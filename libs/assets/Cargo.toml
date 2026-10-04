@@ -1,0 +1,46 @@
+# assets: the resolver for a pinned, immutable set of fonts, icons and emoji
+# published as `<root>/sets/<id>` behind a `current` link, locked by a
+# strict-data manifest with a SHA-256 and a BLAKE3 per file. The core takes
+# its search directories from the caller; the default `mixos` feature adds
+# the MixOS lookup (`mixos/assets` under the XDG data directories, then
+# `assets` under the share directory `config` resolves).
+[package]
+name = "assets"
+description = "Resolver for pinned, verified font, icon and emoji asset sets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "assets"
+kind = "lib"
+layer = "core"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[features]
+default = ["mixos"]
+# The MixOS search path. Without it the crate is the generic core only and
+# depends on no other MixOS crate but `strict`.
+mixos = ["dep:config"]
+
+[dependencies]
+# The two locked hashes every file carries; both are checked on `verify`.
+blake3 = { version = "=1.8.6" }
+sha2 = { version = "=0.10.9" }
+hex = { version = "=0.4.3" }
+config = { path = "../config", optional = true }
+serde = { version = "=1.0.229", features = ["derive"] }
+strict = { path = "../strict" }
+thiserror = { version = "=2.0.20" }
+
+[dev-dependencies]
+# Tests build and mutate manifests as JSON trees, then write them as strict
+# data (or, for the installed layout, as the JSON the installer writes).
+serde_json = { version = "=1.0.151" }
+tempfile = { version = "=3.27.0" }

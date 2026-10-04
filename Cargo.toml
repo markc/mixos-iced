@@ -62,6 +62,7 @@ zbus = { version = "=5.19.0", default-features = false, features = ["blocking-ap
 # Quoin's conf.mix (Mix data) and its one path rule (scene-host).
 
 # Shared libraries (libs/).
+assets = { path = "libs/assets" }
 buildinfo = { path = "libs/buildinfo" }
 bus = { path = "libs/bus" }
 config = { path = "libs/config" }
