@@ -1,9 +1,10 @@
 # vendor/iced: local patches
 
-iced 0.15.0-dev from git master. The only code delta is a local port of
+iced 0.15.0-dev from git master. The code delta is a local port of
 `iced_wgpu` to the wgpu 30 snapshot in `vendor/wgpu`, plus the manifest
-re-wiring that makes iced build against `vendor/wgpu` and `vendor/cryoglyph`.
-Nothing outside `iced_wgpu` and the root `Cargo.toml` differs from upstream.
+re-wiring that makes iced build against `vendor/wgpu` and `vendor/cryoglyph`,
+and two narrow text-input state accessors for `libs/toolkit` (last section).
+Nothing else differs from upstream.
 
 ## Upstream base: `3de451447bd28217bb535632867550908e29d5d0`
 
@@ -89,3 +90,23 @@ and all seven fail on a pristine extract of upstream `3de451447` + cryoglyph
 Retire the API-port part of this delta (and the corresponding guards) when a
 re-vendor lands an upstream iced that already targets wgpu ≥ 30; keep the
 re-wiring guards for as long as the forks are vendored.
+
+## Toolkit text-input state access
+
+`core/src/text/input.rs` adds `Input::cursor()`, reporting the unmasked
+editor's cursor and selection anchor. `widget/src/text_input.rs` makes
+`State<R>` public and adds `cursor()` and `overwrite()`. Immediate overwrite
+clears pending message tracking so undo followed by typing in the same
+event batch uses the restored value. No input binding or rendering changes.
+Each added line carries a `// toolkit:` marker.
+
+iced 0.14 exposed its text-input state; 0.15 made it private and replaced
+grapheme positions with editor byte positions. `libs/toolkit`'s `TextField`
+needs these narrow accessors to preserve bounded, selection-aware undo
+without copying iced's text engine or losing secure-input semantics. This is
+the one vendor patch toolkit needs to compile (its README says so for
+anyone taking the crate); it is a candidate for upstreaming. toolkit's
+`text_field` tests guard selection restoration, undo/typing batches and IME
+handling, and fail to compile without the patch: run
+`cargo test -p toolkit text_field` after any iced refresh. Retire the patch
+when upstream provides equivalent public state access.

@@ -57,6 +57,12 @@ impl<R: text::Renderer> Input<R> {
         Editor::text(&self.editor)
     }
 
+    // toolkit: retain selection-aware undo without duplicating the text engine.
+    /// Returns the cursor and selection anchor in the unmasked text.
+    pub fn cursor(&self) -> editor::Cursor {
+        self.editor.cursor()
+    }
+
     pub fn placeholder(&self) -> &str {
         self.placeholder.content()
     }

@@ -116,6 +116,14 @@ are ordinary iced winit programs (Wayland and X11).
   `iced_runtime`, optionally `iced_wgpu` and the `iced` umbrella for the
   examples). `repository.workspace = true` is the only other workspace
   reference.
+- **One iced patch is required.** `TextField`'s selection-aware undo reads
+  the text input's cursor and restores its value, which upstream iced
+  0.15.0-dev keeps private. The checkout this crate ships with carries two
+  narrow accessors (`vendor/iced/PATCHES.md`, "Toolkit text-input state
+  access": `text::Input::cursor()`, a public `text_input::State` with
+  `cursor()` and `overwrite()`), marked `// toolkit:` in the two files.
+  Apply the same lines to your iced, or take every widget except
+  `TextField`.
 - **Single widgets:** each widget is one file (`src/<widget>.rs`) over
   `AudioStyle` or `MenuStyle` from `tokens.rs`; copy the file and the style
   type.
