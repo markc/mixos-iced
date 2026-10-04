@@ -260,7 +260,6 @@ where
 
 struct Visible<'a, Message, Theme, Renderer> {
     first: usize,
-    keys: Vec<u64>,
     rows: Vec<Element<'a, Message, Theme, Renderer>>,
 }
 
@@ -298,7 +297,6 @@ where
             class: Theme::default(),
             visible: Visible {
                 first: 0,
-                keys: Vec::new(),
                 rows: Vec::new(),
             },
         }
@@ -838,7 +836,7 @@ where
             tree.children.push(child);
         }
         drop(old);
-        state.keys = keys.clone();
+        state.keys = keys;
 
         let row_limits = layout::Limits::new(
             Size::new(row_width, self.row_height),
@@ -869,7 +867,7 @@ where
                     .move_to(Point::ORIGIN),
             );
         }
-        self.visible = Visible { first, keys, rows };
+        self.visible = Visible { first, rows };
         layout::Node::with_children(size, nodes)
     }
 

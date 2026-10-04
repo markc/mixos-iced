@@ -977,6 +977,7 @@ mod tests {
                 send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
                 [Msg::Toggle("a")]
             );
+            drop(element);
             nodes.toggle(&"a");
             // Right on an expanded node moves to its first child.
             element = view(&nodes, &selection);
@@ -1013,6 +1014,7 @@ mod tests {
                 [Msg::Toggle("a")]
             );
             // The leaf root has no expander: a press there selects.
+            drop(element);
             nodes.set_expanded(&"a", false);
             element = view(&nodes, &selection);
             node = layout(&mut element, &mut tree);
