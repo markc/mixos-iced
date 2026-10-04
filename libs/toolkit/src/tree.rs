@@ -364,13 +364,17 @@ fn row_key<K: Hash>(key: &K) -> u64 {
     hasher.finish()
 }
 
+/// The row builder: the content after a visible node's guides and expander.
+pub type BuildFn<'a, K, T, Message, Theme, Renderer> =
+    dyn Fn(Row<'a, K, T>) -> Element<'a, Message, Theme, Renderer> + 'a;
+
 /// The tree widget builder; `.into()` makes the [`VirtualList`] element.
 pub struct TreeView<'a, K, T, Message, Theme, Renderer>
 where
     Theme: virtual_list::Catalog,
 {
     nodes: &'a Nodes<K, T>,
-    build: Rc<dyn Fn(Row<'a, K, T>) -> Element<'a, Message, Theme, Renderer> + 'a>,
+    build: Rc<BuildFn<'a, K, T, Message, Theme, Renderer>>,
     on_toggle: Option<Rc<dyn Fn(K) -> Message + 'a>>,
     on_select: Option<Rc<dyn Fn(Selection) -> Message + 'a>>,
     selection: Selection,

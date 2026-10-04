@@ -65,7 +65,7 @@ impl Selection {
     /// Only `row` selected; it is the cursor and the anchor.
     pub fn single(row: usize) -> Self {
         Self {
-            ranges: vec![row..row + 1],
+            ranges: std::iter::once(row..row + 1).collect(),
             anchor: Some(row),
             cursor: Some(row),
         }
@@ -74,7 +74,7 @@ impl Selection {
     /// Every row of a list of `len` rows.
     pub fn all(len: usize) -> Self {
         Self {
-            ranges: if len == 0 { Vec::new() } else { vec![0..len] },
+            ranges: std::iter::once(0..len).filter(|r| !r.is_empty()).collect(),
             anchor: (len > 0).then_some(0),
             cursor: len.checked_sub(1),
         }
@@ -229,6 +229,12 @@ pub struct KeyPress {
     pub cursor: Option<usize>,
 }
 
+/// `on_context`: the row under the pointer, if any, and the pointer's
+/// window position.
+pub type ContextFn<'a, Message> = dyn Fn(Option<usize>, Point) -> Message + 'a;
+/// `type_ahead`: the first row at or after `from` matching the prefix.
+pub type TypeAheadFn<'a> = dyn Fn(&str, usize) -> Option<usize> + 'a;
+
 /// The widget. `'a` is the lifetime of the rows it builds.
 pub struct VirtualList<'a, Message, Theme, Renderer>
 where
@@ -245,9 +251,9 @@ where
     mode: Mode,
     on_select: Option<Box<dyn Fn(Selection) -> Message + 'a>>,
     on_activate: Option<Box<dyn Fn(usize) -> Message + 'a>>,
-    on_context: Option<Box<dyn Fn(Option<usize>, Point) -> Message + 'a>>,
+    on_context: Option<Box<ContextFn<'a, Message>>>,
     on_key: Option<Box<dyn Fn(KeyPress) -> Option<Message> + 'a>>,
-    type_ahead: Option<Box<dyn Fn(&str, usize) -> Option<usize> + 'a>>,
+    type_ahead: Option<Box<TypeAheadFn<'a>>>,
     reveal: Option<usize>,
     width: Length,
     height: Length,
@@ -1618,6 +1624,8 @@ impl Catalog for iced_core::Theme {
     }
 }
 
+// The expected values here are lists of ranges, one range each.
+#[allow(clippy::single_range_in_vec_init)]
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
