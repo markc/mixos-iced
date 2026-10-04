@@ -1115,34 +1115,19 @@ where
         let body = self.body(bounds);
         let hovered = cursor.is_over(clip);
         let style = self.resolve_style(theme, state, hovered);
-        if let Some(background) = style.background {
+        if style.background.is_some() || style.border.width > 0.0 {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds,
-                    border: Border {
-                        radius: style.border.radius,
-                        ..Border::default()
-                    },
+                    border: style.border,
                     ..renderer::Quad::default()
                 },
-                background,
+                style.background.unwrap_or(Background::Color(Color::TRANSPARENT)),
             );
         }
-        // The outline goes on last, over the rows that reach the edge.
-        let outline = |renderer: &mut Renderer| {
-            if style.border.width > 0.0 {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds,
-                        border: style.border,
-                        ..renderer::Quad::default()
-                    },
-                    Background::Color(Color::TRANSPARENT),
-                );
-            }
-        };
+        // Row, header and rail fills stay inside the outline.
+        let inset = style.border.width;
         let Some(body_clip) = body.intersection(&clip) else {
-            outline(renderer);
             return;
         };
         let hover_row = cursor
@@ -1157,12 +1142,15 @@ where
         renderer.with_layer(body_clip, |renderer| {
             for (offset, (row, child)) in self.visible.rows.iter().zip(&tree.children).enumerate() {
                 let index = self.visible.first + offset;
-                let row_bounds = self.row_bounds(state, body, index);
-                if row_bounds.y + row_bounds.height <= body_clip.y
-                    || row_bounds.y >= body_clip.y + body_clip.height
-                {
+                let full = self.row_bounds(state, body, index);
+                if full.y + full.height <= body_clip.y || full.y >= body_clip.y + body_clip.height {
                     continue;
                 }
+                let row_bounds = Rectangle {
+                    x: full.x + inset,
+                    width: (full.width - 2.0 * inset).max(0.0),
+                    ..full
+                };
                 let selected = self.selection.contains(index);
                 let background = if selected {
                     Some(style.selection)
@@ -1205,6 +1193,14 @@ where
             }
         });
         if let Some((rail, scroller)) = self.scrollbar(state, body) {
+            let rail = Rectangle {
+                x: rail.x - inset,
+                ..rail
+            };
+            let scroller = Rectangle {
+                x: scroller.x - inset,
+                ..scroller
+            };
             if let Some(background) = style.rail {
                 renderer.fill_quad(
                     renderer::Quad {
@@ -1228,8 +1224,10 @@ where
         }
         if let Some(header) = &self.header {
             let header_bounds = Rectangle {
-                height: self.header_height,
-                ..bounds
+                x: bounds.x + inset,
+                y: bounds.y + inset,
+                width: (bounds.width - 2.0 * inset).max(0.0),
+                height: (self.header_height - inset).max(0.0),
             };
             if let Some(background) = style.header {
                 renderer.fill_quad(
@@ -1267,7 +1265,6 @@ where
                 });
             }
         }
-        outline(renderer);
     }
 
     fn mouse_interaction(
