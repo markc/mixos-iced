@@ -15,14 +15,24 @@ if let Some(warning) = look.warning() {                       // no or partial a
     log::warn!("{warning}");
 }
 
-iced::application(...).default_font(look.ui_font());          // Inter Variable, Light (300)
-TextField::new("Name", &value).style(move |_, status| look.tokens.text_input(status));
-Menu::bar(items).style(look.tokens.menu_style());
+iced::application(...)
+    .default_font(look.ui_font())                             // Inter Variable, Light (300)
+    .theme(|app: &App| app.look.theme());                     // toolkit::Theme from the tokens
+TextField::new("Name", &value);                               // styled by the theme
+Menu::bar(items);                                             // likewise
+button("Delete").style(toolkit::theme::button::destructive);  // a per-widget class
 let (glyph, font) = look.icon("delete").unwrap();             // Material Symbols Rounded
+toolkit::icon("delete").size(18);                             // the same glyph as a widget
 text("Title").font(look.display_font());                      // Quicksand
 
 look.retheme(&appearance::Theme::from_source("settings", &new_source)?);  // live change
 ```
+
+With `toolkit::Theme` as the application's iced theme type (`look.theme()`,
+rebuilt from `look.tokens` whenever iced asks), every iced built-in and
+toolkit widget takes the MixOS look with no per-widget style, and a
+`retheme` restyles the next frame. `look.tokens` is still there for the
+explicit styles (`text_input(status)`, `menu_style()`, `audio_style()`).
 
 - `Theme::load()` reads `theme.conf.mix` from the MixOS etc directory
   (`theme_path()`), or uses the embedded default design. `Theme::read(path)`
@@ -37,6 +47,9 @@ look.retheme(&appearance::Theme::from_source("settings", &new_source)?);  // liv
   lookup. A second call is `FontError::AlreadyInstalled`.
 - `Appearance::retheme(&theme)` recomputes the tokens and typography; the
   fonts stay installed.
+- `Appearance::theme()` is `toolkit::Theme::new(tokens)`: the iced theme
+  whose name fingerprints the tokens, so widgets that cache by theme name
+  notice a `retheme`.
 - `Appearance::ui_font()`, `display_font()`, `mono_font()` are the installed
   faces at the design's `ui`, `ui_display` and `mono` weights. The pinned
   fonts are variable, so Light (300) renders true; without a set the
