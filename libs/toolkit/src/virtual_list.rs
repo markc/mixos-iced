@@ -75,7 +75,7 @@ impl Selection {
     pub fn all(len: usize) -> Self {
         Self {
             ranges: if len == 0 { Vec::new() } else { vec![0..len] },
-            anchor: Some(0),
+            anchor: (len > 0).then_some(0),
             cursor: len.checked_sub(1),
         }
     }
@@ -672,16 +672,8 @@ where
                 true
             }
             _ => {
-                if let Some(on_key) = &self.on_key
-                    && let Some(message) = on_key(KeyPress {
-                        key: key.clone(),
-                        modifiers,
-                        cursor,
-                    })
-                {
-                    shell.publish(message);
-                    return true;
-                }
+                // Plainly typed text is type-ahead when there is a finder;
+                // every other key is offered to the hook.
                 if let (Some(find), Some(text)) = (&self.type_ahead, text)
                     && !modifiers.command()
                     && !modifiers.alt()
@@ -705,6 +697,16 @@ where
                     if let Some(row) = find(&state.typed, from).filter(|row| *row < self.rows) {
                         self.move_cursor(state, shell, body_height, row, keyboard::Modifiers::empty());
                     }
+                    return true;
+                }
+                if let Some(on_key) = &self.on_key
+                    && let Some(message) = on_key(KeyPress {
+                        key: key.clone(),
+                        modifiers,
+                        cursor,
+                    })
+                {
+                    shell.publish(message);
                     return true;
                 }
                 false
