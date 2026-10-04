@@ -256,7 +256,7 @@ fn schemas_duplicates_and_unlocked_roles_are_refused() {
             }
             "unlocked-role" => json["fonts"]["sans"] = serde_json::json!("fonts/Absent.ttf"),
             "escape" => json["files"][0]["path"] = serde_json::json!("../outside.ttf"),
-            "old-schema" => json["schema"] = serde_json::json!("cosmix.static-assets.v1"),
+            "old-schema" => json["schema"] = serde_json::json!("other.static-assets.v1"),
             "http-url" => json["files"][0]["url"] = serde_json::json!("http://example.org/font"),
             _ => json["set_id"] = serde_json::json!("other"),
         }
