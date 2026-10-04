@@ -1669,6 +1669,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced_selector"
+version = "0.15.0-dev"
+dependencies = [
+ "iced_core",
+]
+
+[[package]]
+name = "iced_test"
+version = "0.15.0-dev"
+dependencies = [
+ "iced_futures",
+ "iced_program",
+ "iced_renderer",
+ "iced_runtime",
+ "iced_selector",
+ "nom 8.0.0",
+ "png 0.18.1",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "iced_tiny_skia"
 version = "0.15.0-dev"
 dependencies = [
@@ -3487,6 +3509,7 @@ dependencies = [
  "sha2",
  "smithay",
  "tokio",
+ "toolkit",
  "tracing",
  "ui",
  "world",
@@ -4273,8 +4296,10 @@ dependencies = [
  "iced_graphics",
  "iced_renderer",
  "iced_runtime",
+ "iced_test",
  "iced_wgpu",
  "iced_widget",
+ "png 0.18.1",
  "serde_json",
 ]
 
