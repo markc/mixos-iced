@@ -78,6 +78,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "appearance"
+version = "0.1.1"
+dependencies = [
+ "assets",
+ "blake3",
+ "config",
+ "design",
+ "hex",
+ "iced_core",
+ "serde_json",
+ "sha2",
+ "strict",
+ "tempfile",
+ "toolkit",
+]
+
+[[package]]
 name = "appendlist"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
