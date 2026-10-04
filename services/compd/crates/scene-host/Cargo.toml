@@ -30,7 +30,7 @@ dispatcher = { workspace = true }
 ui = { workspace = true }
 world = { workspace = true }
 iced_core = { workspace = true }
-iced_widget = { workspace = true }
+iced_widget = { workspace = true, features = ["wgpu"] }
 iced_graphics = { workspace = true, features = ["image"] }
 # Packaged icons such as Rio embed PNGs inside their SVG.
 iced_wgpu = { workspace = true, features = ["svg-raster-images"] }

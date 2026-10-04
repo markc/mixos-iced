@@ -2,9 +2,13 @@
 
 ## 0.1.0 (toolkit)
 
-- Port cosmix-iced-widgets 0.1.7 to the workspace's vendored iced 0.15-dev.
-  Preserve the widgets and tests; expose iced component crates through toolkit.
-  See PORTING.md for API and clipboard changes. The entries below are retained
+- Port cosmix-iced-widgets 0.1.7 to the vendored iced 0.15-dev. Preserve the
+  widgets and tests; expose iced component crates through toolkit. See
+  PORTING.md for API and clipboard changes.
+- Make the crate generic (PORTING.md, G0): `Tokens` is `Palette` + `Metrics`
+  with built-in dark and light sets; fonts and icons come from a
+  caller-supplied `FontSet`/`IconFont` through `fonts::install`; the gallery
+  is a plain iced program; the `generic` gate. The entries below are retained
   source history from cosmix-iced-widgets.
 
 ## 0.1.5

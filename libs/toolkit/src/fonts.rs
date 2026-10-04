@@ -1,158 +1,465 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Installed font registration and named Material glyphs for iced consumers.
-//! Registration uses iced's shared font system before theme family selection.
-//! Generic sans, serif and mono families use the installed roles. Authored named
-//! families remain selectable through the existing theme resolver.
-//! Material variable axes beyond weight remain renderer dependent.
+//! Caller-supplied fonts and icon fonts, registered once per process with
+//! iced's shared font system.
+//!
+//! A [`FontSet`] names one face per role (sans, mono, serif, display, emoji)
+//! from bytes or a path. An [`IconFont`] is a glyph font with a name →
+//! codepoint table in the Material Symbols `.codepoints` format (`name hex`
+//! per line). [`install`] reads them, replaces any preloaded face of the same
+//! family, registers them and binds iced's generic sans-serif, serif and
+//! monospace families to the supplied roles. Nothing here reads a
+//! configuration, an environment variable or a fixed path: the application
+//! decides where its fonts come from.
 
-use cosmix_assets::AssetSet;
-use iced_core::{Font, font};
-use iced_graphics::text::font_system;
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
+    fmt, io,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 
-static INSTALLED: OnceLock<Result<Option<AssetSet>, String>> = OnceLock::new();
+use iced_core::{Font, font};
+use iced_graphics::text::{cosmic_text::fontdb, font_system};
 
-/// Load the complete verified set once. Absence is a normal platform fallback;
-/// malformed or unreadable installed assets are reported to the caller.
-pub fn register_installed() -> Result<Option<&'static AssetSet>, &'static str> {
-    match INSTALLED.get_or_init(|| {
-        let set = AssetSet::discover().map_err(|error| error.to_string())?;
-        if let Some(set) = &set {
-            // Read every face before mutating the renderer's collection.
-            let data = set
-                .font_paths()
-                .into_iter()
-                .map(|path| {
-                    std::fs::read(&path)
-                        .map_err(|error| format!("font {}: {error}", path.display()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            // Identify families from the selected bytes, including old sets
-            // whose manifest predates family metadata. The selected release
-            // owns these families; keeping a preloaded system face with the
-            // same name would let fontdb query that earlier source instead.
-            let mut selected = iced_graphics::text::cosmic_text::fontdb::Database::new();
-            for bytes in &data {
-                selected.load_font_data(bytes.clone());
-            }
-            let families: HashSet<_> = selected
-                .faces()
-                .flat_map(|face| face.families.iter())
-                .map(|(name, _)| name.to_ascii_lowercase())
-                .collect();
-            for role in ["sans", "mono", "serif", "icons", "emoji"] {
-                if let Some(family) = set.family(role)
-                    && !families.contains(&family.to_ascii_lowercase())
-                {
-                    return Err(format!(
-                        "installed {role} font family {family:?} could not be registered"
-                    ));
-                }
-            }
-            drop(selected);
-            let mut system = font_system()
-                .write()
-                .map_err(|_| "iced font system lock poisoned".to_owned())?;
-            let conflicts: Vec<_> = system
-                .raw()
-                .db()
-                .faces()
-                .filter(|face| {
-                    face.families
-                        .iter()
-                        .any(|(name, _)| families.contains(&name.to_ascii_lowercase()))
-                })
-                .map(|face| face.id)
-                .collect();
-            // db_mut invalidates cosmic-text's family-match cache; load_font
-            // also increments iced's version so existing paragraphs refresh.
-            for id in conflicts {
-                system.raw().db_mut().remove_face(id);
-            }
-            for bytes in data {
-                system.load_font(Cow::Owned(bytes));
-            }
-            for role in ["sans", "mono", "serif", "icons", "emoji"] {
-                if let Some(family) = set.family(role)
-                    && !system.raw().db().faces().any(|face| {
-                        face.families
-                            .iter()
-                            .any(|(name, _)| name.eq_ignore_ascii_case(family))
-                    })
-                {
-                    return Err(format!(
-                        "installed {role} font family {family:?} could not be registered"
-                    ));
-                }
-            }
-            // Generic widget fonts share the same defaults as explicit roles.
-            // These mappings do not rewrite an authored Family::Name choice.
-            let db = system.raw().db_mut();
-            if let Some(family) = set.family("sans") {
-                db.set_sans_serif_family(family);
-            }
-            if let Some(family) = set.family("serif") {
-                db.set_serif_family(family);
-            }
-            if let Some(family) = set.family("mono") {
-                db.set_monospace_family(family);
-            }
-        }
-        Ok(set)
-    }) {
-        Ok(set) => Ok(set.as_ref()),
-        Err(error) => {
-            static REPORTED: OnceLock<()> = OnceLock::new();
-            REPORTED.get_or_init(|| eprintln!("iced static assets: {error}"));
-            Err(error.as_str())
+/// Font bytes, or a file to read them from at [`install`] time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontSource {
+    Bytes(Cow<'static, [u8]>),
+    Path(PathBuf),
+}
+
+impl From<&'static [u8]> for FontSource {
+    fn from(bytes: &'static [u8]) -> Self {
+        Self::Bytes(Cow::Borrowed(bytes))
+    }
+}
+
+impl From<Vec<u8>> for FontSource {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Bytes(Cow::Owned(bytes))
+    }
+}
+
+impl From<PathBuf> for FontSource {
+    fn from(path: PathBuf) -> Self {
+        Self::Path(path)
+    }
+}
+
+impl From<&Path> for FontSource {
+    fn from(path: &Path) -> Self {
+        Self::Path(path.to_path_buf())
+    }
+}
+
+impl FontSource {
+    fn load(self, role: &'static str) -> Result<Cow<'static, [u8]>, FontError> {
+        match self {
+            Self::Bytes(bytes) => Ok(bytes),
+            Self::Path(path) => std::fs::read(&path)
+                .map(Cow::Owned)
+                .map_err(|error| FontError::Read { role, path, error }),
         }
     }
 }
 
-/// Shared UI default for an iced application's `.default_font(...)`.
-/// Registration is once per process and does not contact the network.
+/// The roles a [`FontSet`] can fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    /// Body and UI text; bound to iced's generic sans-serif family.
+    Sans,
+    /// Code and technical fields; bound to the generic monospace family.
+    Mono,
+    /// Bound to the generic serif family.
+    Serif,
+    /// Headings; selected explicitly with [`Fonts::font`].
+    Display,
+    /// Emoji; registered for fallback, selected explicitly if wanted.
+    Emoji,
+}
+
+impl Role {
+    pub const ALL: [Role; 5] = [
+        Role::Sans,
+        Role::Mono,
+        Role::Serif,
+        Role::Display,
+        Role::Emoji,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Role::Sans => "sans",
+            Role::Mono => "mono",
+            Role::Serif => "serif",
+            Role::Display => "display",
+            Role::Emoji => "emoji",
+        }
+    }
+}
+
+/// One optional face per role. Build it with the role methods or fill the
+/// fields directly.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FontSet {
+    pub sans: Option<FontSource>,
+    pub mono: Option<FontSource>,
+    pub serif: Option<FontSource>,
+    pub display: Option<FontSource>,
+    pub emoji: Option<FontSource>,
+}
+
+impl FontSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn sans(mut self, source: impl Into<FontSource>) -> Self {
+        self.sans = Some(source.into());
+        self
+    }
+
+    pub fn mono(mut self, source: impl Into<FontSource>) -> Self {
+        self.mono = Some(source.into());
+        self
+    }
+
+    pub fn serif(mut self, source: impl Into<FontSource>) -> Self {
+        self.serif = Some(source.into());
+        self
+    }
+
+    pub fn display(mut self, source: impl Into<FontSource>) -> Self {
+        self.display = Some(source.into());
+        self
+    }
+
+    pub fn emoji(mut self, source: impl Into<FontSource>) -> Self {
+        self.emoji = Some(source.into());
+        self
+    }
+
+    pub fn get(&self, role: Role) -> Option<&FontSource> {
+        match role {
+            Role::Sans => self.sans.as_ref(),
+            Role::Mono => self.mono.as_ref(),
+            Role::Serif => self.serif.as_ref(),
+            Role::Display => self.display.as_ref(),
+            Role::Emoji => self.emoji.as_ref(),
+        }
+    }
+
+    fn take(&mut self, role: Role) -> Option<FontSource> {
+        match role {
+            Role::Sans => self.sans.take(),
+            Role::Mono => self.mono.take(),
+            Role::Serif => self.serif.take(),
+            Role::Display => self.display.take(),
+            Role::Emoji => self.emoji.take(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        Role::ALL.iter().all(|role| self.get(*role).is_none())
+    }
+}
+
+/// A line of a `.codepoints` table that could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodepointsError {
+    /// 1-based line number.
+    pub line: usize,
+    pub reason: &'static str,
+}
+
+impl fmt::Display for CodepointsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "codepoints line {}: {}", self.line, self.reason)
+    }
+}
+
+impl std::error::Error for CodepointsError {}
+
+/// A glyph font with a name → codepoint table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconFont {
+    pub font: FontSource,
+    pub codepoints: BTreeMap<String, char>,
+}
+
+impl IconFont {
+    pub fn new(font: impl Into<FontSource>, codepoints: BTreeMap<String, char>) -> Self {
+        Self {
+            font: font.into(),
+            codepoints,
+        }
+    }
+
+    /// From a font and the text of its `.codepoints` table.
+    pub fn from_codepoints(
+        font: impl Into<FontSource>,
+        text: &str,
+    ) -> Result<Self, CodepointsError> {
+        Ok(Self::new(font, Self::parse_codepoints(text)?))
+    }
+
+    /// Parse the Material Symbols `.codepoints` format: one `name hex` pair
+    /// per line, blank lines ignored, names unique.
+    pub fn parse_codepoints(text: &str) -> Result<BTreeMap<String, char>, CodepointsError> {
+        let mut icons = BTreeMap::new();
+        for (index, line) in text.lines().enumerate() {
+            let fail = |reason| CodepointsError {
+                line: index + 1,
+                reason,
+            };
+            let mut parts = line.split_whitespace();
+            let Some(name) = parts.next() else {
+                continue;
+            };
+            let hex = parts.next().ok_or(fail("missing codepoint"))?;
+            if parts.next().is_some() {
+                return Err(fail("more than two fields"));
+            }
+            let scalar = u32::from_str_radix(hex, 16).map_err(|_| fail("codepoint is not hex"))?;
+            let glyph = char::from_u32(scalar).ok_or(fail("codepoint is not a Unicode scalar"))?;
+            if icons.insert(name.to_owned(), glyph).is_some() {
+                return Err(fail("duplicate name"));
+            }
+        }
+        if icons.is_empty() {
+            return Err(CodepointsError {
+                line: 0,
+                reason: "empty table",
+            });
+        }
+        Ok(icons)
+    }
+
+    pub fn glyph(&self, name: &str) -> Option<char> {
+        self.codepoints.get(name).copied()
+    }
+}
+
+/// Why [`install`] failed. The font system is left as it was.
+#[derive(Debug)]
+pub enum FontError {
+    /// A `FontSource::Path` could not be read.
+    Read {
+        role: &'static str,
+        path: PathBuf,
+        error: io::Error,
+    },
+    /// The bytes hold no font face.
+    NoFace { role: &'static str },
+    /// The face did not register with iced's font system.
+    NotRegistered {
+        role: &'static str,
+        family: String,
+    },
+    /// Fonts are installed once per process.
+    AlreadyInstalled,
+    /// iced's font system lock is poisoned.
+    Poisoned,
+}
+
+impl fmt::Display for FontError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { role, path, error } => {
+                write!(f, "{role} font {}: {error}", path.display())
+            }
+            Self::NoFace { role } => write!(f, "{role} font holds no face"),
+            Self::NotRegistered { role, family } => {
+                write!(f, "{role} font family {family:?} could not be registered")
+            }
+            Self::AlreadyInstalled => write!(f, "fonts are already installed"),
+            Self::Poisoned => write!(f, "font system lock poisoned"),
+        }
+    }
+}
+
+impl std::error::Error for FontError {}
+
+/// The registered fonts: a family name per supplied role and the icon table.
+#[derive(Debug)]
+pub struct Fonts {
+    families: BTreeMap<Role, &'static str>,
+    icon_family: Option<&'static str>,
+    icons: BTreeMap<String, char>,
+}
+
+impl Fonts {
+    /// The registered family name of a role.
+    pub fn family(&self, role: Role) -> Option<&'static str> {
+        self.families.get(&role).copied()
+    }
+
+    /// A regular-weight font naming the role's family.
+    pub fn font(&self, role: Role) -> Option<Font> {
+        self.family(role).map(named)
+    }
+
+    /// The icon font, without a glyph.
+    pub fn icon_font(&self) -> Option<Font> {
+        self.icon_family.map(named)
+    }
+
+    /// The glyph and font of a named icon, ready for a text widget.
+    pub fn icon(&self, name: &str) -> Option<(char, Font)> {
+        self.icons
+            .get(name)
+            .copied()
+            .zip(self.icon_font())
+    }
+
+    /// Every icon name, in order.
+    pub fn icon_names(&self) -> impl Iterator<Item = &str> {
+        self.icons.keys().map(String::as_str)
+    }
+}
+
+static INSTALLED: OnceLock<Fonts> = OnceLock::new();
+static INSTALLING: Mutex<()> = Mutex::new(());
+
+/// Register the set and the icon font, once per process. Faces already in
+/// the font system under one of the supplied families are replaced, so the
+/// application's bytes win over a system font of the same name. The
+/// generic sans-serif, serif and monospace families are bound to the sans,
+/// serif and mono roles when supplied. Sources are read and checked before
+/// the installed-once rule applies, so a bad source is always reported.
+pub fn install(mut set: FontSet, icon: Option<IconFont>) -> Result<&'static Fonts, FontError> {
+    // Read and identify every face before touching the renderer's collection.
+    let mut faces: Vec<(&'static str, Cow<'static, [u8]>, String)> = Vec::new();
+    let mut roles = Vec::new();
+    for role in Role::ALL {
+        if let Some(source) = set.take(role) {
+            let bytes = source.load(role.name())?;
+            let family = first_family(&bytes).ok_or(FontError::NoFace { role: role.name() })?;
+            roles.push((role, family.clone()));
+            faces.push((role.name(), bytes, family));
+        }
+    }
+    let icons = icon
+        .map(|icon| {
+            let bytes = icon.font.load("icon")?;
+            let family = first_family(&bytes).ok_or(FontError::NoFace { role: "icon" })?;
+            faces.push(("icon", bytes, family.clone()));
+            Ok::<_, FontError>((family, icon.codepoints))
+        })
+        .transpose()?;
+    let families: HashSet<String> = faces
+        .iter()
+        .map(|(_, _, family)| family.to_ascii_lowercase())
+        .collect();
+    let _installing = INSTALLING.lock().map_err(|_| FontError::Poisoned)?;
+    if INSTALLED.get().is_some() {
+        return Err(FontError::AlreadyInstalled);
+    }
+    {
+        let mut system = font_system().write().map_err(|_| FontError::Poisoned)?;
+        let conflicts: Vec<_> = system
+            .raw()
+            .db()
+            .faces()
+            .filter(|face| {
+                face.families
+                    .iter()
+                    .any(|(name, _)| families.contains(&name.to_ascii_lowercase()))
+            })
+            .map(|face| face.id)
+            .collect();
+        // db_mut invalidates cosmic-text's family-match cache; load_font also
+        // increments iced's version so existing paragraphs refresh.
+        for id in conflicts {
+            system.raw().db_mut().remove_face(id);
+        }
+        for (_, bytes, _) in &faces {
+            system.load_font(bytes.clone());
+        }
+        for (role, _, family) in &faces {
+            if !has_family(system.raw().db(), family) {
+                return Err(FontError::NotRegistered {
+                    role,
+                    family: family.clone(),
+                });
+            }
+        }
+        // Generic widget fonts share the supplied roles. These bindings do
+        // not rewrite an explicit `Family::Name` choice.
+        let db = system.raw().db_mut();
+        for (role, family) in &roles {
+            match role {
+                Role::Sans => db.set_sans_serif_family(family.clone()),
+                Role::Serif => db.set_serif_family(family.clone()),
+                Role::Mono => db.set_monospace_family(family.clone()),
+                Role::Display | Role::Emoji => {}
+            }
+        }
+    }
+    let fonts = Fonts {
+        families: roles
+            .into_iter()
+            .map(|(role, family)| (role, intern(&family)))
+            .collect(),
+        icon_family: icons.as_ref().map(|(family, _)| intern(family)),
+        icons: icons.map(|(_, table)| table).unwrap_or_default(),
+    };
+    INSTALLED
+        .set(fonts)
+        .map_err(|_| FontError::AlreadyInstalled)?;
+    Ok(INSTALLED.get().expect("just set"))
+}
+
+/// The fonts registered by [`install`], if any.
+pub fn installed() -> Option<&'static Fonts> {
+    INSTALLED.get()
+}
+
+/// The glyph and font of a named icon from the installed [`IconFont`].
+pub fn icon(name: &str) -> Option<(char, Font)> {
+    installed().and_then(|fonts| fonts.icon(name))
+}
+
+/// Shared UI default for an iced application's `.default_font(...)`: the
+/// installed sans face, else the generic sans-serif family.
 pub fn default_ui_font() -> Font {
     font_for("sans-serif", &[], 400, false, true)
 }
 
 /// Shared mono default for code, technical fields and other mono widgets.
-/// Explicit authored families should continue to use `font_for`.
 pub fn default_mono_font() -> Font {
     font_for("monospace", &[], 400, true, true)
 }
 
-/// Resolve an authored family chain. An untouched embedded role can prefer
-/// the installed sans/mono family; explicit design families retain precedence.
+/// Resolve a family chain to a registered face. With `prefer_installed`, the
+/// installed sans (or mono) role is tried first; an explicit family that is
+/// registered keeps precedence when `prefer_installed` is false. The weight
+/// is bucketed to iced's scale, and a Light request falls back to Normal in
+/// a family with no light face.
 pub fn font_for(
     family: &str,
     fallbacks: &[String],
     requested_weight: u16,
     monospace: bool,
-    prefer_assets: bool,
+    prefer_installed: bool,
 ) -> Font {
-    let set = register_installed().ok().flatten();
-    let preferred = prefer_assets
-        .then(|| set.and_then(|set| set.family(if monospace { "mono" } else { "sans" })))
+    let preferred = prefer_installed
+        .then(|| {
+            installed().and_then(|fonts| {
+                fonts.family(if monospace { Role::Mono } else { Role::Sans })
+            })
+        })
         .flatten();
     let names: Vec<_> = preferred
         .into_iter()
         .chain(std::iter::once(family))
         .chain(fallbacks.iter().map(String::as_str))
         .collect();
-    let (installed, has_light) = {
+    let (found, has_light) = {
         let mut system = font_system().write().expect("font system");
         let db = system.raw().db();
-        let found = names.iter().find(|name| {
-            db.faces().any(|face| {
-                face.families
-                    .iter()
-                    .any(|(family, _)| family.eq_ignore_ascii_case(name))
-            })
-        });
+        let found = names.iter().find(|name| has_family(db, name));
         let light = found.is_some_and(|name| {
             db.faces().any(|face| {
                 face.weight.0 == 300
@@ -164,12 +471,31 @@ pub fn font_for(
         });
         (found.map(|name| (*name).to_owned()), light)
     };
-    let family = match installed {
+    let family = match found {
         Some(name) => font::Family::Name(intern(&name)),
         None if monospace => font::Family::Monospace,
         None => font::Family::SansSerif,
     };
-    let weight = match cosmix_design::family_font_weight(requested_weight, has_light) {
+    Font {
+        family,
+        weight: weight(effective_weight(requested_weight, has_light)),
+        ..Font::DEFAULT
+    }
+}
+
+/// A Light (300) request in a family with no light face selects Normal, so
+/// that a fallback family never renders ExtraLight.
+pub const fn effective_weight(requested: u16, has_light: bool) -> u16 {
+    if requested == 300 && !has_light {
+        400
+    } else {
+        requested
+    }
+}
+
+/// Bucket a CSS weight to iced's named weights.
+pub const fn weight(value: u16) -> font::Weight {
+    match value {
         0..=150 => font::Weight::Thin,
         151..=250 => font::Weight::ExtraLight,
         251..=350 => font::Weight::Light,
@@ -179,32 +505,33 @@ pub fn font_for(
         651..=750 => font::Weight::Bold,
         751..=850 => font::Weight::ExtraBold,
         _ => font::Weight::Black,
-    };
+    }
+}
+
+fn named(family: &'static str) -> Font {
     Font {
-        family,
-        weight,
+        family: font::Family::Name(family),
         ..Font::DEFAULT
     }
 }
 
-/// The codepoint and explicitly named font, ready for a text widget.
-/// Absence/unknown names return None; a broken installed set returns an error.
-pub fn material_icon(name: &str) -> Result<Option<(char, Font)>, &'static str> {
-    let Some(set) = register_installed()? else {
-        return Ok(None);
-    };
-    Ok(set
-        .icon(name)
-        .zip(set.family("icons"))
-        .map(|(glyph, family)| {
-            (
-                glyph,
-                Font {
-                    family: font::Family::Name(intern(family)),
-                    ..Font::DEFAULT
-                },
-            )
-        }))
+/// The first family name of the first face in `bytes`.
+fn first_family(bytes: &[u8]) -> Option<String> {
+    let mut scratch = fontdb::Database::new();
+    scratch.load_font_data(bytes.to_vec());
+    scratch
+        .faces()
+        .next()
+        .and_then(|face| face.families.first())
+        .map(|(name, _)| name.clone())
+}
+
+fn has_family(db: &fontdb::Database, family: &str) -> bool {
+    db.faces().any(|face| {
+        face.families
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(family))
+    })
 }
 
 fn intern(name: &str) -> &'static str {
@@ -224,89 +551,124 @@ fn intern(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced_graphics::text::FIRA_SANS_REGULAR;
 
     #[test]
-    #[ignore = "requires a bootstrapped static asset set"]
-    fn installed_roles_and_material_glyph_resolve() {
-        use iced_graphics::text::cosmic_text::fontdb::{Database, Family, Language, Query};
-        let expected = AssetSet::discover().unwrap().expect("installed set");
-        let sans_bytes = std::fs::read(expected.font_path("sans").unwrap()).unwrap();
-        let mono_bytes = std::fs::read(expected.font_path("mono").unwrap()).unwrap();
-        assert_ne!(sans_bytes, mono_bytes);
-        // A preloaded conflicting family points at different valid font bytes.
-        // Only fontdb's in-memory family metadata is changed, never a font file.
-        let mut source = Database::new();
-        source.load_font_data(mono_bytes.clone());
-        let mut conflict = source.faces().next().unwrap().clone();
-        conflict.families = vec![(
-            expected.family("sans").unwrap().to_owned(),
-            Language::English_UnitedStates,
-        )];
-        let stale_id = {
-            let mut system = font_system().write().unwrap();
-            system.raw().db_mut().push_face_info(conflict)
-        };
-        let set = register_installed().unwrap().expect("installed set");
+    fn codepoints_parse_and_reject_bad_rows() {
+        let table = IconFont::parse_codepoints("delete e872\n\nfolder e2c7\n").unwrap();
+        assert_eq!(table.get("delete"), Some(&'\u{e872}'));
+        assert_eq!(table.get("folder"), Some(&'\u{e2c7}'));
+        assert_eq!(table.len(), 2);
+        let icon = IconFont::from_codepoints(FIRA_SANS_REGULAR, "a 61").unwrap();
+        assert_eq!(icon.glyph("a"), Some('a'));
+        assert_eq!(icon.glyph("b"), None);
+        for (text, line, reason) in [
+            ("delete", 1, "missing codepoint"),
+            ("delete e872 extra", 1, "more than two fields"),
+            ("delete zz", 1, "codepoint is not hex"),
+            ("delete d800", 1, "codepoint is not a Unicode scalar"),
+            ("a 61\na 62", 2, "duplicate name"),
+            ("\n\n", 0, "empty table"),
+        ] {
+            assert_eq!(
+                IconFont::parse_codepoints(text),
+                Err(CodepointsError { line, reason }),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn weights_bucket_and_light_falls_back() {
+        assert_eq!(effective_weight(300, false), 400);
+        assert_eq!(effective_weight(300, true), 300);
+        assert_eq!(effective_weight(700, false), 700);
+        assert_eq!(weight(100), font::Weight::Thin);
+        assert_eq!(weight(300), font::Weight::Light);
+        assert_eq!(weight(400), font::Weight::Normal);
+        assert_eq!(weight(600), font::Weight::Semibold);
+        assert_eq!(weight(900), font::Weight::Black);
+    }
+
+    #[test]
+    fn font_set_builders_fill_roles() {
+        let set = FontSet::new()
+            .sans(FIRA_SANS_REGULAR)
+            .mono(Path::new("mono.ttf"))
+            .emoji(vec![1, 2, 3]);
+        assert!(!set.is_empty());
+        assert!(FontSet::new().is_empty());
+        assert_eq!(set.get(Role::Sans), Some(&FontSource::from(FIRA_SANS_REGULAR)));
+        assert_eq!(
+            set.get(Role::Mono),
+            Some(&FontSource::Path(PathBuf::from("mono.ttf")))
+        );
+        assert_eq!(set.get(Role::Serif), None);
+        assert_eq!(Role::Display.name(), "display");
+        assert_eq!(first_family(FIRA_SANS_REGULAR).as_deref(), Some("Fira Sans"));
+        assert_eq!(first_family(b"not a font"), None);
+    }
+
+    #[test]
+    fn missing_file_and_bad_bytes_are_reported() {
+        let missing = install(
+            FontSet::new().sans(Path::new("/nonexistent/toolkit-test.ttf")),
+            None,
+        );
+        assert!(matches!(missing, Err(FontError::Read { role: "sans", .. })));
+        let bad = install(FontSet::new(), Some(IconFont::new(vec![0u8; 4], BTreeMap::new())));
+        assert!(matches!(bad, Err(FontError::NoFace { role: "icon" })));
+    }
+
+    /// The one test that installs: it uses the Fira Sans bytes iced embeds
+    /// under its `fira-sans` feature, so no font file is needed.
+    #[test]
+    fn install_registers_roles_and_icons_once() {
+        use fontdb::{Family, Query};
+        let icon_font = IconFont::from_codepoints(FIRA_SANS_REGULAR, "a 61\nb 62").unwrap();
+        let fonts = install(
+            FontSet::new()
+                .sans(FIRA_SANS_REGULAR)
+                .mono(FIRA_SANS_REGULAR.to_vec()),
+            Some(icon_font),
+        )
+        .unwrap();
+        assert_eq!(fonts.family(Role::Sans), Some("Fira Sans"));
+        assert_eq!(fonts.family(Role::Mono), Some("Fira Sans"));
+        assert_eq!(fonts.family(Role::Serif), None);
+        assert_eq!(fonts.icon("a"), Some(('a', named("Fira Sans"))));
+        assert_eq!(fonts.icon("c"), None);
+        assert_eq!(fonts.icon_names().collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(icon("b").map(|(glyph, _)| glyph), Some('b'));
+        assert!(std::ptr::eq(installed().unwrap(), fonts));
         {
             let mut system = font_system().write().unwrap();
             let db = system.raw().db();
-            assert!(
-                db.face(stale_id).is_none(),
-                "conflicting system face removed"
-            );
+            assert_eq!(db.family_name(&Family::SansSerif), "Fira Sans");
+            assert_eq!(db.family_name(&Family::Monospace), "Fira Sans");
             let id = db
                 .query(&Query {
-                    families: &[Family::Name(set.family("sans").unwrap())],
+                    families: &[Family::Name("Fira Sans")],
                     ..Default::default()
                 })
                 .unwrap();
             assert_eq!(
                 db.with_face_data(id, |bytes, _| bytes.to_vec()).unwrap(),
-                sans_bytes
+                FIRA_SANS_REGULAR
             );
-            for (family, role) in [
-                (Family::SansSerif, "sans"),
-                (Family::Serif, "serif"),
-                (Family::Monospace, "mono"),
-            ] {
-                assert_eq!(db.family_name(&family), set.family(role).unwrap());
-                let id = db
-                    .query(&Query {
-                        families: &[family],
-                        ..Default::default()
-                    })
-                    .unwrap();
-                assert_eq!(
-                    db.with_face_data(id, |bytes, _| bytes.to_vec()).unwrap(),
-                    std::fs::read(set.font_path(role).unwrap()).unwrap(),
-                    "generic {role} must select the installed bytes"
-                );
-            }
         }
-        let sans = font_for("Missing family", &[], 400, false, true);
-        let mono = font_for("Missing family", &[], 400, true, true);
+        let sans = font_for("Missing family", &[], 300, false, true);
+        assert_eq!(sans.family, font::Family::Name("Fira Sans"));
+        assert_eq!(sans.weight, font::Weight::Normal, "no light face");
+        assert_eq!(default_ui_font(), font_for("sans-serif", &[], 400, false, true));
+        assert_eq!(default_mono_font().family, font::Family::Name("Fira Sans"));
         assert_eq!(
-            sans.family,
-            font::Family::Name(intern(set.family("sans").unwrap()))
+            font_for("Missing family", &[], 400, true, false).family,
+            font::Family::Monospace
         );
-        assert_eq!(
-            mono.family,
-            font::Family::Name(intern(set.family("mono").unwrap()))
-        );
-        assert_eq!(default_ui_font(), sans);
-        assert_eq!(default_mono_font(), mono);
-        let authored = font_for(set.family("serif").unwrap(), &[], 400, false, false);
-        assert_eq!(
-            authored.family,
-            font::Family::Name(intern(set.family("serif").unwrap()))
-        );
-        let (glyph, font) = material_icon("delete").unwrap().unwrap();
-        // Match the pinned Material Symbols catalogue, not legacy Material Icons.
-        assert_eq!(glyph, '\u{e92e}');
-        assert_eq!(
-            font.family,
-            font::Family::Name(intern(set.family("icons").unwrap()))
-        );
-        assert!(material_icon("not_a_material_icon").unwrap().is_none());
+        assert!(matches!(
+            install(FontSet::new(), None),
+            Err(FontError::AlreadyInstalled)
+        ));
     }
 }

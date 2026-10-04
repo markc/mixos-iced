@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 gallery-title = Toolkit widget gallery
+theme-dark = Dark
+theme-light = Light
+fonts = Installed fonts
+font-sample = { $role }: { $family } — The quick brown fox jumps over the lazy dog 0123456789
 new = New
 open-recent = Open recent
 session-one = Session one

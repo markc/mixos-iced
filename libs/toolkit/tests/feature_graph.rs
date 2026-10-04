@@ -1,28 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Check that the library links no winit, that each renderer arm selects only
-//! its backend (with geometry), and that the winit-based gallery arms stay
-//! Wayland-only, alone and unified with the shipping shell selection. Uses the
-//! committed lock; may fetch crate sources for an arm the worker has not built
-//! yet (forcing offline made the result order-dependent).
+//! Check that the library links no winit and selects no renderer by default,
+//! that each renderer arm selects only its backend (with geometry), and that
+//! the gallery arms are plain iced programs: winit on Wayland and X11, with
+//! none of iced's default, debug or hot-reload extras. Uses the committed
+//! lock; may fetch crate sources for an arm the worker has not built yet
+//! (forcing offline made the result order-dependent).
 use std::path::Path;
 use std::process::Command;
 
-fn graph(edges: &str, features: Option<&str>, with_shell: bool) -> String {
-    cargo_tree(edges, None, features, with_shell)
+fn graph(edges: &str, features: Option<&str>) -> String {
+    cargo_tree(edges, None, features)
 }
 
 /// Normal dependencies as `name vX.Y.Z[ (path)]\tfeature,feature` lines: the
 /// tab keeps the package annotation out of the trailing features field.
 fn enabled_features(features: &str) -> String {
-    cargo_tree("normal", Some("{p}\t{f}"), Some(features), false)
+    cargo_tree("normal", Some("{p}\t{f}"), Some(features))
 }
 
-fn cargo_tree(
-    edges: &str,
-    format: Option<&str>,
-    features: Option<&str>,
-    with_shell: bool,
-) -> String {
+fn cargo_tree(edges: &str, format: Option<&str>, features: Option<&str>) -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut command = Command::new(env!("CARGO"));
     command.current_dir(root);
@@ -43,9 +39,6 @@ fn cargo_tree(
     ]);
     if let Some(format) = format {
         command.args(["--format", format]);
-    }
-    if with_shell {
-        command.args(["-p", "compd"]);
     }
     if let Some(features) = features {
         command.args(["--features", features]);
@@ -73,15 +66,19 @@ fn check_no_winit(graph: &str) {
     );
 }
 
-fn check_wayland(graph: &str) {
-    assert!(graph.contains("iced_winit feature \"wayland\""));
+fn check_plain_shell(graph: &str) {
+    for edge in ["iced_winit feature \"wayland\"", "iced_winit feature \"x11\""] {
+        assert!(
+            graph.lines().any(|line| line.starts_with(edge)),
+            "missing feature edge: {edge}\n{graph}"
+        );
+    }
     for edge in [
-        "iced feature \"x11\"",
         "iced feature \"default\"",
         "iced feature \"debug\"",
+        "iced feature \"hot\"",
+        "iced feature \"time-travel\"",
         "iced feature \"unconditional-rendering\"",
-        "softbuffer feature \"x11\"",
-        "window_clipboard feature \"x11\"",
     ] {
         assert!(
             !graph.lines().any(|line| line.starts_with(edge)),
@@ -93,7 +90,7 @@ fn check_wayland(graph: &str) {
 #[test]
 fn library_links_no_winit_and_selects_no_renderer_by_default() {
     for edges in ["normal", "features"] {
-        let default = graph(edges, None, false);
+        let default = graph(edges, None);
         check_no_winit(&default);
         assert!(!has_package(&default, "iced_wgpu"));
         assert!(!has_package(&default, "iced_tiny_skia"));
@@ -106,7 +103,7 @@ fn renderer_features_select_one_backend_with_geometry_and_no_winit() {
         ("toolkit/wgpu", "iced_wgpu", "iced_tiny_skia"),
         ("toolkit/tiny-skia", "iced_tiny_skia", "iced_wgpu"),
     ] {
-        let graph = graph("features", Some(feature), false);
+        let graph = graph("features", Some(feature));
         check_no_winit(&graph);
         assert!(has_package(&graph, renderer));
         assert!(!has_package(&graph, other));
@@ -123,18 +120,14 @@ fn renderer_features_select_one_backend_with_geometry_and_no_winit() {
 }
 
 #[test]
-fn gallery_arms_keep_shell_wayland_only() {
+fn gallery_arms_are_plain_winit_programs_with_one_renderer() {
     for (feature, renderer, other) in [
         ("toolkit/gallery-wgpu", "iced_wgpu", "iced_tiny_skia"),
         ("toolkit/gallery-tiny-skia", "iced_tiny_skia", "iced_wgpu"),
     ] {
-        for with_shell in [false, true] {
-            let graph = graph("features", Some(feature), with_shell);
-            check_wayland(&graph);
-            assert!(has_package(&graph, renderer));
-            if !with_shell || other != "iced_wgpu" {
-                assert!(!has_package(&graph, other));
-            }
-        }
+        let graph = graph("features", Some(feature));
+        check_plain_shell(&graph);
+        assert!(has_package(&graph, renderer));
+        assert!(!has_package(&graph, other));
     }
 }

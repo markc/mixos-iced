@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Measurement-only renderer: real iced text shaping, no device or painting.
 
-use std::borrow::Cow;
 use std::sync::Once;
 
 use iced_core::{Background, Color, Font, Pixels, Point, Rectangle, Transformation};
@@ -13,15 +12,13 @@ impl LayoutRenderer {
     pub(crate) fn new() -> Self {
         static FONT: Once = Once::new();
         FONT.call_once(|| {
+            // The test build enables iced_graphics `fira-sans`, which embeds
+            // Fira Sans and binds the generic sans-serif family to it. Widget
+            // text uses Font::DEFAULT or MONOSPACE, so bind monospace to the
+            // same face: no host fonts are needed for text bounds, cursor
+            // positioning or typing.
             let mut system = iced_graphics::text::font_system().write().unwrap();
-            system.load_font(Cow::Borrowed(include_bytes!(
-                "../../../vendor/font/Inter-VariableFont_opsz,wght.ttf"
-            )));
-            // Scene text explicitly uses Font::DEFAULT (or MONOSPACE), so
-            // bind both generic families to the bundled face. No host fonts
-            // are needed for text bounds, cursor positioning or typing.
-            system.raw().db_mut().set_sans_serif_family("Inter");
-            system.raw().db_mut().set_monospace_family("Inter");
+            system.raw().db_mut().set_monospace_family("Fira Sans");
         });
         Self
     }

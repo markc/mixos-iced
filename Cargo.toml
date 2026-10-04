@@ -28,11 +28,14 @@ crossbeam-channel = { version = "=0.5.16" }
 drm-ffi = { version = "=0.9.1" }
 gbm = { version = "=0.18.0" }
 glow = { version = "=0.17.0" }
+iced = { path = "vendor/iced", version = "0.15.0-dev", default-features = false }
 iced_core = { path = "vendor/iced/core", version = "0.15.0-dev" }
 iced_graphics = { path = "vendor/iced/graphics", version = "0.15.0-dev", features = ["web-colors"] }
+iced_renderer = { path = "vendor/iced/renderer", version = "0.15.0-dev", default-features = false }
 iced_runtime = { path = "vendor/iced/runtime", version = "0.15.0-dev" }
 iced_wgpu = { path = "vendor/iced/wgpu", version = "0.15.0-dev", default-features = false, features = ["web-colors"] }
-iced_widget = { path = "vendor/iced/widget", version = "0.15.0-dev", features = ["advanced", "image", "svg", "wgpu"] }
+# No renderer here: toolkit selects none by default; compd's iced hosts add `wgpu`.
+iced_widget = { path = "vendor/iced/widget", version = "0.15.0-dev", features = ["advanced", "image", "svg"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 libc = { version = "=0.2.189" }
 libpulse-binding = { version = "=2.30.1" }
@@ -70,6 +73,7 @@ design = { path = "libs/design" }
 expr = { path = "libs/expr" }
 scene = { path = "libs/scene" }
 strict = { path = "libs/strict" }
+toolkit = { path = "libs/toolkit" }
 
 # compd's private crates (services/compd/crates/).
 comp-model = { path = "services/compd/crates/comp-model" }

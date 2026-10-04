@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Adapter-side mapping of resolved design colours; no iced dependency leaks
-//! into `cosmix-design`. These are provisional widget mappings, not additions
-//! to the design compiler's closed family registry.
+//! Theme tokens: a [`Palette`] of colours and [`Metrics`] (spacing, radii,
+//! border widths, type scale and weights), combined as [`Tokens`].
+//!
+//! The widgets take their colours through `Tokens::text_input`,
+//! `Tokens::menu_style`, `Tokens::tooltip_style` and `Tokens::audio_style`.
+//! The built-in [`Palette::dark`] and [`Palette::light`] sets are complete
+//! on their own; an application with its own theme fills the same plain
+//! fields. Nothing here parses a theme file.
 
-use cosmix_design::{LinearRgba, ResolvedColours, ResolvedDictionary, ResolvedMetricKind};
 use iced_core::{Border, Color};
 use iced_widget::{container, text_input};
 
@@ -37,207 +41,55 @@ pub(crate) fn default_menu_style() -> MenuStyle {
     }
 }
 
-/// Missing or invalid resolved dictionary entry. Never silently substitutes a
-/// fallback for a partially compiled design.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenError(pub &'static str);
-
-impl std::fmt::Display for TokenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "missing or invalid design token: {}", self.0)
-    }
-}
-
-impl std::error::Error for TokenError {}
-
-/// Converts linear-light design colours to iced's encoded sRGB components.
-pub fn colour(value: LinearRgba) -> Color {
-    // Use the model's canonical transfer function and quantisation, including
-    // alpha. Passing linear channels directly makes middle greys too dark.
-    let [r, g, b, a] = value.to_srgba8();
-    Color::from_rgba8(r, g, b, f32::from(a) / 255.0)
-}
-
-/// Widget colours and radius in iced terms, taken from a resolved design.
-/// Pair fields use the rendered (composited) values; `border`, `input` and
-/// `ring` are the non-text colours of the same names.
+/// Widget colours in iced terms. Each `*_text` field is the foreground that
+/// reads on the surface of the same name; `border`, `input` and `ring` are
+/// outline colours (resting outline, input outline, focus ring).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Tokens {
+pub struct Palette {
+    /// The window background.
     pub surface: Color,
+    /// Text on `surface`.
     pub text: Color,
+    /// Menus and other popovers.
     pub popover: Color,
+    /// Text on `popover`.
     pub popover_text: Color,
+    /// Tooltips and other content that floats over the surface; opaque and
+    /// distinct from `surface`.
     pub elevated: Color,
+    /// Text on `elevated`.
     pub elevated_text: Color,
+    /// Grouped content such as a channel strip.
     pub card: Color,
+    /// Text on `card`.
     pub card_text: Color,
+    /// The main action and fill colour.
     pub primary: Color,
+    /// Text on `primary`.
     pub primary_text: Color,
+    /// Dangerous actions and clipping indicators.
     pub destructive: Color,
+    /// Text on `destructive`.
     pub destructive_text: Color,
+    /// De-emphasised surfaces (disabled inputs, tracks).
     pub muted_surface: Color,
+    /// Placeholder and disabled text.
     pub muted_text: Color,
+    /// Selection highlight in inputs and menus.
     pub selection: Color,
+    /// Text on `selection`.
     pub selection_text: Color,
+    /// Resting outlines and separators.
     pub border: Color,
+    /// Outline of an input at rest.
     pub input: Color,
+    /// Focus ring.
     pub ring: Color,
-    pub radius: f32,
 }
 
-impl Tokens {
-    /// Maps the `base`, `popover`, `elevated`, `card`, `primary`,
-    /// `destructive`, `muted` and `accent` pairs plus the
-    /// `border`, `input` and `ring` colours. Radius is 6 px.
-    pub fn from_colours(colours: &ResolvedColours) -> Result<Self, TokenError> {
-        let pair = |name| colours.pairs.get(name).ok_or(TokenError(name));
-        let non_text = |name| {
-            colours
-                .non_text
-                .get(name)
-                .map(|v| colour(v.value))
-                .ok_or(TokenError(name))
-        };
-        let base = pair("base")?;
-        let popover = pair("popover")?;
-        let elevated = pair("elevated")?;
-        let muted = pair("muted")?;
-        let accent = pair("accent")?;
-        let card = pair("card")?;
-        let primary = pair("primary")?;
-        let destructive = pair("destructive")?;
-        Ok(Self {
-            surface: colour(base.rendered_surface),
-            text: colour(base.rendered_foreground),
-            popover: colour(popover.rendered_surface),
-            popover_text: colour(popover.rendered_foreground),
-            elevated: colour(elevated.rendered_surface),
-            elevated_text: colour(elevated.rendered_foreground),
-            card: colour(card.rendered_surface),
-            card_text: colour(card.rendered_foreground),
-            primary: colour(primary.rendered_surface),
-            primary_text: colour(primary.rendered_foreground),
-            destructive: colour(destructive.rendered_surface),
-            destructive_text: colour(destructive.rendered_foreground),
-            muted_surface: colour(muted.rendered_surface),
-            muted_text: colour(muted.rendered_foreground),
-            selection: colour(accent.rendered_surface),
-            selection_text: colour(accent.rendered_foreground),
-            border: non_text("border")?,
-            input: non_text("input")?,
-            ring: non_text("ring")?,
-            radius: 6.0,
-        })
-    }
-
-    /// As `from_colours`, with the radius from the `radius.md` px metric.
-    pub fn from_dictionary(dictionary: &ResolvedDictionary) -> Result<Self, TokenError> {
-        let mut tokens = Self::from_colours(&dictionary.colours)?;
-        let radius = dictionary
-            .metrics
-            .get("radius.md")
-            .ok_or(TokenError("radius.md"))?;
-        if radius.kind != ResolvedMetricKind::Px
-            || !radius.value.is_finite()
-            || radius.value < 0.0
-            || radius.value > f32::MAX as f64
-        {
-            return Err(TokenError("radius.md"));
-        }
-        tokens.radius = radius.value as f32;
-        Ok(tokens)
-    }
-
-    /// Style for `TextField::style` (or a plain iced `text_input`).
-    pub fn text_input(self, status: text_input::Status) -> text_input::Style {
-        let disabled = matches!(status, text_input::Status::Disabled);
-        text_input::Style {
-            background: if disabled {
-                self.muted_surface
-            } else {
-                self.surface
-            }
-            .into(),
-            border: Border {
-                color: match status {
-                    text_input::Status::Focused { .. } => self.ring,
-                    text_input::Status::Hovered => self.border,
-                    _ => self.input,
-                },
-                width: 1.0,
-                radius: self.radius.into(),
-            },
-            placeholder: self.muted_text,
-            value: if disabled { self.muted_text } else { self.text },
-            selection: self.selection,
-        }
-    }
-
-    /// Style for `Menu::style`, keeping the default row metrics.
-    pub fn menu_style(self) -> MenuStyle {
-        MenuStyle {
-            background: self.popover,
-            text: self.popover_text,
-            disabled: self.muted_text,
-            selected: self.selection,
-            selected_text: self.selection_text,
-            border: self.border,
-            radius: self.radius,
-            ..MenuStyle::default()
-        }
-    }
-
-    /// Tooltip chrome using the compiled `elevated` pair, so tooltip text
-    /// never sits on the surface it covers. Pass the resolved
-    /// `button.border_width` metric (1 px in the default design); padding
-    /// belongs to the tooltip's spacing-scale configuration. The compiler
-    /// guarantees an opaque, base-distinct surface and AA contrast for this
-    /// pair.
-    pub fn tooltip_style(self, border_width: f32) -> container::Style {
-        container::Style {
-            background: Some(self.elevated.into()),
-            text_color: Some(self.elevated_text),
-            border: Border {
-                color: self.border,
-                width: border_width,
-                radius: self.radius.into(),
-            },
-            ..Default::default()
-        }
-    }
-
-    /// Style for the pro-audio controls and canvases. Meter zones run
-    /// primary (below -12 dB), accent (to -3 dB), destructive (above).
-    pub fn audio_style(self) -> AudioStyle {
-        AudioStyle {
-            background: self.card,
-            track: self.muted_surface,
-            fill: self.primary,
-            thumb: self.card_text,
-            text: self.card_text,
-            muted_text: self.muted_text,
-            border: self.border,
-            meter_low: self.primary,
-            meter_high: self.selection,
-            meter_clip: self.destructive,
-            peak: self.card_text,
-            active: self.selection,
-            active_text: self.selection_text,
-            alert: self.destructive,
-            alert_text: self.destructive_text,
-            grid: self.border,
-            lane: self.muted_surface,
-            note: self.primary,
-            waveform: self.primary,
-            playhead: self.ring,
-            radius: self.radius.min(4.0),
-        }
-    }
-}
-
-/// Standalone preview palette. Applications should use their resolved design.
-impl Default for Tokens {
-    fn default() -> Self {
+impl Palette {
+    /// A dark palette: near-black surfaces, light text, green primary.
+    pub const fn dark() -> Self {
         Self {
             surface: Color::from_rgb8(27, 29, 35),
             text: Color::from_rgb8(230, 234, 241),
@@ -258,132 +110,373 @@ impl Default for Tokens {
             border: Color::from_rgb8(80, 91, 109),
             input: Color::from_rgb8(66, 77, 95),
             ring: Color::from_rgb8(143, 184, 232),
-            radius: 6.0,
         }
+    }
+
+    /// A light palette: white surfaces, near-black text, the same hues.
+    pub const fn light() -> Self {
+        Self {
+            surface: Color::WHITE,
+            text: Color::from_rgb8(28, 30, 36),
+            popover: Color::from_rgb8(250, 250, 252),
+            popover_text: Color::from_rgb8(28, 30, 36),
+            elevated: Color::from_rgb8(240, 242, 246),
+            elevated_text: Color::from_rgb8(28, 30, 36),
+            card: Color::from_rgb8(247, 248, 250),
+            card_text: Color::from_rgb8(28, 30, 36),
+            primary: Color::from_rgb8(36, 122, 80),
+            primary_text: Color::WHITE,
+            destructive: Color::from_rgb8(190, 40, 40),
+            destructive_text: Color::WHITE,
+            muted_surface: Color::from_rgb8(236, 238, 242),
+            muted_text: Color::from_rgb8(92, 100, 114),
+            selection: Color::from_rgb8(184, 208, 240),
+            selection_text: Color::from_rgb8(20, 28, 44),
+            border: Color::from_rgb8(214, 218, 226),
+            input: Color::from_rgb8(226, 229, 235),
+            ring: Color::from_rgb8(66, 133, 244),
+        }
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+/// The spacing scale, in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spacing {
+    pub xs: f32,
+    pub sm: f32,
+    pub md: f32,
+    pub lg: f32,
+    pub xl: f32,
+}
+
+/// Corner radii, in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Radii {
+    /// Small controls: thumbs, toggles, meters.
+    pub sm: f32,
+    /// Inputs, menus, tooltips.
+    pub md: f32,
+    /// Cards and panels.
+    pub lg: f32,
+}
+
+/// Border widths, in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Borders {
+    /// Outlines and separators.
+    pub width: f32,
+    /// The focus ring.
+    pub focus_width: f32,
+}
+
+/// Text sizes, in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypeScale {
+    pub xs: f32,
+    pub sm: f32,
+    /// Body text and menu labels.
+    pub md: f32,
+    pub lg: f32,
+    pub xl: f32,
+    pub xxl: f32,
+}
+
+/// Font weights on the CSS 100–900 scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Weights {
+    pub light: u16,
+    pub regular: u16,
+    pub medium: u16,
+    pub bold: u16,
+}
+
+/// Sizes that do not depend on the palette.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Metrics {
+    pub spacing: Spacing,
+    pub radius: Radii,
+    pub border: Borders,
+    pub text: TypeScale,
+    pub weight: Weights,
+}
+
+impl Metrics {
+    /// The built-in scale: 2/4/8/16/24 spacing, 4/6/12 radii, 1 px borders
+    /// with a 2 px focus ring, 11–24 px text, 300/400/500/700 weights.
+    pub const DEFAULT: Self = Self {
+        spacing: Spacing {
+            xs: 2.0,
+            sm: 4.0,
+            md: 8.0,
+            lg: 16.0,
+            xl: 24.0,
+        },
+        radius: Radii {
+            sm: 4.0,
+            md: 6.0,
+            lg: 12.0,
+        },
+        border: Borders {
+            width: 1.0,
+            focus_width: 2.0,
+        },
+        text: TypeScale {
+            xs: 11.0,
+            sm: 12.0,
+            md: 14.0,
+            lg: 16.0,
+            xl: 20.0,
+            xxl: 24.0,
+        },
+        weight: Weights {
+            light: 300,
+            regular: 400,
+            medium: 500,
+            bold: 700,
+        },
+    };
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// A palette and its metrics: everything the widget styles are derived from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tokens {
+    pub palette: Palette,
+    pub metrics: Metrics,
+}
+
+impl Tokens {
+    pub const fn new(palette: Palette, metrics: Metrics) -> Self {
+        Self { palette, metrics }
+    }
+
+    /// `Palette::dark` with the default metrics.
+    pub const fn dark() -> Self {
+        Self::new(Palette::dark(), Metrics::DEFAULT)
+    }
+
+    /// `Palette::light` with the default metrics.
+    pub const fn light() -> Self {
+        Self::new(Palette::light(), Metrics::DEFAULT)
+    }
+
+    /// Style for `TextField::style` (or a plain iced `text_input`).
+    pub fn text_input(self, status: text_input::Status) -> text_input::Style {
+        let palette = self.palette;
+        let disabled = matches!(status, text_input::Status::Disabled);
+        text_input::Style {
+            background: if disabled {
+                palette.muted_surface
+            } else {
+                palette.surface
+            }
+            .into(),
+            border: Border {
+                color: match status {
+                    text_input::Status::Focused { .. } => palette.ring,
+                    text_input::Status::Hovered => palette.border,
+                    _ => palette.input,
+                },
+                width: self.metrics.border.width,
+                radius: self.metrics.radius.md.into(),
+            },
+            placeholder: palette.muted_text,
+            value: if disabled {
+                palette.muted_text
+            } else {
+                palette.text
+            },
+            selection: palette.selection,
+        }
+    }
+
+    /// Style for `Menu::style`, keeping the default row metrics.
+    pub fn menu_style(self) -> MenuStyle {
+        let palette = self.palette;
+        MenuStyle {
+            background: palette.popover,
+            text: palette.popover_text,
+            disabled: palette.muted_text,
+            selected: palette.selection,
+            selected_text: palette.selection_text,
+            border: palette.border,
+            radius: self.metrics.radius.md,
+            text_size: self.metrics.text.md,
+            ..MenuStyle::default()
+        }
+    }
+
+    /// Tooltip chrome on the `elevated` pair, so tooltip text never sits on
+    /// the surface it covers. Padding belongs to the tooltip's own spacing.
+    pub fn tooltip_style(self) -> container::Style {
+        container::Style {
+            background: Some(self.palette.elevated.into()),
+            text_color: Some(self.palette.elevated_text),
+            border: Border {
+                color: self.palette.border,
+                width: self.metrics.border.width,
+                radius: self.metrics.radius.md.into(),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Style for the pro-audio controls and canvases. Meter zones run
+    /// primary (below -12 dB), selection (to -3 dB), destructive (above).
+    pub fn audio_style(self) -> AudioStyle {
+        let palette = self.palette;
+        AudioStyle {
+            background: palette.card,
+            track: palette.muted_surface,
+            fill: palette.primary,
+            thumb: palette.card_text,
+            text: palette.card_text,
+            muted_text: palette.muted_text,
+            border: palette.border,
+            meter_low: palette.primary,
+            meter_high: palette.selection,
+            meter_clip: palette.destructive,
+            peak: palette.card_text,
+            active: palette.selection,
+            active_text: palette.selection_text,
+            alert: palette.destructive,
+            alert_text: palette.destructive_text,
+            grid: palette.border,
+            lane: palette.muted_surface,
+            note: palette.primary,
+            waveform: palette.primary,
+            playhead: palette.ring,
+            radius: self.metrics.radius.sm,
+        }
+    }
+}
+
+/// The dark palette with the default metrics.
+impl Default for Tokens {
+    fn default() -> Self {
+        Self::dark()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cosmix_design::{ResolvedMetric, ResolvedNonTextColour, ResolvedPair};
 
-    fn dictionary() -> ResolvedDictionary {
-        let mut colours = ResolvedColours::default();
-        for name in [
-            "base",
-            "popover",
-            "elevated",
-            "muted",
-            "accent",
-            "card",
-            "primary",
-            "destructive",
-        ] {
-            colours.pairs.insert(
-                name.into(),
-                ResolvedPair {
-                    surface_name: name.into(),
-                    surface: LinearRgba::WHITE,
-                    foreground_name: name.into(),
-                    foreground: LinearRgba::BLACK,
-                    backdrop_name: None,
-                    backdrop: None,
-                    rendered_surface: LinearRgba::BLACK,
-                    rendered_foreground: LinearRgba::WHITE,
-                    contrast_ratio: 21.0,
-                    recipe: None,
-                },
-            );
+    /// WCAG relative luminance of an encoded sRGB colour.
+    fn luminance(colour: Color) -> f32 {
+        let channel = |c: f32| {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(colour.r) + 0.7152 * channel(colour.g) + 0.0722 * channel(colour.b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f32 {
+        let (l1, l2) = (luminance(a), luminance(b));
+        (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
+    }
+
+    /// Text pairs read at AA (4.5:1); filled controls at the UI threshold (3:1).
+    #[test]
+    fn built_in_palettes_are_readable() {
+        for palette in [Palette::dark(), Palette::light()] {
+            for (surface, text) in [
+                (palette.surface, palette.text),
+                (palette.popover, palette.popover_text),
+                (palette.elevated, palette.elevated_text),
+                (palette.card, palette.card_text),
+                (palette.muted_surface, palette.muted_text),
+                (palette.surface, palette.muted_text),
+            ] {
+                assert!(contrast(surface, text) >= 4.5, "{surface:?} / {text:?}");
+            }
+            for (surface, text) in [
+                (palette.primary, palette.primary_text),
+                (palette.destructive, palette.destructive_text),
+                (palette.selection, palette.selection_text),
+                (palette.surface, palette.ring),
+            ] {
+                assert!(contrast(surface, text) >= 3.0, "{surface:?} / {text:?}");
+            }
+            assert_eq!(palette.elevated.a, 1.0);
+            assert_ne!(palette.elevated, palette.surface);
         }
-        for name in ["border", "input", "ring"] {
-            colours.non_text.insert(
-                name.into(),
-                ResolvedNonTextColour {
-                    value_name: name.into(),
-                    value: LinearRgba::WHITE,
-                    adjacent: Default::default(),
-                },
-            );
-        }
-        ResolvedDictionary {
-            colours,
-            metrics: [(
-                "radius.md".into(),
-                ResolvedMetric {
-                    kind: ResolvedMetricKind::Px,
-                    value: 9.0,
-                },
-            )]
-            .into(),
-            scales: Default::default(),
-        }
+        assert!(luminance(Palette::light().surface) > luminance(Palette::dark().surface));
     }
 
     #[test]
-    fn linear_conversion_preserves_alpha_and_encodes_grey() {
-        let mapped = colour(LinearRgba {
-            red: 0.5,
-            green: 0.5,
-            blue: 0.5,
-            alpha: 0.25,
-        });
-        assert_eq!(mapped, Color::from_rgba8(188, 188, 188, 64.0 / 255.0));
+    fn text_input_uses_ring_on_focus_and_muted_when_disabled() {
+        let tokens = Tokens::default();
+        let focused = tokens.text_input(text_input::Status::Focused { is_hovered: false });
+        assert_eq!(focused.border.color, tokens.palette.ring);
+        assert_eq!(focused.border.width, tokens.metrics.border.width);
+        assert_eq!(focused.border.radius, tokens.metrics.radius.md.into());
+        assert_eq!(
+            tokens.text_input(text_input::Status::Hovered).border.color,
+            tokens.palette.border
+        );
+        let disabled = tokens.text_input(text_input::Status::Disabled);
+        assert_eq!(disabled.value, tokens.palette.muted_text);
+        assert_eq!(disabled.background, tokens.palette.muted_surface.into());
     }
 
     #[test]
-    fn mapping_uses_rendered_pairs_and_focus_token() {
-        let tokens = Tokens::from_dictionary(&dictionary()).unwrap();
-        assert_eq!(tokens.surface, Color::BLACK);
-        assert_eq!(tokens.text, Color::WHITE);
-        assert_eq!(tokens.radius, 9.0);
-        assert_eq!(
-            tokens
-                .text_input(text_input::Status::Focused { is_hovered: false })
-                .border
-                .color,
-            tokens.ring
-        );
-        assert_eq!(
-            tokens.text_input(text_input::Status::Disabled).value,
-            tokens.muted_text
-        );
-        assert_eq!(tokens.menu_style().selected_text, tokens.selection_text);
+    fn menu_and_audio_styles_follow_the_palette_and_metrics() {
+        let tokens = Tokens::light();
+        let menu = tokens.menu_style();
+        assert_eq!(menu.selected_text, tokens.palette.selection_text);
+        assert_eq!(menu.background, tokens.palette.popover);
+        assert_eq!(menu.radius, tokens.metrics.radius.md);
+        assert_eq!(menu.text_size, tokens.metrics.text.md);
+        assert_eq!(menu.row_height, MenuStyle::default().row_height);
         let audio = tokens.audio_style();
-        assert_eq!(audio.meter_clip, tokens.destructive);
-        assert_eq!(audio.background, tokens.card);
-        assert_eq!(audio.radius, 4.0);
+        assert_eq!(audio.meter_clip, tokens.palette.destructive);
+        assert_eq!(audio.background, tokens.palette.card);
+        assert_eq!(audio.radius, tokens.metrics.radius.sm);
+        assert_eq!(AudioStyle::default(), Tokens::default().audio_style());
     }
 
     #[test]
     fn tooltip_style_is_pure_and_uses_the_elevated_pair() {
-        for tokens in [
-            Tokens::default(),
-            Tokens::from_dictionary(&dictionary()).unwrap(),
-        ] {
-            let style = tokens.tooltip_style(1.0);
-            assert_eq!(style, tokens.tooltip_style(1.0));
-            assert_eq!(style.background, Some(tokens.elevated.into()));
-            assert_eq!(style.text_color, Some(tokens.elevated_text));
-            assert_eq!(tokens.elevated.a, 1.0);
-            assert_eq!(style.border.color, tokens.border);
+        for tokens in [Tokens::dark(), Tokens::light()] {
+            let style = tokens.tooltip_style();
+            assert_eq!(style, tokens.tooltip_style());
+            assert_eq!(style.background, Some(tokens.palette.elevated.into()));
+            assert_eq!(style.text_color, Some(tokens.palette.elevated_text));
+            assert_eq!(style.border.color, tokens.palette.border);
             assert_eq!(style.border.width, 1.0);
-            assert_eq!(style.border.radius, tokens.radius.into());
-            assert_eq!(tokens.tooltip_style(2.0).border.width, 2.0);
+            assert_eq!(style.border.radius, tokens.metrics.radius.md.into());
         }
+        let mut thick = Tokens::dark();
+        thick.metrics.border.width = 2.0;
+        assert_eq!(thick.tooltip_style().border.width, 2.0);
     }
 
     #[test]
-    fn incomplete_or_wrong_unit_dictionary_is_rejected() {
-        assert_eq!(
-            Tokens::from_colours(&ResolvedColours::default()),
-            Err(TokenError("base"))
-        );
-        let mut dictionary = dictionary();
-        dictionary.metrics.get_mut("radius.md").unwrap().kind = ResolvedMetricKind::Ratio;
-        assert_eq!(
-            Tokens::from_dictionary(&dictionary),
-            Err(TokenError("radius.md"))
-        );
+    fn default_metrics_scale_upwards() {
+        let m = Metrics::default();
+        assert!(m.spacing.xs < m.spacing.sm && m.spacing.sm < m.spacing.md);
+        assert!(m.spacing.md < m.spacing.lg && m.spacing.lg < m.spacing.xl);
+        assert!(m.radius.sm < m.radius.md && m.radius.md < m.radius.lg);
+        assert!(m.border.width < m.border.focus_width);
+        assert!(m.text.xs < m.text.sm && m.text.sm < m.text.md && m.text.md < m.text.lg);
+        assert!(m.text.lg < m.text.xl && m.text.xl < m.text.xxl);
+        assert!(m.weight.light < m.weight.regular && m.weight.regular < m.weight.medium);
+        assert!(m.weight.medium < m.weight.bold);
+        assert_eq!(Tokens::default(), Tokens::dark());
     }
 }

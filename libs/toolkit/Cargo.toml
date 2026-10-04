@@ -1,11 +1,14 @@
 [package]
 name = "toolkit"
-version.workspace = true
-description = "Shared Cosmix iced widgets: text field, menus, pro-audio controls, waveform, piano roll, design tokens"
-edition.workspace = true
-rust-version.workspace = true
-publish = false
+description = "iced widgets: text field, menus, audio controls, waveform, piano roll, theming tokens, font sets and icon fonts"
+# A public contract with its own version (CHANGELOG.md); the edition and
+# toolchain are stated here so the crate carries them when taken elsewhere.
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
 license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = false
 
 [package.metadata.mixos]
 component = "toolkit"
@@ -18,7 +21,7 @@ mod_module_files = "deny"
 
 # The library uses iced's component crates only. The `iced` umbrella always
 # links iced_winit and winit, so it is reachable solely through the gallery
-# features, for the example.
+# features, for the examples.
 [features]
 default = []
 wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]
@@ -28,17 +31,25 @@ gallery-wgpu = ["gallery", "wgpu", "iced/wgpu-bare"]
 gallery-tiny-skia = ["gallery", "tiny-skia", "iced/tiny-skia"]
 
 [dependencies]
-cosmix-assets = { workspace = true }
-cosmix-design = { workspace = true }
 iced_core = { workspace = true, features = ["advanced"] }
 iced_widget = { workspace = true }
 iced_graphics = { workspace = true, features = ["geometry"] }
 iced_renderer = { workspace = true }
 iced_runtime = { workspace = true }
 iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
-iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "thread-pool", "fira-sans"] }
+iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "x11", "thread-pool", "fira-sans"] }
 fluent-bundle = { version = "0.15", optional = true }
+
+[dev-dependencies]
+# Tests shape real text; iced's embedded Fira Sans means no host font is read.
+iced_graphics = { workspace = true, features = ["fira-sans"] }
+# The `generic` gate reads `cargo metadata`.
+serde_json = { workspace = true }
 
 [[example]]
 name = "gallery"
+required-features = ["gallery"]
+
+[[example]]
+name = "gallery_fonts"
 required-features = ["gallery"]

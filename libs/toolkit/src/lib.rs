@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Shared, event-driven iced controls. Select `wgpu` or `tiny-skia` in the host.
-//! The default feature set deliberately selects neither renderer.
+//! Event-driven iced widgets with plain-data theming: text field, menus,
+//! pro-audio controls, waveform, piano roll; [`Tokens`] for colours and
+//! metrics; [`fonts`] for caller-supplied font sets and icon fonts.
+//!
+//! Select `wgpu` or `tiny-skia` in the host. The default feature set
+//! deliberately selects neither renderer and links no window shell.
 
 pub mod audio_style;
 pub mod fader;
@@ -20,13 +24,14 @@ mod test_renderer;
 
 pub use audio_style::AudioStyle;
 pub use fader::Fader;
+pub use fonts::{FontSet, FontSource, Fonts, IconFont, Role};
 pub use knob::Knob;
 pub use menu::{Item, Menu, MenuState, MenuStyle, NavOutcome, Navigator, Panel};
 pub use meter::LevelMeter;
 pub use piano_roll::{Note, PianoRoll, RollNotes, RollView};
 pub use text_field::TextField;
 pub use toggle::Toggle;
-pub use tokens::{TokenError, Tokens};
+pub use tokens::{Metrics, Palette, Tokens};
 pub use waveform::{Waveform, WaveformPeaks};
 
 #[cfg(feature = "gallery")]

@@ -1,16 +1,14 @@
-# Port of cosmix-iced-widgets 0.1.7
+# Port history
+
+## T0: port of cosmix-iced-widgets 0.1.7 to iced 0.15
 
 Source: cosmix `src/desktop/crates/cosmix-iced-widgets`, revision
-`685622493a5203635661fb9adc1cea4a4fc4ac3b`. Toolkit inherits compd's version
-and edition and uses only its vendored iced 0.15.0-dev and wgpu 30.
-
-## Cosmix pin
-
-The existing workspace pin is retained for every cosmix dependency, including
-design and the newly added assets resolver. Contrary to the brief's chronology,
-`f92f9e78`, `549fea4b` and `4799db04` are ancestors of `68562249`.
-That revision already contains the verified Material Symbols catalogue and
-shared installed-font registration. A pin bump is unnecessary.
+`685622493a5203635661fb9adc1cea4a4fc4ac3b`, ported on the compd repository
+(branch `t0-toolkit`, head `1d6d32d7`) against its vendored iced 0.15.0-dev
+and wgpu 30, then brought here verbatim before the G0 changes below. At T0
+the crate still depended on `cosmix-design` (tokens, font weights) and
+`cosmix-assets` (installed font set, Material Symbols catalogue); the
+cosmix pin was unchanged (`68562249` already contained both).
 
 ## Features and layering
 
@@ -63,3 +61,53 @@ No new widget features are introduced.
 The gallery's existing English strings are in `i18n/en/toolkit.ftl`; only its
 title changes to the new crate name. Preview and menu-default colours move
 to the token path without changing their values. Fluent is gallery-only.
+
+## G0: made generic
+
+The crate is written for any iced project (decision: `toolkit` is generic
+and stealable). Changes versus T0:
+
+- **`tokens.rs`:** the `cosmix-design` mapping (`Tokens::from_colours`,
+  `from_dictionary`, `TokenError`, the linear-light `colour` conversion) is
+  gone. `Tokens` is now `{ palette: Palette, metrics: Metrics }` with plain
+  fields, `Palette::dark()` (the T0 preview values, unchanged) and
+  `Palette::light()` (new), and `Metrics::DEFAULT` (spacing, radii, border
+  widths, type scale, weights). `text_input`, `menu_style` and
+  `audio_style` derive the same styles as before from the palette, with the
+  radius from `metrics.radius.md` (6 px) and the audio radius from
+  `metrics.radius.sm` (4 px, the old `radius.min(4.0)`); `menu_style` also
+  sets `text_size` from `metrics.text.md` (14 px, the old default).
+  `tooltip_style()` takes no border-width argument: the width comes from
+  `metrics.border.width` (1 px, the old default design metric). A theme
+  compiler, if an application has one, maps its output onto these fields
+  outside this crate.
+- **`fonts.rs`:** the `cosmix-assets` discovery (`register_installed`,
+  `material_icon`) is replaced by `FontSet` (sans, mono, serif, display,
+  emoji; bytes or path), `IconFont` (font plus a `.codepoints` table, with
+  its parser) and `fonts::install(set, icon) -> &'static Fonts`, once per
+  process. Registration keeps the T0 behaviour: the supplied bytes replace a
+  preloaded face of the same family, and the generic sans-serif, serif and
+  monospace families are bound to the supplied roles. Family names are read
+  from the font bytes rather than a manifest. `default_ui_font`,
+  `default_mono_font` and `font_for` keep their signatures (the last
+  argument now means "prefer the installed role"); the Light-to-Normal
+  weight fallback (`cosmix_design::family_font_weight`) is
+  `fonts::effective_weight`. `material_icon(name)` is `fonts::icon(name)`,
+  returning `Option` (no installed set is simply `None`).
+- **Tests:** text is shaped with iced's embedded Fira Sans (the
+  `iced_graphics/fira-sans` dev feature) instead of a font file outside the
+  crate, so `cargo test -p toolkit` works wherever the crate is taken.
+- **Gallery:** `examples/gallery.rs` is a plain iced winit program (Wayland
+  and X11) with the default fonts and a dark/light toggle over
+  `Tokens::dark()`/`Tokens::light()`; `examples/gallery_fonts.rs` runs the
+  same program after `fonts::install` with paths from the command line. The
+  shared program is `examples/gallery/app.rs`. The compositor-nested capture
+  gate that ran the gallery inside the desktop at T0 lives with the desktop
+  tests, not here.
+- **Feature graph:** the gallery arms are no longer Wayland-only;
+  `tests/feature_graph.rs` checks they are plain winit programs on both
+  backends with none of iced's default, debug or hot extras.
+- **`tests/generic.rs`:** the gate (forbidden names in the crate; no
+  workspace crate outside `vendor/` in the normal-dependency closure).
+- The manifest states its own version, edition and toolchain, and names no
+  project crate.
