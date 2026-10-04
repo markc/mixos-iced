@@ -124,9 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          environment/patches/README.md"
     );
 
-    // Install the embedded default UI font (Inter) into iced's lazy global font
-    // system while it is still untouched — before any engine/surface exists —
-    // so the sans-serif default resolves even on systems with no fonts.
+    // Install the UI fonts (the pinned asset set, else the embedded Inter) into
+    // iced's lazy global font system while it is still untouched — before any
+    // engine/surface exists — so the generic families resolve to the set's
+    // faces even on systems with no fonts.
     ui::font::default::base::install();
 
     // Arm the persistence engine (spawn its writer thread) before any world flushes.

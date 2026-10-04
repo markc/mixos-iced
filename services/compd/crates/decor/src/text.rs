@@ -2,9 +2,10 @@
 //! elided at the end to the width it may take.
 //!
 //! The font system is iced's process-wide one (`iced_graphics::text::
-//! font_system`): the faces compd already loaded, including the embedded Inter
-//! that `main` installs as the sans-serif default (ui `font::default`),
-//! so a machine with no fonts installed still gets a title. A missing face
+//! font_system`): the faces compd already loaded, including the asset set's
+//! sans (or, without a set, the embedded Inter) that `main` installs as the
+//! sans-serif default (ui `font::default`), so a machine with no fonts
+//! installed still gets a title. A missing face
 //! falls back the way cosmic-text always does; no usable face gives an empty
 //! mask, never a failure.
 

@@ -523,7 +523,8 @@ impl SceneUi {
             "column" | "row" => self.container(nodes, id, node, parent, row, &key, route())?,
             "text" => {
                 let size = number(node, "size").unwrap_or(TEXT_SIZE);
-                let mut font = if flag(node, "mono") { Font::MONOSPACE } else { Font::DEFAULT };
+                // Body text is Light (ui::font::BODY); mono keeps its normal weight.
+                let mut font = if flag(node, "mono") { Font::MONOSPACE } else { ui::font::BODY };
                 if flag(node, "bold") {
                     font.weight = font::Weight::Bold;
                 }

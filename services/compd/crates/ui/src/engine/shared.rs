@@ -82,7 +82,8 @@ pub struct EngineSettings {
 impl Default for EngineSettings {
     fn default() -> Self {
         Self {
-            default_font: Font::default(),
+            // Body text is the sans default at Light (300): `font::BODY`.
+            default_font: crate::font::BODY,
             default_text_size: Pixels::from(16),
         }
     }

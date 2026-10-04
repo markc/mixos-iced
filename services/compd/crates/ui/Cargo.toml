@@ -16,6 +16,8 @@ contract = "none"
 workspace = true
 
 [dependencies]
+# The pinned font, icon and emoji set the UI fonts come from (src/font/default).
+assets = { workspace = true }
 dispatcher = { workspace = true }
 graphics = { workspace = true }
 # FrameSource: the per-frame report content sources (src/source.rs) hand the presentation ledger.
@@ -29,3 +31,12 @@ iced_wgpu = { workspace = true }
 smithay = { workspace = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
+
+[dev-dependencies]
+# tests/fonts.rs publishes a fake asset set: the manifest is JSON (strict
+# data) with a SHA-256 and a BLAKE3 per file, in a temporary directory.
+blake3 = { version = "=1.8.6" }
+hex = { version = "=0.4.3" }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { version = "=3.27.0" }

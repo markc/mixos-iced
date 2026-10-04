@@ -3680,16 +3680,22 @@ dependencies = [
 name = "ui"
 version = "0.1.1"
 dependencies = [
+ "assets",
  "bitflags 2.13.1",
+ "blake3",
  "dispatcher",
  "graphics",
+ "hex",
  "iced_core",
  "iced_graphics",
  "iced_runtime",
  "iced_wgpu",
  "ledger",
  "model",
+ "serde_json",
+ "sha2",
  "smithay",
+ "tempfile",
  "thiserror 2.0.20",
  "wgpu",
 ]

@@ -16,9 +16,10 @@ impl LayoutRenderer {
             system.load_font(Cow::Borrowed(include_bytes!(
                 "../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf"
             )));
-            // Scene text explicitly uses Font::DEFAULT (or MONOSPACE), so
-            // bind both generic families to the bundled face. No host fonts
-            // are needed for text bounds, cursor positioning or typing.
+            // Scene text uses the sans-serif family (ui::font::BODY) or
+            // MONOSPACE, so bind both generic families to the bundled face.
+            // No host fonts and no asset set are needed for text bounds,
+            // cursor positioning or typing: this renderer stays hermetic.
             system.raw().db_mut().set_sans_serif_family("Inter");
             system.raw().db_mut().set_monospace_family("Inter");
         });
@@ -66,7 +67,7 @@ impl text::Renderer for LayoutRenderer {
     const SCROLL_RIGHT_ICON: char = '\u{e805}';
 
     fn default_font(&self) -> Font {
-        Font::DEFAULT
+        ui::font::BODY
     }
     fn default_size(&self) -> Pixels {
         Pixels(16.0)
