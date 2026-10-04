@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+gallery-title = Toolkit widget gallery
+new = New
+open-recent = Open recent
+session-one = Session one
+archive = Archive
+session-two = Session two
+unavailable = Unavailable
+save = Save
+file = File
+help = Help
+about = About
+channel = Ch { $number }
+mute = M
+solo = S
+context-hint = Right-click here for a context menu (or click, then Shift+F10).
+picked = picked pitch { $pitch } at beat { $beat }
+text-input = Text input
+input-hint = Type, select, paste; Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y
+password = Password
+menu-hint = F10 activates the menu bar. Use arrows, Enter and Escape.
+last-action = Last action: { $action }
+mixer = Mixer (drag; Shift is fine; double-click resets)
+loud = Loud
+quiet = Quiet
+waveform = Waveform (click to seek)
+piano-roll = Piano roll: { $count } notes (wheel, Shift+wheel, Ctrl+wheel) { $picked }

@@ -1,0 +1,44 @@
+[package]
+name = "toolkit"
+version.workspace = true
+description = "Shared Cosmix iced widgets: text field, menus, pro-audio controls, waveform, piano roll, design tokens"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata.mixos]
+component = "toolkit"
+kind = "lib"
+layer = "desktop"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+# The library uses iced's component crates only. The `iced` umbrella always
+# links iced_winit and winit, so it is reachable solely through the gallery
+# features, for the example.
+[features]
+default = []
+wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]
+tiny-skia = ["iced_renderer/tiny-skia", "iced_renderer/geometry"]
+gallery = ["dep:iced", "dep:fluent-bundle"]
+gallery-wgpu = ["gallery", "wgpu", "iced/wgpu-bare"]
+gallery-tiny-skia = ["gallery", "tiny-skia", "iced/tiny-skia"]
+
+[dependencies]
+cosmix-assets = { workspace = true }
+cosmix-design = { workspace = true }
+iced_core = { workspace = true, features = ["advanced"] }
+iced_widget = { workspace = true }
+iced_graphics = { workspace = true, features = ["geometry"] }
+iced_renderer = { workspace = true }
+iced_runtime = { workspace = true }
+iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
+iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "thread-pool", "fira-sans"] }
+fluent-bundle = { version = "0.15", optional = true }
+
+[[example]]
+name = "gallery"
+required-features = ["gallery"]
