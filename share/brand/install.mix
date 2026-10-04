@@ -1,0 +1,38 @@
+#!/opt/mixos/bin/mix
+-- Install the MixOS brand icons into the shared icon tree.
+-- Default root: $MIXOS_SHARE, otherwise /opt/mixos/share. --root for a sandbox.
+--
+--   icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg
+--     The transparent mark. A *-symbolic icon is drawn in the theme's ink,
+--     so the panel launcher follows light and dark mode from this one file.
+--
+-- The session must have the root in XDG_DATA_DIRS for icon lookup to find it.
+
+$g = getopt(args(), {help: {short: "h"}, root: {arg: true}})
+if len($g.errors) != 0 or len($g.rest) != 0 then
+  raise("BRAND_ARGS", "Unexpected arguments: " .. join(concat($g.errors, $g.rest), "; "))
+end
+if $g.opts.help then
+  print("usage: mix share/brand/install.mix [--root /absolute/share]")
+  exit(0)
+end
+$root = $g.opts.root ?? env("MIXOS_SHARE", "/opt/mixos/share")
+if not starts_with($root, "/") or $root == "/" then
+  raise("BRAND_ROOT", "Destination must be an absolute share directory")
+end
+$brand = dirname(realpath($0))
+$icons = {
+  "icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg": "logos/mixos-black-transparent.svg"
+}
+for each $dest in sort(keys($icons))
+  $src = $brand .. "/" .. $icons[$dest]
+  $path = $root .. "/" .. $dest
+  mkdir(dirname($path))
+  if is_file($path) and hash_file($path, "sha256") == hash_file($src, "sha256") then
+    print("unchanged " .. $path)
+  else
+    copy($src, $path)
+    chmod($path, 0o644)
+    print("installed " .. $path)
+  end
+end

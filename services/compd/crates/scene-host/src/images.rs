@@ -33,6 +33,9 @@ pub(crate) fn panel_fallback(id: &str) -> Option<&'static str> {
         "st_vol_i" => Some("audio-volume-high-symbolic"),
         "st_net_i" => Some("network-wired-symbolic"),
         "peek_i" => Some("video-display-symbolic"),
+        // The MixOS mark, a symbolic glyph: it takes the scene ink, so it
+        // follows the light/dark theme (share/brand installs it).
+        "launcher_icon" => Some("dev.mixos-symbolic"),
         _ => None,
     }
 }
@@ -40,7 +43,8 @@ pub(crate) fn panel_fallback(id: &str) -> Option<&'static str> {
 pub(crate) fn fallback_image(id: &str) -> Option<&'static str> {
     match id {
         "st_notes_f" => Some("st_notes_i"), "st_vol_f" => Some("st_vol_i"),
-        "st_net_f" => Some("st_net_i"), "peek_f" => Some("peek_i"), _ => None,
+        "st_net_f" => Some("st_net_i"), "peek_f" => Some("peek_i"),
+        "launcher_text" => Some("launcher_icon"), _ => None,
     }
 }
 
@@ -189,6 +193,24 @@ icon: {widget: "image", src: "", w: 31, h: 31}
         for id in ["dev.mixos.media.desktop", "bssh.desktop", "bvnc.desktop", "avahi-discover.desktop"] {
             assert!(matches!(images.get(&("apps".into(), id.into(), "icon".into())), Some(Asset::Raster(Handle::Rgba { .. }))));
         }
+    }
+
+    #[test]
+    fn empty_panel_launcher_recovers_the_symbolic_mixos_mark() {
+        let tree = scene::resolve(&scene::parse(
+            "---\nscene: 1\nname: panel\ncitizen: test\n---\n```mix\nroot: {widget: \"row\", children: [\"launcher_icon\"]}\nlauncher_icon: {widget: \"image\", src: \"\", w: 28, h: 28}\n```\n",
+        ).unwrap()).unwrap();
+        let lists = crate::templates::validate_templates(&tree).unwrap();
+        let symbolic = std::env::temp_dir().join(format!("compd-launcher-{}", std::process::id())).join("dev.mixos-symbolic.svg");
+        std::fs::create_dir_all(symbolic.parent().unwrap()).unwrap();
+        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/embedded-icon.svg"), &symbolic).unwrap();
+        let images = prepare_with(&tree, &lists, &Mutex::new(AssetCache::new()), |name, _, _| {
+            assert_eq!(name, "dev.mixos-symbolic");
+            Some(symbolic.clone())
+        });
+        assert!(matches!(images.get(&key("launcher_icon", None)), Some(Asset::Svg(_, true))), "the mark must be tinted with the scene ink");
+        assert_eq!(fallback_image("launcher_text"), Some("launcher_icon"));
+        std::fs::remove_dir_all(symbolic.parent().unwrap()).unwrap();
     }
 
     #[test]
