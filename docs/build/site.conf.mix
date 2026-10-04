@@ -1,0 +1,81 @@
+-- site.conf.mix — the mixos.dev site definition, read by build/gen-site.mix.
+-- Strict data (load_data): no variables, no calls. Edit, then run
+--   mix docs/build/gen-site.mix
+-- Pages are every docs/**/*.md outside build/ and web/; this file only says
+-- how they are dressed (sidebar order, icons) and where things moved.
+site: {
+  schema: "mixos.site.v1",
+  url: "https://mixos.dev",
+  name: "MixOS",
+  home_title: "MixOS — an agent-operable computing system",
+  description: "MixOS — an agent-operable computing system: legible, modifiable, and reconstructible by design. The MixOS manual.",
+  llms_summary: "MixOS is an agent-operable computing system: a Linux userland where every app is a service, every service speaks one message bus, and Mix is the shell. It is tried as a small signed systemd-nspawn image that runs on its own virtual terminal beside the user's existing desktop, at native GPU, input and audio speed.",
+
+  -- Icons: Material Symbols Rounded, cut from the SAME pinned asset set the
+  -- MixOS desktop draws from, so site and desktop share one icon language.
+  -- The source font is verified by sha256 before anything is subset.
+  icons: {
+    asset_set: "/opt/mixos/share/assets/sets/2026-10-01-core-2",
+    font: "icons/MaterialSymbolsRounded.ttf",
+    codepoints: "icons/MaterialSymbolsRounded.codepoints",
+    licence: "licences/MaterialSymbols-Apache.txt",
+    sha256: "c2182b6337495e64cc9e2311c52522567ac277d25a842bd027f9c9e3a5cc6d86",
+    -- The desktop draws the font's default instance; match it exactly.
+    instance: "FILL=0,GRAD=0,opsz=24,wght=400",
+    -- Icons base.js swaps in at runtime (theme, pin, tree folders); they never
+    -- appear in a template, so they are listed here.
+    dynamic: ["sun", "moon", "pin", "pin-off", "folder", "folder-open"],
+    -- Templates keep base.js's data-lucide="<name>" markup; this maps each
+    -- name to its Material Symbols glyph. New markup may use
+    -- data-icon="<material_name>" directly.
+    map: {
+      "home": "home",
+      "menu": "menu",
+      "pin": "keep",
+      "pin-off": "keep_off",
+      "sun": "light_mode",
+      "moon": "dark_mode",
+      "folder": "folder",
+      "folder-open": "folder_open",
+      "book-open": "menu_book",
+      "globe": "language",
+      "share-2": "share",
+      "network": "lan",
+      "mail": "mail",
+      "monitor": "monitor",
+      "zap": "bolt",
+      "layers": "stacks",
+      "box": "deployed_code",
+      "chevron-left": "chevron_left",
+      "chevron-right": "chevron_right",
+      "cpu": "memory",
+      "file-text": "description"
+    }
+  },
+
+  -- Left sidebar: one carousel panel per entry. Items are links
+  -- {title, href, icon} or {divider: true}. Every internal href must resolve.
+  left_panels: [
+    {
+      title: "MixOS",
+      items: [
+        {title: "Home", href: "/", icon: "home"},
+        {divider: true},
+        {title: "Try it beside your desktop", href: "/try/", icon: "monitor"},
+        {divider: true},
+        {title: "Decision: source layout", href: "/decisions/2026-10-04-source-layout/", icon: "file-text"}
+      ]
+    }
+  ],
+
+  -- "On this page" for the home page (doc pages list their own headings).
+  home_toc: [
+    {title: "Try it beside your desktop", href: "#try", icon: "monitor"},
+    {title: "Documentation", href: "#docs", icon: "book-open"}
+  ],
+
+  -- Moved pages: old URL path -> new URL path. Each old path gets a static
+  -- redirect page (meta refresh + canonical), because GitHub Pages has no
+  -- server-side redirects. Never delete an entry; URLs are forever.
+  redirects: {}
+}

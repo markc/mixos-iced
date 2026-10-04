@@ -1,0 +1,276 @@
+use smithay::backend::input::{ButtonState, Event, InputBackend, PointerButtonEvent};
+use smithay::desktop::{Window, WindowSurfaceType, layer_map_for_output};
+use smithay::input::keyboard::KeyboardHandle;
+use smithay::input::pointer::{ButtonEvent, PointerHandle};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{SERIAL_COUNTER, Serial};
+use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
+use world::state::Loop;
+use dispatcher::state::state::Dispatch;
+use world::surface::interface::hit::SurfaceHit;
+// Trait import: provides `uuid()` / `is_fullscreen()` on `Window` below.
+use world::window::interface::record::window::LoopWindow;
+use protocols::window::shell::shell;
+use protocols::window::ident::ident;
+
+// This is only called on presses when there was a surface hit.
+// Currently, I cancel wayland focus on a different place. so please provide a snippet on how to invoke the de-activation.
+// This is how i do it on the other place: ( which has priority over this function )
+//         _loop.inner.space_state().state.elements().for_each(|window| {
+//             window.set_activated(false);
+//             window.toplevel().unwrap().send_pending_configure();
+//         });
+//
+//         // Deactivate keyboard focus
+//         keyboard.set_focus(&mut _loop.state, Option::<WlSurface>::None, serial);
+//         pointer.button(
+//             _loop,
+//             &ButtonEvent {
+//                 button,
+//                 state: button_state,
+//                 serial,
+//                 time: event.time_msec(),
+//             },
+//         );
+//         pointer.frame(&mut _loop.state);
+
+/// The `keyboard_interactivity` a mapped layer surface committed, found by locating the
+/// surface in each output's layer map. `None` (the return) means it is not a currently
+/// mapped layer surface.
+fn layer_keyboard_interactivity(_loop: &Loop, surface: &WlSurface) -> Option<KeyboardInteractivity> {
+    for output in _loop.inner.space_state().state.outputs() {
+        let map = layer_map_for_output(output);
+        if let Some(ls) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+            return Some(ls.cached_state().keyboard_interactivity);
+        }
+    }
+    None
+}
+
+/// The topmost mapped Top/Overlay layer surface that requested `Exclusive` keyboard
+/// interactivity, if any. While one exists it owns the keyboard (wlr layer-shell), so a click
+/// elsewhere must not steal focus from it.
+fn exclusive_layer(_loop: &Loop) -> Option<WlSurface> {
+    for output in _loop.inner.space_state().state.outputs() {
+        let map = layer_map_for_output(output);
+        for band in [Layer::Overlay, Layer::Top] {
+            for layer in map.layers_on(band).rev() {
+                if layer.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive {
+                    return Some(layer.wl_surface().clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `grabbed`: the seat pointer holds a grab (smithay's implicit click grab while
+/// another button is down, or a client DnD grab). Each step decides its own
+/// mid-grab behavior: focus/raise and iced dispatch are the grab owner's and
+/// skip; the wayland button always delivers — the grab routes it to ITS focus
+/// (chorded presses land on the held window even off-cursor).
+pub fn input_received<I: InputBackend>(
+    pointer: &PointerHandle<Dispatch>,
+    event: &I::PointerButtonEvent,
+    _loop: &mut Loop,
+    hit: SurfaceHit,
+    keyboard: &KeyboardHandle<Dispatch>,
+    button_state: ButtonState,
+    grabbed: bool,
+) {
+    let serial = SERIAL_COUNTER.next_serial();
+    let button = event.button_code();
+
+    // Raise / activate / keyboard-focus what was hit. Shared with touch-down so a
+    // tap focuses a window exactly like a click does. Never mid-grab.
+    if !grabbed {
+        apply_focus(_loop, &hit, keyboard, serial);
+    }
+
+    pointer.button(
+        &mut _loop.state,
+        &ButtonEvent {
+            button,
+            state: button_state,
+            serial,
+            time: event.time_msec(),
+        },
+    );
+    pointer.frame(&mut _loop.state);
+
+    // Server-side chrome (decor): a primary press on a chrome part starts a
+    // move or resize grab, toggles maximise on a titlebar double-click, or arms a
+    // caption button (`pointer::input::chrome`). After the button reached the
+    // seat, so the grab replaces the implicit click grab that press opened.
+    if !grabbed && button == crate::pointer::input::chrome::BTN_LEFT && button_state == ButtonState::Pressed {
+        crate::pointer::input::chrome::press(_loop, &hit, pointer.current_location(), event.time_msec());
+    }
+
+    if !grabbed {
+        // Iced pointer-button target (None for non-iced hits).
+        let iced_button_target = match &hit {
+            SurfaceHit::Iced { handle, .. } => Some(*handle),
+            _ => None,
+        };
+        if let Some(registry) = _loop.inner.surface_mut().registry.as_mut() {
+            registry.dispatch_button(iced_button_target, button, true);
+        }
+    }
+}
+
+/// Raise, activate and move keyboard focus to the surface a press/tap landed on:
+/// windows → their toplevel (raised, activated, others deactivated, fullscreen
+/// re-raised); Top/Overlay layers → the layer surface; iced → raise the drawable
+/// and clear window activation. Does NOT deliver a button — callers that need one
+/// (pointer clicks) send it separately; touch delivers `wl_touch` instead.
+pub fn apply_focus(
+    _loop: &mut Loop,
+    hit: &SurfaceHit,
+    keyboard: &KeyboardHandle<Dispatch>,
+    serial: Serial,
+) {
+    // Keyboard-transparent iced surfaces (the on-screen keyboard) take the pointer
+    // press but must NOT move keyboard focus or deactivate the focused window — the
+    // text field being typed into has to keep its focus so injected keys reach it.
+    if let SurfaceHit::Iced { handle, .. } = hit {
+        if _loop
+            .inner
+            .surface()
+            .registry
+            .as_ref()
+            .is_some_and(|r| r.is_keyboard_transparent(*handle))
+        {
+            return;
+        }
+    }
+
+    // A press on an override-redirect X11 window the compositor manages as a
+    // window (a menu or tooltip with no popup parent) is not a focus
+    // interaction: no raise, no activation, and the keyboard stays where it
+    // is. The X client holds its own grab; the button still reaches the
+    // surface. Tracked X11 popups (`x11_popup_focus`, a menu with a parent)
+    // keep their keyboard exception, because compd refuses X popup grabs and
+    // a search box in a menu would otherwise get no keys.
+    if let SurfaceHit::Window { window, .. } | SurfaceHit::WindowChrome { window, .. } = hit
+        && window.x11_surface().is_some_and(|x11| x11.is_override_redirect())
+    {
+        return;
+    }
+
+    let focus_surface: Option<WlSurface> = match hit {
+        // Chrome joins the window arm deliberately: a press on the letterbox
+        // raises, activates and focuses the window exactly like a press on its
+        // content. Only the pointer delivery differs, and that is decided by
+        // `hit.surface()` elsewhere, not here — this arm derives everything from
+        // the window and ends by taking the toplevel's surface for KEYBOARD
+        // focus, which is a property of the window, not of where the click fell.
+        SurfaceHit::Window { window, .. } | SurfaceHit::WindowChrome { window, .. } => {
+            _loop.inner.space_state_mut().state.raise_element(window, true);
+            if let Some(uuid) = window.uuid() {
+                _loop.inner.raise_drawable(uuid);
+            }
+
+            for w in _loop.inner.space_state().state.elements() {
+                w.set_activated(w == window);
+                shell::send_pending(w);
+            }
+
+            // A fullscreen window must stay above its peers even when another
+            // window (outside its bounds) is raised.
+            let fullscreen = _loop
+                .inner.space_state()
+                .state
+                .elements()
+                .find(|w| w.is_fullscreen() && *w != window)
+                .cloned();
+            if let Some(fullscreen) = fullscreen {
+                _loop.inner.space_state_mut().state.raise_element(&fullscreen, false);
+                if let Some(uuid) = fullscreen.uuid() {
+                    _loop.inner.raise_drawable(uuid);
+                }
+            }
+
+            // KEYBOARD focus is a property of the WINDOW, not of where the click fell —
+            // with one exception, and it is forced rather than chosen.
+            //
+            // An X11 POPUP gets no grab. The compositor refuses one (`PopupGrabError::InvalidGrab`:
+            // an X client grabs through the X server and is already holding one), so
+            // nothing routes keys to it the way a wayland popup's grab does. Focus stays
+            // on the toplevel, `focus_changed` points the X SERVER's input focus at the
+            // toplevel window, and a text field inside a menu receives pointer events but
+            // no keys at all — which is exactly what a menu with a search box does.
+            //
+            // So the popup's own surface takes the focus. Everything downstream already
+            // works from there: `surface_associated` indexes every X11 window including
+            // popups, so `focus_changed` resolves this surface back to its `X11Surface`
+            // and issues the `SetInputFocus` the menu is waiting for.
+            x11_popup_focus(_loop, hit).or_else(|| ident::surface(window))
+        }
+        SurfaceHit::Layer { surface, .. } => {
+            // Honor the client's keyboard_interactivity on ANY layer — Background/Bottom
+            // included (wlr-layer-shell allows `on_demand` on any layer, e.g. interactive
+            // wallpapers). `None` never takes keyboard focus even on a click; `OnDemand` /
+            // `Exclusive` are focusable on click.
+            match layer_keyboard_interactivity(_loop, surface) {
+                Some(KeyboardInteractivity::None) | None => None,
+                _ => Some(surface.clone()),
+            }
+        }
+        SurfaceHit::Iced { handle, .. } => {
+            // WORLD surfaces only. `raise_drawable` lazily REGISTERS into the world
+            // band's z-authority, which a screen surface does not belong to — so
+            // raising one reordered nothing and instead had the canvas scene draw
+            // it a second time, camera-transformed. Invisible until a pointer warp
+            // curved the world band and not the screen band.
+            let is_world = _loop
+                .inner
+                .surface()
+                .registry
+                .as_ref()
+                .and_then(|r| r.space_of(*handle))
+                .is_some_and(|s| {
+                    matches!(s, ui::IcedSpace::World)
+                });
+            if is_world {
+                _loop.inner.raise_drawable(uuid::Uuid::from_u128(handle.0 as u128));
+            }
+            for window in _loop.inner.space_state().state.elements() {
+                window.set_activated(false);
+                shell::send_pending(window);
+            }
+            None
+        }
+    };
+
+    // wlr exclusive keyboard: while a mapped Top/Overlay layer surface requested `Exclusive`
+    // interactivity, it HOLDS the keyboard — a click on a window (or any other surface) must
+    // NOT switch focus away from it. We disallow the switch here rather than re-asserting
+    // focus every frame. This runs only when no compositor modal (overview / lock / launcher)
+    // swallowed the click first, so those still own the keyboard while active.
+    let focus_surface = exclusive_layer(_loop).or(focus_surface);
+
+    keyboard.set_focus(&mut _loop.state, focus_surface, serial);
+
+    let iced_focus = match hit {
+        SurfaceHit::Iced { handle, .. } => Some(*handle),
+        _ => None,
+    };
+    if let Some(registry) = _loop.inner.surface_mut().registry.as_mut() {
+        registry.set_keyboard_focus(iced_focus);
+    }
+}
+
+/// The clicked surface, if it is a TRACKED X11 POPUP — the one thing that takes keyboard
+/// focus away from the window it belongs to.
+///
+/// Restricted to X11 on purpose. A wayland popup is served by its grab, which routes keys
+/// without moving the seat's focus, and pulling focus onto its surface here would change
+/// long-settled xdg behaviour to fix a problem it does not have.
+fn x11_popup_focus(state: &Loop, hit: &SurfaceHit) -> Option<WlSurface> {
+    let surface = hit.surface()?;
+    matches!(
+        state.state.popup.state.find_popup(surface),
+        Some(smithay::desktop::PopupKind::X11(_))
+    )
+    .then(|| surface.clone())
+}

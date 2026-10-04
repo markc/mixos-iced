@@ -1,0 +1,727 @@
+#!/usr/bin/env mix
+-- version: 0.6.0
+-- desktop_nested_gate.mix — the nested desktop smoke: a PRIVATE nested compd
+-- on its own headless weston host, judged by Bus evidence.
+--
+--   mix tests/desktop/desktop_nested_gate.mix [--bin PATH] --config-file PATH [arms]
+--
+-- arms:
+--   --layer-client waybar    waybar maps a layer surface and the usable area shrinks
+--   --overlay-client fuzzel  fuzzel maps on the Overlay band, takes the keyboard
+--                            and holds focus.exclusive_latch
+--   --x-client xmessage|firefox|all   X11 clients through the compositor's
+--                            XWayland: the per-socket descriptor (DISPLAY,
+--                            GENERATION, 0600) agrees with Bus xwayland.display,
+--                            each client maps a NEW x11-toplevel, firefox loads
+--                            the LOCAL tests/desktop/x_fixture.html (title in its row)
+--   --x-kill                 SIGKILL the compositor's Xwayland: it survives, the
+--                            display goes null, the descriptor goes, no X row
+--                            stays mapped, every native toplevel keeps its row
+--   --x-kill-recover         also wait out the one retry (60 s backstop): a newer
+--                            GENERATION is published and an X client maps on it
+--
+-- Harness notes:
+-- - The evidence is the Bus, not the compositor's log: the `surfaces.*` rows
+--   and the `surface.mapped` topic, so a mapped NEW row of the right role is
+--   the attribution for a client.
+-- - Its own headless weston host (nested_host_lib), never a live desktop
+--   session, so a build worker with no desktop can run it.
+-- - Clients: foot, weston-terminal and weston-simple-shm, plus the arms
+--   above. The MixOS panel host, IME, capture and design arms are separate
+--   gates built on this base (the panel-host arm returns with that app).
+-- - The SIGTERM verdict: the compositor must be gone within 10 s of TERM
+--   with no KILL needed and no panic in its log. A spawned child's exit
+--   status is not observable from Mix (process_alive reaps and discards it),
+--   so the verdict is the outcome, not an exit code.
+--
+-- Every check prints a line; the run ends with one PASS/FAIL summary and
+-- exits non-zero if anything failed.
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+
+$KIND = "compd"
+$ENV = {}
+$SOFTWARE = false
+$CLIENT_ENV = {}
+$BIN = ""
+$CONFIG = ""
+$LAYER_CLIENT = ""
+$OVERLAY_CLIENT = ""
+$X_CLIENT = ""
+$X_KILL = false
+$X_KILL_RECOVER = false
+$USAGE = "usage: desktop_nested_gate.mix [--bin PATH] --config-file PATH [--layer-client waybar] [--overlay-client fuzzel] [--x-client xmessage|firefox|all [--x-kill [--x-kill-recover]]] [--software] [--env NAME=VALUE ...] [--client-env NAME=VALUE ...]"
+$argv = args()
+$ai = 0
+while $ai < len($argv)
+  $arg = $argv[$ai]
+  if $arg == "--env" and $ai + 1 < len($argv) and contains($argv[$ai + 1], "=") then
+    $kv = split_once($argv[$ai + 1], "=")
+    $ENV[$kv[0]] = $kv[1]
+    $ai = $ai + 2
+  elif $arg == "--client-env" and $ai + 1 < len($argv) and contains($argv[$ai + 1], "=") then
+    $ckv = split_once($argv[$ai + 1], "=")
+    $CLIENT_ENV[$ckv[0]] = $ckv[1]
+    $ai = $ai + 2
+  elif $arg == "--software" then
+    $SOFTWARE = true
+    $ai = $ai + 1
+  elif $arg == "--bin" and $ai + 1 < len($argv) then
+    $BIN = $argv[$ai + 1]
+    $ai = $ai + 2
+  elif $arg == "--config-file" and $ai + 1 < len($argv) then
+    $CONFIG = $argv[$ai + 1]
+    $ai = $ai + 2
+  elif $arg == "--layer-client" and $ai + 1 < len($argv) then
+    $LAYER_CLIENT = $argv[$ai + 1]
+    $ai = $ai + 2
+  elif $arg == "--x-client" and $ai + 1 < len($argv) then
+    $X_CLIENT = $argv[$ai + 1]
+    $ai = $ai + 2
+  elif $arg == "--x-kill" then
+    $X_KILL = true
+    $ai = $ai + 1
+  elif $arg == "--x-kill-recover" then
+    $X_KILL_RECOVER = true
+    $ai = $ai + 1
+  elif $arg == "--overlay-client" and $ai + 1 < len($argv) then
+    $OVERLAY_CLIENT = $argv[$ai + 1]
+    $ai = $ai + 2
+  else
+    print("  ERROR: unknown or incomplete argument '" .. $arg .. "'")
+    print($USAGE)
+    exit(2)
+  end
+end
+if $LAYER_CLIENT != "" and $LAYER_CLIENT != "waybar" then
+  print("  ERROR: --layer-client supports only waybar")
+  exit(2)
+end
+if $OVERLAY_CLIENT != "" and $OVERLAY_CLIENT != "fuzzel" then
+  print("  ERROR: --overlay-client supports only fuzzel")
+  exit(2)
+end
+if $X_CLIENT != "" and $X_CLIENT != "xmessage" and $X_CLIENT != "firefox" and $X_CLIENT != "all" then
+  print("  ERROR: --x-client supports only xmessage, firefox or all")
+  exit(2)
+end
+if $X_KILL and $X_CLIENT == "" then
+  print("  ERROR: --x-kill needs --x-client (an X client must be holding the server)")
+  exit(2)
+end
+if $X_KILL_RECOVER and not $X_KILL then
+  print("  ERROR: --x-kill-recover needs --x-kill")
+  exit(2)
+end
+
+$comp = $n.require_binary("compd", $BIN, ["/opt/compd/bin"])
+-- Every client this run needs, refused by name before anything starts.
+fn tool($name)
+  $p = which($name)
+  if $p == nil or $p == "" then
+    print("  ERROR: " .. $name .. " is not on PATH")
+    exit(2)
+  end
+  return $p
+end
+$foot = tool("foot")
+$wterm = tool("weston-terminal")
+$shm = tool("weston-simple-shm")
+$waybar = ""
+if $LAYER_CLIENT != "" then
+  $waybar = tool("waybar")
+end
+$fuzzel = ""
+if $OVERLAY_CLIENT != "" then
+  $fuzzel = tool("fuzzel")
+end
+$xmessage = ""
+if $X_CLIENT == "xmessage" or $X_CLIENT == "all" or $X_KILL then
+  $xmessage = tool("xmessage")
+end
+$firefox = ""
+$x_fixture = ""
+if $X_CLIENT == "firefox" or $X_CLIENT == "all" then
+  $firefox = tool("firefox")
+  -- A LOCAL page, always: a gate that loads the network proves the network.
+  $x_fixture = realpath("tests/desktop/x_fixture.html") ?? ""
+  if $x_fixture == "" or not is_file($x_fixture) then
+    $x_fixture = "/opt/compd/bin/x_fixture.html"
+  end
+  if not is_file($x_fixture) then
+    print("  ERROR: no x_fixture.html (tests/desktop/ under the working directory, or /opt/compd/bin)")
+    exit(2)
+  end
+end
+-- The topic subscriber: tests/desktop/bus_watch.mix under the working
+-- directory, else /opt/compd/bin/bus_watch.mix.
+$watch_script = "tests/desktop/bus_watch.mix"
+if not is_file($watch_script) then
+  $watch_script = "/opt/compd/bin/bus_watch.mix"
+end
+if not is_file($watch_script) then
+  print("  ERROR: no bus_watch.mix (tests/desktop/ under the working directory, or /opt/compd/bin)")
+  exit(2)
+end
+
+$TALLY = {pass: 0, fail: 0, skip: 0}
+fn check($name, $ok, $detail)
+  if $ok then
+    print("  PASS " .. $name)
+    $TALLY["pass"] = $TALLY["pass"] + 1
+  else
+    print("  FAIL " .. $name .. ": " .. $detail)
+    $TALLY["fail"] = $TALLY["fail"] + 1
+  end
+  return $ok
+end
+
+$CLEANUP.run = $n.new_run("/tmp/" .. $KIND .. "-desk-" .. to_string(pid()))
+$session = $n.start({bin: $comp, tag: "desk", run: $CLEANUP.run, config: $CONFIG, env: $ENV, software: $SOFTWARE})
+$svc = $session["service"]
+$run = $session["runtime"]
+if not check("compositor socket up and comp.ping answered", $n.wait_ready($session, 30),
+    "log " .. $session["log"]) then
+  $n.stop($session)
+  exit(1)
+end
+print("nested " .. $KIND .. " (" .. $comp .. "): socket " .. $session["socket"] .. ", service " .. $svc)
+
+fn call($verb, $args)
+  return $n.call($svc, $verb, $args)
+end
+
+-- The surfaces rows, keyed by id string; {} when the read failed.
+fn surface_rows()
+  $r = call("comp.props.get", {path: "surfaces"})
+  if $r.rc != 0 or type($r.result) != "map" then
+    return {}
+  end
+  $out = {}
+  for each $k in keys($r.result)
+    $row = $r.result[$k]
+    if type($row) == "map" and $row.id != nil then
+      $out[to_string($row.id)] = $row
+    end
+  end
+  return $out
+end
+
+-- A mapped row of `role` whose id was not in `known` (a set of id strings),
+-- within `secs`; nil if none appeared. This is the attribution: a client
+-- passes only with a surface that did not exist before it started.
+fn wait_new_row($known, $role, $secs)
+  $tries = $secs * 4
+  $i = 0
+  while $i < $tries
+    $rows = surface_rows()
+    for each $k in keys($rows)
+      $row = $rows[$k]
+      if $known[$k] != true and $row.role == $role and $row.mapped == true then
+        return $row
+      end
+    end
+    sleep(0.25)
+    $i = $i + 1
+  end
+  return nil
+end
+
+fn known_ids()
+  $set = {}
+  for each $k in keys(surface_rows())
+    $set[$k] = true
+  end
+  return $set
+end
+
+fn client_env()
+  $e = {WAYLAND_DISPLAY: $session["socket"], XDG_RUNTIME_DIR: $run, SHELL: "/bin/sh",
+    HOME: env("HOME", "/tmp")}
+  if $session["dbus"] != "" then
+    $e["DBUS_SESSION_BUS_ADDRESS"] = $session["dbus"]
+  end
+  if $SOFTWARE then
+    $e["LIBGL_ALWAYS_SOFTWARE"] = "1"
+  end
+  for each $k in keys($CLIENT_ENV)
+    $e[$k] = $CLIENT_ENV[$k]
+  end
+  return $e
+end
+
+$PIDS = {}
+fn launch($name, $argv)
+  return launch_with($name, $argv, {})
+end
+
+-- launch() with extra environment over client_env().
+fn launch_with($name, $argv, $extra)
+  $e = client_env()
+  for each $k in keys($extra)
+    $e[$k] = $extra[$k]
+  end
+  $p = spawn($argv, {env: $e, stdout: {file: $run .. "/" .. $name .. ".log"},
+    stderr: "stdout", detach: true})
+  $PIDS[$name] = $p
+  return $p
+end
+
+fn alive($p)
+  return $p != nil and exists("/proc/" .. to_string($p))
+end
+
+try
+  -- ── observation topics, subscribed before any client ──────────────────
+  $watch_out = $run .. "/watch.jsonl"
+  $wp = spawn(["/opt/mixos/bin/mix", "--serve", $watch_script, "--name", $svc .. "-w"],
+    {env: {BUS_WATCH_SERVICE: $svc, BUS_WATCH_OUT: $watch_out}, stdout: {file: $run .. "/watch.log"},
+     stderr: "stdout", detach: true})
+  $PIDS["watch"] = $wp
+  $t = 0
+  while not exists($watch_out) and $t < 40
+    sleep(0.25)
+    $t = $t + 1
+  end
+  check("a topic subscriber followed the compositor's topics before any client launched",
+    exists($watch_out), "no " .. $watch_out .. " (" .. $run .. "/watch.log)")
+  -- The props.changed bootstrap: `comp.props.watch` seeds the diff baseline. (The broker's topic.active should do the same
+  -- for a plain subscriber; this gate does not rely on it.)
+  $pw = call("comp.props.watch", {})
+  check("comp.props.watch bootstraps " .. $svc .. ".props.changed",
+    $pw.rc == 0 and type($pw.result) == "map" and $pw.result.topic == $svc .. ".props.changed" and ($pw.result.lost_count ?? 0) == 0,
+    json_encode($pw))
+
+  -- ── three toplevels, each a NEW mapped row ────────────────────────────
+  $ids = {}
+  for each $c in [["foot", [$foot]], ["weston-terminal", [$wterm]], ["weston-simple-shm", [$shm]]]
+    $before = known_ids()
+    launch($c[0], $c[1])
+    $row = wait_new_row($before, "toplevel", 15)
+    if check($c[0] .. " mapped a NEW toplevel", $row != nil, "no new mapped toplevel row in 15 s") then
+      $ids[$c[0]] = $row.id
+    end
+  end
+
+  -- ── a layer client: waybar ────────────────────────────────────────────
+  $waybar_id = nil
+  $usable_before = nil
+  if $waybar != "" then
+    $o = call("comp.props.get", {path: "outputs"})
+    if $o.rc == 0 and type($o.result) == "map" and len(keys($o.result)) > 0 then
+      $usable_before = $o.result[keys($o.result)[0]].usable
+    end
+    $before = known_ids()
+    launch("waybar", [$waybar])
+    $row = wait_new_row($before, "layer", 15)
+    if check("waybar's layer surface mapped", $row != nil, "no new mapped layer row in 15 s") then
+      $waybar_id = $row.id
+    end
+    $shrunk = false
+    $t = 0
+    while not $shrunk and $t < 20
+      $o = call("comp.props.get", {path: "outputs"})
+      if $o.rc == 0 and type($o.result) == "map" and len(keys($o.result)) > 0 then
+        $out = $o.result[keys($o.result)[0]]
+        $shrunk = $out.usable != nil and $out.usable.height < $out.height
+      end
+      if not $shrunk then
+        sleep(0.25)
+        $t = $t + 1
+      end
+    end
+    check("the usable area shrank under waybar's exclusive zone", $shrunk,
+      "usable before " .. json_encode($usable_before))
+  end
+
+  -- ── an Exclusive Overlay layer: fuzzel ────────────────────────────────
+  $overlay_id = nil
+  if $fuzzel != "" then
+    $before = known_ids()
+    -- fuzzel exits when it loses the keyboard; the gate proves the latch
+    -- and the band, not fuzzel's exit policy.
+    launch("fuzzel", [$fuzzel, "--no-exit-on-keyboard-focus-loss"])
+    $row = wait_new_row($before, "layer", 15)
+    if check("fuzzel's layer surface mapped", $row != nil, "no new mapped layer row in 15 s") then
+      $overlay_id = $row.id
+      check("fuzzel is on the Overlay band", $row.band == "overlay", json_encode($row.band))
+      $kb = nil
+      $latch = nil
+      $t = 0
+      while ($kb != $overlay_id or $latch != $overlay_id) and $t < 20
+        $kb = call("comp.props.get", {path: "focus.keyboard"}).result
+        $latch = call("comp.props.get", {path: "focus.exclusive_latch"}).result
+        if $kb != $overlay_id or $latch != $overlay_id then
+          sleep(0.25)
+          $t = $t + 1
+        end
+      end
+      check("the Exclusive overlay took the keyboard", $kb == $overlay_id,
+        "focus.keyboard " .. json_encode($kb))
+      check("focus.exclusive_latch names the overlay", $latch == $overlay_id,
+        json_encode($latch))
+    end
+  end
+
+  -- ── settle: every client still alive ──────────────────────────────────
+  sleep(5)
+  for each $name in keys($PIDS)
+    if $name != "watch" then
+      check($name .. " still alive after settle", alive($PIDS[$name]), $run .. "/" .. $name .. ".log")
+    end
+  end
+
+  -- ── decoration: foot asked, and got server-side ───────────────────────
+  if $ids["foot"] != nil then
+    $dec = call("comp.props.get", {path: "surfaces.s" .. to_string($ids["foot"]) .. ".decoration"})
+    check("foot's toplevel is server-side decorated", $dec.rc == 0 and $dec.result == "server",
+      json_encode($dec))
+  end
+
+  -- ── the Bus read tree ─────────────────────────────────────────────────
+  $ping = call("comp.ping", {})
+  check("comp.ping answers pong", $ping.rc == 0 and type($ping.result) == "map" and $ping.result.pong == true,
+    json_encode($ping))
+  $o = call("comp.props.get", {path: "outputs"})
+  $okeys = []
+  if $o.rc == 0 and type($o.result) == "map" then
+    $okeys = keys($o.result)
+  end
+  if check("comp.props.get outputs returns exactly one output", len($okeys) == 1, json_encode($okeys)) then
+    $out = $o.result[$okeys[0]]
+    check("the output has a size and is the default", $out.width > 0 and $out.height > 0 and $out.default == true,
+      json_encode($out))
+  end
+  $list = call("comp.props.list", {prefix: "focus"})
+  $has_kb = false
+  if $list.rc == 0 and type($list.result) == "list" then
+    for each $leaf in $list.result
+      if $leaf == "focus.keyboard" then
+        $has_kb = true
+      end
+    end
+  end
+  check("comp.props.list includes focus.keyboard", $has_kb, json_encode($list))
+  $desc = call("comp.props.describe", {path: "focus.keyboard"})
+  check("comp.props.describe focus.keyboard is read-only",
+    $desc.rc == 0 and type($desc.result) == "map" and $desc.result.mutable == false, json_encode($desc))
+  $bad = call("comp.props.get", {path: "no_such.leaf"})
+  check("an unknown path is refused unknown_path", $bad.rc >= 10 and contains(json_encode($bad.result), "unknown_path"),
+    json_encode($bad))
+  $rows = surface_rows()
+  for each $name in keys($ids)
+    check("surfaces lists " .. $name .. " (s" .. to_string($ids[$name]) .. ") as a mapped toplevel",
+      $rows[to_string($ids[$name])] != nil and $rows[to_string($ids[$name])].role == "toplevel",
+      json_encode($rows[to_string($ids[$name])]))
+  end
+
+  -- ── a write and its props.changed ─────────────────────────────────────
+  $d0 = call("comp.props.get", {path: "input.corners.dwell_ms"})
+  $want = 250
+  if $d0.rc == 0 and $d0.result == 250 then
+    $want = 260
+  end
+  $set = call("comp.props.set", {path: "input.corners.dwell_ms", value: $want})
+  check("comp.props.set input.corners.dwell_ms -> " .. to_string($want) .. " accepted", $set.rc == 0, json_encode($set))
+  $d1 = call("comp.props.get", {path: "input.corners.dwell_ms"})
+  check("comp.props.get reads the written value", $d1.rc == 0 and $d1.result == $want, json_encode($d1))
+  $dd = call("comp.props.describe", {path: "input.corners.dwell_ms"})
+  check("describe input.corners.dwell_ms: mutable", $dd.rc == 0 and type($dd.result) == "map" and $dd.result.mutable == true,
+    json_encode($dd))
+
+  -- ── XWayland (--x-client / --x-kill / --x-kill-recover) ──────────────
+  -- The DISPLAY comes from compd's per-socket descriptor, cross-checked with
+  -- the Bus `xwayland.display`; an X client passes only with a NEW mapped
+  -- `x11-toplevel` row.
+  if $X_CLIENT != "" then
+    $desc_path = $run .. "/compd/" .. $session["socket"] .. ".xwayland.env"
+    $t = 0
+    while not is_file($desc_path) and $t < 120
+      sleep(0.5)
+      $t = $t + 1
+    end
+    $x_display = ""
+    $x_generation = 0
+    if check("the per-socket XWayland descriptor was published", is_file($desc_path), $desc_path) then
+      $dtext = read_file($desc_path)
+      $fd = re_find($dtext, "DISPLAY=(:[0-9]+)")
+      if len($fd) > 0 then
+        $x_display = $fd[0].groups[0]
+      end
+      $fg = re_find($dtext, "GENERATION=([0-9]+)")
+      if len($fg) > 0 then
+        $x_generation = to_number($fg[0].groups[0])
+      end
+      check("the descriptor carries DISPLAY=:N", $x_display != "", $dtext)
+      check("the descriptor carries a GENERATION", $x_generation > 0, $dtext)
+      check("the descriptor is mode 0600", stat($desc_path).perm == 0o600, to_string(stat($desc_path).perm))
+      $bus_display = call("comp.props.get", {path: "xwayland.display"}).result
+      check("Bus xwayland.display matches the descriptor", $bus_display == $x_display,
+        json_encode([$bus_display, $x_display]))
+    end
+    fn x_env($display)
+      $e = {DISPLAY: $display, XDG_RUNTIME_DIR: $run, HOME: env("HOME", "/tmp")}
+    if $session["dbus"] != "" then
+      $e["DBUS_SESSION_BUS_ADDRESS"] = $session["dbus"]
+    end
+    return $e
+    end
+    fn launch_x($name, $argv, $display)
+      $p = spawn($argv, {env: x_env($display), stdout: {file: $run .. "/" .. $name .. ".log"},
+        stderr: "stdout", detach: true})
+      $PIDS[$name] = $p
+      return $p
+    end
+    $x_ids = []
+    if $x_display != "" and $xmessage != "" then
+      $before = known_ids()
+      launch_x("xmessage", [$xmessage, "-geometry", "560x220+80+80", "an X11 client through XWayland"], $x_display)
+      $row = wait_new_row($before, "x11-toplevel", 60)
+      if check("xmessage mapped a NEW x11-toplevel", $row != nil, "no new mapped x11-toplevel row in 60 s") then
+        push($x_ids, $row.id)
+      end
+    end
+    if $x_display != "" and $firefox != "" then
+      $profile = $run .. "/xprofile"
+      mkdir($profile, {parents: true})
+      write_file($profile .. "/user.js",
+        "user_pref(\"browser.shell.checkDefaultBrowser\", false);\n" ..
+        "user_pref(\"browser.startup.homepage_override.mstone\", \"ignore\");\n" ..
+        "user_pref(\"browser.aboutwelcome.enabled\", false);\n" ..
+        "user_pref(\"browser.sessionstore.resume_from_crash\", false);\n" ..
+        "user_pref(\"datareporting.policy.dataSubmissionEnabled\", false);\n" ..
+        "user_pref(\"toolkit.telemetry.reportingpolicy.firstRun\", false);\n")
+      $before = known_ids()
+      launch_x("firefox", [$firefox, "--no-remote", "--new-instance", "--profile", $profile,
+        "file://" .. $x_fixture], $x_display)
+      $row = wait_new_row($before, "x11-toplevel", 180)
+      if check("firefox mapped a NEW x11-toplevel", $row != nil, "no new mapped x11-toplevel row in 180 s") then
+        push($x_ids, $row.id)
+        -- The page's <title> in WM_NAME proves the page loaded, not merely a window.
+        $title = ""
+        $t = 0
+        while not contains($title, "compd XWayland gate") and $t < 60
+          $title = to_string(surface_rows()[to_string($row.id)].title ?? "")
+          if not contains($title, "compd XWayland gate") then
+            sleep(0.5)
+            $t = $t + 1
+          end
+        end
+        check("firefox's row title is the local fixture's", contains($title, "compd XWayland gate"), json_encode($title))
+      end
+    end
+
+    -- ── kill: SIGKILL this compositor's Xwayland; the compositor survives ──
+    if $X_KILL and $x_display != "" then
+      fn xwayland_pid($compd)
+        $path = "/proc/" .. to_string($compd) .. "/task/" .. to_string($compd) .. "/children"
+        if not exists($path) then
+          return nil
+        end
+        for each $c in split(trim(read_file($path)), " ")
+          $comm = "/proc/" .. $c .. "/comm"
+          $status = "/proc/" .. $c .. "/status"
+          if $c != "" and exists($comm) and trim(read_file($comm)) == "Xwayland" and exists($status) and not contains(read_file($status), "State:\tZ") then
+            return to_number($c)
+          end
+        end
+        return nil
+      end
+      $native = []
+      for each $k in keys($ids)
+        push($native, $ids[$k])
+      end
+      $xw = xwayland_pid($session["comp_pid"])
+      if check("found the compositor's Xwayland child", $xw != nil, "pid " .. to_string($session["comp_pid"])) then
+        $k1 = kill($xw, 9)
+        $gone = false
+        $t = 0
+        while not $gone and $t < 60
+          $d = call("comp.props.get", {path: "xwayland.display"})
+          $gone = $d.rc == 0 and $d.result == nil and not is_file($desc_path)
+          if not $gone then
+            sleep(0.25)
+            $t = $t + 1
+          end
+        end
+        check("Bus xwayland.display went null and the descriptor was removed", $gone, $desc_path)
+        check("the compositor survived the X server's death", alive($session["comp_pid"]) and call("comp.ping", {}).rc == 0,
+          "pid " .. to_string($session["comp_pid"]))
+        $rows = surface_rows()
+        $x_left = []
+        for each $k in keys($rows)
+          if $rows[$k].role == "x11-toplevel" and $rows[$k].mapped == true then
+            push($x_left, $rows[$k].id)
+          end
+        end
+        check("no X11 window is left mapped", len($x_left) == 0, json_encode($x_left))
+        $lost = []
+        for each $id in $native
+          if $rows[to_string($id)] == nil or $rows[to_string($id)].mapped != true then
+            push($lost, $id)
+          end
+        end
+        check("every native Wayland toplevel kept its row", len($lost) == 0, json_encode($lost))
+        if $X_KILL_RECOVER then
+          -- The one retry: the 60 s backstop, then a NEW generation.
+          $t = 0
+          $regen = 0
+          $redisplay = ""
+          while $regen <= $x_generation and $t < 200
+            if is_file($desc_path) then
+              $dt = read_file($desc_path)
+              $fg2 = re_find($dt, "GENERATION=([0-9]+)")
+              $fd2 = re_find($dt, "DISPLAY=(:[0-9]+)")
+              if len($fg2) > 0 and len($fd2) > 0 then
+                $regen = to_number($fg2[0].groups[0])
+                $redisplay = $fd2[0].groups[0]
+              end
+            end
+            if $regen <= $x_generation then
+              sleep(0.5)
+              $t = $t + 1
+            end
+          end
+          check("the respawned generation republished the descriptor with a newer GENERATION",
+            $regen > $x_generation, json_encode([$x_generation, $regen]))
+          if $regen > $x_generation and $xmessage != "" then
+            $before = known_ids()
+            launch_x("xmessage-recover", [$xmessage, "-geometry", "400x120+60+60", "after the retry"], $redisplay)
+            $rr = wait_new_row($before, "x11-toplevel", 60)
+            check("an X client maps on the respawned server", $rr != nil, "no new x11-toplevel in 60 s")
+          end
+        end
+      end
+    end
+  end
+
+  -- ── what the subscriber saw ───────────────────────────────────────────
+  sleep(1)
+  $records = []
+  if exists($watch_out) then
+    for each $line in lines(read_file($watch_out))
+      if trim($line) != "" then
+        push($records, json_parse($line))
+      end
+    end
+  end
+  $mapped = {}
+  $dwell_cause = nil
+  $shrink_seen = false
+  $seqs = []
+  for each $r in $records
+    $a = $r.args
+    if type($a) == "string" and starts_with($a, "{") then
+      $a = json_parse($a)
+    end
+    if type($a) != "map" then
+      continue
+    end
+    if $a.event_seq != nil then
+      push($seqs, $a.event_seq)
+    end
+    if $r.command == "surface.mapped" then
+      $mapped[to_string($a.id)] = $a.role
+    elif $r.command == "props.changed" and $a.path == "input.corners.dwell_ms" then
+      $dwell_cause = $a.cause
+    elif $r.command == "output.changed" then
+      -- The wire shape: {output, geometry: {x, y, width, height}, usable:
+      -- {x, y, width, height}, event_seq}. The height is under `geometry`;
+      -- there is no top-level `height`.
+      $geo = $a.geometry
+      $usable = $a.usable
+      if type($geo) == "map" and type($usable) == "map" and $geo.height != nil and $usable.height != nil and $usable.height < $geo.height then
+        $shrink_seen = true
+      end
+    end
+  end
+  for each $name in keys($ids)
+    check("surface.mapped announced " .. $name .. " (s" .. to_string($ids[$name]) .. ", toplevel)",
+      $mapped[to_string($ids[$name])] == "toplevel", json_encode($mapped))
+  end
+  if $waybar_id != nil then
+    check("surface.mapped announced waybar (layer)", $mapped[to_string($waybar_id)] == "layer", json_encode($mapped))
+    check("output.changed reported the usable area shrinking", $shrink_seen, "no shrinking output.changed delivery")
+  end
+  if $overlay_id != nil then
+    check("surface.mapped announced fuzzel (layer)", $mapped[to_string($overlay_id)] == "layer", json_encode($mapped))
+  end
+  check("a props.changed with cause props.set followed the write", $dwell_cause == "props.set",
+    json_encode($dwell_cause))
+  $mono = true
+  $i = 1
+  while $i < len($seqs)
+    if $seqs[$i] <= $seqs[$i - 1] then
+      $mono = false
+    end
+    $i = $i + 1
+  end
+  check("delivered event_seq values are strictly increasing", len($seqs) > 0 and $mono,
+    to_string(len($seqs)) .. " deliveries")
+catch $e
+  check("the runner completed", false, to_string($e))
+end
+
+-- ── teardown: clients, then TERM the compositor and judge the exit ───────
+for each $name in keys($PIDS)
+  if alive($PIDS[$name]) then
+    $sent = kill($PIDS[$name], 15)
+  end
+end
+$cp = $session["comp_pid"]
+$sent = kill($cp, 15)
+$t = 0
+while alive($cp) and $t < 40
+  sleep(0.25)
+  $t = $t + 1
+end
+check("SIGTERM stopped the compositor within 10 s (no KILL needed)", not alive($cp), "pid " .. to_string($cp))
+$n.stop($session)
+$final = ""
+if is_file($session["log"]) then
+  $final = re_replace(read_file($session["log"]), "\u{1b}\\[[0-9;]*m", "")
+end
+$panics = []
+for each $needle in ["panicked at", "internal error: entered unreachable code", "note: run with `RUST_BACKTRACE"]
+  for each $line in grep_lines($final, $needle)
+    push($panics, $line)
+  end
+end
+check("no compositor panic (final log)", len($panics) == 0, json_encode(slice($panics, 0, 3)))
+check("no shader failure (final log)", not contains($final, "failed to process shader"), $session["log"])
+-- Known third-party ERROR lines that say nothing about the compositor: the
+-- winit/sctk decoration crate asking for a desktop settings portal the
+-- headless host does not run. Matched by content.
+$THIRD_PARTY_ERRORS = ["XDG Settings Portal"]
+$errors = []
+for each $line in grep_lines($final, "ERROR")
+  $known = false
+  for each $needle in $THIRD_PARTY_ERRORS
+    if contains($line, $needle) then
+      $known = true
+    end
+  end
+  if not $known then
+    push($errors, $line)
+  end
+end
+check("no compositor ERROR (final log; known third-party lines excused)", len($errors) == 0, json_encode(slice($errors, 0, 3)))
+
+$total = $TALLY["pass"] + $TALLY["fail"]
+$skipnote = ""
+if $TALLY["skip"] > 0 then
+  $skipnote = ", " .. to_string($TALLY["skip"]) .. " arm(s) skipped"
+end
+if $TALLY["fail"] == 0 then
+  print("PASS desktop_nested_gate [" .. $KIND .. "]: " .. to_string($TALLY["pass"]) .. "/" .. to_string($total) .. " checks" .. $skipnote)
+  $CLEANUP.ok = true
+  exit(0)
+end
+print("FAIL desktop_nested_gate [" .. $KIND .. "]: " .. to_string($TALLY["fail"]) .. " of " .. to_string($total) ..
+  " checks failed" .. $skipnote .. " (logs in " .. $run .. ")")
+exit(1)
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

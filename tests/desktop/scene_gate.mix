@@ -1,0 +1,660 @@
+-- scene_gate.mix — Mix Scenes host gate for nested compd (scene-host).
+-- version: 0.6.1
+--
+--   mix tests/desktop/scene_gate.mix <compd-binary> [--config-file PATH] [--idle-secs N] [--scale S]
+--       [--compare-layout PATH] [--json]
+--
+-- `--scale S` runs compd's nested output at S: compd is
+-- passed `--scale=S` (its window then asks for 1280x800 × S physical, so the
+-- output is 1280x800 LOGICAL at any S) and the weston host grows to
+-- 3840x2160 to hold it. Layout rects and pointer input are logical, so
+-- every phase reads the same at any S. Without it (or S = 1) the run is
+-- exactly the 1.0 gate. At any S, S2 also asserts `outputs.*.scale` == S.
+--
+-- `--compare-layout PATH`: PATH holds a previous run's `--json` report (the
+-- line that starts with `{`); S2 then requires `go`, `plain` and both list rows to
+-- have the same logical size as there (± 1 px). Run 1.0 with `--json` first,
+-- then S with `--compare-layout`: a scene laid out at the wrong iced scale
+-- factor measures 1/S as wide.
+--
+-- Needs a running noded on this host (like chrome_gate): compd's scene host
+-- registers on it, and so does this gate's smoke citizen. Headless: weston
+-- (headless, pixman) hosts compd nested; nothing runs on the live desktop.
+--
+-- compd runs with the `scene_host` preference ON and a per-run fallback name
+-- (`--scene-service sg-<pid>`). It registers as `shell` when the
+-- broker has it free and falls back to the override only when `shell` is
+-- taken; the gate reads which from compd's log ("registered as `NAME`") and
+-- drives that name, so it never assumes one.
+--
+-- The smoke citizen is a `mix --serve` script the gate writes into the run:
+-- its handlers `go` and `pick` append each event they receive to a JSON-lines
+-- file, so the gate sees exactly what compd sent and nothing else.
+--
+-- Phases:
+--   S1. load an edge scene (a button `go`, a handler-less text `plain`, a
+--       two-row list with `on_click: pick`); its edge reads page scene-gate,
+--       mode hidden, not visible (Quoin's panel model), then
+--       `shell.panel.mode pinned` applies; `shell.scene.watch` must reach
+--       applied_revision == revision (the renderer drew it);
+--   S2. `shell.scene.layout`: visible, a left-edge surface, rects for `go`,
+--       `plain` and both list rows, all inside the surface;
+--   S3. click `go` (human seat, comp.input.pointer.*, aimed at the measured
+--       rect): the citizen receives {scene, node:"go", kind:"click"};
+--   S4. click list row r2: the citizen receives pick with item.id "r2";
+--   S5. NEGATIVE CONTROL (off-button): click the middle of `plain` and the
+--       strip's empty lower area: no event arrives (1.5 s). A gate that heard
+--       an event here could not tell a press on the button from one beside it;
+--   S6. patch go.label: the revision moves and the renderer applies it, and
+--       the frame trace shows a frame answering `publish` (the probe can see
+--       scene frames: the positive control for S7); and the content source
+--       `sources.scene_gate` reaches the patch revision with its
+--       presented count increased and its damage_px_total grown (the
+--       redraw counted);
+--   S7. IDLE: pointer parked outside the scene, 2 s settle, then ZERO frames
+--       over --idle-secs (default 5) with the scene static;
+--   S8. unload: layout answers NOT_FOUND.
+--   GL. the whole run's compositor.log holds no `No array object bound`
+--       (wgpu's iced draws refused for want of a vertex array, ae6c462: the
+--       scene measured and clicked but drew nothing, unseen by S1–S8).
+--
+-- Frames come from compd's redraw ledger (COMPD_FRAME_TRACE=1:
+-- one `stage=comp_frame_reasons subject=<reason bits>` record per frame),
+-- as idle_probe.mix counts them.
+--
+-- Exit codes: 0 PASS, 1 FAIL (reason printed, logs tailed), 2 setup.
+
+$args = args()
+if len($args) < 1 then
+  eprint("usage: scene_gate.mix <compd-binary> [--config-file PATH] [--idle-secs N] [--scale S] [--compare-layout PATH] [--json]")
+  exit(2)
+end
+$bin = $args[0]
+$config = nil
+$idle_secs = 5
+$as_json = false
+$SCALE = 1
+$compare = nil
+$i = 1
+while $i < len($args)
+  $a = $args[$i]
+  if $a == "--config-file" then
+    $config = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--idle-secs" then
+    $idle_secs = to_number($args[$i + 1])
+    $i = $i + 2
+  elif $a == "--compare-layout" then
+    $compare = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--scale" then
+    $SCALE = to_number($args[$i + 1])
+    if $SCALE == nil or $SCALE <= 0 then
+      eprint("--scale needs a positive number")
+      exit(2)
+    end
+    $i = $i + 2
+  elif $a == "--json" then
+    $as_json = true
+    $i = $i + 1
+  else
+    eprint("unknown option: " .. $a)
+    exit(2)
+  end
+end
+if not is_file($bin) then
+  eprint("no such binary: " .. $bin)
+  exit(2)
+end
+$bindir = re_replace($bin, "[^/]*$", "")
+if $config == nil then
+  $config = $bindir .. "smoke-settings.json"
+end
+if not is_file($config) then
+  eprint("missing " .. $config .. " (pass --config-file)")
+  exit(2)
+end
+$weston = which("weston")
+-- The citizen's interpreter: PATH, else the system install (systemd-run's
+-- PATH lacks /opt/mixos/bin; nested_smoke resolves it the same way).
+$mix = which("mix") ?? "/opt/mixos/bin/mix"
+if $weston == nil then
+  eprint("needs weston on PATH")
+  exit(2)
+end
+if not is_file($mix) then
+  eprint("ERROR: no mix on PATH and /opt/mixos/bin/mix not installed")
+  exit(2)
+end
+
+-- The ledger bit of RedrawReason::Publish (ledger ALL order; idle_probe's
+-- REASONS mirror: index 19).
+$PUBLISH_BIT = 524288
+
+$scratch = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$CLEANUP.run = $scratch.new_run("/tmp/compd-scene-" .. to_string(pid()))
+$root = $CLEANUP.run.path
+$logs = $root .. "/logs"
+mkdir($logs, {parents: true})
+$chmod = run_argv(["chmod", "0700", $root])
+if $chmod.exit_code != 0 then
+  eprint("chmod failed: " .. $chmod.stderr)
+  exit(2)
+end
+$TRACE = $logs .. "/frame-trace.log"
+$CLOG = $logs .. "/compositor.log"
+$EVENTS = $root .. "/events.jsonl"
+
+-- The broker this script's own `send` reaches (chrome_gate's rule).
+fn noded_url()
+  $set = env("MIXOS_NODED_URL", "")
+  if $set != "" then
+    return $set
+  end
+  for each $path in [env("HOME", "") .. "/.config/mixos/node.conf.mix", "/etc/mixos/node.conf.mix"]
+    if is_file($path) then
+      $c = load_data($path)
+      $host = $c.wg_ip ?? ""
+      if $host == "" then
+        $host = "127.0.0.1"
+      end
+      $port = 4200
+      if $c.noded != nil and $c.noded.port != nil then
+        $port = $c.noded.port
+      end
+      return "ws://" .. $host .. ":" .. to_string($port) .. "/ws"
+    end
+  end
+  return "ws://127.0.0.1:4200/ws"
+end
+fn ping_broker()
+  send noded noded.ping timeout=5
+  return $rc
+end
+$NODED = noded_url()
+if ping_broker() != 0 then
+  eprint("no broker answered noded.ping; compd would dial " .. $NODED)
+  exit(2)
+end
+
+fn call($svc, $verb, $args)
+  $b = json_encode($args)
+  send $svc $verb body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn alive($p)
+  return exists("/proc/" .. to_string($p))
+end
+
+fn sockets($dir)
+  $out = []
+  for each $e in lines(run_argv(["ls", $dir]).stdout)
+    if starts_with($e, "wayland-") and not ends_with($e, ".lock") then
+      push($out, $e)
+    end
+  end
+  return $out
+end
+
+fn stop($pids)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 15)
+    end
+  end
+  sleep(1)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 9)
+    end
+  end
+end
+
+-- Frame-ledger records so far, and the OR of their reason bits.
+fn frames()
+  $n = 0
+  $bits = []
+  if exists($TRACE) then
+    for each $l in lines(read_file($TRACE))
+      $m = re_find($l, "stage=comp_frame_reasons subject=([0-9]+) ")
+      if len($m) > 0 then
+        $n = $n + 1
+        push($bits, to_number($m[0].groups[0]))
+      end
+    end
+  end
+  return {count: $n, bits: $bits}
+end
+
+fn has_bit($list, $bit)
+  for each $b in $list
+    if band($b, $bit) != 0 then
+      return true
+    end
+  end
+  return false
+end
+
+-- Events the citizen recorded: [{verb, args}].
+fn events()
+  if not exists($EVENTS) then
+    return []
+  end
+  return read_jsonl($EVENTS, {skip_errors: true})
+end
+
+-- Wait (bounded) for event number $n (1-based) to arrive; it, or nil.
+fn await_event($n, $tenths)
+  $t = 0
+  while $t < $tenths
+    $e = events()
+    if len($e) >= $n then
+      return $e[$n - 1]
+    end
+    sleep(0.1)
+    $t = $t + 1
+  end
+  return nil
+end
+
+fn human($svc, $verb, $args)
+  $args.seat = "human"
+  $r = call($svc, $verb, $args)
+  if $r.rc != 0 then
+    return $verb .. " " .. json_encode($args) .. ": rc " .. to_string($r.rc) .. " " .. json_encode($r.reply)
+  end
+  return nil
+end
+
+fn click($svc, $x, $y)
+  $e = human($svc, "comp.input.pointer.move", {x: $x, y: $y})
+  if $e != nil then
+    return $e
+  end
+  return human($svc, "comp.input.pointer.button", {button: "left"})
+end
+
+-- The centre of a layout rect, in output coordinates.
+fn centre_of($surface, $r)
+  return [$surface.x + $r.x + $r.w / 2, $surface.y + $r.y + $r.h / 2]
+end
+
+fn inside($surface, $r)
+  return $r.x >= 0 and $r.y >= 0 and $r.x + $r.w <= $surface.w + 0.5 and $r.y + $r.h <= $surface.h + 0.5 and $r.w > 0 and $r.h > 0
+end
+
+fn tails()
+  for each $f in ["compositor.log", "citizen.log", "weston.log"]
+    $p = $logs .. "/" .. $f
+    if exists($p) then
+      print("--- tail " .. $f)
+      print(run_argv(["tail", "-30", $p]).stdout)
+    end
+  end
+end
+
+-- ── Setup ────────────────────────────────────────────────────────────────
+
+$override = "sg-" .. to_string(pid())
+$citizen = "sgc-" .. to_string(pid())
+$svc = "compd-scene-" .. to_string(pid())
+
+$cfg = $root .. "/cfg"
+mkdir($cfg, {parents: true})
+write_file($cfg .. "/smoke-settings.json", read_file($config))
+write_file($cfg .. "/preferences.json", json_encode({scene_host: true, scene_service: $override}))
+
+-- The smoke citizen: every scene event it receives, one JSON line.
+$cfile = $root .. "/citizen.mix"
+$csrc = "-- scene_gate's smoke citizen: records each scene event it receives.\n$events = \"" .. $EVENTS .. "\"\non go\n  append_file($events, json_encode({verb: \"go\", args: $event.args}) .. \"\\n\")\n  reply(\"ok\")\nend\non pick\n  append_file($events, json_encode({verb: \"pick\", args: $event.args}) .. \"\\n\")\n  reply(\"ok\")\nend\n"
+write_file($cfile, $csrc)
+
+$host = $SCALE == 1 ? ["--width=1920", "--height=1080"] : ["--width=3840", "--height=2160"]
+$wp = spawn([$weston, "--backend=headless", "--renderer=pixman", "--socket=wl-host", $host[0], $host[1], "--idle-time=0"], {env: {XDG_RUNTIME_DIR: $root}, stdout: {file: $logs .. "/weston.log"}, stderr: "stdout", detach: true})
+$t = 0
+while not exists($root .. "/wl-host") and $t < 50
+  sleep(0.2)
+  $t = $t + 1
+end
+if not exists($root .. "/wl-host") then
+  stop([$wp])
+  eprint("setup: weston host socket never appeared")
+  exit(2)
+end
+$kp = spawn([$mix, "--serve", $cfile, "--name", $citizen], {env: {MIXOS_NODED_URL: $NODED}, stdout: {file: $logs .. "/citizen.log"}, stderr: "stdout", detach: true})
+$before = sockets($root)
+-- Panel persistence belongs to this run, including scaled reruns.
+mkdir($root .. "/var", {parents: true})
+$cenv = {MIXOS_VAR: $root .. "/var", XDG_RUNTIME_DIR: $root, LIBGL_ALWAYS_SOFTWARE: "1", WAYLAND_DISPLAY: "wl-host", MIXOS_NODED_URL: $NODED, COMPD_FRAME_TRACE: "1", COMPD_FRAME_TRACE_FILE: $TRACE}
+$compd_argv = [$bin, "--config-file=" .. $cfg .. "/smoke-settings.json", "--bus-service", $svc, "--scene-service", $override]
+if $SCALE != 1 then
+  push($compd_argv, "--scale=" .. to_string($SCALE))
+end
+$cp = spawn($compd_argv, {env: $cenv, stdout: {file: $CLOG}, stderr: "stdout", detach: true})
+$pids = [$cp, $kp, $wp]
+
+fn fail($why)
+  print("FAIL: " .. $why)
+  print("== logs " .. $logs)
+  tails()
+  stop($pids)
+  exit(1)
+end
+
+$sock = nil
+$t = 0
+while $sock == nil and $t < 100
+  sleep(0.2)
+  $t = $t + 1
+  for each $s in sockets($root)
+    if not contains($before, $s) and $s != "wl-host" then
+      $sock = $s
+    end
+  end
+  if not alive($cp) then
+    fail("compd exited during startup")
+  end
+end
+if $sock == nil then
+  fail("compd created no Wayland socket within 20 s")
+end
+
+-- Which name the scene host took: from compd's own log.
+$host = nil
+$t = 0
+while $host == nil and $t < 60
+  $m = re_find(read_file($CLOG), "scene host: registered as `([^`]+)`")
+  if len($m) > 0 then
+    $host = $m[0].groups[0]
+  elif contains(read_file($CLOG), "SCENE HOST: ") and contains(read_file($CLOG), "the scene host is OFF") then
+    fail("the scene host refused to register; see the SCENE HOST lines")
+  else
+    sleep(0.25)
+    $t = $t + 1
+  end
+end
+if $host == nil then
+  fail("the scene host never registered (no `registered as` in the log within 15 s)")
+end
+if $host != "shell" and $host != $override then
+  fail("the scene host registered as `" .. $host .. "`, neither `shell` nor the override `" .. $override .. "` (no other name is allowed)")
+end
+-- The citizen must be up before a click can reach it.
+$t = 0
+$up = false
+while not $up and $t < 40
+  $r = call($citizen, "HELP", {})
+  if $r.rc == 0 then
+    $up = true
+  else
+    sleep(0.25)
+    $t = $t + 1
+  end
+end
+if not $up then
+  fail("the smoke citizen " .. $citizen .. " never answered HELP")
+end
+
+-- ── S1: load ─────────────────────────────────────────────────────────────
+
+$doc = "---\nscene: 1\nname: gate\ncitizen: " .. $citizen .. "\nwindow: {\"kind\":\"edge\",\"edge\":\"left\",\"w\":360}\n---\n```mix\nroot: {widget: \"column\", gap: 12, padding: 16, children: [\"title\", \"go\", \"plain\", \"rows\"]}\ntitle: {widget: \"text\", text: \"Scene gate\", size: 18, bold: true}\ngo: {widget: \"button\", label: \"Go\", tone: \"primary\", width: 120, on_click: \"go\"}\nplain: {widget: \"text\", text: \"no handler here\", width: 200}\nrows: {widget: \"list\", rows: [{id: \"r1\", cells: [\"first\"]}, {id: \"r2\", cells: [\"second\"]}], row: \"item\", row_height: 32, gap: 4, on_click: \"pick\"}\nitem: {widget: \"text\", text: \"{cells[0]}\"}\n```\n"
+$load = call($host, "shell.scene.load", {source: $doc})
+if $load.rc != 0 then
+  fail("S1 shell.scene.load: rc " .. to_string($load.rc) .. " " .. json_encode($load.reply))
+end
+-- Quoin's panel model: a mounted page's edge starts hidden; pinning it
+-- shows its active page. Hidden first, so a host that drew every page
+-- regardless could not pass.
+$st = call($host, "shell.panel.state", {edge: "left"})
+if $st.rc != 0 or $st.reply.page != "scene-gate" or $st.reply.mode != "hidden" or $st.reply.visible then
+  fail("S1: the left edge should carry page scene-gate, hidden: rc " .. to_string($st.rc) .. " " .. json_encode($st.reply))
+end
+$pin = call($host, "shell.panel.mode", {edge: "left", mode: "pinned"})
+if $pin.rc != 0 or not $pin.reply.applied then
+  fail("S1 shell.panel.mode pinned: rc " .. to_string($pin.rc) .. " " .. json_encode($pin.reply))
+end
+
+fn await_applied($host, $want)
+  $t = 0
+  $w = nil
+  while $t < 50
+    $r = call($host, "shell.scene.watch", {scene: "gate"})
+    if $r.rc == 0 then
+      $w = $r.reply
+      if $w.revision >= $want and $w.applied_revision == $w.revision then
+        return $w
+      end
+    end
+    sleep(0.1)
+    $t = $t + 1
+  end
+  return $w
+end
+$w = await_applied($host, 1)
+if $w == nil or $w.applied_revision != $w.revision then
+  fail("S1: the renderer never applied the load: watch " .. json_encode($w))
+end
+-- The pinned edge slides in (Quoin's 200 ms motion): wait for it to rest at
+-- x 0 before measuring it (bounded, 3 s).
+$t = 0
+$rest = nil
+while $t < 30
+  $r = call($host, "shell.scene.layout", {scene: "gate"})
+  if $r.rc == 0 and $r.reply.visible and $r.reply.surface.x == 0 then
+    $rest = $r.reply
+    break
+  end
+  sleep(0.1)
+  $t = $t + 1
+end
+if $rest == nil then
+  fail("S1: the pinned edge never came to rest at x 0: " .. json_encode($r.reply))
+end
+
+-- ── S2: layout ───────────────────────────────────────────────────────────
+
+$lay = call($host, "shell.scene.layout", {scene: "gate"})
+if $lay.rc != 0 then
+  fail("S2 shell.scene.layout: rc " .. to_string($lay.rc) .. " " .. json_encode($lay.reply))
+end
+$L = $lay.reply
+$S = $L.surface
+if not $L.visible or $S.kind != "edge" or $S.edge != "left" or $S.x != 0 or $S.w != 360 then
+  fail("S2: want a visible 360-wide left strip at x 0: " .. json_encode($L))
+end
+for each $n in ["go", "plain"]
+  if $L.nodes[$n] == nil or $L.nodes[$n].hidden or not inside($S, $L.nodes[$n]) then
+    fail("S2: node " .. $n .. " not measured inside the surface: " .. json_encode($L.nodes[$n]))
+  end
+end
+for each $r in ["r1", "r2"]
+  if $L.instances.rows == nil or $L.instances.rows[$r] == nil or not inside($S, $L.instances.rows[$r]) then
+    fail("S2: list row " .. $r .. " not measured: " .. json_encode($L.instances))
+  end
+end
+-- The run is at the scale it was asked for.
+$outs = call($svc, "comp.props.get", {path: "outputs"})
+$out = nil
+if $outs.rc == 0 and type($outs.reply) == "map" then
+  for each $k in keys($outs.reply)
+    if $out == nil then
+      $out = $outs.reply[$k]
+    end
+  end
+end
+if $out == nil or abs(($out.scale ?? 0) - $SCALE) > 0.000001 then
+  fail("S2: outputs.* is not at scale " .. to_string($SCALE) .. ": " .. json_encode($outs.reply))
+end
+-- The same logical layout as the reference run.
+if $compare != nil then
+  $ref = nil
+  for each $line in lines(read_file($compare) ?? "")
+    if starts_with($line, "{") then
+      $ref = json_parse($line)
+    end
+  end
+  if $ref == nil or $ref.go == nil then
+    eprint("setup: --compare-layout " .. $compare .. " holds no scene_gate --json report")
+    stop($pids)
+    exit(2)
+  end
+  $pairs = [["go", $ref.go, $L.nodes.go], ["plain", $ref.plain, $L.nodes.plain], ["r1", $ref.rows.r1, $L.instances.rows.r1], ["r2", $ref.rows.r2, $L.instances.rows.r2]]
+  for each $p in $pairs
+    if $p[1] == nil or abs($p[1].w - $p[2].w) > 1 or abs($p[1].h - $p[2].h) > 1 then
+      fail("S2: " .. $p[0] .. " measures " .. json_encode($p[2]) .. " at scale " .. to_string($SCALE) .. ", the reference " .. json_encode($p[1]) .. " (laid out at the wrong iced scale factor?)")
+    end
+  end
+end
+
+-- ── S3: click the button ─────────────────────────────────────────────────
+
+$c = centre_of($S, $L.nodes.go)
+$before_click = frames().count
+$e = click($svc, $c[0], $c[1])
+if $e != nil then
+  fail("S3 " .. $e)
+end
+$ev = await_event(1, 30)
+if $ev == nil then
+  -- Diagnosis: a click on an iced surface is applied only by a frame's tick.
+  $after_click = frames().count - $before_click
+  fail("S3: clicking `go` at " .. json_encode($c) .. " sent the citizen no event (" .. to_string($after_click) .. " frames after the click; 0 = nothing ticked the scene's surface)")
+end
+if $ev.verb != "go" or $ev.args.node != "go" or $ev.args.kind != "click" or $ev.args.scene != "gate" then
+  fail("S3: the event is not {scene:gate, node:go, kind:click}: " .. json_encode($ev))
+end
+
+-- ── S4: click a list row ─────────────────────────────────────────────────
+
+$c = centre_of($S, $L.instances.rows.r2)
+$e = click($svc, $c[0], $c[1])
+if $e != nil then
+  fail("S4 " .. $e)
+end
+$ev = await_event(2, 30)
+if $ev == nil then
+  fail("S4: clicking row r2 at " .. json_encode($c) .. " sent the citizen no event")
+end
+if $ev.verb != "pick" or $ev.args.node != "rows" or $ev.args.item == nil or $ev.args.item.id != "r2" then
+  fail("S4: the event is not pick on rows with item r2: " .. json_encode($ev))
+end
+
+-- ── S5: negative control (off the button) ───────────────────────────────
+
+$c = centre_of($S, $L.nodes.plain)
+$e = click($svc, $c[0], $c[1])
+if $e != nil then
+  fail("S5 " .. $e)
+end
+$e = click($svc, $S.x + $S.w / 2, $S.y + $S.h - 40)
+if $e != nil then
+  fail("S5 " .. $e)
+end
+sleep(1.5)
+$n = len(events())
+if $n != 2 then
+  fail("S5 negative control: clicks off the button and rows produced events (" .. to_string($n) .. " recorded, want 2): " .. json_encode(events()))
+end
+
+-- ── S6: patch, applied, and the frame answers `publish` ─────────────────
+
+$f0 = frames()
+-- The scene is a content source `scene_gate` (F6): its presented count
+-- before the patch.
+$src0 = call($svc, "comp.props.get", {path: "sources.scene_gate"})
+if $src0.rc != 0 or type($src0.reply) != "map" then
+  fail("S6: comp.props.get sources.scene_gate: rc " .. to_string($src0.rc) .. " " .. json_encode($src0.reply) .. " (the scene is not a registered content source)")
+end
+$presented0 = $src0.reply.presentation.presented ?? 0
+$damage0 = $src0.reply.presentation.damage_px_total ?? 0
+$p = call($host, "shell.scene.patch", {scene: "gate", path: "go.label", value: "Pressed"})
+if $p.rc != 0 then
+  fail("S6 shell.scene.patch: rc " .. to_string($p.rc) .. " " .. json_encode($p.reply))
+end
+$w = await_applied($host, $p.reply.revision)
+if $w == nil or $w.applied_revision != $p.reply.revision then
+  fail("S6: the patch (revision " .. to_string($p.reply.revision) .. ") was never applied: " .. json_encode($w))
+end
+sleep(0.5)
+$f1 = frames()
+$new_bits = slice($f1.bits, $f0.count, $f1.count)
+if not has_bit($new_bits, $PUBLISH_BIT) then
+  fail("S6: no frame after the patch answered `publish` (" .. to_string($f1.count - $f0.count) .. " frames, reasons " .. json_encode($new_bits) .. "): the ledger cannot see scene frames")
+end
+-- The source ledger saw the patched revision reach the screen (bounded:
+-- presentation lands after the frame).
+fn source_after($svc, $want, $presented0)
+  $t = 0
+  $last = nil
+  while $t < 20
+    $r = call($svc, "comp.props.get", {path: "sources.scene_gate"})
+    if $r.rc == 0 and type($r.reply) == "map" then
+      $last = $r.reply
+      if $last.revision == $want and ($last.presentation.presented ?? 0) > $presented0 then
+        return {ok: true, row: $last}
+      end
+    end
+    sleep(0.1)
+    $t = $t + 1
+  end
+  return {ok: false, row: $last}
+end
+$src = source_after($svc, $p.reply.revision, $presented0)
+if not $src.ok then
+  fail("S6: sources.scene_gate did not present the patch (want revision " .. to_string($p.reply.revision) .. ", presented > " .. to_string($presented0) .. "): " .. json_encode($src.row))
+end
+-- The patch redrew the whole surface, and the source counts that work.
+if ($src.row.presentation.damage_px_total ?? 0) <= $damage0 then
+  fail("S6: sources.scene_gate counted no damage for the patch (damage_px_total " .. to_string($src.row.presentation.damage_px_total) .. ", was " .. to_string($damage0) .. ")")
+end
+
+-- ── S7: idle ─────────────────────────────────────────────────────────────
+
+-- Off the scene (the left strip is x 0..360) but inside the nested 1280x800
+-- output: injection refuses out-of-bounds points.
+$e = human($svc, "comp.input.pointer.move", {x: 1000, y: 600})
+if $e != nil then
+  fail("S7 " .. $e)
+end
+sleep(2)
+$i0 = frames().count
+sleep($idle_secs)
+$i1 = frames().count
+if $i1 != $i0 then
+  fail("S7 idle: " .. to_string($i1 - $i0) .. " frames over " .. to_string($idle_secs) .. " s with a static scene (want 0)")
+end
+
+-- ── S8: unload ───────────────────────────────────────────────────────────
+
+$u = call($host, "shell.scene.unload", {scene: "gate"})
+if $u.rc != 0 then
+  fail("S8 shell.scene.unload: rc " .. to_string($u.rc) .. " " .. json_encode($u.reply))
+end
+$gone = call($host, "shell.scene.layout", {scene: "gate"})
+if $gone.rc == 0 or $gone.reply.error_code != "NOT_FOUND" then
+  fail("S8: layout after unload is not NOT_FOUND: rc " .. to_string($gone.rc) .. " " .. json_encode($gone.reply))
+end
+
+-- GL (whole run): a wgpu draw refused for want of a vertex array is dropped
+-- with exactly this message, leaving a surface that measures and takes
+-- clicks but draws nothing (graphics `acquire_gl_state`, ae6c462). It hid
+-- until a pixel gate looked once; now any run that logs it fails.
+if contains(read_file($CLOG) ?? "", "No array object bound") then
+  fail("GL: compositor.log has `No array object bound` errors: wgpu (iced) draws were refused")
+end
+
+stop($pids)
+$result = {scale: $SCALE, host: $host, surface: $S, go: $L.nodes.go, plain: $L.nodes.plain, rows: $L.instances.rows, events: events(), idle_frames: 0, idle_secs: $idle_secs}
+if $as_json then
+  print(json_encode($result))
+end
+print("scene host registered as `" .. $host .. "`; strip " .. json_encode($S) .. "; go " .. json_encode($L.nodes.go) .. "; rows " .. json_encode($L.instances.rows))
+print("PASS: load drawn and measured; button and row clicks reach the citizen, clicks beside them do not; a patch draws a `publish` frame; 0 frames over " .. to_string($idle_secs) .. " s static; unload answers NOT_FOUND")
+$CLEANUP.ok = true
+exit(0)
+finally
+  $scratch.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

@@ -1,0 +1,46 @@
+[package]
+name = "native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[features]
+flip-estimate = ["kms/flip-estimate"]
+mode-synthesize = ["kms/mode-synthesize", "render-gles/mode-synthesize"]
+modifier-fallback = ["kms/modifier-fallback", "render-gles/modifier-fallback"]
+native-scanout = ["kms/native-scanout"]
+timing-predict = ["kms/timing-predict", "flip-estimate"]
+timing-throttle = ["kms/timing-throttle"]
+
+[dependencies]
+recorder = { workspace = true }
+dispatcher = { workspace = true }
+outputs = { workspace = true }
+drivers = { workspace = true }
+kms = { workspace = true }
+frames = { workspace = true }
+graphics = { workspace = true }
+ledger = { workspace = true }
+model = { workspace = true }
+render-gles = { workspace = true }
+scenegraph = { workspace = true }
+decor = { workspace = true }
+screencopy = { workspace = true }
+seat = { workspace = true }
+slots = { workspace = true }
+protocols = { workspace = true }
+world = { workspace = true }
+x11-wm = { workspace = true }
+smithay = { workspace = true }
+uuid = { workspace = true }

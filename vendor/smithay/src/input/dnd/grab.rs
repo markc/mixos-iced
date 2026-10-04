@@ -1,0 +1,1037 @@
+use std::{fmt, sync::Arc};
+
+#[cfg(feature = "wayland_frontend")]
+use wayland_server::DisplayHandle;
+
+#[cfg(feature = "xwayland")]
+use crate::{wayland::seat::WaylandFocus, xwayland::XWaylandClientData};
+#[cfg(feature = "xwayland")]
+use wayland_server::Resource;
+
+use crate::{
+    input::{
+        Seat, SeatHandler,
+        dnd::OfferData,
+        pointer::{
+            AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+            GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, GrabStartData as PointerGrabStartData,
+            MotionEvent as PointerMotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+        },
+        touch::{
+            DownEvent, GrabStartData as TouchGrabStartData, MotionEvent as TouchMotionEvent, TouchGrab,
+            TouchInnerHandle, UpEvent,
+        },
+    },
+    utils::{Logical, Point, SERIAL_COUNTER, Serial},
+};
+
+use super::{DndFocus, Source};
+
+/// Type of interaction that started a DnD grab
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrabType {
+    /// Pointer input was validated for the requested grab
+    Pointer,
+    /// Touch input was validated for the requested grab
+    Touch,
+}
+
+/// Grab during a client-initiated DnD operation.
+pub struct DnDGrab<D: SeatHandler, S: Source, F: DndFocus<D> + 'static> {
+    #[cfg(feature = "wayland_frontend")]
+    dh: DisplayHandle,
+    pointer_start_data: Option<PointerGrabStartData<D>>,
+    touch_start_data: Option<TouchGrabStartData<D>>,
+    last_position: Point<f64, Logical>,
+    data_source: Arc<S>,
+    current_focus: Option<F>,
+    offer_data: Option<F::OfferData<S>>,
+    seat: Seat<D>,
+    should_drop: bool,
+    // compd: cancel()/drop() each run at most once, so the source
+    // gets at most one `cancelled`/`dnd_drop_performed` and the handler exactly one
+    // `cancelled`/`dropped` per drag, whatever teardown path reaches `unset()`.
+    finished: bool,
+    // compd: held while the drag is live; see `register_live_drag`
+    // in `input/dnd/mod.rs`. Cleared when the drag ends.
+    live_token: Option<Arc<()>>,
+}
+
+impl<D, S, F> fmt::Debug for DnDGrab<D, S, F>
+where
+    D: SeatHandler + 'static,
+    S: Source + fmt::Debug,
+    F: DndFocus<D> + fmt::Debug + 'static,
+    F::OfferData<S>: fmt::Debug + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut f = f.debug_struct("DnDGrab");
+
+        #[cfg(feature = "wayland_frontend")]
+        {
+            f.field("dh", &self.dh);
+        }
+
+        f.field("pointer_start_data", &self.pointer_start_data)
+            .field("touch_start_data", &self.touch_start_data)
+            .field("last_position", &self.last_position)
+            .field("data_source", &self.data_source)
+            .field("current_focus", &self.current_focus)
+            .field("offer_data", &self.offer_data)
+            // compd: which arm `unset()` takes.
+            .field("should_drop", &self.should_drop)
+            .field("finished", &self.finished)
+            .field("seat", &self.seat)
+            .finish()
+    }
+}
+
+// compd: `D: 'static` because registration touches the seat's
+// user data (`Seat::user_data` requires it).
+impl<D: SeatHandler + 'static, S: Source> DnDGrab<D, S, D::PointerFocus>
+where
+    D::PointerFocus: DndFocus<D>,
+{
+    /// Create a new DnDGrab from an implicit pointer grab for a given source
+    pub fn new_pointer(
+        #[cfg(feature = "wayland_frontend")] dh: &DisplayHandle,
+        start_data: PointerGrabStartData<D>,
+        source: S,
+        seat: Seat<D>,
+    ) -> Self {
+        let last_position = start_data.location;
+        let data_source = Arc::new(source);
+        // compd: register so the source's owner can cancel this drag.
+        let live_token = Some(super::register_live_drag(&seat, &data_source, GrabType::Pointer));
+        Self {
+            #[cfg(feature = "wayland_frontend")]
+            dh: dh.clone(),
+            pointer_start_data: Some(start_data),
+            touch_start_data: None,
+            last_position,
+            data_source,
+            current_focus: None,
+            offer_data: None,
+            seat,
+            should_drop: false,
+            finished: false,
+            live_token,
+        }
+    }
+}
+
+// compd: `D: 'static`, as for `new_pointer`.
+impl<D: SeatHandler + 'static, S: Source> DnDGrab<D, S, D::TouchFocus>
+where
+    D::TouchFocus: DndFocus<D>,
+{
+    /// Create a new DnDGrab from an implicit touch grab for a given source
+    pub fn new_touch(
+        #[cfg(feature = "wayland_frontend")] dh: &DisplayHandle,
+        start_data: TouchGrabStartData<D>,
+        source: S,
+        seat: Seat<D>,
+    ) -> Self {
+        let last_position = start_data.location;
+        let data_source = Arc::new(source);
+        // compd: register so the source's owner can cancel this drag.
+        let live_token = Some(super::register_live_drag(&seat, &data_source, GrabType::Touch));
+        Self {
+            #[cfg(feature = "wayland_frontend")]
+            dh: dh.clone(),
+            pointer_start_data: None,
+            touch_start_data: Some(start_data),
+            last_position,
+            data_source,
+            current_focus: None,
+            offer_data: None,
+            seat,
+            should_drop: false,
+            finished: false,
+            live_token,
+        }
+    }
+}
+
+/// Enum over DndFocus candidates receiving a drop from `DnDGrab`
+pub enum DndTarget<'a, D: SeatHandler> {
+    /// A Pointer-based DnDGrab ended on a `D::PointerFocus`
+    Pointer(&'a D::PointerFocus),
+    /// A Touch-based DnDGrab ended on a `D::TouchFocus`
+    Touch(&'a D::TouchFocus),
+}
+
+impl<D: SeatHandler> fmt::Debug for DndTarget<'_, D>
+where
+    D::PointerFocus: fmt::Debug,
+    D::TouchFocus: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pointer(p) => f.debug_tuple("DndTarget::Pointer").field(p).finish(),
+            Self::Touch(t) => f.debug_tuple("DndTarget::Touch").field(t).finish(),
+        }
+    }
+}
+
+impl<'a, D: SeatHandler> DndTarget<'a, D> {
+    /// Returns the contained `Pointer`-value, consuming `self``.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the self value equals `Touch`.
+    pub fn unwrap_pointer(self) -> &'a D::PointerFocus {
+        match self {
+            DndTarget::Pointer(p) => p,
+            DndTarget::Touch(_) => panic!("unwrap_pointer on touch-based dnd grab target"),
+        }
+    }
+
+    /// Returns the contained `Touch`-value, consuming `self``.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the self value equals `Pointer`.
+    pub fn unwrap_touch(self) -> &'a D::TouchFocus {
+        match self {
+            DndTarget::Pointer(_) => panic!("unwrap_pointer on pointer-based dnd grab target"),
+            DndTarget::Touch(t) => t,
+        }
+    }
+}
+
+impl<'a, F, D: SeatHandler<PointerFocus = F, TouchFocus = F>> DndTarget<'a, D> {
+    /// Returns the contained value consuming `self`.
+    pub fn into_inner(self) -> &'a F {
+        match self {
+            DndTarget::Pointer(p) => p,
+            DndTarget::Touch(t) => t,
+        }
+    }
+}
+
+/// Events that are generated during drag'n'drop
+pub trait DndGrabHandler: SeatHandler + Sized {
+    /// The drag'n'drop action was finished by the user releasing the pointer button / touch inputs.
+    ///
+    /// At this point, any icon should be removed.
+    ///
+    /// * `target` - The target that the contents were dropped on.
+    /// * `validated` - Whether the drop offer was negotiated and accepted.
+    /// * `seat` - The seat on which the DnD action was finished.
+    /// * `location` - The location the drop was finished at
+    fn dropped(
+        &mut self,
+        target: Option<DndTarget<'_, Self>>,
+        validated: bool,
+        seat: Seat<Self>,
+        location: Point<f64, Logical>,
+    ) {
+        let _ = (target, validated, seat, location);
+    }
+
+    /// The grab was cancelled by removing the grab by some means other than releasing the mouse
+    /// button or touch up.
+    fn cancelled(&mut self, seat: Seat<Self>, location: Point<f64, Logical>) {
+        let _ = (seat, location);
+    }
+}
+
+impl<D, S, F> DnDGrab<D, S, F>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    D: 'static,
+    S: Source,
+    F: DndFocus<D> + 'static,
+{
+    fn update_focus(
+        &mut self,
+        data: &mut D,
+        focus: Option<(F, Point<f64, Logical>)>,
+        location: Point<f64, Logical>,
+        serial: Serial,
+        time: u32,
+    ) {
+        if self
+            .current_focus
+            .as_ref()
+            .is_some_and(|current| focus.as_ref().is_none_or(|(f, _)| f != current))
+        {
+            // focus changed, we need to make a leave if appropriate
+            if let Some(focus) = self.current_focus.take() {
+                // only leave if there is a data source or we are on the original client
+                focus.leave(data, self.offer_data.as_mut(), &self.seat);
+
+                // disable the offers
+                if let Some(offer_data) = self.offer_data.take() {
+                    offer_data.disable();
+                }
+            }
+        }
+
+        if let Some((focus, surface_location)) = focus {
+            // early return if the surface is no longer valid
+            if !focus.alive() {
+                return;
+            }
+
+            let (x, y) = (location - surface_location).into();
+            if self.current_focus.is_none() {
+                if self
+                    .data_source
+                    .metadata()
+                    .is_some_and(|metadata| metadata.mime_types.is_empty())
+                {
+                    // delay until they have materialized
+                    return;
+                }
+
+                // We entered a new surface, send the data offer if appropriate
+                self.offer_data = focus.enter(
+                    data,
+                    #[cfg(feature = "wayland_frontend")]
+                    &self.dh,
+                    self.data_source.clone(),
+                    &self.seat,
+                    Point::new(x, y),
+                    &serial,
+                );
+                self.current_focus = Some(focus);
+            } else {
+                // make a move
+                focus.motion(data, self.offer_data.as_mut(), &self.seat, Point::new(x, y), time);
+            }
+        }
+    }
+
+    // compd: true once a release may legitimately end this drag as a
+    // drop. A source that is no longer alive (wl_data_source destroyed, its client gone,
+    // a local drag's origin surface destroyed) can never transfer, so its release must
+    // cancel rather than deliver a drop the target's `receive` would then refuse.
+    fn release_may_drop(&self) -> bool {
+        self.data_source.alive()
+    }
+
+    fn cancel(&mut self, data: &mut D) {
+        // compd: run at most once — see `finished`; ending the drag
+        // releases its live-drag registration.
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        self.should_drop = false;
+        self.live_token = None;
+
+        if let Some(ref offer_data) = self.offer_data {
+            offer_data.disable();
+        }
+
+        self.data_source.cancel();
+
+        DndGrabHandler::cancelled(data, self.seat.clone(), self.last_position);
+
+        if let Some(ref focus) = self.current_focus {
+            focus.leave(data, self.offer_data.as_mut(), &self.seat);
+        }
+    }
+
+    fn drop<'a>(&'a mut self, data: &mut D, into_target: impl Fn(&'a F) -> DndTarget<'a, D>) {
+        // compd: run at most once — see `finished`.
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        self.should_drop = false;
+        self.live_token = None;
+
+        // the user dropped, proceed to the drop
+        let validated = self.offer_data.as_ref().is_some_and(|data| data.validated());
+        if let Some(ref focus) = self.current_focus {
+            focus.drop(data, self.offer_data.as_mut(), &self.seat);
+        }
+
+        if let Some(ref offer_data) = self.offer_data {
+            if validated {
+                offer_data.drop();
+            } else {
+                offer_data.disable();
+            }
+        }
+
+        // local patch: `dnd_drop_performed` and `cancelled` are ORTHOGONAL, not
+        // alternatives. The spec defines the former as "the user performed the
+        // drop action... this event does not indicate acceptance,
+        // wl_data_source.cancelled may still be emitted afterwards if the drop
+        // destination does not accept any mime type", and lists "the operation
+        // was performed but didn't happen over a surface" among the reasons for
+        // the latter. `drop()` is only reached when the user physically released
+        // (see `unset`: `should_drop`), so the release event is always owed.
+        //
+        // Sending only `cancelled` loses the single signal `xdg_toplevel_drag_v1`
+        // keys on: "when a drag operation ends as indicated by
+        // wl_data_source.dnd_drop_performed the dragged toplevel window's final
+        // position is determined as if a xdg_toplevel_move operation ended". A
+        // torn-off tab dropped on empty desktop has no data target by
+        // construction, so under the old behaviour it could only ever be
+        // cancelled — and the spec tells clients to delete newly created windows
+        // on cancel, which is why the tab always snapped back.
+        self.data_source.drop_performed();
+        if !validated {
+            self.data_source.cancel();
+        }
+
+        DndGrabHandler::dropped(
+            data,
+            self.current_focus.as_ref().map(into_target),
+            validated,
+            self.seat.clone(),
+            self.last_position,
+        );
+        // in all cases abandon the drop
+        // no more buttons are pressed, release the grab
+        if let Some(ref focus) = self.current_focus {
+            focus.leave(data, self.offer_data.as_mut(), &self.seat);
+        }
+    }
+}
+
+impl<D, S> PointerGrab<D> for DnDGrab<D, S, D::PointerFocus>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    <D as SeatHandler>::PointerFocus: DndFocus<D> + 'static,
+    D: 'static,
+    S: Source,
+{
+    fn motion(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        focus: Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
+        event: &PointerMotionEvent,
+    ) {
+        handle.motion(data, self.ptr_focus(), event);
+
+        self.last_position = event.location;
+
+        // compd: a drag whose source died is over — cancel it now
+        // (restoring pointer focus, so the still-held button's release reaches a client)
+        // instead of entering further surfaces with an offer that can never transfer.
+        // Backstop for owners that cannot find the grab directly.
+        if !self.release_may_drop() {
+            self.should_drop = false;
+            handle.unset_grab(self, data, event.serial, event.time, true);
+            return;
+        }
+
+        self.update_focus(data, focus, event.location, event.serial, event.time);
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        _focus: Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
+        event: &RelativeMotionEvent,
+    ) {
+        handle.relative_motion(data, self.ptr_focus(), event);
+    }
+
+    fn button(&mut self, data: &mut D, handle: &mut PointerInnerHandle<'_, D>, event: &ButtonEvent) {
+        handle.button(data, event);
+
+        if handle.current_pressed().is_empty() {
+            // the user dropped, proceed to the drop
+            // compd: unless the source is gone — then cancel; see
+            // `release_may_drop`.
+            self.should_drop = self.release_may_drop();
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+    }
+
+    fn axis(&mut self, data: &mut D, handle: &mut PointerInnerHandle<'_, D>, details: AxisFrame) {
+        // we just forward the axis events as is
+        handle.axis(data, details);
+    }
+
+    fn frame(&mut self, data: &mut D, handle: &mut PointerInnerHandle<'_, D>) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GestureSwipeBeginEvent,
+    ) {
+        handle.gesture_swipe_begin(data, event);
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GestureSwipeUpdateEvent,
+    ) {
+        handle.gesture_swipe_update(data, event);
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GestureSwipeEndEvent,
+    ) {
+        handle.gesture_swipe_end(data, event);
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GesturePinchBeginEvent,
+    ) {
+        handle.gesture_pinch_begin(data, event);
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GesturePinchUpdateEvent,
+    ) {
+        handle.gesture_pinch_update(data, event);
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GesturePinchEndEvent,
+    ) {
+        handle.gesture_pinch_end(data, event);
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GestureHoldBeginEvent,
+    ) {
+        handle.gesture_hold_begin(data, event);
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        data: &mut D,
+        handle: &mut PointerInnerHandle<'_, D>,
+        event: &GestureHoldEndEvent,
+    ) {
+        handle.gesture_hold_end(data, event);
+    }
+
+    fn start_data(&self) -> &PointerGrabStartData<D> {
+        self.pointer_start_data.as_ref().unwrap()
+    }
+
+    fn unset(&mut self, data: &mut D) {
+        if self.should_drop {
+            self.drop(data, DndTarget::Pointer);
+        } else {
+            self.cancel(data);
+        }
+    }
+}
+
+impl<D, S> TouchGrab<D> for DnDGrab<D, S, D::TouchFocus>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    <D as SeatHandler>::TouchFocus: DndFocus<D> + 'static,
+    D: 'static,
+    S: Source,
+{
+    fn down(
+        &mut self,
+        _data: &mut D,
+        _handle: &mut TouchInnerHandle<'_, D>,
+        _focus: Option<(<D as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
+        _event: &DownEvent,
+    ) {
+        // Ignore
+    }
+
+    fn up(&mut self, data: &mut D, handle: &mut TouchInnerHandle<'_, D>, event: &UpEvent) {
+        if event.slot != self.start_data().slot {
+            return;
+        }
+
+        // the user dropped, proceed to the drop
+        // compd: unless the source is gone — then cancel; see
+        // `release_may_drop`.
+        self.should_drop = self.release_may_drop();
+        handle.unset_grab(self, data);
+    }
+
+    fn motion(
+        &mut self,
+        data: &mut D,
+        handle: &mut TouchInnerHandle<'_, D>,
+        focus: Option<(<D as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
+        event: &TouchMotionEvent,
+    ) {
+        if event.slot != self.start_data().slot {
+            return;
+        }
+
+        handle.motion(data, self.touch_focus(), event);
+
+        self.last_position = event.location;
+
+        // compd: as for the pointer — a drag whose source died is
+        // cancelled on its next motion.
+        if !self.release_may_drop() {
+            self.should_drop = false;
+            handle.unset_grab(self, data);
+            return;
+        }
+
+        self.update_focus(
+            data,
+            focus,
+            event.location,
+            SERIAL_COUNTER.next_serial(),
+            event.time,
+        );
+    }
+
+    fn frame(&mut self, data: &mut D, handle: &mut TouchInnerHandle<'_, D>) {
+        handle.frame(data);
+    }
+
+    fn cancel(&mut self, data: &mut D, handle: &mut TouchInnerHandle<'_, D>) {
+        // compd: a touch cancel (the stream was claimed as a gesture)
+        // ends the whole touch session: forward it so clients get `wl_touch.cancel` and
+        // touch focus is drained — exactly what the default `TouchDownGrab::cancel` does
+        // — and then end the drag as a CANCEL, never a drop.
+        handle.cancel(data);
+        self.should_drop = false;
+        handle.unset_grab(self, data);
+    }
+
+    fn shape(
+        &mut self,
+        _data: &mut D,
+        _handle: &mut TouchInnerHandle<'_, D>,
+        _event: &crate::input::touch::ShapeEvent,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _data: &mut D,
+        _handle: &mut TouchInnerHandle<'_, D>,
+        _event: &crate::input::touch::OrientationEvent,
+    ) {
+    }
+
+    fn start_data(&self) -> &TouchGrabStartData<D> {
+        self.touch_start_data.as_ref().unwrap()
+    }
+
+    fn unset(&mut self, data: &mut D) {
+        if self.should_drop {
+            self.drop(data, DndTarget::Touch);
+        } else {
+            self.cancel(data);
+        }
+    }
+}
+
+#[cfg(not(feature = "xwayland"))]
+impl<D, S> DnDGrab<D, S, D::PointerFocus>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    <D as SeatHandler>::PointerFocus: DndFocus<D> + 'static,
+    D: 'static,
+    S: Source,
+{
+    fn ptr_focus(&self) -> Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)> {
+        None
+    }
+}
+
+#[cfg(not(feature = "xwayland"))]
+impl<D, S> DnDGrab<D, S, D::TouchFocus>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    <D as SeatHandler>::TouchFocus: DndFocus<D> + 'static,
+    D: 'static,
+    S: Source,
+{
+    fn touch_focus(&self) -> Option<(<D as SeatHandler>::TouchFocus, Point<f64, Logical>)> {
+        None
+    }
+}
+
+#[cfg(feature = "xwayland")]
+impl<D, S> DnDGrab<D, S, D::PointerFocus>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    <D as SeatHandler>::PointerFocus: DndFocus<D> + 'static,
+    D: 'static,
+    S: Source,
+{
+    fn ptr_focus(&self) -> Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)> {
+        // While the grab is active, we don't want any focus except for xwayland
+        self.pointer_start_data
+            .as_ref()?
+            .focus
+            .clone()
+            .filter(|(focus, _)| {
+                focus.wl_surface().is_some_and(|s| {
+                    s.client()
+                        .is_some_and(|c| c.get_data::<XWaylandClientData>().is_some())
+                })
+            })
+    }
+}
+
+#[cfg(feature = "xwayland")]
+impl<D, S> DnDGrab<D, S, D::TouchFocus>
+where
+    D: DndGrabHandler,
+    D: SeatHandler,
+    <D as SeatHandler>::TouchFocus: DndFocus<D> + 'static,
+    D: 'static,
+    S: Source,
+{
+    fn touch_focus(&self) -> Option<(<D as SeatHandler>::TouchFocus, Point<f64, Logical>)> {
+        // While the grab is active, we don't want any focus except for xwayland
+        self.touch_start_data
+            .as_ref()?
+            .focus
+            .clone()
+            .filter(|(focus, _)| {
+                focus.wl_surface().is_some_and(|s| {
+                    s.client()
+                        .is_some_and(|c| c.get_data::<XWaylandClientData>().is_some())
+                })
+            })
+    }
+}
+
+// compd: guards for the DnD cancel suite. These drive the real
+// `DnDGrab` through a real seat's `PointerHandle`/`TouchHandle` with a test `Source`
+// whose liveness the test controls, and a source-order guard for the
+// `wl_data_source` destroy path (which needs a live client to drive behaviourally).
+#[cfg(all(test, feature = "wayland_frontend"))]
+mod cancel_suite_guard {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use wayland_server::protocol::wl_surface::WlSurface;
+    use wayland_server::{Client, Display};
+
+    use crate::backend::input::ButtonState;
+    use crate::input::dnd::{
+        DnDGrab, DndAction, DndGrabHandler, DndTarget, GrabType, Source, SourceMetadata, live_drags_using,
+    };
+    use crate::input::pointer::{
+        ButtonEvent, Focus, GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab,
+    };
+    use crate::input::touch::GrabStartData as TouchGrabStartData;
+    use crate::input::{Seat, SeatHandler, SeatState};
+    use crate::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
+    use crate::wayland::selection::SelectionHandler;
+    use crate::wayland::selection::data_device::{DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler};
+
+    #[derive(Default)]
+    struct Probe {
+        dead: AtomicBool,
+        cancels: AtomicUsize,
+        drops_performed: AtomicUsize,
+    }
+
+    struct TestSource(Arc<Probe>);
+
+    impl IsAlive for TestSource {
+        fn alive(&self) -> bool {
+            !self.0.dead.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Source for TestSource {
+        fn metadata(&self) -> Option<SourceMetadata> {
+            Some(SourceMetadata {
+                mime_types: vec!["text/plain".into()],
+                dnd_actions: Default::default(),
+            })
+        }
+        fn choose_action(&self, _action: DndAction) {}
+        fn send(&self, _mime_type: &str, _fd: std::os::fd::OwnedFd) {}
+        fn drop_performed(&self) {
+            self.0.drops_performed.fetch_add(1, Ordering::SeqCst);
+        }
+        fn cancel(&self) {
+            self.0.cancels.fetch_add(1, Ordering::SeqCst);
+        }
+        fn finished(&self) {}
+    }
+
+    struct State {
+        seat_state: SeatState<State>,
+        dropped: usize,
+        cancelled: usize,
+    }
+
+    impl SeatHandler for State {
+        type KeyboardFocus = WlSurface;
+        type PointerFocus = WlSurface;
+        type TouchFocus = WlSurface;
+        fn seat_state(&mut self) -> &mut SeatState<Self> {
+            &mut self.seat_state
+        }
+    }
+    // `WlSurface` as a focus target requires these on the state type in this
+    // smithay base; no surface is ever focused here, so they are never reached.
+    impl crate::wayland::compositor::CompositorHandler for State {
+        fn compositor_state(&mut self) -> &mut crate::wayland::compositor::CompositorState {
+            unreachable!("cancel suite touches no surface")
+        }
+        fn client_compositor_state<'a>(
+            &self,
+            _client: &'a Client,
+        ) -> &'a crate::wayland::compositor::CompositorClientState {
+            unreachable!("cancel suite touches no surface")
+        }
+        fn commit(&mut self, _surface: &WlSurface) {}
+    }
+    impl crate::wayland::pointer_constraints::PointerConstraintsHandler for State {}
+    // `WlSurface: DndFocus<State>` requires a data-device handler; never reached.
+    impl SelectionHandler for State {
+        type SelectionUserData = ();
+    }
+    impl WaylandDndGrabHandler for State {}
+    impl DataDeviceHandler for State {
+        fn data_device_state(&mut self) -> &mut DataDeviceState {
+            unreachable!("cancel suite touches no data device")
+        }
+    }
+    impl DndGrabHandler for State {
+        fn dropped(
+            &mut self,
+            _target: Option<DndTarget<'_, Self>>,
+            _validated: bool,
+            _seat: Seat<Self>,
+            _location: Point<f64, Logical>,
+        ) {
+            self.dropped += 1;
+        }
+        fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
+            self.cancelled += 1;
+        }
+    }
+
+    fn setup() -> (Display<State>, State, Seat<State>) {
+        let display = Display::<State>::new().unwrap();
+        let mut seat_state = SeatState::<State>::new();
+        let seat = seat_state.new_seat("dnd");
+        let state = State {
+            seat_state,
+            dropped: 0,
+            cancelled: 0,
+        };
+        (display, state, seat)
+    }
+
+    fn pointer_start() -> PointerGrabStartData<State> {
+        PointerGrabStartData {
+            focus: None,
+            button: 0x110,
+            location: (0.0, 0.0).into(),
+        }
+    }
+
+    fn release() -> ButtonEvent {
+        ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 1,
+            button: 0x110,
+            state: ButtonState::Released,
+        }
+    }
+
+    // Control: a release with a live source is a drop — proves the gate below can fail.
+    #[test]
+    fn live_source_release_drops() {
+        let (display, mut state, mut seat) = setup();
+        let pointer = seat.add_pointer();
+        let probe = Arc::new(Probe::default());
+        let grab = DnDGrab::new_pointer(
+            &display.handle(),
+            pointer_start(),
+            TestSource(probe.clone()),
+            seat.clone(),
+        );
+        pointer.set_grab(&mut state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+        pointer.button(&mut state, &release());
+        assert!(!pointer.is_grabbed());
+        assert_eq!((state.dropped, state.cancelled), (1, 0));
+        assert_eq!(probe.drops_performed.load(Ordering::SeqCst), 1);
+    }
+
+    // (a) backstop: a release after the source died cancels, never drops.
+    #[test]
+    fn dead_source_release_cancels() {
+        let (display, mut state, mut seat) = setup();
+        let pointer = seat.add_pointer();
+        let probe = Arc::new(Probe::default());
+        let grab = DnDGrab::new_pointer(
+            &display.handle(),
+            pointer_start(),
+            TestSource(probe.clone()),
+            seat.clone(),
+        );
+        pointer.set_grab(&mut state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+        probe.dead.store(true, Ordering::SeqCst);
+        pointer.button(&mut state, &release());
+        assert!(!pointer.is_grabbed());
+        assert_eq!((state.dropped, state.cancelled), (0, 1));
+        assert_eq!(probe.drops_performed.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.cancels.load(Ordering::SeqCst), 1);
+    }
+
+    // (a) backstop: the next motion after the source died ends the drag as a cancel.
+    #[test]
+    fn dead_source_motion_cancels() {
+        let (display, mut state, mut seat) = setup();
+        let pointer = seat.add_pointer();
+        let probe = Arc::new(Probe::default());
+        let grab = DnDGrab::new_pointer(
+            &display.handle(),
+            pointer_start(),
+            TestSource(probe.clone()),
+            seat.clone(),
+        );
+        pointer.set_grab(&mut state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+        probe.dead.store(true, Ordering::SeqCst);
+        let motion = MotionEvent {
+            location: (5.0, 5.0).into(),
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 2,
+        };
+        pointer.motion(&mut state, None, &motion);
+        assert!(!pointer.is_grabbed());
+        assert_eq!((state.dropped, state.cancelled), (0, 1));
+    }
+
+    // (a) registry: a live drag is findable by its source until it ends, and an
+    // external unset (what `wl_data_source` destroy does) cancels it.
+    #[test]
+    fn registry_finds_live_drag_until_it_ends() {
+        let (display, mut state, mut seat) = setup();
+        let pointer = seat.add_pointer();
+        let probe = Arc::new(Probe::default());
+        let grab = DnDGrab::new_pointer(
+            &display.handle(),
+            pointer_start(),
+            TestSource(probe.clone()),
+            seat.clone(),
+        );
+        pointer.set_grab(&mut state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+        let mine = |s: &TestSource| Arc::ptr_eq(&s.0, &probe);
+        assert_eq!(
+            live_drags_using::<State, TestSource>(&seat, mine),
+            vec![GrabType::Pointer]
+        );
+        let other = Arc::new(Probe::default());
+        assert!(live_drags_using::<State, TestSource>(&seat, |s| Arc::ptr_eq(&s.0, &other)).is_empty());
+
+        pointer.unset_grab(&mut state, SERIAL_COUNTER.next_serial(), 3);
+        assert_eq!((state.dropped, state.cancelled), (0, 1));
+        assert!(live_drags_using::<State, TestSource>(&seat, mine).is_empty());
+    }
+
+    // (c) run-once: a second unset of the same grab delivers nothing more.
+    #[test]
+    fn cancel_and_drop_run_at_most_once() {
+        let (display, mut state, seat) = setup();
+        let probe = Arc::new(Probe::default());
+        let mut grab = DnDGrab::new_pointer(
+            &display.handle(),
+            pointer_start(),
+            TestSource(probe.clone()),
+            seat,
+        );
+        PointerGrab::unset(&mut grab, &mut state);
+        PointerGrab::unset(&mut grab, &mut state);
+        assert_eq!((state.dropped, state.cancelled), (0, 1));
+        assert_eq!(probe.cancels.load(Ordering::SeqCst), 1);
+    }
+
+    // (b) a touch cancel ends the drag as a cancel, never a drop.
+    #[test]
+    fn touch_cancel_cancels_the_drag() {
+        let (display, mut state, mut seat) = setup();
+        let touch = seat.add_touch();
+        let probe = Arc::new(Probe::default());
+        let start = TouchGrabStartData {
+            focus: None,
+            slot: Some(0).into(),
+            location: (0.0, 0.0).into(),
+        };
+        let grab = DnDGrab::new_touch(&display.handle(), start, TestSource(probe.clone()), seat.clone());
+        touch.set_grab(&mut state, grab, SERIAL_COUNTER.next_serial());
+        touch.cancel(&mut state);
+        assert!(!touch.is_grabbed());
+        assert_eq!((state.dropped, state.cancelled), (0, 1));
+        assert_eq!(probe.drops_performed.load(Ordering::SeqCst), 0);
+    }
+
+    // (b) source guard: the DnD touch cancel forwards the cancel (wl_touch.cancel +
+    // focus drain) BEFORE ending the grab; not observable without a live client.
+    #[test]
+    fn touch_cancel_forwards_before_unset() {
+        let src = include_str!("grab.rs");
+        let arm = src
+            .find("fn cancel(&mut self, data: &mut D, handle: &mut TouchInnerHandle")
+            .expect("touch cancel");
+        let body = &src[arm..];
+        let fwd = body.find("handle.cancel(data)").expect("forwards cancel");
+        let unset = body.find("handle.unset_grab(self, data)").expect("unsets");
+        assert!(fwd < unset);
+    }
+
+    // (a) source guard: `wl_data_source` destroy keeps hooks 3a/3b first and then
+    // cancels drags, outside the used-source branch (a missing record must not skip it).
+    #[test]
+    fn data_source_destroy_cancels_drags_after_selection_hooks() {
+        let src = include_str!("../../wayland/selection/data_device/source.rs");
+        let body = &src[src.find("fn destroyed(").expect("destroyed")..];
+        let end = body
+            .find("\nfn cancel_drags_using")
+            .expect("helper after destroyed");
+        let destroyed = &body[..end];
+        let at = |needle: &str| {
+            destroyed
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} missing"))
+        };
+        let gone = at("selection_source_gone(");
+        let replace = at("replace_owned_selections(");
+        let cancel = at("cancel_drags_using(state, source)");
+        assert!(gone < replace && replace < cancel);
+        assert!(
+            !destroyed[..cancel].contains("return"),
+            "no early return may skip the drag cancel"
+        );
+    }
+}

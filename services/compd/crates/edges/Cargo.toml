@@ -1,0 +1,21 @@
+[package]
+name = "edges"
+description = "The desktop shell's edge model: one panel per output edge with its mode, thickness and motion, a page carousel per edge, and corner engagement detection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+# Pure state: no renderer, window system, compositor or Bus dependency.
+[dependencies]

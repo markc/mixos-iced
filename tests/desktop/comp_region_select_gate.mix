@@ -1,0 +1,382 @@
+#!/usr/bin/env mix
+-- version: 0.2.0
+-- comp_region_select_gate.mix — acceptance gate for comp.region.select: it
+-- starts a PRIVATE nested compd on nested_host_lib's headless weston host.
+--
+-- usage: mix tests/desktop/comp_region_select_gate.mix [--bin PATH]
+--        --config-file PATH [--env NAME=VALUE ...] [--software] [--keep-log]
+--
+-- WHAT IT PROVES. comp.region.select is an interactive rubber-band selector
+-- that must answer a Bus caller with the rectangle a pointer drew. Because compd
+-- also exposes comp.input.pointer.{move,button} and comp.input.key, the
+-- whole interaction can be driven over ABP with no human hand — which is the
+-- point: a verb a human must service is not agent-operable, and this gate is
+-- the proof that it is not one.
+--
+-- HOW IT DRIVES A BLOCKING VERB. `send` is a blocking RPC, so the selection
+-- cannot be started and driven from one script. Each arm spawns a SELECTOR
+-- process (mix -c) that issues comp.region.select and writes its reply to a
+-- file; the gate then drives the pointer and reads the file back. A selector
+-- that never writes its file is a FAILURE, not a pass — an absent answer and a
+-- correct answer must never look alike.
+--
+-- THE FAIL ARM HAS BEEN WATCHED. Against a compositor WITHOUT the verb, every
+-- arm reports `unknown verb` and the gate exits 1. Run it against a build
+-- without the verb once before trusting a green: a gate nobody has watched
+-- fail is not yet a gate, and neither is one nobody has watched pass.
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$KIND = "compd"
+$BIN = ""
+$CONFIG = ""
+$ENV = {}
+$SOFTWARE = false
+
+$ARGS = args()
+$i = 0
+while $i < len($ARGS)
+  $a = $ARGS[$i]
+  if $a == "--bin" and $i + 1 < len($ARGS) then
+    $i = $i + 1
+    $BIN = $ARGS[$i]
+  elif $a == "--config-file" and $i + 1 < len($ARGS) then
+    $i = $i + 1
+    $CONFIG = $ARGS[$i]
+  elif $a == "--env" and $i + 1 < len($ARGS) and contains($ARGS[$i + 1], "=") then
+    $i = $i + 1
+    $kv = split_once($ARGS[$i], "=")
+    $ENV[$kv[0]] = $kv[1]
+  elif $a == "--software" then
+    $SOFTWARE = true
+  elif $a == "--keep-log" then
+    -- Accepted for compatibility; failed runs always keep their evidence.
+    print("  --keep-log: artefacts are kept only on failure or abort")
+  else
+    print("comp_region_select_gate: unknown argument: " .. $a)
+    print("usage: comp_region_select_gate.mix [--bin PATH] --config-file PATH [--env NAME=VALUE ...] [--software] [--keep-log]")
+    exit(2)
+  end
+  $i = $i + 1
+end
+
+$bin = $n.require_binary("compd", $BIN, ["/opt/compd/bin"])
+$CLEANUP.run = $n.new_run("/tmp/" .. $KIND .. "-region-" .. to_string(pid()))
+$SESSION = $n.start({bin: $bin, tag: "region", run: $CLEANUP.run, config: $CONFIG, env: $ENV, software: $SOFTWARE})
+if not $n.wait_ready($SESSION, 30) then
+  print("  ERROR: nested " .. $KIND .. " did not answer " .. $SESSION["service"] .. ".comp.ping (log " .. $SESSION["log"] .. ")")
+  $n.stop($SESSION)
+  exit(1)
+end
+$COMP = $SESSION["service"]
+$DIR = $SESSION["runtime"] .. "/region-gate"
+
+$FAILURES = []
+
+fn note($msg)
+  print("  " .. $msg)
+  return 0
+end
+
+fn fail($arm, $why)
+  print("  FAIL [" .. $arm .. "] " .. $why)
+  return 0
+end
+
+fn rpc($verb, $payload, $timeout)
+  send $COMP $verb body=json_encode($payload) timeout=$timeout
+  if $rc != 0 then return {ok: false, rc: $rc, body: to_string($result)} end
+  $parsed = nil
+  try
+    $parsed = json_parse(to_string($result))
+  catch $e
+    $parsed = nil
+  end
+  return {ok: true, rc: 0, body: to_string($result), value: $parsed}
+end
+
+-- Start a selection in its own process. Returns the path its reply lands in.
+fn start_selector($tag, $payload)
+  $path = $DIR .. "/" .. $tag .. ".json"
+  try
+    remove($path)
+  catch $e
+    $ignored = 0
+  end
+  -- The target goes through a VARIABLE, never inline: a bare `send comp-rs ...`
+  -- parses the hyphen as subtraction ("cannot use 'comp' as number"), so any
+  -- hyphenated service name -- which is every nested dev instance -- breaks a
+  -- literal send. Same reason the verb is bound rather than written inline.
+  -- RETRY ON BUSY. A selection holds its run open past its own reply, until the
+  -- overlay's removal is evidenced, and refuses `busy` for that window -- so a
+  -- caller that selects again immediately is legitimately refused. Probing for
+  -- readiness beforehand cannot fix this, because the probe is itself a
+  -- selection and re-arms the same window; the only correct shape is what a real
+  -- caller must do, which is retry. The gate does it here so every arm measures
+  -- the verb rather than the gap between arms.
+  $src = "$t = " .. json_encode($COMP) .. "\n" ..
+    "$v = \"comp.region.select\"\n" ..
+    "$n = 0\n" ..
+    "while $n < 20\n" ..
+    "  send $t $v body=" .. json_encode(json_encode($payload)) .. " timeout=90\n" ..
+    "  if $rc == 0 then\n" ..
+    "    break\n" ..
+    "  end\n" ..
+    "  if not contains(to_string($result), \"busy\") then\n" ..
+    "    break\n" ..
+    "  end\n" ..
+    "  sleep(0.4)\n" ..
+    "  $n = $n + 1\n" ..
+    "end\n" ..
+    -- $result comes back DECODED (a map), not as a JSON string, so the first
+    -- cut's to_string($result) wrote Mix's map rendering -- `{status: selected,
+    -- ...}`, unquoted keys -- which json_parse then refused, failing every arm
+    -- against a verb that was answering correctly. Nest the value and let
+    -- json_encode do it properly.
+    "write_file(" .. json_encode($path) .. ", json_encode({rc: $rc, body: $result}))\n"
+  $script = $DIR .. "/" .. $tag .. ".mix"
+  write_file($script, $src)
+  spawn(["/opt/mixos/bin/mix", $script], {detach: false})
+  return $path
+end
+
+-- Wait for a selector's reply file. nil = it never answered, which is a
+-- failure in every arm: no arm of this gate treats silence as success.
+fn await_selector($path, $deadline_s)
+  $deadline = time() + $deadline_s
+  while time() < $deadline
+    if is_file($path) then
+      sleep(0.1)
+      try
+        $raw = json_parse(read_file($path))
+        -- body is a nested object for a structured reply and a plain string for
+        -- an error body; accept either rather than assuming one.
+        $inner = nil
+        if type($raw.body) == "map" then
+          $inner = $raw.body
+        else
+          try
+            $inner = json_parse(to_string($raw.body))
+          catch $e2
+            $inner = nil
+          end
+        end
+        return {rc: $raw.rc, body: to_string($raw.body), value: $inner}
+      catch $e
+        return nil
+      end
+    end
+    sleep(0.1)
+  end
+  return nil
+end
+
+-- The real contracts, read from port.rs rather than assumed (the first cut of
+-- this gate invented `comp.input.pointer.teleport` and a `pressed` boolean;
+-- neither exists). Absolute motion is pointer.move with x/y -- `corners: false`
+-- keeps a drag to a screen edge from arming a hot corner mid-gate. Press and
+-- release are the `action` field; omitting it means BOTH, i.e. a full click,
+-- which would collapse a drag into a single click at the start point.
+fn point($x, $y)
+  return rpc("comp.input.pointer.move", {seat: "human", x: $x, y: $y, corners: false}, 5)
+end
+
+fn button($btn, $action)
+  return rpc("comp.input.pointer.button", {seat: "human", button: $btn, action: $action}, 5)
+end
+
+fn key($name, $action)
+  return rpc("comp.input.key", {seat: "human", key: $name, action: $action}, 5)
+end
+
+-- Drag from (x1,y1) to (x2,y2) with an intermediate move, so the arm proves a
+-- real drag and not a single click that happens to carry two coordinates.
+fn drag($x1, $y1, $x2, $y2)
+  point($x1, $y1)
+  sleep(0.1)
+  button("left", "press")
+  sleep(0.1)
+  point(($x1 + $x2) / 2, ($y1 + $y2) / 2)
+  sleep(0.1)
+  point($x2, $y2)
+  sleep(0.1)
+  button("left", "release")
+  return 0
+end
+
+-- A selection's REPLY goes out as soon as the result is decided, but the run is
+-- held open until the overlay's removal is evidenced (or the cleanup budget
+-- expires), and `busy` is refused for that whole window. So back-to-back
+-- selections -- reply, immediately select again -- legitimately see `busy`, and
+-- a caller must tolerate it. Settle before each arm that expects admission, so
+-- the gate measures the verb rather than its own impatience. A 1 ms selection is
+-- the cheapest liveness probe: admitted means it answers `timeout`.
+fn settle($deadline_s)
+  $deadline = time() + $deadline_s
+  while time() < $deadline
+    $r = rpc("comp.region.select", {timeout_ms: 1}, 10)
+    if $r.ok then
+      return true
+    end
+    sleep(0.3)
+  end
+  return false
+end
+
+mkdir($DIR, {parents: true})
+
+print("gate: comp.region.select (driven over ABP, no human hand)")
+print("  compd service: " .. $COMP)
+
+-- ── arm 0: the verb exists ───────────────────────────────────────────────
+-- Asked FIRST and separately: every later arm's failure is ambiguous if the
+-- verb is simply absent, and "unknown verb" must never be reported as a
+-- selection that went wrong.
+-- A compositor without the verb answers:
+--   rc=10  {error: unknown_verb, error_code: unknown_verb}
+-- Matched on that exact token, not a loose "unknown": every later arm drives
+-- SYNTHETIC POINTER INPUT, so a probe that fails to recognise the refusal would
+-- start dragging on a live desktop. The narrow match is the safety interlock.
+$probe = rpc("comp.region.select", {timeout_ms: 1000}, 15)
+if not $probe.ok then
+  if contains($probe.body, "unknown_verb") then
+    print("  REFUSE: this compositor has no comp.region.select (" .. $probe.body .. ")")
+    print("          the gate cannot test a verb that is not there")
+    $n.stop($SESSION)
+    exit(2)
+  end
+end
+note("arm 0: verb present")
+
+-- ── arm 1: a forward drag returns that rectangle ─────────────────────────
+settle(10)
+$p1 = start_selector("forward", {timeout_ms: 20000})
+sleep(1.0)
+drag(400, 300, 700, 500)
+$r1 = await_selector($p1, 25)
+if $r1 == nil then
+  push($FAILURES, "forward")
+  fail("forward", "the selector never wrote a reply")
+elif $r1.value == nil then
+  push($FAILURES, "forward")
+  fail("forward", "reply was not JSON: " .. $r1.body)
+elif to_string($r1.value.status) != "selected" then
+  push($FAILURES, "forward")
+  fail("forward", "status=" .. to_string($r1.value.status) .. " body=" .. $r1.body)
+else
+  $g = $r1.value.region
+  if $g.width < 250 or $g.width > 350 or $g.height < 150 or $g.height > 250 then
+    push($FAILURES, "forward")
+    fail("forward", "rectangle is not the drag: " .. json_encode($g))
+  else
+    note("arm 1 forward drag: " .. json_encode($g))
+  end
+end
+
+-- ── arm 2: a REVERSE drag returns the same rectangle ─────────────────────
+-- Dragging up-left must normalise; a raw x2-x1 would go negative here.
+settle(10)
+$p2 = start_selector("reverse", {timeout_ms: 20000})
+sleep(1.0)
+drag(700, 500, 400, 300)
+$r2 = await_selector($p2, 25)
+if $r2 == nil or $r2.value == nil then
+  push($FAILURES, "reverse")
+  fail("reverse", "no usable reply")
+elif to_string($r2.value.status) != "selected" then
+  push($FAILURES, "reverse")
+  fail("reverse", "status=" .. to_string($r2.value.status))
+else
+  $g2 = $r2.value.region
+  if $g2.width < 250 or $g2.width > 350 or $g2.height < 150 or $g2.height > 250 then
+    push($FAILURES, "reverse")
+    fail("reverse", "reverse drag did not normalise: " .. json_encode($g2))
+  else
+    note("arm 2 reverse drag normalised: " .. json_encode($g2))
+  end
+end
+
+-- ── arm 3: Escape cancels ────────────────────────────────────────────────
+settle(10)
+$p3 = start_selector("escape", {timeout_ms: 20000})
+sleep(1.0)
+point(500, 400)
+sleep(0.1)
+button("left", "press")
+sleep(0.2)
+key("Escape", "press")
+sleep(0.1)
+key("Escape", "release")
+-- The drag's own button is still down; release it so the arm cannot pass by
+-- leaving held state behind for the next one.
+button("left", "release")
+$r3 = await_selector($p3, 25)
+if $r3 == nil or $r3.value == nil then
+  push($FAILURES, "escape")
+  fail("escape", "no usable reply")
+elif to_string($r3.value.status) != "cancelled" then
+  push($FAILURES, "escape")
+  fail("escape", "status=" .. to_string($r3.value.status) .. " (expected cancelled)")
+else
+  note("arm 3 escape cancelled, reason=" .. to_string($r3.value.reason))
+end
+
+-- ── arm 4: a second caller is refused, not queued ────────────────────────
+$p4 = start_selector("holder", {timeout_ms: 8000})
+sleep(1.0)
+$second = rpc("comp.region.select", {timeout_ms: 5000}, 15)
+if $second.ok then
+  push($FAILURES, "busy")
+  fail("busy", "a second concurrent selection was ACCEPTED: " .. $second.body)
+elif not contains(lower($second.body), "busy") then
+  push($FAILURES, "busy")
+  fail("busy", "refused but not as busy: " .. $second.body)
+else
+  note("arm 4 second caller refused busy")
+end
+-- let the holder time out rather than leaving a grab behind
+$r4 = await_selector($p4, 25)
+if $r4 == nil then
+  push($FAILURES, "busy-release")
+  fail("busy-release", "the holding selector never answered — a grab may be leaked")
+end
+
+-- ── arm 5: timeout answers, and the grab is released ─────────────────────
+settle(10)
+$p5 = start_selector("timeout", {timeout_ms: 3000})
+$r5 = await_selector($p5, 25)
+if $r5 == nil or $r5.value == nil then
+  push($FAILURES, "timeout")
+  fail("timeout", "no usable reply")
+elif to_string($r5.value.status) != "timeout" then
+  push($FAILURES, "timeout")
+  fail("timeout", "status=" .. to_string($r5.value.status) .. " (expected timeout)")
+else
+  note("arm 5 timeout answered cleanly")
+end
+-- after a timeout the next selection must be accepted, or the grab leaked
+settle(10)
+$p6 = start_selector("after-timeout", {timeout_ms: 8000})
+sleep(1.0)
+drag(300, 200, 500, 360)
+$r6 = await_selector($p6, 25)
+if $r6 == nil or $r6.value == nil or to_string($r6.value.status) != "selected" then
+  push($FAILURES, "after-timeout")
+  fail("after-timeout", "a selection after a timeout did not succeed — grab leaked?")
+else
+  note("arm 6 selection after timeout still works")
+end
+
+$n.stop($SESSION)
+print("")
+if len($FAILURES) == 0 then
+  print("=== REGION SELECT GATE [" .. $KIND .. "]: GREEN — 6 arms, every one answered ===")
+  $CLEANUP.ok = true
+  exit(0)
+end
+print("=== REGION SELECT GATE [" .. $KIND .. "]: FAILED — " .. join($FAILURES, ", ") .. " ===")
+exit(1)
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

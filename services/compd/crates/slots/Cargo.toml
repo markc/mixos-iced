@@ -1,0 +1,29 @@
+[package]
+name = "slots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+model = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smithay = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }

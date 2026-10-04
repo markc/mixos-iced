@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>compd XWayland gate</title>
+<style>
+  /* Everything is inline and local: the gate must not depend on the network
+     or on anything the machine happens to have cached. */
+  html, body { margin: 0; padding: 0; height: 100%; background: #101828; }
+  body { font-family: sans-serif; color: #f4f6fb; }
+  .bar { display: flex; height: 22%; }
+  .bar div { flex: 1 1 0; }
+  .a { background: #d1495b; } .b { background: #edae49; }
+  .c { background: #00798c; } .d { background: #30638e; }
+  h1 { font-size: 8vw; margin: 4vh 3vw 0 3vw; }
+  p  { font-size: 3vw; margin: 2vh 3vw; }
+</style>
+</head>
+<body>
+  <div class="bar"><div class="a"></div><div class="b"></div><div class="c"></div><div class="d"></div></div>
+  <h1>XWayland gate</h1>
+  <p>An X11 client, rendered through the nested compositor's XWayland.</p>
+</body>
+</html>

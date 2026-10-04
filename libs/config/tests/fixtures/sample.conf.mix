@@ -1,0 +1,5 @@
+# A small strict-data config file, read by tests/data.rs.
+name: "sample"
+priority: 3
+tags: ["alpha", "beta"]
+limits: { connections: 100, idle_seconds: 30 }

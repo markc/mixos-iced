@@ -1,0 +1,417 @@
+-- screencopy_gate.mix — wlr-screencopy pixel gate for nested compd.
+-- version: 0.4.1
+--
+--   mix tests/desktop/screencopy_gate.mix <compd-binary> [--shot PATH] [--config-file PATH] [--scale S] [--json]
+--
+-- `--scale S` runs compd's nested output at S: compd is
+-- passed `--scale=S` (its window then asks for 1280x800 × S physical, so the
+-- output is 1280x800 logical at any S and the shot 3200x2000 at 2.5), the
+-- weston host grows to 3840x2160 to hold it, and every sample offset below, written in logical px, is
+-- multiplied by S because the shot is physical. Without it (or S = 1) the run
+-- is exactly the 1.0 gate.
+--
+-- Headless, like idle_probe.mix: weston (headless, pixman) hosts compd nested;
+-- clients run inside compd. Needs weston and weston-simple-shm. The capture
+-- client is testkit-shot (`--shot`, default: `testkit-screenshot` beside the compd
+-- binary, i.e. the same cargo target dir); grim works too if passed.
+--
+-- The gate, and why it can FAIL:
+--   A. Before any client exists, capture the whole output. Its sample block
+--      must be the background (read from the shot itself) — the NEGATIVE
+--      control: the "subject present" test below must say NO on this frame.
+--   B. Start weston-simple-shm (compd maps a new window centred), capture
+--      again: the "subject present" test must say YES.
+--   A gate that says YES on A could not tell a capture from a stale buffer, so
+--   both verdicts are required (memory: prove a pixel gate can fail).
+-- overlay_cursor. The pointer starts at the output centre, where compd draws
+-- the arrow sprite (down-right of its hotspot, its tail at about centre
+-- +0..+12, +11..+21) and, with the `canvas_cursor` preference on (default
+-- off), the canvas cursor, a 20x20 translucent box centred on it. Both are
+-- cursor elements (`is_cursor`).
+--   C1. shot A1 (`--cursor`, overlay_cursor = 1) and shot A (overlay_cursor = 0,
+--       the client default, as grim) of the same static screen DIFFER on the
+--       arrow tail (the 9x9 block centred at centre +6,+16): more than 0/81.
+--       This is C0's proof that the block is where a cursor is; it compares
+--       the two shots, never a shot against an assumed colour.
+--   C2. no EGL_BAD_SURFACE anywhere in compositor.log, startup included: the
+--       nested frame makes its window surface current before it queries the
+--       buffer age, whatever left it otherwise (copies, a new client, prewarm).
+--   C0. shot A shows no cursor at all: the arrow-tail block AND the block at
+--       the pointer itself (centre +0,+0, inside the canvas box) are the
+--       background, 0/81 each.
+-- Idle, from compd's frame-trace ledger:
+--   I1. no frames at all across a 5 s window with no copy pending;
+--   I2. one plain copy on a static screen causes at most 2 frames (the copy's
+--       own, plus a possible first-frame), and returns.
+--
+-- `--config-file` defaults to `smoke-settings.json` beside the compd binary
+-- (where it is installed with it); pass it when it lives elsewhere.
+--
+-- Exit codes: 0 PASS, 1 FAIL (reason printed, logs tailed), 2 setup.
+
+$args = args()
+if len($args) < 1 then
+  eprint("usage: screencopy_gate.mix <compd-binary> [--shot PATH] [--config-file PATH] [--scale S] [--json]")
+  exit(2)
+end
+$bin = $args[0]
+$shot = nil
+$config = nil
+$as_json = false
+$SCALE = 1
+$i = 1
+while $i < len($args)
+  $a = $args[$i]
+  if $a == "--shot" then
+    $shot = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--config-file" then
+    $config = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--scale" then
+    $SCALE = to_number($args[$i + 1])
+    if $SCALE == nil or $SCALE <= 0 then
+      eprint("--scale needs a positive number")
+      exit(2)
+    end
+    $i = $i + 2
+  elif $a == "--json" then
+    $as_json = true
+    $i = $i + 1
+  else
+    eprint("unknown option: " .. $a)
+    exit(2)
+  end
+end
+if not is_file($bin) then
+  eprint("no such binary: " .. $bin)
+  exit(2)
+end
+if $config == nil then
+  $config = re_replace($bin, "[^/]*$", "") .. "smoke-settings.json"
+end
+if not is_file($config) then
+  eprint("no compd settings at " .. $config .. " (pass --config-file)")
+  exit(2)
+end
+if $shot == nil then
+  $shot = re_replace($bin, "[^/]*$", "") .. "testkit-screenshot"
+end
+if not is_file($shot) then
+  eprint("no capture client at " .. $shot .. " (build testkit's testkit-screenshot, or pass --shot)")
+  exit(2)
+end
+$weston = which("weston")
+$shm = which("weston-simple-shm")
+if $weston == nil or $shm == nil then
+  eprint("needs weston and weston-simple-shm on PATH")
+  exit(2)
+end
+
+$scratch = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$CLEANUP.run = $scratch.new_run("/tmp/compd-shot-" .. to_string(pid()))
+$run_dir = $CLEANUP.run.path
+$chmod = run_argv(["chmod", "0700", $run_dir])
+if $chmod.exit_code != 0 then
+  eprint("chmod failed: " .. $chmod.stderr)
+  exit(2)
+end
+$logs = $run_dir .. "/logs"
+mkdir($logs, {parents: true})
+$TRACE = $logs .. "/frame-trace.log"
+
+fn alive($p)
+  return exists("/proc/" .. to_string($p))
+end
+
+fn sockets($dir)
+  $out = []
+  for each $e in lines(run_argv(["ls", $dir]).stdout)
+    if starts_with($e, "wayland-") and not ends_with($e, ".lock") then
+      push($out, $e)
+    end
+  end
+  return $out
+end
+
+fn stop($pids)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 15)
+    end
+  end
+  sleep(1)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 9)
+    end
+  end
+end
+
+fn frames_now()
+  if not exists($TRACE) then
+    return 0
+  end
+  return to_number(trim(run_argv(["grep", "-c", "-e", "stage=comp_frame_reasons ", $TRACE]).stdout)) ?? 0
+end
+
+-- A PPM (P6) as {w, h, off, bytes}; the header testkit-screenshot writes is
+-- "P6\n<w> <h>\n255\n".
+fn load_ppm($path)
+  $b = read_file_bytes($path)
+  $head = bytes_to_string(slice($b, 0, 32), {lossy: true})
+  $m = re_find($head, "^P6\\s+(\\d+)\\s+(\\d+)\\s+255\\s")
+  if len($m) == 0 then
+    return nil
+  end
+  return {w: to_number($m[0].groups[0]), h: to_number($m[0].groups[1]), off: $m[0].end, bytes: $b}
+end
+
+-- How many pixels of a 9x9 block near the centre differ from the clear colour by
+-- more than `tol` in any channel. The "subject present" verdict is ">= 40 of 81".
+-- The block sits 60 px up-left of centre: inside the centred client window
+-- (~250 px), but clear of the pointer, which starts at the centre and draws
+-- down-right of its hotspot (before compd honoured overlay_cursor = 0 the
+-- cursor was in every shot; the first run sampled it and failed shot A).
+-- The background is read from the shot's own (10,10) pixel, not assumed: the
+-- clear colour is compd's theme's, (18,20,25) on 2026-10-03, and a hard-coded
+-- (25,25,25) made shot A read 81/81 "present".
+fn centre_changed($ppm, $tol)
+  return patch_changed($ppm, $tol, -60, -60)
+end
+
+-- The 9x9 block centred at (w/2 + ox, h/2 + oy), against the shot's own
+-- background at (10,10). ox/oy are logical px (× $SCALE here).
+fn patch_changed($ppm, $tol, $ox, $oy)
+  $bg = $ppm.off + (10 * $ppm.w + 10) * 3
+  $br = $ppm.bytes[$bg]
+  $bgg = $ppm.bytes[$bg + 1]
+  $bb = $ppm.bytes[$bg + 2]
+  $cx = floor($ppm.w / 2) + round($ox * $SCALE)
+  $cy = floor($ppm.h / 2) + round($oy * $SCALE)
+  $n = 0
+  for each $dy in [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+    for each $dx in [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+      $at = $ppm.off + (($cy + $dy) * $ppm.w + ($cx + $dx)) * 3
+      $r = $ppm.bytes[$at]
+      $g = $ppm.bytes[$at + 1]
+      $bl = $ppm.bytes[$at + 2]
+      if abs($r - $br) > $tol or abs($g - $bgg) > $tol or abs($bl - $bb) > $tol then
+        $n = $n + 1
+      end
+    end
+  end
+  return $n
+end
+
+-- How many pixels of the 9x9 block centred at (w/2 + ox, h/2 + oy) differ by
+-- more than `tol` in any channel between two shots of the same size.
+fn patch_diff($p1, $p2, $tol, $ox, $oy)
+  $cx = floor($p1.w / 2) + round($ox * $SCALE)
+  $cy = floor($p1.h / 2) + round($oy * $SCALE)
+  $n = 0
+  for each $dy in [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+    for each $dx in [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+      $at1 = $p1.off + (($cy + $dy) * $p1.w + ($cx + $dx)) * 3
+      $at2 = $p2.off + (($cy + $dy) * $p2.w + ($cx + $dx)) * 3
+      $d = 0
+      for each $c in [0, 1, 2]
+        if abs($p1.bytes[$at1 + $c] - $p2.bytes[$at2 + $c]) > $tol then
+          $d = 1
+        end
+      end
+      $n = $n + $d
+    end
+  end
+  return $n
+end
+
+-- The log tails a FAIL prints, so a compd panic shows in the gate output.
+fn tails()
+  for each $f in ["compositor.log", "client.log", "weston.log"]
+    $p = $logs .. "/" .. $f
+    if exists($p) then
+      print("--- tail " .. $f)
+      print(run_argv(["tail", "-25", $p]).stdout)
+    end
+  end
+end
+
+fn fail($why, $pids)
+  stop($pids)
+  print("FAIL: " .. $why)
+  tails()
+  print("logs: " .. $logs)
+  exit(1)
+end
+
+-- host + compd
+$host = $SCALE == 1 ? ["--width=1920", "--height=1080"] : ["--width=3840", "--height=2160"]
+$wp = spawn([$weston, "--backend=headless", "--renderer=pixman", "--socket=wl-host", $host[0], $host[1], "--idle-time=0"], {env: {XDG_RUNTIME_DIR: $run_dir}, stdout: {file: $logs .. "/weston.log"}, stderr: "stdout", detach: true})
+$t = 0
+while not exists($run_dir .. "/wl-host") and $t < 50
+  sleep(0.2)
+  $t = $t + 1
+end
+if not exists($run_dir .. "/wl-host") then
+  stop([$wp])
+  eprint("weston host socket never appeared")
+  exit(2)
+end
+$before = sockets($run_dir)
+$compd_argv = [$bin, "--config-file=" .. $config]
+if $SCALE != 1 then
+  push($compd_argv, "--scale=" .. to_string($SCALE))
+end
+mkdir($run_dir .. "/var", {parents: true})
+$cp = spawn($compd_argv, {env: {MIXOS_VAR: $run_dir .. "/var", XDG_RUNTIME_DIR: $run_dir, LIBGL_ALWAYS_SOFTWARE: "1", WAYLAND_DISPLAY: "wl-host", COMPD_FRAME_TRACE: "1", COMPD_FRAME_TRACE_FILE: $TRACE, COMPD_FRAME_TRACE_LIMIT: "0"}, stdout: {file: $logs .. "/compositor.log"}, stderr: "stdout", detach: true})
+$sock = nil
+$t = 0
+while $sock == nil and $t < 100
+  sleep(0.2)
+  $t = $t + 1
+  for each $s in sockets($run_dir)
+    if not contains($before, $s) and $s != "wl-host" then
+      $sock = $s
+    end
+  end
+  if not alive($cp) then
+    stop([$wp])
+    eprint("compd exited during startup")
+    exit(2)
+  end
+end
+if $sock == nil then
+  stop([$cp, $wp])
+  eprint("compd created no Wayland socket within 20 s")
+  exit(2)
+end
+sleep(2)
+$kenv = {XDG_RUNTIME_DIR: $run_dir, WAYLAND_DISPLAY: $sock}
+
+fn capture_shot($name, $kenv, $extra)
+  $path = $logs .. "/" .. $name .. ".ppm"
+  $argv = [$shot, $path]
+  for each $x in $extra
+    push($argv, $x)
+  end
+  $r = run_argv($argv, {env: $kenv, timeout: 20})
+  return {rc: $r.exit_code, out: trim($r.stdout), err: trim($r.stderr), path: $path}
+end
+
+-- I1: nothing renders while nothing is owed.
+$f0 = frames_now()
+sleep(5)
+$idle_frames = frames_now() - $f0
+if $idle_frames != 0 then
+  fail("I1: " .. to_string($idle_frames) .. " frames in 5 s with no copy pending (static screen)", [$cp, $wp])
+end
+
+-- A: the negative control, and I2.
+$f1 = frames_now()
+$a = capture_shot("a-before", $kenv, [])
+sleep(0.5)
+$copy_frames = frames_now() - $f1
+if $a.rc != 0 then
+  fail("shot A: testkit-screenshot exit " .. to_string($a.rc) .. ": " .. $a.err, [$cp, $wp])
+end
+if $copy_frames < 1 or $copy_frames > 2 then
+  fail("I2: one copy on a static screen caused " .. to_string($copy_frames) .. " frames (want 1-2)", [$cp, $wp])
+end
+$pa = load_ppm($a.path)
+if $pa == nil then
+  fail("shot A is not a PPM", [$cp, $wp])
+end
+-- The capture is physical, the 1280x800 logical
+-- output times S (this gate has no Bus to read `outputs.*.scale` from; the
+-- shot's size is the same proof from the pixels' side).
+if $pa.w != round(1280 * $SCALE) or $pa.h != round(800 * $SCALE) then
+  fail("shot A is " .. to_string($pa.w) .. "x" .. to_string($pa.h) .. ", want " .. to_string(round(1280 * $SCALE)) .. "x" .. to_string(round(800 * $SCALE)) .. " (1280x800 at scale " .. to_string($SCALE) .. ")", [$cp, $wp])
+end
+$changed_a = centre_changed($pa, 6)
+$tail_off = patch_changed($pa, 6, 6, 16)
+$box_off = patch_changed($pa, 6, 0, 0)
+
+-- A1: the same static screen, cursor requested.
+$a1 = capture_shot("a1-cursor", $kenv, ["--cursor"])
+if $a1.rc != 0 then
+  fail("shot A1: testkit-screenshot exit " .. to_string($a1.rc) .. ": " .. $a1.err, [$cp, $wp])
+end
+$pa1 = load_ppm($a1.path)
+if $pa1 == nil then
+  fail("shot A1 is not a PPM", [$cp, $wp])
+end
+$cursor_on = patch_diff($pa1, $pa, 6, 6, 16)
+
+-- B: the subject.
+$kp = spawn([$shm], {env: $kenv, stdout: {file: $logs .. "/client.log"}, stderr: "stdout", detach: true})
+sleep(2)
+$b = capture_shot("b-after", $kenv, [])
+stop([$kp])
+if $b.rc != 0 then
+  fail("shot B: testkit-screenshot exit " .. to_string($b.rc) .. ": " .. $b.err, [$cp, $wp])
+end
+$pb = load_ppm($b.path)
+if $pb == nil then
+  fail("shot B is not a PPM", [$cp, $wp])
+end
+$changed_b = centre_changed($pb, 6)
+stop([$cp, $wp])
+
+-- C2: no EGL_BAD_SURFACE in the whole run (the window surface left not
+-- current: a failed swap, or a buffer-age query refused before the next bind).
+$egl_errors = []
+for each $line in lines(read_file($logs .. "/compositor.log"))
+  if contains($line, "BAD_SURFACE") then
+    push($egl_errors, $line)
+  end
+end
+
+$present_a = $changed_a >= 40
+$present_b = $changed_b >= 40
+$result = {scale: $SCALE, size: [$pa.w, $pa.h], idle_frames_5s: $idle_frames, copy_frames: $copy_frames,
+  centre_changed_a: $changed_a, centre_changed_b: $changed_b,
+  egl_bad_surface: len($egl_errors),
+  cursor_tail_overlay_0: $tail_off, cursor_box_overlay_0: $box_off, cursor_tail_a1_vs_a: $cursor_on,
+  negative_control_absent: not $present_a, subject_present: $present_b, logs: $logs}
+if $as_json then
+  print(json_encode($result))
+else
+  print("size " .. to_string($pa.w) .. "x" .. to_string($pa.h) .. "; idle frames in 5 s: " .. to_string($idle_frames) .. "; frames for one copy: " .. to_string($copy_frames))
+  print("A (before the client): " .. to_string($changed_a) .. "/81 centre pixels off the clear colour")
+  print("B (with the client):   " .. to_string($changed_b) .. "/81 centre pixels off the clear colour")
+  print("cursor: arrow tail " .. to_string($cursor_on) .. "/81 differ between A1 (overlay_cursor=1) and A; in A, tail " .. to_string($tail_off) .. "/81 and pointer " .. to_string($box_off) .. "/81 off the background")
+end
+if $cursor_on == 0 then
+  print("FAIL: C1: shots with and without the cursor are identical on the arrow tail — the block is not where the cursor is, so C0 proves nothing")
+  tails()
+  exit(1)
+end
+if len($egl_errors) > 0 then
+  print("FAIL: C2: " .. to_string(len($egl_errors)) .. " EGL_BAD_SURFACE line(s) in compositor.log, first: " .. $egl_errors[0])
+  tails()
+  exit(1)
+end
+if $tail_off != 0 or $box_off != 0 then
+  print("FAIL: C0: a cursor is in a copy that asked for none (overlay_cursor=0): arrow tail " .. to_string($tail_off) .. "/81, pointer " .. to_string($box_off) .. "/81")
+  tails()
+  exit(1)
+end
+if $present_a then
+  print("FAIL: the negative control reads as 'subject present' — the gate cannot fail")
+  tails()
+  exit(1)
+end
+if not $present_b then
+  print("FAIL: the client is not in the captured frame")
+  tails()
+  exit(1)
+end
+print("PASS: screencopy reads the live picture (control absent, subject present); overlay_cursor honoured; idle holds")
+$CLEANUP.ok = true
+exit(0)
+finally
+  $scratch.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

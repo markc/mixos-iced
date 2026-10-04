@@ -1,0 +1,645 @@
+#!/usr/bin/env mix
+-- version: 0.2.0
+-- comp_workspaces_gate.mix — acceptance gate for workspaces (virtual
+-- desktops), against a PRIVATE nested compd on its own headless weston host
+-- (nested_host_lib).
+--
+--   mix tests/desktop/comp_workspaces_gate.mix [--bin PATH] --config-file PATH [--probe PATH] [--pprobe PATH]
+--
+-- Defaults: compd /opt/compd/bin/compd, probes from compd's bin dir (beside
+-- a compd --bin, then /opt/compd/bin). Rule 10 (EWMH) needs xmessage and
+-- xdotool.
+--
+-- Contract under test (the workspaces contract): the
+-- props (workspaces.count / workspaces.current / workspaces.list /
+-- windows.s<id>.workspace; the per-output workspaces.o_<slug>.current is
+-- NOT read here — one nested output — and is owed to the core's tests), the verbs
+-- (comp.workspace.switch, comp.window.send_to_workspace, the windows.list
+-- workspace filter, focus-switches-first) and the numbered behaviour rules.
+-- Each rule is one or more PASS/FAIL lines; the run ends with one summary
+-- line and exits non-zero if anything failed. The nested compd, its probes
+-- and its socket are always torn down.
+--
+-- Against a compositor without workspaces every workspace line FAILS on the
+-- missing prop/verb, which is this gate's proof that it can fail. Every line
+-- that could pass on a missing verb or a nil id has been tightened. The X11
+-- rule (10) is SKIPPED, not failed, when the compositor publishes no
+-- `xwayland.display`.
+--
+-- --bin/--probe/--pprobe name a build instead of the installed binaries.
+-- --probe is testkit-input-probe (--title, --app-id, --size, --seconds);
+-- --pprobe is testkit-presentation-probe, whose --callbacks-only mode is the
+-- only client that reports frame-callback delivery, which rule 9 needs.
+--
+-- Mix facts this file leans on: type() names are lowercase ("map",
+-- "string", "number", "nil"); comp.props.get replies with the BARE leaf
+-- (a number, a bool, a string), not a wrapper; prop writes and switches are
+-- asynchronous to the caller, so every read after a verb is a bounded wait.
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+
+$KIND = "compd"
+$CONFIG = ""
+$ENV = {}
+$SOFTWARE = false
+$COMP = ""
+$PROBE = ""
+$PPROBE = ""
+$USAGE = "usage: comp_workspaces_gate.mix [--bin PATH] --config-file PATH [--probe PATH] [--pprobe PATH] [--env NAME=VALUE ...] [--software]"
+$argv = args()
+$i = 0
+while $i < len($argv)
+  $flag = $argv[$i]
+  if $flag == "--bin" and $i + 1 < len($argv) then
+    $COMP = $argv[$i + 1]
+    $i = $i + 2
+  elif $flag == "--config-file" and $i + 1 < len($argv) then
+    $CONFIG = $argv[$i + 1]
+    $i = $i + 2
+  elif $flag == "--env" and $i + 1 < len($argv) and contains($argv[$i + 1], "=") then
+    $kv = split_once($argv[$i + 1], "=")
+    $ENV[$kv[0]] = $kv[1]
+    $i = $i + 2
+  elif $flag == "--software" then
+    $SOFTWARE = true
+    $i = $i + 1
+  elif $flag == "--probe" and $i + 1 < len($argv) then
+    $PROBE = $argv[$i + 1]
+    $i = $i + 2
+  elif $flag == "--pprobe" and $i + 1 < len($argv) then
+    $PPROBE = $argv[$i + 1]
+    $i = $i + 2
+  else
+    print($USAGE)
+    exit(2)
+  end
+end
+
+$comp = $n.require_binary("compd", $COMP, ["/opt/compd/bin"])
+$probe = $n.require_probe("testkit-input-probe", $PROBE, $comp)
+$pprobe = $n.require_probe("testkit-presentation-probe", $PPROBE, $comp)
+$CLEANUP.run = $n.new_run(env("TMPDIR", "/tmp") .. "/" .. $KIND .. "-ws-" .. to_string(pid()))
+$log_dir = $CLEANUP.run.path
+$stamp = to_string(pid())
+$out_a = $log_dir .. "/comp-ws-gate-a." .. $stamp .. ".log"
+$out_b = $log_dir .. "/comp-ws-gate-b." .. $stamp .. ".log"
+$out_c = $log_dir .. "/comp-ws-gate-c." .. $stamp .. ".log"
+$out_p1 = $log_dir .. "/comp-ws-gate-p1." .. $stamp .. ".log"
+$out_p2 = $log_dir .. "/comp-ws-gate-p2." .. $stamp .. ".log"
+
+-- The tally lives in a map: a fn can mutate an entry of an outer map,
+-- where a plain `$count = $count + 1` would bind a silent local.
+$TALLY = {pass: 0, fail: 0, skip: 0}
+fn check($name, $ok, $detail)
+  if $ok then
+    print("  PASS " .. $name)
+    $TALLY["pass"] = $TALLY["pass"] + 1
+  else
+    print("  FAIL " .. $name .. ": " .. to_string($detail))
+    $TALLY["fail"] = $TALLY["fail"] + 1
+  end
+  return $ok
+end
+fn skip($name, $why)
+  print("  SKIP " .. $name .. ": " .. $why)
+  $TALLY["skip"] = $TALLY["skip"] + 1
+end
+
+$session = $n.start({bin: $comp, tag: "ws", run: $CLEANUP.run, config: $CONFIG, env: $ENV, software: $SOFTWARE})
+if not $n.wait_ready($session, 30) then
+  print("  ERROR: nested " .. $KIND .. " did not answer " .. $session["service"] .. ".comp.ping (log " .. $session["log"] .. ")")
+  $n.stop($session)
+  exit(1)
+end
+$svc = $session["service"]
+print("nested " .. $KIND .. " (" .. $comp .. "): socket " .. $session["socket"] ..
+  ", service " .. $svc)
+
+fn call($verb, $args)
+  return $n.call($svc, $verb, $args)
+end
+
+-- A refusal's reason code, or "" for a success / an undecodable body.
+fn reason($r)
+  if $r["rc"] == 0 then
+    return ""
+  end
+  if type($r["result"]) == "map" then
+    return to_string($r["result"]["reason"] ?? $r["result"]["error"] ?? "")
+  end
+  return to_string($r["result"])
+end
+
+-- A verb reply that is a map, or nil.
+fn map_of($r)
+  if $r["rc"] != 0 or type($r["result"]) != "map" then
+    return nil
+  end
+  return $r["result"]
+end
+
+-- A prop read: comp.props.get answers the BARE leaf. {ok, value, detail}.
+fn prop($path)
+  $r = call("comp.props.get", {path: $path})
+  if $r["rc"] != 0 then
+    return {ok: false, value: nil, detail: "rc=" .. to_string($r["rc"]) .. " " .. to_string($r["result"])}
+  end
+  return {ok: true, value: $r["result"], detail: ""}
+end
+
+fn set_prop($path, $value)
+  $r = call("comp.props.set", {path: $path, value: $value})
+  return $r["rc"] == 0
+end
+
+fn sleep_ms($ms)
+  $_ = run_argv(["sleep", to_string($ms / 1000)])
+end
+
+-- Wait up to $ms for a prop to read $want; returns the last value read.
+-- Props settle asynchronously after a verb reply, so a bare read after a
+-- verb is a race the gate must not encode.
+fn wait_prop($path, $want, $ms)
+  $deadline = time() + $ms / 1000
+  $last = nil
+  while true
+    $p = prop($path)
+    $last = $p["value"]
+    if $p["ok"] and $last == $want then
+      return $last
+    end
+    if time() >= $deadline then
+      return $last
+    end
+    sleep_ms(150)
+  end
+end
+
+fn probe_env($session)
+  return {WAYLAND_DISPLAY: $session["socket"], XDG_RUNTIME_DIR: $session["runtime"]}
+end
+
+fn spawn_probe($probe, $session, $title, $app_id, $out)
+  $argv = [$probe, "--title", $title, "--app-id", $app_id, "--size", "300x200", "--seconds", "120"]
+  return spawn($argv, {env: probe_env($session), stdout: {file: $out},
+    stderr: {file: $out .. ".err"}})
+end
+
+fn wait_window($app_id, $until, $timeout)
+  return call("comp.window.wait",
+    {match: {app_id: $app_id}, until: $until, timeout_ms: $timeout})
+end
+
+-- The window row for an app_id from comp.windows.list, or nil.
+fn window_of($app_id)
+  $m = map_of(call("comp.windows.list", {app_id: $app_id}))
+  if $m == nil then
+    return nil
+  end
+  $rows = $m["windows"] ?? []
+  if len($rows) == 0 then
+    return nil
+  end
+  return $rows[0]
+end
+
+fn ids_of($r)
+  $out = []
+  $m = map_of($r)
+  if $m != nil then
+    for each $row in ($m["windows"] ?? [])
+      push($out, $row["app_id"])
+    end
+  end
+  return $out
+end
+
+-- Field of a row, or nil when the row is nil (a nil id must never compare
+-- equal to anything a correct compositor answers).
+fn field($row, $name)
+  if $row == nil then
+    return nil
+  end
+  return $row[$name]
+end
+
+-- The presentation probe's --callbacks-only run: N frame callbacks, or a
+-- timeout. Returns the spawn pid; the result is read from its log.
+fn spawn_callbacks_probe($pprobe, $session, $frames, $timeout_s, $out)
+  $argv = [$pprobe, "--callbacks-only", "--frames", to_string($frames), "--timeout-s", to_string($timeout_s)]
+  return spawn($argv, {env: probe_env($session), stdout: {file: $out},
+    stderr: {file: $out .. ".err"}})
+end
+
+-- Wait until a probe's log contains $needle; returns the seconds it took, or
+-- nil at the deadline. Polls the LOG, never the pid: a spawned child stays
+-- a zombie until reaped, so `kill -0` keeps succeeding after it has exited
+-- (this exact false FAIL was seen on the first wiring run).
+fn wait_log($path, $needle, $ms)
+  $t0 = time()
+  $deadline = $t0 + $ms / 1000
+  while true
+    if contains(log_text($path), $needle) then
+      return time() - $t0
+    end
+    if time() >= $deadline then
+      return nil
+    end
+    sleep_ms(200)
+  end
+end
+
+fn log_text($path)
+  if not exists($path) then
+    return ""
+  end
+  return read_file($path)
+end
+
+$pids = []
+try
+  -- ── 1. defaults and writability ───────────────────────────────────────
+  print("== 1: workspaces.count defaults to 4; workspaces.current starts at 1; both writable")
+  $count = prop("workspaces.count")
+  check("workspaces.count readable", $count["ok"], $count["detail"])
+  check("workspaces.count == 4", $count["value"] == 4, to_string($count["value"]))
+  $cur = prop("workspaces.current")
+  check("workspaces.current == 1", $cur["ok"] and $cur["value"] == 1, $cur["detail"] .. to_string($cur["value"]))
+  $wl = prop("workspaces.list")
+  check("workspaces.list is a list of 4", $wl["ok"] and type($wl["value"]) == "list" and len($wl["value"]) == 4, to_string($wl["value"]))
+  check("workspaces.count writable (4 -> 3 -> 4)",
+    set_prop("workspaces.count", 3) and wait_prop("workspaces.count", 3, 2000) == 3 and
+    set_prop("workspaces.count", 4) and wait_prop("workspaces.count", 4, 2000) == 4, "")
+  check("workspaces.current writable (1 -> 2 -> 1)",
+    set_prop("workspaces.current", 2) and wait_prop("workspaces.current", 2, 2000) == 2 and
+    set_prop("workspaces.current", 1) and wait_prop("workspaces.current", 1, 2000) == 1, "")
+  $bad = call("comp.workspace.switch", {index: 9})
+  check("switch to an index past count is refused invalid_value", $bad["rc"] != 0 and reason($bad) == "invalid_value", reason($bad))
+  $bad0 = call("comp.workspace.switch", {index: 0})
+  check("switch to index 0 is refused (1-based)", $bad0["rc"] != 0 and reason($bad0) != "unknown_verb", reason($bad0))
+
+  -- ── 2. a new window joins the current workspace ───────────────────────
+  print("== 2: a new window joins the current workspace")
+  push($pids, spawn_probe($probe, $session, "ws-a", "dev.mixos.WsA", $out_a))
+  $wa = wait_window("dev.mixos.WsA", "visible", 15000)
+  check("probe A mapped and visible", $wa["rc"] == 0, to_string($wa["result"]))
+  $a = window_of("dev.mixos.WsA")
+  $a_id = field($a, "id")
+  $a_gen = field($a, "generation")
+  check("A row carries workspace == 1", $a != nil and field($a, "workspace") == 1, to_string($a))
+  check("A has an id and a generation", $a_id != nil and $a_gen != nil, to_string($a))
+  $a_ws = prop("windows.s" .. to_string($a_id) .. ".workspace")
+  check("A on workspace 1 (prop)", $a_id != nil and $a_ws["ok"] and $a_ws["value"] == 1, $a_ws["detail"] .. to_string($a_ws["value"]))
+
+  -- ── 3. switching away hides without minimising; back restores ─────────
+  print("== 3: switch away = visible:false minimized:false; switch back = visible")
+  $sw = map_of(call("comp.workspace.switch", {index: 2}))
+  check("switch {index:2} answers {from:1,to:2}", $sw != nil and $sw["from"] == 1 and $sw["to"] == 2, to_string($sw))
+  check("workspaces.current == 2", wait_prop("workspaces.current", 2, 2000) == 2, "")
+  $vis = wait_prop("windows.s" .. to_string($a_id) .. ".visible", false, 3000)
+  $min = prop("windows.s" .. to_string($a_id) .. ".minimized")
+  check("A hidden but not minimised", $a_id != nil and $vis == false and $min["ok"] and $min["value"] == false,
+    "visible=" .. to_string($vis) .. " minimized=" .. to_string($min["value"]))
+  $wv = wait_window("dev.mixos.WsA", "visible", 1500)
+  check("F1.9: window.wait until:visible times out while off-workspace", $wv["rc"] != 0 and reason($wv) != "unknown_verb", reason($wv))
+  $back = map_of(call("comp.workspace.switch", {index: 1}))
+  check("switch back to 1", $back != nil and $back["to"] == 1, to_string($back))
+  -- Only meaningful if A was actually hidden first: a compositor that never
+  -- hides would otherwise pass this on a window that never went away.
+  check("A visible again", $vis == false and $back != nil and
+    wait_prop("windows.s" .. to_string($a_id) .. ".visible", true, 3000) == true, "hidden=" .. to_string($vis == false))
+
+  -- ── 4. windows.list workspace filter ──────────────────────────────────
+  print("== 4: windows.list {workspace} filter")
+  $_ = call("comp.workspace.switch", {index: 2})
+  $_ = wait_prop("workspaces.current", 2, 2000)
+  push($pids, spawn_probe($probe, $session, "ws-b", "dev.mixos.WsB", $out_b))
+  $wb = wait_window("dev.mixos.WsB", "visible", 15000)
+  check("probe B mapped (rc only; its workspace is the next line)", $wb["rc"] == 0, to_string($wb["result"]))
+  $b = window_of("dev.mixos.WsB")
+  $b_id = field($b, "id")
+  $b_gen = field($b, "generation")
+  check("B row says workspace 2", $b != nil and field($b, "workspace") == 2, to_string($b))
+  $cur_ids = ids_of(call("comp.windows.list", {workspace: "current"}))
+  $all_ids = ids_of(call("comp.windows.list", {}))
+  $two_ids = ids_of(call("comp.windows.list", {workspace: 2}))
+  check("list {workspace:current} = only B",
+    contains($cur_ids, "dev.mixos.WsB") and not contains($cur_ids, "dev.mixos.WsA"), to_string($cur_ids))
+  check("list {workspace:2} = only B",
+    contains($two_ids, "dev.mixos.WsB") and not contains($two_ids, "dev.mixos.WsA"), to_string($two_ids))
+  check("list {} (all) = A and B",
+    contains($all_ids, "dev.mixos.WsA") and contains($all_ids, "dev.mixos.WsB"), to_string($all_ids))
+
+  -- ── 5. move without switching; send with follow ───────────────────────
+  print("== 5: prop write moves without switching; send_to_workspace {follow} switches")
+  check("write windows.s<B>.workspace = 3", $b_id != nil and set_prop("windows.s" .. to_string($b_id) .. ".workspace", 3), "")
+  check("B reads workspace 3", wait_prop("windows.s" .. to_string($b_id) .. ".workspace", 3, 2000) == 3, "")
+  check("still on workspace 2 after the move", prop("workspaces.current")["value"] == 2, "")
+  check("B now hidden", wait_prop("windows.s" .. to_string($b_id) .. ".visible", false, 3000) == false, "")
+  $mv = map_of(call("comp.window.send_to_workspace", {id: $b_id, generation: $b_gen, index: 4, follow: true}))
+  check("send_to_workspace {follow} answers index 4", $mv != nil and $mv["index"] == 4, to_string($mv))
+  check("followed to workspace 4", $mv != nil and wait_prop("workspaces.current", 4, 2000) == 4, "")
+  check("B visible on 4", $mv != nil and wait_prop("windows.s" .. to_string($b_id) .. ".visible", true, 3000) == true, "moved=" .. to_string($mv != nil))
+  $stale = call("comp.window.send_to_workspace", {id: $b_id, generation: 999999, index: 1})
+  check("send_to_workspace with a wrong generation is refused", $stale["rc"] != 0 and reason($stale) != "unknown_verb", reason($stale))
+
+  -- ── 6. focus switches to the window's workspace, never pulls it ───────
+  print("== 6: focus on an off-workspace window switches first")
+  $fo = call("comp.window.focus", {id: $a_id, generation: $a_gen})
+  check("focus A (on 1) from 4 succeeds", $a_id != nil and $fo["rc"] == 0, reason($fo))
+  check("current is now 1", wait_prop("workspaces.current", 1, 2000) == 1, "")
+  check("A still on workspace 1", prop("windows.s" .. to_string($a_id) .. ".workspace")["value"] == 1, "")
+  -- focus.keyboard is the focused window's numeric id (bare leaf): compare
+  -- exactly, never by substring ("1" would match "12").
+  $fk = prop("focus.keyboard")
+  check("keyboard focus is A", $a_id != nil and $fk["ok"] and $fk["value"] != nil and
+    to_number($fk["value"]) == to_number($a_id), to_string($fk["value"]))
+
+  -- ── 7. next/prev wrap; wrap:false refuses at_end ──────────────────────
+  print("== 7: next/prev wrap at the ends; wrap:false refuses at_end")
+  $p = map_of(call("comp.workspace.switch", {index: "prev"}))
+  check("prev from 1 wraps to 4", $p != nil and $p["to"] == 4, to_string($p))
+  $nx = map_of(call("comp.workspace.switch", {index: "next"}))
+  check("next from 4 wraps to 1", $nx != nil and $nx["to"] == 1, to_string($nx))
+  $nw = call("comp.workspace.switch", {index: "prev", wrap: false})
+  check("prev from 1 with wrap:false is refused at_end", $nw["rc"] != 0 and reason($nw) == "at_end", reason($nw))
+  check("still on 1", prop("workspaces.current")["value"] == 1, "")
+
+  -- ── 8. restore {} prefers the current workspace's LIFO ───────────────
+  print("== 8: restore {} prefers the most recently minimised window on the current workspace")
+  push($pids, spawn_probe($probe, $session, "ws-c", "dev.mixos.WsC", $out_c))
+  $wc = wait_window("dev.mixos.WsC", "visible", 15000)
+  check("probe C mapped (rc only; its workspace is the next line)", $wc["rc"] == 0, to_string($wc["result"]))
+  $c = window_of("dev.mixos.WsC")
+  $c_id = field($c, "id")
+  $c_gen = field($c, "generation")
+  check("C row says workspace 1", $c != nil and field($c, "workspace") == 1, to_string($c))
+  -- minimise C (on 1) first, then B (on 4) later: global LIFO says B,
+  -- current-workspace LIFO says C.
+  $m1 = call("comp.window.minimize", {id: $c_id, generation: $c_gen})
+  $_ = wait_prop("windows.s" .. to_string($c_id) .. ".minimized", true, 2000)
+  $_ = call("comp.workspace.switch", {index: 4})
+  $_ = wait_prop("workspaces.current", 4, 2000)
+  $m2 = call("comp.window.minimize", {id: $b_id, generation: $b_gen})
+  $_ = wait_prop("windows.s" .. to_string($b_id) .. ".minimized", true, 2000)
+  $_ = call("comp.workspace.switch", {index: 1})
+  $_ = wait_prop("workspaces.current", 1, 2000)
+  check("both minimised", $c_id != nil and $b_id != nil and $m1["rc"] == 0 and $m2["rc"] == 0, reason($m1) .. " " .. reason($m2))
+  $rs = map_of(call("comp.window.restore", {}))
+  check("restore {} picked C (current workspace), not B", $rs != nil and $c_id != nil and $rs["id"] == $c_id, to_string($rs))
+  check("still on workspace 1", prop("workspaces.current")["value"] == 1, "")
+  $rs2 = map_of(call("comp.window.restore", {}))
+  check("second restore {} picks B and switches to 4",
+    $rs2 != nil and $b_id != nil and $rs2["id"] == $b_id and wait_prop("workspaces.current", 4, 2000) == 4, to_string($rs2))
+
+  -- ── 9. frame callbacks stop for an off-workspace client ───────────────
+  print("== 9: an off-workspace client gets no frame callbacks; an on-workspace one does")
+  -- Method: the same callbacks-only run twice. The control stays visible
+  -- and completes N callbacks in T0. The subject is moved off-workspace for
+  -- H seconds and then brought back; if callbacks are withheld while
+  -- hidden it completes in about T0 + H, and if the compositor keeps
+  -- delivering them while hidden it completes in about T0. Asserting
+  -- elapsed >= T0 + 0.8 H cannot pass on a compositor that never stops
+  -- callbacks, and a probe that times out (no summary line) fails both
+  -- ways. N is sized so the control takes several seconds at nested pace
+  -- (~25-40 ms per callback). On the headless host a nested compositor can
+  -- pace as fast as ~4 ms per callback, so T0 can be under a second: the
+  -- control asserts completion
+  -- only, and the H-second hide is what the subject check measures.
+  -- Rule 8 leaves the current workspace at 4: new windows join THAT one,
+  -- and the subject must return to it, not to a literal. Read it.
+  $N = 200
+  $HIDE_S = 6
+  $DONE = "COMPD_PRESENTATION_PROBE CALLBACKS"
+  $ws_home = prop("workspaces.current")["value"]
+  $ws_away = if $ws_home == 3 then 2 else 3 end
+  $p1 = spawn_callbacks_probe($pprobe, $session, $N, 60, $out_p1)
+  push($pids, $p1)
+  $t0 = wait_log($out_p1, $DONE, 60000)
+  check("control: " .. to_string($N) .. " callbacks on the current workspace complete",
+    $t0 != nil and $t0 > 0, "elapsed " .. to_string($t0) .. " s; log: " .. log_text($out_p1 .. ".err"))
+  $p2 = spawn_callbacks_probe($pprobe, $session, $N, 90, $out_p2)
+  push($pids, $p2)
+  $t_start = time()
+  $wp = wait_window("dev.mixos.PresentationProbe", "visible", 10000)
+  $pp = window_of("dev.mixos.PresentationProbe")
+  $pp_id = field($pp, "id")
+  check("subject probe mapped", $wp["rc"] == 0 and $pp_id != nil, to_string($wp["result"]))
+  $hidden = ($pp_id != nil and $ws_home != nil and
+    set_prop("windows.s" .. to_string($pp_id) .. ".workspace", $ws_away) and
+    wait_prop("windows.s" .. to_string($pp_id) .. ".visible", false, 3000) == false)
+  check("subject moved off-workspace by prop write", $hidden, "")
+  sleep_ms($HIDE_S * 1000)
+  $early = contains(log_text($out_p2), $DONE)
+  -- Guarded on the hide having happened: a subject that was never hidden
+  -- and simply has not finished yet must not pass this.
+  check("subject did not finish while hidden", $hidden and not $early,
+    "hidden=" .. to_string($hidden) .. " finished_early=" .. to_string($early))
+  check("subject brought back to the current workspace by prop write", $hidden and
+    set_prop("windows.s" .. to_string($pp_id) .. ".workspace", $ws_home) and
+    wait_prop("windows.s" .. to_string($pp_id) .. ".visible", true, 3000) == true, "home=" .. to_string($ws_home))
+  $t_done = wait_log($out_p2, $DONE, 90000)
+  $elapsed = if $t_done != nil then time() - $t_start else nil end
+  -- Half the hidden time as the margin: the control runs first and pays
+  -- warm-up, so the subject's own baseline can be a little FASTER than
+  -- T0; with H=6 s a non-withholding compositor still lands ~3 s short.
+  check("subject completed after return, delayed by the hidden time",
+    $t0 != nil and $elapsed != nil and $elapsed >= $t0 + 0.5 * $HIDE_S,
+    "control " .. to_string($t0) .. " s, subject " .. to_string($elapsed) .. " s, hidden " .. to_string($HIDE_S) .. " s")
+
+  -- ── 11. count shrink migrates stranded windows ────────────────────────
+  print("== 11: shrinking workspaces.count moves stranded windows to the last one")
+  check("count 4 -> 2", set_prop("workspaces.count", 2) and wait_prop("workspaces.count", 2, 2000) == 2, "")
+  check("B (was on 4) now on 2", wait_prop("windows.s" .. to_string($b_id) .. ".workspace", 2, 3000) == 2, "")
+  -- The clamp is the thing asserted and it settles asynchronously: a
+  -- bounded poll, not one bare read.
+  $clamp_deadline = time() + 3
+  $clamped = prop("workspaces.current")["value"]
+  while ($clamped == nil or $clamped > 2) and time() < $clamp_deadline
+    sleep_ms(150)
+    $clamped = prop("workspaces.current")["value"]
+  end
+  check("current clamped to <= 2", $clamped != nil and $clamped <= 2, to_string($clamped))
+  $_ = set_prop("workspaces.count", 4)
+
+  -- ── 10. X11 EWMH: the root pair, the per-window property, both messages ─
+  -- Every property compd publishes is read back off the X wire here, because
+  -- the offline suite cannot (its X connection is dead and it reads a
+  -- mirror): the root pair after a switch and a count change, and
+  -- _NET_WM_DESKTOP on a real X client (xmessage) at map and after a move.
+  -- The two client messages a pager sends — _NET_WM_DESKTOP (a move) and
+  -- the root _NET_CURRENT_DESKTOP (a switch) — go through xdotool, which
+  -- refuses to send either unless _NET_SUPPORTED advertises the atom, so a
+  -- compositor that dropped the advertisement fails here too.
+  print("== 10: EWMH — root _NET_CURRENT_DESKTOP/_NET_NUMBER_OF_DESKTOPS, per-window _NET_WM_DESKTOP, client messages")
+  $xd = prop("xwayland.display")
+  if not $xd["ok"] or $xd["value"] == nil or to_string($xd["value"]) == "" then
+    skip("10: EWMH", "the compositor publishes no xwayland.display")
+  else
+    $disp = to_string($xd["value"])
+    if not starts_with($disp, ":") then
+      $disp = ":" .. $disp
+    end
+    -- A CARDINAL property read as a number, or nil (absent, or xprop failed).
+    fn x_cardinal($disp, $target, $name)
+      $argv = ["xprop"]
+      if $target == "root" then
+        push($argv, "-root")
+      else
+        push($argv, "-id")
+        push($argv, $target)
+      end
+      push($argv, $name)
+      $r = run_argv($argv, {env: {DISPLAY: $disp}, timeout: 10})
+      $m = re_find($r["stdout"], "= ([0-9]+)")
+      if len($m) == 0 then
+        return nil
+      end
+      return to_number($m[0]["groups"][0])
+    end
+    fn x_current($disp)
+      return x_cardinal($disp, "root", "_NET_CURRENT_DESKTOP")
+    end
+    fn x_count($disp)
+      return x_cardinal($disp, "root", "_NET_NUMBER_OF_DESKTOPS")
+    end
+    -- The last window id in the root's _NET_CLIENT_LIST (the WM-maintained
+    -- list, most recently mapped last), or nil.
+    fn x_last_client($disp)
+      $r = run_argv(["xprop", "-root", "_NET_CLIENT_LIST"], {env: {DISPLAY: $disp}, timeout: 10})
+      $m = re_find($r["stdout"], "0x[0-9a-f]+")
+      if len($m) == 0 then
+        return nil
+      end
+      return $m[len($m) - 1]["match"]
+    end
+    -- The mapped surfaces row whose app_id (the X class) is $class, or nil.
+    -- X11 toplevels have no windows.* row (D11): surfaces.* is where they
+    -- are legible.
+    fn surface_of_class($class)
+      $s = prop("surfaces")
+      if not $s["ok"] or type($s["value"]) != "map" then
+        return nil
+      end
+      for each $k in keys($s["value"])
+        $row = $s["value"][$k]
+        if type($row) == "map" and $row["app_id"] == $class and $row["mapped"] == true then
+          return $row
+        end
+      end
+      return nil
+    end
+    fn wait_surface_of_class($class, $ms)
+      $deadline = time() + $ms / 1000
+      while true
+        $row = surface_of_class($class)
+        if $row != nil or time() >= $deadline then
+          return $row
+        end
+        sleep_ms(150)
+      end
+    end
+    fn xdo($disp, $argv)
+      $r = run_argv(concat(["xdotool"], $argv), {env: {DISPLAY: $disp}, timeout: 10})
+      return $r["ok"] == true
+    end
+
+    -- 10a. The root current tracks switches (0-based).
+    $_ = call("comp.workspace.switch", {index: 2})
+    $_ = wait_prop("workspaces.current", 2, 2000)
+    sleep_ms(300)
+    $x2 = x_current($disp)
+    check("root _NET_CURRENT_DESKTOP == 1 after switch to 2", $x2 == 1, to_string($x2))
+    $_ = call("comp.workspace.switch", {index: 1})
+    $_ = wait_prop("workspaces.current", 1, 2000)
+    sleep_ms(300)
+    $x1 = x_current($disp)
+    check("root _NET_CURRENT_DESKTOP == 0 after switch to 1", $x1 == 0, to_string($x1))
+
+    -- 10b. The root count tracks count changes (rule 11 restored 4).
+    check("workspaces.count back at 4", wait_prop("workspaces.count", 4, 2000) == 4, "")
+    sleep_ms(300)
+    $n4 = x_count($disp)
+    check("root _NET_NUMBER_OF_DESKTOPS == 4", $n4 == 4, to_string($n4))
+    check("count 4 -> 3", set_prop("workspaces.count", 3) and wait_prop("workspaces.count", 3, 2000) == 3, "")
+    sleep_ms(300)
+    $n3 = x_count($disp)
+    check("root _NET_NUMBER_OF_DESKTOPS == 3 after the shrink", $n3 == 3, to_string($n3))
+    check("count 3 -> 4", set_prop("workspaces.count", 4) and wait_prop("workspaces.count", 4, 2000) == 4, "")
+    sleep_ms(300)
+    $n4b = x_count($disp)
+    check("root _NET_NUMBER_OF_DESKTOPS == 4 after the grow", $n4b == 4, to_string($n4b))
+
+    -- 10c. A real X client: _NET_WM_DESKTOP on the wire, and both messages.
+    if which("xmessage") == nil or which("xdotool") == nil then
+      skip("10c: _NET_WM_DESKTOP + client messages", "needs xmessage (xorg-xmessage) and xdotool on this host")
+    else
+      $xm = spawn(["xmessage", "-buttons", "", "compd-ws-gate"],
+        {env: {DISPLAY: $disp}, stdout: {file: $out_c .. ".xmessage"}, stderr: {file: $out_c .. ".xmessage"}})
+      push($pids, $xm)
+      $xrow = wait_surface_of_class("Xmessage", 10000)
+      $xsid = field($xrow, "id")
+      check("xmessage mapped as an X11 toplevel (surfaces row, app_id Xmessage)", $xsid != nil,
+        "no mapped Xmessage row; xmessage log: " .. log_text($out_c .. ".xmessage"))
+      $xid = x_last_client($disp)
+      check("xmessage in the root _NET_CLIENT_LIST", $xid != nil, "")
+      check("its workspace is the current one (1)", field($xrow, "workspace") == 1, to_string(field($xrow, "workspace")))
+      sleep_ms(300)
+      $d0 = if $xid != nil then x_cardinal($disp, $xid, "_NET_WM_DESKTOP") else nil end
+      check("window _NET_WM_DESKTOP == 0 at map", $d0 == 0, to_string($d0))
+      -- The client message move: xdotool sends _NET_WM_DESKTOP to the root
+      -- for the window; compd moves it WITHOUT switching and republishes.
+      $sent = $xid != nil and xdo($disp, ["set_desktop_for_window", $xid, "2"])
+      check("xdotool set_desktop_for_window sent (atom advertised)", $sent, "")
+      $moved = ($sent and $xsid != nil and
+        wait_prop("surfaces.s" .. to_string($xsid) .. ".workspace", 3, 3000) == 3)
+      check("compd moved the window to workspace 3 on the message", $moved, "")
+      check("a move does not switch", prop("workspaces.current")["value"] == 1, to_string(prop("workspaces.current")["value"]))
+      check("window hidden off-workspace", $moved and
+        wait_prop("surfaces.s" .. to_string($xsid) .. ".visible", false, 3000) == false, "")
+      sleep_ms(300)
+      $d2 = if $xid != nil then x_cardinal($disp, $xid, "_NET_WM_DESKTOP") else nil end
+      check("window _NET_WM_DESKTOP == 2 after the move", $d2 == 2, to_string($d2))
+      -- The root client message: a pager's switch.
+      $sent2 = xdo($disp, ["set_desktop", "2"])
+      check("xdotool set_desktop sent (atom advertised)", $sent2, "")
+      check("compd switched to workspace 3 on the root message", $sent2 and
+        wait_prop("workspaces.current", 3, 3000) == 3, to_string(prop("workspaces.current")["value"]))
+      check("the moved window is on screen again", $moved and
+        wait_prop("surfaces.s" .. to_string($xsid) .. ".visible", true, 3000) == true, "")
+      sleep_ms(300)
+      $x3 = x_current($disp)
+      check("root _NET_CURRENT_DESKTOP == 2 after the root message", $x3 == 2, to_string($x3))
+      -- A shrink strands it onto the last workspace and republishes.
+      check("count 4 -> 2 strands the window", set_prop("workspaces.count", 2) and $xsid != nil and
+        wait_prop("surfaces.s" .. to_string($xsid) .. ".workspace", 2, 3000) == 2, "")
+      sleep_ms(300)
+      $d1 = if $xid != nil then x_cardinal($disp, $xid, "_NET_WM_DESKTOP") else nil end
+      check("window _NET_WM_DESKTOP == 1 after the shrink", $d1 == 1, to_string($d1))
+      $_ = set_prop("workspaces.count", 4)
+      $_ = xdo($disp, ["set_desktop", "0"])
+    end
+  end
+catch $e
+  print("  ERROR: " .. to_string($e))
+  $TALLY["fail"] = $TALLY["fail"] + 1
+finally
+  for each $p in $pids
+    $_k = run_argv(["kill", to_string($p)])
+  end
+  $n.stop($session)
+end
+
+print("")
+print("=== WORKSPACES GATE [" .. $KIND .. "]: " .. to_string($TALLY["pass"]) .. " pass, " ..
+  to_string($TALLY["fail"]) .. " fail, " .. to_string($TALLY["skip"]) .. " skip ===")
+print("  probe logs: " .. $out_a .. " " .. $out_b .. " " .. $out_c .. " " .. $out_p1 .. " " .. $out_p2)
+if $TALLY["fail"] > 0 then
+  exit(1)
+end
+$CLEANUP.ok = true
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

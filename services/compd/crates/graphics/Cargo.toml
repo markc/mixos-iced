@@ -1,0 +1,40 @@
+[package]
+name = "graphics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+model = { workspace = true }
+render-gles = { workspace = true }
+slots = { workspace = true }
+gbm = { workspace = true }
+glow = { workspace = true }
+image = { workspace = true }
+pollster = { workspace = true }
+smithay = { workspace = true }
+thiserror = { workspace = true }
+wgpu = { workspace = true }
+zbus = { workspace = true }
+
+[build-dependencies]
+bindgen = { workspace = true, optional = true }
+cc = { workspace = true, optional = true }
+pkg-config = { workspace = true, optional = true }
+
+[features]
+# Q-K / D11: link libav for hardware video capture (VA-API, NVENC). Off by
+# default; without it the encoders refuse to start and nothing links ffmpeg.
+capture-ffmpeg = ["dep:bindgen", "dep:cc", "dep:pkg-config"]

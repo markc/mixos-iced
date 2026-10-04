@@ -1,0 +1,28 @@
+[package]
+name = "screencopy"
+description = "wlr-screencopy v3 for compd: protocol state on the real Dispatch, damage-driven copies serviced by the backends after they render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+comp-model = { workspace = true }
+dispatcher = { workspace = true }
+ledger = { workspace = true }
+model = { workspace = true }
+protocols = { workspace = true }
+image = { workspace = true }
+serde_json = { workspace = true }
+smithay = { workspace = true }

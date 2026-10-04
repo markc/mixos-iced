@@ -1,0 +1,35 @@
+[package]
+name = "decor"
+description = "Server-side window chrome for compd: chrome layout and hit-testing, themed from the design tokens, drawn as scene elements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Title shaping and glyph rasterisation: cosmic-text through iced's shared
+# font system (the fonts compd already loaded, the embedded Inter included).
+iced_graphics = { workspace = true }
+# The decoration mode a toplevel negotiated (`wayland::xdg::decoration::mode`).
+dispatcher = { workspace = true }
+# The decorations_ssd preference cell.
+model = { workspace = true }
+# The X11 decoration rule as a pure fn.
+policy = { workspace = true }
+# The mandated token source (theme.conf.mix), with its compiler.
+design = { workspace = true }
+# The shared selection-only theme file is strict Mix data.
+config = { workspace = true }
+libc = { workspace = true }
+smithay = { workspace = true }

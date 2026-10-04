@@ -1,0 +1,24 @@
+[package]
+name = "outputs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+dispatcher = { workspace = true }
+model = { workspace = true }
+render-gles = { workspace = true }
+scenegraph = { workspace = true }
+world = { workspace = true }
+smithay = { workspace = true }

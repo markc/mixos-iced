@@ -1,0 +1,3208 @@
+-- nested_smoke.mix — headless runtime smoke for compd on a build worker.
+-- version: 0.43.1
+--
+--   mix tests/desktop/nested_smoke.mix <compositor-binary> [--secs N] [--config-file PATH]
+--       [--bus [--watch-script PATH] [--truth-self-test] [--layer-client PATH]]
+--       [--scale S]
+--
+-- `--scale S` runs compd's nested output at S: compd is
+-- passed `--scale=S` (its window then asks for 1280x800 × S physical, so the
+-- output is 1280x800 LOGICAL at any S) and the weston host grows to
+-- 3840x2160 to hold it, so every fixed logical coordinate below (up to
+-- 800,550) means what it does at 1.0. Input and truth are logical; the pixel checks
+-- read edge or centre pixels, which do not move with S. Without it (or S = 1)
+-- the run is exactly the 1.0 smoke.
+--   (compd needs a settings file: tests/desktop/smoke-settings.json)
+--
+-- Runs entirely without a display: weston (headless backend, pixman renderer)
+-- is the host Wayland compositor; the compositor under test runs NESTED inside
+-- it on Mesa's software GL (LIBGL_ALWAYS_SOFTWARE=1); weston-simple-shm then
+-- runs as a client INSIDE the compositor under test. Intended for headless
+-- build workers (no DRM), never for a live desktop.
+--
+-- PASS requires all of:
+--   1. the compositor under test creates its own Wayland socket;
+--   2. it is still alive after the settle time;
+--   3. weston-simple-shm connects to it and runs for the client window
+--      (it is killed by us, never exits on its own with an error first);
+--   4. the compositor under test is still alive after the client ran.
+--
+-- --bus (compd only; needs a running noded on this host) additionally gates
+-- the native `comp` Bus service:
+--   5. compd registers a private service (`compd-smoke-<pid>`, never `comp` or
+--      `comp-nested`, so a live compositor is never displaced) and answers
+--      `comp.ping` with {pong: true};
+--   6. `comp.info` names that service, backend `nested`, engine `gles`, a
+--      non-empty version, and numeric counters;
+--   7. while weston-simple-shm runs, `comp.info` counts at least one surface
+--      more than before it started (the registry saw its toplevel), and after
+--      the client is killed the count drops back to that baseline;
+--   8. with the client mapped, `comp.windows.list` returns one row more than
+--      before, with a numeric {id, generation} and a non-empty app_id or title;
+--      `surfaces.s<id>.mapped` is true; `focus.window.id` names it (compd focuses
+--      a window when it maps); `comp.window.wait` {until: mapped}
+--      answers with that window; after the client is killed the row is gone and
+--      `comp.window.wait` {until: gone} answers with a null window;
+--   8b. presentation ledger (batch D): with the client mapped and drawing,
+--      comp.window.wait {until: presented} answers; comp.window.stats has
+--      presented >= 2, an interval p50 and an intervals_us sample list;
+--      windows.s<id>.presentation.presented is at least that; an output's
+--      presentation.frames >= 2; comp.window.stats.reset answers reset window
+--      and the count restarts; a {source} target is refused unknown_source;
+--      the count increases over a further second of drawing. 14i also waits
+--      {until: presented} on eventdemo's fresh map. An injected human key
+--      gives the window an input_to_present_p50_us.
+--   9. it still answers `comp.ping` after the client ran;
+--  10. observation topics: a subscriber (tests/desktop/bus_watch.mix, started before the
+--      client) sees `surface.mapped` and `focus.changed` naming the window when
+--      it maps, `surface.unmapped` after the kill, a `props.changed` for its
+--      surfaces row under `comp.props.watch`, and `event_seq` strictly
+--      increasing across everything it received. props.changed causes are
+--      per source: the window's rows carry wayland.map / wayland.focus,
+--      the workspace switch workspace.switch, a props.set props.set.
+--  11. Bus truth: before the client, with it mapped, and after it is gone, the
+--      Bus view (comp.windows.list rows, focus.window, focus.keyboard,
+--      comp.info surface_count) equals `compd.truth` (CompState read directly,
+--      not through the projection) at one content revision: the reads are
+--      bracketed by two truth calls that must report the same revision. The
+--      truth's own engine half must agree too (the drawn toplevels and live
+--      keyboard focus). Any divergence fails with both sides printed.
+--      The view and the truth also carry each window's workspace and visible
+--      flag, the workspaces model {count, current}, and the corner
+--      configuration (input.corners.* against compd.truth `corners`).
+--  11b. corners: input.corners.holders reads true (the holder plane);
+--      props.set input.corners.dwell_ms 350 answers {old: 200, new: 350} and
+--      the view equals truth; deadzone_px 300 is refused invalid_value,
+--      holders read_only; dwell_ms goes back to 200. (Live corner topics need
+--      pointer injection: 14c.)
+--  11c. `decoration` equals compd.truth's chrome block (ssd_enabled,
+--      the installed style, else mac) and props.set decoration.style is
+--      refused read_only; `xwayland` reads enabled true with persist_path
+--      <run dir>/etc/comp/xwayland-enabled.<socket> (compd runs with
+--      MIXOS_ETC in the run dir), a set false answers {old true, new false,
+--      persisted true} and the file reads false, a string value is refused
+--      invalid_value, a set true restores it; `dmabuf` has numeric accepted /
+--      failed and a failures list (counts printed, not gated: the clients
+--      are shm).
+--  12. workspaces: with the client mapped, comp.workspace.switch to 2 hides it
+--      (surfaces.s<id>.visible false), it then gets no frame callbacks (its
+--      commit count in compd.truth stays put for 1.5 s), and the view still
+--      equals truth; switching back shows it again and its commits resume.
+--  13. minimise / restore: comp.window.minimize hides the client (visible
+--      false, commits held), comp.window.restore shows it again (commits
+--      resume); the view equals truth after each.
+--  14. maximise / unmaximise: comp.window.maximize puts the window at the
+--      default output's origin, committed maximised, and the size the client
+--      acked (compd.truth `configured`) is the output's (weston-simple-shm keeps
+--      drawing its own buffer, so the drawn size is not); unmaximize clears it.
+--      Seen on screen too (the camera pinned to identity):
+--      a screencopy at (20,40) shows background before the maximise and the
+--      window's content after it, so the window's corner is the output's
+--      top-left, not the screen centre.
+--      The view equals truth after each.
+--  14b. placement: comp.window.place {x: 40, y: 30} (output-relative) puts the
+--      window's geometry origin there (truth x/y = output origin + 40/30), then
+--      comp.window.place {width: 300, height: 200} configures that size (the
+--      acked `configured` size); the view equals truth after each.
+--  14c. injected input (comp.input.*): the human pointer, moved to
+--      (3, 3) on the default output, dwells into the top-left hot corner
+--      (compd.truth corners.engaged "tl"; the subscriber hears corner.entered)
+--      and leaves it when moved to the middle (corner.left); moved onto the
+--      window and clicked, the click is delivered to it (reply target) and
+--      it holds focus; the agent seat's move onto the window either lands or
+--      is refused agent_seat_unbound (weston-simple-shm binds no wl_seat).
+--  14d. input second half: comp.pointer.watch opens the lease and
+--      the subscriber hears a valid pointer.changed; input.seats names both
+--      seats with the human's last input, input.last_origin is "human";
+--      input.host.passthrough false/true round-trips (an injected move still
+--      lands with it off); a human comp.input.sequence completes. With an
+--      agent-seat client (weston-clickdot / weston-flower bind every
+--      wl_seat), an agent sequence of three zero-delay moves onto it and a
+--      click completes with the moves coalesced (steps[0].coalesced == 3) and
+--      the click delivered to it; a human move injected while an agent
+--      sequence waits in a delay does NOT clear it (compd clears the agent
+--      only on lost input authority, never on human input). Without such a
+--      client the agent half is SKIPPED, and the run says so.
+--  14e. panel holders: a testkit-layer-client panel (namespace
+--      token) under a REGISTERED holder service (tests/desktop/panel_holder.mix:
+--      compd binds an edge only for a registered reporter). The panel's client
+--      is stopped, then the holder reports the edge hidden: compd commands a
+--      conceal, the panel stays shown, the grace runs out, the liveness probe
+--      (a re-sent configure) goes unanswered, and compd enforces the conceal
+--      (truth `concealed`, input.corners.enforced.top 1, view == truth). With
+--      its client running again the panel gets no frame callbacks (its
+--      commits hold for 1.5 s); a pointer hold reveals the edge, the
+--      enforcement lifts and its commits resume. The subscriber hears
+--      panel.command reveal false and true for the token. services_live: the
+--      holder service is killed with its pointer hold still acquired, and
+--      input.corners.held.top falls 1 -> 0 (the broker's services.registered
+--      drops it). Owner-applied conceal: a second panel run with
+--      --conceal-on-usr1 is reported hidden by a second holder; on its
+--      panel.command conceal the smoke signals it, it attaches null, and past
+--      grace + probe nothing is enforced (enforced.top 0, stalled false).
+--      --layer-client names the client; default testkit-layer-client beside the
+--      compositor binary, else on PATH.
+--  14f. exclusive zones: a testkit-layer-client top panel reserving a
+--      30 px exclusive zone moves outputs.*.usable down by 30; the window,
+--      maximised, sits at y = output y + 30 with the acked size output
+--      width x (height - 30); when the panel's client goes, the maximised
+--      window grows back to the whole output. Usable areas are in the
+--      comparator (outputs.*.usable against compd.truth `outputs`).
+--  14g. placement: with a 400 px exclusive top panel up, a second
+--      weston-simple-shm opens inside the usable area (y >= output y + 400,
+--      bottom inside the output) rather than centred under the panel. (Assumes
+--      the nested camera shows the world at the output origin, as the other
+--      geometry checks do.) comp.window.raise lifts the first window above
+--      the second (`raised: true`); output.changed is heard for the zones.
+--  14a2. fullscreen: comp.window.fullscreen {output: no-such} is refused
+--      unknown_output; {output: <first key>} puts the window at the output's
+--      origin configured to its whole size; set to band bottom first, it
+--      reads normal while fullscreen and bottom again after; unfullscreen
+--      returns it to where it was before; Bus == truth.
+--  14g2. band: props.set windows.s<first>.band bottom answers {old
+--      normal, new bottom}, the leaf reads bottom and `stack` lists it below
+--      the second window; comp.window.raise on it answers raised false and
+--      leaves it below; band normal restores it; band top is invalid_value.
+--  14h. region select: while comp.region.select waits, a helper
+--      drags the human pointer (injected) from (600,400) to (800,550) over
+--      plain background, taking a screencopy before it lets go; the reply is
+--      {status: selected, region {600,400,200,150}, coordinate_space:
+--      output-local-logical, output_generation = compd.truth's}; a
+--      screencopy after the reply shows the overlay gone (clean-frame rule)
+--      where the one during showed it; an injected Escape cancels a second
+--      selection; with the client stopped, no frame is drawn for 2 s (no
+--      leftover overlay or timer). compd runs with COMPD_FRAME_TRACE under
+--      --bus for that count; testkit-screenshot sits beside the compositor binary
+--      (or --shot PATH).
+--  14i. key bindings (batch B): `bindings` reads enabled, profile nested and a
+--      Super+2 WorkspaceJump row; weston-eventdemo --log-key (under stdbuf -oL)
+--      maps and takes focus; an injected human `a` reaches it (evdev 30); a
+--      human Super+2 makes workspaces.current 2 (compd.truth input.bindings
+--      fired +1, last WorkspaceJump) and Super+1 brings it back, and neither
+--      bound digit (evdev 3, 2) reaches the client. Needs weston-eventdemo and
+--      stdbuf on PATH.
+--  14j. session lock (batch C), with eventdemo (14i) mapped and focused:
+--      testkit's testkit-lock-client (beside the compositor, else PATH) locks
+--      and fills its lock surface with (24,36,56); focus.session_lock reaches
+--      locked and the client prints `locked`; compd.truth names its lock
+--      surface; windows.* is empty and eventdemo's row invisible and nameless;
+--      comp.window.focus and props.set workspaces.current answer rc 10
+--      locked; a human Super+2 leaves workspace 1; a human `b` reaches the
+--      lock client (`key 48 pressed`) and not eventdemo; a screencopy at
+--      eventdemo's window centre shows the lock colour, not the window's.
+--      SIGUSR1 unlocks: focus.session_lock none, eventdemo back in windows.*,
+--      a human `c` reaches it again, its pixel is back, Bus == truth. Then
+--      eventdemo leaves.
+--  14k. exclusive latch (F2): testkit-layer-client --layer top --keyboard
+--      exclusive latches at map, before any key (focus.exclusive_latch set,
+--      focus.keyboard on it); comp.window.focus on eventdemo answers
+--      focused false, reason exclusive_layer; when the layer exits the
+--      keyboard returns to eventdemo.
+--  14m. X11 (E1): xev (under stdbuf -oL, DISPLAY from xwayland.display)
+--      maps as an x11-toplevel on workspace 1 and logs a PropertyNotify for
+--      _NET_WM_DESKTOP; a switch to workspace 2 and back each change its
+--      _NET_WM_STATE (HIDDEN on, then off); a human key aimed at it arrives
+--      (keysym 0x61); the polite close ends it.
+--  14m2. X11 requests (E2): wmctrl (DISPLAY as above) -s 1 / -s 0 switch
+--      workspaces 2 / 1; -r <xev> -t 1 moves xev to workspace 2 without a
+--      switch and xprop reads _NET_WM_DESKTOP = 1; -t 4 (past the count) is refused;
+--      -t 0 moves it back; -a <xev> focuses it (focus.keyboard); xprop -root
+--      reads _NET_NUMBER_OF_DESKTOPS = 4. Needs wmctrl and xprop.
+--  14n. hidden windows take no input (E5): eventdemo sent to workspace 2
+--      (no switch) reads visible false; a human click where it sat targets
+--      something else, focus does not go to it, workspace 1 stays current;
+--      then it is sent back.
+--  14o. X11 decoration (E6): xlogo is listed decorated in compd.truth's
+--      chrome block with a close button; a human click on it closes xlogo.
+--  14p. X11 placement (E3): xlogo -geometry 200x150+400+300 opens at
+--      (400,300) sized 200x150; a plain xlogo cascades (x = 36 + 48k).
+--  14q. Override-redirect menu (E4, X-2a): Ctrl+press on an xterm pops its
+--      menu; focus.keyboard stays on the xterm and the menu row is never
+--      focused/activated; released off the menu it closes. Needs xterm.
+--  14r. Xwayland's one retry (E7; leaves X11 down, so it is the last X11
+--      step): kill -9 compd's Xwayland -> xwayland.state retrying, failures
+--      1, display null; within ~75 s ready on a new display and an xlogo
+--      maps; kill again -> failed, failures 2, display null, no respawn.
+--  14s. Occlusion: two simple-shm windows on one rect, B over A: A reads
+--      occluded/opaque-coverage (revision > 0), B exposed; A's commits fall
+--      to the ~1 Hz trickle (3..7 in 5 s; withheld_opportunities grows);
+--      raised, A is exposed (resumes +1) at full rate (>= 15 in 2 s);
+--      minimised, unknown.
+--  14t. Covered-idle control: two testkit-ssd-client windows (opaque,
+--      idle) on one rect, B over A; A opaque-coverage; with simple-shm
+--      stopped, 0 frames over 5 s after a 2 s settle and no A commits.
+--  16. (LAST; compd stays locked until torn down) the orphan rule: with a
+--      fresh client window mapped, testkit-lock-client locks and is SIGKILLed;
+--      focus.session_lock goes to orphaned, windows.* stays empty and the
+--      window row invisible, a screencopy at the window shows the opaque
+--      blank (0,0,0), and a second testkit-lock-client is refused (exit 3,
+--      finished) without moving the phase.
+--  15. the client leaves through comp.window.close (the polite xdg close); only
+--      if it ignores that is it killed, and the run says so.
+--      --truth-self-test proves that failure path: it adds 1 to the Bus view's
+--      surface_count before every comparison, so the run must FAIL at the first
+--      one ("truth before the client: … diverge on surface_count"), exit 1.
+--      --watch-script names the subscriber; default tests/desktop/bus_watch.mix
+--      under the working directory, else /opt/compd/bin/bus_watch.mix.
+-- The broker URL is handed to compd as MIXOS_NODED_URL: taken from this
+-- script's environment if set, else built from node.conf.mix the way
+-- the config library does (ws://<wg_ip, or 127.0.0.1 when empty>:<noded.port,
+-- default 4200>/ws), else loopback. Mix's own `send` finds the broker the same
+-- way, so both ends dial the same noded.
+--
+-- Exit codes: 0 PASS, 1 FAIL (reason printed, logs tailed), 2 usage/setup.
+
+$args = args()
+if len($args) < 1 then
+  eprint("usage: nested_smoke.mix <compositor-binary> [--secs N] [--config-file PATH] [--bus [--watch-script PATH] [--truth-self-test]] [--scale S]")
+  exit(2)
+end
+$bin = $args[0]
+$secs = 8
+$config = nil
+$bus = false
+$watch_script = nil
+$layer_client = nil
+$shot = nil
+$SCALE = 1
+-- Read inside fns, so a map (a fn sees the outer map's entries).
+$OPTS = {truth_self_test: false}
+$i = 1
+while $i < len($args)
+  if $args[$i] == "--secs" then
+    $secs = to_number($args[$i + 1])
+    $i = $i + 2
+  elif $args[$i] == "--config-file" then
+    $config = $args[$i + 1]
+    $i = $i + 2
+  elif $args[$i] == "--bus" then
+    $bus = true
+    $i = $i + 1
+  elif $args[$i] == "--truth-self-test" then
+    $OPTS["truth_self_test"] = true
+    $i = $i + 1
+  elif $args[$i] == "--shot" then
+    $shot = $args[$i + 1]
+    $i = $i + 2
+  elif $args[$i] == "--layer-client" then
+    $layer_client = $args[$i + 1]
+    $i = $i + 2
+  elif $args[$i] == "--watch-script" then
+    $watch_script = $args[$i + 1]
+    $i = $i + 2
+  elif $args[$i] == "--scale" then
+    $SCALE = to_number($args[$i + 1])
+    if $SCALE == nil or $SCALE <= 0 then
+      eprint("--scale needs a positive number")
+      exit(2)
+    end
+    $i = $i + 2
+  else
+    eprint("unknown option: " .. $args[$i])
+    exit(2)
+  end
+end
+if not is_file($bin) then
+  eprint("no such binary: " .. $bin)
+  exit(2)
+end
+if $layer_client == nil then
+  $layer_client = dirname($bin) .. "/testkit-layer-client"
+  if not is_file($layer_client) then
+    $layer_client = which("testkit-layer-client")
+  end
+end
+if $shot == nil then
+  $shot = dirname($bin) .. "/testkit-screenshot"
+  if not is_file($shot) then
+    $shot = which("testkit-screenshot")
+  end
+end
+if $bus and ($shot == nil or not is_file($shot)) then
+  eprint("--bus needs testkit-screenshot (beside the compositor binary, on PATH, or --shot PATH)")
+  exit(2)
+end
+if $bus and ($layer_client == nil or not is_file($layer_client)) then
+  eprint("--bus needs testkit-layer-client (beside the compositor binary, on PATH, or --layer-client PATH)")
+  exit(2)
+end
+$weston = which("weston")
+$client = which("weston-simple-shm")
+if $weston == nil or $client == nil then
+  eprint("weston and weston-simple-shm are required (pacman -S weston)")
+  exit(2)
+end
+
+-- The broker URL compd must dial: the one this script's own `send` reaches.
+fn noded_url()
+  $set = env("MIXOS_NODED_URL", "")
+  if $set != "" then
+    return $set
+  end
+  for each $path in [env("HOME", "") .. "/.config/mixos/node.conf.mix", "/etc/mixos/node.conf.mix"]
+    if is_file($path) then
+      $c = load_data($path)
+      $host = $c.wg_ip ?? ""
+      if $host == "" then
+        $host = "127.0.0.1"
+      end
+      $port = 4200
+      if $c.noded != nil and $c.noded.port != nil then
+        $port = $c.noded.port
+      end
+      return "ws://" .. $host .. ":" .. to_string($port) .. "/ws"
+    end
+  end
+  return "ws://127.0.0.1:4200/ws"
+end
+
+-- One RPC each; `$reply` is the whole JSON body, success or refusal.
+fn ping_once($svc)
+  send $svc comp.ping timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn info_once($svc)
+  send $svc comp.info timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- The structured verbs travel as a JSON body, which keeps a refusal whole.
+fn list_once($svc)
+  $b = json_encode({})
+  send $svc comp.windows.list body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn get_once($svc, $path)
+  $b = json_encode({path: $path})
+  send $svc comp.props.get body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn wait_once($svc, $args)
+  $b = json_encode($args)
+  send $svc comp.window.wait body=$b timeout=10
+  return {rc: $rc, reply: $reply}
+end
+
+fn set_once($svc, $path, $value)
+  $b = json_encode({path: $path, value: $value})
+  send $svc comp.props.set body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn minimize_once($svc, $id, $gen)
+  $b = json_encode({id: $id, generation: $gen})
+  send $svc comp.window.minimize body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn restore_once($svc, $id, $gen)
+  $b = json_encode({id: $id, generation: $gen})
+  send $svc comp.window.restore body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn maximize_once($svc, $id, $gen)
+  $b = json_encode({id: $id, generation: $gen})
+  send $svc comp.window.maximize body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn unmaximize_once($svc, $id, $gen)
+  $b = json_encode({id: $id, generation: $gen})
+  send $svc comp.window.unmaximize body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn input_once($svc, $verb, $args)
+  $b = json_encode($args)
+  send $svc $verb body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- Poll compd.truth until its corners object satisfies `want` (a map of
+-- leaf -> value), at most ~3 s; returns the last corners object.
+fn await_corners($svc, $want)
+  $n = 0
+  $c = nil
+  while $n < 12
+    $tr = truth_once($svc)
+    $c = $tr.reply.corners ?? {}
+    $ok = true
+    for each $k in keys($want)
+      if $c[$k] != $want[$k] then
+        $ok = false
+      end
+    end
+    if $ok then
+      return {ok: true, corners: $c}
+    end
+    sleep(0.25)
+    $n = $n + 1
+  end
+  return {ok: false, corners: $c}
+end
+
+fn seq_once($svc, $args)
+  $b = json_encode($args)
+  send $svc comp.input.sequence body=$b timeout=15
+  return {rc: $rc, reply: $reply}
+end
+
+-- A PPM (P6) as {w, h, off, bytes} (testkit-screenshot's header "P6\n<w> <h>\n255\n").
+fn load_ppm($path)
+  $b = read_file_bytes($path)
+  $head = bytes_to_string(slice($b, 0, 32), {lossy: true})
+  $m = re_find($head, "^P6\\s+(\\d+)\\s+(\\d+)\\s+255\\s")
+  if len($m) == 0 then
+    return nil
+  end
+  return {w: to_number($m[0].groups[0]), h: to_number($m[0].groups[1]), off: $m[0].end, bytes: $b}
+end
+
+-- One pixel of a loaded PPM as [r, g, b].
+fn pixel($ppm, $x, $y)
+  $at = $ppm.off + ($y * $ppm.w + $x) * 3
+  return [$ppm.bytes[$at], $ppm.bytes[$at + 1], $ppm.bytes[$at + 2]]
+end
+
+-- The largest per-channel difference between two pixels.
+fn channel_gap($a, $b)
+  $gap = 0
+  for each $c in [0, 1, 2]
+    $d = abs($a[$c] - $b[$c])
+    if $d > $gap then
+      $gap = $d
+    end
+  end
+  return $gap
+end
+
+-- Frames compd has drawn so far (its frame trace, one record per frame).
+fn frames_now()
+  if not exists($TRACE) then
+    return 0
+  end
+  return to_number(trim(run_argv(["grep", "-c", "-e", "stage=comp_frame_reasons ", $TRACE]).stdout)) ?? 0
+end
+
+-- The panel layer's commit count in compd.truth (the frame-callback oracle).
+fn panel_commits($svc, $token)
+  $tr = truth_once($svc)
+  for each $pn in $tr.reply.panels ?? []
+    if $pn.surface == $token then
+      return $pn.commits
+    end
+  end
+  return nil
+end
+
+-- Whether the subscriber's file holds a panel.command `action` for `token`
+-- past its first `skip` lines (the record count before the request).
+fn watch_saw_panel($path, $svc, $token, $action, $skip)
+  $i = 0
+  for each $line in lines(read_file($path) ?? "")
+    $i = $i + 1
+    if $i > $skip and trim($line) != "" then
+      $r = json_parse($line)
+      $a = $r.args ?? {}
+      if $r.topic == $svc .. ".panel.command" and $a.surface == $token and $a.action == $action then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+fn place_once($svc, $args)
+  $b = json_encode($args)
+  send $svc comp.window.place body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+fn close_once($svc, $id, $gen)
+  $b = json_encode({id: $id, generation: $gen})
+  send $svc comp.window.close body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- compd.truth's row for one window (nil when absent) and its configured size.
+fn truth_window($svc, $id)
+  $r = truth_once($svc)
+  if $r.rc != 0 or type($r.reply) != "map" then
+    return nil
+  end
+  $row = nil
+  for each $w in $r.reply.windows
+    if $w.id == $id then
+      $row = $w
+    end
+  end
+  return {window: $row, configured: ($r.reply.configured ?? {})[to_string($id)]}
+end
+
+-- The first outputs.* row (the default output in a one-output run), or nil.
+fn first_output($svc)
+  $o = get_once($svc, "outputs")
+  if $o.rc != 0 or type($o.reply) != "map" then
+    return nil
+  end
+  for each $k in keys($o.reply)
+    return $o.reply[$k]
+  end
+  return nil
+end
+
+fn switch_once($svc, $index)
+  $b = json_encode({index: $index})
+  send $svc comp.workspace.switch body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- A window's buffer-commit count from compd.truth, or nil.
+fn commits_of($svc, $id)
+  $r = truth_once($svc)
+  if $r.rc != 0 or type($r.reply) != "map" then
+    return nil
+  end
+  return ($r.reply.commits ?? {})[to_string($id)]
+end
+
+-- Poll surfaces.s<id>.visible until it reads `want` (bounded); the last value.
+fn await_visible($svc, $id, $want)
+  $last = nil
+  $n = 0
+  while $n < 20
+    $v = get_once($svc, "surfaces.s" .. to_string($id) .. ".visible")
+    $last = $v.reply
+    if $v.rc == 0 and $v.reply == $want then
+      return $last
+    end
+    sleep(0.25)
+    $n = $n + 1
+  end
+  return $last
+end
+
+-- 11c. batch A: decoration, the xwayland switch, the dmabuf ledger.
+fn batch_a($svc, $pids)
+  $d = get_once($svc, "decoration")
+  $t = truth_once($svc)
+  if $d.rc != 0 or type($d.reply) != "map" or $t.rc != 0 or type($t.reply) != "map" then
+    finish(false, "decoration / truth read failed: " .. json_encode($d.reply) .. " " .. json_encode($t.reply), $pids)
+  end
+  $chrome = $t.reply.chrome
+  $want_style = "mac"
+  if $chrome.installed == true then
+    $want_style = $chrome.style
+  end
+  if $d.reply.enabled != $chrome.ssd_enabled or $d.reply.style != $want_style then
+    finish(false, "decoration " .. json_encode($d.reply) .. " disagrees with compd.truth chrome " .. json_encode($chrome), $pids)
+  end
+  $s = set_once($svc, "decoration.style", "win11")
+  if $s.rc == 0 or type($s.reply) != "map" or $s.reply.error != "read_only" then
+    finish(false, "props.set decoration.style was not refused read_only: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), $pids)
+  end
+  print("bus: decoration " .. json_encode($d.reply) .. " matches the chrome preferences (read-only)")
+
+  $file = $ETC .. "/comp/xwayland-enabled." .. $sock
+  $x = get_once($svc, "xwayland")
+  if $x.rc != 0 or type($x.reply) != "map" or $x.reply.enabled != true or $x.reply.persist_path != $file then
+    finish(false, "xwayland before any set (want enabled true, persist_path " .. $file .. "): " .. json_encode($x.reply), $pids)
+  end
+  $s = set_once($svc, "xwayland.enabled", false)
+  if $s.rc != 0 or type($s.reply) != "map" or $s.reply.old != true or $s.reply.new != false or $s.reply.persisted != true then
+    finish(false, "props.set xwayland.enabled false: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), $pids)
+  end
+  $g = get_once($svc, "xwayland.enabled")
+  if $g.reply != false or rtrim(read_file($file)) != "false" then
+    finish(false, "xwayland.enabled after set false: " .. json_encode($g.reply) .. ", file " .. json_encode(read_file($file)), $pids)
+  end
+  $s = set_once($svc, "xwayland.enabled", "no")
+  if $s.rc == 0 or type($s.reply) != "map" or $s.reply.error != "invalid_value" then
+    finish(false, "props.set xwayland.enabled \"no\" was not refused invalid_value: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), $pids)
+  end
+  $s = set_once($svc, "xwayland.enabled", true)
+  if $s.rc != 0 or type($s.reply) != "map" or $s.reply.new != true or $s.reply.persisted != true or rtrim(read_file($file)) != "true" then
+    finish(false, "props.set xwayland.enabled true: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), $pids)
+  end
+  print("bus: xwayland.enabled set/persist round trip ok (" .. $file .. ")")
+
+  -- The ledger's shape only: the smoke clients are shm, so the counts are
+  -- printed, not gated.
+  $m = get_once($svc, "dmabuf")
+  if $m.rc != 0 or type($m.reply) != "map" or type($m.reply.accepted) != "number" or type($m.reply.failed) != "number" or type($m.reply.failures) != "list" then
+    finish(false, "dmabuf ledger: " .. json_encode($m.reply), $pids)
+  end
+  print("bus: dmabuf ledger accepted " .. to_string($m.reply.accepted) .. " failed " .. to_string($m.reply.failed))
+end
+
+-- A window id's position in a `stack` list (topmost first), -1 if absent.
+fn stack_index($list, $id)
+  $i = 0
+  for each $e in $list ?? []
+    if $e == $id then
+      return $i
+    end
+    $i = $i + 1
+  end
+  return -1
+end
+
+-- How many PropertyNotify lines for _NET_WM_STATE an xev log holds.
+fn net_state_changes($path)
+  return len(split(read_file($path) ?? "", "(_NET_WM_STATE)")) - 1
+end
+
+-- Run an X11 tool (wmctrl, xprop) with these args under the given env.
+fn wm_ctl($bin, $env, $args)
+  $argv = [$bin]
+  for each $a in $args
+    push($argv, $a)
+  end
+  return run_argv($argv, {env: $env, timeout: 10})
+end
+
+-- Poll workspaces.current until it reads $want (5 s); the last value read.
+fn await_current($svc, $want)
+  $n = 0
+  $cur = nil
+  while $cur != $want and $n < 20
+    $cur = get_once($svc, "workspaces.current").reply
+    if $cur != $want then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  return $cur
+end
+
+fn truth_once($svc)
+  $b = json_encode({})
+  send $svc compd.truth body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- The windows.list rows, or nil when the call failed.
+fn window_rows($svc)
+  $r = list_once($svc)
+  if $r.rc != 0 or type($r.reply) != "map" or type($r.reply.windows) != "list" then
+    return nil
+  end
+  return $r.reply.windows
+end
+
+-- The corner configuration leaves of an input.corners subtree (Bus or truth).
+fn corner_config($c)
+  return {holders: $c.holders, enforced: $c.enforced, held: $c.held, enabled: $c.enabled, deadzone_px: $c.deadzone_px, dwell_ms: $c.dwell_ms, velocity_max_px_s: $c.velocity_max_px_s, affordance: $c.affordance, discovery: $c.discovery}
+end
+
+-- The Bus view the comparator checks, or nil when a read failed. An empty
+-- focus.window ({id: null, generation: null}) reads as null, as compd.truth
+-- reports it.
+fn bus_view($svc)
+  $rows = window_rows($svc)
+  $f = get_once($svc, "focus")
+  $i = info_once($svc)
+  $ws = get_once($svc, "workspaces")
+  $c = get_once($svc, "input.corners")
+  $op = get_once($svc, "outputs")
+  if $rows == nil or $f.rc != 0 or $i.rc != 0 or $ws.rc != 0 or $c.rc != 0 or $op.rc != 0 or type($f.reply) != "map" or type($i.reply) != "map" or type($ws.reply) != "map" or type($c.reply) != "map" or type($op.reply) != "map" then
+    return nil
+  end
+  $usable = {}
+  for each $k in keys($op.reply)
+    $usable[$k] = {usable: $op.reply[$k].usable}
+  end
+  $windows = []
+  for each $r in $rows
+    push($windows, {id: $r.id, generation: $r.generation, app_id: $r.app_id, title: $r.title, workspace: $r.workspace, visible: $r.visible, minimized: $r.minimized, maximized: $r.maximized, x: $r.window_x, y: $r.window_y, width: $r.window_width, height: $r.window_height})
+  end
+  $fw = $f.reply.window
+  if type($fw) == "map" and $fw.id == nil then
+    $fw = nil
+  end
+  return {windows: $windows, focus_window: $fw, keyboard: $f.reply.keyboard, surface_count: $i.reply.surface_count, workspaces: {count: $ws.reply.count, current: $ws.reply.current}, corners: corner_config($c.reply), outputs: $usable}
+end
+
+-- Compare the Bus view with compd.truth at one content revision (retrying
+-- while compd's state is still moving); fail loudly with both sides.
+fn truth_matches($svc, $label, $pids)
+  $n = 0
+  while $n < 20
+    $a = truth_once($svc)
+    $view = bus_view($svc)
+    $b = truth_once($svc)
+    if $a.rc != 0 or $b.rc != 0 or type($b.reply) != "map" then
+      finish(false, $label .. ": compd.truth failed: rc " .. to_string($b.rc) .. " " .. json_encode($b.reply), $pids)
+    end
+    if $view != nil and $a.reply.revision == $b.reply.revision then
+      $truth = $b.reply
+      if $OPTS.truth_self_test then
+        $view["surface_count"] = $view.surface_count + 1
+      end
+      $ids = []
+      for each $w in $truth.windows
+        push($ids, $w.id)
+      end
+      $bad = []
+      if not deep_eq($view.windows, $truth.windows) then
+        push($bad, "windows")
+      end
+      if not deep_eq($view.focus_window, $truth.focus.window) then
+        push($bad, "focus.window")
+      end
+      if $view.keyboard != $truth.focus.keyboard then
+        push($bad, "focus.keyboard")
+      end
+      if $view.surface_count != $truth.surface_count then
+        push($bad, "surface_count")
+      end
+      if not deep_eq($view.workspaces, $truth.workspaces) then
+        push($bad, "workspaces")
+      end
+      if type($truth.corners) != "map" or not deep_eq($view.corners, corner_config($truth.corners)) then
+        push($bad, "corners")
+      end
+      if not deep_eq($view.outputs, $truth.outputs ?? {}) then
+        push($bad, "outputs.usable")
+      end
+      if not deep_eq($truth.engine.windows, $ids) then
+        push($bad, "engine.windows")
+      end
+      if $truth.engine.keyboard != $truth.focus.keyboard then
+        push($bad, "engine.keyboard")
+      end
+      if len($bad) > 0 then
+        finish(false, $label .. ": Bus view and compd.truth diverge on " .. join($bad, ", ") .. "\n  bus:   " .. json_encode($view) .. "\n  truth: " .. json_encode($truth), $pids)
+      end
+      print("bus: " .. $label .. " == compd.truth at revision " .. to_string($truth.revision) .. " (" .. to_string(len($ids)) .. " windows, surface_count " .. to_string($truth.surface_count) .. ")")
+      return true
+    end
+    sleep(0.25)
+    $n = $n + 1
+  end
+  finish(false, $label .. ": compd's state never settled for a bracketed read (20 tries)", $pids)
+end
+
+$NODED = nil
+$SVC = nil
+$ORPHAN_PIDS = []
+$BASE_SURFACES = 0
+$BASE_WINDOWS = 0
+if $bus then
+  $NODED = noded_url()
+  send noded noded.ping timeout=5
+  if $rc != 0 then
+    eprint("--bus: no broker answered noded.ping (rc " .. to_string($rc) .. "); compd would dial " .. $NODED)
+    exit(2)
+  end
+  $SVC = "compd-smoke-" .. to_string(pid())
+  print("bus: service " .. $SVC .. " via " .. $NODED)
+end
+
+$scratch = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$CLEANUP.run = $scratch.new_run("/tmp/compd-smoke-" .. to_string(pid()))
+$run_dir = $CLEANUP.run.path
+$TRACE = $run_dir .. "/frame-trace.log"
+$chmod = run_argv(["chmod", "0700", $run_dir])
+if $chmod.exit_code != 0 then
+  eprint("chmod failed: " .. $chmod.stderr)
+  exit(2)
+end
+$logs = $run_dir .. "/logs"
+mkdir($logs, {parents: true})
+
+$base_env = {XDG_RUNTIME_DIR: $run_dir, LIBGL_ALWAYS_SOFTWARE: "1", RUST_LOG: "info"}
+
+fn alive($p)
+  return exists("/proc/" .. to_string($p))
+end
+
+fn sockets($dir)
+  $out = []
+  for each $e in lines(run_argv(["ls", $dir]).stdout)
+    if starts_with($e, "wayland-") and not ends_with($e, ".lock") then
+      push($out, $e)
+    end
+  end
+  return $out
+end
+
+$WATCH = {pid: nil}
+
+fn finish($ok, $why, $pids)
+  if $WATCH.pid != nil then
+    push($pids, $WATCH.pid)
+  end
+  for each $p in $pids
+    if $p != nil and exists("/proc/" .. to_string($p)) then
+      kill($p, 15)
+    end
+  end
+  sleep(1)
+  for each $p in $pids
+    if $p != nil and exists("/proc/" .. to_string($p)) then
+      kill($p, 9)
+    end
+  end
+  if $ok then
+    print("PASS: " .. $why)
+    $CLEANUP.ok = true
+    exit(0)
+  end
+  print("FAIL: " .. $why)
+  for each $f in ["weston.log", "compositor.log", "client.log"]
+    $p = $logs .. "/" .. $f
+    if exists($p) then
+      print("--- tail " .. $f)
+      print(run_argv(["tail", "-25", $p]).stdout)
+    end
+  end
+  exit(1)
+end
+
+-- 1. host: weston headless
+$host = $SCALE == 1 ? ["--width=1920", "--height=1080"] : ["--width=3840", "--height=2160"]
+$wp = spawn([$weston, "--backend=headless", "--renderer=pixman", "--socket=wl-host", $host[0], $host[1], "--idle-time=0"], {env: $base_env, stdout: {file: $logs .. "/weston.log"}, stderr: "stdout", detach: true})
+$t = 0
+while not exists($run_dir .. "/wl-host") and $t < 50
+  sleep(0.2)
+  $t = $t + 1
+end
+if not exists($run_dir .. "/wl-host") then
+  finish(false, "weston host socket never appeared", [$wp])
+end
+
+-- 2. compositor under test, nested in the host
+$before = sockets($run_dir)
+$cenv = $base_env
+$cenv["WAYLAND_DISPLAY"] = "wl-host"
+-- The xwayland.enabled switch persists under MIXOS_ETC (step 11c): keep it
+-- in the run dir, never the real per-socket file.
+$ETC = $run_dir .. "/etc"
+$cenv["MIXOS_ETC"] = $ETC
+$cargv = [$bin]
+if $config != nil then
+  push($cargv, "--config-file=" .. $config)
+end
+if $SCALE != 1 then
+  push($cargv, "--scale=" .. to_string($SCALE))
+end
+if $bus then
+  $cenv["MIXOS_NODED_URL"] = $NODED
+  -- The frame trace the idle check after region select counts (14h).
+  $cenv["COMPD_FRAME_TRACE"] = "1"
+  $cenv["COMPD_FRAME_TRACE_FILE"] = $TRACE
+  $cenv["COMPD_FRAME_TRACE_LIMIT"] = "0"
+  push($cargv, "--bus-service")
+  push($cargv, $SVC)
+end
+$cp = spawn($cargv, {env: $cenv, stdout: {file: $logs .. "/compositor.log"}, stderr: "stdout", detach: true})
+$sock = nil
+$t = 0
+while $sock == nil and $t < 100
+  sleep(0.2)
+  $t = $t + 1
+  for each $s in sockets($run_dir)
+    if not contains($before, $s) and $s != "wl-host" then
+      $sock = $s
+    end
+  end
+  if not alive($cp) then
+    finish(false, "compositor exited during startup", [$cp, $wp])
+  end
+end
+if $sock == nil then
+  finish(false, "compositor created no Wayland socket within 20 s", [$cp, $wp])
+end
+print("compositor socket: " .. $sock)
+sleep(2)
+if not alive($cp) then
+  finish(false, "compositor died after creating its socket", [$cp, $wp])
+end
+
+-- 2b. the comp Bus service (--bus): registration is asynchronous, so ping
+-- until it answers (bounded), then read comp.info.
+if $bus then
+  $pong = nil
+  $last = nil
+  $t = 0
+  while $pong == nil and $t < 40
+    $last = ping_once($SVC)
+    if $last.rc == 0 then
+      $pong = $last.reply
+    else
+      sleep(0.5)
+    end
+    $t = $t + 1
+    if not alive($cp) then
+      finish(false, "compositor died while registering its Bus service", [$cp, $wp])
+    end
+  end
+  if $pong == nil then
+    finish(false, "comp.ping on " .. $SVC .. " never answered in 20 s (last rc " .. to_string($last.rc) .. ")", [$cp, $wp])
+  end
+  if not deep_eq($pong, {pong: true}) then
+    finish(false, "comp.ping replied " .. json_encode($pong) .. ", expected " .. json_encode({pong: true}), [$cp, $wp])
+  end
+  print("bus: comp.ping " .. json_encode($pong))
+  $i = info_once($SVC)
+  if $i.rc != 0 or type($i.reply) != "map" then
+    finish(false, "comp.info rc " .. to_string($i.rc) .. ": " .. json_encode($i.reply), [$cp, $wp])
+  end
+  $info = $i.reply
+  $bad = []
+  if $info.service != $SVC then
+    push($bad, "service " .. json_encode($info.service))
+  end
+  if $info.backend != "nested" then
+    push($bad, "backend " .. json_encode($info.backend))
+  end
+  if $info.engine != "gles" then
+    push($bad, "engine " .. json_encode($info.engine))
+  end
+  if type($info.version) != "string" or $info.version == "" then
+    push($bad, "version " .. json_encode($info.version))
+  end
+  for each $k in ["output_count", "surface_count", "event_seq", "lost_count"]
+    if type($info[$k]) != "number" then
+      push($bad, $k .. " " .. json_encode($info[$k]))
+    end
+  end
+  if len($bad) > 0 then
+    finish(false, "comp.info shape: " .. join($bad, ", ") .. " in " .. json_encode($info), [$cp, $wp])
+  end
+  print("bus: comp.info " .. json_encode($info))
+  $BASE_SURFACES = $info.surface_count
+  $rows0 = window_rows($SVC)
+  if $rows0 == nil then
+    finish(false, "comp.windows.list failed before the client", [$cp, $wp])
+  end
+  $BASE_WINDOWS = len($rows0)
+  truth_matches($SVC, "truth before the client", [$cp, $wp])
+  -- 11b. the corner configuration through props.set.
+  $c = get_once($SVC, "input.corners")
+  if $c.rc != 0 or type($c.reply) != "map" or $c.reply.holders != true or $c.reply.dwell_ms != 200 or $c.reply.enabled != true then
+    finish(false, "input.corners before any set: " .. json_encode($c.reply), [$cp, $wp])
+  end
+  $s = set_once($SVC, "input.corners.dwell_ms", 350)
+  if $s.rc != 0 or type($s.reply) != "map" or $s.reply.old != 200 or $s.reply.new != 350 then
+    finish(false, "props.set input.corners.dwell_ms 350: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), [$cp, $wp])
+  end
+  truth_matches($SVC, "truth after corners.dwell_ms 350", [$cp, $wp])
+  $s = set_once($SVC, "input.corners.deadzone_px", 300)
+  if $s.rc == 0 or type($s.reply) != "map" or $s.reply.error != "invalid_value" then
+    finish(false, "props.set input.corners.deadzone_px 300 was not refused invalid_value: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), [$cp, $wp])
+  end
+  $s = set_once($SVC, "input.corners.holders", true)
+  if $s.rc == 0 or type($s.reply) != "map" or $s.reply.error != "read_only" then
+    finish(false, "props.set input.corners.holders was not refused read_only: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), [$cp, $wp])
+  end
+  $s = set_once($SVC, "input.corners.dwell_ms", 200)
+  if $s.rc != 0 or type($s.reply) != "map" or $s.reply.new != 200 then
+    finish(false, "props.set input.corners.dwell_ms 200: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), [$cp, $wp])
+  end
+  print("bus: input.corners set/refuse round trip ok (holders true)")
+  truth_matches($SVC, "truth after corners.dwell_ms 200", [$cp, $wp])
+  batch_a($SVC, [$cp, $wp])
+end
+
+-- The surface count comp.info reports now, or nil when the call failed.
+fn surface_count($svc)
+  $r = info_once($svc)
+  if $r.rc != 0 or type($r.reply) != "map" then
+    return nil
+  end
+  return $r.reply.surface_count
+end
+
+-- 2c. the observation subscriber (--bus), before the client so no edge is missed
+$watch_out = $run_dir .. "/bus-watch.jsonl"
+$WATCH_SEQ = -1
+if $bus then
+  $ws = $watch_script
+  if $ws == nil then
+    $ws = "tests/desktop/bus_watch.mix"
+    if not is_file($ws) then
+      $ws = "/opt/compd/bin/bus_watch.mix"
+    end
+  end
+  if not is_file($ws) then
+    finish(false, "no observation subscriber script (" .. $ws .. "); pass --watch-script", [$cp, $wp])
+  end
+  $mix_bin = which("mix") ?? "/opt/mixos/bin/mix"
+  $wenv = {BUS_WATCH_SERVICE: $SVC, BUS_WATCH_OUT: $watch_out}
+  $WATCH["pid"] = spawn([$mix_bin, "--serve", $ws, "--name", "compd-watch-" .. to_string(pid())], {env: $wenv, stdout: {file: $logs .. "/bus-watch.log"}, stderr: "stdout", detach: true})
+  $t = 0
+  while not is_file($watch_out) and $t < 40
+    sleep(0.25)
+    $t = $t + 1
+  end
+  if not is_file($watch_out) then
+    finish(false, "the observation subscriber never confirmed its subscriptions", [$cp, $wp])
+  end
+  $wb = json_encode({})
+  send $SVC comp.props.watch body=$wb timeout=5
+  if $rc != 0 or type($reply) != "map" or $reply.topic != $SVC .. ".props.changed" then
+    finish(false, "comp.props.watch: rc " .. to_string($rc) .. " " .. json_encode($reply), [$cp, $wp])
+  end
+  $WATCH_SEQ = $reply.event_seq
+  print("bus: subscriber up; comp.props.watch " .. json_encode($reply))
+end
+
+-- 3. client inside the compositor under test
+$kenv = $base_env
+$kenv["WAYLAND_DISPLAY"] = $sock
+$kp = spawn([$client], {env: $kenv, stdout: {file: $logs .. "/client.log"}, stderr: "stdout", detach: true})
+sleep($secs)
+if not alive($kp) then
+  finish(false, "client exited early (could not connect or was refused)", [$cp, $wp])
+end
+if not alive($cp) then
+  finish(false, "compositor died while the client was running", [$kp, $wp])
+end
+$busnote = ""
+if $bus then
+  -- 7. the registry saw the client's surfaces, and saw them go.
+  $during = surface_count($SVC)
+  if $during == nil or $during < $BASE_SURFACES + 1 then
+    finish(false, "comp.info surface_count " .. json_encode($during) .. " while the client runs, expected >= " .. to_string($BASE_SURFACES + 1), [$kp, $cp, $wp])
+  end
+  print("bus: surface_count " .. to_string($BASE_SURFACES) .. " -> " .. to_string($during) .. " with the client")
+  -- 8. the client's window row, its mapped leaf, focus and a wait on it.
+  $rows = window_rows($SVC)
+  if $rows == nil or len($rows) != $BASE_WINDOWS + 1 then
+    finish(false, "comp.windows.list rows " .. json_encode($rows) .. ", expected " .. to_string($BASE_WINDOWS + 1), [$kp, $cp, $wp])
+  end
+  $row = nil
+  for each $r in $rows
+    if $row == nil or $r.id > $row.id then
+      $row = $r
+    end
+  end
+  $named = (type($row.app_id) == "string" and $row.app_id != "") or (type($row.title) == "string" and $row.title != "")
+  if type($row.id) != "number" or type($row.generation) != "number" or not $named then
+    finish(false, "window row shape: " .. json_encode($row), [$kp, $cp, $wp])
+  end
+  print("bus: windows.list row " .. json_encode($row))
+  $wid = $row.id
+  $mapped = get_once($SVC, "surfaces.s" .. to_string($wid) .. ".mapped")
+  if $mapped.rc != 0 or $mapped.reply != true then
+    finish(false, "surfaces.s" .. to_string($wid) .. ".mapped = " .. json_encode($mapped.reply) .. " (rc " .. to_string($mapped.rc) .. ")", [$kp, $cp, $wp])
+  end
+  $focus = nil
+  $t = 0
+  while $t < 12
+    $f = get_once($SVC, "focus")
+    if $f.rc == 0 and type($f.reply) == "map" and type($f.reply.window) == "map" and $f.reply.window.id == $wid then
+      $focus = $f.reply
+      $t = 12
+    else
+      sleep(0.25)
+      $t = $t + 1
+    end
+  end
+  if $focus == nil then
+    $f = get_once($SVC, "focus")
+    finish(false, "focus does not name window " .. to_string($wid) .. ": " .. json_encode($f.reply), [$kp, $cp, $wp])
+  end
+  print("bus: focus " .. json_encode($focus))
+  $w = wait_once($SVC, {match: {id: $wid, generation: $row.generation}, until: "mapped", timeout_ms: 2000})
+  if $w.rc != 0 or type($w.reply) != "map" or type($w.reply.window) != "map" or $w.reply.window.id != $wid then
+    finish(false, "comp.window.wait mapped: rc " .. to_string($w.rc) .. " " .. json_encode($w.reply), [$kp, $cp, $wp])
+  end
+  print("bus: window.wait mapped " .. json_encode($w.reply))
+  truth_matches($SVC, "truth with the client", [$kp, $cp, $wp])
+  -- 8b. presentation ledger (batch D): the running client is presented.
+  -- comp.window.wait {until: presented} answers; comp.window.stats counts
+  -- presentations with an interval; windows.s<id>.presentation and
+  -- outputs.<key>.presentation agree; stats.reset restarts the count; a
+  -- source target is unknown_source.
+  $wp_ = wait_once($SVC, {match: {id: $wid, generation: $row.generation}, until: "presented", timeout_ms: 3000})
+  if $wp_.rc != 0 or type($wp_.reply) != "map" or type($wp_.reply.window) != "map" or $wp_.reply.window.id != $wid then
+    finish(false, "comp.window.wait presented: rc " .. to_string($wp_.rc) .. " " .. json_encode($wp_.reply), [$kp, $cp, $wp])
+  end
+  sleep(1)
+  $sb = json_encode({id: $wid, generation: $row.generation, samples: 4})
+  send $SVC comp.window.stats body=$sb timeout=5
+  $st_rc = $rc
+  $st = $reply
+  if $st_rc != 0 or type($st) != "map" or type($st.presented) != "number" or $st.presented < 2 or type($st.interval_p50_us) != "number" or type($st.intervals_us) != "list" then
+    finish(false, "comp.window.stats: rc " .. to_string($st_rc) .. " " .. json_encode($st), [$kp, $cp, $wp])
+  end
+  -- The counters keep increasing while the client draws.
+  sleep(1)
+  send $SVC comp.window.stats body=$sb timeout=5
+  if $rc != 0 or type($reply) != "map" or type($reply.presented) != "number" or $reply.presented <= $st.presented then
+    finish(false, "comp.window.stats did not increase in 1 s: " .. to_string($st.presented) .. " -> " .. json_encode($reply), [$kp, $cp, $wp])
+  end
+  $st = $reply
+  $pl = get_once($SVC, "windows.s" .. to_string($wid) .. ".presentation.presented")
+  if $pl.rc != 0 or type($pl.reply) != "number" or $pl.reply < $st.presented then
+    finish(false, "windows.s" .. to_string($wid) .. ".presentation.presented " .. json_encode($pl.reply) .. " vs stats " .. to_string($st.presented), [$kp, $cp, $wp])
+  end
+  $op_ = get_once($SVC, "outputs")
+  $ofr = nil
+  if type($op_.reply) == "map" then
+    for each $k in keys($op_.reply)
+      $orow_p = $op_.reply[$k]
+      if type($orow_p) == "map" and type($orow_p.presentation) == "map" then
+        $ofr = $orow_p.presentation.frames
+      end
+    end
+  end
+  if type($ofr) != "number" or $ofr < 2 then
+    finish(false, "outputs.*.presentation.frames " .. json_encode($ofr), [$kp, $cp, $wp])
+  end
+  $rb = json_encode({id: $wid, generation: $row.generation})
+  send $SVC comp.window.stats.reset body=$rb timeout=5
+  $rs_rc = $rc
+  $rs = $reply
+  send $SVC comp.window.stats body=$sb timeout=5
+  if $rs_rc != 0 or $rs.reset != "window" or $rc != 0 or $reply.presented > $st.presented then
+    finish(false, "comp.window.stats.reset: rc " .. to_string($rs_rc) .. " " .. json_encode($rs) .. "; then stats " .. json_encode($reply), [$kp, $cp, $wp])
+  end
+  -- Input-to-present (F1): an injected key the window receives is answered
+  -- by its next presented update.
+  $ik = input_once($SVC, "comp.input.key", {seat: "human", key: "x"})
+  $itp = nil
+  $n = 0
+  while $itp == nil and $n < 20
+    send $SVC comp.window.stats body=$sb timeout=5
+    if $rc == 0 and type($reply) == "map" and type($reply.input_to_present_p50_us) == "number" then
+      $itp = $reply.input_to_present_p50_us
+    else
+      sleep(0.1)
+      $n = $n + 1
+    end
+  end
+  if $ik.rc != 0 or $itp == nil then
+    finish(false, "input-to-present: key rc " .. to_string($ik.rc) .. " " .. json_encode($ik.reply) .. ", stats " .. json_encode($reply), [$kp, $cp, $wp])
+  end
+  print("bus: input-to-present p50 " .. to_string($itp) .. " us")
+  $srcb = json_encode({source: "no-such-source"})
+  send $SVC comp.window.stats body=$srcb timeout=5
+  if $rc == 0 or type($reply) != "map" or $reply.error != "unknown_source" then
+    finish(false, "comp.window.stats {source}: rc " .. to_string($rc) .. " " .. json_encode($reply), [$kp, $cp, $wp])
+  end
+  print("bus: presentation: wait presented ok; stats presented " .. to_string($st.presented) .. ", interval p50 " .. to_string($st.interval_p50_us) .. " us; output frames " .. to_string($ofr) .. "; reset ok")
+  -- 12. workspaces: hide the client by switching away, prove it gets no frame
+  -- callbacks (a frame-driven client stops committing), then bring it back.
+  $sw = switch_once($SVC, 2)
+  if $sw.rc != 0 or type($sw.reply) != "map" or $sw.reply.from != 1 or $sw.reply.to != 2 then
+    finish(false, "comp.workspace.switch 2: rc " .. to_string($sw.rc) .. " " .. json_encode($sw.reply), [$kp, $cp, $wp])
+  end
+  $vis = await_visible($SVC, $wid, false)
+  if $vis != false then
+    finish(false, "surfaces.s" .. to_string($wid) .. ".visible stayed " .. json_encode($vis) .. " on workspace 2", [$kp, $cp, $wp])
+  end
+  sleep(0.5)
+  $c1 = commits_of($SVC, $wid)
+  sleep(1.5)
+  $c2 = commits_of($SVC, $wid)
+  if $c1 == nil or $c2 != $c1 then
+    finish(false, "hidden window kept committing (frame callbacks still sent?): " .. json_encode($c1) .. " -> " .. json_encode($c2) .. " over 1.5 s", [$kp, $cp, $wp])
+  end
+  print("bus: workspace 2: s" .. to_string($wid) .. " hidden, commits held at " .. to_string($c2) .. " for 1.5 s")
+  truth_matches($SVC, "truth on workspace 2", [$kp, $cp, $wp])
+  $sw = switch_once($SVC, 1)
+  if $sw.rc != 0 or type($sw.reply) != "map" or $sw.reply.to != 1 then
+    finish(false, "comp.workspace.switch 1: rc " .. to_string($sw.rc) .. " " .. json_encode($sw.reply), [$kp, $cp, $wp])
+  end
+  $vis = await_visible($SVC, $wid, true)
+  if $vis != true then
+    finish(false, "surfaces.s" .. to_string($wid) .. ".visible stayed " .. json_encode($vis) .. " back on workspace 1", [$kp, $cp, $wp])
+  end
+  sleep(1.5)
+  $c3 = commits_of($SVC, $wid)
+  if $c3 == nil or $c3 <= $c2 then
+    finish(false, "shown window did not resume committing: " .. json_encode($c2) .. " -> " .. json_encode($c3), [$kp, $cp, $wp])
+  end
+  print("bus: workspace 1: s" .. to_string($wid) .. " shown, commits resumed " .. to_string($c2) .. " -> " .. to_string($c3))
+  truth_matches($SVC, "truth back on workspace 1", [$kp, $cp, $wp])
+  $gen = $row.generation
+  -- 13. minimise / restore through compd's verbs.
+  $m = minimize_once($SVC, $wid, $gen)
+  if $m.rc != 0 or type($m.reply) != "map" or $m.reply.minimized != true then
+    finish(false, "comp.window.minimize: rc " .. to_string($m.rc) .. " " .. json_encode($m.reply), [$kp, $cp, $wp])
+  end
+  $vis = await_visible($SVC, $wid, false)
+  if $vis != false then
+    finish(false, "minimised s" .. to_string($wid) .. " stayed visible: " .. json_encode($vis), [$kp, $cp, $wp])
+  end
+  sleep(0.5)
+  $c1 = commits_of($SVC, $wid)
+  sleep(1.5)
+  $c2 = commits_of($SVC, $wid)
+  if $c1 == nil or $c2 != $c1 then
+    finish(false, "minimised window kept committing: " .. json_encode($c1) .. " -> " .. json_encode($c2), [$kp, $cp, $wp])
+  end
+  print("bus: minimised s" .. to_string($wid) .. ", commits held at " .. to_string($c2))
+  truth_matches($SVC, "truth minimised", [$kp, $cp, $wp])
+  $r = restore_once($SVC, $wid, $gen)
+  if $r.rc != 0 or type($r.reply) != "map" or $r.reply.minimized != false then
+    finish(false, "comp.window.restore: rc " .. to_string($r.rc) .. " " .. json_encode($r.reply), [$kp, $cp, $wp])
+  end
+  $vis = await_visible($SVC, $wid, true)
+  if $vis != true then
+    finish(false, "restored s" .. to_string($wid) .. " stayed hidden: " .. json_encode($vis), [$kp, $cp, $wp])
+  end
+  sleep(1.5)
+  $c3 = commits_of($SVC, $wid)
+  if $c3 == nil or $c3 <= $c2 then
+    finish(false, "restored window did not resume committing: " .. json_encode($c2) .. " -> " .. json_encode($c3), [$kp, $cp, $wp])
+  end
+  print("bus: restored s" .. to_string($wid) .. ", commits " .. to_string($c2) .. " -> " .. to_string($c3))
+  truth_matches($SVC, "truth restored", [$kp, $cp, $wp])
+  -- 14. maximise / unmaximise.
+  $out = first_output($SVC)
+  if $out == nil then
+    finish(false, "no outputs.* row to maximise against", [$kp, $cp, $wp])
+  end
+  -- The run really is at the scale it was asked for,
+  -- and the output is 1280x800 logical at any scale.
+  if abs(($out.scale ?? 0) - $SCALE) > 0.000001 or $out.width != 1280 or $out.height != 800 then
+    finish(false, "outputs row is not 1280x800 at scale " .. to_string($SCALE) .. ": " .. json_encode($out), [$kp, $cp, $wp])
+  end
+  print("bus: output " .. to_string($out.width) .. "x" .. to_string($out.height) .. " at scale " .. to_string($out.scale))
+  $corner_before = $logs .. "/corner-before.ppm"
+  $corner_after = $logs .. "/corner-after.ppm"
+  $cb = run_argv([$shot, $corner_before, "--region", "20,40,4,4"], {env: $kenv, timeout: 20})
+  $x = maximize_once($SVC, $wid, $gen)
+  if $x.rc != 0 then
+    finish(false, "comp.window.maximize: rc " .. to_string($x.rc) .. " " .. json_encode($x.reply), [$kp, $cp, $wp])
+  end
+  $tw = nil
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and $tw.window != nil and $tw.window.maximized == true and $tw.window.x == $out.x and $tw.window.y == $out.y and deep_eq($tw.configured, [$out.width, $out.height]) then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $ok then
+    finish(false, "maximise did not take: truth " .. json_encode($tw) .. " vs output " .. json_encode($out), [$kp, $cp, $wp])
+  end
+  print("bus: maximised s" .. to_string($wid) .. " at " .. to_string($out.x) .. "," .. to_string($out.y) .. ", configured " .. json_encode($tw.configured))
+  truth_matches($SVC, "truth maximised", [$kp, $cp, $wp])
+  -- On screen: the window's content now covers (20,40), which showed background.
+  sleep(0.5)
+  $ca = run_argv([$shot, $corner_after, "--region", "20,40,4,4"], {env: $kenv, timeout: 20})
+  $pcb = nil
+  $pca = nil
+  if $cb.exit_code == 0 then
+    $pcb = load_ppm($corner_before)
+  end
+  if $ca.exit_code == 0 then
+    $pca = load_ppm($corner_after)
+  end
+  if $pcb == nil or $pca == nil then
+    finish(false, "corner screencopies: before exit " .. to_string($cb.exit_code) .. " " .. trim($cb.stderr) .. ", after exit " .. to_string($ca.exit_code) .. " " .. trim($ca.stderr), [$kp, $cp, $wp])
+  end
+  $pxb = pixel($pcb, 1, 1)
+  $pxa = pixel($pca, 1, 1)
+  if channel_gap($pxb, $pxa) <= 30 then
+    finish(false, "the maximised window does not cover (20,40) on screen (camera not at identity?): before " .. json_encode($pxb) .. ", after " .. json_encode($pxa), [$kp, $cp, $wp])
+  end
+  print("bus: on screen, (20,40) went from background " .. json_encode($pxb) .. " to window content " .. json_encode($pxa))
+  $u = unmaximize_once($SVC, $wid, $gen)
+  if $u.rc != 0 then
+    finish(false, "comp.window.unmaximize: rc " .. to_string($u.rc) .. " " .. json_encode($u.reply), [$kp, $cp, $wp])
+  end
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and $tw.window != nil and $tw.window.maximized == false then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $ok then
+    finish(false, "unmaximise did not take: truth " .. json_encode($tw), [$kp, $cp, $wp])
+  end
+  print("bus: unmaximised s" .. to_string($wid))
+  truth_matches($SVC, "truth unmaximised", [$kp, $cp, $wp])
+  -- 14a2. fullscreen {output} (F5): the window covers that output's whole
+  -- geometry (configured to its size, origin at its corner); an unknown
+  -- output is refused; unfullscreen puts it back where it was.
+  $pre = truth_window($SVC, $wid)
+  $okeys = keys(get_once($SVC, "outputs").reply ?? {})
+  $fsbad = json_encode({id: $wid, generation: $gen, output: "no-such-output"})
+  send $SVC comp.window.fullscreen body=$fsbad timeout=5
+  if $rc == 0 or type($reply) != "map" or $reply.error != "unknown_output" then
+    finish(false, "comp.window.fullscreen {output: no-such-output}: rc " .. to_string($rc) .. " " .. json_encode($reply), [$kp, $cp, $wp])
+  end
+  -- Demoted first: fullscreen lifts it to normal and gives bottom back after.
+  $fsd = set_once($SVC, "windows.s" .. to_string($wid) .. ".band", "bottom")
+  if $fsd.rc != 0 then
+    finish(false, "band bottom before fullscreen: " .. json_encode($fsd.reply), [$kp, $cp, $wp])
+  end
+  $fsb = json_encode({id: $wid, generation: $gen, output: $okeys[0]})
+  send $SVC comp.window.fullscreen body=$fsb timeout=5
+  $fsrc = $rc
+  $fsreply = $reply
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and $tw.window != nil and $tw.window.x == $out.x and $tw.window.y == $out.y and deep_eq($tw.configured, [$out.width, $out.height]) then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $fsrc != 0 or not $ok then
+    finish(false, "fullscreen on " .. to_string($okeys[0]) .. ": rc " .. to_string($fsrc) .. " " .. json_encode($fsreply) .. "; truth " .. json_encode($tw) .. " vs output " .. json_encode($out), [$kp, $cp, $wp])
+  end
+  -- Re-target (F5): fullscreen {output} again on a fullscreen window answers
+  -- and keeps it covering the output (one output nested: same output).
+  send $SVC comp.window.fullscreen body=$fsb timeout=5
+  $rtrc = $rc
+  $rtreply = $reply
+  $tw = truth_window($SVC, $wid)
+  if $rtrc != 0 or $tw == nil or $tw.window == nil or $tw.window.x != $out.x or $tw.window.y != $out.y or not deep_eq($tw.configured, [$out.width, $out.height]) then
+    finish(false, "fullscreen re-target: rc " .. to_string($rtrc) .. " " .. json_encode($rtreply) .. "; truth " .. json_encode($tw), [$kp, $cp, $wp])
+  end
+  $fsband = get_once($SVC, "windows.s" .. to_string($wid) .. ".band").reply
+  if $fsband != "normal" then
+    finish(false, "a bottom-band window went fullscreen but band reads " .. json_encode($fsband) .. " (want normal)", [$kp, $cp, $wp])
+  end
+  print("bus: fullscreen s" .. to_string($wid) .. " covers " .. to_string($okeys[0]) .. " " .. json_encode($tw.configured) .. ", lifted from bottom to normal")
+  $ufb = json_encode({id: $wid, generation: $gen})
+  send $SVC comp.window.unfullscreen body=$ufb timeout=5
+  $ufrc = $rc
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and $tw.window != nil and $pre != nil and $pre.window != nil and $tw.window.x == $pre.window.x and $tw.window.y == $pre.window.y then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $ufrc != 0 or not $ok then
+    finish(false, "unfullscreen: rc " .. to_string($ufrc) .. "; truth " .. json_encode($tw) .. " vs before " .. json_encode($pre), [$kp, $cp, $wp])
+  end
+  $ufband = get_once($SVC, "windows.s" .. to_string($wid) .. ".band").reply
+  $fsn = set_once($SVC, "windows.s" .. to_string($wid) .. ".band", "normal")
+  if $ufband != "bottom" or $fsn.rc != 0 then
+    finish(false, "after unfullscreen the band reads " .. json_encode($ufband) .. " (want bottom back); restore rc " .. to_string($fsn.rc), [$kp, $cp, $wp])
+  end
+  print("bus: unfullscreened s" .. to_string($wid) .. " back at " .. to_string($tw.window.x) .. "," .. to_string($tw.window.y) .. ", band bottom restored")
+  truth_matches($SVC, "truth unfullscreened", [$kp, $cp, $wp])
+  -- 14b. placement through comp.window.place.
+  $pl = place_once($SVC, {id: $wid, generation: $gen, x: 40, y: 30})
+  if $pl.rc != 0 or type($pl.reply) != "map" or $pl.reply.window_x != 40 or $pl.reply.window_y != 30 then
+    finish(false, "comp.window.place move: rc " .. to_string($pl.rc) .. " " .. json_encode($pl.reply), [$kp, $cp, $wp])
+  end
+  $tw = truth_window($SVC, $wid)
+  if $tw == nil or $tw.window == nil or $tw.window.x != $out.x + 40 or $tw.window.y != $out.y + 30 then
+    finish(false, "place move: truth " .. json_encode($tw) .. ", expected origin " .. to_string($out.x + 40) .. "," .. to_string($out.y + 30), [$kp, $cp, $wp])
+  end
+  print("bus: placed s" .. to_string($wid) .. " at 40,30 " .. json_encode($pl.reply))
+  truth_matches($SVC, "truth after place (move)", [$kp, $cp, $wp])
+  $pl = place_once($SVC, {id: $wid, generation: $gen, width: 300, height: 200})
+  if $pl.rc != 0 or type($pl.reply) != "map" then
+    finish(false, "comp.window.place resize: rc " .. to_string($pl.rc) .. " " .. json_encode($pl.reply), [$kp, $cp, $wp])
+  end
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and deep_eq($tw.configured, [300, 200]) then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $ok then
+    finish(false, "place resize: the client never acked 300x200: truth " .. json_encode($tw), [$kp, $cp, $wp])
+  end
+  print("bus: resized s" .. to_string($wid) .. ", configured " .. json_encode($tw.configured) .. " " .. json_encode($pl.reply))
+  truth_matches($SVC, "truth after place (resize)", [$kp, $cp, $wp])
+  -- 14c. injected input: a human dwell into the top-left corner, out again,
+  -- then a human click on the window; the agent seat's move onto it.
+  $mv = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: 3, y: 3})
+  if $mv.rc != 0 or type($mv.reply) != "map" or $mv.reply.seat != "human" or type($mv.reply.input_seq) != "number" then
+    finish(false, "comp.input.pointer.move human (3,3): rc " .. to_string($mv.rc) .. " " .. json_encode($mv.reply), [$kp, $cp, $wp])
+  end
+  $ac = await_corners($SVC, {engaged: "tl"})
+  if not $ac.ok then
+    finish(false, "the human pointer at (3,3) never engaged the top-left corner: truth corners " .. json_encode($ac.corners) .. ", move reply " .. json_encode($mv.reply), [$kp, $cp, $wp])
+  end
+  print("bus: human pointer at (3,3) engaged corner tl " .. json_encode($ac.corners))
+  $mv = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: floor($out.width / 2), y: floor($out.height / 2)})
+  if $mv.rc != 0 then
+    finish(false, "comp.input.pointer.move human (middle): rc " .. to_string($mv.rc) .. " " .. json_encode($mv.reply), [$kp, $cp, $wp])
+  end
+  $ac = await_corners($SVC, {engaged: nil, contact: nil})
+  if not $ac.ok then
+    finish(false, "the corner stayed engaged after the pointer left: " .. json_encode($ac.corners), [$kp, $cp, $wp])
+  end
+  $mv = input_once($SVC, "comp.input.pointer.move", {seat: "human", window: {id: $wid, generation: $gen}, x: 20, y: 20})
+  if $mv.rc != 0 then
+    finish(false, "comp.input.pointer.move human onto s" .. to_string($wid) .. ": rc " .. to_string($mv.rc) .. " " .. json_encode($mv.reply), [$kp, $cp, $wp])
+  end
+  $bt = input_once($SVC, "comp.input.pointer.button", {seat: "human", button: "left"})
+  if $bt.rc != 0 or type($bt.reply) != "map" or type($bt.reply.target) != "map" or $bt.reply.target.id != $wid then
+    finish(false, "comp.input.pointer.button human click on s" .. to_string($wid) .. ": rc " .. to_string($bt.rc) .. " " .. json_encode($bt.reply), [$kp, $cp, $wp])
+  end
+  $f = get_once($SVC, "focus")
+  if $f.rc != 0 or type($f.reply) != "map" or type($f.reply.window) != "map" or $f.reply.window.id != $wid then
+    finish(false, "after the click, focus is not s" .. to_string($wid) .. ": " .. json_encode($f.reply), [$kp, $cp, $wp])
+  end
+  print("bus: human click delivered to s" .. to_string($wid) .. " (input_seq " .. to_string($bt.reply.input_seq) .. "), focus holds")
+  $ag = input_once($SVC, "comp.input.pointer.move", {window: {id: $wid, generation: $gen}, x: 20, y: 20})
+  if $ag.rc == 0 and type($ag.reply) == "map" and $ag.reply.seat == "agent" then
+    print("bus: agent pointer moved onto s" .. to_string($wid) .. " " .. json_encode($ag.reply))
+  elif $ag.rc != 0 and type($ag.reply) == "map" and $ag.reply.error == "agent_seat_unbound" then
+    print("bus: agent move refused agent_seat_unbound (the client binds no agent seat)")
+  else
+    finish(false, "comp.input.pointer.move agent onto s" .. to_string($wid) .. ": rc " .. to_string($ag.rc) .. " " .. json_encode($ag.reply), [$kp, $cp, $wp])
+  end
+  truth_matches($SVC, "truth after injected input", [$kp, $cp, $wp])
+  -- 14d. pointer.watch: the lease opens; a move publishes pointer.changed.
+  $pw = json_encode({})
+  send $SVC comp.pointer.watch body=$pw timeout=5
+  if $rc != 0 or type($reply) != "map" or $reply.topic != $SVC .. ".pointer.changed" or type($reply.lease_ms) != "number" then
+    finish(false, "comp.pointer.watch: rc " .. to_string($rc) .. " " .. json_encode($reply), [$kp, $cp, $wp])
+  end
+  $mv = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: 100, y: 100})
+  if $mv.rc != 0 then
+    finish(false, "human move under pointer.watch: rc " .. to_string($mv.rc) .. " " .. json_encode($mv.reply), [$kp, $cp, $wp])
+  end
+  -- input.* props: both seats, the human's last input, the last origin.
+  $is = get_once($SVC, "input.seats")
+  if $is.rc != 0 or type($is.reply) != "map" or type($is.reply.human) != "map" or type($is.reply.agent) != "map" or $is.reply.human.name != "seat0" or $is.reply.agent.name != "agent" or type($is.reply.human.last_input_us) != "number" then
+    finish(false, "input.seats: rc " .. to_string($is.rc) .. " " .. json_encode($is.reply), [$kp, $cp, $wp])
+  end
+  $lo = get_once($SVC, "input.last_origin")
+  if $lo.rc != 0 or $lo.reply != "human" then
+    finish(false, "input.last_origin after a human move: rc " .. to_string($lo.rc) .. " " .. json_encode($lo.reply), [$kp, $cp, $wp])
+  end
+  print("bus: input.seats " .. json_encode($is.reply) .. ", last_origin human")
+  -- input.host.passthrough (nested): off and on again; injection still lands.
+  $s = set_once($SVC, "input.host.passthrough", false)
+  if $s.rc != 0 or type($s.reply) != "map" or $s.reply.old != true or $s.reply.new != false then
+    finish(false, "props.set input.host.passthrough false: rc " .. to_string($s.rc) .. " " .. json_encode($s.reply), [$kp, $cp, $wp])
+  end
+  $hp = get_once($SVC, "input.host.passthrough")
+  $mv = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: 120, y: 120})
+  $s = set_once($SVC, "input.host.passthrough", true)
+  if $hp.rc != 0 or $hp.reply != false or $mv.rc != 0 or $s.rc != 0 or $s.reply.new != true then
+    finish(false, "input.host.passthrough round trip: read " .. json_encode($hp.reply) .. ", move rc " .. to_string($mv.rc) .. ", restore " .. json_encode($s.reply), [$kp, $cp, $wp])
+  end
+  print("bus: input.host.passthrough false/true; injected move landed with it off")
+  -- A human sequence completes, one reply per step.
+  $sq = seq_once($SVC, {seat: "human", steps: [{verb: "comp.input.pointer.move", args: {x: 200, y: 200}}, {verb: "comp.input.pointer.move", args: {x: 210, y: 210}, delay_ms: 100}]})
+  if $sq.rc != 0 or type($sq.reply) != "map" or $sq.reply.seat != "human" or len($sq.reply.steps ?? []) != 2 then
+    finish(false, "comp.input.sequence human: rc " .. to_string($sq.rc) .. " " .. json_encode($sq.reply), [$kp, $cp, $wp])
+  end
+  print("bus: human sequence completed in " .. to_string($sq.reply.elapsed_ms) .. " ms")
+  -- The agent half needs a client bound to the agent seat.
+  $dot = which("weston-clickdot") ?? which("weston-flower")
+  if $dot == nil then
+    print("bus: SKIP agent sequence (no weston-clickdot / weston-flower on this host to bind the agent seat)")
+  else
+    $dp = spawn([$dot], {env: $kenv, stdout: {file: $logs .. "/agent-client.log"}, stderr: "stdout", detach: true})
+    $arow = nil
+    $n = 0
+    while $arow == nil and $n < 40
+      $rows = window_rows($SVC) ?? []
+      for each $r in $rows
+        if $r.id != $wid then
+          $arow = $r
+        end
+      end
+      if $arow == nil then
+        sleep(0.25)
+      end
+      $n = $n + 1
+    end
+    if $arow == nil then
+      finish(false, "the agent-seat client (" .. $dot .. ") never mapped a window", [$dp, $kp, $cp, $wp])
+    end
+    $aw = {id: $arow.id, generation: $arow.generation}
+    $sq = seq_once($SVC, {steps: [{verb: "comp.input.pointer.move", args: {window: $aw, x: 10, y: 10}}, {verb: "comp.input.pointer.move", args: {window: $aw, x: 20, y: 20}}, {verb: "comp.input.pointer.move", args: {window: $aw, x: 30, y: 30}}, {verb: "comp.input.pointer.button", args: {button: "left"}}]})
+    if $sq.rc != 0 or type($sq.reply) != "map" or $sq.reply.seat != "agent" or len($sq.reply.steps ?? []) != 4 or $sq.reply.steps[0].coalesced != 3 or type($sq.reply.steps[3].target) != "map" or $sq.reply.steps[3].target.id != $arow.id then
+      finish(false, "agent sequence onto s" .. to_string($arow.id) .. ": rc " .. to_string($sq.rc) .. " " .. json_encode($sq.reply), [$dp, $kp, $cp, $wp])
+    end
+    print("bus: agent sequence coalesced 3 moves and clicked s" .. to_string($arow.id) .. " in " .. to_string($sq.reply.elapsed_ms) .. " ms")
+    -- A human move while an agent sequence waits does not clear it.
+    $helper = $run_dir .. "/human-mid.mix"
+    write_file($helper, "sleep(0.4)\n$b = json_encode({seat: \"human\", x: 300, y: 300})\nsend " .. $SVC .. " comp.input.pointer.move body=$b timeout=5\nprint(\"rc \" .. to_string($rc))\n")
+    $hm = spawn([$mix_bin, $helper], {stdout: {file: $logs .. "/human-mid.log"}, stderr: "stdout", detach: true})
+    $sq = seq_once($SVC, {steps: [{verb: "comp.input.pointer.move", args: {window: $aw, x: 12, y: 12}}, {verb: "comp.input.pointer.move", args: {window: $aw, x: 40, y: 40}, delay_ms: 1200}]})
+    $n = 0
+    while alive($hm) and $n < 20
+      sleep(0.1)
+      $n = $n + 1
+    end
+    $hl = read_file($logs .. "/human-mid.log") ?? ""
+    if $sq.rc != 0 or type($sq.reply) != "map" or len($sq.reply.steps ?? []) != 2 or not contains($hl, "rc 0") then
+      finish(false, "agent sequence with a human move in its delay: rc " .. to_string($sq.rc) .. " " .. json_encode($sq.reply) .. "; human move: " .. trim($hl), [$dp, $kp, $cp, $wp])
+    end
+    print("bus: a human move during the agent sequence's delay left it running (completed, " .. to_string(len($sq.reply.steps)) .. " steps)")
+    $killed = kill($dp, 15)
+    if not $killed then
+      print("bus: note: the agent-seat client had already gone")
+    end
+    $n = 0
+    while len(window_rows($SVC) ?? []) > $BASE_WINDOWS + 1 and $n < 40
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  truth_matches($SVC, "truth after input second half", [$kp, $cp, $wp])
+  -- 14e. panel holders: a layer-shell panel under a registered
+  -- holder service; a stalled owner's conceal is enforced (not drawn, no
+  -- frame callbacks), a reveal lifts it.
+  $tok = "smoke-panel-" .. to_string(pid())
+  $lout = $logs .. "/layer-client.log"
+  $lc = spawn([$layer_client, "--namespace", $tok, "--edge", "top", "--size", "24"], {env: $kenv, stdout: {file: $lout}, stderr: "stdout", detach: true})
+  $n = 0
+  while not contains(read_file($lout) ?? "", "mapped") and $n < 40
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if not contains(read_file($lout) ?? "", "mapped") then
+    finish(false, "the layer client never mapped: " .. trim(read_file($lout) ?? ""), [$lc, $kp, $cp, $wp])
+  end
+  $hready = $run_dir .. "/holder.ready"
+  $hname = "compd-holder-" .. to_string(pid())
+  $hp = spawn([$mix_bin, "--serve", dirname($ws) .. "/panel_holder.mix", "--name", $hname], {env: {HOLDER_SERVICE: $SVC, HOLDER_READY: $hready}, stdout: {file: $logs .. "/panel-holder.log"}, stderr: "stdout", detach: true})
+  $n = 0
+  while not is_file($hready) and $n < 40
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if not is_file($hready) then
+    finish(false, "the holder service never came up (" .. $hname .. ")", [$hp, $lc, $kp, $cp, $wp])
+  end
+  sleep(0.5)
+  -- Stop the panel's client BEFORE the report: it will never answer the
+  -- liveness probe compd sends when the panel stays shown under a conceal.
+  $stopped = kill($lc, 19)
+  $hb = json_encode({output: $out.name, edge: "top", surface: $tok, mode: "hidden", generation: 1})
+  send $hname holder.mode body=$hb timeout=10
+  if $rc != 0 or type($result) != "map" or $result.rc != 0 or type($result.reply) != "map" or $result.reply.accepted != true then
+    finish(false, "comp.panel.mode via the holder service: rc " .. to_string($rc) .. " " .. json_encode($result) .. " " .. json_encode($reply) .. " (client stopped: " .. to_string($stopped) .. ")", [$hp, $lc, $kp, $cp, $wp])
+  end
+  -- grace (1 s) + probe timeout (1 s): the stalled owner's panel is concealed.
+  $panel = nil
+  $concealed = false
+  $n = 0
+  while not $concealed and $n < 24
+    $tr = truth_once($SVC)
+    $panel = nil
+    for each $pn in $tr.reply.panels ?? []
+      if $pn.surface == $tok then
+        $panel = $pn
+      end
+    end
+    if $panel != nil and $panel.id != nil and len($panel.enforced ?? []) > 0 and len($tr.reply.concealed ?? []) > 0 then
+      $concealed = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $concealed then
+    finish(false, "the stalled panel was never concealed: truth panel " .. json_encode($panel), [$hp, $lc, $kp, $cp, $wp])
+  end
+  $c = get_once($SVC, "input.corners")
+  if $c.rc != 0 or type($c.reply) != "map" or $c.reply.holders != true or type($c.reply.enforced) != "map" or $c.reply.enforced.top != 1 then
+    finish(false, "input.corners while concealed: " .. json_encode($c.reply), [$hp, $lc, $kp, $cp, $wp])
+  end
+  print("bus: stalled panel s" .. to_string($panel.id) .. " concealed (verdict " .. json_encode($panel.verdict) .. ", stalled " .. json_encode($panel.stalled) .. "), input.corners.enforced.top 1")
+  truth_matches($SVC, "truth with the panel concealed", [$hp, $lc, $kp, $cp, $wp])
+  -- The client runs again but gets no frame callbacks: its commits hold.
+  $resumed = kill($lc, 18)
+  sleep(0.5)
+  $lid = $panel.id
+  $c0 = panel_commits($SVC, $tok)
+  sleep(1.5)
+  $c1 = panel_commits($SVC, $tok)
+  if $c0 == nil or $c1 != $c0 then
+    finish(false, "a concealed panel still got frame callbacks: commits " .. json_encode($c0) .. " -> " .. json_encode($c1) .. " (resumed " .. to_string($resumed) .. ")", [$hp, $lc, $kp, $cp, $wp])
+  end
+  print("bus: concealed panel commits held at " .. to_string($c0) .. " for 1.5 s with its client running")
+  -- A hold reveals the edge: the enforcement lifts, frame callbacks resume.
+  $hb = json_encode({output: $out.name, edge: "top", surface: $tok, holder: "pointer", acquire: true})
+  send $hname holder.hold body=$hb timeout=10
+  if $rc != 0 or type($result) != "map" or $result.rc != 0 then
+    finish(false, "comp.panel.hold acquire: rc " .. to_string($rc) .. " " .. json_encode($result) .. " " .. json_encode($reply), [$hp, $lc, $kp, $cp, $wp])
+  end
+  $c2 = $c0
+  $n = 0
+  while ($c2 == nil or $c2 <= $c0) and $n < 20
+    sleep(0.25)
+    $c2 = panel_commits($SVC, $tok)
+    $n = $n + 1
+  end
+  $tr = truth_once($SVC)
+  if $c2 == nil or $c2 <= $c0 or len($tr.reply.concealed ?? []) != 0 then
+    finish(false, "the reveal did not lift the conceal: commits " .. json_encode($c0) .. " -> " .. json_encode($c2) .. ", concealed " .. json_encode($tr.reply.concealed), [$hp, $lc, $kp, $cp, $wp])
+  end
+  print("bus: hold revealed the panel; commits " .. to_string($c0) .. " -> " .. to_string($c2))
+  truth_matches($SVC, "truth with the panel revealed", [$hp, $lc, $kp, $cp, $wp])
+  -- services_live: the holder service leaves the Bus WITHOUT releasing; the
+  -- broker's services.registered drops it and its hold goes with it.
+  $c = get_once($SVC, "input.corners")
+  if $c.rc != 0 or type($c.reply) != "map" or type($c.reply.held) != "map" or $c.reply.held.top != 1 then
+    finish(false, "input.corners.held while the pointer hold is acquired: " .. json_encode($c.reply), [$hp, $lc, $kp, $cp, $wp])
+  end
+  $k2 = kill($hp, 15)
+  $held = 1
+  $n = 0
+  while $held != 0 and $n < 20
+    sleep(0.25)
+    $c = get_once($SVC, "input.corners")
+    $held = nil
+    if type($c.reply) == "map" and type($c.reply.held) == "map" then
+      $held = $c.reply.held.top
+    end
+    $n = $n + 1
+  end
+  if $held != 0 then
+    finish(false, "the departed holder's hold outlived it: input.corners.held " .. json_encode($c.reply.held) .. " (holder killed: " .. to_string($k2) .. ")", [$lc, $kp, $cp, $wp])
+  end
+  print("bus: holder " .. $hname .. " left the Bus holding; input.corners.held.top 1 -> 0")
+  $k1 = kill($lc, 15)
+  $n = 0
+  while len(truth_once($SVC).reply.concealed ?? []) != 0 and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  -- Owner-applied conceal: the panel's own client hides it on the command
+  -- (a null attach, as Quoin does), so nothing is owed and nothing enforced.
+  $tok2 = "smoke-panel-owner-" .. to_string(pid())
+  $lout2 = $logs .. "/layer-client-owner.log"
+  $lc2 = spawn([$layer_client, "--namespace", $tok2, "--edge", "top", "--size", "24", "--conceal-on-usr1"], {env: $kenv, stdout: {file: $lout2}, stderr: "stdout", detach: true})
+  $hready2 = $run_dir .. "/holder2.ready"
+  $hname2 = "compd-holder2-" .. to_string(pid())
+  $hp2 = spawn([$mix_bin, "--serve", dirname($ws) .. "/panel_holder.mix", "--name", $hname2], {env: {HOLDER_SERVICE: $SVC, HOLDER_READY: $hready2}, stdout: {file: $logs .. "/panel-holder2.log"}, stderr: "stdout", detach: true})
+  $n = 0
+  while not (contains(read_file($lout2) ?? "", "mapped") and is_file($hready2)) and $n < 40
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if not (contains(read_file($lout2) ?? "", "mapped") and is_file($hready2)) then
+    finish(false, "owner panel or second holder never came up: " .. trim(read_file($lout2) ?? ""), [$hp2, $lc2, $kp, $cp, $wp])
+  end
+  sleep(0.5)
+  $wskip = len(lines(read_file($watch_out) ?? ""))
+  $hb = json_encode({output: $out.name, edge: "top", surface: $tok2, mode: "hidden", generation: 1})
+  send $hname2 holder.mode body=$hb timeout=10
+  if $rc != 0 or type($result) != "map" or $result.rc != 0 or type($result.reply) != "map" or $result.reply.accepted != true then
+    finish(false, "comp.panel.mode (owner panel) via the holder service: rc " .. to_string($rc) .. " " .. json_encode($result) .. " " .. json_encode($reply), [$hp2, $lc2, $kp, $cp, $wp])
+  end
+  $n = 0
+  while not watch_saw_panel($watch_out, $SVC, $tok2, "conceal", $wskip) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if not watch_saw_panel($watch_out, $SVC, $tok2, "conceal", $wskip) then
+    finish(false, "no panel.command conceal for the owner panel " .. $tok2 .. " in " .. $watch_out, [$hp2, $lc2, $kp, $cp, $wp])
+  end
+  $u = kill($lc2, 10)
+  $n = 0
+  while not contains(read_file($lout2) ?? "", "concealed") and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if not contains(read_file($lout2) ?? "", "concealed") then
+    finish(false, "the owner panel never applied the conceal (SIGUSR1 " .. to_string($u) .. "): " .. trim(read_file($lout2) ?? ""), [$hp2, $lc2, $kp, $cp, $wp])
+  end
+  -- Past grace (1 s) + probe (1 s): an applied conceal is never enforced.
+  sleep(3)
+  $tr = truth_once($SVC)
+  $panel = nil
+  for each $pn in $tr.reply.panels ?? []
+    if $pn.surface == $tok2 then
+      $panel = $pn
+    end
+  end
+  $c = get_once($SVC, "input.corners")
+  if $panel == nil or len($panel.enforced ?? []) != 0 or $panel.stalled == true or len($tr.reply.concealed ?? []) != 0 or type($c.reply) != "map" or type($c.reply.enforced) != "map" or $c.reply.enforced.top != 0 then
+    finish(false, "an owner-applied conceal was enforced anyway: truth panel " .. json_encode($panel) .. ", concealed " .. json_encode($tr.reply.concealed) .. ", input.corners " .. json_encode($c.reply), [$hp2, $lc2, $kp, $cp, $wp])
+  end
+  print("bus: owner panel applied the conceal itself; after grace + probe nothing enforced (enforced.top 0, stalled false)")
+  truth_matches($SVC, "truth with the owner panel self-concealed", [$hp2, $lc2, $kp, $cp, $wp])
+  $k1 = kill($lc2, 15)
+  $k2 = kill($hp2, 15)
+  -- 14f. exclusive zones: a 30 px top panel reserves its zone; the
+  -- maximised window takes the usable area, and grows back when it goes.
+  $ztok = "smoke-zone-" .. to_string(pid())
+  $zout = $logs .. "/zone-client.log"
+  $zc = spawn([$layer_client, "--namespace", $ztok, "--edge", "top", "--size", "30", "--exclusive", "30"], {env: $kenv, stdout: {file: $zout}, stderr: "stdout", detach: true})
+  $n = 0
+  while not contains(read_file($zout) ?? "", "mapped") and $n < 40
+    sleep(0.25)
+    $n = $n + 1
+  end
+  $okz = false
+  $n = 0
+  while not $okz and $n < 20
+    $o = first_output($SVC)
+    if $o != nil and $o.usable.y == $out.y + 30 and $o.usable.height == $out.height - 30 and $o.usable.x == $out.x and $o.usable.width == $out.width then
+      $okz = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $okz then
+    finish(false, "outputs usable never reserved the 30 px top zone: " .. json_encode(first_output($SVC)) .. "; client: " .. trim(read_file($zout) ?? ""), [$zc, $kp, $cp, $wp])
+  end
+  print("bus: top panel reserves 30 px: usable " .. json_encode($o.usable))
+  truth_matches($SVC, "truth with a 30 px exclusive zone", [$zc, $kp, $cp, $wp])
+  $mx = maximize_once($SVC, $wid, $gen)
+  if $mx.rc != 0 then
+    finish(false, "comp.window.maximize under the zone: rc " .. to_string($mx.rc) .. " " .. json_encode($mx.reply), [$zc, $kp, $cp, $wp])
+  end
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and $tw.window != nil and $tw.window.y == $out.y + 30 and $tw.window.x == $out.x and deep_eq($tw.configured, [$out.width, $out.height - 30]) then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $ok then
+    finish(false, "maximised under the zone: truth " .. json_encode($tw) .. ", expected y " .. to_string($out.y + 30) .. " and " .. to_string($out.width) .. "x" .. to_string($out.height - 30), [$zc, $kp, $cp, $wp])
+  end
+  print("bus: maximised into the usable area at y " .. to_string($tw.window.y) .. ", configured " .. json_encode($tw.configured))
+  truth_matches($SVC, "truth maximised under the zone", [$zc, $kp, $cp, $wp])
+  $zk = kill($zc, 15)
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $tw = truth_window($SVC, $wid)
+    if $tw != nil and $tw.window != nil and $tw.window.y == $out.y and deep_eq($tw.configured, [$out.width, $out.height]) then
+      $ok = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $ok then
+    finish(false, "the maximised window did not grow back when the panel left (killed " .. to_string($zk) .. "): truth " .. json_encode($tw), [$kp, $cp, $wp])
+  end
+  print("bus: panel gone, the maximised window grew back to " .. json_encode($tw.configured))
+  truth_matches($SVC, "truth after the zone left", [$kp, $cp, $wp])
+  $um = unmaximize_once($SVC, $wid, $gen)
+  if $um.rc != 0 then
+    finish(false, "comp.window.unmaximize after the zone: rc " .. to_string($um.rc) .. " " .. json_encode($um.reply), [$kp, $cp, $wp])
+  end
+  -- 14g. placement under a zone: with a 400 px top panel up, a new
+  -- window opens inside the usable area (y >= output y + 400), not centred
+  -- under the panel.
+  $ptok = "smoke-place-" .. to_string(pid())
+  $pout = $logs .. "/place-panel.log"
+  $pz = spawn([$layer_client, "--namespace", $ptok, "--edge", "top", "--size", "400", "--exclusive", "400"], {env: $kenv, stdout: {file: $pout}, stderr: "stdout", detach: true})
+  $okz = false
+  $n = 0
+  while not $okz and $n < 20
+    $o = first_output($SVC)
+    if $o != nil and $o.usable.y == $out.y + 400 then
+      $okz = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $okz then
+    finish(false, "the 400 px zone never reserved: " .. json_encode(first_output($SVC)) .. "; client: " .. trim(read_file($pout) ?? ""), [$pz, $kp, $cp, $wp])
+  end
+  $kp2 = spawn([$client], {env: $kenv, stdout: {file: $logs .. "/client2.log"}, stderr: "stdout", detach: true})
+  $row2 = nil
+  $n = 0
+  while $row2 == nil and $n < 40
+    for each $r in window_rows($SVC) ?? []
+      if $r.id != $wid then
+        $row2 = $r
+      end
+    end
+    if $row2 == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $row2 == nil then
+    finish(false, "the second client never mapped a window", [$kp2, $pz, $kp, $cp, $wp])
+  end
+  $tw2 = truth_window($SVC, $row2.id)
+  if $tw2 == nil or $tw2.window == nil or $tw2.window.y < $out.y + 400 or $tw2.window.y + $tw2.window.height > $out.y + $out.height then
+    finish(false, "a new window opened outside the usable area (y >= " .. to_string($out.y + 400) .. " wanted): truth " .. json_encode($tw2), [$kp2, $pz, $kp, $cp, $wp])
+  end
+  print("bus: new window s" .. to_string($row2.id) .. " opened inside the usable area at y " .. to_string($tw2.window.y))
+  truth_matches($SVC, "truth with a new window under a 400 px zone", [$kp2, $pz, $kp, $cp, $wp])
+  -- comp.window.raise: the first window, now under the second, rises.
+  $rb = json_encode({id: $wid, generation: $gen})
+  send $SVC comp.window.raise body=$rb timeout=5
+  if $rc != 0 or type($reply) != "map" or $reply.raised != true then
+    finish(false, "comp.window.raise s" .. to_string($wid) .. " under s" .. to_string($row2.id) .. ": rc " .. to_string($rc) .. " " .. json_encode($reply), [$kp2, $pz, $kp, $cp, $wp])
+  end
+  $st = get_once($SVC, "stack")
+  print("bus: comp.window.raise s" .. to_string($wid) .. " raised; stack " .. json_encode($st.reply))
+  -- 14g2. band (F3): windows.s<first>.band bottom puts it behind the second
+  -- in `stack`; a raise keeps it there (raised false); normal restores it.
+  $bd = set_once($SVC, "windows.s" .. to_string($wid) .. ".band", "bottom")
+  $bandread = get_once($SVC, "windows.s" .. to_string($wid) .. ".band").reply
+  $stb = get_once($SVC, "stack").reply
+  if $bd.rc != 0 or $bd.reply.old != "normal" or $bd.reply.new != "bottom" or $bandread != "bottom" or stack_index($stb, $wid) < stack_index($stb, $row2.id) then
+    finish(false, "band bottom: rc " .. to_string($bd.rc) .. " " .. json_encode($bd.reply) .. ", band " .. json_encode($bandread) .. ", stack " .. json_encode($stb), [$kp2, $pz, $kp, $cp, $wp])
+  end
+  send $SVC comp.window.raise body=$rb timeout=5
+  -- Captured at once: get_once's own send rebinds $rc / $reply.
+  $brc = $rc
+  $breply = $reply
+  $stb2 = get_once($SVC, "stack").reply
+  if $brc != 0 or type($breply) != "map" or $breply.raised != false or stack_index($stb2, $wid) < stack_index($stb2, $row2.id) then
+    finish(false, "raise of a bottom-band window: rc " .. to_string($brc) .. " " .. json_encode($breply) .. ", stack " .. json_encode($stb2), [$kp2, $pz, $kp, $cp, $wp])
+  end
+  $bn = set_once($SVC, "windows.s" .. to_string($wid) .. ".band", "normal")
+  $bx = set_once($SVC, "windows.s" .. to_string($wid) .. ".band", "top")
+  if $bn.rc != 0 or $bn.reply.new != "normal" or $bx.rc == 0 or $bx.reply.error != "invalid_value" then
+    finish(false, "band normal / top: " .. json_encode($bn.reply) .. ", " .. json_encode($bx.reply), [$kp2, $pz, $kp, $cp, $wp])
+  end
+  print("bus: band bottom put s" .. to_string($wid) .. " behind s" .. to_string($row2.id) .. " (stack " .. json_encode($stb) .. "), a raise kept it there, normal restored it, top refused")
+  $k3 = kill($kp2, 15)
+  $k4 = kill($pz, 15)
+  $n = 0
+  while len(window_rows($SVC) ?? []) > $BASE_WINDOWS + 1 and $n < 40
+    sleep(0.25)
+    $n = $n + 1
+  end
+  -- 14h. region select: a helper drags the human pointer (injected)
+  -- from (600,400) to (800,550) over plain background while
+  -- comp.region.select waits, taking a screencopy of the rectangle before it
+  -- lets go; the reply is the selected rectangle with the output's generation
+  -- (compd.truth's); a screencopy after the reply shows the overlay gone (the
+  -- clean-frame rule), the one during shows it (the check can fail); Escape
+  -- cancels a second selection; then, with the client stopped, the
+  -- compositor draws no frame (no leftover overlay timer).
+  $rhelper = $run_dir .. "/region-drag.mix"
+  $rshot_during = $logs .. "/region-during.ppm"
+  $rshot_after = $logs .. "/region-after.ppm"
+  $rregion = "600,400,200,150"
+  $rsteps = "sleep(0.6)\n"
+  for each $st in [{verb: "comp.input.pointer.move", args: {seat: "human", x: 600, y: 400}}, {verb: "comp.input.pointer.button", args: {seat: "human", button: "left", action: "press"}}, {verb: "comp.input.pointer.move", args: {seat: "human", x: 700, y: 480}}, {verb: "comp.input.pointer.move", args: {seat: "human", x: 800, y: 550}}]
+    $rsteps = $rsteps .. "$b = " .. json_encode(json_encode($st.args)) .. "\nsend " .. $SVC .. " " .. $st.verb .. " body=$b timeout=5\nprint(\"rc \" .. to_string($rc))\nsleep(0.05)\n"
+  end
+  $rsteps = $rsteps .. "sleep(0.3)\n$s = run_argv([" .. json_encode($shot) .. ", " .. json_encode($rshot_during) .. ", \"--region\", " .. json_encode($rregion) .. "], {timeout: 20})\nprint(\"shot \" .. to_string($s.exit_code) .. \" \" .. trim($s.stderr))\n"
+  $rsteps = $rsteps .. "$b = " .. json_encode(json_encode({seat: "human", button: "left", action: "release"})) .. "\nsend " .. $SVC .. " comp.input.pointer.button body=$b timeout=5\nprint(\"rc \" .. to_string($rc))\n"
+  write_file($rhelper, $rsteps)
+  $rh = spawn([$mix_bin, $rhelper], {env: $kenv, stdout: {file: $logs .. "/region-drag.log"}, stderr: "stdout", detach: true})
+  $rb = json_encode({timeout_ms: 8000})
+  send $SVC comp.region.select body=$rb timeout=15
+  $rrc = $rc
+  $rrep = $reply
+  $n = 0
+  while alive($rh) and $n < 30
+    sleep(0.1)
+    $n = $n + 1
+  end
+  $rlog = read_file($logs .. "/region-drag.log") ?? ""
+  $out_key = keys(get_once($SVC, "outputs").reply ?? {})[0]
+  $tgen = (truth_once($SVC).reply.output_generations ?? {})[$out_key] ?? nil
+  if $rrc != 0 or type($rrep) != "map" or $rrep.status != "selected" or type($rrep.region) != "map" or $rrep.region.x != 600 or $rrep.region.y != 400 or $rrep.region.width != 200 or $rrep.region.height != 150 or $rrep.coordinate_space != "output-local-logical" or $rrep.output_generation != $tgen or $tgen == nil then
+    finish(false, "comp.region.select: rc " .. to_string($rrc) .. " " .. json_encode($rrep) .. " (truth generation " .. json_encode($tgen) .. "); drag helper: " .. trim($rlog), [$kp, $cp, $wp])
+  end
+  print("bus: region select returned " .. json_encode($rrep.region) .. " on " .. to_string($rrep.output) .. " generation " .. to_string($rrep.output_generation))
+  $sa = run_argv([$shot, $rshot_after, "--region", $rregion], {env: $kenv, timeout: 20})
+  $pd = nil
+  if is_file($rshot_during) then
+    $pd = load_ppm($rshot_during)
+  end
+  $pa = nil
+  if $sa.exit_code == 0 then
+    $pa = load_ppm($rshot_after)
+  end
+  if $pd == nil or $pa == nil then
+    finish(false, "region screencopies: during " .. json_encode($pd != nil) .. " (helper: " .. trim($rlog) .. "), after exit " .. to_string($sa.exit_code) .. " " .. trim($sa.stderr), [$kp, $cp, $wp])
+  end
+  -- (1,1) sits on the overlay's outline; the shot's middle on plain background
+  -- (after) or the translucent fill (during).
+  $d_edge = pixel($pd, 1, 1)
+  $a_edge = pixel($pa, 1, 1)
+  $a_mid = pixel($pa, floor($pa.w / 2), floor($pa.h / 2))
+  if channel_gap($d_edge, $a_edge) <= 30 then
+    finish(false, "the overlay was not in the screencopy taken during the selection: during " .. json_encode($d_edge) .. " vs after " .. json_encode($a_edge), [$kp, $cp, $wp])
+  end
+  if channel_gap($a_edge, $a_mid) > 8 then
+    finish(false, "the overlay outlived the selection (clean-frame rule): after edge " .. json_encode($a_edge) .. " vs background " .. json_encode($a_mid), [$kp, $cp, $wp])
+  end
+  print("bus: overlay present during the drag " .. json_encode($d_edge) .. ", gone after the reply " .. json_encode($a_edge))
+  -- An Escape cancels: a second selection, cancelled by an injected key.
+  $ehelper = $run_dir .. "/region-escape.mix"
+  write_file($ehelper, "sleep(0.6)\n$b = " .. json_encode(json_encode({seat: "human", key: "Escape"})) .. "\nsend " .. $SVC .. " comp.input.key body=$b timeout=5\nprint(\"rc \" .. to_string($rc))\n")
+  $eh = spawn([$mix_bin, $ehelper], {stdout: {file: $logs .. "/region-escape.log"}, stderr: "stdout", detach: true})
+  send $SVC comp.region.select body=$rb timeout=15
+  if $rc != 0 or type($reply) != "map" or $reply.status != "cancelled" or $reply.reason != "escape" then
+    finish(false, "comp.region.select cancelled by Escape: rc " .. to_string($rc) .. " " .. json_encode($reply) .. "; helper: " .. trim(read_file($logs .. "/region-escape.log") ?? ""), [$kp, $cp, $wp])
+  end
+  print("bus: region select cancelled by Escape")
+  -- Idle after the selection: with the client stopped, no frame in 2 s.
+  $stopped = kill($kp, 19)
+  sleep(1)
+  $f0 = frames_now()
+  sleep(2)
+  $idle = frames_now() - $f0
+  $resumed = kill($kp, 18)
+  if $idle != 0 then
+    finish(false, to_string($idle) .. " frames in 2 s after the selection with the client stopped (stopped " .. to_string($stopped) .. "): a leftover overlay or timer", [$kp, $cp, $wp])
+  end
+  print("bus: idle after the selection: 0 frames in 2 s")
+  truth_matches($SVC, "truth after region select", [$kp, $cp, $wp])
+  -- 14i. key bindings (batch B): the nested bindings table is served; a human
+  -- Super+2 / Super+1 switches the workspace and never reaches the focused
+  -- client (weston-eventdemo --log-key), while a plain key does.
+  $bt = get_once($SVC, "bindings")
+  if $bt.rc != 0 or type($bt.reply) != "map" or $bt.reply.enabled != true or $bt.reply.profile != "nested" then
+    finish(false, "bindings: rc " .. to_string($bt.rc) .. " " .. json_encode($bt.reply), [$kp, $cp, $wp])
+  end
+  $has_jump = false
+  for each $row in $bt.reply.table ?? []
+    if $row.chord == "Super+2" and $row.action == "WorkspaceJump" then
+      $has_jump = true
+    end
+  end
+  if not $has_jump then
+    finish(false, "bindings.table has no Super+2 WorkspaceJump row: " .. json_encode($bt.reply.table), [$kp, $cp, $wp])
+  end
+  $eventdemo = which("weston-eventdemo")
+  $stdbuf = which("stdbuf")
+  if $eventdemo == nil or $stdbuf == nil then
+    finish(false, "14i needs weston-eventdemo and stdbuf on PATH (eventdemo " .. to_string($eventdemo) .. ", stdbuf " .. to_string($stdbuf) .. ")", [$kp, $cp, $wp])
+  end
+  $edlog = $logs .. "/eventdemo.log"
+  $ed = spawn([$stdbuf, "-oL", $eventdemo, "--log-key", "--title=smoke-keys"], {env: $kenv, stdout: {file: $edlog}, stderr: "stdout", detach: true})
+  $erow = nil
+  $n = 0
+  while $erow == nil and $n < 40
+    for each $r in window_rows($SVC) ?? []
+      if $r.title == "smoke-keys" then
+        $erow = $r
+      end
+    end
+    if $erow == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $erow == nil then
+    finish(false, "weston-eventdemo never mapped a window; log: " .. (read_file($edlog) ?? ""), [$ed, $kp, $cp, $wp])
+  end
+  -- A fresh map is presented (batch D).
+  $ewp = wait_once($SVC, {match: {id: $erow.id, generation: $erow.generation}, until: "presented", timeout_ms: 3000})
+  if $ewp.rc != 0 or type($ewp.reply) != "map" or type($ewp.reply.window) != "map" or $ewp.reply.window.id != $erow.id then
+    finish(false, "comp.window.wait presented on the fresh eventdemo map: rc " .. to_string($ewp.rc) .. " " .. json_encode($ewp.reply), [$ed, $kp, $cp, $wp])
+  end
+  $focused = false
+  $n = 0
+  while not $focused and $n < 20
+    $tr = truth_once($SVC)
+    if $tr.rc == 0 and type($tr.reply) == "map" and $tr.reply.focus.window != nil and $tr.reply.focus.window.id == $erow.id then
+      $focused = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $focused then
+    finish(false, "s" .. to_string($erow.id) .. " (eventdemo) never took keyboard focus", [$ed, $kp, $cp, $wp])
+  end
+  $ka = input_once($SVC, "comp.input.key", {seat: "human", key: "a"})
+  if $ka.rc != 0 then
+    finish(false, "human key a: rc " .. to_string($ka.rc) .. " " .. json_encode($ka.reply), [$ed, $kp, $cp, $wp])
+  end
+  $got_a = false
+  $n = 0
+  while not $got_a and $n < 20
+    if contains(read_file($edlog) ?? "", "key key: 30, ") then
+      $got_a = true
+    else
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $got_a then
+    finish(false, "a plain key never reached the focused client; eventdemo log: " .. (read_file($edlog) ?? ""), [$ed, $kp, $cp, $wp])
+  end
+  $fired0 = truth_once($SVC).reply.input.bindings.fired
+  $k2 = input_once($SVC, "comp.input.key", {seat: "human", key: "2", modifiers: ["super"]})
+  if $k2.rc != 0 then
+    finish(false, "human Super+2: rc " .. to_string($k2.rc) .. " " .. json_encode($k2.reply), [$ed, $kp, $cp, $wp])
+  end
+  $ws = nil
+  $n = 0
+  while $ws != 2 and $n < 20
+    $ws = get_once($SVC, "workspaces.current").reply
+    if $ws != 2 then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $tb = truth_once($SVC).reply.input.bindings
+  if $ws != 2 or $tb.fired != $fired0 + 1 or $tb.last != "WorkspaceJump" then
+    finish(false, "Super+2 did not switch to workspace 2: workspaces.current " .. json_encode($ws) .. ", truth bindings " .. json_encode($tb) .. " (fired before " .. to_string($fired0) .. "), reply " .. json_encode($k2.reply), [$ed, $kp, $cp, $wp])
+  end
+  $k1 = input_once($SVC, "comp.input.key", {seat: "human", key: "1", modifiers: ["super"]})
+  $n = 0
+  while $ws != 1 and $n < 20
+    $ws = get_once($SVC, "workspaces.current").reply
+    if $ws != 1 then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $k1.rc != 0 or $ws != 1 then
+    finish(false, "Super+1 did not switch back to workspace 1: rc " .. to_string($k1.rc) .. " " .. json_encode($k1.reply) .. ", workspaces.current " .. json_encode($ws), [$ed, $kp, $cp, $wp])
+  end
+  -- The bound digits (evdev 3 = 2, 2 = 1) never reached the client.
+  $edtext = read_file($edlog) ?? ""
+  if contains($edtext, "key key: 3, ") or contains($edtext, "key key: 2, ") then
+    finish(false, "a bound chord's key reached the client; eventdemo log: " .. $edtext, [$ed, $kp, $cp, $wp])
+  end
+  $tb2 = truth_once($SVC).reply.input.bindings
+  if $tb2.fired != $fired0 + 2 then
+    finish(false, "bindings fired " .. to_string($tb2.fired - $fired0) .. " times for two chords: truth " .. json_encode($tb2), [$ed, $kp, $cp, $wp])
+  end
+  print("bus: Super+2 / Super+1 switched workspaces 1 -> 2 -> 1 (bindings fired +2, total " .. to_string($tb2.fired) .. "); the client saw a, not the bound digits")
+  truth_matches($SVC, "truth after the binding chords", [$ed, $kp, $cp, $wp])
+  -- 14j. session lock (batch C): testkit-lock-client locks the session with
+  -- eventdemo (14i) mapped and focused. Bus reads focus.session_lock locked,
+  -- no windows.* rows and nameless, invisible windows; window verbs and
+  -- workspace sets answer `locked`; a human Super+2 switches nothing; a key
+  -- reaches the lock client and not eventdemo; the screen at eventdemo's
+  -- window shows the lock colour, not the window. SIGUSR1 unlocks: the
+  -- window, its pixels and its keyboard come back.
+  $lock_client = dirname($bin) .. "/testkit-lock-client"
+  if not is_file($lock_client) then
+    $lock_client = which("testkit-lock-client")
+  end
+  if $lock_client == nil then
+    finish(false, "14j needs testkit-lock-client beside the compositor or on PATH", [$ed, $kp, $cp, $wp])
+  end
+  $ew = truth_window($SVC, $erow.id)
+  if $ew == nil or $ew.window == nil then
+    finish(false, "no truth row for eventdemo s" .. to_string($erow.id), [$ed, $kp, $cp, $wp])
+  end
+  $probe_at = to_string(floor($ew.window.x + $ew.window.width / 2)) .. "," .. to_string(floor($ew.window.y + $ew.window.height / 2)) .. ",4,4"
+  $preshot = $logs .. "/prelock.ppm"
+  $ps = run_argv([$shot, $preshot, "--region", $probe_at], {env: $kenv, timeout: 20})
+  $pp = nil
+  if $ps.exit_code == 0 then
+    $pp = load_ppm($preshot)
+  end
+  if $pp == nil then
+    finish(false, "screencopy before the lock at " .. $probe_at .. ": exit " .. to_string($ps.exit_code) .. " " .. trim($ps.stderr), [$ed, $kp, $cp, $wp])
+  end
+  $window_px = pixel($pp, 1, 1)
+  $lock_colour = [24, 36, 56]
+  if channel_gap($window_px, $lock_colour) <= 12 then
+    finish(false, "eventdemo's pixel " .. json_encode($window_px) .. " is too close to the lock colour for the gate to tell them apart", [$ed, $kp, $cp, $wp])
+  end
+  $sl = get_once($SVC, "focus.session_lock")
+  if $sl.rc != 0 or $sl.reply != "none" then
+    finish(false, "focus.session_lock before the lock: rc " .. to_string($sl.rc) .. " " .. json_encode($sl.reply), [$ed, $kp, $cp, $wp])
+  end
+  $lklog = $logs .. "/lock-client.log"
+  $lk = spawn([$lock_client, "--hold", "60"], {env: $kenv, stdout: {file: $lklog}, stderr: "stdout", detach: true})
+  $phase = nil
+  $n = 0
+  while $phase != "locked" and $n < 40
+    $phase = get_once($SVC, "focus.session_lock").reply
+    if $phase != "locked" then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $locked_seen = false
+  $n = 0
+  while not $locked_seen and $n < 20
+    $locked_seen = contains(read_file($lklog) ?? "", "locked\n")
+    if not $locked_seen then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $phase != "locked" or not $locked_seen then
+    finish(false, "the lock never confirmed: focus.session_lock " .. json_encode($phase) .. "; lock client log: " .. (read_file($lklog) ?? ""), [$lk, $ed, $kp, $cp, $wp])
+  end
+  $tl = truth_once($SVC).reply.session_lock
+  if $tl.phase != "locked" or len($tl.surfaces ?? []) < 1 then
+    finish(false, "compd.truth session_lock " .. json_encode($tl), [$lk, $ed, $kp, $cp, $wp])
+  end
+  print("bus: session locked (generation " .. to_string($tl.generation) .. ", lock surface s" .. to_string($tl.surfaces[0]) .. ")")
+  -- Redacted: no windows.* rows; the window rows are invisible and nameless.
+  $wr = get_once($SVC, "windows")
+  $sr = get_once($SVC, "surfaces.s" .. to_string($erow.id))
+  if type($wr.reply) != "map" or len(keys($wr.reply)) != 0 or type($sr.reply) != "map" or $sr.reply.visible != false or $sr.reply.title != nil or $sr.reply.app_id != nil then
+    finish(false, "not redacted under the lock: windows " .. json_encode($wr.reply) .. ", s" .. to_string($erow.id) .. " " .. json_encode($sr.reply), [$lk, $ed, $kp, $cp, $wp])
+  end
+  -- `locked` refusals.
+  $fb = json_encode({id: $erow.id, generation: $erow.generation})
+  send $SVC comp.window.focus body=$fb timeout=5
+  $frc = $rc
+  $freply = $reply
+  $ws_set = set_once($SVC, "workspaces.current", 2)
+  if $frc != 10 or type($freply) != "map" or $freply.error != "locked" or $ws_set.rc != 10 or $ws_set.reply.error != "locked" then
+    finish(false, "under the lock: comp.window.focus rc " .. to_string($frc) .. " " .. json_encode($freply) .. ", workspaces.current set rc " .. to_string($ws_set.rc) .. " " .. json_encode($ws_set.reply), [$lk, $ed, $kp, $cp, $wp])
+  end
+  -- Keys: a binding chord is not a binding, and a key reaches the lock
+  -- client, never eventdemo (b = evdev 48).
+  $kl = input_once($SVC, "comp.input.key", {seat: "human", key: "2", modifiers: ["super"]})
+  $kb = input_once($SVC, "comp.input.key", {seat: "human", key: "b"})
+  $got_b = false
+  $n = 0
+  while not $got_b and $n < 20
+    $got_b = contains(read_file($lklog) ?? "", "key 48 pressed")
+    if not $got_b then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $wsl = get_once($SVC, "workspaces.current").reply
+  $edtext = read_file($edlog) ?? ""
+  if $kl.rc != 0 or $wsl != 1 or $kb.rc != 0 or not $got_b or contains($edtext, "key key: 48, ") then
+    finish(false, "keys under the lock: Super+2 rc " .. to_string($kl.rc) .. " (workspaces.current " .. json_encode($wsl) .. "), b rc " .. to_string($kb.rc) .. " " .. json_encode($kb.reply) .. ", lock client saw b " .. to_string($got_b) .. ", eventdemo saw b " .. to_string(contains($edtext, "key key: 48, ")), [$lk, $ed, $kp, $cp, $wp])
+  end
+  -- On screen at eventdemo's window: the lock colour, not the window.
+  $lshot = $logs .. "/locked.ppm"
+  $ls = run_argv([$shot, $lshot, "--region", $probe_at], {env: $kenv, timeout: 20})
+  $lp = nil
+  if $ls.exit_code == 0 then
+    $lp = load_ppm($lshot)
+  end
+  if $lp == nil then
+    finish(false, "screencopy under the lock: exit " .. to_string($ls.exit_code) .. " " .. trim($ls.stderr), [$lk, $ed, $kp, $cp, $wp])
+  end
+  $lpx = pixel($lp, 1, 1)
+  if channel_gap($lpx, $lock_colour) > 12 then
+    finish(false, "the locked screen at " .. $probe_at .. " shows " .. json_encode($lpx) .. " (the window was " .. json_encode($window_px) .. "), not the lock colour " .. json_encode($lock_colour), [$lk, $ed, $kp, $cp, $wp])
+  end
+  print("bus: locked: the screen shows the lock surface " .. json_encode($lpx) .. " where the window was " .. json_encode($window_px) .. "; b reached the lock client only; Super+2 and window verbs refused")
+  -- Unlock.
+  $ul = kill($lk, 10)
+  $phase = nil
+  $n = 0
+  while $phase != "none" and $n < 40
+    $phase = get_once($SVC, "focus.session_lock").reply
+    if $phase != "none" then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $phase != "none" then
+    finish(false, "SIGUSR1 (" .. to_string($ul) .. ") did not unlock: focus.session_lock " .. json_encode($phase) .. "; lock client log: " .. (read_file($lklog) ?? ""), [$lk, $ed, $kp, $cp, $wp])
+  end
+  $n = 0
+  while alive($lk) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($lk) then
+    $lkk = kill($lk, 15)
+  end
+  $wr = get_once($SVC, "windows")
+  if type($wr.reply) != "map" or $wr.reply["s" .. to_string($erow.id)] == nil then
+    finish(false, "s" .. to_string($erow.id) .. " did not come back after the unlock: windows " .. json_encode($wr.reply), [$ed, $kp, $cp, $wp])
+  end
+  -- Its keyboard came back (c = evdev 46) and so did its pixels.
+  $kc = input_once($SVC, "comp.input.key", {seat: "human", key: "c"})
+  $got_c = false
+  $n = 0
+  while not $got_c and $n < 20
+    $got_c = contains(read_file($edlog) ?? "", "key key: 46, ")
+    if not $got_c then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $ushot = $logs .. "/unlocked.ppm"
+  $us = run_argv([$shot, $ushot, "--region", $probe_at], {env: $kenv, timeout: 20})
+  $up = nil
+  if $us.exit_code == 0 then
+    $up = load_ppm($ushot)
+  end
+  $upx = nil
+  if $up != nil then
+    $upx = pixel($up, 1, 1)
+  end
+  if not $got_c or $upx == nil or channel_gap($upx, $window_px) > 12 then
+    finish(false, "after the unlock: c rc " .. to_string($kc.rc) .. " " .. json_encode($kc.reply) .. ", eventdemo saw c " .. to_string($got_c) .. "; screencopy exit " .. to_string($us.exit_code) .. ", pixel " .. json_encode($upx) .. " vs the window's " .. json_encode($window_px), [$ed, $kp, $cp, $wp])
+  end
+  print("bus: unlocked; s" .. to_string($erow.id) .. " back in windows.*, on screen and holding the keyboard")
+  truth_matches($SVC, "truth after the unlock", [$ed, $kp, $cp, $wp])
+  -- 14k. exclusive latch (F2): a Top layer asking for an exclusive keyboard
+  -- latches at MAP, before any key: focus.exclusive_latch names it and
+  -- focus.keyboard is it; comp.window.focus on eventdemo answers focused
+  -- false, reason exclusive_layer; when the layer goes the keyboard returns
+  -- to eventdemo (the highest visible window).
+  $ltok = "smoke-latch-" .. to_string(pid())
+  $llog = $logs .. "/latch-layer.log"
+  $ll = spawn([$layer_client, "--namespace", $ltok, "--edge", "top", "--size", "40", "--layer", "top", "--keyboard", "exclusive"], {env: $kenv, stdout: {file: $llog}, stderr: "stdout", detach: true})
+  $lf = nil
+  $n = 0
+  while ($lf == nil or $lf.exclusive_latch == nil) and $n < 40
+    $lf = get_once($SVC, "focus").reply
+    if type($lf) != "map" or $lf.exclusive_latch == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if type($lf) != "map" or $lf.exclusive_latch == nil or $lf.keyboard != $lf.exclusive_latch then
+    finish(false, "the exclusive layer did not latch at map: focus " .. json_encode($lf) .. "; layer log: " .. (read_file($llog) ?? ""), [$ll, $ed, $kp, $cp, $wp])
+  end
+  $lfb = json_encode({id: $erow.id, generation: $erow.generation})
+  send $SVC comp.window.focus body=$lfb timeout=5
+  if $rc != 0 or type($reply) != "map" or $reply.focused != false or $reply.reason != "exclusive_layer" then
+    finish(false, "comp.window.focus under the latch: rc " .. to_string($rc) .. " " .. json_encode($reply), [$ll, $ed, $kp, $cp, $wp])
+  end
+  print("bus: exclusive layer s" .. to_string($lf.exclusive_latch) .. " latched at map (keyboard on it, no key sent); comp.window.focus refused exclusive_layer")
+  $lk_ = kill($ll, 15)
+  $back = nil
+  $n = 0
+  while $back != $erow.id and $n < 40
+    $bf = get_once($SVC, "focus").reply
+    if type($bf) == "map" and $bf.exclusive_latch == nil then
+      $back = $bf.keyboard
+    end
+    if $back != $erow.id then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $back != $erow.id then
+    finish(false, "after the latched layer left, focus.keyboard is " .. json_encode($back) .. ", not eventdemo s" .. to_string($erow.id) .. " (killed " .. to_string($lk_) .. ")", [$ed, $kp, $cp, $wp])
+  end
+  print("bus: latch released; the keyboard returned to s" .. to_string($erow.id))
+  -- 14m. X11 (E1, live): xev under compd's Xwayland maps as an
+  -- x11-toplevel stamped on workspace 1 with _NET_WM_DESKTOP published; a
+  -- switch to workspace 2 sets _NET_WM_STATE (HIDDEN) on it and back clears
+  -- it (xev logs its own PropertyNotify events); an injected human key
+  -- reaches it; the polite close ends it.
+  $xev = which("xev")
+  $stdbuf_x = which("stdbuf")
+  if $xev == nil or $stdbuf_x == nil then
+    finish(false, "14m needs xev and stdbuf on PATH (xev " .. to_string($xev) .. ")", [$ed, $kp, $cp, $wp])
+  end
+  $xdisplay = nil
+  $n = 0
+  while $xdisplay == nil and $n < 40
+    $xdisplay = get_once($SVC, "xwayland.display").reply
+    if $xdisplay == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $xdisplay == nil then
+    finish(false, "14m: Xwayland never published xwayland.display", [$ed, $kp, $cp, $wp])
+  end
+  $xenv = $kenv
+  $xenv["DISPLAY"] = $xdisplay
+  $xlog = $logs .. "/xev.log"
+  $xp = spawn([$stdbuf_x, "-oL", $xev], {env: $xenv, stdout: {file: $xlog}, stderr: "stdout", detach: true})
+  $xid = nil
+  $xgen = nil
+  $n = 0
+  while $xid == nil and $n < 40
+    $sf = get_once($SVC, "surfaces").reply
+    if type($sf) == "map" then
+      for each $k in keys($sf)
+        $row_x = $sf[$k]
+        if type($row_x) == "map" and $row_x.role == "x11-toplevel" and $row_x.mapped == true then
+          $xid = $row_x.id
+          $xgen = $row_x.generation
+        end
+      end
+    end
+    if $xid == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $xid == nil then
+    finish(false, "14m: xev never mapped an x11-toplevel; log: " .. (read_file($xlog) ?? ""), [$xp, $ed, $kp, $cp, $wp])
+  end
+  $xws = get_once($SVC, "surfaces.s" .. to_string($xid) .. ".workspace").reply
+  $desk = false
+  $n = 0
+  while not $desk and $n < 20
+    $desk = contains(read_file($xlog) ?? "", "(_NET_WM_DESKTOP)")
+    if not $desk then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $xws != 1 or not $desk then
+    finish(false, "14m: xev s" .. to_string($xid) .. " workspace " .. json_encode($xws) .. ", _NET_WM_DESKTOP published " .. to_string($desk), [$xp, $ed, $kp, $cp, $wp])
+  end
+  $ns0 = net_state_changes($xlog)
+  $sw2 = switch_once($SVC, 2)
+  $n = 0
+  while net_state_changes($xlog) <= $ns0 and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  $ns1 = net_state_changes($xlog)
+  $sw1 = switch_once($SVC, 1)
+  $n = 0
+  while net_state_changes($xlog) <= $ns1 and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  $ns2 = net_state_changes($xlog)
+  if $sw2.rc != 0 or $sw1.rc != 0 or $ns1 <= $ns0 or $ns2 <= $ns1 then
+    finish(false, "14m: _NET_WM_STATE did not follow the switch (changes " .. to_string($ns0) .. " -> " .. to_string($ns1) .. " -> " .. to_string($ns2) .. ")", [$xp, $ed, $kp, $cp, $wp])
+  end
+  $xk = input_once($SVC, "comp.input.key", {seat: "human", key: "a", window: {id: $xid, generation: $xgen}})
+  $xkrc = $xk.rc
+  $gotk = false
+  $n = 0
+  while not $gotk and $n < 20
+    $gotk = contains(read_file($xlog) ?? "", "keysym 0x61, a)")
+    if not $gotk then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $xkrc != 0 or not $gotk then
+    finish(false, "14m: a key to xev: rc " .. to_string($xkrc) .. " " .. json_encode($xk.reply) .. ", xev saw it " .. to_string($gotk), [$xp, $ed, $kp, $cp, $wp])
+  end
+  -- 14m2. X11 requests (E2), sent with wmctrl as a pager would, read back
+  -- with xprop: _NET_CURRENT_DESKTOP switches; _NET_WM_DESKTOP moves xev
+  -- without a switch (xprop reads 1) and back; an index past the count is
+  -- refused; _NET_ACTIVE_WINDOW focuses it; the root says 4 desktops.
+  $wmctrl = which("wmctrl")
+  $xprop = which("xprop")
+  if $wmctrl == nil or $xprop == nil then
+    finish(false, "14m2 needs wmctrl and xprop on PATH (wmctrl " .. to_string($wmctrl) .. ", xprop " .. to_string($xprop) .. ")", [$xp, $ed, $kp, $cp, $wp])
+  end
+  $xwin = nil
+  $wm = re_find(read_file($xlog) ?? "", "Outer window is (0x[0-9a-fA-F]+)")
+  if len($wm) > 0 then
+    $xwin = $wm[0].groups[0]
+  end
+  if $xwin == nil then
+    finish(false, "14m2: no 'Outer window is 0x…' line in the xev log", [$xp, $ed, $kp, $cp, $wp])
+  end
+  $c1 = wm_ctl($wmctrl, $xenv, ["-s", "1"])
+  $cur = await_current($SVC, 2)
+  $c0 = wm_ctl($wmctrl, $xenv, ["-s", "0"])
+  $cur0 = await_current($SVC, 1)
+  if $c1.exit_code != 0 or $cur != 2 or $cur0 != 1 then
+    finish(false, "14m2: _NET_CURRENT_DESKTOP: wmctrl -s 1 exit " .. to_string($c1.exit_code) .. " -> current " .. json_encode($cur) .. ", -s 0 -> " .. json_encode($cur0), [$xp, $ed, $kp, $cp, $wp])
+  end
+  $mv = wm_ctl($wmctrl, $xenv, ["-i", "-r", $xwin, "-t", "1"])
+  $n = 0
+  $xws2 = nil
+  while $xws2 != 2 and $n < 20
+    $xws2 = get_once($SVC, "surfaces.s" .. to_string($xid) .. ".workspace").reply
+    if $xws2 != 2 then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $pd = run_argv([$xprop, "-id", $xwin, "_NET_WM_DESKTOP"], {env: $xenv, timeout: 10})
+  $curm = get_once($SVC, "workspaces.current").reply
+  if $mv.exit_code != 0 or $xws2 != 2 or not contains($pd.stdout, "= 1") or $curm != 1 then
+    finish(false, "14m2: _NET_WM_DESKTOP 1: workspace " .. json_encode($xws2) .. ", xprop '" .. trim($pd.stdout) .. "', current " .. json_encode($curm), [$xp, $ed, $kp, $cp, $wp])
+  end
+  -- Negative control: an index past the count (4 desktops) is refused. wmctrl
+  -- cannot send sticky (0xFFFFFFFF): its `-t -1` means "the current desktop",
+  -- so the sticky refusal is covered by inspection of control.rs only.
+  $sticky = wm_ctl($wmctrl, $xenv, ["-i", "-r", $xwin, "-t", "4"])
+  sleep(0.5)
+  $xws3 = get_once($SVC, "surfaces.s" .. to_string($xid) .. ".workspace").reply
+  if $xws3 != 2 then
+    finish(false, "14m2: an out-of-range desktop request (-t 4) moved xev to " .. json_encode($xws3), [$xp, $ed, $kp, $cp, $wp])
+  end
+  $back = wm_ctl($wmctrl, $xenv, ["-i", "-r", $xwin, "-t", "0"])
+  $n = 0
+  $xws4 = nil
+  while $xws4 != 1 and $n < 20
+    $xws4 = get_once($SVC, "surfaces.s" .. to_string($xid) .. ".workspace").reply
+    if $xws4 != 1 then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  -- Activation: focus eventdemo first, then ask for xev.
+  $efb = json_encode({id: $erow.id, generation: $erow.generation})
+  send $SVC comp.window.focus body=$efb timeout=5
+  $act = wm_ctl($wmctrl, $xenv, ["-i", "-a", $xwin])
+  $kfocus = nil
+  $n = 0
+  while $kfocus != $xid and $n < 20
+    $kfocus = get_once($SVC, "focus.keyboard").reply
+    if $kfocus != $xid then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $rootd = run_argv([$xprop, "-root", "_NET_NUMBER_OF_DESKTOPS"], {env: $xenv, timeout: 10})
+  if $xws4 != 1 or $act.exit_code != 0 or $kfocus != $xid or not contains($rootd.stdout, "= 4") then
+    finish(false, "14m2: back to desktop 0 -> workspace " .. json_encode($xws4) .. "; activate exit " .. to_string($act.exit_code) .. " -> focus.keyboard " .. json_encode($kfocus) .. "; root '" .. trim($rootd.stdout) .. "'", [$xp, $ed, $kp, $cp, $wp])
+  end
+  print("bus: X11 requests: _NET_CURRENT_DESKTOP switched 1 -> 2 -> 1; _NET_WM_DESKTOP moved xev (xprop '" .. trim($pd.stdout) .. "') and back, out-of-range refused; _NET_ACTIVE_WINDOW focused it; '" .. trim($rootd.stdout) .. "'")
+  $xc = close_once($SVC, $xid, $xgen)
+  $n = 0
+  while alive($xp) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($xp) then
+    $xkill = kill($xp, 15)
+    print("bus: note: xev ignored comp.window.close (" .. json_encode($xc.reply) .. "); killed " .. to_string($xkill))
+  end
+  print("bus: X11 xev s" .. to_string($xid) .. " on DISPLAY " .. to_string($xdisplay) .. ": _NET_WM_DESKTOP published, HIDDEN followed workspace 2 and back, a key reached it, closed")
+  -- 14n. hidden windows take no input (E5): eventdemo is sent to workspace 2
+  -- (no switch) and reads visible false; a
+  -- human click where it sat reaches something else (never s<eventdemo>),
+  -- focus does not go to it and the workspace does not switch to it. Then
+  -- it comes back. (Touch and tablet, the paths E5 changes, have no Bus
+  -- injection verb; the pointer exercises the same hit driver's precondition
+  -- through the canvas press.)
+  $ew5 = truth_window($SVC, $erow.id)
+  $sb5 = json_encode({id: $erow.id, generation: $erow.generation, index: 2, follow: false})
+  send $SVC comp.window.send_to_workspace body=$sb5 timeout=5
+  $s5rc = $rc
+  $hid = nil
+  $n = 0
+  while $hid != false and $n < 20
+    $hid = get_once($SVC, "surfaces.s" .. to_string($erow.id) .. ".visible").reply
+    if $hid != false then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $s5rc != 0 or $hid != false or $ew5 == nil or $ew5.window == nil then
+    finish(false, "14n: send eventdemo to workspace 2: rc " .. to_string($s5rc) .. ", visible " .. json_encode($hid), [$ed, $kp, $cp, $wp])
+  end
+  $cx = floor($ew5.window.x + $ew5.window.width / 2)
+  $cy = floor($ew5.window.y + $ew5.window.height / 2)
+  $m5 = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: $cx, y: $cy})
+  $b5 = input_once($SVC, "comp.input.pointer.button", {seat: "human", button: "left"})
+  sleep(0.3)
+  $f5 = get_once($SVC, "focus").reply
+  $cur5 = get_once($SVC, "workspaces.current").reply
+  $tgt5 = nil
+  if type($b5.reply) == "map" and type($b5.reply.target) == "map" then
+    $tgt5 = $b5.reply.target.id
+  end
+  $fw5 = nil
+  if type($f5) == "map" and type($f5.window) == "map" then
+    $fw5 = $f5.window.id
+  end
+  if $tgt5 == $erow.id or $fw5 == $erow.id or $cur5 != 1 then
+    finish(false, "14n: a click where hidden s" .. to_string($erow.id) .. " sat reached it: target " .. json_encode($tgt5) .. ", focus.window " .. json_encode($fw5) .. ", current " .. json_encode($cur5), [$ed, $kp, $cp, $wp])
+  end
+  $bk5 = json_encode({id: $erow.id, generation: $erow.generation, index: 1, follow: false})
+  send $SVC comp.window.send_to_workspace body=$bk5 timeout=5
+  print("bus: hidden s" .. to_string($erow.id) .. " took no click (target " .. json_encode($tgt5) .. ", focus " .. json_encode($fw5) .. "); back on workspace 1")
+  -- 14o. X11 decoration (E6): xlogo (no Motif refusal) wears compd's chrome:
+  -- compd.truth's chrome block lists it as decorated with a close button;
+  -- a human click on that button closes it (WM_DELETE_WINDOW).
+  $xlogo = which("xlogo")
+  if $xlogo == nil then
+    finish(false, "14o needs xlogo on PATH", [$ed, $kp, $cp, $wp])
+  end
+  $xl = spawn([$xlogo], {env: $xenv, stdout: {file: $logs .. "/xlogo.log"}, stderr: "stdout", detach: true})
+  $lid = nil
+  $close = nil
+  $n = 0
+  while $close == nil and $n < 40
+    $tr6 = truth_once($SVC).reply
+    if type($tr6) == "map" and type($tr6.chrome) == "map" and type($tr6.chrome.windows) == "map" then
+      $sf6 = get_once($SVC, "surfaces").reply
+      for each $k in keys($sf6 ?? {})
+        $r6 = $sf6[$k]
+        if type($r6) == "map" and $r6.role == "x11-toplevel" and $r6.mapped == true then
+          $lid = $r6.id
+        end
+      end
+      if $lid != nil then
+        $cw = $tr6.chrome.windows[to_string($lid)]
+        if type($cw) == "map" and type($cw.buttons) == "map" and type($cw.buttons.close) == "list" then
+          $close = $cw.buttons.close
+        end
+      end
+    end
+    if $close == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $close == nil then
+    finish(false, "14o: xlogo (s" .. json_encode($lid) .. ") never wore compd chrome with a close button", [$xl, $ed, $kp, $cp, $wp])
+  end
+  $cbx = floor($close[0] + $close[2] / 2)
+  $cby = floor($close[1] + $close[3] / 2)
+  $m6 = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: $cbx, y: $cby})
+  $b6 = input_once($SVC, "comp.input.pointer.button", {seat: "human", button: "left"})
+  $n = 0
+  while alive($xl) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($xl) then
+    $xlk = kill($xl, 15)
+    finish(false, "14o: a click on xlogo's chrome close button (" .. to_string($cbx) .. "," .. to_string($cby) .. ") did not close it (move rc " .. to_string($m6.rc) .. ", button " .. json_encode($b6.reply) .. ")", [$ed, $kp, $cp, $wp])
+  end
+  print("bus: X11 xlogo s" .. to_string($lid) .. " wore compd chrome; its close button closed it")
+  -- 14p. X11 placement (E3): xlogo -geometry 200x150+400+300 opens at its
+  -- stated origin (inside the usable area) and size; a plain xlogo cascades
+  -- (origin 36 + 48k); both close politely.
+  fn x11_row($svc, $exclude)
+    $sf = get_once($svc, "surfaces").reply
+    for each $k in keys($sf ?? {})
+      $r = $sf[$k]
+      if type($r) == "map" and $r.role == "x11-toplevel" and $r.mapped == true and not contains($exclude, $r.id) then
+        return $r
+      end
+    end
+    return nil
+  end
+  fn await_x11_row($svc, $exclude)
+    $n = 0
+    $r = nil
+    while $r == nil and $n < 40
+      $r = x11_row($svc, $exclude)
+      if $r == nil then
+        sleep(0.25)
+        $n = $n + 1
+      end
+    end
+    return $r
+  end
+  $xa = spawn([$xlogo, "-geometry", "200x150+400+300"], {env: $xenv, stdout: {file: $logs .. "/xlogo-a.log"}, stderr: "stdout", detach: true})
+  $ra = await_x11_row($SVC, [])
+  $ok = false
+  $n = 0
+  while not $ok and $n < 20
+    $ra = x11_row($SVC, []) ?? $ra
+    $ok = $ra != nil and $ra.x == 400 and $ra.y == 300 and $ra.width == 200 and $ra.height == 150
+    if not $ok then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $ok then
+    finish(false, "14p: xlogo -geometry 200x150+400+300 placed at " .. json_encode($ra), [$xa, $ed, $kp, $cp, $wp])
+  end
+  $xb = spawn([$xlogo], {env: $xenv, stdout: {file: $logs .. "/xlogo-b.log"}, stderr: "stdout", detach: true})
+  $rb = await_x11_row($SVC, [$ra.id])
+  -- The slot is relative to the output's usable area; chrome may push it in.
+  $ux = 0
+  $uy = 0
+  $opx = get_once($SVC, "outputs").reply
+  if $rb != nil and type($opx) == "map" and $rb.output != nil and $opx[$rb.output] != nil then
+    $ux = $opx[$rb.output].usable.x
+    $uy = $opx[$rb.output].usable.y
+  end
+  $cascaded = $rb != nil and $rb.x - $ux >= 36 and $rb.x - $ux < 36 + 48 * 6 and $rb.y - $uy >= 36 and $rb.y - $uy < 36 + 48 * 6 + 48
+  if not $cascaded then
+    finish(false, "14p: a plain xlogo did not cascade: " .. json_encode($rb), [$xa, $xb, $ed, $kp, $cp, $wp])
+  end
+  $ca = close_once($SVC, $ra.id, $ra.generation)
+  $cb = close_once($SVC, $rb.id, $rb.generation)
+  $n = 0
+  while (alive($xa) or alive($xb)) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($xa) then
+    $ka = kill($xa, 15)
+  end
+  if alive($xb) then
+    $kb = kill($xb, 15)
+  end
+  print("bus: X11 placement: stated origin honoured " .. json_encode([$ra.x, $ra.y, $ra.width, $ra.height]) .. "; plain xlogo cascaded to " .. json_encode([$rb.x, $rb.y]))
+  -- 14q. An override-redirect menu takes no focus (E4): Ctrl+press
+  -- on an xterm pops its Main Options menu, an override-redirect window. While
+  -- it is up the keyboard stays on the xterm and the menu is never focused or
+  -- activated. Released away from the menu (nothing selected), it closes.
+  fn or_row($svc)
+    $sf = get_once($svc, "surfaces").reply
+    for each $k in keys($sf ?? {})
+      $r = $sf[$k]
+      if type($r) == "map" and $r.role == "x11-override-redirect" and $r.mapped == true then
+        return $r
+      end
+    end
+    return nil
+  end
+  $xterm = which("xterm")
+  if $xterm == nil then
+    finish(false, "14q needs xterm on PATH", [$ed, $kp, $cp, $wp])
+  end
+  $xt = spawn([$xterm], {env: $xenv, stdout: {file: $logs .. "/xterm.log"}, stderr: "stdout", detach: true})
+  $tr = await_x11_row($SVC, [])
+  if $tr == nil then
+    finish(false, "14q: xterm never mapped", [$xt, $ed, $kp, $cp, $wp])
+  end
+  $kf0 = nil
+  $n = 0
+  while $kf0 != $tr.id and $n < 20
+    $kf0 = get_once($SVC, "focus.keyboard").reply
+    if $kf0 != $tr.id then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  $tcx = floor($tr.x + $tr.width / 2)
+  $tcy = floor($tr.y + $tr.height / 2)
+  $m7 = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: $tcx, y: $tcy})
+  $c7 = input_once($SVC, "comp.input.key", {seat: "human", key: "Control_L", action: "press"})
+  $b7 = input_once($SVC, "comp.input.pointer.button", {seat: "human", button: "left", action: "press"})
+  $mr = nil
+  $n = 0
+  while $mr == nil and $n < 20
+    $mr = or_row($SVC)
+    if $mr == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  sleep(0.3)
+  $kf1 = get_once($SVC, "focus.keyboard").reply
+  $mr1 = nil
+  if $mr != nil then
+    $mr1 = get_once($SVC, "surfaces.s" .. to_string($mr.id)).reply
+  end
+  -- Away from the menu (below-right of the xterm), then release: no item.
+  $m8 = input_once($SVC, "comp.input.pointer.move", {seat: "human", x: floor($tr.x + $tr.width + 60), y: floor($tr.y + $tr.height + 60)})
+  $b8 = input_once($SVC, "comp.input.pointer.button", {seat: "human", button: "left", action: "release"})
+  $c8 = input_once($SVC, "comp.input.key", {seat: "human", key: "Control_L", action: "release"})
+  $n = 0
+  while or_row($SVC) != nil and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  $kf2 = get_once($SVC, "focus.keyboard").reply
+  $menu_ok = $mr1 != nil and $mr1.focused == false and $mr1.activated == false
+  if $kf0 != $tr.id or $mr == nil or not $menu_ok or $kf1 != $tr.id or $kf2 != $tr.id or or_row($SVC) != nil then
+    $xtk = kill($xt, 15)
+    finish(false, "14q: xterm s" .. to_string($tr.id) .. " menu " .. json_encode($mr1) .. "; focus.keyboard before " .. json_encode($kf0) .. ", with the menu up " .. json_encode($kf1) .. ", after " .. json_encode($kf2) .. " (ctrl rc " .. to_string($c7.rc) .. ", press rc " .. to_string($b7.rc) .. ")", [$ed, $kp, $cp, $wp])
+  end
+  $xtc = close_once($SVC, $tr.id, $tr.generation)
+  $n = 0
+  while alive($xt) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($xt) then
+    $xtk2 = kill($xt, 15)
+  end
+  print("bus: xterm s" .. to_string($tr.id) .. " Ctrl+click menu s" .. to_string($mr.id) .. " (override-redirect) took no focus; the keyboard stayed on the xterm")
+  -- 14r. Xwayland's one retry (E7; LAST X11 step, it leaves X11 down): kill
+  -- compd's Xwayland. xwayland.display goes null, state reads retrying,
+  -- failures 1; within the 60 s backstop (+15 s) a new server is ready and
+  -- an X client maps on it. Kill it again: failed, failures 2, display null,
+  -- and it stays down.
+  fn xwayland_pid($compd)
+    $path = "/proc/" .. to_string($compd) .. "/task/" .. to_string($compd) .. "/children"
+    if not exists($path) then
+      return nil
+    end
+    for each $c in split(trim(read_file($path)), " ")
+      $comm = "/proc/" .. $c .. "/comm"
+      $status = "/proc/" .. $c .. "/status"
+      -- A killed server may linger as a zombie until it is reaped: not alive.
+      if $c != "" and exists($comm) and trim(read_file($comm)) == "Xwayland" and exists($status) and not contains(read_file($status), "State:\tZ") then
+        return to_number($c)
+      end
+    end
+    return nil
+  end
+  fn await_xwayland($svc, $want, $tries)
+    $n = 0
+    $st = nil
+    while $st != $want and $n < $tries
+      $st = get_once($svc, "xwayland.state").reply
+      if $st != $want then
+        sleep(0.5)
+        $n = $n + 1
+      end
+    end
+    return $st
+  end
+  $xw1 = xwayland_pid($cp)
+  if $xw1 == nil then
+    finish(false, "14r: no Xwayland child of compd (pid " .. to_string($cp) .. ")", [$ed, $kp, $cp, $wp])
+  end
+  $k1 = kill($xw1, 9)
+  $st1 = await_xwayland($SVC, "retrying", 20)
+  $f1 = get_once($SVC, "xwayland.failures").reply
+  $d1 = get_once($SVC, "xwayland.display").reply
+  if $st1 != "retrying" or $f1 != 1 or $d1 != nil then
+    finish(false, "14r: after the first kill: state " .. json_encode($st1) .. ", failures " .. json_encode($f1) .. ", display " .. json_encode($d1), [$ed, $kp, $cp, $wp])
+  end
+  $st2 = await_xwayland($SVC, "ready", 150)
+  $d2 = get_once($SVC, "xwayland.display").reply
+  if $st2 != "ready" or $d2 == nil or alive($cp) == false then
+    finish(false, "14r: the retry never came up: state " .. json_encode($st2) .. ", display " .. json_encode($d2), [$ed, $kp, $cp, $wp])
+  end
+  $renv = $kenv
+  $renv["DISPLAY"] = $d2
+  $xr = spawn([$xlogo], {env: $renv, stdout: {file: $logs .. "/xlogo-retry.log"}, stderr: "stdout", detach: true})
+  $rr = await_x11_row($SVC, [])
+  if $rr == nil then
+    $xrk = kill($xr, 15)
+    finish(false, "14r: no X client mapped on the retried server " .. $d2, [$ed, $kp, $cp, $wp])
+  end
+  $xw2 = xwayland_pid($cp)
+  if $xw2 == nil or $xw2 == $xw1 then
+    finish(false, "14r: the retried Xwayland is not a new child (" .. json_encode([$xw1, $xw2]) .. ")", [$xr, $ed, $kp, $cp, $wp])
+  end
+  $k2 = kill($xw2, 9)
+  $st3 = await_xwayland($SVC, "failed", 20)
+  sleep(3)
+  $st4 = get_once($SVC, "xwayland.state").reply
+  $f2 = get_once($SVC, "xwayland.failures").reply
+  $d3 = get_once($SVC, "xwayland.display").reply
+  $xw3 = xwayland_pid($cp)
+  if alive($xr) then
+    $xrk2 = kill($xr, 15)
+  end
+  if $st3 != "failed" or $st4 != "failed" or $f2 != 2 or $d3 != nil or $xw3 != nil then
+    finish(false, "14r: the second death did not stay dead: state " .. json_encode([$st3, $st4]) .. ", failures " .. json_encode($f2) .. ", display " .. json_encode($d3) .. ", Xwayland " .. json_encode($xw3), [$ed, $kp, $cp, $wp])
+  end
+  print("bus: Xwayland retried once (" .. $d2 .. ", xlogo mapped as s" .. to_string($rr.id) .. "); the second death stays failed (failures 2)")
+  -- 14s. Occlusion (F6): two fresh weston-simple-shm windows (XRGB, opaque,
+  -- 250x250) placed on one rect, B raised over A. A reads occluded /
+  -- opaque-coverage with a revision, B exposed; A's commits fall to the
+  -- ~1 Hz trickle (3..7 in 5 s, withheld_opportunities grows); raised, A is
+  -- exposed again (resumes +1) and commits at full rate; minimised, unknown.
+  fn new_window_row($svc, $known)
+    $n = 0
+    while $n < 40
+      for each $r in window_rows($svc) ?? []
+        if not contains($known, $r.id) then
+          return $r
+        end
+      end
+      sleep(0.25)
+      $n = $n + 1
+    end
+    return nil
+  end
+  fn occl($svc, $id)
+    -- The surfaces row: it outlives a minimise, as the windows row may not.
+    return get_once($svc, "surfaces.s" .. to_string($id)).reply
+  end
+  fn await_reason($svc, $id, $want)
+    $n = 0
+    $row = occl($svc, $id)
+    while ($row == nil or $row.occlusion_reason != $want) and $n < 20
+      sleep(0.25)
+      $n = $n + 1
+      $row = occl($svc, $id)
+    end
+    return $row
+  end
+  $known = []
+  for each $r in window_rows($SVC) ?? []
+    push($known, $r.id)
+  end
+  $oa = spawn([$client], {env: $kenv, stdout: {file: $logs .. "/occl-a.log"}, stderr: "stdout", detach: true})
+  $ra = new_window_row($SVC, $known)
+  if $ra == nil then
+    finish(false, "14s: occlusion client A never mapped", [$oa, $ed, $kp, $cp, $wp])
+  end
+  push($known, $ra.id)
+  $ob = spawn([$client], {env: $kenv, stdout: {file: $logs .. "/occl-b.log"}, stderr: "stdout", detach: true})
+  $rb = new_window_row($SVC, $known)
+  if $rb == nil then
+    finish(false, "14s: occlusion client B never mapped", [$oa, $ob, $ed, $kp, $cp, $wp])
+  end
+  $pa = place_once($SVC, {id: $ra.id, generation: $ra.generation, x: 100, y: 100})
+  $pb = place_once($SVC, {id: $rb.id, generation: $rb.generation, x: 100, y: 100})
+  $rbb = json_encode({id: $rb.id, generation: $rb.generation})
+  send $SVC comp.window.raise body=$rbb timeout=5
+  $occ_a = await_reason($SVC, $ra.id, "opaque-coverage")
+  $occ_b = occl($SVC, $rb.id)
+  if $pa.rc != 0 or $pb.rc != 0 or $occ_a == nil or $occ_a.occluded != true or $occ_a.occlusion_revision < 1 or $occ_b == nil or $occ_b.occlusion_reason != "exposed" then
+    -- What the cull saw: both rects (truth and Bus), the stack, the place replies.
+    $ta = truth_window($SVC, $ra.id)
+    $tb = truth_window($SVC, $rb.id)
+    $stk = get_once($SVC, "stack").reply
+    finish(false, "14s: covered A s" .. to_string($ra.id) .. " reads " .. json_encode([$occ_a.occluded, $occ_a.occlusion_reason, $occ_a.occlusion_revision]) .. ", B s" .. to_string($rb.id) .. " " .. json_encode($occ_b.occlusion_reason) .. "; A truth " .. json_encode($ta) .. " bus " .. json_encode([$occ_a.x, $occ_a.y, $occ_a.width, $occ_a.height, $occ_a.decoration]) .. "; B truth " .. json_encode($tb) .. " bus " .. json_encode([$occ_b.x, $occ_b.y, $occ_b.width, $occ_b.height, $occ_b.decoration]) .. "; stack " .. json_encode($stk) .. "; place " .. json_encode([$pa, $pb]), [$oa, $ob, $ed, $kp, $cp, $wp])
+  end
+  -- The trickle: about one commit a second while covered.
+  sleep(1)
+  $w0 = get_once($SVC, "occlusion.counters").reply
+  $c0 = commits_of($SVC, $ra.id)
+  sleep(5)
+  $c1 = commits_of($SVC, $ra.id)
+  $w1 = get_once($SVC, "occlusion.counters").reply
+  $trickle = ($c1 ?? 0) - ($c0 ?? 0)
+  if $c0 == nil or $trickle < 3 or $trickle > 7 or $w1.withheld_opportunities <= $w0.withheld_opportunities then
+    finish(false, "14s: covered A committed " .. to_string($trickle) .. " times in 5 s (want 3..7, the ~1 Hz trickle); counters " .. json_encode([$w0, $w1]), [$oa, $ob, $ed, $kp, $cp, $wp])
+  end
+  -- Raised over B: exposed again, a resume, full-rate commits.
+  $rab = json_encode({id: $ra.id, generation: $ra.generation})
+  send $SVC comp.window.raise body=$rab timeout=5
+  $exp_a = await_reason($SVC, $ra.id, "exposed")
+  $w2 = get_once($SVC, "occlusion.counters").reply
+  $c2 = commits_of($SVC, $ra.id)
+  sleep(2)
+  $c3 = commits_of($SVC, $ra.id)
+  $full = ($c3 ?? 0) - ($c2 ?? 0)
+  if $exp_a == nil or $exp_a.occluded != false or $w2.resumes < $w1.resumes + 1 or $full < 15 then
+    finish(false, "14s: raised A reads " .. json_encode($exp_a.occlusion_reason) .. ", resumes " .. json_encode([$w1.resumes, $w2.resumes]) .. ", " .. to_string($full) .. " commits in 2 s (want >= 15)", [$oa, $ob, $ed, $kp, $cp, $wp])
+  end
+  -- Minimised: no pane evaluates it, unknown.
+  $mn = minimize_once($SVC, $ra.id, $ra.generation)
+  $unk_a = await_reason($SVC, $ra.id, "unknown")
+  if $mn.rc != 0 or $unk_a == nil or $unk_a.occlusion_reason != "unknown" or $unk_a.occluded != false then
+    finish(false, "14s: minimised A reads " .. json_encode($unk_a) .. " (minimize rc " .. to_string($mn.rc) .. ")", [$oa, $ob, $ed, $kp, $cp, $wp])
+  end
+  $ca = close_once($SVC, $ra.id, $ra.generation)
+  $cb = close_once($SVC, $rb.id, $rb.generation)
+  $n = 0
+  while (alive($oa) or alive($ob)) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($oa) then
+    $koa = kill($oa, 15)
+  end
+  if alive($ob) then
+    $kob = kill($ob, 15)
+  end
+  print("bus: occlusion: covered s" .. to_string($ra.id) .. " opaque-coverage (revision " .. to_string($occ_a.occlusion_revision) .. "), trickled " .. to_string($trickle) .. " commits in 5 s; raised: exposed, " .. to_string($full) .. " commits in 2 s; minimised: unknown")
+  -- 14t. The covered-IDLE-client control: occlusion must never
+  -- wake an idle screen. Two testkit-ssd-client windows (opaque XRGB, client-side
+  -- decorations, commit only on configure and never ask for frame callbacks)
+  -- on one rect, B raised over A: A reads opaque-coverage; then, with the
+  -- animating simple-shm stopped and a 2 s settle, compd draws 0 frames over
+  -- 5 s and A commits nothing. The trickle must not wake the loop for a
+  -- client that is not waiting.
+  $ssd = dirname($bin) .. "/testkit-ssd-client"
+  if not is_file($ssd) then
+    $ssd = which("testkit-ssd-client") ?? ""
+  end
+  if $ssd == "" or not is_file($ssd) then
+    finish(false, "14t needs testkit-ssd-client (beside the compositor binary or on PATH)", [$ed, $kp, $cp, $wp])
+  end
+  $known_t = []
+  for each $r in window_rows($SVC) ?? []
+    push($known_t, $r.id)
+  end
+  $ia = spawn([$ssd, "--colour", "00a000", "--mode", "client"], {env: $kenv, stdout: {file: $logs .. "/idle-a.log"}, stderr: "stdout", detach: true})
+  $wa = new_window_row($SVC, $known_t)
+  if $wa == nil then
+    finish(false, "14t: the idle client A never mapped", [$ia, $ed, $kp, $cp, $wp])
+  end
+  push($known_t, $wa.id)
+  $ib = spawn([$ssd, "--colour", "a00000", "--mode", "client"], {env: $kenv, stdout: {file: $logs .. "/idle-b.log"}, stderr: "stdout", detach: true})
+  $wb = new_window_row($SVC, $known_t)
+  if $wb == nil then
+    finish(false, "14t: the idle client B never mapped", [$ia, $ib, $ed, $kp, $cp, $wp])
+  end
+  $pia = place_once($SVC, {id: $wa.id, generation: $wa.generation, x: 100, y: 100})
+  $pib = place_once($SVC, {id: $wb.id, generation: $wb.generation, x: 100, y: 100})
+  $rbi = json_encode({id: $wb.id, generation: $wb.generation})
+  send $SVC comp.window.raise body=$rbi timeout=5
+  $ida = await_reason($SVC, $wa.id, "opaque-coverage")
+  if $ida == nil or $ida.occluded != true then
+    finish(false, "14t: the covered idle client A reads " .. json_encode($ida) .. " (place rc " .. json_encode([$pia.rc, $pib.rc]) .. ")", [$ia, $ib, $ed, $kp, $cp, $wp])
+  end
+  -- A static screen: the only animating client stopped.
+  $stopped_t = kill($kp, 19)
+  sleep(2)
+  $ca0 = commits_of($SVC, $wa.id)
+  $ft0 = frames_now()
+  sleep(5)
+  $ft = frames_now() - $ft0
+  $ca1 = commits_of($SVC, $wa.id)
+  $resumed_t = kill($kp, 18)
+  if $ft != 0 or $ca0 == nil or $ca1 != $ca0 then
+    finish(false, "14t: with a covered idle client and a static screen compd drew " .. to_string($ft) .. " frames in 5 s (want 0) and A committed " .. json_encode([$ca0, $ca1]) .. " (stopped " .. to_string($stopped_t) .. ")", [$ia, $ib, $ed, $kp, $cp, $wp])
+  end
+  $cia = close_once($SVC, $wa.id, $wa.generation)
+  $cib = close_once($SVC, $wb.id, $wb.generation)
+  $n = 0
+  while (alive($ia) or alive($ib)) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($ia) then
+    $kia = kill($ia, 15)
+  end
+  if alive($ib) then
+    $kib = kill($ib, 15)
+  end
+  print("bus: covered idle client s" .. to_string($wa.id) .. " opaque-coverage; static screen: 0 frames in 5 s, A committed nothing")
+  -- eventdemo leaves (14i, 14j).
+  $ec = close_once($SVC, $erow.id, $erow.generation)
+  $n = 0
+  while alive($ed) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($ed) then
+    $ek = kill($ed, 15)
+    print("bus: note: eventdemo ignored comp.window.close (" .. json_encode($ec.reply) .. "); killed " .. to_string($ek))
+  end
+  $n = 0
+  $gone = false
+  while not $gone and $n < 20
+    $gone = true
+    for each $r in window_rows($SVC) ?? []
+      if $r.id == $erow.id then
+        $gone = false
+      end
+    end
+    if not $gone then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if not $gone then
+    finish(false, "eventdemo's window row outlived its client", [$kp, $cp, $wp])
+  end
+  -- 15. the polite close; the kill only if the client ignores it.
+  $cl = close_once($SVC, $wid, $gen)
+  if $cl.rc != 0 or type($cl.reply) != "map" or $cl.reply.closed != "polite" then
+    finish(false, "comp.window.close: rc " .. to_string($cl.rc) .. " " .. json_encode($cl.reply), [$kp, $cp, $wp])
+  end
+  $after = $during
+  $t = 0
+  while $after != $BASE_SURFACES and $t < 20
+    sleep(0.25)
+    $after = surface_count($SVC) ?? $after
+    $t = $t + 1
+  end
+  if $after == $BASE_SURFACES then
+    print("bus: the client left on comp.window.close (polite)")
+  else
+    print("bus: note: the client ignored comp.window.close; killing it")
+    $killed = kill($kp, 15)
+    if not $killed then
+      finish(false, "could not signal the client to exit", [$kp, $cp, $wp])
+    end
+    $t = 0
+    while $after != $BASE_SURFACES and $t < 20
+      sleep(0.25)
+      $after = surface_count($SVC) ?? $after
+      $t = $t + 1
+    end
+  end
+  if $after != $BASE_SURFACES then
+    finish(false, "comp.info surface_count stayed " .. to_string($after) .. " after the client left, expected " .. to_string($BASE_SURFACES), [$kp, $cp, $wp])
+  end
+  print("bus: surface_count back to " .. to_string($after) .. " after the client exited")
+  $rows = window_rows($SVC)
+  if $rows == nil or len($rows) != $BASE_WINDOWS then
+    finish(false, "comp.windows.list after exit " .. json_encode($rows) .. ", expected " .. to_string($BASE_WINDOWS) .. " rows", [$kp, $cp, $wp])
+  end
+  $g = wait_once($SVC, {match: {id: $wid}, until: "gone", timeout_ms: 2000})
+  if $g.rc != 0 or type($g.reply) != "map" or $g.reply.window != nil then
+    finish(false, "comp.window.wait gone: rc " .. to_string($g.rc) .. " " .. json_encode($g.reply), [$kp, $cp, $wp])
+  end
+  print("bus: window row gone; window.wait gone " .. json_encode($g.reply))
+  truth_matches($SVC, "truth after the client", [$kp, $cp, $wp])
+  -- 10. what the subscriber heard (deliveries are asynchronous: poll for the
+  -- unmap edge, bounded).
+  $seen = {mapped: false, focused: false, unmapped: false, props: false, corner_entered: false, corner_left: false, pointer: false, panel_conceal: false, panel_reveal: false, output_changed: false, cause_map: false, cause_workspace: false, cause_set: false}
+  $records = []
+  $t = 0
+  while not $seen.unmapped and $t < 20
+    $records = []
+    for each $line in lines(read_file($watch_out))
+      if trim($line) != "" then
+        push($records, json_parse($line))
+      end
+    end
+    for each $r in $records
+      $a = $r.args ?? {}
+      if $r.topic == $SVC .. ".surface.mapped" and $a.id == $wid then
+        $seen["mapped"] = true
+      end
+      if $r.topic == $SVC .. ".focus.changed" and $a.keyboard == $wid then
+        $seen["focused"] = true
+      end
+      if $r.topic == $SVC .. ".surface.unmapped" and $a.id == $wid then
+        $seen["unmapped"] = true
+      end
+      if $r.topic == $SVC .. ".props.changed" and starts_with($a.path ?? "", "surfaces.s" .. to_string($wid)) then
+        $seen["props"] = true
+        -- F4: the window's own rows carry a wayland cause, not compd.state.
+        if $a.cause == "wayland.map" or $a.cause == "wayland.focus" then
+          $seen["cause_map"] = true
+        end
+      end
+      if $r.topic == $SVC .. ".props.changed" and $a.cause == "workspace.switch" then
+        $seen["cause_workspace"] = true
+      end
+      if $r.topic == $SVC .. ".props.changed" and $a.cause == "props.set" then
+        $seen["cause_set"] = true
+      end
+      if $r.topic == $SVC .. ".corner.entered" and $a.corner == "tl" then
+        $seen["corner_entered"] = true
+      end
+      if $r.topic == $SVC .. ".corner.left" and $a.corner == "tl" then
+        $seen["corner_left"] = true
+      end
+      if $r.topic == $SVC .. ".pointer.changed" and $a.valid == true then
+        $seen["pointer"] = true
+      end
+      if $r.topic == $SVC .. ".output.changed" and $a.usable != nil and $a.usable.y == $out.y + 30 then
+        $seen["output_changed"] = true
+      end
+      if $r.topic == $SVC .. ".panel.command" and starts_with($a.surface ?? "", "smoke-panel-") then
+        -- The wire shape: {action: "conceal" | "reveal", ...}
+        if $a.action == "conceal" then
+          $seen["panel_conceal"] = true
+        elif $a.action == "reveal" then
+          $seen["panel_reveal"] = true
+        end
+      end
+    end
+    if not $seen.unmapped then
+      sleep(0.25)
+    end
+    $t = $t + 1
+  end
+  $last = $WATCH_SEQ
+  $monotonic = true
+  for each $r in $records
+    $seq = ($r.args ?? {}).event_seq
+    if $seq == nil or $seq <= $last then
+      $monotonic = false
+    else
+      $last = $seq
+    end
+  end
+  $missing = []
+  for each $k in ["mapped", "focused", "unmapped", "props", "corner_entered", "corner_left", "pointer", "panel_conceal", "panel_reveal", "output_changed", "cause_map", "cause_workspace", "cause_set"]
+    if not $seen[$k] then
+      push($missing, $k)
+    end
+  end
+  if len($missing) > 0 or not $monotonic then
+    finish(false, "observation topics: missing " .. json_encode($missing) .. ", event_seq strictly increasing past the watch watermark: " .. to_string($monotonic) .. "; " .. to_string(len($records)) .. " deliveries in " .. $watch_out, [$kp, $cp, $wp])
+  end
+  print("bus: topics surface.mapped, focus.changed, surface.unmapped, props.changed, corner.entered/left tl, pointer.changed, panel.command conceal/reveal, output.changed for s" .. to_string($wid) .. "; " .. to_string(len($records)) .. " deliveries, event_seq " .. to_string($WATCH_SEQ) .. " -> " .. to_string($last))
+  $again = ping_once($SVC)
+  if $again.rc != 0 then
+    finish(false, "comp.ping failed after the client ran (rc " .. to_string($again.rc) .. ")", [$kp, $cp, $wp])
+  end
+  $busnote = ", Bus " .. $SVC .. " answered ping/info, surface_count " .. to_string($BASE_SURFACES) .. " -> " .. to_string($during) .. " -> " .. to_string($after)
+  -- 16. the orphan rule (batch C), LAST: it leaves compd locked until the
+  -- smoke tears it down. A mapped window, a confirmed lock, then the lock
+  -- client SIGKILLed: focus.session_lock goes to orphaned, the window stays
+  -- out of windows.* and invisible, the screen at the window stays the
+  -- opaque blank (neither the window nor the dead lock surface), and a new
+  -- lock is refused (`finished`).
+  $okenv = $kenv
+  $okp = spawn([$client], {env: $okenv, stdout: {file: $logs .. "/orphan-client.log"}, stderr: "stdout", detach: true})
+  $orow = nil
+  $n = 0
+  while $orow == nil and $n < 40
+    for each $r in window_rows($SVC) ?? []
+      $orow = $r
+    end
+    if $orow == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $orow == nil then
+    finish(false, "16: the orphan-test client never mapped a window", [$okp, $kp, $cp, $wp])
+  end
+  sleep(0.5)
+  $ow = truth_window($SVC, $orow.id)
+  if $ow == nil or $ow.window == nil then
+    finish(false, "16: no truth row for s" .. to_string($orow.id), [$okp, $kp, $cp, $wp])
+  end
+  $oat = to_string(floor($ow.window.x + $ow.window.width / 2)) .. "," .. to_string(floor($ow.window.y + $ow.window.height / 2)) .. ",4,4"
+  $olk = spawn([$lock_client, "--hold", "60"], {env: $kenv, stdout: {file: $logs .. "/orphan-lock.log"}, stderr: "stdout", detach: true})
+  $phase = nil
+  $n = 0
+  while $phase != "locked" and $n < 40
+    $phase = get_once($SVC, "focus.session_lock").reply
+    if $phase != "locked" then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $phase != "locked" then
+    finish(false, "16: the lock never confirmed: " .. json_encode($phase), [$olk, $okp, $kp, $cp, $wp])
+  end
+  $killed = kill($olk, 9)
+  $n = 0
+  while $phase != "orphaned" and $n < 40
+    $phase = get_once($SVC, "focus.session_lock").reply
+    if $phase != "orphaned" then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $phase != "orphaned" then
+    finish(false, "16: SIGKILL (" .. to_string($killed) .. ") of the lock client left focus.session_lock " .. json_encode($phase) .. ", not orphaned", [$okp, $kp, $cp, $wp])
+  end
+  sleep(0.5)
+  $wr = get_once($SVC, "windows")
+  $sr = get_once($SVC, "surfaces.s" .. to_string($orow.id))
+  if type($wr.reply) != "map" or len(keys($wr.reply)) != 0 or type($sr.reply) != "map" or $sr.reply.visible != false then
+    finish(false, "16: orphaned but not hidden: windows " .. json_encode($wr.reply) .. ", s" .. to_string($orow.id) .. " " .. json_encode($sr.reply), [$okp, $kp, $cp, $wp])
+  end
+  $oshot = $logs .. "/orphaned.ppm"
+  $os = run_argv([$shot, $oshot, "--region", $oat], {env: $kenv, timeout: 20})
+  $op = nil
+  if $os.exit_code == 0 then
+    $op = load_ppm($oshot)
+  end
+  if $op == nil then
+    finish(false, "16: screencopy while orphaned: exit " .. to_string($os.exit_code) .. " " .. trim($os.stderr), [$okp, $kp, $cp, $wp])
+  end
+  $opx = pixel($op, 1, 1)
+  if channel_gap($opx, [0, 0, 0]) > 12 then
+    finish(false, "16: the orphaned screen at " .. $oat .. " shows " .. json_encode($opx) .. ", not the opaque blank", [$okp, $kp, $cp, $wp])
+  end
+  -- Nobody can take the lock over: a new lock answers `finished` (exit 3).
+  $second = run_argv([$lock_client, "--hold", "5"], {env: $kenv, timeout: 20})
+  if $second.exit_code != 3 then
+    finish(false, "16: a new lock while orphaned exited " .. to_string($second.exit_code) .. " (want 3, finished): " .. trim($second.stdout) .. " " .. trim($second.stderr), [$okp, $kp, $cp, $wp])
+  end
+  $phase = get_once($SVC, "focus.session_lock").reply
+  if $phase != "orphaned" then
+    finish(false, "16: the refused second lock moved focus.session_lock to " .. json_encode($phase), [$okp, $kp, $cp, $wp])
+  end
+  print("bus: lock client SIGKILLed: orphaned, the window hidden, the screen blank " .. json_encode($opx) .. ", a new lock refused; compd stays locked until torn down")
+  $ORPHAN_PIDS = [$okp]
+end
+$final_pids = [$kp, $cp, $wp]
+for each $orphan_pid in $ORPHAN_PIDS
+  push($final_pids, $orphan_pid)
+end
+finish(true, "socket " .. $sock .. ", compositor alive, client ran " .. to_string($secs) .. " s" .. $busnote, $final_pids)
+finally
+  $scratch.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

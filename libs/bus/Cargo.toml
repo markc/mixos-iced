@@ -1,0 +1,40 @@
+# bus: the Bus (ABP) wire format and, behind the default `client` feature,
+# the WebSocket client that registers a service with the local broker
+# (noded) and survives broker restarts. The wire format alone needs only
+# serde_json: `default-features = false` gives a transport-free crate.
+[package]
+name = "bus"
+description = "Bus wire format and the supervised broker client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "bus"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[features]
+default = ["client"]
+# The broker client: tokio + WebSocket transport, supervised reconnect, and
+# broker URL discovery (which reads node.conf.mix as strict data).
+client = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tracing", "dep:strict"]
+
+[dependencies]
+serde_json = { version = "=1.0.151" }
+strict = { path = "../strict", optional = true }
+tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "sync", "time"], optional = true }
+tokio-tungstenite = { version = "=0.26.2", optional = true }
+futures-util = { version = "=0.3.34", optional = true }
+tracing = { version = "=0.1.44", optional = true }
+
+# The stub broker in tests/ needs a multi-thread runtime and the server side
+# of the WebSocket handshake.
+[dev-dependencies]
+tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "=0.26.2" }
+futures-util = { version = "=0.3.34" }

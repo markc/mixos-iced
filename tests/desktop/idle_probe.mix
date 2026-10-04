@@ -1,0 +1,417 @@
+-- idle_probe.mix — static-screen (idle) comparator for compd.
+-- version: 0.2.2
+--
+--   mix tests/desktop/idle_probe.mix <compd-binary> [--static-secs N] [--anim-secs N]
+--       [--min-fps N] [--config-file PATH] [--static-client CMD] [--json]
+--
+-- Headless, like nested_smoke.mix: weston (headless backend, pixman) is the
+-- host; compd runs NESTED in it on Mesa's software GL; clients run inside
+-- compd. Never on the live desktop. Needs weston, weston-simple-shm and the
+-- static client (default weston-flower) on PATH.
+--
+-- compd runs with COMPD_FRAME_TRACE=1 + COMPD_FRAME_TRACE_FILE, so its
+-- redraw ledger writes one `stage=comp_frame_reasons` record per frame
+-- (subject = the reasons bitmask, detail = 1 for an empty frame: rendered,
+-- nothing submitted), and with WAYLAND_DEBUG=client, so every wl_surface.commit
+-- it sends to the host is logged. Phases, in order:
+--
+--   1. calibration A: weston-simple-shm animating (--anim-secs, default 10);
+--   2. static: the static client alone (--static-secs, default 60), measured
+--      after a 3 s settle;
+--   3. calibration B: weston-simple-shm again.
+--
+-- Probe 1 (idle) PASSES when the static window has ZERO submitted frames AND
+-- zero host commits, and both calibration windows are NON-zero (a probe that
+-- cannot see frames cannot claim their absence).
+-- Probe 2 (no stall) PASSES when both calibration windows hold at least
+-- --min-fps (default 45) submitted frames per second.
+--
+-- Reasons are named from the bitmask in ledger's `RedrawReason::ALL`
+-- order (REASONS below); keep the two in step.
+--
+-- Exit codes: 0 both probes pass, 1 a probe failed, 2 usage/setup.
+
+$REASONS = ["commit", "map", "unmap", "window_state", "stack", "focus", "cursor",
+  "input", "agent_input", "workspace", "output", "layer", "popup", "animation",
+  "effect", "iced", "capture", "lock", "bus", "publish", "resume", "first_frame", "rescue",
+  "watchdog", "settle", "rearm", "background", "unattributed"]
+
+$args = args()
+if len($args) < 1 then
+  eprint("usage: idle_probe.mix <compd-binary> [--static-secs N] [--anim-secs N] [--min-fps N] [--config-file PATH] [--static-client CMD] [--json]")
+  exit(2)
+end
+$bin = $args[0]
+$static_secs = 60
+$anim_secs = 10
+$min_fps = 45
+$config = "tests/desktop/smoke-settings.json"
+$static_client = "weston-flower"
+$as_json = false
+$i = 1
+while $i < len($args)
+  $a = $args[$i]
+  if $a == "--static-secs" then
+    $static_secs = to_number($args[$i + 1])
+    $i = $i + 2
+  elif $a == "--anim-secs" then
+    $anim_secs = to_number($args[$i + 1])
+    $i = $i + 2
+  elif $a == "--min-fps" then
+    $min_fps = to_number($args[$i + 1])
+    $i = $i + 2
+  elif $a == "--config-file" then
+    $config = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--static-client" then
+    $static_client = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--json" then
+    $as_json = true
+    $i = $i + 1
+  else
+    eprint("unknown option: " .. $a)
+    exit(2)
+  end
+end
+if not is_file($bin) then
+  eprint("no such binary: " .. $bin)
+  exit(2)
+end
+if not is_file($config) then
+  eprint("no settings file: " .. $config .. " (pass --config-file)")
+  exit(2)
+end
+$weston = which("weston")
+$shm = which("weston-simple-shm")
+$still = which($static_client)
+if $weston == nil or $shm == nil or $still == nil then
+  eprint("needs weston, weston-simple-shm and " .. $static_client .. " on PATH")
+  exit(2)
+end
+
+$scratch = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$CLEANUP.run = $scratch.new_run("/tmp/compd-idle-" .. to_string(pid()))
+$run_dir = $CLEANUP.run.path
+$chmod = run_argv(["chmod", "0700", $run_dir])
+if $chmod.exit_code != 0 then
+  eprint("chmod failed: " .. $chmod.stderr)
+  exit(2)
+end
+$logs = $run_dir .. "/logs"
+mkdir($logs, {parents: true})
+$TRACE = $logs .. "/frame-trace.log"
+$CLOG = $logs .. "/compositor.log"
+$base_env = {XDG_RUNTIME_DIR: $run_dir, LIBGL_ALWAYS_SOFTWARE: "1"}
+
+fn alive($p)
+  return exists("/proc/" .. to_string($p))
+end
+
+fn sockets($dir)
+  $out = []
+  for each $e in lines(run_argv(["ls", $dir]).stdout)
+    if starts_with($e, "wayland-") and not ends_with($e, ".lock") then
+      push($out, $e)
+    end
+  end
+  return $out
+end
+
+fn stop($pids)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 15)
+    end
+  end
+  sleep(1)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 9)
+    end
+  end
+end
+
+fn grep_count($pattern, $file)
+  if not exists($file) then
+    return 0
+  end
+  $r = run_argv(["grep", "-cE", "-e", $pattern, $file])
+  return to_number(trim($r.stdout)) ?? 0
+end
+
+-- Frame records written so far, and host commits sent so far.
+fn frames_now()
+  return grep_count("stage=comp_frame_reasons ", $TRACE)
+end
+
+fn commits_now()
+  return grep_count("-> wl_surface[#@][0-9]+\\.commit\\(", $CLOG)
+end
+
+fn log_lines_now()
+  return grep_count("", $CLOG)
+end
+
+-- A WAYLAND_DEBUG timestamp in ms: "[HH:MM:SS.ffffff]" (libwayland >= 1.23) or
+-- "[1234567.890]" (older libwayland, ms).
+fn stamp_ms($line)
+  $m = re_find($line, "^\\[([0-9:.]+)\\]")
+  if len($m) == 0 then
+    return nil
+  end
+  $s = $m[0].groups[0]
+  if contains($s, ":") then
+    $p = split($s, ":")
+    return ((to_number($p[0]) * 60 + to_number($p[1])) * 60 + to_number($p[2])) * 1000
+  end
+  return to_number($s)
+end
+
+fn pct($sorted, $q)
+  if len($sorted) == 0 then
+    return nil
+  end
+  $i = floor((len($sorted) - 1) * $q)
+  return round($sorted[$i], 2)
+end
+
+-- Host pacing in a window of compositor.log lines: the interval between our
+-- commits, and how long after the host's latest frame-callback `done` each
+-- commit went out. A compositor that renders on the callback commits a few ms
+-- after it; one a frame late shows a ~frame-long gap here.
+fn pacing($from, $to)
+  $commits = []
+  $lat = []
+  $last_done = nil
+  $n = 0
+  for each $l in lines(read_file($CLOG))
+    $n = $n + 1
+    if $n > $from and $n <= $to then
+      if re_match($l, "wl_callback[#@][0-9]+\\.done\\(") and not contains($l, "->") then
+        $last_done = stamp_ms($l)
+      elif re_match($l, "-> wl_surface[#@][0-9]+\\.commit\\(") then
+        $t = stamp_ms($l)
+        if $t != nil then
+          push($commits, $t)
+          if $last_done != nil then
+            push($lat, $t - $last_done)
+          end
+        end
+      end
+    end
+  end
+  $gaps = []
+  $k = 1
+  while $k < len($commits)
+    push($gaps, $commits[$k] - $commits[$k - 1])
+    $k = $k + 1
+  end
+  $gaps = sort($gaps)
+  $lat = sort($lat)
+  return {commits: len($commits), interval_ms_p50: pct($gaps, 0.5), interval_ms_p95: pct($gaps, 0.95),
+    done_to_commit_ms_p50: pct($lat, 0.5), done_to_commit_ms_p95: pct($lat, 0.95)}
+end
+
+fn fail_setup($why, $pids)
+  stop($pids)
+  eprint("SETUP: " .. $why)
+  for each $f in ["weston.log", "compositor.log"]
+    $p = $logs .. "/" .. $f
+    if exists($p) then
+      eprint("--- tail " .. $f)
+      eprint(run_argv(["tail", "-25", $p]).stdout)
+    end
+  end
+  exit(2)
+end
+
+-- host
+$wp = spawn([$weston, "--backend=headless", "--renderer=pixman", "--socket=wl-host", "--width=1920", "--height=1080", "--idle-time=0"], {env: $base_env, stdout: {file: $logs .. "/weston.log"}, stderr: "stdout", detach: true})
+$t = 0
+while not exists($run_dir .. "/wl-host") and $t < 50
+  sleep(0.2)
+  $t = $t + 1
+end
+if not exists($run_dir .. "/wl-host") then
+  fail_setup("weston host socket never appeared", [$wp])
+end
+
+-- compd, traced
+$before = sockets($run_dir)
+$cenv = {XDG_RUNTIME_DIR: $run_dir, LIBGL_ALWAYS_SOFTWARE: "1", WAYLAND_DISPLAY: "wl-host",
+  WAYLAND_DEBUG: "client", COMPD_FRAME_TRACE: "1", COMPD_FRAME_TRACE_FILE: $TRACE,
+  COMPD_FRAME_TRACE_LIMIT: "0", RUST_LOG: "warn"}
+$cp = spawn([$bin, "--config-file=" .. $config], {env: $cenv, stdout: {file: $CLOG}, stderr: "stdout", detach: true})
+$sock = nil
+$t = 0
+while $sock == nil and $t < 100
+  sleep(0.2)
+  $t = $t + 1
+  for each $s in sockets($run_dir)
+    if not contains($before, $s) and $s != "wl-host" then
+      $sock = $s
+    end
+  end
+  if not alive($cp) then
+    fail_setup("compd exited during startup", [$cp, $wp])
+  end
+end
+if $sock == nil then
+  fail_setup("compd created no Wayland socket within 20 s", [$cp, $wp])
+end
+sleep(2)
+-- No trace file yet is not fatal (the sink opens on the first record); the
+-- calibration windows are what prove the probe can see frames.
+if not exists($TRACE) then
+  eprint("note: no frame trace yet at " .. $TRACE)
+end
+$kenv = {XDG_RUNTIME_DIR: $run_dir, WAYLAND_DISPLAY: $sock}
+
+-- One measured window: frame records and host commits between two marks.
+fn window($label, $secs, $cp)
+  $f0 = frames_now()
+  $k0 = commits_now()
+  $l0 = log_lines_now()
+  $t0 = monotonic()
+  sleep($secs)
+  $dt = monotonic() - $t0
+  $f1 = frames_now()
+  $k1 = commits_now()
+  $l1 = log_lines_now()
+  if not alive($cp) then
+    return {label: $label, died: true}
+  end
+  return {label: $label, secs: round($dt, 2), first: $f0, last: $f1,
+    records: $f1 - $f0, host_commits: $k1 - $k0,
+    host_commits_per_s: round(($k1 - $k0) / $dt, 1),
+    pacing: pacing($l0, $l1)}
+end
+
+fn animate($label, $secs, $cp, $kenv, $logs)
+  $p = spawn([which("weston-simple-shm")], {env: $kenv, stdout: {file: $logs .. "/" .. $label .. ".log"}, stderr: "stdout", detach: true})
+  sleep(1)
+  $w = window($label, $secs, $cp)
+  stop([$p])
+  sleep(1)
+  return $w
+end
+
+$calA = animate("calibration_a", $anim_secs, $cp, $kenv, $logs)
+$sp = spawn([$still], {env: $kenv, stdout: {file: $logs .. "/static.log"}, stderr: "stdout", detach: true})
+sleep(3)
+$static = window("static", $static_secs, $cp)
+$static_alive = alive($sp)
+$calB = animate("calibration_b", $anim_secs, $cp, $kenv, $logs)
+stop([$sp])
+sleep(1)
+stop([$cp, $wp])
+
+-- Attribute each window's frame records (the trace is in arrival order).
+$records = []
+for each $l in lines(read_file($TRACE))
+  if contains($l, "stage=comp_frame_reasons ") then
+    $m = re_find($l, "subject=([0-9]+) detail=([0-9]+)")
+    if len($m) > 0 then
+      push($records, {mask: to_number($m[0].groups[0]), empty: to_number($m[0].groups[1])})
+    end
+  end
+end
+
+fn tally($w, $records, $reasons)
+  if $w.died ?? false then
+    return $w
+  end
+  $submitted = 0
+  $empty = 0
+  $unasked = 0
+  $by = {}
+  $j = $w.first
+  while $j < $w.last and $j < len($records)
+    $r = $records[$j]
+    if $r.empty == 1 then
+      $empty = $empty + 1
+    else
+      $submitted = $submitted + 1
+    end
+    if $r.mask == 0 then
+      $unasked = $unasked + 1
+    end
+    $k = 0
+    while $k < len($reasons)
+      if band(bshr($r.mask, $k), 1) == 1 then
+        $by[$reasons[$k]] = ($by[$reasons[$k]] ?? 0) + 1
+      end
+      $k = $k + 1
+    end
+    $j = $j + 1
+  end
+  $w["submitted"] = $submitted
+  $w["empty"] = $empty
+  $w["unasked"] = $unasked
+  $w["fps"] = round($submitted / $w.secs, 1)
+  $w["reasons"] = $by
+  return $w
+end
+
+$calA = tally($calA, $records, $REASONS)
+$static = tally($static, $records, $REASONS)
+$calB = tally($calB, $records, $REASONS)
+
+$why = []
+for each $w in [$calA, $static, $calB]
+  if $w.died ?? false then
+    push($why, "compd died during " .. $w.label)
+  end
+end
+if len($why) == 0 then
+  if $calA.submitted == 0 or $calB.submitted == 0 then
+    push($why, "a calibration window saw no frames: the probe cannot see frames")
+  end
+  if not $static_alive then
+    push($why, $static_client .. " exited early: the static phase had no client")
+  end
+end
+$idle_pass = len($why) == 0 and $static.submitted == 0 and $static.host_commits == 0
+$stall_pass = len($why) == 0 and $calA.fps >= $min_fps and $calB.fps >= $min_fps
+
+$result = {binary: $bin, static_client: $static_client, min_fps: $min_fps,
+  calibration_a: $calA, static: $static, calibration_b: $calB,
+  probe_idle: $idle_pass, probe_no_stall: $stall_pass, problems: $why, logs: $logs}
+
+if $as_json then
+  print(json_encode($result))
+else
+  for each $w in [$calA, $static, $calB]
+    if $w.died ?? false then
+      print($w.label .. ": compd DIED")
+    else
+      print($w.label .. ": " .. to_string($w.submitted) .. " submitted (" .. to_string($w.fps) .. " fps), " .. to_string($w.empty) .. " empty, " .. to_string($w.unasked) .. " unasked, host commits " .. to_string($w.host_commits) .. " (" .. to_string($w.host_commits_per_s) .. "/s) over " .. to_string($w.secs) .. " s; reasons " .. json_encode($w.reasons))
+      print("  pacing " .. json_encode($w.pacing))
+    end
+  end
+  for each $p in $why
+    print("problem: " .. $p)
+  end
+  if $idle_pass then
+    print("probe idle: PASS")
+  else
+    print("probe idle: FAIL")
+  end
+  if $stall_pass then
+    print("probe no-stall: PASS")
+  else
+    print("probe no-stall: FAIL")
+  end
+  print("logs: " .. $logs)
+end
+if $idle_pass and $stall_pass then
+  $CLEANUP.ok = true
+  exit(0)
+end
+exit(1)
+finally
+  $scratch.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

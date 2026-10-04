@@ -1,0 +1,17 @@
+# MixOS
+
+> MixOS is an agent-operable computing system: a Linux userland where every app is a service, every service speaks one message bus, and Mix is the shell. It is tried as a small signed systemd-nspawn image that runs on its own virtual terminal beside the user's existing desktop, at native GPU, input and audio speed.
+
+Every page on https://mixos.dev is static HTML at a directory-style URL (`/try/`) and is
+also published as Markdown (`/try.md`). The links below point at the Markdown.
+`/llms-full.txt` is the whole manual in one file.
+
+## Docs
+
+- [Try it beside your desktop](https://mixos.dev/try.md): How MixOS runs as a small signed systemd-nspawn image on its own virtual terminal, next to the Linux desktop you already use, with native GPU, input and audio.
+- [Decision — source layout and naming](https://mixos.dev/decisions/2026-10-04-source-layout.md): Why the MixOS repository is laid out by kind of artefact (apps, services, cli, libs) with plain, unique names and self-contained components, and what was rejected.
+
+## Optional
+
+- [The whole manual in one file](https://mixos.dev/llms-full.txt)
+- [Sitemap](https://mixos.dev/sitemap.xml)

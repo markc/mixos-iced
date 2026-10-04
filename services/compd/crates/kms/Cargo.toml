@@ -1,0 +1,31 @@
+[package]
+name = "kms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[features]
+flip-estimate = []
+mode-synthesize = ["dep:drm-ffi"]
+modifier-fallback = []
+native-scanout = []
+timing-predict = []
+timing-throttle = []
+
+[dependencies]
+model = { workspace = true }
+render-gles = { workspace = true }
+drm-ffi = { workspace = true, optional = true }
+libc = { workspace = true }
+smithay = { workspace = true }

@@ -1,0 +1,99 @@
+# layers.conf.mix — the compd crate layer table (strict data, load_data).
+# version: 0.2.0
+#
+# Read by tools/layering_gate.mix and tools/bevy_gate.mix.
+#
+# RULE: every dependency edge between workspace crates goes to a LOWER layer
+# or WITHIN THE SAME LAYER, and the crate graph is acyclic (cargo already
+# refuses cycles in normal/build deps). An edge from a lower layer to a higher
+# one fails the layering gate. A workspace crate missing from `layers` fails
+# too ("unknown crate") unless the gate runs with --allow-unlisted.
+#
+# Bevy: the only crates whose closure may contain bevy/bevy_* are
+# `effects_crates` and the `binary` (via its optional `effects-bevy` feature).
+# `core_crates` are the crates gate (c) proves Bevy-free (and ash-free: GLES
+# only, no Vulkan) with --all-features AND --no-default-features.
+# `nodefault_crates` are additionally checked in the --no-default-features
+# run only (the binary without effects-bevy).
+#
+# 34 entries: the 29 crates under services/compd/crates plus the compd binary,
+# and four planned crates (furniture, lock, background, effects-bevy) that do
+# not exist yet; the gates only look up crates the workspace has, so a planned
+# entry is inert until the crate lands. A crate's layer is a design decision:
+# change it deliberately, never to make a build pass.
+
+# The component this table orders; packages outside it (libs/) are not listed.
+component: "compd"
+
+layers: {
+  # 0 — model and the slot/channel/persist system
+  "model": 0,
+  "slots": 0,
+  # 0 — the engine-neutral policy cores: surface registry, frame/presentation
+  #     ledgers, the comp.* wire model, policy
+  "surfaces": 0,
+  "ledger": 0,
+  "comp-model": 0,
+  "policy": 0,
+  # 0 — the desktop shell's panel/edge model (pure, no dependencies)
+  "edges": 0,
+
+  # 1 — device primitives (drm/udev/seat/input/gpu + kernel.scanout),
+  #     GLES renderer primitives, the one wgpu device factory
+  "kms": 1,
+  "render-gles": 1,
+  "graphics": 1,
+
+  # 2 — smithay state + dispatch, Xwayland WM, effects trait, drivers
+  "protocols": 2,
+  "dispatcher": 2,
+  "x11-wm": 2,
+  "effects": 2,
+  "drivers": 2,
+
+  # 3 — core state, seat, scene, compositor-owned iced
+  "world": 3,
+  "seat": 3,
+  "scenegraph": 3,
+  "ui": 3,
+  # 3 — wlr-screencopy v3 over the Dispatch (L2) and the schedule
+  "screencopy": 3,
+  # 3 — server-side decoration chrome (decor layout + design tokens)
+  "decor": 3,
+
+  # 4 — frame ledgers, native backend + executor, nested backend,
+  #     capture, display, protocols
+  "frames": 4,
+  "native": 4,
+  "nested": 4,
+  "recorder": 4,
+  "outputs": 4,
+  "policy-host": 4,
+  # 4 — headless test harness over core state (dev-dependency only)
+  "testkit": 4,
+
+  # 5 — furniture, Mix Scenes iced adapter, lock, background, Bevy effects
+  "furniture": 5,
+  "scene-host": 5,
+  "lock": 5,
+  "background": 5,
+  "effects-bevy": 5,
+
+  # 6 — the Bus port
+  "comp-service": 6,
+
+  # 7 — the binary
+  "compd": 7,
+}
+
+# The binary package; may reach bevy only through its `effects-bevy` feature.
+binary: "compd"
+
+# Crates allowed to reach bevy (and, through Bevy's wgpu, ash).
+effects_crates: ["effects-bevy"]
+
+# Gate (c): must reach neither bevy nor ash, in every feature configuration.
+core_crates: ["scenegraph", "frames", "policy-host", "native", "world", "seat", "surfaces", "ledger", "comp-model", "policy"]
+
+# Checked for bevy and ash in the --no-default-features run only.
+nodefault_crates: ["compd"]

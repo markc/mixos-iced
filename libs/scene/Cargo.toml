@@ -1,0 +1,29 @@
+[package]
+name = "scene"
+description = "Mix Scenes document core: parse, lint, resolve, diff, describe, bindings and list templates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "scene"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+# The binding expression language: compiled once per binding, evaluated over JSON.
+expr = { path = "../expr" }
+# The node fence is strict data, loaded and never executed.
+strict = { path = "../strict" }
+# Nodes and ports keep their authored order.
+indexmap = { version = "=2.14.1", features = ["serde"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+# Never enable `preserve_order`: resolved trees and digests rely on sorted keys.
+serde_json = { version = "=1.0.151" }

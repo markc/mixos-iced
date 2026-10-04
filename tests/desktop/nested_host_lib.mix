@@ -1,0 +1,440 @@
+-- nested_host_lib.mix — start, drive and stop a PRIVATE nested compd on its
+-- version: 0.2.0
+-- own headless weston host.
+--
+--   $n = require("nested_host_lib.mix")   -- from a script beside it
+--
+-- Rather than nesting in a live desktop session, it brings its own host, as
+-- nested_smoke does, so a build worker with no desktop can run every gate.
+-- Everything is private to one run directory: the host, the compositor's
+-- socket, its Bus service name, its MIXOS_ETC, MIXOS_VAR and MIXOS_RUN.
+-- Nothing touches a live desktop.
+--
+-- Binaries: mix and noded are looked up in /opt/mixos/bin; compd and the
+-- testkit probes in /opt/compd/bin (a gate's --bin names a build instead).
+--
+--   start({bin, tag, config, env, max_secs})
+--   wait_ready(session, seconds)   ping the session's own Bus service
+--   call(service, verb, map)       one Bus request, structured refusal kept
+--   stop(session)                  tear down what start() created
+--   new_run(prefix)                create and record a fresh scratch directory
+--   finish_run(record|nil, ok)     remove owned scratch only after a full PASS
+--   require_binary(name, override, dirs)
+--   log_has / await_log            read what a child process wrote
+
+-- Return the ownership record explicitly: required modules capture state for
+-- reads, so a module-global registry would not persist between helper calls.
+-- mktemp's exclusive creation avoids reusing an earlier run's evidence.
+fn new_run($prefix)
+  $path = trim(run_argv_must(["mktemp", "-d", "--", $prefix .. ".XXXXXX"]))
+  -- Name it immediately, so even an interrupted setup leaves a breadcrumb.
+  print("run artefacts: " .. $path)
+  return {path: $path, owner_pid: pid(), identity: stat($path, {follow_symlinks: false})}
+end
+
+-- The gate keeps new_run()'s record BEFORE calling start(), so aborted setup
+-- can still finish it. nil means no directory was created. Call from finally
+-- with ok=false until all checks AND process teardown have completed; logs
+-- belong inside this directory, never loose files in /tmp.
+fn finish_run($run, $ok)
+  if $run == nil then return end
+  if type($run) != "map" or $run.owner_pid != pid() or $run.identity == nil then
+    raise("RUN_NOT_OWNED", "refusing to clean a directory without this run's ownership record")
+  end
+  $path = $run.path
+  -- COMPD_KEEP_RUN=1 keeps a passing run's artefacts (screenshots, logs) on purpose.
+  if not $ok or env("COMPD_KEEP_RUN", "") != "" then
+    print("kept run artefacts: " .. $path)
+    return
+  end
+  try
+    if exists($path, {follow_symlinks: false}) then
+      $now = stat($path, {follow_symlinks: false})
+      $owned = $run.identity
+      if not $now.is_dir or $now.is_symlink or $now.dev != $owned.dev or $now.ino != $owned.ino then
+        raise("RUN_CHANGED", "run directory identity changed: " .. $path)
+      end
+      remove_dir($path)
+    end
+  catch $error
+    print("cleanup failed; kept run artefacts: " .. $path .. " (" .. $error .. ")")
+    raise("RUN_CLEANUP", "could not remove passing run artefacts: " .. $path)
+  end
+end
+
+-- A binary for a gate: the caller's --flag, else the first of `dirs` that
+-- has it. A gate runs what is installed unless the caller names a build.
+fn binary($name, $override, $dirs)
+  if $override != nil and $override != "" then
+    if not is_file($override) then
+      print("  ERROR: no such binary: " .. $override)
+      exit(2)
+    end
+    return $override
+  end
+  for each $dir in $dirs ?? ["/opt/compd/bin"]
+    $p = $dir .. "/" .. $name
+    if is_file($p) then
+      return $p
+    end
+  end
+  return ""
+end
+
+fn require_binary($name, $override, $dirs)
+  $p = binary($name, $override, $dirs)
+  if $p == "" then
+    print("  ERROR: no " .. $name .. " — pass its path, or install it into one of " ..
+      json_encode($dirs ?? ["/opt/compd/bin"]))
+    exit(2)
+  end
+  return $p
+end
+
+-- Where a gate's testkit probes (testkit-input-probe,
+-- testkit-presentation-probe) are looked for: beside the compd `bin` a gate
+-- was given, then /opt/compd/bin. A probe is built with the compd it tests,
+-- so the one beside a named build wins over an installed copy (which can
+-- predate the flags a gate needs).
+fn probe_dirs($bin)
+  $dirs = []
+  if $bin != nil and $bin != "" then
+    push($dirs, dirname($bin))
+  end
+  if not contains($dirs, "/opt/compd/bin") then
+    push($dirs, "/opt/compd/bin")
+  end
+  return $dirs
+end
+
+-- A probe's `--version` line, or why there is none (a probe that predates
+-- the version flag refuses it as an unknown argument).
+fn probe_version($path)
+  $r = run_argv([$path, "--version"], {timeout: 5})
+  $out = trim($r.stdout)
+  if $r.exit_code == 0 and $out != "" then
+    return split($out, "\n")[0]
+  end
+  $err = trim($r.stderr .. " " .. $r.stdout)
+  if $err == "" then
+    $err = "exit " .. to_string($r.exit_code)
+  end
+  return "unversioned (" .. split($err, "\n")[0] .. ")"
+end
+
+-- require_binary for a probe over probe_dirs, printing which one was used
+-- and its version.
+fn require_probe($name, $override, $bin)
+  $p = require_binary($name, $override, probe_dirs($bin))
+  print("  probe " .. $name .. ": " .. $p .. " — " .. probe_version($p))
+  return $p
+end
+
+-- One Bus request. The body travels as JSON, which keeps a structured
+-- refusal whole; a child `mix` keeps `$rc` / `$result` out of the caller's
+-- globals (a send in a fn would clobber them). Returns {rc, result}: rc 0 on
+-- success, >= 10 for a peer refusal, -9 when the child itself failed.
+fn call($service, $verb, $args)
+  $body = json_encode($args)
+  $script = "$b = " .. json_encode($body) .. "\nsend " .. json_encode($service) ..
+    " " .. $verb .. " body=$b timeout=30\nprint($rc)\nprint(json_encode($result))\n"
+  $r = run_argv(["/opt/mixos/bin/mix", "-c", $script], {timeout: 60})
+  $lines = split(trim($r.stdout), "\n")
+  if len($lines) < 2 then
+    return {rc: -9, result: trim($r.stdout .. " " .. $r.stderr)}
+  end
+  $result = json_parse(join(slice($lines, 1), "\n"))
+  -- A refusal body can arrive as its JSON text; decode it so callers read
+  -- the fields either way.
+  if type($result) == "string" and starts_with($result, "{") then
+    $result = json_parse($result)
+  end
+  return {rc: to_number(trim($lines[0])), result: $result}
+end
+
+-- The broker URL compd dials: the one this script's own `send` reaches
+-- (MIXOS_NODED_URL, else the node config's wg_ip and noded.port).
+fn noded_url()
+  $set = env("MIXOS_NODED_URL", "")
+  if $set != "" then
+    return $set
+  end
+  for each $path in [env("HOME", "") .. "/.config/mixos/node.conf.mix", "/etc/mixos/node.conf.mix"]
+    if is_file($path) then
+      $c = load_data($path)
+      $host = $c.wg_ip ?? ""
+      if $host == "" then
+        $host = "127.0.0.1"
+      end
+      $port = 4200
+      if $c.noded != nil and $c.noded.port != nil then
+        $port = $c.noded.port
+      end
+      return "ws://" .. $host .. ":" .. to_string($port) .. "/ws"
+    end
+  end
+  return "ws://127.0.0.1:4200/ws"
+end
+
+fn _alive($p)
+  return $p != nil and exists("/proc/" .. to_string($p))
+end
+
+-- A private broker for a gate whose citizens have FIXED Bus names (editd
+-- registers `edit`, which a host's own editd may hold). Starts noded
+-- (/opt/mixos/bin, or `noded: PATH`) on a random loopback port with
+-- admission off, then EXPORTS MIXOS_NODE_CONFIG and MIXOS_NODED_URL into
+-- this process, so everything started afterwards (start()'s compositor,
+-- call()'s child mix, the gate's clients) talks to it. Call it before
+-- start(); stop_bus() at the end.
+--
+--   private_bus({dir: PATH, name: "desk-gate", noded: PATH?})
+--
+-- Returns {pid, conf, url, port, log}, or exits 2 when it never answers.
+fn private_bus($opts)
+  $dir = $opts["dir"]
+  $name = $opts["name"] ?? "gate"
+  $noded = binary("noded", $opts["noded"] ?? "", ["/opt/mixos/bin"])
+  if $noded == "" then
+    print("  ERROR: no noded for the private broker (pass --noded PATH, or install it into /opt/mixos/bin)")
+    exit(2)
+  end
+  mkdir($dir, {parents: true})
+  $port = random(47000, 47999)
+  $conf = $dir .. "/node.conf.mix"
+  write_file($conf, json_encode({node: $name, wg_ip: "", mesh: $name .. ".invalid",
+    noded: {port: $port, admission: "off", unix_socket: $dir .. "/bus.sock"}}))
+  $log = $dir .. "/noded.log"
+  $p = spawn([$noded, "serve", "--listen", "127.0.0.1:" .. to_string($port), "--node", $name, "--no-monitor", "--no-log"],
+    {env: {MIXOS_NODE_CONFIG: $conf}, stdout: {file: $log}, stderr: "stdout", detach: true})
+  $url = "ws://127.0.0.1:" .. to_string($port) .. "/ws"
+  export MIXOS_NODE_CONFIG=$conf
+  export MIXOS_NODED_URL=$url
+  $t = 0
+  while call("noded", "noded.ping", {})["rc"] != 0 and $t < 60
+    sleep(0.25)
+    $t = $t + 1
+  end
+  if call("noded", "noded.ping", {})["rc"] != 0 then
+    if _alive($p) then
+      $k = kill($p, 15)
+    end
+    print("  ERROR: the private broker never answered noded.ping (" .. $log .. ")")
+    exit(2)
+  end
+  return {pid: $p, conf: $conf, url: $url, port: $port, log: $log}
+end
+
+fn stop_bus($bus)
+  if $bus != nil and _alive($bus["pid"]) then
+    $k = kill($bus["pid"], 15)
+  end
+end
+
+-- Start a private nested compd on a private headless weston host.
+--
+--   start({bin: PATH, tag: "control", config: PATH,
+--          run: new_run(PREFIX), env: {NAME: "value"}, width: 1280,
+--          height: 800, host_renderer: "gl"})
+--
+-- The host renders with weston's GL renderer by default. Its pixman renderer
+-- offers no linux-dmabuf, so a Vulkan client of the nested compositor finds
+-- no present modes; GL gives dmabuf. `host_renderer: "pixman"` keeps the
+-- old host for a run that needs it.
+--
+-- The compositor renders on the GPU unless `software: true` sets
+-- LIBGL_ALWAYS_SOFTWARE=1 (a container build worker has no DRM node; a
+-- workstation has one). A software compositor cannot import a GPU client's
+-- dmabufs, which is how a Vulkan client stalls before its first frame.
+--
+-- A private session bus (dbus-daemon, when installed) is started per run and
+-- exported to the compositor and, through `session.dbus`, to the clients:
+-- waybar and other GTK clients refuse to start without one.
+--
+-- Returns {kind, bin, socket, service, runtime, log, host_log, pids}, or
+-- exits 2 when the host or the compositor cannot start. `config` is compd's
+-- settings file (its COMPOSITOR_ENVIRONMENT). `kind` is always "compd"; it
+-- names the run directory and the Bus service.
+fn start($opts)
+  $kind = "compd"
+  $bin = $opts["bin"]
+  $tag = $opts["tag"]
+  if $bin == nil or $tag == nil then
+    print("  ERROR: start() needs {bin, tag}")
+    exit(2)
+  end
+  if $opts["config"] == nil or not is_file($opts["config"]) then
+    print("  ERROR: compd needs {config: PATH} (its settings file)")
+    exit(2)
+  end
+  $weston = which("weston")
+  if $weston == nil then
+    print("  ERROR: weston is required for the headless host (pacman -S weston)")
+    exit(2)
+  end
+  $id = to_string(pid())
+  $record = $opts["run"]
+  if $record == nil then
+    $record = new_run("/tmp/" .. $kind .. "-" .. $tag .. "-" .. $id)
+  end
+  $run = $record.path
+  $socket = "nested-" .. $tag .. "-" .. $id
+  -- Bus names are at most 31 characters.
+  $service = $kind .. "-" .. $tag .. "-" .. $id
+  if len($service) > 31 then
+    $service = $kind .. "-" .. $id
+  end
+  $chmod = run_argv(["chmod", "0700", $run])
+  if $chmod.exit_code != 0 then
+    print("  ERROR: chmod " .. $run .. ": " .. $chmod.stderr)
+    exit(2)
+  end
+  mkdir($run .. "/etc", {parents: true})
+  mkdir($run .. "/var", {parents: true})
+  mkdir($run .. "/run", {parents: true})
+  $host_log = $run .. "/weston.log"
+  $log = $run .. "/compositor.log"
+  $renderer = $opts["host_renderer"] ?? "gl"
+  -- A private session bus for this run (dbus-daemon prints its address).
+  $dbus_address = ""
+  $dbus_pid = nil
+  $dbus_daemon = which("dbus-daemon")
+  if $dbus_daemon != nil and $dbus_daemon != "" then
+    $dbus_address = "unix:path=" .. $run .. "/session-bus"
+    $dbus_pid = spawn([$dbus_daemon, "--session", "--nofork", "--nopidfile", "--address=" .. $dbus_address],
+      {stdout: {file: $run .. "/dbus.log"}, stderr: "stdout", detach: true})
+    $t = 0
+    while not exists($run .. "/session-bus") and $t < 25
+      sleep(0.2)
+      $t = $t + 1
+    end
+    if not exists($run .. "/session-bus") then
+      print("  WARN: the private session bus never appeared (" .. $run .. "/dbus.log); continuing without one")
+      $dbus_address = ""
+    end
+  else
+    print("  WARN: no dbus-daemon on PATH; clients that need a session bus (waybar) will not start")
+  end
+  $width = to_string($opts["width"] ?? 1280)
+  $height = to_string($opts["height"] ?? 800)
+  $hp = spawn([$weston, "--backend=headless", "--renderer=" .. $renderer, "--socket=wl-host",
+    "--width=" .. $width, "--height=" .. $height, "--idle-time=0"],
+    {env: {XDG_RUNTIME_DIR: $run}, stdout: {file: $host_log}, stderr: "stdout", detach: true})
+  $t = 0
+  while not exists($run .. "/wl-host") and $t < 50
+    sleep(0.2)
+    $t = $t + 1
+  end
+  if not exists($run .. "/wl-host") then
+    $killed = kill($hp, 15)
+    print("  ERROR: the weston host socket never appeared (" .. $host_log .. ")")
+    exit(2)
+  end
+  $cenv = {
+    XDG_RUNTIME_DIR: $run,
+    WAYLAND_DISPLAY: "wl-host",
+    WINIT_UNIX_BACKEND: "wayland",
+    DISPLAY: "",
+    RUST_LOG: "info",
+    MIXOS_ETC: $run .. "/etc",
+    MIXOS_RUN: $run .. "/run",
+    MIXOS_NODED_URL: noded_url(),
+    MIXOS_NODE_CONFIG: env("MIXOS_NODE_CONFIG", "/etc/mixos/node.conf.mix"),
+    HOME: env("HOME", "/tmp"),
+    USER: env("USER", "")
+  }
+  -- Mesa's Vulkan WSI in FIFO never completes a present to this headless
+  -- host, so a Vulkan client draws its first frame and stops: no frame
+  -- callback ever fires. Mailbox presents complete. compd itself presents
+  -- through EGL and ignores this; it is for the clients. `env` can override.
+  $cenv["MESA_VK_WSI_PRESENT_MODE"] = "mailbox"
+  if $opts["software"] == true then
+    $cenv["LIBGL_ALWAYS_SOFTWARE"] = "1"
+  end
+  if $dbus_address != "" then
+    $cenv["DBUS_SESSION_BUS_ADDRESS"] = $dbus_address
+  end
+  for each $name in keys($opts["env"] ?? {})
+    $cenv[$name] = to_string($opts["env"][$name])
+  end
+  -- Persistence must stay private even when the caller supplies an env map.
+  $cenv["MIXOS_VAR"] = $run .. "/var"
+  $argv = [$bin, "--nested", "--socket", $socket, "--bus-service", $service, "--config-file=" .. $opts["config"]]
+  $cp = spawn($argv, {env: $cenv, stdout: {file: $log}, stderr: "stdout", detach: true})
+  $pids = [$cp, $hp]
+  if $dbus_pid != nil then
+    push($pids, $dbus_pid)
+  end
+  return {kind: $kind, bin: $bin, socket: $socket, service: $service, runtime: $run,
+          log: $log, host_log: $host_log, pids: $pids, comp_pid: $cp, dbus: $dbus_address, run: $record}
+end
+
+-- Until the compositor answers its own Bus port. Bounded: a compositor that
+-- never comes up is a failed gate, not a hang.
+fn wait_ready($session, $seconds)
+  $tries = ($seconds ?? 30) * 2
+  $i = 0
+  while $i < $tries
+    if not _alive($session["comp_pid"]) then
+      return false
+    end
+    if exists($session["runtime"] .. "/" .. $session["socket"]) then
+      $p = call($session["service"], "comp.ping", {})
+      if $p.rc == 0 then
+        return true
+      end
+    end
+    sleep(0.5)
+    $i = $i + 1
+  end
+  return false
+end
+
+-- Stop the compositor and its host. The gate calls finish_run() after its
+-- final verdict to remove passing artefacts or name retained evidence.
+fn stop($session)
+  for each $p in $session["pids"]
+    if _alive($p) then
+      $sent = kill($p, 15)
+    end
+  end
+  sleep(1)
+  for each $p in $session["pids"]
+    if _alive($p) then
+      $sent = kill($p, 9)
+    end
+  end
+  print("teardown: " .. $session["kind"] .. " stopped")
+end
+
+-- The lines a child wrote. A missing file is no lines, never an error: a
+-- gate reads it while the process is still writing.
+fn log_lines($path)
+  if not is_file($path) then
+    return []
+  end
+  return split(read_file($path), "\n")
+end
+
+fn log_has($path, $needle)
+  for each $line in log_lines($path)
+    if contains($line, $needle) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Wait (bounded) for a needle in a log a child process is writing.
+fn await_log($path, $needle, $seconds)
+  $tries = ($seconds ?? 10) * 4
+  $i = 0
+  while $i < $tries
+    if log_has($path, $needle) then
+      return true
+    end
+    sleep(0.25)
+    $i = $i + 1
+  end
+  return false
+end

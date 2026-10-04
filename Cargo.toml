@@ -1,0 +1,120 @@
+# MixOS workspace. Every package is a component or a component's private
+# crate (AGENTS.md §1–§2); vendor/ holds patched upstreams, several with their
+# own [workspace].
+
+[workspace]
+resolver = "3"
+members = ["libs/*", "services/compd", "services/compd/crates/*"]
+# The comp policy cores (surfaces, ledger, comp-model, policy, comp-service)
+# keep their own default lints: they do not opt into [workspace.lints].
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/markc/mixos"
+
+# The engine crates still carry warnings; a clippy-clean pass is its own change.
+[workspace.lints.rust]
+warnings = "allow"
+
+[workspace.dependencies]
+bindgen = { version = "=0.71.1" }
+bitflags = { version = "=2.13.1" }
+cc = { version = "=1.4.3" }
+crossbeam-channel = { version = "=0.5.16" }
+drm-ffi = { version = "=0.9.1" }
+gbm = { version = "=0.18.0" }
+glow = { version = "=0.17.0" }
+iced_core = { path = "vendor/iced/core", version = "0.15.0-dev" }
+iced_graphics = { path = "vendor/iced/graphics", version = "0.15.0-dev", features = ["web-colors"] }
+iced_runtime = { path = "vendor/iced/runtime", version = "0.15.0-dev" }
+iced_wgpu = { path = "vendor/iced/wgpu", version = "0.15.0-dev", default-features = false, features = ["web-colors"] }
+iced_widget = { path = "vendor/iced/widget", version = "0.15.0-dev", features = ["advanced", "image", "svg", "wgpu"] }
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+libc = { version = "=0.2.189" }
+libpulse-binding = { version = "=2.30.1" }
+mpris = { version = "=2.1.0" }
+pkg-config = { version = "=0.3.34" }
+pollster = { version = "=0.3.0" }
+# `rc`: the comp.* props tree serialises Arc<str> leaves (comp-model).
+serde = { version = "=1.0.229", features = ["derive", "rc"] }
+# serde_json must never gain `preserve_order` (indexmap): the frozen comp.* wire
+# relies on BTreeMap key order (comp-model `wire_object_keys_stay_sorted`).
+serde_json = { version = "=1.0.151" }
+# scene-host's scene digest; already in the lock (0.10.9).
+sha2 = { version = "=0.10.9" }
+smithay = { path = "vendor/smithay", version = "0.7.0", default-features = false, features = ["backend_drm", "backend_egl", "backend_gbm", "backend_libinput", "backend_session_libseat", "backend_udev", "backend_winit", "desktop", "drm", "gbm", "renderer_gl", "renderer_multi", "renderer_pixman", "use_system_lib", "wayland-egl", "wayland_frontend", "xwayland"] }
+thiserror = { version = "=2.0.20" }
+# comp-service only (a current-thread runtime on its worker); the bus client and zbus
+# ask for the tokio features they need themselves.
+tokio = { version = "=1.53.1", features = ["macros", "rt", "sync", "time"] }
+tracing = { version = "=0.1.44" }
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+uuid = { version = "=1.24.1", features = ["fast-rng", "serde", "v7"] }
+wayland-backend = { version = "=0.3.17" }
+wayland-scanner = { version = "=0.31.11" }
+wgpu = { path = "vendor/wgpu/wgpu", version = "30.0.0", default-features = false, features = ["gles", "parking_lot", "std", "wgsl"] }
+xcursor = { version = "=0.3.11" }
+zbus = { version = "=5.19.0", default-features = false, features = ["blocking-api", "tokio"] }
+# Quoin's conf.mix (Mix data) and its one path rule (scene-host).
+
+# Shared libraries (libs/).
+buildinfo = { path = "libs/buildinfo" }
+bus = { path = "libs/bus" }
+config = { path = "libs/config" }
+design = { path = "libs/design" }
+expr = { path = "libs/expr" }
+scene = { path = "libs/scene" }
+strict = { path = "libs/strict" }
+
+# compd's private crates (services/compd/crates/).
+comp-model = { path = "services/compd/crates/comp-model" }
+comp-service = { path = "services/compd/crates/comp-service" }
+decor = { path = "services/compd/crates/decor" }
+dispatcher = { path = "services/compd/crates/dispatcher" }
+drivers = { path = "services/compd/crates/drivers" }
+edges = { path = "services/compd/crates/edges" }
+effects = { path = "services/compd/crates/effects" }
+frames = { path = "services/compd/crates/frames" }
+graphics = { path = "services/compd/crates/graphics" }
+kms = { path = "services/compd/crates/kms" }
+ledger = { path = "services/compd/crates/ledger" }
+model = { path = "services/compd/crates/model" }
+native = { path = "services/compd/crates/native" }
+nested = { path = "services/compd/crates/nested" }
+outputs = { path = "services/compd/crates/outputs" }
+policy = { path = "services/compd/crates/policy" }
+policy-host = { path = "services/compd/crates/policy-host" }
+protocols = { path = "services/compd/crates/protocols" }
+recorder = { path = "services/compd/crates/recorder" }
+render-gles = { path = "services/compd/crates/render-gles" }
+scene-host = { path = "services/compd/crates/scene-host" }
+scenegraph = { path = "services/compd/crates/scenegraph" }
+screencopy = { path = "services/compd/crates/screencopy" }
+seat = { path = "services/compd/crates/seat" }
+slots = { path = "services/compd/crates/slots" }
+surfaces = { path = "services/compd/crates/surfaces" }
+ui = { path = "services/compd/crates/ui" }
+world = { path = "services/compd/crates/world" }
+x11-wm = { path = "services/compd/crates/x11-wm" }
+
+[patch.crates-io]
+# calloop 0.14.4 with composed-channel idle wakeups, and input-rs with its
+# local fixes. See vendor/README.md.
+calloop = { path = "vendor/calloop" }
+input = { path = "vendor/input" }
+
+[profile.release]
+codegen-units = 1
+debug = "line-tables-only"
+lto = "fat"
+split-debuginfo = "packed"
+strip = "symbols"
+
+[profile.release-fast]
+codegen-units = 16
+inherits = "release"
+lto = false

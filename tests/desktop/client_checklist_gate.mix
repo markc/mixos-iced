@@ -1,0 +1,344 @@
+#!/usr/bin/env mix
+-- version: 0.2.0
+-- client_checklist_gate.mix — the real-client checklist as a nested gate:
+-- real Firefox and Thunderbird, native Wayland, on a PRIVATE nested compd
+-- (nested_host_lib).
+--
+--   mix tests/desktop/client_checklist_gate.mix [--bin PATH]
+--       --config-file PATH [--env NAME=VALUE ...] [--software] [--no-thunderbird]
+--
+-- The checklist: focus, copy and paste both ways, a text drag-and-drop, a
+-- file drag-and-drop, each step observed.
+--
+-- Firefox loads the LOCAL tests/desktop/client_fixture.html: a text area whose
+-- contents are mirrored into the page title, so the compositor's own window
+-- row (its title) shows what the client received. No network.
+--   F1 maps a NEW toplevel (Wayland-native, app_id firefox)
+--   F2 comp.window.focus gives it focus.window and focus.keyboard
+--   F3 injected text reaches the page (title CK:<text>)
+--   F4 paste IN: wl-copy a needle, Ctrl+A Ctrl+V, the title shows it
+--   F5 copy OUT: Ctrl+A Ctrl+C, wl-paste returns the page's text
+--   F6 polite close: the window is gone
+-- Thunderbird (a fresh private profile, first-run wizard):
+--   T1 maps a NEW toplevel, T2 takes focus, T3 polite close
+-- Drag-and-drop (text and file) is reported SKIP: an injected pointer drag
+-- between two real clients cannot be observed from the Bus or the client
+-- without instrumenting the client, so those two steps stay on the checklist
+-- run with a person at the screen.
+--
+-- Needs firefox, thunderbird (unless --no-thunderbird), wl-copy and wl-paste
+-- (wl-clipboard). Run from the repo root so tests/desktop/client_fixture.html
+-- resolves (else /opt/compd/bin/client_fixture.html).
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+
+$KIND = "compd"
+$BIN = ""
+$CONFIG = ""
+$ENV = {}
+$SOFTWARE = false
+$THUNDERBIRD = true
+$USAGE = "usage: client_checklist_gate.mix [--bin PATH] --config-file PATH [--env NAME=VALUE ...] [--software] [--no-thunderbird]"
+$argv = args()
+$ai = 0
+while $ai < len($argv)
+  $arg = $argv[$ai]
+  if $arg == "--bin" and $ai + 1 < len($argv) then
+    $BIN = $argv[$ai + 1]
+    $ai = $ai + 2
+  elif $arg == "--config-file" and $ai + 1 < len($argv) then
+    $CONFIG = $argv[$ai + 1]
+    $ai = $ai + 2
+  elif $arg == "--env" and $ai + 1 < len($argv) and contains($argv[$ai + 1], "=") then
+    $kv = split_once($argv[$ai + 1], "=")
+    $ENV[$kv[0]] = $kv[1]
+    $ai = $ai + 2
+  elif $arg == "--software" then
+    $SOFTWARE = true
+    $ai = $ai + 1
+  elif $arg == "--no-thunderbird" then
+    $THUNDERBIRD = false
+    $ai = $ai + 1
+  else
+    print("  ERROR: unknown or incomplete argument '" .. $arg .. "'")
+    print($USAGE)
+    exit(2)
+  end
+end
+
+fn tool($name)
+  $p = which($name)
+  if $p == nil or $p == "" then
+    print("  ERROR: " .. $name .. " is not on PATH")
+    exit(2)
+  end
+  return $p
+end
+$comp = $n.require_binary("compd", $BIN, ["/opt/compd/bin"])
+$firefox = tool("firefox")
+$wl_copy = tool("wl-copy")
+$wl_paste = tool("wl-paste")
+$thunderbird = ""
+if $THUNDERBIRD then
+  $thunderbird = tool("thunderbird")
+end
+$fixture = realpath("tests/desktop/client_fixture.html") ?? ""
+if $fixture == "" or not is_file($fixture) then
+  $fixture = "/opt/compd/bin/client_fixture.html"
+end
+if not is_file($fixture) then
+  print("  ERROR: no client_fixture.html (tests/desktop/ under the working directory, or /opt/compd/bin)")
+  exit(2)
+end
+
+$TALLY = {pass: 0, fail: 0, skip: 0}
+fn check($name, $ok, $detail)
+  if $ok then
+    print("  PASS " .. $name)
+    $TALLY["pass"] = $TALLY["pass"] + 1
+  else
+    print("  FAIL " .. $name .. ": " .. to_string($detail))
+    $TALLY["fail"] = $TALLY["fail"] + 1
+  end
+  return $ok
+end
+fn skip($name, $why)
+  print("  SKIP " .. $name .. ": " .. $why)
+  $TALLY["skip"] = $TALLY["skip"] + 1
+end
+
+$CLEANUP.run = $n.new_run("/tmp/" .. $KIND .. "-clients-" .. to_string(pid()))
+$session = $n.start({bin: $comp, tag: "clients", run: $CLEANUP.run, config: $CONFIG, env: $ENV, software: $SOFTWARE})
+$svc = $session["service"]
+$run = $session["runtime"]
+if not check("compositor socket up and comp.ping answered", $n.wait_ready($session, 30), $session["log"]) then
+  $n.stop($session)
+  exit(1)
+end
+print("nested " .. $KIND .. " (" .. $comp .. "): socket " .. $session["socket"] .. ", service " .. $svc)
+
+fn call($verb, $args)
+  return $n.call($svc, $verb, $args)
+end
+
+fn client_env()
+  $e = {WAYLAND_DISPLAY: $session["socket"], XDG_RUNTIME_DIR: $run, HOME: $run .. "/home",
+    MOZ_ENABLE_WAYLAND: "1", DISPLAY: ""}
+  if $session["dbus"] != "" then
+    $e["DBUS_SESSION_BUS_ADDRESS"] = $session["dbus"]
+  end
+  if $SOFTWARE then
+    $e["LIBGL_ALWAYS_SOFTWARE"] = "1"
+  end
+  return $e
+end
+
+$PIDS = {}
+fn launch($name, $argv)
+  $p = spawn($argv, {env: client_env(), stdout: {file: $run .. "/" .. $name .. ".log"},
+    stderr: "stdout", detach: true})
+  $PIDS[$name] = $p
+  return $p
+end
+
+fn alive($p)
+  return $p != nil and exists("/proc/" .. to_string($p))
+end
+
+-- The windows rows; {} when the read failed.
+fn window_rows()
+  $r = call("comp.windows.list", {})
+  if $r.rc != 0 or type($r.result) != "map" or type($r.result.windows) != "list" then
+    return []
+  end
+  return $r.result.windows
+end
+
+fn known_ids()
+  $set = {}
+  for each $w in window_rows()
+    $set[to_string($w.id)] = true
+  end
+  return $set
+end
+
+-- A NEW window row (by id) whose app_id contains `needle`, within `secs`.
+fn wait_new_window($known, $needle, $secs)
+  $tries = $secs * 2
+  $i = 0
+  while $i < $tries
+    for each $w in window_rows()
+      if $known[to_string($w.id)] != true and contains(lower(to_string($w.app_id ?? "")), $needle) then
+        return $w
+      end
+    end
+    sleep(0.5)
+    $i = $i + 1
+  end
+  return nil
+end
+
+fn title_of($id)
+  for each $w in window_rows()
+    if $w.id == $id then
+      return to_string($w.title ?? "")
+    end
+  end
+  return ""
+end
+
+-- The window's title until it contains `want` (bounded); the last read.
+fn await_title($id, $want, $secs)
+  $t = ""
+  $i = 0
+  while not contains($t, $want) and $i < $secs * 4
+    $t = title_of($id)
+    if not contains($t, $want) then
+      sleep(0.25)
+      $i = $i + 1
+    end
+  end
+  return $t
+end
+
+fn key($name, $mods)
+  return call("comp.input.key", {seat: "human", key: $name, modifiers: $mods})
+end
+
+fn focus_ok($w)
+  $f = call("comp.window.focus", {id: $w.id, generation: $w.generation})
+  $kb = nil
+  $fw = nil
+  $i = 0
+  while ($fw != $w.id) and $i < 20
+    $fw = call("comp.props.get", {path: "focus.window.id"}).result
+    $kb = call("comp.props.get", {path: "focus.keyboard"}).result
+    if $fw != $w.id then
+      sleep(0.25)
+      $i = $i + 1
+    end
+  end
+  return {ok: $f.rc == 0 and $fw == $w.id and $kb != nil, detail: json_encode({reply: $f, window: $fw, keyboard: $kb})}
+end
+
+fn close_gone($w, $pid, $secs)
+  $c = call("comp.window.close", {id: $w.id, generation: $w.generation})
+  $gone = false
+  $i = 0
+  while not $gone and $i < $secs * 4
+    $gone = true
+    for each $row in window_rows()
+      if $row.id == $w.id then
+        $gone = false
+      end
+    end
+    if not $gone then
+      sleep(0.25)
+      $i = $i + 1
+    end
+  end
+  return {ok: $c.rc == 0 and $gone, detail: json_encode($c)}
+end
+
+mkdir($run .. "/home", {parents: true})
+try
+  -- The passthrough off, so a host pointer cannot overwrite the injection.
+  $pt = call("comp.props.set", {path: "input.host.passthrough", value: false})
+
+  -- ── Firefox, native Wayland ───────────────────────────────────────────
+  $profile = $run .. "/ff-profile"
+  mkdir($profile, {parents: true})
+  write_file($profile .. "/user.js",
+    "user_pref(\"browser.shell.checkDefaultBrowser\", false);\n" ..
+    "user_pref(\"browser.startup.homepage_override.mstone\", \"ignore\");\n" ..
+    "user_pref(\"browser.aboutwelcome.enabled\", false);\n" ..
+    "user_pref(\"browser.sessionstore.resume_from_crash\", false);\n" ..
+    "user_pref(\"datareporting.policy.dataSubmissionEnabled\", false);\n" ..
+    "user_pref(\"toolkit.telemetry.reportingpolicy.firstRun\", false);\n")
+  $before = known_ids()
+  launch("firefox", [$firefox, "--no-remote", "--new-instance", "--profile", $profile, "file://" .. $fixture])
+  $ff = wait_new_window($before, "firefox", 120)
+  if check("F1 firefox mapped a NEW Wayland toplevel", $ff != nil, "no new window row with app_id firefox in 120 s") then
+    $t0 = await_title($ff.id, "CK:", 60)
+    check("F1 the local fixture loaded (title " .. json_encode($t0) .. ")", contains($t0, "CK:"), $t0)
+    $fo = focus_ok($ff)
+    check("F2 comp.window.focus gives firefox focus.window and the keyboard", $fo.ok, $fo.detail)
+
+    -- F3: typed text reaches the page.
+    $ty = call("comp.input.key", {seat: "human", text: "hello"})
+    $t3 = await_title($ff.id, "CK:hello", 10)
+    check("F3 injected text reached the page", contains($t3, "CK:hello"), json_encode([$ty, $t3]))
+
+    -- F4: paste IN from another client.
+    $needle_in = "pastein" .. to_string(pid())
+    $cp = spawn([$wl_copy, $needle_in], {env: client_env(), stdout: {file: $run .. "/wl-copy.log"}, stderr: "stdout", detach: true})
+    sleep(1)
+    $ka = key("a", ["ctrl"])
+    $kv = key("v", ["ctrl"])
+    $t4 = await_title($ff.id, "CK:" .. $needle_in, 10)
+    check("F4 paste IN: firefox received the other client's clipboard", contains($t4, "CK:" .. $needle_in),
+      json_encode([$ka.rc, $kv.rc, $t4]))
+
+    -- F5: copy OUT to another client.
+    $ty2 = call("comp.input.key", {seat: "human", text: "out"})
+    $want_out = $needle_in .. "out"
+    $t5 = await_title($ff.id, "CK:" .. $want_out, 10)
+    $ka2 = key("a", ["ctrl"])
+    $kc = key("c", ["ctrl"])
+    $got = ""
+    $i = 0
+    while $got != $want_out and $i < 20
+      $r = run_argv([$wl_paste, "--no-newline"], {env: client_env(), timeout: 5})
+      $got = $r.stdout ?? ""
+      if $got != $want_out then
+        sleep(0.25)
+        $i = $i + 1
+      end
+    end
+    check("F5 copy OUT: another client pastes firefox's text", $got == $want_out, json_encode([$t5, $got]))
+
+    skip("text drag-and-drop", "not observable from the Bus without instrumenting a client; on the checklist run with a person at the screen")
+    skip("file drag-and-drop", "not observable from the Bus without instrumenting a client; on the checklist run with a person at the screen")
+
+    $cg = close_gone($ff, $PIDS["firefox"], 20)
+    check("F6 a polite close removes firefox's window", $cg.ok, $cg.detail)
+  end
+
+  -- ── Thunderbird ───────────────────────────────────────────────────────
+  if $thunderbird != "" then
+    $tprofile = $run .. "/tb-profile"
+    mkdir($tprofile, {parents: true})
+    $before = known_ids()
+    launch("thunderbird", [$thunderbird, "--no-remote", "--profile", $tprofile])
+    $tb = wait_new_window($before, "thunderbird", 120)
+    if check("T1 thunderbird mapped a NEW Wayland toplevel", $tb != nil, "no new window row with app_id thunderbird in 120 s") then
+      $to = focus_ok($tb)
+      check("T2 comp.window.focus gives thunderbird focus.window and the keyboard", $to.ok, $to.detail)
+      $tg = close_gone($tb, $PIDS["thunderbird"], 30)
+      check("T3 a polite close removes thunderbird's window", $tg.ok, $tg.detail)
+    end
+  end
+catch $e
+  check("the runner completed", false, to_string($e))
+end
+
+for each $name in keys($PIDS)
+  if alive($PIDS[$name]) then
+    $sent = kill($PIDS[$name], 15)
+  end
+end
+$n.stop($session)
+
+$total = $TALLY["pass"] + $TALLY["fail"]
+if $TALLY["fail"] == 0 then
+  print("PASS client_checklist_gate [" .. $KIND .. "]: " .. to_string($TALLY["pass"]) .. "/" .. to_string($total) .. " checks, " .. to_string($TALLY["skip"]) .. " skipped")
+  $CLEANUP.ok = true
+  exit(0)
+end
+print("FAIL client_checklist_gate [" .. $KIND .. "]: " .. to_string($TALLY["fail"]) .. " of " .. to_string($total) .. " checks failed (logs in " .. $run .. ")")
+exit(1)
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

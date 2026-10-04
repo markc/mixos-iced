@@ -1,0 +1,20 @@
+[package]
+name = "expr"
+description = "The pure expression language of Mix Scenes bindings: compile, inspect reads, evaluate over JSON"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "expr"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { version = "=1.0.151" }

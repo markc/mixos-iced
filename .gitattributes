@@ -1,0 +1,12 @@
+# Written by docs/build/gen-site.mix — collapsed in GitHub diffs. Edit the
+# sources (docs/**/*.md, docs/build/*) and rebuild; never edit these by hand.
+docs/index.html linguist-generated
+docs/404.html linguist-generated
+docs/**/index.html linguist-generated
+docs/llms.txt linguist-generated
+docs/llms-full.txt linguist-generated
+docs/sitemap.xml linguist-generated
+docs/robots.txt linguist-generated
+docs/web/icons.css linguist-generated
+docs/web/fonts/icons.woff2 linguist-generated binary
+docs/web/fonts/LICENSE-MaterialSymbols.txt linguist-generated

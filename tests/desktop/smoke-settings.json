@@ -1,0 +1,18 @@
+{
+  "capture_background_encoder": "ffmpeg",
+  "capture_codec": "av1",
+  "capture_encoder": "vaapi",
+  "capture_nvenc_allow_readback_fallback": false,
+  "capture_quality": "optimized",
+  "capture_refresh_rate_max": 120,
+  "capture_variable_frame_rate": true,
+  "depth": 8,
+  "desktop_name": "MixOS",
+  "hdr": false,
+  "log_level": "info",
+  "render_node": "/dev/dri/renderD128",
+  "renderer_sync": "infence",
+  "vrr": true,
+  "window_client_size_fallback": false,
+  "window_subsurface_shrinks": false
+}

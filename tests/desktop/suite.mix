@@ -1,0 +1,302 @@
+#!/usr/bin/env mix
+-- version: 0.3.0
+-- suite.mix — the compd desktop suite: every desktop gate on the same harness
+-- (nested_host_lib, or the equivalent setup inside the standalone gates: a
+-- private headless weston host per run), then one PASS/FAIL table.
+--
+--   mix tests/desktop/suite.mix [--dir DIR] [--out DIR] [--only a,b] [--skip a,b]
+--       [--scales 1,2.5] [--bin PATH] [--config-file PATH] [--seat-seconds N]
+--       [--timeout SECS] [--json]
+--
+-- --dir is where the gates live (default `tests/desktop` under the working
+-- directory, else /opt/compd/bin: run it from the repo root, or on a host where the
+-- gates are installed beside compd). Gates run with the repo root (or that
+-- dir) as their working directory, so their own lookups (bus_watch.mix,
+-- fixtures) resolve as when run by hand.
+--
+-- Harness gates (nested_host_lib; run once): desktop (with the waybar,
+-- fuzzel and xmessage arms), control, workspaces, agent_seat, presentation
+-- (g1plus), region, clients.
+-- Standalone gates (the compd binary as their first argument), once per
+-- --scales entry: nested_smoke (--bus), chrome, scene (at a second scale it
+-- compares against the first scale's layout), screencopy. idle_probe takes no
+-- scale and runs once.
+--
+-- A row is the gate's own verdict from its exit status: PASS (0), FAIL (1),
+-- SETUP (2: usage, a missing tool or binary; the gate printed why), TIMEOUT,
+-- or ERROR (anything else). FAIL rows list the gate's FAIL lines below the
+-- table. Every gate's full output is kept in --out (default
+-- /tmp/compd-suite-<pid>). Exits 0 only when every gate that ran is PASS.
+
+$DIR = ""
+$OUT = "/tmp/compd-suite-" .. to_string(pid())
+$ONLY = []
+$SKIP = []
+$SCALES = ["1"]
+$BIN = ""
+$CONFIG = ""
+$SEAT_SECONDS = "10"
+$TIMEOUT = 1200
+$JSON = false
+$USAGE = "usage: suite.mix [--dir DIR] [--out DIR] [--only a,b] [--skip a,b] [--scales 1,2.5] [--bin PATH] [--config-file PATH] [--seat-seconds N] [--timeout SECS] [--json]"
+
+fn csv($s)
+  $out = []
+  for each $p in split($s, ",")
+    if trim($p) != "" then
+      push($out, trim($p))
+    end
+  end
+  return $out
+end
+
+$argv = args()
+$i = 0
+while $i < len($argv)
+  $a = $argv[$i]
+  $v = nil
+  if $i + 1 < len($argv) then
+    $v = $argv[$i + 1]
+  end
+  if $a == "--dir" and $v != nil then
+    $DIR = $v
+    $i = $i + 2
+  elif $a == "--out" and $v != nil then
+    $OUT = $v
+    $i = $i + 2
+  elif $a == "--only" and $v != nil then
+    $ONLY = csv($v)
+    $i = $i + 2
+  elif $a == "--skip" and $v != nil then
+    $SKIP = csv($v)
+    $i = $i + 2
+  elif $a == "--scales" and $v != nil then
+    $SCALES = csv($v)
+    $i = $i + 2
+  elif $a == "--bin" and $v != nil then
+    $BIN = $v
+    $i = $i + 2
+  elif $a == "--config-file" and $v != nil then
+    $CONFIG = $v
+    $i = $i + 2
+  elif $a == "--seat-seconds" and $v != nil then
+    $SEAT_SECONDS = $v
+    $i = $i + 2
+  elif $a == "--timeout" and $v != nil then
+    $TIMEOUT = to_number($v) ?? 1200
+    $i = $i + 2
+  elif $a == "--json" then
+    $JSON = true
+    $i = $i + 1
+  else
+    print($USAGE)
+    exit(2)
+  end
+end
+if len($SCALES) == 0 then
+  print("  ERROR: --scales needs at least one scale")
+  exit(2)
+end
+
+-- Where the gates are, and the working directory they run in.
+if $DIR == "" then
+  if is_file("tests/desktop/nested_host_lib.mix") then
+    $DIR = "tests/desktop"
+  else
+    $DIR = "/opt/compd/bin"
+  end
+end
+if not is_file($DIR .. "/nested_host_lib.mix") then
+  print("  ERROR: no gates in " .. $DIR .. " (pass --dir)")
+  exit(2)
+end
+-- In a checkout the gates run from the repo root (two levels up from
+-- tests/desktop); installed beside compd they run from their own directory.
+$CWD = $DIR
+if basename($DIR) == "desktop" and basename(dirname($DIR)) == "tests" then
+  $CWD = dirname(dirname($DIR))
+  if $CWD == "" then
+    $CWD = "."
+  end
+end
+if $CONFIG == "" then
+  for each $c in [$DIR .. "/smoke-settings.json", "/opt/compd/bin/smoke-settings.json"]
+    if $CONFIG == "" and is_file($c) then
+      $CONFIG = $c
+    end
+  end
+end
+if $BIN == "" then
+  for each $c in [$DIR .. "/compd", "/opt/compd/bin/compd"]
+    if $BIN == "" and is_file($c) then
+      $BIN = $c
+    end
+  end
+end
+$MIX = which("mix") ?? "/opt/mixos/bin/mix"
+mkdir($OUT, {parents: true})
+
+-- The gate table. `style` "harness" takes --bin/--config-file; "standalone"
+-- takes the compd binary as its first argument (and --scale).
+$GATES = [
+  {name: "desktop", script: "desktop_nested_gate.mix", style: "harness",
+    args: ["--layer-client", "waybar", "--overlay-client", "fuzzel", "--x-client", "xmessage"]},
+  {name: "control", script: "comp_control_smoke.mix", style: "harness", args: []},
+  {name: "workspaces", script: "comp_workspaces_gate.mix", style: "harness", args: []},
+  {name: "agent_seat", script: "comp_agent_seat_gate.mix", style: "harness", args: ["--seconds", $SEAT_SECONDS]},
+  {name: "presentation", script: "comp_presentation_smoke.mix", style: "harness", args: ["--gate", "g1plus"]},
+  {name: "region", script: "comp_region_select_gate.mix", style: "harness", args: []},
+  {name: "clients", script: "client_checklist_gate.mix", style: "harness", args: []}
+]
+for each $s in $SCALES
+  push($GATES, {name: "nested_smoke@" .. $s, script: "nested_smoke.mix", style: "standalone", scale: $s,
+    args: ["--secs", "8", "--bus", "--watch-script", $DIR .. "/bus_watch.mix"]})
+  push($GATES, {name: "chrome@" .. $s, script: "chrome_gate.mix", style: "standalone", scale: $s, args: ["--json"]})
+  push($GATES, {name: "scene@" .. $s, script: "scene_gate.mix", style: "standalone", scale: $s, args: ["--json"]})
+  push($GATES, {name: "screencopy@" .. $s, script: "screencopy_gate.mix", style: "standalone", scale: $s, args: ["--json"]})
+end
+push($GATES, {name: "idle_probe", script: "idle_probe.mix", style: "standalone", scale: "1", args: ["--json"]})
+
+fn selected($name, $only, $skip)
+  $base = split($name, "@")[0]
+  if len($only) > 0 and not contains($only, $name) and not contains($only, $base) then
+    return false
+  end
+  return not contains($skip, $name) and not contains($skip, $base)
+end
+
+-- One gate run: {verdict, exit, seconds, fails, log}.
+fn run_gate($g, $ctx)
+  $argv = [$ctx.mix, $ctx.dir .. "/" .. $g.script]
+  if $g.style == "harness" then
+    if $ctx.config != "" then
+      push($argv, "--config-file")
+      push($argv, $ctx.config)
+    end
+    if $ctx.bin != "" then
+      push($argv, "--bin")
+      push($argv, $ctx.bin)
+    end
+  else
+    push($argv, $ctx.bin)
+    if $ctx.config != "" then
+      push($argv, "--config-file")
+      push($argv, $ctx.config)
+    end
+    if $g.scale != "1" then
+      push($argv, "--scale")
+      push($argv, $g.scale)
+      -- scene: compare against the first scale's layout when it ran.
+      $first = $ctx.out .. "/scene@" .. $ctx.first_scale .. ".stdout"
+      if $g.script == "scene_gate.mix" and is_file($first) then
+        push($argv, "--compare-layout")
+        push($argv, $first)
+      end
+    end
+  end
+  for each $x in $g.args
+    push($argv, $x)
+  end
+  $stem = $ctx.out .. "/" .. $g.name
+  $t0 = monotonic()
+  $r = run_argv($argv, {cwd: $ctx.cwd, timeout: $ctx.timeout, grace: 15, max_output: 64 * 1024 * 1024})
+  $secs = floor(monotonic() - $t0)
+  write_file($stem .. ".stdout", $r.stdout ?? "")
+  write_file($stem .. ".log", join($argv, " ") .. "\n\n" .. ($r.stdout ?? "") .. "\n--- stderr\n" .. ($r.stderr ?? ""))
+  $verdict = "ERROR"
+  if $r.timed_out == true then
+    $verdict = "TIMEOUT"
+  elif $r.exit_code == 0 then
+    $verdict = "PASS"
+  elif $r.exit_code == 1 then
+    $verdict = "FAIL"
+  elif $r.exit_code == 2 then
+    $verdict = "SETUP"
+  end
+  -- The gate's own FAIL check lines (its summary line names the script).
+  $fails = []
+  $script_stem = replace($g.script, ".mix", "")
+  for each $l in lines($r.stdout ?? "")
+    $t = trim($l)
+    if (starts_with($t, "FAIL ") or starts_with($t, "FAIL:")) and not contains($t, $script_stem) then
+      push($fails, $t)
+    end
+  end
+  if $verdict != "PASS" and len($fails) == 0 then
+    -- No check line: the last thing the gate said is the reason.
+    $tail = trim(($r.stdout ?? "") .. "\n" .. ($r.stderr ?? ""))
+    $ls = lines($tail)
+    if len($ls) > 0 then
+      push($fails, trim($ls[len($ls) - 1]))
+    end
+  end
+  return {verdict: $verdict, exit: $r.exit_code, seconds: $secs, fails: $fails, log: $stem .. ".log"}
+end
+
+$CTX = {mix: $MIX, dir: $DIR, cwd: $CWD, out: $OUT, config: $CONFIG, bin: $BIN,
+  timeout: $TIMEOUT, first_scale: $SCALES[0]}
+if not $JSON then
+  print("compd suite: gates " .. $DIR .. " (cwd " .. $CWD .. "), logs " .. $OUT)
+  print("  compd " .. ($BIN == "" ? "(gate default)" : $BIN) .. ", config " .. ($CONFIG == "" ? "(none)" : $CONFIG))
+end
+$ROWS = []
+for each $g in $GATES
+  if selected($g.name, $ONLY, $SKIP) then
+    $row = {gate: $g.name}
+    if $g.style == "standalone" and $BIN == "" then
+      $row.result = {verdict: "SETUP", exit: nil, seconds: 0, fails: ["no compd binary (pass --bin)"], log: ""}
+    else
+      if not $JSON then
+        print("  running " .. $g.name .. " ...")
+      end
+      $row.result = run_gate($g, $CTX)
+      if not $JSON then
+        print("    " .. $row.result.verdict .. " in " .. to_string($row.result.seconds) .. " s")
+      end
+    end
+    push($ROWS, $row)
+  end
+end
+
+-- The table.
+fn cell_text($c)
+  if $c.verdict == "FAIL" then
+    return "FAIL(" .. to_string(len($c.fails)) .. ")"
+  end
+  return $c.verdict
+end
+$all_pass = true
+for each $row in $ROWS
+  if $row.result.verdict != "PASS" then
+    $all_pass = false
+  end
+end
+$ran = len($ROWS)
+if $JSON then
+  print(json_encode({ok: $all_pass and $ran > 0, out: $OUT, rows: $ROWS}))
+  exit(($all_pass and $ran > 0) ? 0 : 1)
+end
+print("")
+$head = rpad("gate", 20) .. rpad("verdict", 12) .. "seconds"
+print($head)
+print(repeat("-", len($head) + 4))
+for each $row in $ROWS
+  print(rpad($row.gate, 20) .. rpad(cell_text($row.result), 12) .. to_string($row.result.seconds))
+end
+for each $row in $ROWS
+  $c = $row.result
+  if $c.verdict != "PASS" then
+    print("")
+    print($row.gate .. " " .. $c.verdict .. " (exit " .. to_string($c.exit) .. "; " .. $c.log .. ")")
+    for each $f in $c.fails
+      print("  " .. $f)
+    end
+  end
+end
+print("")
+if $ran == 0 then
+  print("FAIL suite: no gate selected")
+  exit(1)
+end
+print(($all_pass ? "PASS" : "FAIL") .. " suite: " .. to_string($ran) .. " gates, logs in " .. $OUT)
+exit($all_pass ? 0 : 1)

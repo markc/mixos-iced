@@ -1,0 +1,291 @@
+#!/usr/bin/env mix
+-- version: 0.2.0
+-- comp_control_smoke.mix — gates G3 and G4 of the control contract: input
+-- injection and the window verbs, against a PRIVATE nested compd on its own
+-- headless weston host:
+--
+--   mix tests/desktop/comp_control_smoke.mix [--bin PATH] --config-file PATH [--probe PATH]
+--
+-- Defaults: compd is /opt/compd/bin/compd, the probe is testkit-input-probe
+-- from compd's bin dir (beside a compd --bin, then /opt/compd/bin); its path
+-- and --version are printed.
+-- Needs weston (the host) and a reachable noded. `--env NAME=VALUE`
+-- (repeatable) passes an environment variable to the compositor only.
+--
+-- G3: a window-local pointer move, a click and injected text land on the
+--     window under the point, which is then focused. Proven from BOTH ends:
+--     compd's reply names the target, and the probe client prints the events
+--     it actually received.
+-- G4: two overlapping windows — place, the occlusion refusal, a click on the
+--     exposed corner, an async resize confirmed by `comp.window.wait`,
+--     minimise/restore, `comp.windows.list`, and the two forced-close
+--     outcomes (a window that hides on close is KILLED as unmapped; one that
+--     really goes is `gone`).
+--
+-- Every check is a line; the run ends with one PASS/FAIL summary line and
+-- exits non-zero if anything failed. The nested compd, its probes and its
+-- socket are always torn down.
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+
+$KIND = "compd"
+$ENV = {}
+$SOFTWARE = false
+$COMP = ""
+$CONFIG = ""
+$PROBE = ""
+$argv = args()
+$index = 0
+while $index < len($argv)
+  $arg = $argv[$index]
+  if $arg == "--env" and $index + 1 < len($argv) and contains($argv[$index + 1], "=") then
+    $kv = split_once($argv[$index + 1], "=")
+    $ENV[$kv[0]] = $kv[1]
+    $index = $index + 2
+  elif $arg == "--software" then
+    $SOFTWARE = true
+    $index = $index + 1
+  elif $arg == "--bin" and $index + 1 < len($argv) then
+    $COMP = $argv[$index + 1]
+    $index = $index + 2
+  elif $arg == "--config-file" and $index + 1 < len($argv) then
+    $CONFIG = $argv[$index + 1]
+    $index = $index + 2
+  elif $arg == "--probe" and $index + 1 < len($argv) then
+    $PROBE = $argv[$index + 1]
+    $index = $index + 2
+  else
+    print("usage: comp_control_smoke.mix [--bin PATH] --config-file PATH [--probe PATH] [--env NAME=VALUE ...] [--software]")
+    exit(2)
+  end
+end
+
+$comp = $n.require_binary("compd", $COMP, ["/opt/compd/bin"])
+$probe = $n.require_probe("testkit-input-probe", $PROBE, $comp)
+$CLEANUP.run = $n.new_run(env("TMPDIR", "/tmp") .. "/" .. $KIND .. "-control-" .. to_string(pid()))
+$log_dir = $CLEANUP.run.path
+$out_a = $log_dir .. "/comp-control-smoke-a." .. to_string(pid()) .. ".log"
+$out_b = $log_dir .. "/comp-control-smoke-b." .. to_string(pid()) .. ".log"
+
+-- The tally lives in a map: a fn can mutate an entry of an outer map,
+-- where a plain `$count = $count + 1` would bind a silent local.
+$TALLY = {pass: 0, fail: 0}
+fn check($name, $ok, $detail)
+  if $ok then
+    print("  PASS " .. $name)
+    $TALLY["pass"] = $TALLY["pass"] + 1
+  else
+    print("  FAIL " .. $name .. ": " .. $detail)
+    $TALLY["fail"] = $TALLY["fail"] + 1
+  end
+  return $ok
+end
+
+$session = $n.start({bin: $comp, tag: "control", run: $CLEANUP.run, config: $CONFIG, env: $ENV, software: $SOFTWARE})
+if not $n.wait_ready($session, 30) then
+  print("  ERROR: nested " .. $KIND .. " did not answer " .. $session["service"] .. ".comp.ping (log " .. $session["log"] .. ")")
+  $n.stop($session)
+  exit(1)
+end
+$svc = $session["service"]
+print("nested " .. $KIND .. " (" .. $comp .. "): socket " .. $session["socket"] ..
+  ", service " .. $svc)
+
+fn call($verb, $args)
+  return $n.call($svc, $verb, $args)
+end
+
+fn probe_env($session)
+  return {WAYLAND_DISPLAY: $session["socket"], XDG_RUNTIME_DIR: $session["runtime"]}
+end
+
+fn spawn_probe($probe, $session, $title, $app_id, $out, $extra)
+  $argv = concat([$probe, "--title", $title, "--app-id", $app_id,
+    "--size", "300x200", "--seconds", "90"], $extra)
+  return spawn($argv, {env: probe_env($session), stdout: {file: $out},
+    stderr: {file: $out .. ".err"}})
+end
+
+fn wait_window($app_id, $until, $timeout)
+  return call("comp.window.wait",
+    {match: {app_id: $app_id}, until: $until, timeout_ms: $timeout})
+end
+
+$pids = []
+try
+-- ── G3: injected input reaches the window under the point ───────────────
+print("== G3: move + click + text land on the window under the point")
+-- Probe A hides on close and remaps once, so G4 can tell a window that
+-- merely unmapped from one that is gone.
+push($pids, spawn_probe($probe, $session, "probe-a", "dev.mixos.ProbeA", $out_a,
+  ["--hide-on-close", "--remap-once-ms", "1000"]))
+$wa = wait_window("dev.mixos.ProbeA", "presented", 15000)
+$a_id = 0
+$a_gen = 0
+if check("probe A mapped and presented a frame", $wa.rc == 0, json_encode($wa.result)) then
+  $a_id = $wa.result.window.id
+  $a_gen = $wa.result.window.generation
+  $set = call("comp.props.set", {path: "input.host.passthrough", value: false})
+  check("host passthrough off (the host cursor cannot overwrite injection)",
+    $set.rc == 0, json_encode($set.result))
+
+  $move = call("comp.input.pointer.move",
+    {seat: "human", window: {id: $a_id, generation: $a_gen}, x: 40, y: 30, require_hit: true})
+  check("window-local move is accepted", $move.rc == 0, json_encode($move.result))
+  check("the move targets A", $move.rc == 0 and $move.result.target.id == $a_id,
+    json_encode($move.result))
+  $click = call("comp.input.pointer.button", {seat: "human", button: "left", action: "click"})
+  check("the click targets A", $click.rc == 0 and $click.result.target.id == $a_id,
+    json_encode($click.result))
+  $text = call("comp.input.key", {seat: "human", text: "ok"})
+  check("injected text targets A", $text.rc == 0 and $text.result.target.id == $a_id,
+    json_encode($text.result))
+
+  -- The other end: what the client actually received.
+  check("A saw the pointer at 40,30",
+    $n.await_log($out_a, "enter 40 30", 3) or $n.await_log($out_a, "motion 40 30", 1),
+    "no pointer line in " .. $out_a)
+  check("A saw the left press at 40,30", $n.await_log($out_a, "button 272 1 40 30", 3), $out_a)
+  check("A saw the left release", $n.await_log($out_a, "button 272 0", 3), $out_a)
+  check("A saw o pressed and released",
+    $n.log_has($out_a, "key 24 1") and $n.log_has($out_a, "key 24 0"), $out_a)
+  check("A saw k pressed and released",
+    $n.log_has($out_a, "key 37 1") and $n.log_has($out_a, "key 37 0"), $out_a)
+  $focus = wait_window("dev.mixos.ProbeA", "focused", 2000)
+  check("the click focused A", $focus.rc == 0, json_encode($focus.result))
+end
+
+-- ── G4: two windows, placement, occlusion, size, minimise, close ────────
+print("== G4: overlap, place, exposed-corner click, size wait, minimise/restore")
+push($pids, spawn_probe($probe, $session, "probe-b", "dev.mixos.ProbeB", $out_b, []))
+$wb = wait_window("dev.mixos.ProbeB", "presented", 15000)
+$b_ready = check("probe B mapped and presented a frame", $wb.rc == 0, json_encode($wb.result))
+if $b_ready and $a_id != 0 then
+  $b_id = $wb.result.window.id
+  $b_gen = $wb.result.window.generation
+  $place_b = call("comp.window.place", {id: $b_id, generation: $b_gen, x: 0, y: 0})
+  check("place B at 0,0",
+    $place_b.rc == 0 and $place_b.result.window_x == 0 and $place_b.result.window_y == 0,
+    json_encode($place_b.result))
+  $place_a = call("comp.window.place", {id: $a_id, generation: $a_gen, x: 100, y: 100})
+  check("place A at 100,100", $place_a.rc == 0, json_encode($place_a.result))
+  $focus_a = call("comp.window.focus", {id: $a_id, generation: $a_gen})
+  check("focus+raise A", $focus_a.rc == 0 and $focus_a.result.focused,
+    json_encode($focus_a.result))
+
+  -- What the hit test should see: both windows' rects and the stack, read
+  -- before the move (printed only if the refusal check fails).
+  $geo_a = call("comp.props.get", {path: "windows.s" .. to_string($a_id)}).result
+  $geo_b = call("comp.props.get", {path: "windows.s" .. to_string($b_id)}).result
+  $geo_stack = call("comp.props.get", {path: "stack"}).result
+  fn rect($row)
+    if type($row) != "map" then
+      return $row
+    end
+    return {buffer: [$row.x, $row.y, $row.width, $row.height], window: [$row.window_x, $row.window_y, $row.window_width, $row.window_height]}
+  end
+  $occluded = call("comp.input.pointer.move",
+    {seat: "human", window: {id: $b_id, generation: $b_gen}, x: 150, y: 150, require_hit: true})
+  check("a point of B covered by A is refused as occluded, naming A",
+    $occluded.rc == 10 and $occluded.result.error_code == "occluded"
+      and $occluded.result.under.id == $a_id,
+    json_encode($occluded.result) .. "; A " .. json_encode(rect($geo_a)) .. " B " .. json_encode(rect($geo_b)) ..
+      " stack " .. json_encode($geo_stack))
+  $corner = call("comp.input.pointer.move", {seat: "human", x: 10, y: 10})
+  check("B's exposed corner is B's", $corner.rc == 0 and $corner.result.target.id == $b_id,
+    json_encode($corner.result))
+  $click_b = call("comp.input.pointer.button", {seat: "human"})
+  check("the click lands on B", $click_b.rc == 0 and $click_b.result.target.id == $b_id,
+    json_encode($click_b.result))
+  check("B saw the press at 10,10", $n.await_log($out_b, "button 272 1 10 10", 3), $out_b)
+  $focus_b = call("comp.window.wait",
+    {match: {id: $b_id, generation: $b_gen}, until: "focused", timeout_ms: 2000})
+  check("the click focused B", $focus_b.rc == 0, json_encode($focus_b.result))
+
+  $resize = call("comp.window.place", {id: $b_id, generation: $b_gen, width: 500, height: 300})
+  check("place B 500x300 sends a configure",
+    $resize.rc == 0 and $resize.result.configure_pending, json_encode($resize.result))
+  $sized = call("comp.window.wait",
+    {match: {id: $b_id, generation: $b_gen}, until: "size", width: 500, height: 300,
+     timeout_ms: 5000})
+  check("wait until:size confirms the client answered", $sized.rc == 0, json_encode($sized.result))
+  check("B reconfigured to 500x300", $n.await_log($out_b, "configure 500 300", 3), $out_b)
+
+  $min = call("comp.window.minimize", {id: $a_id, generation: $a_gen})
+  check("minimize A", $min.rc == 0 and $min.result.minimized, json_encode($min.result))
+  $invisible = call("comp.window.wait",
+    {match: {id: $a_id, generation: $a_gen}, until: "visible", timeout_ms: 500})
+  check("wait until:visible times out while A is minimised",
+    $invisible.rc == 10 and $invisible.result.error_code == "timeout",
+    json_encode($invisible.result))
+  $restore = call("comp.window.restore", {id: $a_id, generation: $a_gen})
+  check("restore A", $restore.rc == 0 and not $restore.result.minimized,
+    json_encode($restore.result))
+  $visible = call("comp.window.wait",
+    {match: {id: $a_id, generation: $a_gen}, until: "visible", timeout_ms: 2000})
+  check("wait until:visible resolves after the restore",
+    $visible.rc == 0 and $visible.result.window.visible, json_encode($visible.result))
+  $list = call("comp.windows.list", {app_id: "dev.mixos.ProbeB"})
+  check("windows.list finds B by app_id",
+    $list.rc == 0 and len($list.result.windows) == 1 and $list.result.windows[0].id == $b_id,
+    json_encode($list.result))
+
+  -- A hide-on-close window: unmapped is NOT gone, and the deadline kills it.
+  $polite = call("comp.window.close", {id: $a_id, generation: $a_gen})
+  check("polite close of A", $polite.rc == 0 and $polite.result.closed == "polite",
+    json_encode($polite.result))
+  $unmapped = call("comp.window.wait",
+    {match: {id: $a_id, generation: $a_gen}, until: "unmapped", timeout_ms: 3000})
+  check("A unmapped itself on close (a tray app)", $unmapped.rc == 0,
+    json_encode($unmapped.result))
+  $remapped = call("comp.window.wait",
+    {match: {id: $a_id, generation: $a_gen}, until: "mapped", timeout_ms: 5000})
+  check("A mapped again with the same generation", $remapped.rc == 0,
+    json_encode($remapped.result))
+  $presented = call("comp.window.wait",
+    {match: {id: $a_id, generation: $a_gen}, until: "presented", timeout_ms: 5000})
+  check("until:presented waits for a frame of the NEW mapping", $presented.rc == 0,
+    json_encode($presented.result))
+  $killed = call("comp.window.close",
+    {id: $a_id, generation: $a_gen, force: true, timeout_ms: 1500})
+  check("a forced close kills a window that only hid, and says it was unmapped",
+    $killed.rc == 0 and $killed.result.closed == "killed"
+      and $killed.result.window == "unmapped",
+    json_encode($killed.result))
+  check("A hid and remapped as instructed",
+    $n.log_has($out_a, "hidden") and $n.log_has($out_a, "remapped"), $out_a)
+  $typo = call("comp.window.wait",
+    {match: {id: $a_id, generation: $a_gen}, until: "mapped", timeout_ms: 100, oops: 1})
+  check("an unknown argument is refused with a structured body",
+    $typo.rc == 10 and $typo.result.error_code == "invalid_args" and $typo.result.field == "oops",
+    json_encode($typo.result))
+  $gone = call("comp.window.close",
+    {id: $b_id, generation: $b_gen, force: true, timeout_ms: 3000})
+  check("a forced close of a window that really closes is gone, not killed",
+    $gone.rc == 0 and $gone.result.closed == "gone", json_encode($gone.result))
+end
+catch $e
+  check("the runner completed", false, to_string($e))
+end
+
+call("comp.input.release_all", {})
+for each $child in $pids
+  $sent = kill($child)
+end
+$n.stop($session)
+
+$total = $TALLY["pass"] + $TALLY["fail"]
+if $TALLY["fail"] == 0 then
+  print("PASS comp_control_smoke [" .. $KIND .. "]: " .. to_string($TALLY["pass"]) .. "/" ..
+    to_string($total) .. " checks")
+  $CLEANUP.ok = true
+  exit(0)
+end
+print("FAIL comp_control_smoke [" .. $KIND .. "]: " .. to_string($TALLY["fail"]) .. " of " ..
+  to_string($total) .. " checks failed (compositor log: " .. $session["log"] .. ")")
+exit(1)
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

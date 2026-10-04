@@ -1,0 +1,28 @@
+[package]
+name = "seat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+decor = { workspace = true }
+dispatcher = { workspace = true }
+drivers = { workspace = true }
+ui = { workspace = true }
+model = { workspace = true }
+slots = { workspace = true }
+protocols = { workspace = true }
+world = { workspace = true }
+smithay = { workspace = true }
+uuid = { workspace = true }

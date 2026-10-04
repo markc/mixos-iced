@@ -1,0 +1,468 @@
+use std::time::Duration;
+
+use edges::{
+    Carousel, CarouselError, ConcealReason, Edge, LogicalSize, MotionError, PanelConfig,
+    PanelEffect, PanelInput, PanelMode, PanelMotion, PanelStateMachine, PanelWake, RevealTrigger,
+    seed_panel_thickness,
+};
+
+fn ms(value: u64) -> Duration {
+    Duration::from_millis(value)
+}
+
+fn panel() -> PanelStateMachine {
+    PanelStateMachine::new(
+        PanelConfig::new(100.0, ms(800), ms(200)).unwrap(),
+        Duration::ZERO,
+    )
+    .unwrap()
+}
+
+#[test]
+fn reveal_is_idempotent() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Reveal).unwrap();
+    panel.tick(ms(100)).unwrap();
+    let before = panel.snapshot();
+    let update = panel.apply(ms(100), PanelInput::Reveal).unwrap();
+    assert!(!update.changed);
+    assert_eq!(update.snapshot, before);
+}
+
+#[test]
+fn pointer_leave_conceals_only_after_grace() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Reveal).unwrap();
+    panel.tick(ms(200)).unwrap();
+    panel.apply(ms(200), PanelInput::PointerEntered).unwrap();
+    panel.apply(ms(300), PanelInput::PointerLeft).unwrap();
+    assert_eq!(panel.wake(), PanelWake::WakeAt(ms(1_100)));
+    panel.tick(ms(1_099)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(panel.snapshot().transient_revealed);
+    panel.tick(ms(1_100)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(!panel.snapshot().transient_revealed);
+    assert!(panel.snapshot().mapped);
+    panel.tick(ms(1_300)).unwrap();
+    assert!(!panel.snapshot().mapped);
+}
+
+#[test]
+fn generic_reveal_has_no_fallback_grace() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Reveal).unwrap();
+    assert_eq!(panel.snapshot().hide_at, None);
+    panel.tick(ms(1_000)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(panel.snapshot().transient_revealed);
+}
+
+#[test]
+fn corner_and_pointer_are_independent_holds_with_explicit_causes() {
+    let mut panel = panel();
+    let entered = panel.apply(ms(0), PanelInput::CornerEntered).unwrap();
+    assert_eq!(
+        entered.effect,
+        Some(PanelEffect::Reveal {
+            trigger: RevealTrigger::Corner,
+        })
+    );
+    panel.apply(ms(100), PanelInput::PointerEntered).unwrap();
+    panel.apply(ms(200), PanelInput::CornerLeft).unwrap();
+    assert_eq!(panel.snapshot().hide_at, None);
+    panel.apply(ms(300), PanelInput::PointerLeft).unwrap();
+    assert_eq!(panel.snapshot().conceal_reason, Some(ConcealReason::Grace));
+    panel.apply(ms(400), PanelInput::CornerEntered).unwrap();
+    assert_eq!(panel.snapshot().hide_at, None);
+    panel.apply(ms(500), PanelInput::PointerLeft).unwrap();
+    assert_eq!(panel.snapshot().hide_at, None);
+    panel.apply(ms(600), PanelInput::CornerLeft).unwrap();
+    assert_eq!(
+        panel.snapshot().conceal_reason,
+        Some(ConcealReason::CornerLeft)
+    );
+}
+
+#[test]
+fn dock_survives_both_leaves_and_undock_outside_hides_at_once() {
+    let mut panel = panel();
+    assert_eq!(
+        panel.apply(ms(0), PanelInput::Dock).unwrap().effect,
+        Some(PanelEffect::ModeChanged {
+            mode: PanelMode::Docked
+        })
+    );
+    panel.apply(ms(1), PanelInput::CornerLeft).unwrap();
+    panel.apply(ms(2), PanelInput::PointerLeft).unwrap();
+    panel.tick(ms(2_000)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Docked);
+    assert_eq!(
+        panel.apply(ms(2_000), PanelInput::Undock).unwrap().effect,
+        Some(PanelEffect::ModeChanged {
+            mode: PanelMode::Hidden
+        })
+    );
+    assert!(!panel.snapshot().transient_revealed);
+    assert_eq!(panel.snapshot().hide_at, None);
+    assert_eq!(panel.snapshot().conceal_reason, None);
+}
+
+#[test]
+fn pointer_enter_after_corner_left_cancels_corner_conceal() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::CornerEntered).unwrap();
+    panel.apply(ms(1), PanelInput::CornerLeft).unwrap();
+    panel.apply(ms(500), PanelInput::PointerEntered).unwrap();
+    panel.tick(ms(2_000)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(panel.snapshot().transient_revealed);
+    assert_eq!(panel.snapshot().conceal_reason, None);
+}
+
+#[test]
+fn pointer_leave_during_active_corner_does_not_arm_conceal() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::CornerEntered).unwrap();
+    panel.apply(ms(100), PanelInput::PointerEntered).unwrap();
+    panel.apply(ms(200), PanelInput::PointerLeft).unwrap();
+
+    assert!(panel.snapshot().corner_inside);
+    assert!(!panel.snapshot().pointer_inside);
+    assert_eq!(panel.snapshot().hide_at, None);
+    panel.tick(ms(2_000)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(panel.snapshot().transient_revealed);
+}
+
+#[test]
+fn late_corner_or_dock_effect_supersedes_an_unpresented_expired_conceal() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::CornerEntered).unwrap();
+    panel.apply(ms(1), PanelInput::CornerLeft).unwrap();
+    let entered = panel.apply(ms(1_000), PanelInput::CornerEntered).unwrap();
+    assert_eq!(
+        entered.effect,
+        Some(PanelEffect::Reveal {
+            trigger: RevealTrigger::Corner,
+        })
+    );
+    assert_eq!(entered.snapshot.mode, PanelMode::Hidden);
+    assert!(entered.snapshot.transient_revealed);
+
+    panel.apply(ms(1_001), PanelInput::CornerLeft).unwrap();
+    let pinned = panel.apply(ms(2_000), PanelInput::Dock).unwrap();
+    assert_eq!(
+        pinned.effect,
+        Some(PanelEffect::ModeChanged {
+            mode: PanelMode::Docked
+        })
+    );
+    assert_eq!(pinned.snapshot.mode, PanelMode::Docked);
+}
+
+#[test]
+fn pointer_reentry_cancels_grace_deadline() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Reveal).unwrap();
+    panel.tick(ms(200)).unwrap();
+    panel.apply(ms(210), PanelInput::PointerLeft).unwrap();
+    panel.apply(ms(500), PanelInput::PointerEntered).unwrap();
+    panel.tick(ms(2_000)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(panel.snapshot().transient_revealed);
+    assert_eq!(panel.snapshot().hide_at, None);
+}
+
+#[test]
+fn reveal_reverses_conceal_without_jumping_to_an_endpoint() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Reveal).unwrap();
+    panel.tick(ms(100)).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 0.5);
+    panel.apply(ms(100), PanelInput::Hide).unwrap();
+    panel.tick(ms(150)).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 0.25);
+    panel.apply(ms(150), PanelInput::Reveal).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 0.25);
+    panel.tick(ms(200)).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 0.5);
+}
+
+#[test]
+fn ordinary_hide_never_undocks() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Dock).unwrap();
+    panel.tick(ms(200)).unwrap();
+    let update = panel.apply(ms(300), PanelInput::Hide).unwrap();
+    assert!(!update.changed);
+    assert_eq!(update.snapshot.mode, PanelMode::Docked);
+    assert_eq!(update.snapshot.exclusive_zone_px, 100.0);
+}
+
+/// `Toggle` mirrors `Hide`: a pinned panel ignores BOTH directions. The law
+/// is stated in `PanelInput::Toggle`'s docs and in `apply`'s Toggle arm, and
+/// until now was asserted at no level — the toggle rewire's own tests all
+/// start from Hidden or Revealed.
+#[test]
+fn a_docked_panel_ignores_the_toggle_in_both_directions() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Dock).unwrap();
+    panel.tick(ms(200)).unwrap();
+    let pinned = panel.snapshot();
+    assert_eq!(pinned.mode, PanelMode::Docked);
+
+    // Pinned is not Hidden, so this takes the "hide otherwise" branch — and
+    // the pin must veto it, exactly as `Hide` is vetoed above.
+    let update = panel.apply(ms(300), PanelInput::Toggle).unwrap();
+    assert!(!update.changed);
+    assert_eq!(update.snapshot.mode, PanelMode::Docked);
+    assert_eq!(update.snapshot.exclusive_zone_px, 100.0);
+
+    // And the other direction is no different: a second toggle must not
+    // reveal-cycle it either.
+    let update = panel.apply(ms(400), PanelInput::Toggle).unwrap();
+    assert!(!update.changed);
+    assert_eq!(update.snapshot.mode, PanelMode::Docked);
+    assert_eq!(update.snapshot.exclusive_zone_px, 100.0);
+}
+
+/// The chord/Bus toggle is the one toggle a persistent panel obeys: from
+/// Pinned or Docked it hides deliberately (no zone, no grace), and the next
+/// toggle only reveals transiently — it never re-docks.
+#[test]
+fn toggle_shown_hides_a_persistent_panel_and_reveals_transiently() {
+    for enter in [PanelInput::Pin, PanelInput::Dock] {
+        let mut panel = panel();
+        panel.apply(ms(0), enter).unwrap();
+        panel.tick(ms(200)).unwrap();
+        let update = panel.apply(ms(300), PanelInput::ToggleShown).unwrap();
+        assert!(update.changed, "{enter:?}");
+        assert_eq!(update.snapshot.mode, PanelMode::Hidden, "{enter:?}");
+        assert!(!update.snapshot.transient_revealed, "{enter:?}");
+        assert_eq!(update.snapshot.exclusive_zone_px, 0.0, "{enter:?}");
+        assert_eq!(
+            update.effect,
+            Some(PanelEffect::ModeChanged { mode: PanelMode::Hidden }),
+            "{enter:?}"
+        );
+        panel.tick(ms(600)).unwrap();
+        let update = panel.apply(ms(600), PanelInput::ToggleShown).unwrap();
+        assert_eq!(update.snapshot.mode, PanelMode::Hidden, "{enter:?}");
+        assert!(update.snapshot.transient_revealed, "{enter:?}");
+        let update = panel.apply(ms(700), PanelInput::ToggleShown).unwrap();
+        assert!(!update.snapshot.transient_revealed, "{enter:?}");
+    }
+}
+
+#[test]
+fn escape_never_undocks() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Dock).unwrap();
+    panel.tick(ms(200)).unwrap();
+    let update = panel.apply(ms(300), PanelInput::Escape).unwrap();
+    assert!(!update.changed);
+    assert_eq!(update.snapshot.mode, PanelMode::Docked);
+}
+
+#[test]
+fn undock_outside_hides_immediately_without_grace() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Dock).unwrap();
+    panel.tick(ms(200)).unwrap();
+    panel.apply(ms(250), PanelInput::Undock).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(!panel.snapshot().transient_revealed);
+    assert_eq!(panel.snapshot().hide_at, None);
+    assert_eq!(panel.snapshot().exclusive_zone_px, 0.0);
+    // The conceal animation starts at once: fraction 0.75 at 50 ms of the
+    // 200 ms travel, fully hidden well before the old 1_050 ms deadline.
+    panel.tick(ms(300)).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 0.75);
+    panel.tick(ms(1_250)).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 0.0);
+    assert!(!panel.snapshot().mapped);
+    assert_eq!(panel.next_deadline(), None);
+}
+
+#[test]
+fn undock_during_resize_keeps_reveal_until_resize_ends() {
+    for undock in [PanelInput::Undock, PanelInput::DockToggle] {
+        for end in [PanelInput::ResizeCompleted, PanelInput::ResizeCancelled] {
+            let mut panel = panel();
+            panel.apply(ms(0), PanelInput::Dock).unwrap();
+            panel.tick(ms(200)).unwrap();
+            for input in [
+                PanelInput::PointerEntered,
+                PanelInput::ResizeStarted,
+                PanelInput::PointerLeft,
+                undock,
+            ] {
+                panel.apply(ms(250), input).unwrap();
+            }
+            let held = panel.snapshot();
+            assert_eq!(held.mode, PanelMode::Hidden);
+            assert!(held.resize_active);
+            assert!(!held.pointer_inside);
+            assert!(!held.corner_inside);
+            assert!(held.transient_revealed, "{undock:?} / {end:?}");
+            assert_eq!(held.target_fraction, 1.0);
+            assert_eq!(held.exclusive_zone_px, 0.0);
+            assert_eq!(held.hide_at, None);
+            assert_eq!(held.conceal_reason, None);
+
+            // The resize hold outlives both the conceal delay and travel time.
+            panel.tick(ms(2_000)).unwrap();
+            assert_eq!(panel.snapshot().visible_fraction, 1.0);
+            assert!(panel.snapshot().mapped);
+            assert_eq!(panel.next_deadline(), None);
+
+            panel.apply(ms(2_000), end).unwrap();
+            assert!(!panel.snapshot().resize_active);
+            assert!(panel.snapshot().transient_revealed);
+            assert_eq!(panel.snapshot().hide_at, Some(ms(2_800)));
+            assert_eq!(panel.snapshot().conceal_reason, Some(ConcealReason::Grace));
+            panel.tick(ms(2_799)).unwrap();
+            assert_eq!(panel.snapshot().visible_fraction, 1.0);
+            let concealed = panel.tick(ms(2_800)).unwrap();
+            assert_eq!(
+                concealed.effect,
+                Some(PanelEffect::Conceal {
+                    reason: ConcealReason::Grace,
+                })
+            );
+            assert!(!concealed.snapshot.transient_revealed);
+            assert_eq!(concealed.snapshot.target_fraction, 0.0);
+            panel.tick(ms(3_000)).unwrap();
+            assert_eq!(panel.snapshot().visible_fraction, 0.0);
+            assert!(!panel.snapshot().mapped);
+            assert_eq!(panel.next_deadline(), None);
+        }
+    }
+}
+
+#[test]
+fn docking_hidden_panel_maps_it_and_claims_zone_immediately() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Dock).unwrap();
+    let snapshot = panel.snapshot();
+    assert_eq!(snapshot.mode, PanelMode::Docked);
+    assert!(snapshot.mapped);
+    assert_eq!(snapshot.visible_fraction, 0.0);
+    assert_eq!(snapshot.exclusive_zone_px, 100.0);
+    assert_eq!(panel.wake(), PanelWake::Animate);
+}
+
+#[test]
+fn pointer_can_reverse_a_partly_concealed_panel() {
+    let mut panel = panel();
+    panel.apply(ms(0), PanelInput::Reveal).unwrap();
+    panel.tick(ms(200)).unwrap();
+    panel.apply(ms(200), PanelInput::Hide).unwrap();
+    panel.tick(ms(300)).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(!panel.snapshot().transient_revealed);
+    assert_eq!(panel.snapshot().visible_fraction, 0.5);
+    panel.apply(ms(300), PanelInput::PointerEntered).unwrap();
+    assert_eq!(panel.snapshot().mode, PanelMode::Hidden);
+    assert!(panel.snapshot().transient_revealed);
+    panel.tick(ms(400)).unwrap();
+    assert_eq!(panel.snapshot().visible_fraction, 1.0);
+}
+
+#[test]
+fn panel_time_is_monotonic() {
+    let mut panel = panel();
+    panel.tick(ms(100)).unwrap();
+    assert!(panel.tick(ms(99)).is_err());
+    assert!(panel.tick(ms(101)).is_ok());
+}
+
+#[test]
+fn motion_requires_time_and_reverses_from_current_fraction() {
+    assert_eq!(
+        PanelMotion::new(Duration::ZERO),
+        Err(MotionError::ZeroTravelTime)
+    );
+    let mut motion = PanelMotion::new(ms(200)).unwrap();
+    motion.reveal();
+    motion.advance(ms(50));
+    assert_eq!(motion.visible_fraction(), 0.25);
+    motion.conceal();
+    motion.advance(ms(25));
+    assert_eq!(motion.visible_fraction(), 0.125);
+}
+
+#[test]
+fn carousel_wraps_and_selects_stable_ids() {
+    let mut carousel = Carousel::new(["nav", "windows", "places"]).unwrap();
+    assert_eq!(carousel.active_id(), Some("nav"));
+    assert_eq!(carousel.previous_page(), Some("places"));
+    assert_eq!(carousel.next_page(), Some("nav"));
+    assert!(carousel.select_id("windows"));
+    assert_eq!(carousel.active_index(), Some(1));
+    assert!(!carousel.select_id("missing"));
+    assert!(!carousel.select_index(99));
+}
+
+#[test]
+fn carousel_rejects_empty_and_duplicate_ids_but_allows_no_pages() {
+    assert_eq!(Carousel::empty().active_id(), None);
+    assert_eq!(Carousel::new(["", "ok"]), Err(CarouselError::EmptyId));
+    assert_eq!(
+        Carousel::new(["same", "same"]),
+        Err(CarouselError::DuplicateId("same".into()))
+    );
+}
+
+#[test]
+fn thickness_seeds_are_clamped_logical_pixels() {
+    let small = LogicalSize::new(800.0, 600.0).unwrap();
+    assert_eq!(seed_panel_thickness(Edge::Left, small), 240.0);
+    assert_eq!(seed_panel_thickness(Edge::Right, small), 240.0);
+    assert_eq!(seed_panel_thickness(Edge::Top, small), 32.0);
+    assert_eq!(seed_panel_thickness(Edge::Bottom, small), 60.0);
+
+    let large = LogicalSize::new(8_000.0, 4_000.0).unwrap();
+    assert_eq!(seed_panel_thickness(Edge::Left, large), 480.0);
+    assert_eq!(seed_panel_thickness(Edge::Top, large), 64.0);
+    assert_eq!(seed_panel_thickness(Edge::Bottom, large), 128.0);
+}
+
+/// A deliberate reveal during the intro claims the edge, so the edgeless pin
+/// chord can target it.
+#[test]
+fn a_deliberate_reveal_during_the_intro_claims_the_edge() {
+    for claim in [
+        PanelInput::Reveal,
+        PanelInput::CornerEntered,
+        PanelInput::PointerEntered,
+    ] {
+        let mut panel = panel();
+        panel.start_intro(ms(2_000));
+        assert!(panel.snapshot().intro_revealed, "{claim:?}");
+        panel.apply(ms(500), claim).unwrap();
+        let snapshot = panel.snapshot();
+        assert!(snapshot.transient_revealed, "{claim:?}");
+        assert!(!snapshot.intro_revealed, "{claim:?}");
+    }
+}
+
+/// After the intro's deadline its reveal stays the intro's through the
+/// closing grace, until it conceals.
+#[test]
+fn the_intro_reveal_stays_the_intros_through_its_closing_grace() {
+    let mut panel = panel();
+    panel.start_intro(ms(2_000));
+    panel.tick(ms(2_100)).unwrap();
+    let closing = panel.snapshot();
+    assert!(closing.transient_revealed, "precondition: still in the grace");
+    assert!(closing.intro_revealed);
+    panel.tick(ms(4_000)).unwrap();
+    let after = panel.snapshot();
+    assert!(!after.transient_revealed);
+    assert!(!after.intro_revealed);
+    // A later hover reveal is a deliberate one.
+    panel.apply(ms(4_100), PanelInput::Reveal).unwrap();
+    assert!(!panel.snapshot().intro_revealed);
+}

@@ -1,0 +1,24 @@
+[package]
+name = "design"
+description = "The MixOS design-token system: schemes, modes, palettes, typography, the strict-data design source and its compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "design"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+# The design source is a strict-data document; `strict` parses it and
+# hydrates the `#[derive(Deserialize)]` source types.
+strict = { path = "../strict" }
+serde = { version = "=1.0.229", features = ["derive"] }

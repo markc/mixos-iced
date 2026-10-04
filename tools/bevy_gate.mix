@@ -1,0 +1,322 @@
+-- bevy_gate.mix — gate (c): Bevy stays in the effects crate; Vulkan (ash) stays out of the GLES build.
+-- version: 0.1.0
+--
+-- Purpose:
+--   Reads the RESOLVED dependency graph (`cargo metadata --format-version 1`,
+--   resolve.nodes; metadata only — nothing is compiled) twice: once with
+--   --all-features and once with --no-default-features. Edges whose every
+--   dep_kind is "dev" are ignored (they never reach a shipped build).
+--   1. bevy, both runs: each `core_crates` member present in the workspace
+--      (and, in the no-default run, each `nodefault_crates` member) must not
+--      reach any package named `bevy` or `bevy_*`. Failure prints the path
+--      crate -> … -> bevy.
+--   2. bevy, all-features run: every workspace package that reaches bevy must
+--      be in `effects_crates` or be the `binary`; any other fails (with
+--      --allow-unlisted, packages absent from the layer table only warn).
+--   3. ash, no-default run (the GLES build): no core/nodefault crate may reach
+--      a package named `ash`. In the all-features run, workspace packages
+--      reaching ash are REPORTED (feature unification lets Bevy's wgpu turn on
+--      wgpu-hal's Vulkan backend for every crate sharing that wgpu, so an
+--      all-features ash path through wgpu is expected while effects-bevy is on);
+--      a non-allowed package reaching ash there is reported as INFO, not failed.
+--   Target-platform filtering is not applied unless --filter-platform is given
+--   (so cfg(windows)/cfg(macos) edges count: conservative).
+--
+-- Usage:
+--   mix tools/bevy_gate.mix --manifest-path <Cargo.toml> [--layers <conf>]
+--       [--allow-unlisted] [--require] [--offline] [--locked] [--frozen]
+--       [--filter-platform <triple>]
+--   mix tools/bevy_gate.mix --metadata-all <json> --metadata-nodefault <json> [...]
+--     --metadata-all / --metadata-nodefault  pre-saved metadata JSON for the
+--                       two runs (both required together; no cargo is run).
+--     --layers          layer table (default: services/compd/layers.conf.mix
+--                       under the repo root, found from this script's directory).
+--     --require         fail when no core crate (and no listed crate) exists yet.
+--
+-- Exit codes:
+--   0  clean, or nothing to check (no core/nodefault/listed crate in the workspace)
+--   1  a bevy or ash violation, or nothing to check with --require
+--   2  bad arguments, invalid layer table, cargo metadata failed
+
+fn usage_die($msg)
+  eprint("bevy_gate: " .. $msg)
+  eprint("usage: mix tools/bevy_gate.mix (--manifest-path <Cargo.toml> | --metadata-all <json> --metadata-nodefault <json>) [--layers <conf>] [--allow-unlisted] [--require] [--offline] [--locked] [--frozen] [--filter-platform <triple>]")
+  exit(2)
+end
+
+fn is_bevy($name)
+  return $name == "bevy" or starts_with($name, "bevy_")
+end
+
+fn is_ash($name)
+  return $name == "ash"
+end
+
+-- metadata JSON for one feature mode: from a file or from cargo
+fn load_meta($file, $manifest, $mode, $passthrough)
+  $raw = nil
+  if $file != nil then
+    if !is_file($file) then
+      eprint("bevy_gate: metadata file not found: " .. $file)
+      exit(2)
+    end
+    $raw = read_file($file)
+  else
+    $argv = concat(["cargo", "metadata", "--format-version", "1", $mode, "--manifest-path", $manifest], $passthrough)
+    $r = run_argv($argv, {timeout: 600, max_output: 1073741824})
+    if !$r.ok or $r.stdout_truncated then
+      eprint("bevy_gate: cargo metadata " .. $mode .. " failed" .. if $r.stdout_truncated then " (stdout truncated)" else "" end)
+      eprint($r.stderr)
+      exit(2)
+    end
+    $raw = $r.stdout
+  end
+  $m = nil
+  try
+    $m = json_parse($raw)
+  catch $msg
+    eprint("bevy_gate: metadata (" .. $mode .. ") is not JSON: " .. $msg)
+    exit(2)
+  end
+  if $m.resolve == nil or $m.resolve.nodes == nil then
+    eprint("bevy_gate: metadata (" .. $mode .. ") has no resolve graph — it must not be produced with --no-deps")
+    exit(2)
+  end
+  return $m
+end
+
+-- {names: id->name, adj: id->[ids] (non-dev edges), ws: name->id}
+fn build_graph($m)
+  $names = {}
+  for each $p in $m.packages
+    $names[$p.id] = $p.name
+  end
+  $adj = {}
+  for each $n in $m.resolve.nodes
+    $out = []
+    if $n.deps != nil then
+      for each $d in $n.deps
+        $kinds = $d.dep_kinds ?? []
+        $shipped = len($kinds) == 0
+        for each $k in $kinds
+          if $k.kind != "dev" then
+            $shipped = true
+          end
+        end
+        if $shipped then
+          push($out, $d.pkg)
+        end
+      end
+    else
+      $out = $n.dependencies ?? []
+    end
+    $adj[$n.id] = $out
+  end
+  $ws = {}
+  for each $id in $m.workspace_members ?? []
+    $ws[$names[$id]] = $id
+  end
+  return {names: $names, adj: $adj, ws: $ws}
+end
+
+-- BFS from $start; first node whose name satisfies $pred, as a name path, or nil
+fn find_path($g, $start, $pred)
+  $parent = {}
+  $parent[$start] = ""
+  $queue = [$start]
+  $qi = 0
+  while $qi < len($queue)
+    $cur = $queue[$qi]
+    $qi = $qi + 1
+    if $cur != $start and $pred($g.names[$cur] ?? $cur) then
+      $path = []
+      $n = $cur
+      while $n != ""
+        push($path, $g.names[$n] ?? $n)
+        $n = $parent[$n]
+      end
+      return join(reverse($path), " -> ")
+    end
+    for each $nx in $g.adj[$cur] ?? []
+      if $parent[$nx] == nil then
+        $parent[$nx] = $cur
+        push($queue, $nx)
+      end
+    end
+  end
+  return nil
+end
+
+-- ---- arguments ----
+$tools = dirname(realpath($0))
+$layers_path = dirname($tools) .. "/services/compd/layers.conf.mix"
+$manifest = nil
+$f_all = nil
+$f_nodef = nil
+$allow_unlisted = false
+$require = false
+$passthrough = []
+$av = args()
+$i = 0
+while $i < len($av)
+  $a = $av[$i]
+  if $a == "--manifest-path" or $a == "--metadata-all" or $a == "--metadata-nodefault" or $a == "--layers" or $a == "--filter-platform" then
+    if $i + 1 >= len($av) then
+      usage_die($a .. " needs a value")
+    end
+    $v = $av[$i + 1]
+    if $a == "--manifest-path" then
+      $manifest = $v
+    elif $a == "--metadata-all" then
+      $f_all = $v
+    elif $a == "--metadata-nodefault" then
+      $f_nodef = $v
+    elif $a == "--layers" then
+      $layers_path = $v
+    else
+      push($passthrough, "--filter-platform")
+      push($passthrough, $v)
+    end
+    $i = $i + 2
+    continue
+  elif $a == "--allow-unlisted" then
+    $allow_unlisted = true
+  elif $a == "--require" then
+    $require = true
+  elif $a == "--offline" or $a == "--locked" or $a == "--frozen" then
+    push($passthrough, $a)
+  elif $a == "-h" or $a == "--help" then
+    print("see the header of " .. $0 .. " for usage")
+    exit(0)
+  else
+    usage_die("unknown argument: " .. $a)
+  end
+  $i = $i + 1
+end
+$have_files = $f_all != nil or $f_nodef != nil
+if $have_files and ($f_all == nil or $f_nodef == nil) then
+  usage_die("--metadata-all and --metadata-nodefault go together")
+end
+if $have_files == ($manifest != nil) then
+  usage_die("give either --manifest-path or both metadata files")
+end
+if $manifest != nil and !is_file($manifest) then
+  usage_die("manifest not found: " .. $manifest)
+end
+
+-- ---- layer table ----
+if !is_file($layers_path) then
+  usage_die("layer table not found: " .. $layers_path)
+end
+$conf = nil
+try
+  $conf = validate(load_data($layers_path), {layers: {type: "map"}, binary: {type: "string", nonblank: true}, effects_crates: {type: "list", items: {type: "string"}}, core_crates: {type: "list", items: {type: "string"}}, nodefault_crates: {required: false, type: "list", items: {type: "string"}}})
+catch $msg
+  eprint("bevy_gate: invalid layer table " .. $layers_path .. ": " .. $msg)
+  exit(2)
+end
+$layers = $conf.layers
+$allowed = {}
+for each $n in $conf.effects_crates
+  $allowed[$n] = true
+end
+$allowed[$conf.binary] = true
+$nodefault_extra = $conf.nodefault_crates ?? []
+
+-- ---- run 1: all features ----
+$m_all = load_meta($f_all, $manifest, "--all-features", $passthrough)
+$g_all = build_graph($m_all)
+$ws_names = sort(keys($g_all.ws))
+$core_present = filter($conf.core_crates, fn($n) = $g_all.ws[$n] != nil)
+$listed_present = filter($ws_names, fn($n) = $layers[$n] != nil)
+$nodef_present = filter($nodefault_extra, fn($n) = $g_all.ws[$n] != nil)
+
+print("bevy gate: " .. len($ws_names) .. " workspace packages; core crates present: " .. if len($core_present) == 0 then "none" else join($core_present, ", ") end)
+if len($core_present) == 0 and len($listed_present) == 0 and len($nodef_present) == 0 then
+  if $require then
+    eprint("FAIL: nothing to check — no crate from " .. $layers_path .. " is in this workspace (--require)")
+    exit(1)
+  end
+  print("nothing to check: no core or listed crate is in this workspace yet")
+  exit(0)
+end
+if len($core_present) == 0 and $require then
+  eprint("FAIL: no core crate (" .. join($conf.core_crates, ", ") .. ") is in this workspace (--require)")
+  exit(1)
+end
+
+$fails = []
+$warns = []
+$infos = []
+
+-- 1. core crates bevy-free (all features)
+for each $n in $core_present
+  $p = find_path($g_all, $g_all.ws[$n], fn($x) = is_bevy($x))
+  if $p != nil then
+    push($fails, "[all-features] core crate reaches bevy: " .. $p)
+  end
+end
+
+-- 2. workspace packages reaching bevy (all features)
+$reach = []
+for each $n in $ws_names
+  $p = find_path($g_all, $g_all.ws[$n], fn($x) = is_bevy($x))
+  if $p == nil then
+    continue
+  end
+  push($reach, $n)
+  if $allowed[$n] != nil or contains($core_present, $n) then
+    continue
+  end
+  if $layers[$n] == nil and $allow_unlisted then
+    push($warns, "[all-features] unlisted package reaches bevy: " .. $p)
+  else
+    push($fails, "[all-features] package outside effects_crates/binary reaches bevy: " .. $p)
+  end
+end
+
+-- 3b. ash reach report (all features): informational
+for each $n in $ws_names
+  if $layers[$n] == nil and $allow_unlisted then
+    continue
+  end
+  $p = find_path($g_all, $g_all.ws[$n], fn($x) = is_ash($x))
+  if $p != nil and $allowed[$n] == nil then
+    push($infos, "[all-features] reaches ash (feature-unified; check the no-default run): " .. $p)
+  end
+end
+
+-- ---- run 2: no default features ----
+$m_nd = load_meta($f_nodef, $manifest, "--no-default-features", $passthrough)
+$g_nd = build_graph($m_nd)
+$nd_targets = unique(concat(filter($conf.core_crates, fn($n) = $g_nd.ws[$n] != nil), filter($nodefault_extra, fn($n) = $g_nd.ws[$n] != nil)))
+for each $n in $nd_targets
+  $p = find_path($g_nd, $g_nd.ws[$n], fn($x) = is_bevy($x))
+  if $p != nil then
+    push($fails, "[no-default-features] reaches bevy: " .. $p)
+  end
+  $q = find_path($g_nd, $g_nd.ws[$n], fn($x) = is_ash($x))
+  if $q != nil then
+    push($fails, "[no-default-features] GLES build reaches ash (Vulkan): " .. $q)
+  end
+end
+
+-- ---- report ----
+print("all-features: workspace packages reaching bevy: " .. if len($reach) == 0 then "none" else join($reach, ", ") end)
+print("no-default-features: checked " .. if len($nd_targets) == 0 then "nothing" else join($nd_targets, ", ") end .. " for bevy and ash")
+for each $s in $infos
+  print("INFO: " .. $s)
+end
+for each $s in $warns
+  print("WARN: " .. $s)
+end
+if len($fails) > 0 then
+  print("")
+  print("FAIL: " .. len($fails) .. " violation(s):")
+  for each $s in $fails
+    print("  " .. $s)
+  end
+  exit(1)
+end
+print("OK: bevy confined to " .. join(sort(keys($allowed)), ", ") .. "; GLES build ash-free")
+exit(0)

@@ -1,0 +1,776 @@
+-- chrome_gate.mix — server-side decoration (SSD chrome) pixel gate for nested
+-- compd.
+-- version: 0.7.1
+--
+--   mix tests/desktop/chrome_gate.mix <compd-binary> [--config-file PATH] [--shot PATH]
+--       [--client PATH] [--style mac|win11|mixos] [--scale S] [--json]
+--
+-- `--scale S` runs compd's nested output at S: compd is
+-- passed `--scale=S` (a 1280x800 logical output at any S, 1280x800 × S
+-- physical), the weston host grows to 3840x2160 to hold it, and every point
+-- placed from compd.truth (logical px) is multiplied by S to sample the shot
+-- (physical px). Input stays logical. Without it (or S = 1) the run is
+-- exactly the 1.0 gate. At any S (0.7.0) both runs also assert
+-- `outputs.*.scale` == S and that the client (`--report-scale`) was last told
+-- preferred_scale S × 120 (wp_fractional_scale; zoom 1 publishes exactly S).
+--
+-- Needs a running noded on this host (like nested_smoke --bus): compd joins
+-- the Bus as a per-run service and the gate reads `compd.truth` from it.
+--
+-- Headless, like screencopy_gate.mix: weston (headless, pixman) hosts compd
+-- nested. The client is testkit-ssd-client: an xdg toplevel of one solid colour
+-- (ff00ff) that asks for server-side decorations. Shots via testkit-screenshot.
+-- The helpers default to the binaries beside compd (the same target dir).
+--
+-- Two runs of compd, the only difference the `decorations_ssd` preference:
+--   ON.  compd answers server-side; the band just ABOVE the client's top edge
+--        (the middle of the titlebar) must be the titlebar colour on at least
+--        half of the samples across it.
+--   OFF. compd answers client-side; the same band must be that colour on at
+--        most a tenth of them — the NEGATIVE control: the client is found the
+--        same way, so a gate that says "titlebar" here could not tell chrome
+--        from whatever is behind the window.
+-- The expected colour and the titlebar height come from compd itself:
+-- `compd.truth` `chrome` (the theme it installed at startup and draws with),
+-- never a colour written into this gate. Either focus colour counts (the
+-- client may or may not hold the focus by the shot). The truth must also agree
+-- on what it drew: ON lists the client in `chrome.decorated`, OFF lists none.
+--
+-- CORNER (both runs, the phase-2 client clip), placed from compd.truth: the
+-- frame compd cuts the content to (`chrome.windows.<id>.frame`; OFF: the
+-- window itself). The pixel 1 px in from its bottom-left corner sits ~14.85 px
+-- from the arc centre for any radius >= 4, so it is cut to ~0 coverage:
+--   ON:  that pixel is NOT the client's colour, and the pixel r px in on both
+--        axes (inside the arc) IS, so a clip that cut everything cannot pass;
+--   OFF: that pixel IS the client's colour — the negative control.
+-- The ON run also writes both bottom corners side by side (corners-crop.ppm).
+-- (0.4.x probed d = r/4 in from the scanned client box: on the arc's edge,
+-- so antialiasing decided it. A point d in from a corner is outside the arc
+-- only for d < r(1 - 1/sqrt 2) ~ 0.29r.)
+--
+-- INPUT (ON run, after the shot): through slice-11 HUMAN injection
+-- (comp.input.pointer.*), aimed at the parts compd.truth `chrome.windows`
+-- reports (never at an assumed layout):
+--   I1. press the titlebar, move (+80,+40), release: truth x/y moved by that;
+--   I2. click maximise: truth maximized; click it again: not maximized;
+--   I3. press close, move off it onto the titlebar, release: NOT closed;
+--   I4. click close: the window is gone from truth.
+--
+-- --debug-clip (diagnosis, never a PASS): the ON run starts compd with
+-- COMPD_CHROME_CLIP_DEBUG=1, which draws the clipped content as its own
+-- placement (red = p.x mod 256, green = p.y mod 256, blue = coverage). The
+-- gate decodes that at the window's corners and centre (placed from
+-- compd.truth, since the content is no longer ff00ff), prints it against
+-- where those pixels really are, prints compd's `chrome clip` log lines,
+-- and exits 1.
+--
+-- `--config-file` defaults to `smoke-settings.json` beside the compd binary; it
+-- is copied into the run so the run's own preferences.json sits beside it.
+--
+-- Exit codes: 0 PASS, 1 FAIL (reason printed, logs tailed), 2 setup.
+
+$args = args()
+if len($args) < 1 then
+  eprint("usage: chrome_gate.mix <compd-binary> [--config-file PATH] [--shot PATH] [--client PATH] [--style mac|win11|mixos] [--scale S] [--json]")
+  exit(2)
+end
+$bin = $args[0]
+$config = nil
+$shot = nil
+$client = nil
+$style = "mac"
+$as_json = false
+$debug_clip = false
+$SCALE = 1
+$i = 1
+while $i < len($args)
+  $a = $args[$i]
+  if $a == "--config-file" then
+    $config = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--shot" then
+    $shot = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--client" then
+    $client = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--style" then
+    $style = $args[$i + 1]
+    $i = $i + 2
+  elif $a == "--scale" then
+    $SCALE = to_number($args[$i + 1])
+    if $SCALE == nil or $SCALE <= 0 then
+      eprint("--scale needs a positive number")
+      exit(2)
+    end
+    $i = $i + 2
+  elif $a == "--debug-clip" then
+    $debug_clip = true
+    $i = $i + 1
+  elif $a == "--json" then
+    $as_json = true
+    $i = $i + 1
+  else
+    eprint("unknown option: " .. $a)
+    exit(2)
+  end
+end
+if not is_file($bin) then
+  eprint("no such binary: " .. $bin)
+  exit(2)
+end
+$bindir = re_replace($bin, "[^/]*$", "")
+if $config == nil then
+  $config = $bindir .. "smoke-settings.json"
+end
+if $shot == nil then
+  $shot = $bindir .. "testkit-screenshot"
+end
+if $client == nil then
+  $client = $bindir .. "testkit-ssd-client"
+end
+for each $f in [$config, $shot, $client]
+  if not is_file($f) then
+    eprint("missing " .. $f .. " (build testkit's bins, or pass the flag)")
+    exit(2)
+  end
+end
+$weston = which("weston")
+if $weston == nil then
+  eprint("needs weston on PATH")
+  exit(2)
+end
+
+$scratch = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$CLEANUP.run = $scratch.new_run("/tmp/compd-chrome-" .. to_string(pid()))
+$root = $CLEANUP.run.path
+$chmod = run_argv(["chmod", "0700", $root])
+if $chmod.exit_code != 0 then
+  eprint("chmod failed: " .. $chmod.stderr)
+  exit(2)
+end
+
+-- The broker compd must dial: the one this script's own `send` reaches
+-- (nested_smoke's rule: MIXOS_NODED_URL, else node.conf.mix, else local).
+fn noded_url()
+  $set = env("MIXOS_NODED_URL", "")
+  if $set != "" then
+    return $set
+  end
+  for each $path in [env("HOME", "") .. "/.config/mixos/node.conf.mix", "/etc/mixos/node.conf.mix"]
+    if is_file($path) then
+      $c = load_data($path)
+      $host = $c.wg_ip ?? ""
+      if $host == "" then
+        $host = "127.0.0.1"
+      end
+      $port = 4200
+      if $c.noded != nil and $c.noded.port != nil then
+        $port = $c.noded.port
+      end
+      return "ws://" .. $host .. ":" .. to_string($port) .. "/ws"
+    end
+  end
+  return "ws://127.0.0.1:4200/ws"
+end
+-- In a fn: mix lint (W2307) does not see a top-level `$rc` read as the check.
+fn ping_broker()
+  send noded noded.ping timeout=5
+  return $rc
+end
+$NODED = noded_url()
+$ping = ping_broker()
+if $ping != 0 then
+  eprint("no broker answered noded.ping (rc " .. to_string($ping) .. "); compd would dial " .. $NODED)
+  exit(2)
+end
+
+fn truth_once($svc)
+  $b = json_encode({})
+  send $svc compd.truth body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- nil when `outputs.*` reads scale $SCALE (the one output of a nested run),
+-- else why not.
+fn output_scale_why($svc)
+  $b = json_encode({path: "outputs"})
+  send $svc comp.props.get body=$b timeout=5
+  if $rc != 0 or type($reply) != "map" then
+    return "comp.props.get outputs: rc " .. to_string($rc) .. " " .. json_encode($reply)
+  end
+  for each $k in keys($reply)
+    if abs(($reply[$k].scale ?? 0) - $SCALE) > 0.000001 then
+      return "outputs." .. $k .. " is not at scale " .. to_string($SCALE) .. ": " .. json_encode($reply[$k])
+    end
+  end
+  return nil
+end
+
+fn input_once($svc, $verb, $args)
+  $b = json_encode($args)
+  send $svc $verb body=$b timeout=5
+  return {rc: $rc, reply: $reply}
+end
+
+-- The truth row and chrome parts of window $id, or nil.
+fn window_of($truth, $id)
+  for each $w in $truth.windows
+    if $w.id == $id then
+      return {row: $w, parts: $truth.chrome.windows[to_string($id)]}
+    end
+  end
+  return nil
+end
+
+fn centre($r)
+  return [$r[0] + $r[2] / 2, $r[1] + $r[3] / 2]
+end
+
+-- Inject one human pointer step; a refusal fails the phase.
+fn human($svc, $verb, $args)
+  $args.seat = "human"
+  $r = input_once($svc, $verb, $args)
+  if $r.rc != 0 then
+    return $verb .. " " .. json_encode($args) .. ": rc " .. to_string($r.rc) .. " " .. json_encode($r.reply)
+  end
+  return nil
+end
+
+-- Poll the truth (~3 s) until window $id satisfies $want ("moved", "max",
+-- "unmax", "gone", "present"); returns the last window_of (nil = gone).
+fn await_window($svc, $id, $want, $x, $y)
+  $last = nil
+  $t = 0
+  while $t < 15
+    $tr = truth_once($svc)
+    if $tr.rc == 0 and type($tr.reply) == "map" then
+      $last = window_of($tr.reply, $id)
+      if $want == "gone" and $last == nil then
+        return nil
+      end
+      if $last != nil then
+        if $want == "moved" and abs($last.row.x - $x) <= 2 and abs($last.row.y - $y) <= 2 then
+          return $last
+        end
+        if $want == "max" and $last.row.maximized then
+          return $last
+        end
+        if $want == "unmax" and not $last.row.maximized then
+          return $last
+        end
+        if $want == "present" then
+          return $last
+        end
+      end
+    end
+    sleep(0.2)
+    $t = $t + 1
+  end
+  return $last
+end
+
+fn input_phase($svc)
+  $tr = truth_once($svc)
+  if $tr.rc != 0 or len($tr.reply.chrome.decorated) == 0 then
+    return "no decorated window in compd.truth"
+  end
+  $id = $tr.reply.chrome.decorated[0]
+  $w = window_of($tr.reply, $id)
+  if $w == nil or $w.parts.titlebar == nil then
+    return "compd.truth has no chrome parts for window " .. to_string($id)
+  end
+  -- I1: titlebar drag.
+  $x0 = $w.row.x
+  $y0 = $w.row.y
+  $c = centre($w.parts.titlebar)
+  for each $step in [["comp.input.pointer.move", {x: $c[0], y: $c[1]}], ["comp.input.pointer.button", {button: "left", action: "press"}], ["comp.input.pointer.move", {x: $c[0] + 40, y: $c[1] + 20}], ["comp.input.pointer.move", {x: $c[0] + 80, y: $c[1] + 40}], ["comp.input.pointer.button", {button: "left", action: "release"}]]
+    $e = human($svc, $step[0], $step[1])
+    if $e != nil then
+      return "I1 " .. $e
+    end
+  end
+  $w = await_window($svc, $id, "moved", $x0 + 80, $y0 + 40)
+  if $w == nil or abs($w.row.x - ($x0 + 80)) > 2 or abs($w.row.y - ($y0 + 40)) > 2 then
+    return "I1: a titlebar drag of (+80,+40) left the window at " .. json_encode($w) .. " (from " .. to_string($x0) .. "," .. to_string($y0) .. ")"
+  end
+  -- Past the double-click window, so the next presses are single clicks.
+  sleep(0.5)
+  -- I2: maximise, then restore, through the button (it moves with the window).
+  for each $want in ["max", "unmax"]
+    $m = centre($w.parts.buttons.maximize)
+    for each $step in [["comp.input.pointer.move", {x: $m[0], y: $m[1]}], ["comp.input.pointer.button", {button: "left"}]]
+      $e = human($svc, $step[0], $step[1])
+      if $e != nil then
+        return "I2 " .. $e
+      end
+    end
+    $w = await_window($svc, $id, $want, 0, 0)
+    if $w == nil or ($want == "max") != $w.row.maximized then
+      return "I2: clicking maximise did not reach " .. $want .. ": " .. json_encode($w)
+    end
+    sleep(0.5)
+  end
+  -- I3: press close, slide off onto the titlebar, release: nothing closes.
+  $cl = centre($w.parts.buttons.close)
+  $tb = centre($w.parts.titlebar)
+  for each $step in [["comp.input.pointer.move", {x: $cl[0], y: $cl[1]}], ["comp.input.pointer.button", {button: "left", action: "press"}], ["comp.input.pointer.move", {x: $tb[0], y: $tb[1]}], ["comp.input.pointer.button", {button: "left", action: "release"}]]
+    $e = human($svc, $step[0], $step[1])
+    if $e != nil then
+      return "I3 " .. $e
+    end
+  end
+  sleep(1)
+  $w = await_window($svc, $id, "present", 0, 0)
+  if $w == nil then
+    return "I3: pressing close and releasing OFF it closed the window"
+  end
+  sleep(0.5)
+  -- I4: click close: the window goes.
+  $cl = centre($w.parts.buttons.close)
+  for each $step in [["comp.input.pointer.move", {x: $cl[0], y: $cl[1]}], ["comp.input.pointer.button", {button: "left"}]]
+    $e = human($svc, $step[0], $step[1])
+    if $e != nil then
+      return "I4 " .. $e
+    end
+  end
+  $w = await_window($svc, $id, "gone", 0, 0)
+  if $w != nil then
+    return "I4: clicking close left the window in compd.truth"
+  end
+  return nil
+end
+
+-- Decode the debug placement colour at the decorated window's corners and
+-- centre (window geometry from the truth: the host Space is the output at
+-- scale 1 nested). Returns the report.
+fn clip_diagnosis($truth, $ppm)
+  if $ppm == nil or len($truth.chrome.decorated) == 0 then
+    return "no shot or no decorated window"
+  end
+  $id = $truth.chrome.decorated[0]
+  $row = nil
+  for each $w in $truth.windows
+    if $w.id == $id then
+      $row = $w
+    end
+  end
+  if $row == nil then
+    return "no truth row for " .. to_string($id)
+  end
+  $d = 3
+  $s = $SCALE
+  $points = [["bottom-left (cut)", floor($row.x * $s) + $d, floor(($row.y + $row.height) * $s) - 1 - $d], ["bottom-right (cut)", floor(($row.x + $row.width) * $s) - 1 - $d, floor(($row.y + $row.height) * $s) - 1 - $d], ["centre (kept)", floor(($row.x + $row.width / 2) * $s), floor(($row.y + $row.height / 2) * $s)]]
+  $out = "window " .. json_encode($row) .. ", radius " .. to_string($truth.chrome.corner_radius) .. "\n"
+  for each $pt in $points
+    $at = $ppm.off + ($pt[2] * $ppm.w + $pt[1]) * 3
+    $red = $ppm.bytes[$at]
+    $grn = $ppm.bytes[$at + 1]
+    $blu = $ppm.bytes[$at + 2]
+    $out = $out .. "  " .. $pt[0] .. " at (" .. to_string($pt[1]) .. "," .. to_string($pt[2]) .. ") = mod256 (" .. to_string($pt[1] % 256) .. "," .. to_string($pt[2] % 256) .. "): shader p mod256 ~ (" .. to_string(floor($red * 256 / 255)) .. "," .. to_string(floor($grn * 256 / 255)) .. ") coverage " .. to_string($blu) .. "/255 [rgb " .. to_string($red) .. "," .. to_string($grn) .. "," .. to_string($blu) .. "]\n"
+  end
+  return $out
+end
+
+-- Both bottom corners of frame $f side by side (64x64 each, the corner 16 px
+-- in from the crop's outer edges), as a P6 PPM at $path, for eyeballing.
+fn corner_crop($ppm, $f, $path)
+  $size = 64
+  $rows = []
+  $x0s = [floor($f[0]) - 16, floor($f[0] + $f[2]) + 16 - $size]
+  $y0 = floor($f[1] + $f[3]) + 16 - $size
+  for each $yy in range(0, $size)
+    $y = $y0 + $yy
+    for each $x0 in $x0s
+      if $y < 0 or $y >= $ppm.h or $x0 < 0 or $x0 + $size > $ppm.w then
+        return nil
+      end
+      $at = $ppm.off + ($y * $ppm.w + $x0) * 3
+      push($rows, slice($ppm.bytes, $at, $at + $size * 3))
+    end
+  end
+  write_file($path, bytes_concat("P6\n" .. to_string($size * 2) .. " " .. to_string($size) .. "\n255\n", bytes_from($rows)))
+  return $path
+end
+
+fn rgb_of($v)
+  return [$v[0], $v[1], $v[2]]
+end
+
+fn alive($p)
+  return exists("/proc/" .. to_string($p))
+end
+
+fn sockets($dir)
+  $out = []
+  for each $e in lines(run_argv(["ls", $dir]).stdout)
+    if starts_with($e, "wayland-") and not ends_with($e, ".lock") then
+      push($out, $e)
+    end
+  end
+  return $out
+end
+
+fn stop($pids)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 15)
+    end
+  end
+  sleep(1)
+  for each $p in $pids
+    if $p != nil and alive($p) then
+      kill($p, 9)
+    end
+  end
+end
+
+-- A PPM (P6) as {w, h, off, bytes}.
+fn load_ppm($path)
+  $b = read_file_bytes($path)
+  $head = bytes_to_string(slice($b, 0, 32))
+  $m = re_find($head, "^P6\\s+(\\d+)\\s+(\\d+)\\s+255\\s")
+  if len($m) == 0 then
+    return nil
+  end
+  return {w: to_number($m[0].groups[0]), h: to_number($m[0].groups[1]), off: $m[0].end, bytes: $b}
+end
+
+fn near($ppm, $x, $y, $rgb, $tol)
+  $at = $ppm.off + ($y * $ppm.w + $x) * 3
+  return abs($ppm.bytes[$at] - $rgb[0]) <= $tol and abs($ppm.bytes[$at + 1] - $rgb[1]) <= $tol and abs($ppm.bytes[$at + 2] - $rgb[2]) <= $tol
+end
+
+-- The client's bounding box: every pixel of its colour (ff00ff), sampled on a
+-- 2 px grid (2 × S at scale S, so a scaled shot costs what a 1.0 one
+-- does). nil when it is not on screen.
+fn client_box($ppm)
+  $step = max(2, floor(2 * $SCALE))
+  $minx = nil
+  $miny = nil
+  $maxx = 0
+  $maxy = 0
+  $y = 0
+  while $y < $ppm.h
+    $x = 0
+    while $x < $ppm.w
+      if near($ppm, $x, $y, [255, 0, 255], 8) then
+        if $minx == nil or $x < $minx then
+          $minx = $x
+        end
+        if $miny == nil or $y < $miny then
+          $miny = $y
+        end
+        if $x > $maxx then
+          $maxx = $x
+        end
+        if $y > $maxy then
+          $maxy = $y
+        end
+      end
+      $x = $x + $step
+    end
+    $y = $y + $step
+  end
+  if $minx == nil then
+    return nil
+  end
+  return {x: $minx, y: $miny, w: $maxx - $minx, h: $maxy - $miny}
+end
+
+-- One compd run with `decorations_ssd` = $ssd. Returns {rc, why, mode, box, hits, samples, logs}.
+fn run_once($label, $ssd)
+  $run = $root .. "/" .. $label
+  $logs = $run .. "/logs"
+  mkdir($logs, {parents: true})
+  $cfg = $run .. "/cfg"
+  mkdir($cfg, {parents: true})
+  write_file($cfg .. "/smoke-settings.json", read_file($config))
+  write_file($cfg .. "/preferences.json", json_encode({decorations_ssd: $ssd, chrome_style: $style}))
+  $host = $SCALE == 1 ? ["--width=1920", "--height=1080"] : ["--width=3840", "--height=2160"]
+  $wp = spawn([$weston, "--backend=headless", "--renderer=pixman", "--socket=wl-host", $host[0], $host[1], "--idle-time=0"], {env: {XDG_RUNTIME_DIR: $run}, stdout: {file: $logs .. "/weston.log"}, stderr: "stdout", detach: true})
+  $t = 0
+  while not exists($run .. "/wl-host") and $t < 50
+    sleep(0.2)
+    $t = $t + 1
+  end
+  if not exists($run .. "/wl-host") then
+    stop([$wp])
+    return {rc: 2, why: "weston host socket never appeared", logs: $logs}
+  end
+  $before = sockets($run)
+  $svc = "compd-chrome-" .. $label .. "-" .. to_string(pid())
+  mkdir($run .. "/var", {parents: true})
+  $cenv = {MIXOS_VAR: $run .. "/var", XDG_RUNTIME_DIR: $run, LIBGL_ALWAYS_SOFTWARE: "1", WAYLAND_DISPLAY: "wl-host", MIXOS_NODED_URL: $NODED}
+  if $debug_clip and $label == "on" then
+    $cenv["COMPD_CHROME_CLIP_DEBUG"] = "1"
+  end
+  $compd_argv = [$bin, "--config-file=" .. $cfg .. "/smoke-settings.json", "--bus-service", $svc]
+  if $SCALE != 1 then
+    push($compd_argv, "--scale=" .. to_string($SCALE))
+  end
+  $cp = spawn($compd_argv, {env: $cenv, stdout: {file: $logs .. "/compositor.log"}, stderr: "stdout", detach: true})
+  $sock = nil
+  $t = 0
+  while $sock == nil and $t < 100
+    sleep(0.2)
+    $t = $t + 1
+    for each $s in sockets($run)
+      if not contains($before, $s) and $s != "wl-host" then
+        $sock = $s
+      end
+    end
+    if not alive($cp) then
+      stop([$wp])
+      return {rc: 2, why: "compd exited during startup", logs: $logs}
+    end
+  end
+  if $sock == nil then
+    stop([$cp, $wp])
+    return {rc: 2, why: "compd created no Wayland socket within 20 s", logs: $logs}
+  end
+  sleep(1)
+  $kenv = {XDG_RUNTIME_DIR: $run, WAYLAND_DISPLAY: $sock}
+  $kp = spawn([$client, "--colour", "ff00ff", "--size", "400x240", "--mode", "server", "--report-scale"], {env: $kenv, stdout: {file: $logs .. "/client.log"}, stderr: "stdout", detach: true})
+  $mode = nil
+  $t = 0
+  while $mode == nil and $t < 50
+    sleep(0.2)
+    $t = $t + 1
+    if exists($logs .. "/client.log") then
+      $m = re_find(read_file($logs .. "/client.log"), "mapped decoration=(\\w+)")
+      if len($m) > 0 then
+        $mode = $m[0].groups[0]
+      end
+    end
+  end
+  if $mode == nil then
+    stop([$kp, $cp, $wp])
+    return {rc: 1, why: "the client never mapped", logs: $logs}
+  end
+  sleep(1)
+  -- What compd says it draws, and with which colours (Bus registration is
+  -- asynchronous: retry, bounded).
+  $truth = nil
+  $t = 0
+  while $truth == nil and $t < 40
+    $tr = truth_once($svc)
+    if $tr.rc == 0 and type($tr.reply) == "map" and type($tr.reply.chrome) == "map" then
+      $truth = $tr.reply
+    else
+      sleep(0.5)
+      $t = $t + 1
+    end
+  end
+  if $truth == nil then
+    stop([$kp, $cp, $wp])
+    return {rc: 1, why: "compd.truth (with a chrome section) never answered on " .. $svc, mode: $mode, logs: $logs}
+  end
+  $chrome = $truth.chrome
+  if not $chrome.installed then
+    stop([$kp, $cp, $wp])
+    return {rc: 1, why: "compd.truth: no chrome theme installed", mode: $mode, logs: $logs}
+  end
+  -- The run is at the scale asked for, and the
+  -- client is told exactly that scale at zoom 1, in
+  -- wp_fractional_scale's 1/120 units. The last preferred scale counts (a
+  -- creation seed may precede it); bounded past the debounce (750 ms).
+  $scale_why = output_scale_why($svc)
+  if $scale_why != nil then
+    stop([$kp, $cp, $wp])
+    return {rc: 1, why: $scale_why, mode: $mode, logs: $logs}
+  end
+  $want120 = round($SCALE * 120)
+  $told = nil
+  $t = 0
+  while $told != $want120 and $t < 20
+    $told = nil
+    for each $m in re_find(read_file($logs .. "/client.log") ?? "", "preferred_scale (\\d+)")
+      $told = to_number($m.groups[0])
+    end
+    if $told != $want120 then
+      sleep(0.25)
+      $t = $t + 1
+    end
+  end
+  if $told != $want120 then
+    stop([$kp, $cp, $wp])
+    return {rc: 1, why: "the client was told preferred_scale " .. to_string($told) .. "/120, want " .. to_string($want120) .. "/120 (scale " .. to_string($SCALE) .. " at zoom 1)", mode: $mode, logs: $logs}
+  end
+  $focused = rgb_of($chrome.titlebar_focused)
+  $unfocused = rgb_of($chrome.titlebar_unfocused)
+  $top = $chrome.extents.top
+  $path = $logs .. "/shot.ppm"
+  $r = run_argv([$shot, $path], {env: $kenv, timeout: 20})
+  if $debug_clip and $label == "on" and $r.exit_code == 0 then
+    $diag = clip_diagnosis($truth, load_ppm($path))
+    stop([$kp, $cp, $wp])
+    return {rc: 1, why: "debug-clip run (diagnosis only):\n" .. $diag, mode: $mode, logs: $logs}
+  end
+  $input = nil
+  if $label == "on" and $r.exit_code == 0 then
+    $input = input_phase($svc)
+  end
+  stop([$kp, $cp, $wp])
+  if $input != nil then
+    return {rc: 1, why: "input: " .. $input, mode: $mode, logs: $logs}
+  end
+  if $r.exit_code != 0 then
+    return {rc: 1, why: "testkit-screenshot exit " .. to_string($r.exit_code) .. ": " .. trim($r.stderr), mode: $mode, logs: $logs}
+  end
+  $ppm = load_ppm($path)
+  if $ppm == nil then
+    return {rc: 1, why: "the shot is not a PPM", mode: $mode, logs: $logs}
+  end
+  $box = client_box($ppm)
+  if $box == nil or $box.w < 100 then
+    return {rc: 1, why: "the client (ff00ff) is not in the shot", mode: $mode, logs: $logs}
+  end
+  -- The middle of the titlebar band: half the top extent above the client
+  -- (the extent is logical, the shot physical).
+  $y = $box.y - floor($top * $SCALE / 2) - 1
+  if $y < 0 then
+    return {rc: 1, why: "the client sits too high to sample a titlebar above it", mode: $mode, box: $box, logs: $logs}
+  end
+  $hits = 0
+  $samples = 0
+  $x = $box.x + floor($box.w / 10)
+  while $x < $box.x + $box.w - floor($box.w / 10)
+    $samples = $samples + 1
+    if near($ppm, $x, $y, $focused, 6) or near($ppm, $x, $y, $unfocused, 6) then
+      $hits = $hits + 1
+    end
+    $x = $x + 4
+  end
+  -- The corner, placed from compd.truth, never from scanned pixels: the frame
+  -- compd cut the content to (ON), or the window itself (OFF, no chrome).
+  $magenta = [255, 0, 255]
+  $f = nil
+  if len($chrome.decorated) > 0 then
+    $parts = $chrome.windows[to_string($chrome.decorated[0])]
+    if $parts != nil and $parts.frame != nil then
+      $f = $parts.frame
+    end
+  end
+  if $f == nil and len($truth.windows) > 0 then
+    $w0 = $truth.windows[0]
+    $f = [$w0.x, $w0.y, $w0.width, $w0.height]
+  end
+  if $f == nil then
+    return {rc: 1, why: "compd.truth placed no frame or window to probe the corner", mode: $mode, logs: $logs}
+  end
+  -- Logical (truth) to the shot's physical px.
+  $f = [$f[0] * $SCALE, $f[1] * $SCALE, $f[2] * $SCALE, $f[3] * $SCALE]
+  $r = $chrome.corner_radius * $SCALE
+  -- 1 px in from the frame's bottom-left corner: centre ~14.85 px from the arc
+  -- centre for any radius >= 4, so coverage ~0 when cut. And r px in on both
+  -- axes: inside the arc, inside the content, so a clip that cut everything fails.
+  $cut = [floor($f[0]) + 1, floor($f[1] + $f[3]) - 2]
+  $kept = [floor($f[0] + $r), floor($f[1] + $f[3] - $r)]
+  $cut_is_client = near($ppm, $cut[0], $cut[1], $magenta, 8)
+  $kept_is_client = near($ppm, $kept[0], $kept[1], $magenta, 8)
+  $crop = nil
+  if $label == "on" then
+    $crop = corner_crop($ppm, $f, $logs .. "/corners-crop.ppm")
+  end
+  return {rc: 0, mode: $mode, box: $box, hits: $hits, samples: $samples, band_y: $y, chrome: $chrome, frame: $f, cut: $cut, kept: $kept, cut_is_client: $cut_is_client, kept_is_client: $kept_is_client, crop: $crop, logs: $logs}
+end
+
+fn tails($logs)
+  for each $f in ["compositor.log", "client.log", "weston.log"]
+    $p = $logs .. "/" .. $f
+    if exists($p) then
+      print("--- tail " .. $f)
+      print(run_argv(["tail", "-25", $p]).stdout)
+    end
+  end
+end
+
+$on = run_once("on", true)
+$off = run_once("off", false)
+for each $r in [$on, $off]
+  if $r.rc == 2 then
+    eprint("setup: " .. $r.why)
+    exit(2)
+  end
+end
+
+$result = {style: $style, scale: $SCALE, on: $on, off: $off}
+if $as_json then
+  print(json_encode($result))
+end
+
+fn verdict($r, $label)
+  if $r.rc != 0 then
+    return $label .. ": " .. $r.why
+  end
+  return nil
+end
+
+$why = verdict($on, "ON") ?? verdict($off, "OFF")
+if $why == nil and $on.mode != "server" then
+  $why = "ON: compd answered decoration=" .. $on.mode .. " (want server)"
+end
+if $why == nil and $off.mode != "client" then
+  $why = "OFF: compd answered decoration=" .. $off.mode .. " (want client: decorations_ssd is off)"
+end
+if not $as_json and $on.rc == 0 and $off.rc == 0 then
+  $c = $on.chrome
+  print("compd.truth chrome: style " .. $c.style .. ", tokens " .. $c.tokens .. ", titlebar " .. json_encode($c.titlebar_focused) .. " / " .. json_encode($c.titlebar_unfocused) .. ", top extent " .. to_string($c.extents.top))
+  print("ON:  client at " .. json_encode($on.box) .. "; titlebar colour on " .. to_string($on.hits) .. "/" .. to_string($on.samples) .. " samples at y=" .. to_string($on.band_y))
+  print("corner: ON frame " .. json_encode($on.frame) .. " cut " .. json_encode($on.cut) .. " client " .. to_string($on.cut_is_client) .. ", kept " .. json_encode($on.kept) .. " client " .. to_string($on.kept_is_client) .. "; OFF cut " .. json_encode($off.cut) .. " client " .. to_string($off.cut_is_client))
+  if $on.crop != nil then
+    print("bottom corners crop (ON): " .. $on.crop)
+  end
+  print("OFF: client at " .. json_encode($off.box) .. "; titlebar colour on " .. to_string($off.hits) .. "/" .. to_string($off.samples) .. " samples at y=" .. to_string($off.band_y))
+end
+if $why == nil and len($on.chrome.decorated) == 0 then
+  $why = "ON: compd.truth chrome.decorated is empty: compd says it draws no chrome"
+end
+if $why == nil and (len($off.chrome.decorated) != 0 or $off.chrome.ssd_enabled) then
+  $why = "OFF: compd.truth says ssd_enabled " .. to_string($off.chrome.ssd_enabled) .. ", decorated " .. json_encode($off.chrome.decorated)
+end
+if $why == nil and $on.cut_is_client then
+  $why = "ON: the bottom-left corner is not rounded: " .. json_encode($on.cut) .. ", 1 px in from the frame " .. json_encode($on.frame) .. ", is the client's colour (radius " .. to_string($on.chrome.corner_radius) .. ")"
+end
+if $why == nil and not $on.kept_is_client then
+  $why = "ON: " .. json_encode($on.kept) .. ", inside the arc, is not the client's colour: the clip cuts too much"
+end
+if $why == nil and not $off.cut_is_client then
+  $why = "OFF: the negative control: the unclipped window's corner " .. json_encode($off.cut) .. " is not its colour — the corner probe cannot fail"
+end
+if $why == nil and $on.hits * 2 < $on.samples then
+  $why = "ON: the band above the client is not the titlebar colour (" .. to_string($on.hits) .. "/" .. to_string($on.samples) .. ")"
+end
+if $why == nil and $off.hits * 10 > $off.samples then
+  $why = "OFF: the negative control reads as a titlebar (" .. to_string($off.hits) .. "/" .. to_string($off.samples) .. ") — the gate cannot fail"
+end
+if $why != nil then
+  print("FAIL: " .. $why)
+  if $debug_clip and $on.logs != nil and exists($on.logs .. "/compositor.log") then
+    $shown = 0
+    for each $l in lines(read_file($on.logs .. "/compositor.log"))
+      if (contains($l, "chrome clip") or contains($l, "tex program push")) and $shown < 30 then
+        print("  log: " .. $l)
+        $shown = $shown + 1
+      end
+    end
+  end
+  if $on.logs != nil then
+    print("== ON logs " .. $on.logs)
+    tails($on.logs)
+  end
+  if $off.logs != nil then
+    print("== OFF logs " .. $off.logs)
+    tails($off.logs)
+  end
+  exit(1)
+end
+print("PASS: server-side chrome draws a titlebar above the client in the theme's colour (off: it does not); rounded at the bottom too; titlebar drag moves, maximise toggles, close closes, and a close press released off it does not")
+$CLEANUP.ok = true
+exit(0)
+finally
+  $scratch.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

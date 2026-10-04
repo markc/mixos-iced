@@ -1,0 +1,220 @@
+-- smithay_guards.mix — run every guard test vendor/smithay/PATCHES.md cites.
+-- version: 0.1.4
+--
+--   mix tools/smithay_guards.mix [--reseed] [--json]
+--
+-- Run from the compd repo root. Builds vendored smithay's OWN lib tests
+-- standalone (`cargo test --manifest-path vendor/smithay/Cargo.toml --lib`)
+-- with compd's feature set plus `offline_test`, then reports each
+-- guard: PASS (every matching test passed), FAIL (one failed), UNPARSED (a
+-- matching test ran but the log gave no verdict for it), or MISSING (no test
+-- matched the guard's name, i.e. the guard PATCHES.md cites does not run).
+--
+-- Resolution matches compd's: vendor/smithay/Cargo.toml carries the root's
+-- `[patch.crates-io]` (input, calloop) and pins winit exactly, and its
+-- Cargo.lock (gitignored there) is seeded from compd's own Cargo.lock so every
+-- shared dependency resolves to the version compd builds. `--reseed`
+-- re-copies it; otherwise an existing one is kept.
+--
+-- Exit codes: 0 every guard passed, 1 a guard failed, is unparsed or missing,
+-- 2 the tests did not build (or setup failed).
+
+$FEATURES = "backend_drm,backend_egl,backend_gbm,backend_libinput,backend_session_libseat,backend_udev,backend_winit,desktop,drm,gbm,renderer_gl,renderer_multi,renderer_pixman,use_system_lib,wayland-egl,wayland_frontend,xwayland,offline_test"
+
+-- Each guard: a name as PATCHES.md cites it, and the substring (or list of
+-- substrings, any matching) that selects its tests by path
+-- (`module::…::test_name`).
+$GUARDS = [
+  ["hook 1: filtered seat global", "wayland::seat::filter_tests::"],
+  ["hook 2: can_start_drag", "can_start_drag_guard::"],
+  ["hook 3: selection source gone", "hook3_guard::"],
+  ["pre-request interposer", "dispatch2::pre_request_tests::"],
+  ["DnD cancel suite", "cancel_suite_guard::"],
+  ["DnD touch cancel ends the drag", "touch_cancel_cancels_the_drag"],
+  ["DnD touch cancel forwards before unset", "touch_cancel_forwards_before_unset"],
+  ["DnD finished/cancel at most once", "cancel_and_drop_run_at_most_once"],
+  ["session-lock: validate before output", "get_lock_surface_validates_before_registering_output"],
+  ["session-lock: registry by owner", "registry_removes_by_owning_surface_only"],
+  ["session-lock: effective buffer", ["empty_first_commit_has_no_effective_buffer", "empty_commit_after_attach_keeps_the_retained_buffer", "null_attach_clears_the_effective_buffer"]],
+  ["session-lock: pre-commit effective buffer", "pre_commit_hook_checks_the_effective_buffer"],
+  ["session-lock: unlock requires owner", "unlock_requires_the_owning_lock"],
+  ["session-lock: locking lifetime", "lock_destroy_aborts_locking_and_late_lock_is_inert"],
+  ["XWM EWMH desktops + _NET_SUPPORTED", "compd_ewmh_tests::"],
+  ["XWM set_desktop mirrors", "set_desktop_mirrors_before_the_wire"],
+  ["XWM activate_request dispatch", "ewmh_request_arms_are_dispatched"],
+  ["XWM active window publication", "active_window_publication_is_managed_same_xwm_only"],
+  ["XWM raw focus does not publish", "raw_focus_events_do_not_publish_active_window"],
+  ["Xwayland orderly shutdown", "shutdown_tests::"],
+  ["Xwayland shutdown without child", "begin_shutdown_without_a_child_is_a_no_op"],
+  ["Xwayland idempotent disconnected", "vendored_xwayland_disconnected_stays_idempotent"],
+  ["offline X11 setters", "compd_offline_tests::"],
+  ["xdg: wrapper released on destroy", "destroying_the_xdg_surface_releases_the_wl_surface_for_a_fresh_wrapper"],
+  ["xdg: second live wrapper refused", "a_second_wrapper_while_one_is_live_is_refused"],
+  ["xdg: non-xdg role refused", "a_non_xdg_role_is_refused"],
+  ["xdg: pending buffer refused", "_pending_buffer_is_refused"],
+  ["xdg: committed buffer refused", "_committed_buffer_is_refused"],
+  ["xdg: NULL-attach rule", "an_uncommitted_null_attach_does_not_release_a_committed_buffer"],
+  ["xdg: smithay default buffer check", "smithay_default_buffer_check_ignores_an_uncommitted_null_attach"],
+  ["xdg-decoration destroy hook", "destroy_calls_the_decoration_destroyed_hook"],
+  ["libinput dispatch budget", "backend::libinput::fairness_tests::"],
+  ["libinput touch seat_slot", "seat_slot_guard::"],
+  ["syncobj release-signal failure count", "compd_signal_failure_tests::"],
+  ["keyboard focus-to-None", "focus_none_tests::"],
+  ["touch cancel unconditional", "cancel_tests::"],
+  ["wlr_layer reset_after_unmap", "reset_after_unmap_guard"],
+  ["compositor cached access", "cached_access_tests::"],
+  ["foreign-toplevel identifier", "identifier_tests::"],
+  ["pointer grab helpers", "compd_pointer_tests::"],
+  ["compositor transaction_applied", "transaction_applied_tests::"],
+  ["idle-notify timers off the dispatch state", "compd_idle_timer_tests::"]
+]
+
+$args = args()
+$reseed = false
+$as_json = false
+for each $a in $args
+  if $a == "--reseed" then
+    $reseed = true
+  elif $a == "--json" then
+    $as_json = true
+  else
+    eprint("unknown option: " .. $a)
+    exit(2)
+  end
+end
+if not is_file("Cargo.lock") or not is_file("vendor/smithay/Cargo.toml") then
+  eprint("run from the compd repo root (Cargo.lock and vendor/smithay/Cargo.toml)")
+  exit(2)
+end
+if $reseed or not is_file("vendor/smithay/Cargo.lock") then
+  write_file("vendor/smithay/Cargo.lock", read_file("Cargo.lock"))
+  print("seeded vendor/smithay/Cargo.lock from compd's Cargo.lock")
+end
+
+$log = "vendor/smithay/target/smithay_guards.log"
+mkdir("vendor/smithay/target", {parents: true})
+print("cargo test (vendored smithay lib, compd features) → " .. $log)
+$r = run_argv(["cargo", "test", "--manifest-path", "vendor/smithay/Cargo.toml", "--lib",
+  "--no-default-features", "--features", $FEATURES, "--", "--test-threads=1"],
+  {stdout: {file: $log}, stderr: "stdout", timeout: 5400})
+
+-- Every "test <path> ... <verdict>". The verdict is not always on the same
+-- line: with use_system_lib, output a test writes straight to fd 2 (libwayland
+-- C code, which libtest cannot capture) lands between "test <path> ... " and
+-- the verdict, so a pending test takes the next line that ends in one. The
+-- closing "failures:" list is authoritative for FAILED, so a stray "ok" at the
+-- end of interleaved output can never hide a failure. A test whose verdict is
+-- never found is UNPARSED, not MISSING: it ran, the log just did not say how.
+$results = []
+$pending = nil
+$failures = []
+$in_failures = false
+for each $l in lines(read_file($log))
+  $m = re_find($l, "^test (\\S+) \\.\\.\\. ?(.*)$")
+  if len($m) > 0 then
+    if $pending != nil then
+      push($results, {path: $pending, verdict: "unparsed"})
+    end
+    $pending = nil
+    $v = re_find($m[0].groups[1], "^(ok|FAILED|ignored)\\b")
+    if len($v) > 0 then
+      push($results, {path: $m[0].groups[0], verdict: $v[0].groups[0]})
+    else
+      $pending = $m[0].groups[0]
+    end
+  elif $pending != nil and len(re_find($l, "(ok|FAILED|ignored)\\s*$")) > 0 then
+    $v = re_find($l, "(ok|FAILED|ignored)\\s*$")
+    push($results, {path: $pending, verdict: $v[0].groups[0]})
+    $pending = nil
+  elif $l == "failures:" then
+    $failures = []
+    $in_failures = true
+  elif starts_with($l, "test result:") then
+    $in_failures = false
+  elif $in_failures and len(re_find($l, "^    (\\S+)$")) > 0 then
+    push($failures, re_find($l, "^    (\\S+)$")[0].groups[0])
+  end
+end
+if $pending != nil then
+  push($results, {path: $pending, verdict: "unparsed"})
+end
+$i = 0
+while $i < len($results)
+  if contains($failures, $results[$i].path) then
+    $results[$i] = {path: $results[$i].path, verdict: "FAILED"}
+  end
+  $i = $i + 1
+end
+if len($results) == 0 then
+  eprint("no test results: the lib tests did not build. Tail of " .. $log .. ":")
+  eprint(run_argv(["tail", "-40", $log]).stdout)
+  exit(2)
+end
+
+$report = []
+$bad = 0
+for each $g in $GUARDS
+  $ran = 0
+  $failed = []
+  $ignored = 0
+  $unparsed = []
+  $sels = $g[1]
+  if type($sels) != "list" then
+    $sels = [$sels]
+  end
+  for each $t in $results
+    $hit = false
+    for each $s in $sels
+      if contains($t.path, $s) then
+        $hit = true
+      end
+    end
+    if $hit then
+      if $t.verdict == "ok" then
+        $ran = $ran + 1
+      elif $t.verdict == "FAILED" then
+        push($failed, $t.path)
+      elif $t.verdict == "unparsed" then
+        push($unparsed, $t.path)
+      else
+        $ignored = $ignored + 1
+      end
+    end
+  end
+  $status = "PASS"
+  if len($failed) > 0 then
+    $status = "FAIL"
+  elif len($unparsed) > 0 then
+    $status = "UNPARSED"
+  elif $ran == 0 then
+    $status = "MISSING"
+  end
+  if $status != "PASS" then
+    $bad = $bad + 1
+  end
+  push($report, {guard: $g[0], selector: $g[1], status: $status, passed: $ran, ignored: $ignored, failed: $failed, unparsed: $unparsed})
+end
+
+if $as_json then
+  print(json_encode({cargo_exit: $r.exit_code, tests: len($results), guards: $report}))
+else
+  for each $g in $report
+    $line = $g.status .. "  " .. $g.guard .. "  (" .. to_string($g.passed) .. " passed"
+    if $g.ignored > 0 then
+      $line = $line .. ", " .. to_string($g.ignored) .. " ignored"
+    end
+    $line = $line .. ")"
+    print($line)
+    for each $f in $g.failed
+      print("        FAILED " .. $f)
+    end
+    for each $f in $g.unparsed
+      print("        UNPARSED " .. $f)
+    end
+  end
+  print(to_string(len($results)) .. " lib tests ran; " .. to_string(len($GUARDS) - $bad) .. "/" .. to_string(len($GUARDS)) .. " guards pass; cargo exit " .. to_string($r.exit_code) .. "; log " .. $log)
+end
+if $bad > 0 then
+  exit(1)
+end
+exit(0)

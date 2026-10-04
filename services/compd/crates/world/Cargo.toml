@@ -1,0 +1,36 @@
+[package]
+name = "world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+decor = { workspace = true }
+dispatcher = { workspace = true }
+drivers = { workspace = true }
+graphics = { workspace = true }
+ui = { workspace = true }
+ledger = { workspace = true }
+model = { workspace = true }
+policy = { workspace = true }
+surfaces = { workspace = true }
+render-gles = { workspace = true }
+slots = { workspace = true }
+protocols = { workspace = true }
+bitflags = { workspace = true }
+iced_core = { workspace = true }
+iced_widget = { workspace = true }
+smithay = { workspace = true }
+uuid = { workspace = true }
+xcursor = { workspace = true }

@@ -1,0 +1,37 @@
+#!/usr/bin/env mix
+-- panel_holder.mix — a stand-in Quoin holder service for nested_smoke.mix --bus.
+-- version: 0.1.1
+--
+--   mix --serve tests/desktop/panel_holder.mix --name compd-holder-<pid>
+--
+-- comp binds a panel edge only for a REGISTERED holder service's reports (the
+-- broker stamps the sender; an anonymous `send` from the smoke binds nothing).
+-- This citizen is that registered service: the smoke asks it to report or
+-- hold, and it forwards the request to the compositor under its own name.
+--
+-- Verbs (answered with {rc, reply} from the compositor):
+--   holder.mode {output, edge, surface, mode, generation?}  -> comp.panel.mode
+--   holder.hold {output, edge, surface, holder, acquire}   -> comp.panel.hold
+--
+-- Configuration by environment (serve mode owns argv):
+--   HOLDER_SERVICE  the compositor service (required)
+--   HOLDER_READY    a file written once the citizen is serving (required)
+
+$svc = env("HOLDER_SERVICE", "")
+$ready = env("HOLDER_READY", "")
+if $svc == "" or $ready == "" then
+  eprint("panel_holder: HOLDER_SERVICE and HOLDER_READY are required")
+  exit(2)
+end
+write_file($ready, "")
+
+on holder.mode
+  $b = json_encode($event.args)
+  send $svc comp.panel.mode body=$b timeout=5
+  reply(json_encode({rc: $rc, reply: $result}))
+end
+on holder.hold
+  $b = json_encode($event.args)
+  send $svc comp.panel.hold body=$b timeout=5
+  reply(json_encode({rc: $rc, reply: $result}))
+end

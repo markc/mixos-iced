@@ -1,0 +1,25 @@
+[package]
+name = "protocols"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The redraw schedule names a reason per request and feeds the frame ledger.
+ledger = { workspace = true }
+model = { workspace = true }
+slots = { workspace = true }
+bitflags = { workspace = true }
+smithay = { workspace = true }
+uuid = { workspace = true }

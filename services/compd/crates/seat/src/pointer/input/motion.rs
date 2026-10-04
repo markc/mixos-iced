@@ -1,0 +1,654 @@
+use crate::pointer::input::constraint::apply_pointer_constraint;
+use crate::pointer::input::extent;
+use crate::pointer::input::native_motion;
+use smithay::backend::input::{AbsolutePositionEvent, Event, InputBackend, PointerMotionEvent};
+use smithay::utils::{Logical, Physical, Point};
+use std::ops::Deref;
+use world::camera::transform::translate::transform::Transform;
+use world::camera::transform::translate::translate;
+use world::state::Loop;
+use world::state::state::CoordinateTrait;
+
+pub fn absolute<I: InputBackend>(
+    event: &<I as InputBackend>::PointerMotionAbsoluteEvent,
+    _loop: &mut Loop,
+) {
+    // Compute the physical screen position (`raw_pos`) and the normalized world
+    // point BEFORE the bus so the motion systems receive precisely what the rim
+    // computed (the pan delta uses the physical screen, transforms +
+    // pointer.motion use the world point).
+    // Full-output context maps the normalized absolute event → physical cursor.
+    let screen = _loop.size_ctx_all();
+
+    // position_transformed wants Size<_, Logical>. Pass the panel's
+    // physical size wrapped as Logical — the values are physical even
+    // if the marker says otherwise. We immediately re-tag the result
+    // as Physical (which is what it really is).
+    let physical_size_as_logical = smithay::utils::Size::<i32, Logical>::from((
+        screen.screen_size_physical.0.round() as i32,
+        screen.screen_size_physical.1.round() as i32,
+    ));
+    let raw_pos: Point<f64, Logical> = event.position_transformed(physical_size_as_logical);
+
+    // The numbers are in physical units; re-tag.
+    let position_screen = Point::<f64, Physical>::from((raw_pos.x, raw_pos.y));
+
+    // Screen extents, ABSOLUTE half (see `extent.rs`): an absolute pointer has no
+    // overflow to pan by — the host clamps it to the window — so entering the edge
+    // band ARMS a simulated pan that the per-frame tick runs, and the cursor is
+    // pinned to the extent while it is armed (a winit drag reports positions well
+    // outside the window; those belong to the camera). No-op when the extent isn't
+    // a pan, or for a direct device.
+    let (pw, ph) = screen.screen_size_physical;
+    // The hot corners sample first, and a pointer in a corner hotspot holds
+    // no edge pan (corner bands win).
+    let position_screen = if world::comp::corners::sample(_loop, position_screen, (pw, ph), (0.0, 0.0)) {
+        extent::release_absolute(_loop);
+        position_screen
+    } else {
+        extent::hold(
+            _loop,
+            position_screen,
+            (raw_pos.x / pw.max(1.0), raw_pos.y / ph.max(1.0)),
+            pw,
+            ph,
+        )
+    };
+    // Carry the pinning into the value the bus + native motion are given.
+    let raw_pos = Point::<f64, Logical>::from((position_screen.x, position_screen.y));
+
+    // The physical accumulator every reader shares (`relative` continues from
+    // it, the cursor readout reports it): an absolute device sets it outright,
+    // else it keeps the last relative position and an injected move is
+    // reported, and later continued, from the wrong place.
+    {
+        let motion = &mut _loop.inner.pointer_mut().motion;
+        motion.x = position_screen.x;
+        motion.y = position_screen.y;
+    }
+
+    // Resolve the pane under the cursor (records it as the `pointer` slot) and map
+    // physical → world through THAT pane's camera/region, so input follows the
+    // pane the cursor is over, not the keyboard-active pane.
+    let ctx = _loop.pointer_context(position_screen);
+    // Two values leave this point and they are NOT the same thing:
+    //   `position_screen`     — the hardware position, in physical pixels;
+    //   `position_normalized` — where that lands in the world.
+    // A pointer warp changes only the second. The shader displaced where things
+    // LOOK, not where the hand is, so the screen point stays true (the pane
+    // resolution above, the separator/floating drag below, and the cursor sprite
+    // all depend on it) and the world derivation goes through the warp.
+    publish_pointer(&ctx, position_screen);
+    world::comp::scenes::pointer_motion(_loop, Some(position_screen));
+    let t: Transform = (warp_screen(_loop, &ctx, position_screen), ctx).into();
+    let position_normalized = &t.into_storage_point_f64();
+
+    // Separator / floating-pane drag in progress → apply it and move the cursor,
+    // but do not route to the canvas/window grab systems.
+    if world::viewport::interaction::interaction::update_separator(_loop.inner.output_views_mut(), position_screen)
+        || world::viewport::interaction::interaction::update_floating(_loop.inner.output_views_mut(), position_screen)
+    {
+        native_motion::absolute::input_received_normalized::<I>(event, _loop, position_normalized, &raw_pos);
+        return;
+    }
+
+    {
+        // World input bus first (Pass-1): CameraSystem handles the canvas PAN
+        // (Hand / position_updating), CanvasSystem the MOVE/SCALE/SELECTBOX
+        // transforms. `Pass` falls through to legacy `native_motion` routing.
+        let ev = slots::input::event::base::InputEvent::PointerMotion {
+            x: position_normalized.x,
+            y: position_normalized.y,
+            screen_x: raw_pos.x,
+            screen_y: raw_pos.y,
+            delta_x: 0.0,
+            delta_y: 0.0,
+        };
+        if crate::input::drive::drive::route(_loop, ev)
+            == slots::input::event::base::InputFlow::Consume
+        {
+            return;
+        }
+    }
+
+    // let ctx = _loop.size_ctx_all();
+    // let output = _loop.inner.space_state().state.outputs().next().unwrap();
+    // let logical_geom = _loop.inner.space_state().state.output_geometry(output).unwrap();
+
+    // let position_screen: Point<f64, Logical> = event.position_transformed(logical_geom.size);
+
+    // let t: Transform = (position_screen, ctx).into();
+    // let position_normalized = &t.into_storage_point_f64();
+
+    // Extract geometry from compositor space
+    // let compositor_output = _loop.inner.space_state().state.outputs().next().unwrap();
+    // let compositor_output_geometry = _loop
+    //     .state
+    //     .space
+    //     .state
+    //     .output_geometry(compositor_output)
+    //     .unwrap();
+
+    // // Get the position of cursor on screen
+    // let position_screen = event.position_transformed(compositor_output_geometry.size)
+    //     + compositor_output_geometry.loc.to_f64();
+
+    // let ctx = _loop.size_ctx_all();
+    // let cursor_phys = Point::<f64, Physical>::from((position_screen.x, position_screen.y));
+
+    // let t: Transform = (cursor_phys, ctx).into();
+
+    // // Extract as raw world, since smithay clients work in world coords.
+    // let position_normalized = &t.into_storage_point_f64();
+
+    // // Normalize the cursor position based on camera state
+    // // THis is actually screen to world which is also space to world since they share coords.
+    // let position_normalized = &translate::space_to_world(
+    //     &_loop.inner.camera_mut().transform,
+    //     compositor_output_geometry.size.to_f64(),
+    //     position_screen,
+    //     _loop.inner.space_state().default_scale()
+    // );
+
+    // Bus returned Pass (no canvas pan/transform consumed it) — route native
+    // client pointer motion.
+    native_motion::absolute::input_received_normalized::<I>(
+        event,
+        _loop,
+        position_normalized,
+        &raw_pos,
+    );
+}
+
+/// Try to cross the cursor to an adjacent monitor when it leaves this output's
+/// bounds. On success updates `cursor_output`/`cursor_placement` + the per-output
+/// current view, and returns the entry point in the NEW output's physical space
+/// plus that output's pointer context. `None` when there is no teleport layout, the
+/// cursor is still in-bounds, or no placement abuts the crossed edge (clamp).
+fn teleport_cross(
+    _loop: &mut Loop,
+    mx: f64,
+    my: f64,
+    pw: f64,
+    ph: f64,
+) -> Option<(Point<f64, Physical>, world::camera::transform::translate::transform::Context)> {
+    use drivers::output::base::{Edge, CURSOR_PLACEMENT_MUT, TELEPORT_LAYOUT};
+    // Teleport is suppressed while ANY system holds the suppression lock (a refcount);
+    // a canvas pan is the built-in client (it pins the cursor to its output for the pan's
+    // duration). This path knows nothing about pan specifically — just the lock.
+    if _loop.inner.teleport_suppressed() || _loop.inner.kernel.get(&TELEPORT_LAYOUT).is_empty() {
+        return None;
+    }
+    // Which edge did the cursor cross, and where along it (proportionally 0..1)?
+    let (edge, frac) = if mx < 0.0 {
+        (Edge::Left, (my / ph) as f32)
+    } else if mx > pw {
+        (Edge::Right, (my / ph) as f32)
+    } else if my < 0.0 {
+        (Edge::Top, (mx / pw) as f32)
+    } else if my > ph {
+        (Edge::Bottom, (mx / pw) as f32)
+    } else {
+        return None; // still inside the output → not a crossing
+    };
+    let from_id = current_placement(_loop)?;
+    let n = _loop.inner.kernel.get(&TELEPORT_LAYOUT).neighbor(from_id, edge, frac)?;
+    // Adopt the entered monitor + zone. The teleport layout and `output_key` share
+    // the same EDID identity, so the placement key IS the output key. Point the
+    // per-output view state at it so the input systems (pan/zoom on this monitor)
+    // operate on THIS monitor's own camera.
+    _loop.inner.cursor_output = Some(n.key.clone());
+    _loop.inner.output_views_mut().set_current(&n.key);
+    *_loop.inner.kernel.get_mut(&CURSOR_PLACEMENT_MUT) = Some(n.id);
+    // Entry point on the new output (opposite the crossed edge, 1px inset).
+    let (npw, nph) = _loop.size_ctx_all().screen_size_physical;
+    const INSET: f64 = 1.0;
+    let ef = n.entry_frac as f64;
+    let entry: Point<f64, Physical> = match n.entry_edge {
+        Edge::Left => Point::from((INSET, ef * nph)),
+        Edge::Right => Point::from((npw - INSET, ef * nph)),
+        Edge::Top => Point::from((ef * npw, INSET)),
+        Edge::Bottom => Point::from((ef * npw, nph - INSET)),
+    };
+    let new_ctx = _loop.pointer_context(entry);
+    Some((entry, new_ctx))
+}
+
+/// The placement the cursor currently occupies, seeded on first use to the current
+/// output's first placement (else the first placement overall).
+fn current_placement(_loop: &mut Loop) -> Option<u64> {
+    use drivers::output::base::{CURSOR_PLACEMENT, CURSOR_PLACEMENT_MUT, TELEPORT_LAYOUT};
+    if let Some(id) = *_loop.inner.kernel.get(&CURSOR_PLACEMENT) {
+        if _loop.inner.kernel.get(&TELEPORT_LAYOUT).get(id).is_some() {
+            return Some(id);
+        }
+    }
+    let key = _loop.inner.current_output_key();
+    let id = {
+        let t = _loop.inner.kernel.get(&TELEPORT_LAYOUT);
+        t.first_of(&key).or_else(|| t.placements.first()).map(|p| p.id)?
+    };
+    *_loop.inner.kernel.get_mut(&CURSOR_PLACEMENT_MUT) = Some(id);
+    Some(id)
+}
+
+pub fn relative<I: InputBackend>(
+    event: &<I as InputBackend>::PointerMotionEvent,
+    _loop: &mut Loop,
+) {
+    // Full-output context for the physical-accumulator clamp bounds.
+    let screen = _loop.size_ctx_all();
+
+    // A relative pointer is driving, so no ABSOLUTE one is holding an edge pan —
+    // drop that kind only, or this would tear down the continuous pan re-armed at
+    // the end of this very function (see `extent.rs`). Cheap no-op normally.
+    extent::release_absolute(_loop);
+
+    let dt = event.delta();
+    let dt_unaccelerated = event.delta_unaccel();
+
+    // Live cursor-speed multiplier (settings window). Read before the
+    // `pointer_mut()` borrows below so the borrows stay disjoint. Applied ONLY to
+    // the on-screen cursor accumulator — NOT to `dt`/`dt_unaccelerated`, which are
+    // forwarded raw to clients via the relative-pointer protocol (games apply
+    // their own acceleration and expect unscaled hardware deltas).
+    let sensitivity = _loop.inner.preference.cursor_sensitivity;
+
+    // Snapshot previous position in both spaces.
+    let previous_phys = _loop.inner.pointer_mut().motion.clone();
+    // Pane under the cursor (records the `pointer` slot); map world through it.
+    let ctx = _loop.pointer_context(Point::<f64, Physical>::from((previous_phys.x, previous_phys.y)));
+    let previous_world: Point<f64, Logical> = {
+        let pt = Point::<f64, Physical>::from((previous_phys.x, previous_phys.y));
+        let t: Transform = (pt, ctx).into();
+        t.into_storage_point_f64()
+    };
+
+    // Accumulate the physical delta, scaled by the live cursor sensitivity.
+    _loop.inner.pointer_mut().motion.x += dt.x * sensitivity;
+    _loop.inner.pointer_mut().motion.y += dt.y * sensitivity;
+
+    // Candidate in world space.
+    let candidate_world: Point<f64, Logical> = {
+        let pt = Point::<f64, Physical>::from((
+            _loop.inner.pointer_mut().motion.x,
+            _loop.inner.pointer_mut().motion.y,
+        ));
+        let t: Transform = (pt, ctx).into();
+        t.into_storage_point_f64()
+    };
+
+    // CHECK: Constraint is not applied for absolute events. Relevant for
+    // tablets and winit testing; otherwise redundant.
+    let (constrained_world, was_constrained) =
+        apply_pointer_constraint(_loop, previous_world, candidate_world);
+
+    // Reconcile final world position and update the physical accumulator
+    // so future deltas accumulate from the right place.
+    //
+    // A teleport crossing swaps the projection context along with the position, so
+    // the context matching where the accumulator ENDED UP is carried out of the
+    // branch — the warp below re-derives from the final accumulator, and doing
+    // that through the pre-teleport context would land on the monitor just left.
+    let mut eff_ctx = ctx;
+    let final_world: Point<f64, Logical> = if was_constrained {
+        // Reverse-project constrained world back to physical, write to accumulator.
+        let final_phys: Point<f64, Physical> = {
+            let t: Transform = (constrained_world, ctx).into();
+            t.into()
+        };
+        _loop.inner.pointer_mut().motion.x = final_phys.x;
+        _loop.inner.pointer_mut().motion.y = final_phys.y;
+        // A client holds the pointer (lock/confine): the extent is its business now,
+        // so stop any edge pan still running from before the grab.
+        extent::release(_loop);
+        constrained_world
+    } else {
+        // No constraint. The cursor may have left this output's bounds — `extent`
+        // decides what that push MEANS (cross to the monitor across that edge, pan
+        // the camera by it, or just pin the cursor); see `extent.rs` for the policy.
+        let (pw, ph) = screen.screen_size_physical;
+        let mx = _loop.inner.pointer_mut().motion.x;
+        let my = _loop.inner.pointer_mut().motion.y;
+        // AT or past an extent. `>=`, not `>`: the accumulator was clamped exactly
+        // onto the boundary by the previous event, so a cursor already parked there
+        // reports no further overflow — yet it is still asking to pan (that is what
+        // the continuous mode rides on, and it keeps working when the cursor slides
+        // ALONG an edge). The teleport/push below still take the strict test, since
+        // both are driven by actual overflow.
+        let at_extent = mx <= 0.0 || mx >= pw || my <= 0.0 || my >= ph;
+        let mut policy = if at_extent { extent::resolve(_loop) } else { extent::Extent::Clamp };
+        // Super with no grab means "cross to the next monitor" — so a cursor merely
+        // RESTING against the edge under it must not start a continuous pan instead.
+        let teleport_intent = policy == extent::Extent::Teleport;
+        let crossed = if policy == extent::Extent::Teleport {
+            let crossed = teleport_cross(_loop, mx, my, pw, ph);
+            if crossed.is_none() {
+                // Nothing placed across that edge (or teleport is suppressed).
+                policy = extent::fallback(_loop);
+            }
+            crossed
+        } else {
+            None
+        };
+        // The hot corners sample the clamped cursor (just inside the half-open
+        // screen) with the push it attempted; a pointer in a corner hotspot pins
+        // instead of panning (corner bands win).
+        let in_corner = crossed.is_none()
+            && world::comp::corners::sample(
+                _loop,
+                Point::<f64, Physical>::from((mx.clamp(0.0, (pw - 1.0).max(0.0)), my.clamp(0.0, (ph - 1.0).max(0.0)))),
+                (pw, ph),
+                (dt.x * sensitivity, dt.y * sensitivity),
+            );
+        if in_corner && policy == extent::Extent::Pan {
+            policy = extent::Extent::Clamp;
+        }
+        match crossed {
+            Some((entry, new_ctx)) => {
+                _loop.inner.pointer_mut().motion.x = entry.x;
+                _loop.inner.pointer_mut().motion.y = entry.y;
+                eff_ctx = new_ctx;
+                let t: Transform = (entry, new_ctx).into();
+                t.into_storage_point_f64()
+            }
+            None => {
+                _loop.inner.pointer_mut().motion.x = mx.clamp(0.0, pw);
+                _loop.inner.pointer_mut().motion.y = my.clamp(0.0, ph);
+                let pt = Point::<f64, Physical>::from((
+                    _loop.inner.pointer_mut().motion.x,
+                    _loop.inner.pointer_mut().motion.y,
+                ));
+                // Continuous (RTS) mode FIRST: the cursor is now pinned to the
+                // extent, so hand the frame clock a travel to keep applying — a mouse
+                // that stops moving stops sending events, and the pan should not stop
+                // with it. Dropped again the moment the cursor steps off the extent.
+                // The accumulator advance is the arrival measurement: how hard the
+                // pointer drove in sets how fast the sustained pan runs.
+                //
+                // Ahead of the push below so that even the ARRIVING event is netted
+                // against the speed it just seeded, instead of landing on top of it.
+                let step = extent::sustain(
+                    _loop,
+                    pt,
+                    pw,
+                    ph,
+                    !teleport_intent && policy == extent::Extent::Pan,
+                    (dt.x * sensitivity, dt.y * sensitivity),
+                );
+                // Then the push, for whatever it EXCEEDS that travel. Applied before
+                // the world point is taken, so this very event already reports the
+                // cursor's world position under the panned camera — an in-progress
+                // move/scale grab then drags along with the canvas instead of lagging
+                // a frame behind it.
+                let panned =
+                    policy == extent::Extent::Pan && extent::pan(_loop, mx, my, pw, ph, step);
+                // `ctx` was built against the pre-pan camera; re-derive it when the
+                // camera just moved, else the world point is a pan step stale.
+                let ctx = if panned { _loop.pointer_context(pt) } else { ctx };
+                let t: Transform = (pt, ctx).into();
+                t.into_storage_point_f64()
+            }
+        }
+    };
+
+    // Keep the per-output view state's `current` on the output the cursor is on, so
+    // the input systems (pan/zoom, hit-test) operate on THIS monitor's own viewport
+    // — not the last-rendered one. `cursor_output` is maintained by teleport
+    // crossings and persists between them; initialize it to the primary on first use.
+    //
+    // Re-validated, not just seeded. A key that names an output which has since
+    // been unplugged is as unusable as `None`, and strictly worse: `set_current`
+    // below would keep pointing the input systems at a viewport tree for a
+    // monitor that is gone. The removal path re-points this deterministically;
+    // this is the backstop that heals it whatever the cause (and covers backends
+    // that have no reconcile at all).
+    let stale = _loop.inner.cursor_output.as_ref().is_none_or(|key| {
+        !_loop
+            .inner
+            .space_state()
+            .state
+            .outputs()
+            .any(|o| world::state::state::output_key(o) == *key)
+    });
+    if stale {
+        _loop.inner.cursor_output =
+            Some(world::state::state::output_key(_loop.inner.current_output()));
+    }
+    if let Some(co) = _loop.inner.cursor_output.clone() {
+        _loop.inner.output_views_mut().set_current(&co);
+    }
+
+    // The same two values as in `absolute`, and the same split. `position_screen`
+    // is the hardware accumulator and stays TRUE — everything above (constraint,
+    // teleport, clamp) reasons in that space, and nothing writes a corrected
+    // value back into it: doing so would make the next event's input this
+    // event's output and pin the cursor in a corner within a few events.
+    let position_screen = _loop.inner.pointer_mut().motion;
+    // Unconditional, and ahead of the warp split below — the `else` branch does not
+    // go through `warp_screen`, which is exactly how this came to be published on
+    // winit and not on udev.
+    publish_pointer(
+        &eff_ctx,
+        Point::<f64, Physical>::from((position_screen.x, position_screen.y)),
+    );
+    world::comp::scenes::pointer_motion(
+        _loop, Some(Point::<f64, Physical>::from((position_screen.x, position_screen.y))),
+    );
+    // Only the WORLD point is warped. Re-derived from the final accumulator
+    // rather than from `final_world`, because that is the value the constraint
+    // and teleport branches agreed on and it is already in true space.
+    let position_normalized = if warp_active(_loop) {
+        let pt = warp_screen(_loop, &eff_ctx, Point::<f64, Physical>::from((
+            position_screen.x,
+            position_screen.y,
+        )));
+        let t: Transform = (pt, eff_ctx).into();
+        t.into_storage_point_f64()
+    } else {
+        // This branch skips `warp_screen` (the world point is already derived), so
+        // it has to withdraw the published correction itself — otherwise the last
+        // warped frame's position outlives the warp. See `warp_screen`.
+        world::seat::pointer::publish::publish::set_true_screen(None);
+        final_world
+    };
+
+    // Apply motion only if this is equals false
+    // !was_constrained || final_world != previous_world a
+    
+    let was_constrained_locked = !(!was_constrained || final_world != previous_world);
+
+    // Previous code start(working pre motion relative and constraint impl.)
+
+    // Accumulate cursor in physical pixels (libinput's natural unit).
+    // let dt = event.delta();
+    // let dt_unaccelerated = event.delta_unaccel();
+    // let time = event.time_msec();
+
+    // let previous_location = _loop.inner.pointer_mut().motion.clone();
+
+    // _loop.inner.pointer_mut().motion.x += dt.x;
+    // _loop.inner.pointer_mut().motion.y += dt.y;
+
+    // // Clamp to physical panel bounds.
+    // let (pw, ph) = ctx.screen_size_physical;
+
+    // // CHECK: Constraint is not applied for absolute events. This is especially relevant for tablets and testing within winit. but otherwise redaundant.
+    // let (constrained, was_constrained) =
+    //     apply_pointer_constraint(_loop, previous_location, _loop.inner.pointer_mut().motion);
+
+    // let new_location = if was_constrained {
+    //     constrained
+    // } else {
+    //     Point::new(
+    //         _loop.inner.pointer_mut().motion.x.clamp(0.0, pw),
+    //         _loop.inner.pointer_mut().motion.y.clamp(0.0, ph),
+    //     )
+    // };
+
+    // _loop.inner.pointer_mut().motion = new_location;
+
+    // // Additionally clamp by constraint.
+
+    // // Build a Transform from the physical cursor position. Transform
+    // // reverse-projects through scale + camera, storing as world.
+    // let cursor_phys =
+    //     Point::<f64, Physical>::from((_loop.inner.pointer_mut().motion.x, _loop.inner.pointer_mut().motion.y));
+
+    // let t: Transform = (cursor_phys, ctx).into();
+
+    // let position_screen = _loop.inner.pointer_mut().motion; // < -- NOTE: This variable is being used for calculating deltas for panning
+    // // Extract as raw world, since smithay clients work in world coords.
+    // let position_normalized = t.into_storage_point_f64(); // < -- NOTE: This variable is currently the variable sent to pointer motion
+
+    // Previous code end //
+
+    // 1. Extract geometry from compositor space (Exactly like your absolute arm)
+    // let compositor_output = _loop.inner.space_state().state.outputs().next().unwrap();
+    // let compositor_output_geometry = _loop
+    //     .state
+    //     .space
+    //     .state
+    //     .output_geometry(compositor_output)
+    //     .unwrap();
+
+    // let compositor_output_geometry_physical = _loop.inner.space_state().default_physical_precise();
+    // let compositor_output_geometry_logical = _loop.inner.space_state().default_logical();
+
+    // let compositor_output_geometry = _loop.inner.space_state().state.outputs().next().unwrap();
+    // let compositor_output_geometry_logical = _loop.inner.space_state().state.output_geometry(compositor_output_geometry).unwrap();
+
+    // 2. Calculate the new screen position using the hardware delta
+    // Note: You must add `pub pointer_location: smithay::utils::Point<f64, Logical>`
+    // to your `Loop` struct to accumulate this movement!
+    // let dt = event.delta();
+    // let mut position_screen = _loop.inner.pointer_mut().motion + dt;
+
+    // 3. Clamp to screen bounds so the cursor cannot leave the monitor
+    // let min_x = compositor_output_geometry_logical.loc.x as f64;
+    // let max_x = (compositor_output_geometry_logical.loc.x + compositor_output_geometry_logical.size.w) as f64;
+    // let min_y = compositor_output_geometry_logical.loc.y as f64;
+    // let max_y = (compositor_output_geometry_logical.loc.y + compositor_output_geometry_logical.size.h) as f64;
+
+    // It is better that this works logically like now.
+    // But, position_normalized performs space_to_world which is in turn:
+    // 1. does space_to_world
+    // position_screen.x = position_screen.x.clamp(min_x, max_x);
+    // position_screen.y = position_screen.y.clamp(min_y, max_y);
+
+    // Save the clamped position for the next frame's relative calculation
+    // _loop.inner.pointer_mut().motion = position_screen;
+
+    // 5. Normalize the cursor position based on camera state
+    // let position_normalized = translate::space_to_world(
+    //     &_loop.inner.camera_mut().transform,
+    //     compositor_output_geometry_logical.size.to_f64(),
+    //     position_screen,
+    //     _loop.inner.space_state().default_scale()
+    // );
+    // 4. Notify canvas of input to handle camera movement
+
+    // Separator / floating drag in progress → apply + move cursor, skip canvas.
+    // `position_screen` carries physical values under a Logical marker; re-tag.
+    let cursor_phys = Point::<f64, Physical>::from((position_screen.x, position_screen.y));
+    if world::viewport::interaction::interaction::update_separator(_loop.inner.output_views_mut(), cursor_phys)
+        || world::viewport::interaction::interaction::update_floating(_loop.inner.output_views_mut(), cursor_phys)
+    {
+        native_motion::relative::input_received_normalized::<I>(
+            event,
+            _loop,
+            position_normalized,
+            &position_screen,
+            (dt, dt_unaccelerated),
+            was_constrained_locked,
+        );
+        return;
+    }
+
+    // World input bus first (Pass-1), AFTER position_normalized + the
+    // pointer-constraint reconciliation: the systems receive the post-constraint
+    // world point (`position_normalized`) and the physical accumulator
+    // (`position_screen`) — exactly what the rim's canvas motion handler used.
+    {
+        let ev = slots::input::event::base::InputEvent::PointerMotion {
+            x: position_normalized.x,
+            y: position_normalized.y,
+            screen_x: position_screen.x,
+            screen_y: position_screen.y,
+            delta_x: dt.x,
+            delta_y: dt.y,
+        };
+        if crate::input::drive::drive::route(_loop, ev)
+            == slots::input::event::base::InputFlow::Consume
+        {
+            return;
+        }
+    }
+
+    let position_normalized = position_normalized;
+    // 6. Dispatch normalize event to your native pointer handler
+    // (Using the equivalent handler for PointerMotionEvent as you mentioned)
+    native_motion::relative::input_received_normalized::<I>(
+        event,
+        _loop,
+        position_normalized,
+        &position_screen,
+        (dt, dt_unaccelerated),
+        was_constrained_locked,
+    );
+}
+
+/// Whether a shader warp applies to this event.
+///
+/// compd: never. The pointer warp corrected for a user shader bundle's
+/// displacement (compositor.pipeline), which is cut, along with `pointer.warp`.
+fn warp_active(_state: &Loop) -> bool {
+    false
+}
+
+/// Correct a physical screen position through the active warp, and record the
+/// true one for the consumers that must not be corrected (the cursor sprite, the
+/// canvas solid box). Identity, and free, when the warp does not apply.
+///
+/// It publishes on BOTH paths. `None` is what tells those consumers the warp has
+/// stopped applying — a bundle switch, the picker, the lock — and without it they
+/// would go on correcting for a displacement nobody is drawing.
+/// Publish where the hand is, for `pointer_state`.
+///
+/// Screen UV, because this is the one place with the screen size in hand and the
+/// consumers do not share an extent — the worker renders per pane.
+///
+/// NOT inside `warp_screen`, which is where it started and where it was wrong.
+/// That function resolves a WARP, and the relative path only calls it when a warp
+/// is active — so on a udev session with no warping bundle loaded the pointer was
+/// never published at all, while winit (which is absolute, and calls `warp_screen`
+/// unconditionally) worked. Two behaviours from one input backend difference, with
+/// nothing in either path saying so. It is its own function now, called from both
+/// backends on every motion, whatever the warp is doing — and from the pen, which
+/// mirrors the absolute path rather than going through it.
+///
+/// Published BEFORE the warp is applied: `pointer.at` is where the hand is, which
+/// is what a shader drawing at the cursor wants. The displaced point is where the
+/// CONTENT under the hand came from, and a bundle that warps would otherwise drag
+/// its own cursor effect away from the hand by exactly the warp.
+pub(crate) fn publish_pointer(
+    ctx: &world::camera::transform::translate::transform::Context,
+    p: Point<f64, Physical>,
+) {
+    let (w, h) = ctx.screen_size_physical;
+    if w > 0.0 && h > 0.0 {
+        world::seat::pointer::publish::publish::set_position(p.x / w, p.y / h);
+    }
+}
+
+fn warp_screen(
+    state: &mut Loop,
+    ctx: &world::camera::transform::translate::transform::Context,
+    p: Point<f64, Physical>,
+) -> Point<f64, Physical> {
+    // compd: no shader warp exists (see `warp_active`), so the corrected
+    // position is the position.
+    let _ = (state, ctx);
+    world::seat::pointer::publish::publish::set_true_screen(None);
+    p
+}

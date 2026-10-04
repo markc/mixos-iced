@@ -1,0 +1,27 @@
+# config: where MixOS keeps its files (one rule for the etc, var, run and
+# share directories) and the strict-data loader every *.conf.mix reader
+# uses. It never depends on the Mix language: data goes through `strict`.
+[package]
+name = "config"
+description = "MixOS directory rules and strict-data config loading"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "config"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+# One `getuid(2)` call: root resolves the system directories, everyone
+# else the XDG ones.
+libc = "=0.2.189"
+strict = { path = "../strict" }

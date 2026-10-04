@@ -1,0 +1,228 @@
+-- layering_gate.mix — compd crate layering gate.
+-- version: 0.1.0
+--
+-- Purpose: map every workspace package to its layer from
+--   services/compd/layers.conf.mix
+--   and fail on any dependency edge that goes UP (from a lower layer to a
+--   higher one), and on any package of the table's component missing from
+--   the table ("unknown crate"). A table with `component: NAME` covers only
+--   packages whose [package.metadata.mixos] component is NAME. Same-layer edges are allowed. Reads `cargo metadata
+--   --format-version 1 --no-deps` (declared dependencies only: no resolution,
+--   no compilation, no network) or a pre-saved metadata JSON.
+--
+-- Usage:
+--   mix tools/layering_gate.mix (--manifest-path <Cargo.toml> | --metadata-file <json>)
+--       [--layers <conf>] [--allow-unlisted] [--include-dev] [--require]
+--       [--offline] [--locked] [--frozen]
+--     --manifest-path   workspace manifest; runs cargo metadata --no-deps.
+--     --metadata-file   pre-saved `cargo metadata --format-version 1` JSON
+--                       (with or without --no-deps).
+--     --layers          layer table (default: services/compd/layers.conf.mix
+--                       under the repo root, found from this script's directory).
+--     --allow-unlisted  warn instead of fail for workspace crates not in the
+--                       table; their edges are not checked.
+--     --include-dev     also check dev-dependency edges (default: normal+build;
+--                       cargo permits dev-dependency cycles).
+--     --require         fail when no listed crate is in the workspace yet.
+--     --offline/--locked/--frozen  passed through to cargo metadata.
+--
+-- Exit codes:
+--   0  clean, or nothing to check (no listed crate in the workspace, no --require)
+--   1  upward edge(s), unknown crate(s), or nothing to check with --require
+--   2  bad arguments, unreadable/invalid layer table, cargo metadata failed
+
+fn usage_die($msg)
+  eprint("layering_gate: " .. $msg)
+  eprint("usage: mix tools/layering_gate.mix (--manifest-path <Cargo.toml> | --metadata-file <json>) [--layers <conf>] [--allow-unlisted] [--include-dev] [--require] [--offline] [--locked] [--frozen]")
+  exit(2)
+end
+
+fn kind_label($k)
+  return $k ?? "normal"
+end
+
+-- ---- arguments ----
+$tools = dirname(realpath($0))
+$layers_path = dirname($tools) .. "/services/compd/layers.conf.mix"
+$manifest = nil
+$meta_file = nil
+$allow_unlisted = false
+$include_dev = false
+$require = false
+$passthrough = []
+$av = args()
+$i = 0
+while $i < len($av)
+  $a = $av[$i]
+  if $a == "--manifest-path" or $a == "--metadata-file" or $a == "--layers" then
+    if $i + 1 >= len($av) then
+      usage_die($a .. " needs a value")
+    end
+    $v = $av[$i + 1]
+    if $a == "--manifest-path" then
+      $manifest = $v
+    elif $a == "--metadata-file" then
+      $meta_file = $v
+    else
+      $layers_path = $v
+    end
+    $i = $i + 2
+    continue
+  elif $a == "--allow-unlisted" then
+    $allow_unlisted = true
+  elif $a == "--include-dev" then
+    $include_dev = true
+  elif $a == "--require" then
+    $require = true
+  elif $a == "--offline" or $a == "--locked" or $a == "--frozen" then
+    push($passthrough, $a)
+  elif $a == "-h" or $a == "--help" then
+    print("see the header of " .. $0 .. " for usage")
+    exit(0)
+  else
+    usage_die("unknown argument: " .. $a)
+  end
+  $i = $i + 1
+end
+if ($manifest == nil) == ($meta_file == nil) then
+  usage_die("give exactly one of --manifest-path or --metadata-file")
+end
+
+-- ---- layer table ----
+if !is_file($layers_path) then
+  usage_die("layer table not found: " .. $layers_path)
+end
+$conf = nil
+try
+  $conf = validate(load_data($layers_path), {layers: {type: "map"}, binary: {type: "string", nonblank: true}, effects_crates: {type: "list", items: {type: "string"}}, core_crates: {type: "list", items: {type: "string"}}})
+catch $msg
+  eprint("layering_gate: invalid layer table " .. $layers_path .. ": " .. $msg)
+  exit(2)
+end
+$layers = $conf.layers
+for each $k in keys($layers)
+  if type($layers[$k]) != "number" or floor($layers[$k]) != $layers[$k] or $layers[$k] < 0 then
+    eprint("layering_gate: layer for " .. $k .. " is not an integer: " .. to_string($layers[$k]))
+    exit(2)
+  end
+end
+
+-- ---- metadata ----
+$raw = nil
+if $meta_file != nil then
+  if !is_file($meta_file) then
+    usage_die("metadata file not found: " .. $meta_file)
+  end
+  $raw = read_file($meta_file)
+else
+  if !is_file($manifest) then
+    usage_die("manifest not found: " .. $manifest)
+  end
+  $argv = concat(["cargo", "metadata", "--format-version", "1", "--no-deps", "--manifest-path", $manifest], $passthrough)
+  $r = run_argv($argv, {timeout: 600, max_output: 536870912})
+  if !$r.ok or $r.stdout_truncated then
+    eprint("layering_gate: cargo metadata failed" .. if $r.stdout_truncated then " (stdout truncated)" else "" end)
+    eprint($r.stderr)
+    exit(2)
+  end
+  $raw = $r.stdout
+end
+$meta = nil
+try
+  $meta = json_parse($raw)
+catch $msg
+  eprint("layering_gate: metadata is not JSON: " .. $msg)
+  exit(2)
+end
+
+-- workspace packages by name
+$member_ids = {}
+for each $id in $meta.workspace_members ?? []
+  $member_ids[$id] = true
+end
+-- A table that names its component covers only that component's packages
+-- ([package.metadata.mixos] component); everything else in the workspace
+-- (shared libs, other components) sits outside it and is not checked here.
+$component = $conf.component ?? nil
+$ws = {}
+for each $p in $meta.packages ?? []
+  if $member_ids[$p.id] != nil then
+    $owner = (($p.metadata ?? {}).mixos ?? {}).component ?? nil
+    if $component == nil or $owner == $component then
+      $ws[$p.name] = $p
+    end
+  end
+end
+$names = sort(keys($ws))
+$listed = filter($names, fn($n) = $layers[$n] != nil)
+$unlisted = filter($names, fn($n) = $layers[$n] == nil)
+
+print("layering gate: " .. len($names) .. " workspace packages, " .. len($listed) .. " in the layer table, " .. len($unlisted) .. " unlisted")
+if len($listed) == 0 then
+  if $require then
+    eprint("FAIL: nothing to check — no crate from " .. $layers_path .. " is in this workspace (--require)")
+    exit(1)
+  end
+  print("nothing to check: no crate from the layer table is in this workspace yet")
+  exit(0)
+end
+
+-- ---- edges ----
+$up = []
+$to_unlisted = 0
+$checked = 0
+for each $n in $listed
+  $p = $ws[$n]
+  for each $d in $p.dependencies ?? []
+    if $ws[$d.name] == nil then
+      continue
+    end
+    if $d.kind == "dev" and !$include_dev then
+      continue
+    end
+    $tl = $layers[$d.name]
+    if $tl == nil then
+      $to_unlisted = $to_unlisted + 1
+      continue
+    end
+    $checked = $checked + 1
+    if $tl > $layers[$n] then
+      push($up, $n .. " (L" .. $layers[$n] .. ") -> " .. $d.name .. " (L" .. $tl .. ") [" .. kind_label($d.kind) .. "]")
+    end
+  end
+end
+
+$fail = false
+if len($up) > 0 then
+  $fail = true
+  print("")
+  print("FAIL: " .. len($up) .. " upward edge(s) (lower layer -> higher layer):")
+  for each $e in sort(unique($up))
+    print("  " .. $e)
+  end
+end
+if len($unlisted) > 0 then
+  print("")
+  if $allow_unlisted then
+    print("WARN: " .. len($unlisted) .. " workspace crate(s) not in the layer table (--allow-unlisted; edges to/from them not checked):")
+  else
+    $fail = true
+    print("FAIL: " .. len($unlisted) .. " unknown crate(s) (not in " .. $layers_path .. "):")
+  end
+  $shown = 0
+  for each $n in $unlisted
+    if $allow_unlisted and $shown >= 20 then
+      print("  … and " .. (len($unlisted) - $shown) .. " more")
+      break
+    end
+    print("  " .. $n)
+    $shown = $shown + 1
+  end
+end
+print("")
+print("checked " .. $checked .. " edge(s) between listed crates" .. if $to_unlisted > 0 then "; " .. $to_unlisted .. " edge(s) from listed to unlisted crates not checked" else "" end .. if $include_dev then " (dev edges included)" else " (normal+build)" end)
+if $fail then
+  exit(1)
+end
+print("OK: layering clean")
+exit(0)

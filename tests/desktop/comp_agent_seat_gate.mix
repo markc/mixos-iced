@@ -1,0 +1,314 @@
+#!/usr/bin/env mix
+-- version: 0.3.0
+-- Two-seat input/idle gate: a private nested compd on its own headless
+-- weston host (nested_host_lib), one probe client.
+--
+--   mix tests/desktop/comp_agent_seat_gate.mix [--bin PATH] --config-file PATH [--probe PATH] [--seconds N] [--json]
+--
+-- --seconds applies to EACH arm (default 300). Requires testkit-input-probe
+-- with --seats (both-seat ext-idle-notify observation), so it needs
+-- ext-idle-notify-v1 per seat in the compositor.
+-- --self-test checks the verdict predicates and deliberate false evidence;
+-- it does not replace either live arm. No sleep in this gate is below 1 s.
+-- There is no --host arm (a live machine's compositor over the mesh) and no
+-- concurrency scan: the headless host forwards no live human input, so the
+-- human clock is quiet by construction.
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+$OPT = {seconds: 300, json: false, host: "", bin: "", probe: "", "config-file": "",
+  self_test: false, software: false, env: {}}
+$a = args()
+$i = 0
+while $i < len($a)
+  $arg = $a[$i]
+  if $arg == "--json" then
+    $OPT.json = true
+  elif $arg == "--self-test" then
+    $OPT.self_test = true
+  elif $arg == "--software" then
+    $OPT.software = true
+  elif $arg == "--env" and $i + 1 < len($a) and contains($a[$i + 1], "=") then
+    $i = $i + 1
+    $kv = split_once($a[$i], "=")
+    $OPT.env[$kv[0]] = $kv[1]
+  elif contains(["--seconds", "--bin", "--probe", "--config-file"], $arg) and $i + 1 < len($a) then
+    $i = $i + 1
+    $OPT[replace($arg, "--", "")] = $a[$i]
+  elif $arg == "--help" then
+    print("usage: comp_agent_seat_gate.mix [--bin PATH] --config-file PATH [--probe PATH] [--seconds N>=8] [--env NAME=VALUE ...] [--software] [--json] [--self-test]")
+    exit(0)
+  else
+    print(json_encode({ok: false, error: "unknown/incomplete argument", argument: $arg}))
+    exit(1)
+  end
+  $i = $i + 1
+end
+
+-- Seat names as compd advertises them: the human seat and the agent seat.
+$SEATS = {human: "seat0", agent: "agent"}
+
+$REPORT = {ok: true, assertions: [], compositor: "compd"}
+fn check($name, $ok, $detail)
+  $REPORT.assertions = push($REPORT.assertions, {name: $name, ok: $ok, detail: $detail})
+  if not $ok then $REPORT.ok = false end
+  if not $OPT.json then print(($ok ? "PASS " : "FAIL ") .. $name .. " " .. json_encode($detail)) end
+  return $ok
+end
+fn demand($name, $ok, $detail)
+  if not check($name, $ok, $detail) then raise("AGENT_SEAT_GATE", $name) end
+end
+fn finish()
+  if $OPT.json then
+    print(json_encode($REPORT))
+  else
+    print(($REPORT.ok ? "PASS" : "FAIL") .. " comp_agent_seat_gate")
+  end
+  $CLEANUP.ok = $REPORT.ok
+  exit($REPORT.ok ? 0 : 1)
+end
+fn binary($name, $override, $dirs)
+  if $override != "" then
+    demand($name .. ".path", is_file($override), $override)
+    return $override
+  end
+  return $n.binary($name, "", $dirs)
+end
+
+-- Read only complete flushed lines, so an in-progress write cannot move an
+-- arm boundary past an event that has not yet been observed.
+fn log_lines($path)
+  if not is_file($path) then return [] end
+  $parts = split(read_file($path), "\n")
+  return slice($parts, 0, len($parts) - 1)
+end
+fn seat_counts($lines, $name)
+  $prefix = "PROBE seat " .. json_encode($name) .. " "
+  $out = {idled: 0, resumed: 0, presses: 0, releases: 0, removed: 0}
+  for each $line in $lines
+    if starts_with($line, $prefix) then
+      $event = slice($line, len($prefix))
+      if $event == "idled" then $out.idled = $out.idled + 1 end
+      if $event == "resumed" then $out.resumed = $out.resumed + 1 end
+      if $event == "removed" then $out.removed = $out.removed + 1 end
+      if starts_with($event, "key ") then
+        $parts = split($event, " ")
+        if len($parts) == 3 and $parts[2] == "1" then $out.presses = $out.presses + 1 end
+        if len($parts) == 3 and $parts[2] == "0" then $out.releases = $out.releases + 1 end
+      end
+    end
+  end
+  return $out
+end
+fn agent_checks($lines, $before, $after, $sent)
+  $h = seat_counts($lines, $SEATS.human)
+  $a = seat_counts($lines, $SEATS.agent)
+  return {
+    both_idled: $h.idled > 0 and $a.idled > 0,
+    neither_resumed: $h.resumed == 0 and $a.resumed == 0,
+    human_clock_unchanged: $before == $after.seats.human.last_input_us,
+    agent_origin: $after.last_origin == "agent",
+    delivered: $sent > 0 and $a.presses == $sent and $a.releases == $sent and $h.presses == 0 and $h.releases == 0,
+    seats_survived: $h.removed == 0 and $a.removed == 0
+  }
+end
+fn human_checks($lines, $before, $after, $sent)
+  $h = seat_counts($lines, $SEATS.human)
+  $a = seat_counts($lines, $SEATS.agent)
+  return {
+    both_resumed: $h.resumed == 1 and $a.resumed == 1,
+    neither_idled: $h.idled == 0 and $a.idled == 0,
+    human_clock_moved: $after.seats.human.last_input_us != nil and $after.seats.human.last_input_us > $before,
+    human_origin: $after.last_origin == "human",
+    delivered: $sent > 0 and $h.presses == $sent and $h.releases == $sent and $a.presses == 0 and $a.releases == 0,
+    seats_survived: $h.removed == 0 and $a.removed == 0
+  }
+end
+fn all_true($checks)
+  for each $v in values($checks)
+    if not $v then return false end
+  end
+  return true
+end
+fn report_checks($arm, $checks)
+  for each $name in sort(keys($checks))
+    check($arm .. "." .. $name, $checks[$name], {})
+  end
+end
+
+if $OPT.self_test then
+  $agent = ["PROBE seat \"" .. $SEATS.human .. "\" idled", "PROBE seat \"" .. $SEATS.agent .. "\" idled",
+    "PROBE seat \"" .. $SEATS.agent .. "\" key 30 1", "PROBE seat \"" .. $SEATS.agent .. "\" key 30 0"]
+  $human = ["PROBE seat \"" .. $SEATS.human .. "\" resumed", "PROBE seat \"" .. $SEATS.agent .. "\" resumed",
+    "PROBE seat \"" .. $SEATS.human .. "\" key 30 1", "PROBE seat \"" .. $SEATS.human .. "\" key 30 0"]
+  $as = {seats: {human: {last_input_us: 100}}, last_origin: "agent"}
+  $hs = {seats: {human: {last_input_us: 200}}, last_origin: "human"}
+  check("self-test.agent-positive", all_true(agent_checks($agent, 100, $as, 1)), {})
+  check("self-test.human-positive", all_true(human_checks($human, 100, $hs, 1)), {})
+  check("self-test.human-fails-agent-predicate", not all_true(agent_checks($human, 100, $hs, 1)), {})
+  check("self-test.missing-idle-fails", not all_true(agent_checks(slice($agent, 1), 100, $as, 1)), {})
+  check("self-test.moved-human-clock-fails", not all_true(agent_checks($agent, 99, $as, 1)), {})
+  check("self-test.stalled-observer-fails", not all_true(human_checks(slice($human, 0, 2), 100, $hs, 1)), {})
+  check("self-test.human-idled-fails", not all_true(human_checks(concat($human, ["PROBE seat \"" .. $SEATS.agent .. "\" idled"]), 100, $hs, 1)), {})
+  finish()
+end
+
+$RUN = {session: nil, probe_pid: nil, target: "", window: nil, log: "", passthrough: nil}
+fn call($verb, $payload)
+  $target = $RUN.target
+  $body = json_encode($payload)
+  send $target $verb body=$body timeout=10
+  $r = $reply ?? $result
+  if type($r) == "string" and starts_with($r, "{") then $r = json_parse($r) end
+  return {rc: $rc, result: $r}
+end
+fn must($verb, $payload)
+  $r = call($verb, $payload)
+  if $r.rc != 0 then raise("BUS", $verb .. ": " .. json_encode($r)) end
+  return $r.result
+end
+fn input_snapshot()
+  $r = must("comp.props.get", {path: "input"})
+  if $r.seats == nil or $r.seats.human == nil or $r.seats.agent == nil then
+    raise("PROPS", "input.seats.human/agent missing: " .. json_encode($r))
+  end
+  return $r
+end
+fn key($seat)
+  $r = must("comp.input.key", {seat: $seat, window: $RUN.window, key: "a", action: "tap", raise: false})
+  if $r.seat != $seat then raise("SEAT", "reply named wrong seat: " .. json_encode($r)) end
+end
+fn await_line($wanted, $seconds)
+  $end = monotonic() + $seconds
+  while monotonic() < $end
+    if contains(log_lines($RUN.log), $wanted) then return true end
+    sleep(1)
+  end
+  return contains(log_lines($RUN.log), $wanted)
+end
+fn drive($seat, $seconds)
+  $count = 0
+  $end = monotonic() + $seconds
+  while monotonic() < $end
+    key($seat)
+    $count = $count + 1
+    sleep(1)
+  end
+  return $count
+end
+
+try
+  $seconds = to_number($OPT.seconds)
+  demand("duration", $seconds >= 8 and $seconds == floor($seconds), {seconds: $seconds, minimum: 8})
+  $REPORT.seconds_per_arm = $seconds
+  $probe = binary("testkit-input-probe", $OPT.probe, $n.probe_dirs($OPT.bin))
+  demand("probe-binary", $probe != "", $probe)
+  check("probe-version", true, $n.probe_version($probe))
+  $comp = binary("compd", $OPT.bin, ["/opt/compd/bin"])
+  demand("compositor-binary", $comp != "", $comp)
+  $CLEANUP.run = $n.new_run("/tmp/compd-seat-" .. to_string(pid()))
+  $RUN.session = $n.start({bin: $comp, tag: "seat", run: $CLEANUP.run, config: $OPT["config-file"],
+    env: $OPT.env, software: $OPT.software})
+  $RUN.target = $RUN.session.service
+  $runtime = $RUN.session.runtime
+  $display = $RUN.session.socket
+  $dir = $runtime .. "/agent-seat-gate"
+  mkdir($dir)
+  $RUN.log = $dir .. "/probe.log"
+  $REPORT.evidence = $dir
+  $REPORT.target = $RUN.target
+  $ready = false
+  $until = monotonic() + 30
+  while monotonic() < $until
+    $ping = call("comp.ping", {})
+    if $ping.rc == 0 then $ready = true; break end
+    sleep(1)
+  end
+  demand("compositor-ready", $ready, $RUN.target)
+  $initial = input_snapshot()
+  if $initial.host != nil and $initial.host.passthrough != nil then
+    $RUN.passthrough = $initial.host.passthrough
+    must("comp.props.set", {path: "input.host.passthrough", value: false})
+  end
+  $app = "dev.mixos.AgentSeatGate." .. to_string(pid())
+  $RUN.probe_pid = spawn([$probe, "--seats", "--idle-timeout-ms", "3000", "--app-id", $app,
+    "--seconds", to_string(2 * $seconds + 120)],
+    {env: {WAYLAND_DISPLAY: $display, XDG_RUNTIME_DIR: $runtime}, die_with_parent: true,
+      stdout: {file: $RUN.log}, stderr: {file: $RUN.log .. ".err"}})
+  $synced = await_line("PROBE seats_ready", 15)
+  -- A probe without --seats dies on its argv: say so, rather than report a
+  -- sync that could never happen.
+  $perr = read_file($RUN.log .. ".err") ?? ""
+  demand("probe-supports-seats", not contains($perr, "unknown argument"),
+    {probe: $probe, stderr: trim($perr), fix: "install a testkit-input-probe that supports --seats"})
+  demand("probe-setup-sync", $synced, {log: $RUN.log, stderr: trim($perr)})
+  for each $seat in [$SEATS.human, $SEATS.agent]
+    demand("bound." .. $seat, contains(log_lines($RUN.log), "PROBE seat " .. json_encode($seat) ..
+      " bound keyboard=1 pointer=1 idle_timeout_ms=3000"), {})
+  end
+  $w = must("comp.window.wait", {match: {app_id: $app}, until: "mapped", timeout_ms: 8000})
+  $RUN.window = {id: $w.window.id, generation: $w.window.generation}
+  -- Reset both notifications before the baseline; the agent arm must earn
+  -- new idled events, not reuse something that happened during setup.
+  key("human")
+  sleep(1)
+  demand("priming-key-delivered", seat_counts(log_lines($RUN.log), $SEATS.human).releases == 1, {})
+  $baseline = input_snapshot()
+  demand("human-clock-present", $baseline.seats.human.last_input_us != nil, $baseline.seats.human)
+  $agent_start = len(log_lines($RUN.log))
+  $sent_agent = drive("agent", $seconds)
+  $after_agent = input_snapshot()
+  $agent_lines = log_lines($RUN.log)
+  $ac = agent_checks(slice($agent_lines, $agent_start), $baseline.seats.human.last_input_us, $after_agent, $sent_agent)
+  report_checks("agent", $ac)
+  $REPORT.agent = {sent: $sent_agent, before: $baseline, after: $after_agent}
+  -- The control uses the same client and notification objects, which the
+  -- agent arm must have left idle. A human key must resume BOTH objects.
+  $human_start = len($agent_lines)
+  $sent_human = drive("human", $seconds)
+  $after_human = input_snapshot()
+  must("comp.window.close", $RUN.window)
+  demand("probe-final-sync", await_line("PROBE seats_done", 10), $RUN.log)
+  demand("probe-clean-exit-marker", await_line("PROBE exit", 5), $RUN.log)
+  $human_lines = slice(log_lines($RUN.log), $human_start)
+  $hc = human_checks($human_lines, $after_agent.seats.human.last_input_us, $after_human, $sent_human)
+  report_checks("human-control", $hc)
+  check("human-control.fails-agent-predicate", not all_true(agent_checks($human_lines,
+    $after_agent.seats.human.last_input_us, $after_human, $sent_human)), {})
+  $REPORT.human = {sent: $sent_human, before: $after_agent, after: $after_human}
+catch $e
+  check("runner", false, to_string($e))
+finally
+  if $RUN.window != nil then
+    for each $seat in ["agent", "human"]
+      $r = call("comp.input.release_all", {seat: $seat})
+      check("cleanup." .. $seat, $r.rc == 0, $r)
+    end
+  end
+  if $RUN.probe_pid != nil then $_ = kill($RUN.probe_pid) end
+  if $RUN.passthrough != nil then
+    $r = call("comp.props.set", {path: "input.host.passthrough", value: $RUN.passthrough})
+    check("cleanup.host-passthrough", $r.rc == 0, $r)
+  end
+  if $RUN.session != nil then
+    for each $p in $RUN.session.pids
+      if exists("/proc/" .. to_string($p)) then
+        $_ = kill($p, 15)
+      end
+    end
+    sleep(1)
+    $left = []
+    for each $p in $RUN.session.pids
+      if exists("/proc/" .. to_string($p)) then
+        $_ = kill($p, 9)
+        push($left, $p)
+      end
+    end
+    check("cleanup.nested", len($left) == 0, {killed_after_term: $left, logs: $RUN.session.runtime})
+  end
+end
+finish()
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

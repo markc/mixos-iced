@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CK:</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101828; color: #f4f6fb; font-family: sans-serif; }
+  textarea { width: 90%; height: 60%; margin: 5%; font-size: 24px; }
+</style>
+</head>
+<body>
+<!-- The client checklist gate's page: whatever the text area holds is
+     mirrored into the title, so the compositor's window row (its title)
+     shows what the client actually received. -->
+<textarea id="t" autofocus></textarea>
+<script>
+  const t = document.getElementById("t");
+  const mirror = () => { document.title = "CK:" + t.value; };
+  t.addEventListener("input", mirror);
+  window.addEventListener("load", () => { t.focus(); mirror(); });
+</script>
+</body>
+</html>

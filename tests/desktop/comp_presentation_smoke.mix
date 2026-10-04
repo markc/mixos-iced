@@ -1,0 +1,227 @@
+#!/usr/bin/env mix
+-- version: 0.2.0
+-- comp_presentation_smoke.mix — the nested `wp_presentation` gates against a
+-- PRIVATE nested compd on nested_host_lib's headless weston host.
+--
+-- Gates:
+--   g1      the public contract: the probe commits --frames frames (in
+--           --burst-sized bursts) and asserts the nested values itself —
+--           tv on CLOCK_MONOTONIC and inside its own window, never before
+--           the commit, flags/seq/refresh all zero, sync_output seen, and a
+--           superseded commit never presented late.
+--   g1plus  the same run held open (--hold-s), then the compositor's own
+--           numbers read back over the Bus: `comp.window.stats` presented
+--           within one frame of the probe's count, `missed` null (nested
+--           has no vblank grid), and the presentation leaf marked volatile
+--           by `describe`.
+--
+-- There is no g1s arm: an in-compositor content-source probe would test
+-- compd internals, not behaviour. compd's `sources.*` are judged by
+-- scene_gate S6 instead.
+--
+--   mix tests/desktop/comp_presentation_smoke.mix [--bin PATH] --config-file PATH [--gate g1|g1plus] [--frames N] [--burst N] [--hold-s N]
+--
+-- Defaults: compd /opt/compd/bin/compd, the probe testkit-presentation-probe
+-- from compd's bin dir (beside a compd --bin, then /opt/compd/bin); its path
+-- and --version are printed.
+
+$n = require("nested_host_lib.mix")
+$CLEANUP = {ok: false, run: nil}
+try
+
+$USAGE = "usage: comp_presentation_smoke.mix [--bin PATH] --config-file PATH [--probe PATH] [--gate g1|g1plus] [--frames N] [--burst N] [--hold-s N] [--env NAME=VALUE ...] [--software]"
+
+fn usage($message)
+  print("comp_presentation_smoke: " .. $message)
+  print($USAGE)
+  exit(2)
+end
+
+fn positive_number($flag, $value, $max)
+  $number = to_number($value)
+  if $number == nil or $number < 1 or $number > $max then
+    usage($flag .. " must be 1.." .. to_string($max))
+  end
+  return $number
+end
+
+-- `key=value` from the probe's result line, as a number.
+fn result_field($line, $key)
+  for each $part in split($line, " ")
+    if starts_with($part, $key .. "=") then
+      return to_number(after($part, "="))
+    end
+  end
+  return nil
+end
+
+$KIND = "compd"
+$CONFIG = ""
+$ENV = {}
+$SOFTWARE = false
+$gate = "g1"
+$frames = 300
+$burst = 1
+$hold = nil
+$comp_src = ""
+$probe_src = ""
+$argv = args()
+$index = 0
+while $index < len($argv)
+  $flag = $argv[$index]
+  if $flag == "--software" then
+    $SOFTWARE = true
+    $index = $index + 1
+    continue
+  end
+  if $index + 1 >= len($argv) then
+    usage($flag .. " needs a value")
+  end
+  $value = $argv[$index + 1]
+  if $flag == "--bin" then
+    $comp_src = $value
+  elif $flag == "--config-file" then
+    $CONFIG = $value
+  elif $flag == "--probe" then
+    $probe_src = $value
+  elif $flag == "--env" and contains($value, "=") then
+    $kv = split_once($value, "=")
+    $ENV[$kv[0]] = $kv[1]
+  elif $flag == "--gate" then
+    $gate = $value
+  elif $flag == "--frames" then
+    $frames = positive_number($flag, $value, 6000)
+  elif $flag == "--burst" then
+    $burst = positive_number($flag, $value, 16)
+  elif $flag == "--hold-s" then
+    $hold = positive_number($flag, $value, 120)
+  else
+    usage("unknown argument " .. $flag)
+  end
+  $index = $index + 2
+end
+if $gate != "g1" and $gate != "g1plus" then
+  usage("--gate must be g1 or g1plus")
+end
+if $hold == nil then
+  $hold = 0
+  if $gate == "g1plus" then
+    $hold = 8
+  end
+end
+$comp_bin = $n.require_binary("compd", $comp_src, ["/opt/compd/bin"])
+$probe_bin = $n.require_probe("testkit-presentation-probe", $probe_src, $comp_bin)
+-- The probe holds the window open for the Bus reads.
+$probe_timeout = 90 + $hold
+
+print("presentation smoke [" .. $KIND .. "]: gate " .. $gate)
+print("  compositor: " .. $comp_bin)
+print("  probe:      " .. $probe_bin)
+
+$failures = []
+$probe_line = ""
+$CLEANUP.run = $n.new_run("/tmp/" .. $KIND .. "-pres-" .. to_string(pid()))
+$session = $n.start({bin: $comp_bin, tag: "pres", run: $CLEANUP.run, config: $CONFIG, env: $ENV, software: $SOFTWARE})
+$probe_log = $session["runtime"] .. "/probe.log"
+try
+  if not $n.wait_ready($session, 30) then
+    raise("NESTED_NOT_READY", "the nested compositor never answered its Bus port; see " .. $session["log"])
+  end
+  -- Let the first frames settle before measuring a steady client.
+  sleep(2)
+  $probe_argv = [
+    $probe_bin, "--frames", to_string($frames), "--burst", to_string($burst),
+    "--timeout-s", to_string($probe_timeout)
+  ]
+  if $hold > 0 then
+    $probe_argv = concat($probe_argv, ["--hold-s", to_string($hold)])
+  end
+  $probe_pid = spawn($probe_argv, {
+    env: {WAYLAND_DISPLAY: $session["socket"], XDG_RUNTIME_DIR: $session["runtime"]},
+    stdout: {file: $probe_log},
+    stderr: "stdout"
+  })
+  if $n.await_log($probe_log, "COMPD_PRESENTATION_PROBE ", $probe_timeout + 30) then
+    for each $line in $n.log_lines($probe_log)
+      if starts_with(trim($line), "COMPD_PRESENTATION_PROBE ") then
+        $probe_line = trim($line)
+      end
+    end
+  end
+  if $probe_line == "" then
+    push($failures, "the probe printed no result line; see " .. $probe_log)
+  else
+    print("  " .. $probe_line)
+    if not contains($probe_line, "COMPD_PRESENTATION_PROBE PASS") then
+      push($failures, "the probe failed its own assertions")
+    end
+  end
+
+  if $gate == "g1plus" and $probe_line != "" then
+    -- The window is still up (--hold-s): read the compositor's own numbers.
+    $windows = $n.call($session["service"], "comp.props.get", {path: "windows"})
+    $row = nil
+    if $windows["rc"] == 0 and type($windows["result"]) == "map" then
+      for each $key in keys($windows["result"])
+        if $windows["result"][$key]["app_id"] == "dev.mixos.PresentationProbe" then
+          $row = $windows["result"][$key]
+        end
+      end
+    end
+    if $row == nil then
+      push($failures, "the probe's window is not in comp.props: " .. json_encode($windows["result"]))
+    else
+      $stats = $n.call($session["service"], "comp.window.stats",
+        {id: $row["id"], generation: $row["generation"], samples: 0})
+      $describe = $n.call($session["service"], "comp.props.describe",
+        {path: "windows.s" .. to_string($row["id"]) .. ".presentation.missed"})
+      print("  stats rc=" .. to_string($stats["rc"]) .. " " .. json_encode($stats["result"]))
+      if $stats["rc"] != 0 then
+        push($failures, "comp.window.stats refused")
+      else
+        $reported = $stats["result"]["presented"]
+        $seen = result_field($probe_line, "presented")
+        $difference = $reported - $seen
+        print("  compositor presented=" .. to_string($reported) .. " probe presented=" ..
+          to_string($seen) .. " difference=" .. to_string($difference))
+        if $difference > 1 or $difference < -1 then
+          push($failures, "the compositor and the probe disagree by more than one frame")
+        end
+        if $stats["result"]["missed"] != nil then
+          push($failures, "nested missed must be null, not " ..
+            to_string($stats["result"]["missed"]))
+        end
+      end
+      if $describe["rc"] != 0 or type($describe["result"]) != "map" or $describe["result"]["volatile"] != true then
+        push($failures, "describe does not mark the presentation leaf volatile")
+      end
+    end
+  end
+
+  $exit_deadline = time() + $hold + 30
+  while time() < $exit_deadline and process_alive($probe_pid)
+    sleep(0.25)
+  end
+  if process_alive($probe_pid) then
+    push($failures, "the probe did not exit")
+  end
+catch $error
+  print("  ABORTED: " .. to_string($error))
+  push($failures, "aborted: " .. to_string($error))
+finally
+  $n.stop($session)
+end
+
+print("")
+if len($failures) == 0 then
+  print("PASS comp_presentation_smoke [" .. $KIND .. "] " .. $gate)
+  $CLEANUP.ok = true
+else
+  print("  compositor log: " .. $session["log"])
+  print("  probe log:      " .. $probe_log)
+  print("FAIL comp_presentation_smoke [" .. $KIND .. "] " .. $gate .. ": " .. join($failures, "; "))
+  exit(1)
+end
+finally
+  $n.finish_run($CLEANUP.run, $CLEANUP.ok)
+end

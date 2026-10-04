@@ -1,0 +1,31 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+[dependencies]
+dispatcher = { workspace = true }
+graphics = { workspace = true }
+# FrameSource: the per-frame report content sources (src/source.rs) hand the presentation ledger.
+ledger = { workspace = true }
+model = { workspace = true }
+bitflags = { workspace = true }
+iced_core = { workspace = true }
+iced_graphics = { workspace = true }
+iced_runtime = { workspace = true }
+iced_wgpu = { workspace = true }
+smithay = { workspace = true }
+thiserror = { workspace = true }
+wgpu = { workspace = true }

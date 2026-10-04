@@ -1,0 +1,27 @@
+[package]
+name = "comp-model"
+description = "The comp.* Bus wire data model for compd: verbs, topics, requests, replies and the props tree (no transport)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[features]
+# The `xwayland.*` props subtree and its writable leaf (on by default: the
+# frozen wire includes it).
+default = ["xwayland"]
+xwayland = []
+
+[dependencies]
+surfaces.workspace = true
+ledger.workspace = true
+serde.workspace = true
+serde_json.workspace = true

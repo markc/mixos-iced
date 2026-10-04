@@ -1,0 +1,184 @@
+# MixOS — the whole manual
+
+> MixOS is an agent-operable computing system: a Linux userland where every app is a service, every service speaks one message bus, and Mix is the shell. It is tried as a small signed systemd-nspawn image that runs on its own virtual terminal beside the user's existing desktop, at native GPU, input and audio speed.
+
+Generated from the Markdown pages of https://mixos.dev/ in sidebar order. Index: https://mixos.dev/llms.txt
+
+---
+
+<!-- page: https://mixos.dev/try/ (source: https://mixos.dev/try.md) -->
+
+# Try it beside your desktop
+
+Keep the Linux desktop you already use. MixOS runs next to it on another
+virtual terminal (VT): your desktop stays on VT1, MixOS takes another VT, and
+you flip between them with **Ctrl+Alt+F1** and **Ctrl+Alt+F5**. Both keep
+running.
+
+This is how MixOS is meant to be tried, and it shapes the whole design.
+
+> **Status:** the mechanism runs daily on the developers' machines. The
+> download and the one-command installer are being built. This page
+> describes what they will do.
+
+## Why not a virtual machine?
+
+VirtualBox, virt-manager, Incus and Proxmox show a guest desktop in a window,
+through a virtual GPU and emulated or remote-display input. You can feel that,
+and a desktop is exactly the kind of software where you notice. Getting native
+graphics out of a VM means passing through a second GPU, which most people
+can't do.
+
+On its own VT, MixOS drives the **real GPU, keyboard, mouse and speakers**.
+There is no hypervisor, virtual GPU, remote-display protocol or second kernel
+in the way. What you try is what you would get.
+
+## How it works
+
+Three things already in the Linux kernel and systemd do the work:
+
+1. **Virtual terminals.** Each VT is a separate console. When you switch, the
+   kernel asks the current owner to let go before handing over.
+2. **GPU and input handover.** Only one program can drive the display at a
+   time. Your desktop's compositor is managed by `systemd-logind` on VT1;
+   MixOS's compositor is managed by `seatd` on its own VT. Each lets go of the
+   display and input devices when its VT goes to the background, and takes
+   them back when it returns.
+3. **Separate sessions.** MixOS keeps its own runtime directory and its own
+   session bus, so nothing it runs collides with your desktop's.
+
+The container is what makes it a download: `systemd-nspawn` runs MixOS as a
+self-contained machine, `importctl` fetches and verifies the signed image, and
+`machinectl` starts, stops and removes it.
+
+## What you need
+
+- A mainstream Linux distribution running systemd: Ubuntu, Fedora, Debian,
+  Arch, openSUSE or Mint, among others.
+- `systemd-nspawn`. Debian-family systems need the `systemd-container`
+  package; most others already have it.
+- Intel or AMD graphics. NVIDIA's proprietary driver needs extra work and
+  comes later.
+- `sudo`, for the one install command.
+
+## What the installer will do
+
+1. Check your system: systemd and kernel versions, GPU vendor, and a free VT.
+2. Fetch the signed MixOS image and verify its signature.
+3. Describe the machine in one small configuration file: which GPU, which VT,
+   your audio, and a separate home directory with chosen folders shared.
+4. Reserve the VT so no login prompt starts there.
+5. Start MixOS and switch to its VT. If MixOS doesn't come up in time, it
+   switches you back to VT1 automatically.
+
+Removal undoes every step and leaves your system exactly as it was.
+
+## Things to know first
+
+- **It is not a sandbox.** MixOS gets your real input devices and GPU, so
+  trust it as you would any package you install as root.
+- **Your desktop keeps running** in the background, and so does everything in
+  it. While MixOS is in front, the installer stops your desktop from deciding
+  you have gone idle and suspending the machine.
+- **Apps can't be in both places at once.** Firefox and Thunderbird already
+  open on one desktop refuse to open the same profile on the other. That is
+  their profile lock protecting your data, not a fault.
+- **If a screen ever goes black,** SSH in from another machine, or use
+  Alt+SysRq+R followed by Ctrl+Alt+F1 where your kernel allows it.
+
+## For agents
+
+Every page on this site is static HTML, and also published as Markdown: this
+page is [`/try.md`](/try.md). [`/llms.txt`](/llms.txt) indexes the whole
+manual and [`/llms-full.txt`](/llms-full.txt) is all of it in one file.
+
+---
+
+<!-- page: https://mixos.dev/decisions/2026-10-04-source-layout/ (source: https://mixos.dev/decisions/2026-10-04-source-layout.md) -->
+
+# Decision — source layout and naming
+
+**Accepted 2026-10-04.** The binding rules are in the repository's
+[`AGENTS.md`](https://github.com/markc/mixos/blob/main/AGENTS.md). This page records why.
+
+## The decision
+
+- **The top level is classified by kind of artefact, one axis only:**
+  `apps/`, `services/`, `cli/`, `libs/` and `session/`, beside `tests/`,
+  `tools/`, `etc/`, `share/`, `docs/` and `vendor/`. Layer and domain are
+  metadata checked by gates, never directories.
+- **Components are self-contained.** A component's crates, systemd units, Mix
+  scripts, assets, translations and tests live in its one directory. Private
+  crates nest in the component's own `crates/`.
+- **Plain names:** no brand or layer prefixes. Names are unique across the
+  resolved dependency graph and never reused once retired.
+- **Promotion to `libs/` is a reviewed decision, not an automatic move.**
+- **The Mix language is two packages:** the embeddable library `mix` in
+  `libs/mix`, and the shell `mix-shell` in `cli/mix-shell`, which builds the
+  `mix` binary. Daemons embed the interpreter without linking the shell.
+
+## Evidence: how comparable projects do it
+
+Checked against each project's repository on 2026-10-04.
+
+| Project | Shape | Naming | Why |
+|---|---|---|---|
+| Zed | one workspace, flat `crates/` (249 crates) | plain | internal crates, never published |
+| rust-analyzer | flat `crates/` (35) | plain; renamed when published | same |
+| Servo, Deno | `components/`, `ext/` | plain | split by role |
+| Bevy, uv, nushell | flat `crates/` | prefixed | every crate published to crates.io |
+| Haiku | `src/{apps,kits,servers,libs,bin,…}` | plain | by kind of artefact |
+| SerenityOS | `Userland/{Applications,Libraries,Services,Utilities,…}` | `Lib*` | by kind of artefact |
+
+Two lessons:
+
+- **Prefixes appear where crates are published** into a global namespace.
+  Unpublished workspaces use plain names successfully at very large scale.
+- **Operating-system projects divide by kind of artefact,** the most stable
+  classifier: an app seldom becomes a library.
+
+## What was weighed
+
+- **Layer + kind + domain at one level** (the earlier plan: `bus/`, `mix/`,
+  `core/`, `services/`, `desktop/`). Rejected: three axes compete at one
+  level. A desktop daemon could plausibly sit in either of two places, and a
+  crate that changes layer has to move.
+- **One flat `crates/` directory** (Zed, rust-analyzer), with per-package
+  co-location. Seriously considered: it gives fully stable paths, because
+  nothing about classification is encoded in a path. Not chosen. With
+  hundreds of siblings, a large compositor and a tiny parser look identical;
+  the kind of a component (and therefore its lifecycle: units, man pages,
+  install rules) would no longer be visible; and the case for stable paths
+  is weaker than it looks, because an app becoming a library is exactly
+  the kind of change that deserves a deliberate move and review.
+- **Domain-first** (`mail/`, `media/`, `mesh/`…). Rejected: domains blur and
+  multiply, and cross-domain code has no home.
+- **One repository per component**. Rejected: MixOS keeps one
+  workspace so one dependency graph can be gated, shared code can be
+  consolidated, and changes across components are atomic. Its benefits
+  (per-package distribution, separate teams) do not apply here.
+
+## Review
+
+The proposal was reviewed cold by four model families: Codex, GLM, DeepSeek
+and, as tie-breaker, Gemini.
+
+- **Kind-first layout:** three of four. The dissent preferred the flat
+  directory for path stability. That argument is recorded above.
+- **What all reviewers converged on** reshaped the rules:
+  - artefacts co-located with their component;
+  - `vendor/` shared at the top level;
+  - no automatic promotion;
+  - Mix out of `cli/` and split into two packages;
+  - layers derived from dependencies and cross-checked;
+  - removal as a reviewed operation;
+  - a Bus verb registry and a name-retirement registry;
+  - licence headers in the REUSE format, checked without Python;
+  - Fluent for translations;
+  - a test-tier taxonomy;
+  - public decision records like this one.
+- **Considered and declined:**
+  - top-level `sys/`, `init/`, `hw/` and `patches/`;
+  - a separate test workspace.
+  FFI crates take a `-sys` suffix instead, and patch notes live with each
+  vendored upstream.

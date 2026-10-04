@@ -1,0 +1,1 @@
+while true; do echo -en "\r$(date +%S.%N)"; sleep 0.01; done

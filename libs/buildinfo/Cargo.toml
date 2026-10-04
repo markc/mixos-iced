@@ -1,0 +1,21 @@
+# buildinfo: compile-time build provenance (version, git sha, dirty bit,
+# build time) for every MixOS binary, plus the `--version` contract. No
+# dependencies: `emit()` uses only std, and the RFC3339 formatter is
+# hand-rolled so the build script stays SOURCE_DATE_EPOCH-reproducible.
+[package]
+name = "buildinfo"
+description = "Compile-time build provenance and the --version contract for MixOS binaries"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "buildinfo"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[dependencies]

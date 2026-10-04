@@ -1,0 +1,23 @@
+[package]
+name = "ledger"
+description = "Frame, presentation and redraw-reason ledgers for compd (engine-neutral)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[dependencies]
+surfaces.workspace = true
+# clock_gettime (CLOCK_MONOTONIC, CLOCK_THREAD_CPUTIME_ID) and gettid for
+# frame_trace: std exposes neither the raw monotonic value nor the kernel tid.
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true

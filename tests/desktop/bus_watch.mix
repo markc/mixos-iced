@@ -1,0 +1,60 @@
+#!/usr/bin/env mix
+-- bus_watch.mix — a throwaway Bus subscriber for nested_smoke.mix --bus.
+-- version: 0.5.0
+--
+--   mix --serve tests/desktop/bus_watch.mix --name compd-watch-<pid>
+--
+-- Follows the compositor's observation topics, `<service>.<suffix>`, and
+-- appends one JSON line per delivery to a file. Handlers match the publisher's
+-- INNER command, which is the unprefixed suffix; the full topic name is read
+-- from the delivery headers.
+--
+-- The record logic is INLINED in every handler: a fn called from an `on`
+-- handler must not touch `$event`.
+--
+-- Configuration by environment (serve mode owns argv):
+--   BUS_WATCH_SERVICE  compositor service whose topics to follow (required)
+--   BUS_WATCH_OUT      file receiving one JSON line per delivery:
+--                      {"topic":…, "command":…, "args":…}
+--                      created only once every subscription is confirmed, so
+--                      its existence is the readiness signal.
+
+$out = env("BUS_WATCH_OUT", "")
+$svc = env("BUS_WATCH_SERVICE", "")
+if $out == "" or $svc == "" then
+  eprint("bus_watch: BUS_WATCH_OUT and BUS_WATCH_SERVICE are required")
+  exit(2)
+end
+
+for each $s in ["props.changed", "surface.mapped", "surface.unmapped", "focus.changed", "corner.entered", "corner.left", "pointer.changed", "panel.command", "output.changed"]
+  subscribe($svc .. "." .. $s)
+end
+write_file($out, "")
+
+on props.changed
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on surface.mapped
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on surface.unmapped
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on focus.changed
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on corner.entered
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on corner.left
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on pointer.changed
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on panel.command
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end
+on output.changed
+  append_file($out, json_encode({topic: $event.headers["topic"] ?? "", command: $event.command, args: $event.args}) .. "\n")
+end

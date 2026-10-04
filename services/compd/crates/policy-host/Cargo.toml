@@ -1,0 +1,36 @@
+[package]
+name = "policy-host"
+description = "compd's comp policy host: projects the engine into the comp.* props tree, executes policy effects and detects observation edges"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Default lints, not `lints.workspace`: like the policy cores this crate stays
+# clippy `-D warnings` clean rather than inheriting the engine crates'
+# `warnings = "allow"`.
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "service"
+layer = "desktop"
+contract = "none"
+
+[dependencies]
+# The MixOS etc dir rule.
+config = { workspace = true }
+comp-model.workspace = true
+decor.workspace = true
+dispatcher.workspace = true
+ledger.workspace = true
+policy.workspace = true
+surfaces.workspace = true
+screencopy.workspace = true
+seat.workspace = true
+protocols.workspace = true
+world.workspace = true
+x11-wm.workspace = true
+serde_json.workspace = true
+smithay.workspace = true

@@ -1,0 +1,41 @@
+[package]
+name = "testkit"
+description = "Headless test harness for compd: the real protocol engine and comp registry, in-process Wayland clients, no GPU and no backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "compd"
+kind = "test"
+layer = "desktop"
+contract = "none"
+
+[lints]
+workspace = true
+
+# Dev-only: nothing in compd depends on this crate. It exists to be used from
+# its own tests/ (and later from other crates' dev-dependencies).
+[dependencies]
+dispatcher = { workspace = true }
+model = { workspace = true }
+surfaces = { workspace = true }
+screencopy = { workspace = true }
+protocols = { workspace = true }
+world = { workspace = true }
+libc = { workspace = true }
+smithay = { workspace = true }
+uuid = { workspace = true }
+# Pinned to the versions already in Cargo.lock (winit's client side).
+wayland-client = { version = "=0.31.15" }
+wayland-protocols = { version = "=0.32.13", features = ["client", "unstable", "staging"] }
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
+
+[dev-dependencies]
+# The workspace model the window tests drive.
+policy = { workspace = true }
+# The offline X11 suite: smithay's offline setters.
+smithay = { workspace = true, features = ["offline_test"] }
