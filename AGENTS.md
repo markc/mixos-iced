@@ -38,7 +38,7 @@ mixos/
 ├── tests/      cross-component gates and integration suites (Mix)
 ├── tools/      developer tooling that never ships: gates, generators, build helpers
 ├── etc/        system-wide integration not owned by one component (generated where possible)
-├── share/      shared runtime data: asset-set manifests, shared scenes, catalogues
+├── share/      shared runtime data: asset-set manifests, brand art (share/brand), shared scenes, catalogues
 ├── docs/       the mixos.dev site source: manual, dev guides, specs, public decisions
 └── vendor/     patched upstream code (one directory per upstream)
 ```
