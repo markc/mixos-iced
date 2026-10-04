@@ -138,8 +138,34 @@ fn host_copies_of_a_set_family_are_pruned() {
         !db.faces().any(|face| matches!(&face.source, Source::File(p) | Source::SharedFile(p, _) if p == &host)),
         "the host copy survived"
     );
-    let (_, path) = resolve(&db, Family::SansSerif).unwrap();
-    assert!(path.is_some_and(|path| path.starts_with(set.root())));
+    // The generic resolves to the set's file or the embedded copy (a binary
+    // face of the same family is deliberately kept, and the first loaded
+    // wins), never to the host file. compd never loads the embedded copy
+    // beside a set, and its family (`Inter`) differs from the set's
+    // (`Inter Variable`), so in production the set's file wins outright.
+    let (family, path) = resolve(&db, Family::SansSerif).unwrap();
+    assert_eq!(family, FAMILY);
+    assert!(path.is_none_or(|path| path.starts_with(set.root())), "the host copy won");
+}
+
+#[test]
+fn a_set_alone_resolves_to_its_own_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let set = publish(temp.path());
+    let host = temp.path().join("host-Inter.ttf");
+    fs::write(&host, INTER_FONT).unwrap();
+    let mut db = Database::new();
+    db.load_font_file(&host).unwrap();
+
+    let report = install_in(&mut db, Some(&set));
+
+    assert_eq!(report.pruned, 1);
+    assert_eq!(db.len(), FONTS.len());
+    for generic in [Family::SansSerif, Family::Monospace] {
+        let (family, path) = resolve(&db, generic).unwrap();
+        assert_eq!(family, FAMILY);
+        assert!(path.is_some_and(|path| path.starts_with(set.root())), "{generic:?} left the set");
+    }
 }
 
 #[test]
