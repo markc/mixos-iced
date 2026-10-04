@@ -4,8 +4,9 @@ The official MixOS mark: a rounded-flange "M" of five linked nodes. This is
 the one source for the logo and favicons. The website, the desktop and the
 installer image take their copies from here and never keep a second original.
 
-**Status: preliminary.** The licence for these files is not decided yet
-(see `REUSE.toml`). Until it is, they are not covered by the code licence.
+**Status: preliminary designs.** Licensed like the code, MIT OR Apache-2.0
+(the repo-wide `REUSE.toml` default). They were made with an AI image tool
+to Mark Constable's instructions.
 
 ![Both colour treatments](preview.png)
 

@@ -10,9 +10,6 @@ Incorporated code
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its
   copyright line is carried in LICENSE-MIT.
 
-The MixOS logo and favicons (share/brand) are not covered by the code licence
-above. They are preliminary and their licence is not yet decided.
-
 Third-party vendored code under vendor/ keeps its own licence files, and each
 directory records its upstream base and local patches (vendor/README.md).
 

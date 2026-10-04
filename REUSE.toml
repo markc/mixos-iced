@@ -81,14 +81,6 @@ precedence = "override"
 SPDX-FileCopyrightText = "2011 The Quicksand Project Authors (https://github.com/andrew-paglinawan/QuicksandFamily)"
 SPDX-License-Identifier = "OFL-1.1"
 
-# MixOS brand art (preliminary). Deliberately NOT under the code licence: the
-# logo's licence is still to be decided. Decide it before a release.
-[[annotations]]
-path = "share/brand/**"
-precedence = "override"
-SPDX-FileCopyrightText = "2026 Mark Constable <mc@mixos.dev>"
-SPDX-License-Identifier = "NOASSERTION"
-
 # Provenance not yet recorded; clear it (or replace it) before a release.
 [[annotations]]
 path = "docs/web/Server_Room_Dark.webp"
