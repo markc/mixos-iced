@@ -39,6 +39,13 @@ pub fn discover() -> Result<Option<AssetSet>> {
     lookup().discover()
 }
 
+/// Select and open the activated MixOS set without hashing its payload
+/// ([`Lookup::select`]): layout, manifest and sizes checked, the
+/// installer's verification trusted for the bytes.
+pub fn select() -> Result<Option<AssetSet>> {
+    lookup().select()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

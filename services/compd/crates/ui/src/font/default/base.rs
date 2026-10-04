@@ -1,6 +1,7 @@
 //! The UI fonts for iced surfaces: the pinned asset set, or the embedded Inter.
 //!
-//! [`install`] registers the activated MixOS asset set (`assets::mixos`) into
+//! [`install`] registers the activated MixOS asset set (`assets::mixos::select`,
+//! which checks the layout and sizes but trusts the installer's hashes) into
 //! iced's global font system: every font role the set locks (sans, serif,
 //! mono, their italics, display, icons and the colour emoji), with the
 //! generic families — which `iced_core::Font::DEFAULT` and `Font::MONOSPACE`
@@ -137,7 +138,10 @@ impl fmt::Display for Report {
 /// shaping falls back to whatever fonts the system provides.
 pub fn install() {
     let started = Instant::now();
-    let set = match assets::mixos::discover() {
+    // `select`, not `discover`: layout, manifest and sizes are checked, but
+    // the 35 MB of fonts are not re-hashed on every start; the installer
+    // verified them when it activated the set.
+    let set = match assets::mixos::select() {
         Ok(Some(set)) => Some(set),
         Ok(None) => {
             let roots: Vec<String> = assets::mixos::lookup()

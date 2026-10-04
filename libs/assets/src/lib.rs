@@ -15,7 +15,9 @@
 //! - [`Lookup`] is the generic resolver: the caller names the roots to
 //!   search (an XDG subdirectory, an environment variable with a default,
 //!   or explicit paths) and [`Lookup::discover`] selects the first
-//!   activated set, following `current` exactly once.
+//!   activated set, following `current` exactly once, and verifies its
+//!   hashes; [`Lookup::select`] does the same without hashing the
+//!   payload, for a reader that trusts the installer's verification.
 //! - [`mixos`] (the default `mixos` feature) is the MixOS search path:
 //!   `mixos/assets` under the XDG data directories, then `assets` under the
 //!   share directory `config` resolves.

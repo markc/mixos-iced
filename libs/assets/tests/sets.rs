@@ -271,3 +271,26 @@ fn schemas_duplicates_and_unlocked_roles_are_refused() {
         None
     );
 }
+
+#[test]
+fn select_skips_hashing_but_keeps_every_other_check() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("assets");
+    fixture(&root, "core");
+    activate(&root, "core");
+    let lookup: Lookup = vec![root.clone()].into_iter().collect();
+    assert_eq!(lookup.select().unwrap().unwrap().set_id(), "core");
+    // Same size, different bytes: select accepts (the installer verified),
+    // discover refuses.
+    fs::write(root.join("sets/core/fonts/Sans.ttf"), b"font byteZ").unwrap();
+    assert_eq!(lookup.select().unwrap().unwrap().set_id(), "core");
+    assert!(matches!(lookup.discover().unwrap_err(), assets::Error::Mismatch(_)));
+    // A size change fails both.
+    fs::write(root.join("sets/core/fonts/Sans.ttf"), b"font bytes grown").unwrap();
+    assert!(matches!(lookup.select().unwrap_err(), assets::Error::Mismatch(_)));
+    assert!(matches!(lookup.discover().unwrap_err(), assets::Error::Mismatch(_)));
+    // No activated set falls through to None either way.
+    let empty: Lookup = vec![temp.path().join("nothing")].into_iter().collect();
+    assert!(empty.select().unwrap().is_none());
+    assert!(empty.discover().unwrap().is_none());
+}

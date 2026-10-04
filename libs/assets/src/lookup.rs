@@ -115,14 +115,28 @@ impl Lookup {
     }
 
     /// Select the first root with an activated set, open it and verify its
-    /// bytes once. A root without `current` falls through; a root whose
-    /// `current` is dangling or whose set is malformed is an error, so a
-    /// broken override is reported rather than silently replaced by a
+    /// bytes once: [`select`](Self::select) followed by
+    /// [`AssetSet::verify`]. A root without `current` falls through; a root
+    /// whose `current` is dangling or whose set is malformed is an error,
+    /// so a broken override is reported rather than silently replaced by a
     /// system set.
     pub fn discover(&self) -> Result<Option<AssetSet>> {
+        let set = self.select()?;
+        if let Some(set) = &set {
+            set.verify()?;
+        }
+        Ok(set)
+    }
+
+    /// Select and open the first root's activated set without hashing its
+    /// payload: the layout, manifest, every size and the stylesheet text
+    /// are checked, the SHA-256 and BLAKE3 of each file are not. For a
+    /// reader at startup that trusts the installer's verification (a
+    /// compositor loading tens of megabytes of fonts on every start). The
+    /// same fall-through and error rules as [`discover`](Self::discover).
+    pub fn select(&self) -> Result<Option<AssetSet>> {
         for root in &self.roots {
             if let Some(set) = AssetSet::current(root)? {
-                set.verify()?;
                 return Ok(Some(set));
             }
         }

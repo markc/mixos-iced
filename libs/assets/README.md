@@ -44,6 +44,7 @@ let lookup = Lookup::new()
     .xdg("example/assets")                                   // $XDG_DATA_HOME/…, each $XDG_DATA_DIRS/…
     .root_from_env("EXAMPLE_ASSETS", "/usr/share/example/assets");
 let set: Option<AssetSet> = lookup.discover()?;              // first root with `current`, verified
+let set: Option<AssetSet> = lookup.select()?;                // the same, sizes checked but no hashing
 
 // Explicit inputs for a test, or a lookup assembled some other way.
 let lookup = Lookup::new().xdg_in("example/assets", &XdgData::default()).root("/srv/assets");
@@ -83,7 +84,8 @@ apart from the core the way `bus` keeps `noded_url()`:
 | 3 | `assets` under `config::path(Dir::Share)`: `$MIXOS_SHARE/assets`, default `/opt/mixos/share/assets` |
 
 ```rust
-let set = assets::mixos::discover()?;              // once, at startup
+let set = assets::mixos::discover()?;              // once, at startup, hashes verified
+let set = assets::mixos::select()?;                // once, at startup, no hashing (compd)
 let lookup = assets::mixos::lookup();              // the roots, for diagnostics
 let lookup = assets::mixos::lookup_in(&xdg, &share); // explicit inputs
 ```
