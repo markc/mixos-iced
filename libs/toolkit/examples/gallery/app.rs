@@ -16,6 +16,8 @@ use toolkit::iced::{self, Color, Fill};
 mod strings;
 #[path = "services.rs"]
 pub mod services;
+#[path = "lists.rs"]
+mod lists;
 use strings::label;
 use toolkit::fonts::{self, Role};
 use toolkit::scale::format_db;
@@ -106,15 +108,17 @@ pub enum Choice {
 pub enum Page {
     Widgets,
     Services,
+    Lists,
 }
 
 impl Page {
-    pub const ALL: [Page; 2] = [Page::Widgets, Page::Services];
+    pub const ALL: [Page; 3] = [Page::Widgets, Page::Services, Page::Lists];
 
     pub fn name(self) -> &'static str {
         match self {
             Page::Widgets => "widgets",
             Page::Services => "services",
+            Page::Lists => "lists",
         }
     }
 }
@@ -147,6 +151,7 @@ pub struct Gallery {
     notes: RollNotes,
     view: RollView,
     picked: Option<usize>,
+    lists: lists::Lists,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +159,7 @@ pub enum Message {
     Mode(Mode),
     Page(Page),
     Services(services::Message),
+    Lists(lists::Message),
     Text(String),
     Password(String),
     Action(&'static str),
@@ -257,7 +263,14 @@ impl Gallery {
             notes,
             view: RollView::default(),
             picked: None,
+            lists: lists::Lists::new(),
         }
+    }
+
+    /// The "Lists & trees" page on its own (the snapshots render it at its
+    /// own size).
+    pub fn lists_page(&self) -> Element<'_> {
+        self.lists.view(self.theme.tokens()).map(Message::Lists)
     }
 
     /// The current theme; iced asks for it every frame, so a new `Tokens`
@@ -288,6 +301,7 @@ impl Gallery {
             }
             Message::Page(page) => self.page = page,
             Message::Services(message) => self.services.update(message),
+            Message::Lists(message) => self.lists.update(message),
             Message::Text(value) => self.value = value,
             Message::Password(value) => self.password = value,
             Message::Action(action) => self.last_action = label(action),
@@ -582,6 +596,13 @@ impl Gallery {
             return self
                 .services
                 .wrap(content.into(), tokens, Message::Services);
+        }
+        if self.page == Page::Lists {
+            let page = page.push(self.lists_page());
+            return column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill)
+                .into();
         }
         if let Some(fonts) = self.fonts_section(tokens) {
             page = page.push(fonts);

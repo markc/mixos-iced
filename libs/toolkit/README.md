@@ -18,6 +18,8 @@ gate (`tests/generic.rs`) keeps it that way.
 | `KeyRouter`, `Keys`, `Inert`, `FocusProbe` (`keys`) | chord routing at the root, lossless key capture, input blocking under a modal, focus clicks |
 | `Dialog`, `Modal`, `ModalQueue` (`dialog`) | message, confirm, prompt, secret, choice and progress dialogs over a scrim, keyboard-operable |
 | `Toaster`, `Toast` (`toast`) | stacked corner notices with severity, action, dismiss and expiry |
+| `VirtualList`, `Selection`, `virtual_list::Columns` | a list that builds and draws only the rows in view (100,000 rows cost a screenful), keyboard navigation, single/multiple selection, activation, type-ahead, a column header, `scroll_to_row` |
+| `TreeView`, `Nodes` | a tree over the virtual list: a keyed node model with lazy children, expand/collapse by expander, double-click, Right and Left, indentation guides |
 
 Everything is a plain `iced_core::Widget`. The library selects no renderer
 and links no window shell; the host enables the `wgpu` or `tiny-skia`
@@ -218,6 +220,47 @@ let handle = app.toaster.push(Toast::new("Saved").severity(Severity::Success));
 - Styles: `dialog::{card, scrim, focus_ring, button_style, option_style}`
   and `toast::style` are functions of the theme; `Severity::colour` is the
   text colour, `primary`, a softened `destructive` and `destructive`.
+## Data widgets: `VirtualList` and `TreeView`
+
+```rust
+use toolkit::virtual_list::{Columns, Selection, VirtualList, scroll_to_row};
+use toolkit::tree::{Children, Nodes, TreeView};
+
+// Rows come from a closure, by index; only the rows in view are built.
+let columns = Columns::new().column("Name", Fill).column("Size", 90.0);
+VirtualList::new(items.len(), |i| columns.row([text(&items[i].name).into(), text(items[i].size()).into()]))
+    .header(columns.header(Some((0, true)), Message::Sort))
+    .selection(&self.selection)          // the app owns the Selection
+    .on_select(Message::Select)          // click, Ctrl/Shift, arrows, Space, Ctrl+A, Escape
+    .on_activate(Message::Open)          // Enter, double-click
+    .type_ahead(|prefix, from| items[from..].iter().position(|it| it.name.starts_with(prefix)).map(|p| p + from))
+    .id("files");
+scroll_to_row("files", 4_000)            // a Task; or `.reveal(Some(row))`
+
+// A tree: the app keeps the Nodes model and answers toggles.
+let mut nodes = Nodes::new();
+nodes.push(None, "/".to_owned(), dir, Children::Lazy);
+TreeView::new(&nodes, |row| text(&row.data.name))
+    .on_toggle(Message::Toggle)          // then nodes.toggle(&key); if nodes.needs_children(&key) { load; nodes.set_children(&key, kids) }
+    .on_select(Message::TreeSelect)
+    .selection(&self.tree_selection)
+    .list(|list| list.on_activate(Message::OpenNode).height(400));
+```
+
+- `VirtualList::new(rows, build)`: fixed `row_height` (default 28), its own
+  scroll offset and scrollbar, keyboard focus on click (`Focusable` for
+  iced's focus operations), Page Up/Down by a screenful, Home/End,
+  `on_key` for keys it leaves alone, `on_context` for a right press,
+  `key(|i| ...)` for stable row keys so a row keeps its widget state when
+  rows are inserted above it. `Selection` is sorted ranges with a cursor
+  and anchor (`Mode::{None, Single, Multiple}`).
+- `TreeView::new(&nodes, build)`: rows are the model's visible nodes
+  (`Nodes::visible(row)`), each with guides and an expander (the icon
+  font's `chevron_right`/`expand_more`, else a drawn box) before `build`'s
+  content. Selection and activation are by visible row index.
+- Styles: `virtual_list::Catalog` (`Style` with `Status::{Active, Hovered,
+  Focused}`) and `tree::Catalog` (guides and expander), implemented for
+  `Theme` from the tokens and for iced's theme.
 
 ## Strings
 
@@ -244,8 +287,9 @@ renders the gallery page offscreen (and `--test services` the dialogs and
 toasts page, dark and light, plus keyboard-only runs of every dialog) (iced's headless simulator, software
 renderer, embedded Fira Sans) under each token set and writes
 `target/tmp/toolkit-snapshots/gallery-{dark,light,custom}.png` plus a
-before/after pair for the live swap, checking the clear colour, a
-primary-filled control and that the sets differ. No window or GPU is
+before/after pair for the live swap and the "Lists & trees" page as
+`lists-{dark,light}.png`, checking the clear colour, a primary-filled
+control, the selected row and that the sets differ. No window or GPU is
 needed, so it runs on a build server.
 
 ## Taking it

@@ -172,6 +172,41 @@ and the GTK/KDE theme-name discovery, the `-symbolic` round trip, the
 shell-glyph aliases and the category fallback are kept as generic
 freedesktop behaviour.
 
+## Virtual list and tree
+
+`VirtualList` is one widget that owns its scroll offset rather than a
+child of iced's `scrollable`: a scrollable lays out its whole content, and
+a hundred thousand row widgets would be built and laid out every frame.
+Instead `layout` reads the offset from the widget state, builds only the
+rows that cover the viewport plus a two-row overscan, reconciles the tree's
+children by row key (a `HashMap` from the previous keys, so a one-row
+scroll moves state rather than recreating it) and lays those out at their
+absolute positions; `update` and `draw` only ever walk that window. A
+wheel, key or scrollbar drag changes the offset and calls
+`shell.invalidate_layout()`, so the next layout rebuilds the window; the
+runtime's relayout keeps the same element tree, which is why the builder
+closure lives on the widget. A `scroll_to_row` operation cannot ask for a
+relayout (operations have no shell), so it leaves the request in the state
+and the next event (the redraw the runtime schedules after an operation)
+applies it. The test `hundred_thousand_rows_cost_a_screenful` counts
+builder calls, layout nodes and kept child trees across a thousand scrolls.
+
+Selection is caller state passed in and published out, as iced does with
+text input values, so the list never diverges from the model; the widget
+also updates its own copy on the way so a second event in the same batch
+sees the first's result. Keyboard focus is taken on click and dropped on a
+press outside, and the state implements iced's `Focusable` so
+`focus_next` and friends treat the list as one stop.
+
+`TreeView` adds nothing to the list's rendering: it is a builder that turns
+the model's flattened visible nodes into list rows of `[Guides, content]`
+and feeds Left and Right through the list's `on_key` hook, publishing the
+caller's toggle or a new `Selection`. The model (`Nodes`) is an arena with
+a key index and a lazily rebuilt visible list (`OnceCell`, cleared by every
+mutation); the guides mask (one bit per ancestor depth with a later
+sibling) is computed in that pass so a row draws its lines without looking
+at its neighbours.
+
 ## Strings
 
 The widgets draw only what the application gives them; `Item` labels and

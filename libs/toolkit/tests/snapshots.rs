@@ -57,12 +57,21 @@ fn close(a: [u8; 3], b: [u8; 3]) -> bool {
 }
 
 fn render(gallery: &Gallery, path: &Path) -> (u32, u32, Vec<u8>) {
+    render_element(gallery.view(), &gallery.theme(), VIEWPORT, path)
+}
+
+fn render_element(
+    element: app::Element<'_>,
+    theme: &toolkit::Theme,
+    viewport: Size,
+    path: &Path,
+) -> (u32, u32, Vec<u8>) {
     let settings = Settings {
         default_font: fonts::default_ui_font(),
         ..Settings::default()
     };
-    let mut ui = Simulator::with_size(settings, VIEWPORT, gallery.view());
-    let snapshot = ui.snapshot(&gallery.theme()).expect("render the gallery");
+    let mut ui = Simulator::with_size(settings, viewport, element);
+    let snapshot = ui.snapshot(theme).expect("render the gallery");
     let stem = path.file_stem().unwrap().to_string_lossy();
     let written = path.with_file_name(format!("{stem}-{RENDERER}.png"));
     let _ = std::fs::remove_file(&written);
@@ -113,6 +122,39 @@ fn gallery_renders_under_every_token_set() {
     }
     assert_ne!(frames[0], frames[1], "dark and light differ");
     assert_ne!(frames[1], frames[2], "light and custom differ");
+}
+
+/// The "Lists & trees" page on its own, dark and light: the virtual list's
+/// first row is selected, so the selection colour is on screen, and the
+/// two token sets differ.
+#[test]
+fn lists_page_renders_dark_and_light() {
+    const PAGE: Size = Size::new(1280.0, 520.0);
+    let dir = output_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut gallery = Gallery::new();
+    let mut frames = Vec::new();
+    for mode in [Mode::Dark, Mode::Light] {
+        gallery.update(Message::Mode(mode));
+        let tokens = mode.tokens();
+        let path = dir.join(format!("lists-{}.png", mode.name()));
+        let (width, height, rgba) =
+            render_element(gallery.lists_page(), &gallery.theme(), PAGE, &path);
+        assert_eq!((width, height), (2560, 1040), "{mode:?}: 2x the page");
+        let pixel = |x: u32, y: u32| {
+            let at = ((y * width + x) * 4) as usize;
+            [rgba[at], rgba[at + 1], rgba[at + 2]]
+        };
+        let selection = rgb8(tokens.palette.selection);
+        assert!(
+            (0..height)
+                .step_by(2)
+                .any(|y| (0..width).step_by(2).any(|x| close(pixel(x, y), selection))),
+            "{mode:?}: no pixel in the selection colour {selection:?}"
+        );
+        frames.push(rgba);
+    }
+    assert_ne!(frames[0], frames[1], "dark and light differ");
 }
 
 /// Swapping tokens in a running program restyles the next frame: the same

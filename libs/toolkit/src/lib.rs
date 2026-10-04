@@ -25,6 +25,8 @@ pub mod theme;
 pub mod toast;
 pub mod toggle;
 pub mod tokens;
+pub mod tree;
+pub mod virtual_list;
 pub mod waveform;
 
 #[cfg(test)]
@@ -45,6 +47,8 @@ pub use theme::Theme;
 pub use toast::{Toast, Toaster};
 pub use toggle::Toggle;
 pub use tokens::{Metrics, Palette, Tokens};
+pub use tree::{Nodes, TreeView};
+pub use virtual_list::{Selection, VirtualList};
 pub use waveform::{Waveform, WaveformPeaks};
 
 #[cfg(feature = "gallery")]

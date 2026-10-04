@@ -19,6 +19,20 @@
 - Gallery: a "Dialogs & toasts" page driven from buttons and keys;
   `tests/services.rs` snapshots it dark and light and drives it through
   the simulator by keyboard alone.
+- Data widgets: `virtual_list::VirtualList` builds, lays out and draws
+  only the rows in view (a 100,000-row list costs a screenful per frame,
+  checked by a test), with its own scrollbar, keyboard navigation (arrows,
+  Page Up/Down, Home/End, Space, Enter, Ctrl+A, Escape, a type-ahead hook
+  and `on_key` for the rest), `Selection` (sorted ranges, cursor, anchor;
+  `Mode::{None, Single, Multiple}` with Ctrl and Shift), activation by
+  Enter or double-click, `on_context`, stable row keys, an optional header
+  with the `Columns` helper, `reveal` and the `scroll_to_row` task.
+  `tree::TreeView` over `tree::Nodes` (a keyed model with lazy children):
+  expand and collapse by expander, double-click, Right and Left, with
+  indentation guides. Styled through `virtual_list::Catalog` and
+  `tree::Catalog`, implemented for `Theme` and iced's theme.
+- Gallery: a "Lists & trees" section with a 100,000-row list and a lazy
+  tree; `tests/snapshots.rs` writes `lists-{dark,light}.png`.
 
 ## 0.2.0
 
