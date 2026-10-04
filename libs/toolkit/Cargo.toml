@@ -64,3 +64,8 @@ required-features = ["gallery"]
 [[test]]
 name = "snapshots"
 required-features = ["gallery-tiny-skia"]
+
+# Dialog and toast snapshots plus keyboard-driven runs of the gallery page.
+[[test]]
+name = "services"
+required-features = ["gallery-tiny-skia"]

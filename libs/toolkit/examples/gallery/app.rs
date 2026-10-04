@@ -14,6 +14,8 @@ use toolkit::iced::widget::{
 use toolkit::iced::{self, Color, Fill};
 #[path = "strings.rs"]
 mod strings;
+#[path = "services.rs"]
+pub mod services;
 use strings::label;
 use toolkit::fonts::{self, Role};
 use toolkit::scale::format_db;
@@ -99,9 +101,29 @@ pub enum Choice {
     Two,
 }
 
+/// The gallery's pages; each new one lives in its own file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Widgets,
+    Services,
+}
+
+impl Page {
+    pub const ALL: [Page; 2] = [Page::Widgets, Page::Services];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Page::Widgets => "widgets",
+            Page::Services => "services",
+        }
+    }
+}
+
 pub struct Gallery {
     mode: Mode,
     theme: Theme,
+    page: Page,
+    services: services::State,
     value: String,
     password: String,
     last_action: String,
@@ -130,6 +152,8 @@ pub struct Gallery {
 #[derive(Debug, Clone)]
 pub enum Message {
     Mode(Mode),
+    Page(Page),
+    Services(services::Message),
     Text(String),
     Password(String),
     Action(&'static str),
@@ -208,6 +232,8 @@ impl Gallery {
         Self {
             mode: Mode::Dark,
             theme: Theme::new(Mode::Dark.tokens()),
+            page: Page::Widgets,
+            services: services::State::new(),
             value: String::new(),
             password: String::new(),
             last_action: String::new(),
@@ -244,12 +270,22 @@ impl Gallery {
         self.mode
     }
 
+    pub fn page(&self) -> Page {
+        self.page
+    }
+
+    pub fn services(&self) -> &services::State {
+        &self.services
+    }
+
     pub fn update(&mut self, message: Message) {
         match message {
             Message::Mode(mode) => {
                 self.mode = mode;
                 self.theme.set_tokens(mode.tokens());
             }
+            Message::Page(page) => self.page = page,
+            Message::Services(message) => self.services.update(message),
             Message::Text(value) => self.value = value,
             Message::Password(value) => self.password = value,
             Message::Action(action) => self.last_action = label(action),
@@ -517,9 +553,18 @@ impl Gallery {
             choice.on_press(Message::Mode(mode)).into()
         }))
         .spacing(tokens.metrics.spacing.md);
+        let pages = row(Page::ALL.into_iter().map(|page| {
+            let mut choice = button(text(label(&format!("page-{}", page.name()))));
+            if page != self.page {
+                choice = choice.style(theme::button::text);
+            }
+            choice.on_press(Message::Page(page)).into()
+        }))
+        .spacing(tokens.metrics.spacing.md);
         let mut page = column![
             row![
                 modes,
+                pages,
                 text(self.theme.to_string()).style(theme::text::muted)
             ]
             .spacing(tokens.metrics.spacing.lg)
@@ -527,6 +572,15 @@ impl Gallery {
         ]
         .spacing(tokens.metrics.spacing.lg)
         .padding(tokens.metrics.spacing.xl);
+        if self.page == Page::Services {
+            let page = page.push(self.services.view(tokens).map(Message::Services));
+            let content = column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill);
+            return self
+                .services
+                .wrap(content.into(), tokens, Message::Services);
+        }
         if let Some(fonts) = self.fonts_section(tokens) {
             page = page.push(fonts);
         }
