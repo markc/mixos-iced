@@ -861,6 +861,12 @@ impl<'a, Message, Theme, Renderer> Modal<'a, Message, Theme, Renderer> {
                 layer
                     .as_widget_mut()
                     .operate(state, layout, renderer, &mut focus);
+                // A fresh focus puts the cursor after the text, as a click
+                // at the end would.
+                let mut to_end = operation::text_input::move_cursor_to_end::<()>(id.clone());
+                layer
+                    .as_widget_mut()
+                    .operate(state, layout, renderer, &mut to_end);
             }
             None => {
                 let mut unfocus = operation::focusable::unfocus::<()>();
