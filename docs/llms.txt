@@ -10,6 +10,7 @@ also published as Markdown (`/try.md`). The links below point at the Markdown.
 
 - [Try it beside your desktop](https://mixos.dev/try.md): How MixOS runs as a small signed systemd-nspawn image on its own virtual terminal, next to the Linux desktop you already use, with native GPU, input and audio.
 - [Decision — source layout and naming](https://mixos.dev/decisions/2026-10-04-source-layout.md): Why the MixOS repository is laid out by kind of artefact (apps, services, cli, libs) with plain, unique names and self-contained components, and what was rejected.
+- [Decision — toolkit is generic](https://mixos.dev/decisions/2026-10-05-toolkit-is-generic.md): The iced widget toolkit in libs/toolkit is written for any iced project; nothing MixOS-specific lives in it, and a gate enforces that.
 
 ## Optional
 
