@@ -1517,7 +1517,7 @@ mod tests {
         assert_eq!(cancellable.focused_button(), Some(0));
         assert_eq!(escape(&mut cancellable), Some(Outcome::Cancelled));
         assert_eq!(enter(&mut cancellable), Some(Outcome::Cancelled));
-        let uncancellable = Dialog::confirm("", "").cancellable(false);
+        let mut uncancellable = Dialog::confirm("", "").cancellable(false);
         assert_eq!(uncancellable.update(Event::Cancel), None);
         assert_eq!(uncancellable.button_list().len(), 2, "its buttons stay");
     }
