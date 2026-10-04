@@ -274,6 +274,8 @@ impl Gallery {
         self.page
     }
 
+    /// Read by `tests/services.rs`.
+    #[allow(dead_code)]
     pub fn services(&self) -> &services::State {
         &self.services
     }
@@ -555,7 +557,7 @@ impl Gallery {
         .spacing(tokens.metrics.spacing.md);
         let pages = row(Page::ALL.into_iter().map(|page| {
             let mut choice = button(text(label(&format!("page-{}", page.name()))));
-            if page != self.page {
+            if page != self.page() {
                 choice = choice.style(theme::button::text);
             }
             choice.on_press(Message::Page(page)).into()

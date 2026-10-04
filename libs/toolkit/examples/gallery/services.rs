@@ -106,6 +106,26 @@ pub struct State {
 /// How many outcomes the log shows.
 const LOG: usize = 6;
 
+/// What `tests/services.rs` reads back.
+#[allow(dead_code)]
+impl State {
+    pub fn dialog(&self) -> Option<&Dialog> {
+        self.dialog.as_ref()
+    }
+
+    pub fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn toaster(&self) -> &Toaster {
+        &self.toaster
+    }
+
+    pub fn outcomes(&self) -> &[String] {
+        &self.outcomes
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self::new()
@@ -122,22 +142,6 @@ impl State {
             toaster: Toaster::new(),
             outcomes: Vec::new(),
         }
-    }
-
-    pub fn dialog(&self) -> Option<&Dialog> {
-        self.dialog.as_ref()
-    }
-
-    pub fn queued(&self) -> usize {
-        self.queue.len()
-    }
-
-    pub fn toaster(&self) -> &Toaster {
-        &self.toaster
-    }
-
-    pub fn outcomes(&self) -> &[String] {
-        &self.outcomes
     }
 
     fn dialog_for(action: Action) -> Option<Dialog> {
