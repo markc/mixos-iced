@@ -22,6 +22,7 @@ use iced_core::{
     widget::{Operation, Tree, tree},
 };
 
+use crate::theme::Catalog;
 use nav::next;
 use panel::{draw_panel, panel_width, row_height};
 
@@ -156,13 +157,28 @@ impl Default for MenuStyle {
     }
 }
 
+/// The style a menu draws with: the explicit one, else the theme's colours
+/// over the default row metrics (layout has no theme, so the metrics of a
+/// theme-styled menu are always the defaults).
+pub(crate) fn resolve<Theme: Catalog>(style: Option<MenuStyle>, theme: &Theme) -> MenuStyle {
+    style.unwrap_or_else(|| {
+        let metrics = MenuStyle::default();
+        MenuStyle {
+            text_size: metrics.text_size,
+            row_height: metrics.row_height,
+            padding: metrics.padding,
+            ..theme.menu_style()
+        }
+    })
+}
+
 type OnState<'a, Message> = Box<dyn Fn(MenuState) -> Message + 'a>;
 
 /// A horizontal menu bar, or a context-menu wrapper around arbitrary content.
 pub struct Menu<'a, Message, Theme, Renderer> {
     items: Vec<Item<Message>>,
     content: Option<Element<'a, Message, Theme, Renderer>>,
-    style: MenuStyle,
+    style: Option<MenuStyle>,
     external: Option<OnState<'a, Message>>,
     host_state: Option<MenuState>,
     id: Option<iced_core::widget::Id>,
@@ -175,7 +191,7 @@ impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
         Self {
             items,
             content: None,
-            style: MenuStyle::default(),
+            style: None,
             external: None,
             host_state: None,
             id: None,
@@ -191,7 +207,7 @@ impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
         Self {
             items,
             content: Some(content.into()),
-            style: MenuStyle::default(),
+            style: None,
             external: None,
             host_state: None,
             id: None,
@@ -204,10 +220,16 @@ impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
         self
     }
 
-    /// Replaces the default style; see `Tokens::menu_style`.
+    /// An explicit style. Without one the colours come from the theme
+    /// (`theme::Catalog::menu_style`) over the default row metrics.
     pub fn style(mut self, style: MenuStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
+    }
+
+    /// The metrics layout uses: the explicit style, else the defaults.
+    fn metrics(&self) -> MenuStyle {
+        self.style.unwrap_or_default()
     }
 
     /// Draws no popup. Every change to the open state (including its
@@ -484,7 +506,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
                 renderer,
                 &self.items,
                 bounds + state.translation,
-                self.style,
+                self.metrics(),
             )
             .get(root)
             .copied()
@@ -494,10 +516,10 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
         });
         for level in 1..state.nav.path.len() {
             let parent = nav.panel(&state.nav, level - 1);
-            let width = panel_width(renderer, parent, self.style);
+            let width = panel_width(renderer, parent, self.metrics());
             anchors.push(
                 state.nav.path[level - 1]
-                    .and_then(|row| row_bounds(parent, row, width, self.style))
+                    .and_then(|row| row_bounds(parent, row, width, self.metrics()))
                     .unwrap_or_default(),
             );
         }
@@ -584,7 +606,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
         if !self.navigator().is_bar() {
             return None;
         }
-        bar_rects(renderer, &self.items, bounds, self.style)
+        bar_rects(renderer, &self.items, bounds, self.metrics())
             .iter()
             .position(|rect| cursor.is_over(*rect))
     }
@@ -605,7 +627,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
     }
 }
 
-impl<Message: Clone, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
+impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
     for Menu<'_, Message, Theme, Renderer>
 {
     fn size(&self) -> Size<Length> {
@@ -614,7 +636,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Widget<Message, Theme, Ren
             .map(|content| content.as_widget().size())
             .unwrap_or(Size::new(
                 Length::Fill,
-                Length::Fixed(self.style.row_height),
+                Length::Fixed(self.metrics().row_height),
             ))
     }
     fn tag(&self) -> tree::Tag {
@@ -667,7 +689,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Widget<Message, Theme, Ren
         } else {
             layout::Node::new(limits.resolve(
                 Length::Fill,
-                Length::Fixed(self.style.row_height),
+                Length::Fixed(self.metrics().row_height),
                 Size::ZERO,
             ))
         }
@@ -695,16 +717,12 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Widget<Message, Theme, Ren
             return;
         }
         let state = tree.state.downcast_ref::<State>();
-        quad(renderer, layout.bounds(), self.style.background, self.style);
+        let style = resolve(self.style, theme);
+        quad(renderer, layout.bounds(), style.background, style);
         for (index, (item, rect)) in self
             .items
             .iter()
-            .zip(bar_rects(
-                renderer,
-                &self.items,
-                layout.bounds(),
-                self.style,
-            ))
+            .zip(bar_rects(renderer, &self.items, layout.bounds(), style))
             .enumerate()
         {
             let selected = if state.nav.is_open() {
@@ -713,25 +731,25 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Widget<Message, Theme, Ren
                 state.hovered == Some(index)
             };
             if selected {
-                quad(renderer, rect, self.style.selected, self.style);
+                quad(renderer, rect, style.selected, style);
             }
             let color = if !item.selectable() {
-                self.style.disabled
+                style.disabled
             } else if selected {
-                self.style.selected_text
+                style.selected_text
             } else {
-                self.style.text
+                style.text
             };
             label(
                 renderer,
                 &item.label,
                 Rectangle {
-                    x: rect.x + self.style.padding,
-                    width: (rect.width - self.style.padding * 2.0).max(0.0),
+                    x: rect.x + style.padding,
+                    width: (rect.width - style.padding * 2.0).max(0.0),
                     ..rect
                 },
                 color,
-                self.style,
+                style,
                 false,
             );
         }
@@ -998,7 +1016,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Widget<Message, Theme, Ren
     }
 }
 
-impl<'a, Message: Clone + 'a, Theme: 'a, Renderer: text::Renderer + 'a>
+impl<'a, Message: Clone + 'a, Theme: Catalog + 'a, Renderer: text::Renderer + 'a>
     From<Menu<'a, Message, Theme, Renderer>> for Element<'a, Message, Theme, Renderer>
 {
     fn from(menu: Menu<'a, Message, Theme, Renderer>) -> Self {
@@ -1011,10 +1029,14 @@ struct Popup<'a, Message> {
     state: &'a mut State,
     anchor: Rectangle,
     translation: Vector,
-    style: MenuStyle,
+    style: Option<MenuStyle>,
 }
 
 impl<Message: Clone> Popup<'_, Message> {
+    fn metrics(&self) -> MenuStyle {
+        self.style.unwrap_or_default()
+    }
+
     fn hit(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<(usize, Option<usize>)> {
         let panels: Vec<_> = layout.children().collect();
         for (depth, panel) in panels.iter().enumerate().rev() {
@@ -1022,7 +1044,7 @@ impl<Message: Clone> Popup<'_, Message> {
                 let items = self.nav.panel(&self.state.nav, depth);
                 return Some((
                     depth,
-                    row_at(items, position.y - panel.bounds().y, self.style),
+                    row_at(items, position.y - panel.bounds().y, self.metrics()),
                 ));
             }
         }
@@ -1030,8 +1052,8 @@ impl<Message: Clone> Popup<'_, Message> {
     }
 }
 
-impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, Theme, Renderer>
-    for Popup<'_, Message>
+impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
+    overlay::Overlay<Message, Theme, Renderer> for Popup<'_, Message>
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
         self.state.overlay_bounds = Some(bounds);
@@ -1040,7 +1062,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
         };
         let mut panels = Vec::new();
         let mut position = if self.nav.is_bar() {
-            bar_rects(renderer, self.nav.items, self.anchor, self.style)
+            bar_rects(renderer, self.nav.items, self.anchor, self.metrics())
                 .get(root)
                 .map(|rect| Point::new(rect.x, rect.y + rect.height))
                 .unwrap_or(self.anchor.position())
@@ -1049,10 +1071,10 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
         };
         for depth in 0..self.state.nav.path.len() {
             let items = self.nav.panel(&self.state.nav, depth);
-            let width = panel_width(renderer, items, self.style).min(bounds.width);
+            let width = panel_width(renderer, items, self.metrics()).min(bounds.width);
             let height = items
                 .iter()
-                .map(|item| row_height(item, self.style))
+                .map(|item| row_height(item, self.metrics()))
                 .sum::<f32>();
             if position.x + width > bounds.width && depth > 0 {
                 let previous: &layout::Node = &panels[depth - 1];
@@ -1065,7 +1087,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
             let offset = items
                 .iter()
                 .take(selected)
-                .map(|item| row_height(item, self.style))
+                .map(|item| row_height(item, self.metrics()))
                 .sum::<f32>();
             position = Point::new(position.x + width, position.y + offset);
         }
@@ -1075,7 +1097,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
     fn draw(
         &self,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -1083,6 +1105,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
         if !self.state.nav.is_open() {
             return;
         }
+        let style = resolve(self.style, theme);
         for (depth, panel) in layout.children().enumerate() {
             // A bar entry without children (an action opened by F10) has an
             // empty panel; draw_panel draws nothing for it.
@@ -1091,7 +1114,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
                 panel.bounds(),
                 self.nav.panel(&self.state.nav, depth),
                 self.state.nav.path[depth],
-                self.style,
+                style,
             );
         }
     }
@@ -1136,7 +1159,7 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> overlay::Overlay<Message, 
         );
         let (hit, title) = if pointer {
             let title = if nav.is_bar() {
-                bar_rects(renderer, nav.items, self.anchor, self.style)
+                bar_rects(renderer, nav.items, self.anchor, self.metrics())
                     .iter()
                     .position(|rect| cursor.is_over(*rect))
             } else {

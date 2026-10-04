@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use iced_core::widget::operation::{Focusable as _, TextInput as _};
-use iced_core::{Element, Event, Length, Padding, Pixels, Rectangle, Size, Theme, keyboard, mouse};
+use iced_core::{Element, Event, Length, Padding, Pixels, Rectangle, Size, keyboard, mouse};
 use iced_core::{Layout, Shell, Widget, layout, renderer, text, widget};
 use iced_widget::text_input::{self, TextInput};
 
@@ -107,28 +107,50 @@ impl History {
 /// Adjacent non-whitespace typing within one second forms an undo group. Cursor
 /// movement, paste, composition, whitespace and deletion end the group. Up to
 /// 100 groups are retained; an external value replacement clears history.
-pub struct TextField<'a, Message, Renderer: text::Renderer + 'static> {
+pub struct TextField<'a, Message, Theme, Renderer>
+where
+    Theme: text_input::Catalog,
+    Renderer: text::Renderer + 'static,
+{
     input: TextInput<'a, InputMessage, Theme, Renderer>,
     value: String,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Box<dyn Fn() -> Message + 'a>>,
-    config: Config<'a>,
+    config: Config<'a, Theme>,
 }
 
-type InputStyle<'a> = dyn Fn(&Theme, text_input::Status) -> text_input::Style + 'a;
+type InputStyle<'a, Theme> = dyn Fn(&Theme, text_input::Status) -> text_input::Style + 'a;
 
-#[derive(Default)]
-struct Config<'a> {
+struct Config<'a, Theme> {
     placeholder: String,
     secure: bool,
     id: Option<widget::Id>,
     width: Option<Length>,
     padding: Option<Padding>,
     size: Option<Pixels>,
-    style: Option<Rc<InputStyle<'a>>>,
+    style: Option<Rc<InputStyle<'a, Theme>>>,
 }
 
-impl<'a, Message, Renderer: text::Renderer + 'static> TextField<'a, Message, Renderer> {
+impl<Theme> Default for Config<'_, Theme> {
+    fn default() -> Self {
+        Self {
+            placeholder: String::new(),
+            secure: false,
+            id: None,
+            width: None,
+            padding: None,
+            size: None,
+            style: None,
+        }
+    }
+}
+
+impl<'a, Message, Theme, Renderer> TextField<'a, Message, Theme, Renderer>
+where
+    Theme: text_input::Catalog + 'a,
+    Theme::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
+    Renderer: text::Renderer + 'static,
+{
     /// Creates an input with a placeholder and the application's current value.
     pub fn new(placeholder: &str, value: &str) -> Self {
         Self {
@@ -199,7 +221,8 @@ impl<'a, Message, Renderer: text::Renderer + 'static> TextField<'a, Message, Ren
         self
     }
 
-    /// Applies a style, including the crate's design-token adapter.
+    /// A style closure over the theme. Without one the theme's default
+    /// text-input class applies (for `toolkit::Theme`, `Tokens::text_input`).
     pub fn style(
         mut self,
         style: impl Fn(&Theme, text_input::Status) -> text_input::Style + 'a,
@@ -244,8 +267,12 @@ impl<'a, Message, Renderer: text::Renderer + 'static> TextField<'a, Message, Ren
     }
 }
 
-impl<Message, Renderer: text::Renderer + 'static> Widget<Message, Theme, Renderer>
-    for TextField<'_, Message, Renderer>
+impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for TextField<'a, Message, Theme, Renderer>
+where
+    Theme: text_input::Catalog + 'a,
+    Theme::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
+    Renderer: text::Renderer + 'static,
 {
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<History>()
@@ -494,10 +521,15 @@ impl<Message, Renderer: text::Renderer + 'static> Widget<Message, Theme, Rendere
     }
 }
 
-impl<'a, Message: 'a, Renderer: text::Renderer + 'static + 'a>
-    From<TextField<'a, Message, Renderer>> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message, Theme, Renderer> From<TextField<'a, Message, Theme, Renderer>>
+    for Element<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: text_input::Catalog + 'a,
+    Theme::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
+    Renderer: text::Renderer + 'static + 'a,
 {
-    fn from(input: TextField<'a, Message, Renderer>) -> Self {
+    fn from(input: TextField<'a, Message, Theme, Renderer>) -> Self {
         Element::new(input)
     }
 }
@@ -590,7 +622,8 @@ mod widget_tests {
     use crate::test_renderer::LayoutRenderer;
     use iced_core::input_method;
 
-    type Field = TextField<'static, String, LayoutRenderer>;
+    type Theme = iced_core::Theme;
+    type Field = TextField<'static, String, Theme, LayoutRenderer>;
 
     fn field(value: &str) -> (Field, widget::Tree) {
         let mut field = TextField::new("placeholder", value).on_input(std::convert::identity);

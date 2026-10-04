@@ -8,6 +8,7 @@ use iced_core::{
 
 use crate::AudioStyle;
 use crate::audio_style::quad;
+use crate::theme::Catalog;
 
 /// A controlled on/off button that flips on press, as mixer mute and solo
 /// buttons do. `alert(true)` uses the alert colour (mute style); otherwise the
@@ -19,7 +20,7 @@ pub struct Toggle<'a, Message> {
     on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
     width: f32,
     height: f32,
-    style: AudioStyle,
+    style: Option<AudioStyle>,
 }
 
 impl<'a, Message> Toggle<'a, Message> {
@@ -32,7 +33,7 @@ impl<'a, Message> Toggle<'a, Message> {
             on_toggle: None,
             width: 24.0,
             height: 20.0,
-            style: AudioStyle::default(),
+            style: None,
         }
     }
 
@@ -55,14 +56,13 @@ impl<'a, Message> Toggle<'a, Message> {
         self
     }
 
-    /// Colours; see `Tokens::audio_style`.
+    /// Colours; the theme's `audio_style` unless set (`theme::Catalog`).
     pub fn style(mut self, style: AudioStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 
-    fn colours(&self) -> (iced_core::Color, iced_core::Color) {
-        let style = self.style;
+    fn colours(&self, style: AudioStyle) -> (iced_core::Color, iced_core::Color) {
         match (self.on, self.alert) {
             (false, _) => (style.track, style.muted_text),
             (true, false) => (style.active, style.active_text),
@@ -71,7 +71,7 @@ impl<'a, Message> Toggle<'a, Message> {
     }
 }
 
-impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
+impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
     for Toggle<'_, Message>
 {
     fn tag(&self) -> tree::Tag {
@@ -117,21 +117,16 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
         &self,
         _tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let (fill, label) = self.colours();
-        quad(
-            renderer,
-            bounds,
-            fill,
-            self.style.radius,
-            Some(self.style.border),
-        );
+        let style = self.style.unwrap_or_else(|| theme.audio_style());
+        let (fill, label) = self.colours(style);
+        quad(renderer, bounds, fill, style.radius, Some(style.border));
         renderer.fill_text(
             text::Text {
                 content: self.label.clone(),
@@ -168,7 +163,7 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
     }
 }
 
-impl<'a, Message: 'a, Theme: 'a, Renderer: text::Renderer + 'a> From<Toggle<'a, Message>>
+impl<'a, Message: 'a, Theme: Catalog + 'a, Renderer: text::Renderer + 'a> From<Toggle<'a, Message>>
     for Element<'a, Message, Theme, Renderer>
 {
     fn from(toggle: Toggle<'a, Message>) -> Self {
@@ -219,15 +214,15 @@ mod tests {
     fn colours_follow_state_and_kind() {
         let style = AudioStyle::default();
         assert_eq!(
-            Toggle::<()>::new("S", true).colours(),
+            Toggle::<()>::new("S", true).colours(style),
             (style.active, style.active_text)
         );
         assert_eq!(
-            Toggle::<()>::new("M", true).alert(true).colours(),
+            Toggle::<()>::new("M", true).alert(true).colours(style),
             (style.alert, style.alert_text)
         );
         assert_eq!(
-            Toggle::<()>::new("M", false).alert(true).colours(),
+            Toggle::<()>::new("M", false).alert(true).colours(style),
             (style.track, style.muted_text)
         );
     }

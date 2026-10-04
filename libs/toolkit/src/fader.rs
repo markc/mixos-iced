@@ -9,6 +9,7 @@ use iced_core::{
 use crate::AudioStyle;
 use crate::audio_style::quad;
 use crate::scale::Taper;
+use crate::theme::Catalog;
 
 const THUMB_HEIGHT: f32 = 14.0;
 /// Shift divides pointer travel by this.
@@ -27,7 +28,7 @@ pub struct Fader<'a, Message> {
     on_release: Option<Message>,
     width: f32,
     height: Length,
-    style: AudioStyle,
+    style: Option<AudioStyle>,
     taper: Taper<'a>,
 }
 
@@ -41,7 +42,7 @@ impl<'a, Message> Fader<'a, Message> {
             on_release: None,
             width: 28.0,
             height: Length::Fixed(160.0),
-            style: AudioStyle::default(),
+            style: None,
             taper: Taper::DEFAULT,
         }
     }
@@ -76,9 +77,9 @@ impl<'a, Message> Fader<'a, Message> {
         self
     }
 
-    /// Colours; see `Tokens::audio_style`.
+    /// Colours; the theme's `audio_style` unless set (`theme::Catalog`).
     pub fn style(mut self, style: AudioStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 
@@ -149,7 +150,7 @@ pub(crate) fn press_is_double(state: &mut PointerState, position: Point) -> bool
     click.kind() == mouse::click::Kind::Double
 }
 
-impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
+impl<Message: Clone, Theme: Catalog, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
     for Fader<'_, Message>
 {
     fn tag(&self) -> tree::Tag {
@@ -255,14 +256,14 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
         &self,
         _tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let style = self.style;
+        let style = self.style.unwrap_or_else(|| theme.audio_style());
         let position = self.taper.position(self.value_db);
         let thumb = thumb_rect(bounds, position);
         let track = Rectangle {
@@ -325,8 +326,8 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
     }
 }
 
-impl<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 'a> From<Fader<'a, Message>>
-    for Element<'a, Message, Theme, Renderer>
+impl<'a, Message: Clone + 'a, Theme: Catalog + 'a, Renderer: renderer::Renderer + 'a>
+    From<Fader<'a, Message>> for Element<'a, Message, Theme, Renderer>
 {
     fn from(fader: Fader<'a, Message>) -> Self {
         Element::new(fader)

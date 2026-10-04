@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Waveform overview with a cached body and an uncached playhead layer.
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use iced_core::{Element, Event, Length, Point, Rectangle, Size, Vector};
@@ -11,6 +12,7 @@ use iced_graphics::geometry::{self, Cache, Path};
 
 use crate::AudioStyle;
 use crate::audio_style::quad;
+use crate::theme::Catalog;
 
 pub(crate) fn next_generation() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -102,7 +104,7 @@ pub struct Waveform<'a, Message> {
     on_seek: Option<Box<dyn Fn(f32) -> Message + 'a>>,
     width: Length,
     height: Length,
-    style: AudioStyle,
+    style: Option<AudioStyle>,
 }
 
 impl<'a, Message> Waveform<'a, Message> {
@@ -114,7 +116,7 @@ impl<'a, Message> Waveform<'a, Message> {
             on_seek: None,
             width: Length::Fill,
             height: Length::Fixed(64.0),
-            style: AudioStyle::default(),
+            style: None,
         }
     }
 
@@ -142,9 +144,9 @@ impl<'a, Message> Waveform<'a, Message> {
         self
     }
 
-    /// Colours; see `Tokens::audio_style`.
+    /// Colours; the theme's `audio_style` unless set (`theme::Catalog`).
     pub fn style(mut self, style: AudioStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 }
@@ -152,11 +154,13 @@ impl<'a, Message> Waveform<'a, Message> {
 struct WaveState<Renderer: geometry::Renderer> {
     body: Cache<Renderer>,
     generation: u64,
-    style: Option<AudioStyle>,
+    /// The style the body was last drawn with; a theme change clears it.
+    style: Cell<Option<AudioStyle>>,
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Waveform<'_, Message>
 where
+    Theme: Catalog,
     Renderer: geometry::Renderer + 'static,
 {
     fn tag(&self) -> tree::Tag {
@@ -167,16 +171,15 @@ where
         tree::State::new(WaveState::<Renderer> {
             body: Cache::new(),
             generation: self.peaks.generation,
-            style: Some(self.style),
+            style: Cell::new(None),
         })
     }
 
     fn diff(&mut self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<WaveState<Renderer>>();
-        if state.generation != self.peaks.generation || state.style != Some(self.style) {
+        if state.generation != self.peaks.generation {
             state.body.clear();
             state.generation = self.peaks.generation;
-            state.style = Some(self.style);
         }
     }
 
@@ -219,7 +222,7 @@ where
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -229,8 +232,12 @@ where
         if bounds.width < 1.0 || bounds.height < 1.0 {
             return;
         }
-        let style = self.style;
+        let style = self.style.unwrap_or_else(|| theme.audio_style());
         let state = tree.state.downcast_ref::<WaveState<Renderer>>();
+        if state.style.get() != Some(style) {
+            state.body.clear();
+            state.style.set(Some(style));
+        }
         quad(renderer, bounds, style.background, 0.0, None);
         quad(
             renderer,
@@ -299,7 +306,7 @@ where
     }
 }
 
-impl<'a, Message: 'a, Theme: 'a, Renderer> From<Waveform<'a, Message>>
+impl<'a, Message: 'a, Theme: Catalog + 'a, Renderer> From<Waveform<'a, Message>>
     for Element<'a, Message, Theme, Renderer>
 where
     Renderer: geometry::Renderer + 'static,

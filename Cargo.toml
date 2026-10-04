@@ -33,6 +33,8 @@ iced_core = { path = "vendor/iced/core", version = "0.15.0-dev" }
 iced_graphics = { path = "vendor/iced/graphics", version = "0.15.0-dev", features = ["web-colors"] }
 iced_renderer = { path = "vendor/iced/renderer", version = "0.15.0-dev", default-features = false }
 iced_runtime = { path = "vendor/iced/runtime", version = "0.15.0-dev" }
+# Headless rendering for toolkit's gallery snapshots (dev-dependency only).
+iced_test = { path = "vendor/iced/test", version = "0.15.0-dev" }
 iced_wgpu = { path = "vendor/iced/wgpu", version = "0.15.0-dev", default-features = false, features = ["web-colors"] }
 # No renderer here: toolkit selects none by default; compd's iced hosts add `wgpu`.
 iced_widget = { path = "vendor/iced/widget", version = "0.15.0-dev", features = ["advanced", "image", "svg"] }

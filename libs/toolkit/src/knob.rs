@@ -9,6 +9,7 @@ use iced_core::{
 use crate::AudioStyle;
 use crate::audio_style::quad;
 use crate::fader::{Drag, PointerState, press_is_double};
+use crate::theme::Catalog;
 
 /// Vertical pointer travel, in logical pixels, for the whole -1..=1 range.
 const TRAVEL: f32 = 150.0;
@@ -25,7 +26,7 @@ pub struct Knob<'a, Message> {
     on_change: Option<Box<dyn Fn(f32) -> Message + 'a>>,
     on_release: Option<Message>,
     size: f32,
-    style: AudioStyle,
+    style: Option<AudioStyle>,
 }
 
 impl<'a, Message> Knob<'a, Message> {
@@ -36,7 +37,7 @@ impl<'a, Message> Knob<'a, Message> {
             on_change: None,
             on_release: None,
             size: 28.0,
-            style: AudioStyle::default(),
+            style: None,
         }
     }
 
@@ -58,9 +59,9 @@ impl<'a, Message> Knob<'a, Message> {
         self
     }
 
-    /// Colours; see `Tokens::audio_style`.
+    /// Colours; the theme's `audio_style` unless set (`theme::Catalog`).
     pub fn style(mut self, style: AudioStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 }
@@ -101,7 +102,7 @@ pub(crate) fn indicator(bounds: Rectangle, value: f32) -> Point {
     )
 }
 
-impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
+impl<Message: Clone, Theme: Catalog, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
     for Knob<'_, Message>
 {
     fn tag(&self) -> tree::Tag {
@@ -207,13 +208,14 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
         &self,
         _tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        let style = self.style.unwrap_or_else(|| theme.audio_style());
         let diameter = bounds.width.min(bounds.height);
         let body = Rectangle::new(
             Point::new(
@@ -225,9 +227,9 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
         quad(
             renderer,
             body,
-            self.style.track,
+            style.track,
             diameter / 2.0,
-            Some(self.style.border),
+            Some(style.border),
         );
         let dot = indicator(bounds, self.value);
         let dot_radius = (diameter * 0.1).max(2.0);
@@ -237,7 +239,7 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
                 Point::new(dot.x - dot_radius, dot.y - dot_radius),
                 Size::new(dot_radius * 2.0, dot_radius * 2.0),
             ),
-            self.style.fill,
+            style.fill,
             dot_radius,
             None,
         );
@@ -266,8 +268,8 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> Widget<Message, Theme,
     }
 }
 
-impl<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 'a> From<Knob<'a, Message>>
-    for Element<'a, Message, Theme, Renderer>
+impl<'a, Message: Clone + 'a, Theme: Catalog + 'a, Renderer: renderer::Renderer + 'a>
+    From<Knob<'a, Message>> for Element<'a, Message, Theme, Renderer>
 {
     fn from(knob: Knob<'a, Message>) -> Self {
         Element::new(knob)

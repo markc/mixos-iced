@@ -1,6 +1,6 @@
 [package]
 name = "toolkit"
-description = "iced widgets: text field, menus, audio controls, waveform, piano roll, theming tokens, font sets and icon fonts"
+description = "iced widgets: text field, menus, audio controls, waveform, piano roll, a token-driven iced theme, font sets, icon fonts and freedesktop icon lookup"
 # A public contract with its own version (CHANGELOG.md); the edition and
 # toolchain are stated here so the crate carries them when taken elsewhere.
 version = "0.1.0"
@@ -24,6 +24,8 @@ mod_module_files = "deny"
 # features, for the examples.
 [features]
 default = []
+# Styles iced's `svg` widget too (`iced_widget/svg`).
+svg = ["iced_widget/svg"]
 wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]
 tiny-skia = ["iced_renderer/tiny-skia", "iced_renderer/geometry"]
 gallery = ["dep:iced", "dep:fluent-bundle"]
@@ -43,6 +45,10 @@ fluent-bundle = { version = "0.15", optional = true }
 [dev-dependencies]
 # Tests shape real text; iced's embedded Fira Sans means no host font is read.
 iced_graphics = { workspace = true, features = ["fira-sans"] }
+# `tests/snapshots.rs` renders the gallery offscreen with iced's headless
+# simulator and reads the PNGs it writes back.
+iced_test = { workspace = true }
+png = { version = "=0.18.1" }
 # The `generic` gate reads `cargo metadata`.
 serde_json = { workspace = true }
 
@@ -53,3 +59,8 @@ required-features = ["gallery"]
 [[example]]
 name = "gallery_fonts"
 required-features = ["gallery"]
+
+# Offscreen gallery snapshots: `cargo test -p toolkit --features gallery-tiny-skia --test snapshots`.
+[[test]]
+name = "snapshots"
+required-features = ["gallery-tiny-skia"]

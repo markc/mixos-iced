@@ -6,7 +6,7 @@
 //! geometry is cached per zoom level (pixels per beat and row height) and
 //! scrolling only translates cached tiles. Grid, notes and playhead are
 //! separate layers, so moving the playhead never touches note geometry.
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use iced_core::{Color, Element, Event, Length, Point, Rectangle, Size, Vector, keyboard};
 use iced_core::{
@@ -17,6 +17,7 @@ use iced_graphics::geometry::{self, Cache, Path};
 
 use crate::AudioStyle;
 use crate::audio_style::quad;
+use crate::theme::Catalog;
 use crate::waveform::next_generation;
 
 /// Width of one cached tile, in logical pixels of content.
@@ -328,7 +329,8 @@ impl<Renderer: geometry::Renderer> TileSet<Renderer> {
 struct RollState<Renderer: geometry::Renderer> {
     tiles: RefCell<TileSet<Renderer>>,
     generation: u64,
-    style: AudioStyle,
+    /// The style the tiles were last drawn with; a theme change clears them.
+    style: Cell<Option<AudioStyle>>,
     colours: Vec<Color>,
     modifiers: keyboard::Modifiers,
 }
@@ -346,7 +348,7 @@ pub struct PianoRoll<'a, Message> {
     on_note: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     width: Length,
     height: Length,
-    style: AudioStyle,
+    style: Option<AudioStyle>,
     track_colours: &'a [Color],
 }
 
@@ -362,7 +364,7 @@ impl<'a, Message> PianoRoll<'a, Message> {
             track_colours: &[],
             width: Length::Fill,
             height: Length::Fill,
-            style: AudioStyle::default(),
+            style: None,
         }
     }
 
@@ -396,9 +398,9 @@ impl<'a, Message> PianoRoll<'a, Message> {
         self
     }
 
-    /// Colours; see `Tokens::audio_style`.
+    /// Colours; the theme's `audio_style` unless set (`theme::Catalog`).
     pub fn style(mut self, style: AudioStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 
@@ -427,6 +429,7 @@ fn bar_step(pixels_per_beat: f32) -> f32 {
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for PianoRoll<'_, Message>
 where
+    Theme: Catalog,
     Renderer: geometry::Renderer + 'static,
 {
     fn tag(&self) -> tree::Tag {
@@ -437,7 +440,7 @@ where
         tree::State::new(RollState::<Renderer> {
             tiles: RefCell::new(TileSet::new()),
             generation: self.notes.generation,
-            style: self.style,
+            style: Cell::new(None),
             colours: self.track_colours.to_vec(),
             modifiers: keyboard::Modifiers::empty(),
         })
@@ -445,13 +448,9 @@ where
 
     fn diff(&mut self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<RollState<Renderer>>();
-        if state.generation != self.notes.generation
-            || state.style != self.style
-            || state.colours != self.track_colours
-        {
+        if state.generation != self.notes.generation || state.colours != self.track_colours {
             state.tiles.get_mut().clear();
             state.generation = self.notes.generation;
-            state.style = self.style;
             state.colours = self.track_colours.to_vec();
         }
     }
@@ -533,7 +532,7 @@ where
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -543,13 +542,17 @@ where
         if bounds.width < 1.0 || bounds.height < 1.0 {
             return;
         }
-        let style = self.style;
+        let style = self.style.unwrap_or_else(|| theme.audio_style());
         let view = self.view;
         if !view.is_valid() {
             quad(renderer, bounds, style.background, 0.0, None);
             return;
         }
         let state = tree.state.downcast_ref::<RollState<Renderer>>();
+        if state.style.get() != Some(style) {
+            state.tiles.borrow_mut().clear();
+            state.style.set(Some(style));
+        }
 
         // Layer 1: grid, visible rows and bar lines only.
         renderer.with_layer(bounds, |renderer| {
@@ -675,7 +678,7 @@ where
     }
 }
 
-impl<'a, Message: 'a, Theme: 'a, Renderer> From<PianoRoll<'a, Message>>
+impl<'a, Message: 'a, Theme: Catalog + 'a, Renderer> From<PianoRoll<'a, Message>>
     for Element<'a, Message, Theme, Renderer>
 where
     Renderer: geometry::Renderer + 'static,

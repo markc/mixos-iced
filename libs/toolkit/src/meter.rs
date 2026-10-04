@@ -11,6 +11,7 @@ use iced_core::{
 use crate::AudioStyle;
 use crate::audio_style::quad;
 use crate::scale::Taper;
+use crate::theme::Catalog;
 
 /// How long the meter's own peak line holds before falling.
 pub const PEAK_HOLD: Duration = Duration::from_millis(1000);
@@ -40,7 +41,7 @@ pub struct LevelMeter<'a> {
     clipped: bool,
     width: f32,
     height: Length,
-    style: AudioStyle,
+    style: Option<AudioStyle>,
     taper: Taper<'a>,
 }
 
@@ -54,7 +55,7 @@ impl<'a> LevelMeter<'a> {
             clipped: false,
             width: 8.0,
             height: Length::Fixed(160.0),
-            style: AudioStyle::default(),
+            style: None,
             taper: Taper::DEFAULT,
         }
     }
@@ -92,9 +93,9 @@ impl<'a> LevelMeter<'a> {
         self
     }
 
-    /// Colours; see `Tokens::audio_style`.
+    /// Colours; the theme's `audio_style` unless set (`theme::Catalog`).
     pub fn style(mut self, style: AudioStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 
@@ -257,7 +258,7 @@ pub(crate) fn markers(
     out
 }
 
-impl<Message, Theme, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
+impl<Message, Theme: Catalog, Renderer: renderer::Renderer> Widget<Message, Theme, Renderer>
     for LevelMeter<'_>
 {
     fn tag(&self) -> tree::Tag {
@@ -306,14 +307,14 @@ impl<Message, Theme, Renderer: renderer::Renderer> Widget<Message, Theme, Render
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let style = self.style;
+        let style = self.style.unwrap_or_else(|| theme.audio_style());
         quad(renderer, bounds, style.track, style.radius.min(2.0), None);
         for (rect, zone) in segments(bounds, self.taper, self.level_db) {
             let colour = [style.meter_low, style.meter_high, style.meter_clip][zone];
@@ -338,7 +339,7 @@ impl<Message, Theme, Renderer: renderer::Renderer> Widget<Message, Theme, Render
     }
 }
 
-impl<'a, Message: 'a, Theme: 'a, Renderer: renderer::Renderer + 'a> From<LevelMeter<'a>>
+impl<'a, Message: 'a, Theme: Catalog + 'a, Renderer: renderer::Renderer + 'a> From<LevelMeter<'a>>
     for Element<'a, Message, Theme, Renderer>
 {
     fn from(meter: LevelMeter<'a>) -> Self {

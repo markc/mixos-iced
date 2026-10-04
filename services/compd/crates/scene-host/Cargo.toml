@@ -34,6 +34,8 @@ iced_widget = { workspace = true, features = ["wgpu"] }
 iced_graphics = { workspace = true, features = ["image"] }
 # Packaged icons such as Rio embed PNGs inside their SVG.
 iced_wgpu = { workspace = true, features = ["svg-raster-images"] }
+# The freedesktop icon-theme resolver (`toolkit::icons::freedesktop`).
+toolkit = { workspace = true }
 smithay = { workspace = true }
 # The engine-neutral Mix Scenes core: parse, lint, resolve, diff, describe,
 # bindings.

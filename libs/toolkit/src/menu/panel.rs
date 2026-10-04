@@ -7,7 +7,8 @@ use iced_core::{
     text, touch,
 };
 
-use super::{Item, Kind, MenuStyle, label, quad, text_width};
+use super::{Item, Kind, MenuStyle, label, quad, resolve, text_width};
+use crate::theme::Catalog;
 
 /// Minimum panel width in logical pixels.
 pub const MIN_PANEL_WIDTH: f32 = 160.0;
@@ -161,7 +162,7 @@ pub(crate) fn draw_panel<Message, Renderer: text::Renderer>(
 pub struct Panel<'a, Message> {
     items: &'a [Item<Message>],
     selected: Option<usize>,
-    style: MenuStyle,
+    style: Option<MenuStyle>,
     on_hover: Option<Box<dyn Fn(Option<usize>) -> Message + 'a>>,
     on_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
 }
@@ -172,16 +173,21 @@ impl<'a, Message> Panel<'a, Message> {
         Self {
             items,
             selected,
-            style: MenuStyle::default(),
+            style: None,
             on_hover: None,
             on_press: None,
         }
     }
 
-    /// Colours and metrics; see `Tokens::menu_style`.
+    /// An explicit style. Without one the colours come from the theme
+    /// (`theme::Catalog::menu_style`) over the default row metrics.
     pub fn style(mut self, style: MenuStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
+    }
+
+    fn metrics(&self) -> MenuStyle {
+        self.style.unwrap_or_default()
     }
 
     /// Published when the row under the pointer changes (`None` when the
@@ -210,7 +216,7 @@ fn identity<Message>(items: &[Item<Message>]) -> (usize, usize) {
     (items.as_ptr() as usize, items.len())
 }
 
-impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
+impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
     for Panel<'_, Message>
 {
     fn tag(&self) -> tree::Tag {
@@ -244,7 +250,7 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let size = panel_size(renderer, self.items, self.style);
+        let size = panel_size(renderer, self.items, self.metrics());
         layout::Node::new(limits.resolve(Length::Shrink, Length::Shrink, size))
     }
 
@@ -263,7 +269,7 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
         let row_under = |point: Option<Point>| {
             point
                 .filter(|point| bounds.contains(*point))
-                .and_then(|point| row_at(self.items, point.y - bounds.y, self.style))
+                .and_then(|point| row_at(self.items, point.y - bounds.y, self.metrics()))
         };
         match event {
             Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
@@ -309,7 +315,7 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
         &self,
         _tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -320,7 +326,7 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
             layout.bounds(),
             self.items,
             self.selected,
-            self.style,
+            resolve(self.style, theme),
         );
     }
 
@@ -335,14 +341,14 @@ impl<Message, Theme, Renderer: text::Renderer> Widget<Message, Theme, Renderer>
         let Some(point) = cursor.position_in(layout.bounds()) else {
             return mouse::Interaction::None;
         };
-        match row_at(self.items, point.y, self.style) {
+        match row_at(self.items, point.y, self.metrics()) {
             Some(row) if self.items[row].selectable() => mouse::Interaction::Pointer,
             _ => mouse::Interaction::Idle,
         }
     }
 }
 
-impl<'a, Message: 'a, Theme: 'a, Renderer: text::Renderer + 'a> From<Panel<'a, Message>>
+impl<'a, Message: 'a, Theme: Catalog + 'a, Renderer: text::Renderer + 'a> From<Panel<'a, Message>>
     for Element<'a, Message, Theme, Renderer>
 {
     fn from(panel: Panel<'a, Message>) -> Self {

@@ -33,9 +33,7 @@ fn main() -> toolkit::iced::Result {
 }
 
 /// `--role PATH` pairs into a `FontSet`, plus the icon font and its table.
-fn parse(
-    args: impl IntoIterator<Item = String>,
-) -> Result<(FontSet, Option<IconFont>), String> {
+fn parse(args: impl IntoIterator<Item = String>) -> Result<(FontSet, Option<IconFont>), String> {
     let mut set = FontSet::new();
     let mut icons: Option<PathBuf> = None;
     let mut codepoints: Option<PathBuf> = None;

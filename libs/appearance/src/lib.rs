@@ -34,8 +34,8 @@ pub use theme::{Error, Resolved, THEME_FILE, Theme, theme_path};
 pub use tokens::{colour, metrics, palette, tokens};
 
 use design::{ResolvedTypeRecord, TypographyRole};
-use toolkit::Tokens;
 use toolkit::fonts::{Fonts, Role};
+use toolkit::{Theme as ToolkitTheme, Tokens};
 
 /// The installed look: the tokens for the current theme, the context they
 /// came from, and the fonts registered with iced.
@@ -131,6 +131,13 @@ impl Appearance {
         self.tokens.palette.surface
     }
 
+    /// The current tokens as toolkit's iced theme, for
+    /// `iced::application(...).theme`: every iced and toolkit widget then
+    /// takes the MixOS look, and a `retheme` restyles the next frame.
+    pub fn theme(&self) -> ToolkitTheme {
+        ToolkitTheme::new(self.tokens)
+    }
+
     /// The installed family of `role` at the record's weight, trusting the
     /// pinned variable fonts to render the weight requested. Without that
     /// role, the record's own family chain through toolkit's resolver, where
@@ -176,10 +183,15 @@ mod tests {
         assert_eq!(look.tokens, tokens(&theme));
         assert_eq!((look.scheme(), look.mode()), (Scheme::Ocean, Mode::Light));
         assert_eq!(look.origin, FontOrigin::NoSet { roots });
-        assert!(look.warning().unwrap().starts_with("no asset set activated"));
+        assert!(
+            look.warning()
+                .unwrap()
+                .starts_with("no asset set activated")
+        );
         assert_eq!(look.fonts.family(Role::Sans), None);
         assert_eq!(look.icon("delete"), None);
         assert_eq!(look.background(), look.tokens.palette.surface);
+        assert_eq!(look.theme().tokens(), look.tokens);
         // With no installed role, each font is the design record's own
         // family chain through toolkit's resolver (whatever the host has).
         let ui = design::active_typography(Some(theme.typography()), TypographyRole::Ui);
@@ -187,7 +199,10 @@ mod tests {
             look.ui_font(),
             toolkit::fonts::font_for(&ui.family, &ui.fallbacks, ui.weight, false, true)
         );
-        assert!(matches!(look.ui_font().weight, Weight::Light | Weight::Normal));
+        assert!(matches!(
+            look.ui_font().weight,
+            Weight::Light | Weight::Normal
+        ));
         let mono = design::active_typography(Some(theme.typography()), TypographyRole::Mono);
         assert_eq!(
             look.mono_font(),
@@ -197,7 +212,13 @@ mod tests {
             design::active_typography(Some(theme.typography()), TypographyRole::UiDisplay);
         assert_eq!(
             look.display_font(),
-            toolkit::fonts::font_for(&display.family, &display.fallbacks, display.weight, false, true)
+            toolkit::fonts::font_for(
+                &display.family,
+                &display.fallbacks,
+                display.weight,
+                false,
+                true
+            )
         );
 
         let mut look = look;
@@ -206,13 +227,19 @@ mod tests {
             mode: Mode::Dark,
             ..DesignContext::default()
         });
+        let before = look.theme();
         look.retheme(&dark);
         assert_eq!(look.tokens, tokens(&dark));
+        assert_eq!(look.theme().tokens(), tokens(&dark));
+        assert_ne!(look.theme(), before);
         assert_eq!((look.scheme(), look.mode()), (Scheme::Forest, Mode::Dark));
         assert_ne!(look.tokens.palette.surface, tokens(&theme).palette.surface);
 
         assert!(matches!(
-            install_with(&theme, FontSources::none(FontOrigin::Unusable("second".into()))),
+            install_with(
+                &theme,
+                FontSources::none(FontOrigin::Unusable("second".into()))
+            ),
             Err(Error::Fonts(toolkit::fonts::FontError::AlreadyInstalled))
         ));
     }
@@ -222,6 +249,9 @@ mod tests {
         let theme = Theme::embedded();
         assert_eq!(role(&theme, TypographyRole::Ui).weight, 300);
         assert_eq!(weight(300), Weight::Light);
-        assert_eq!(weight(role(&theme, TypographyRole::Small).weight), Weight::Normal);
+        assert_eq!(
+            weight(role(&theme, TypographyRole::Small).weight),
+            Weight::Normal
+        );
     }
 }
