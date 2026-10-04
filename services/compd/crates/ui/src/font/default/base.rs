@@ -219,10 +219,10 @@ fn install_set(db: &mut Database, set: &AssetSet) -> Report {
             .first()
             .map(|(name, _)| name.clone())
             .unwrap_or_default();
-        if let Some(declared) = set.family(role) {
-            if !face.families.iter().any(|(name, _)| name.as_str() == declared) {
-                mismatched.push((role.to_owned(), declared.to_owned(), family.clone()));
-            }
+        if let Some(declared) = set.family(role)
+            && !face.families.iter().any(|(name, _)| name.as_str() == declared)
+        {
+            mismatched.push((role.to_owned(), declared.to_owned(), family.clone()));
         }
         paths.push(path.clone());
         fonts.push(Loaded {
