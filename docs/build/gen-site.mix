@@ -16,8 +16,9 @@
 -- Inputs (all in build/): shell.html (the DCS page chrome, with {{slots}}),
 -- home.html (the landing content), site.conf.mix (sidebar, icons, redirects).
 -- Outputs: index.html, 404.html, <page>/index.html, redirect pages,
--- llms.txt, llms-full.txt, sitemap.xml, robots.txt, web/icons.css and
--- web/fonts/icons.woff2 (+ its licence).
+-- llms.txt, llms-full.txt, sitemap.xml, robots.txt, web/icons.css,
+-- web/fonts/icons.woff2 (+ its licence), and the favicons from share/brand
+-- (web/favicon.svg, favicon.ico, web/brand/*).
 --
 -- Runs locally with /opt/mixos/bin/mix; GitHub Pages only serves the
 -- committed result, so there is no CI step. External tools: git, hb-subset
@@ -296,10 +297,40 @@ $icons_css = "/* " .. $MARKER .. "\n" ..
      "}\n" ..
      join($rules, "\n") .. "\n"
 
+-- ---------------------------------------------------------------- brand
+-- share/brand is the one source for MixOS brand art; the site never keeps a
+-- second original. favicon.svg is generated from the transparent mark and
+-- follows the visitor's prefers-color-scheme (black on light, white on dark).
+-- The raster fallbacks are copied byte for byte. shell.html (top bar) and
+-- home.html (hero) take the mark's outline through {{brand:mark}}.
+$brand = $repo .. "/share/brand"
+$mark_d = re_find(read_file($brand .. "/logos/mixos-black-transparent.svg"), " d=\"([^\"]+)\"")
+if len($mark_d) != 1 then
+  raise("SITE_BRAND", "expected exactly one path in the MixOS mark")
+end
+$mark_path = $mark_d[0]["groups"][0]
+$favicon_svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\">\n" ..
+  "<style>path{fill:#000}@media (prefers-color-scheme:dark){path{fill:#fff}}</style>\n" ..
+  "<path fill-rule=\"evenodd\" d=\"" .. $mark_path .. "\"/>\n</svg>\n"
+$copies = {
+  "favicon.ico": $brand .. "/favicons/black-on-white/favicon.ico",
+  "web/brand/favicon-32-light.png": $brand .. "/favicons/black-on-white/favicon-32x32.png",
+  "web/brand/favicon-32-dark.png": $brand .. "/favicons/white-on-black/favicon-32x32.png",
+  "web/brand/apple-touch-icon.png": $brand .. "/favicons/black-on-white/apple-touch-icon.png"
+}
+$home_src = replace($home_src, "{{brand:mark}}", $mark_path)
+$shell_src = replace($shell_src, "{{brand:mark}}", $mark_path)
+
 -- ---------------------------------------------------------------- asset versions
 fn asset_ver($rel)
   if $rel == "web/icons.css" then
     return substr(hash_sha256($icons_css), 0, 10)
+  end
+  if $rel == "web/favicon.svg" then
+    return substr(hash_sha256($favicon_svg), 0, 10)
+  end
+  if has_key($copies, $rel) then
+    return substr(hash_file($copies[$rel], "sha256"), 0, 10)
   end
   $p = $root .. "/" .. $rel
   if not is_file($p) then
@@ -602,6 +633,7 @@ push($sm, "</urlset>")
 $outputs["sitemap.xml"] = join($sm, "\n") .. "\n"
 $outputs["robots.txt"] = "User-agent: *\nAllow: /\n\nSitemap: " .. $SITE .. "/sitemap.xml\n"
 $outputs["web/icons.css"] = $icons_css
+$outputs["web/favicon.svg"] = $favicon_svg
 $outputs["web/fonts/LICENSE-MaterialSymbols.txt"] = read_file($ic.asset_set .. "/" .. $ic.licence)
 
 -- ---------------------------------------------------------------- link check
@@ -645,7 +677,7 @@ for each $k in sort(keys($outputs))
           end
         else
           $file = substr($path, 1, len($path) - 1)
-          if not has_key($outputs, $file) and not is_file($root .. "/" .. $file) and $file != "web/fonts/icons.woff2" then
+          if not has_key($outputs, $file) and not is_file($root .. "/" .. $file) and $file != "web/fonts/icons.woff2" and not has_key($copies, $file) then
             push($errors, $k .. ": link to a missing file: " .. $h)
           end
         end
@@ -690,6 +722,12 @@ end
 if not $font_same then
   push($changed, "web/fonts/icons.woff2")
 end
+for each $k in sort(keys($copies))
+  $dest = $root .. "/" .. $k
+  if not is_file($dest) or hash_file($dest, "sha256") != hash_file($copies[$k], "sha256") then
+    push($changed, $k)
+  end
+end
 
 fn cleanup()
   run_argv(["rm", "-rf", "--", $tmp])
@@ -724,6 +762,10 @@ for each $c in $changed
   if $c == "web/fonts/icons.woff2" then
     mkdir(dirname($font_dest))
     copy($woff2, $font_dest)
+  elif has_key($copies, $c) then
+    $dest = $root .. "/" .. $c
+    mkdir(dirname($dest))
+    copy($copies[$c], $dest)
   else
     $dest = $root .. "/" .. $c
     mkdir(dirname($dest))

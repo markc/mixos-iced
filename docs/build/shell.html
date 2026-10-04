@@ -4,7 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="{{description}}">
+    <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
+    <link rel="icon" href="{{asset:favicon.ico}}" sizes="any">
     <link rel="icon" type="image/svg+xml" href="{{asset:web/favicon.svg}}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{asset:web/brand/favicon-32-light.png}}" media="(prefers-color-scheme: light)">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{asset:web/brand/favicon-32-dark.png}}" media="(prefers-color-scheme: dark)">
+    <link rel="apple-touch-icon" sizes="180x180" href="{{asset:web/brand/apple-touch-icon.png}}">
     <title>{{title}}</title>
 {{head}}
     <link rel="stylesheet" href="{{asset:web/fonts.css}}"><!-- vendored Inter / Quicksand / JetBrains Mono (woff2 in web/fonts/) -->
@@ -90,7 +95,7 @@
 <button class="menu-toggle" data-sidebar="right"><i data-lucide="menu"></i></button>
 
 <nav class="topnav">
-    <h1><a class="brand" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:1em;height:1em;vertical-align:-0.12em;display:inline" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="5"/><path d="M7 16V8l5 4.5L17 8v8"/></svg> MixOS <span>system</span></a></h1>
+    <h1><a class="brand" href="/"><svg viewBox="0 0 1024 1024" style="width:1em;height:1em;vertical-align:-0.12em;display:inline" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="{{brand:mark}}"/></svg> MixOS <span>system</span></a></h1>
 </nav>
 
 <!-- ================= LEFT SIDEBAR: documentation panels ================= -->
