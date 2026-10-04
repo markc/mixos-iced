@@ -34,10 +34,11 @@ specifics kept apart from it.
 ## The gate
 
 `libs/toolkit/tests/generic.rs` runs with every build. It fails if the
-crate's source, examples, tests, catalogue, README or manifest name the
-project (`mixos`, `cosmix`, `/opt/`, `MIXOS_`, `dev.mixos`,
-case-insensitively; the `[package.metadata.mixos]` line that workspace
-bookkeeping requires is the one exemption), or if toolkit's
+crate's files name the project: its current or former names, its install
+prefix (`/opt/`), its environment-variable prefix (`MIXOS_`) or its app-ID
+namespace (`dev.mixos`), case-insensitively, in any file under
+`libs/toolkit/` (the `[package.metadata.mixos]` line that workspace
+bookkeeping requires is the one exemption); or if toolkit's
 normal-dependency closure contains a workspace crate other than itself or a
 path dependency outside `vendor/`.
 

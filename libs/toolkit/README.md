@@ -135,5 +135,5 @@ above.
 
 ## Licence
 
-MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Provenance is in
-`NOTICE`; the port history is in `PORTING.md` and `CHANGELOG.md`.
+MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Design and porting
+notes are in `PORTING.md`; releases in `CHANGELOG.md`.

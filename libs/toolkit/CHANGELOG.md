@@ -1,31 +1,24 @@
 # Changelog
 
-## 0.1.0 (toolkit)
+## 0.1.0
 
-- Port cosmix-iced-widgets 0.1.7 to the vendored iced 0.15-dev. Preserve the
-  widgets and tests; expose iced component crates through toolkit. See
-  PORTING.md for API and clipboard changes.
-- Make the crate generic (PORTING.md, G0): `Tokens` is `Palette` + `Metrics`
-  with built-in dark and light sets; fonts and icons come from a
-  caller-supplied `FontSet`/`IconFont` through `fonts::install`; the gallery
-  is a plain iced program; the `generic` gate. The entries below are retained
-  source history from cosmix-iced-widgets.
+First release, for iced 0.15.0-dev.
 
-## 0.1.5
-
-- Add `elevated`/`elevated_text` to `Tokens` from the compiled `elevated`
-  pair; `tooltip_style` paints on that pair (with `border` and the token
-  radius) so tooltip text never sits on the surface it covers.
-  `popover`/`popover_text` remain mapped and deliver the same elevated
-  surface in alias-relying designs.
-
-## 0.1.4
-
-- Add `Tokens::tooltip_style` using the compiled `muted` surface/foreground pair,
-  with `border` and token radius.
-  Accept the resolved border-width metric; test deterministic token mapping.
-
-## 0.1.3
-
-- Expose iced TextInput submission through TextField::on_submit, including
-  after undo restores the input.
+- Widgets: `TextField` (bounded, selection-aware undo/redo, secure mode,
+  submit), `Menu`/`Item`/`Panel`/`Navigator` (menu bar and context menus
+  with keyboard navigation; in-surface overlays or app-owned popups via
+  `MenuState`), `Fader`, `Knob`, `LevelMeter`, `Toggle` (with the dB taper
+  in `scale`), `Waveform`/`WaveformPeaks`, `PianoRoll`/`RollNotes`/`RollView`.
+- Theming: `Tokens { palette: Palette, metrics: Metrics }` with built-in
+  `dark()` and `light()` sets; `text_input`, `menu_style`, `tooltip_style`
+  and `audio_style` derive every widget style from them.
+- Fonts and icons: `FontSet` (sans, mono, serif, display, emoji; bytes or
+  path), `IconFont` (font plus a `.codepoints` table) and `fonts::install`,
+  once per process; `default_ui_font`, `default_mono_font`, `font_for`,
+  `fonts::icon`.
+- Features: `wgpu`, `tiny-skia`, and the `gallery-*` arms for the
+  examples; the library links no window shell and selects no renderer.
+- Examples: `gallery` (default fonts, dark/light toggle) and
+  `gallery_fonts` (a `FontSet`/`IconFont` from command-line paths).
+- Tests: widget unit tests over a measurement-only renderer,
+  `tests/feature_graph.rs` and the `tests/generic.rs` gate.

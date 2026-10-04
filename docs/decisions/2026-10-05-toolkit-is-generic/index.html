@@ -267,10 +267,11 @@ ordinary iced (winit) programs.</li>
 </ol>
 <h2 id="the-gate">The gate</h2>
 <p><code>libs/toolkit/tests/generic.rs</code> runs with every build. It fails if the
-crate's source, examples, tests, catalogue, README or manifest name the
-project (<code>mixos</code>, <code>cosmix</code>, <code>/opt/</code>, <code>MIXOS_</code>, <code>dev.mixos</code>,
-case-insensitively; the <code>[package.metadata.mixos]</code> line that workspace
-bookkeeping requires is the one exemption), or if toolkit's
+crate's files name the project: its current or former names, its install
+prefix (<code>/opt/</code>), its environment-variable prefix (<code>MIXOS_</code>) or its app-ID
+namespace (<code>dev.mixos</code>), case-insensitively, in any file under
+<code>libs/toolkit/</code> (the <code>[package.metadata.mixos]</code> line that workspace
+bookkeeping requires is the one exemption); or if toolkit's
 normal-dependency closure contains a workspace crate other than itself or a
 path dependency outside <code>vendor/</code>.</p>
 <h2 id="consequences">Consequences</h2>

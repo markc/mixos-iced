@@ -3,9 +3,9 @@
 //! in it may name the project it ships with, and its dependency closure may
 //! reach no crate of that project. Two checks:
 //!
-//! 1. no file under `src`, `examples`, `tests` (other than this file),
-//!    `i18n`, `README.md` or `Cargo.toml` contains a `FORBIDDEN` term,
-//!    case-insensitively;
+//! 1. no file anywhere under the crate directory (other than this file)
+//!    contains a `FORBIDDEN` term, case-insensitively: sources, examples,
+//!    tests, catalogues, docs, licences and the manifest alike;
 //! 2. toolkit's normal-dependency closure (default and all features)
 //!    contains no workspace member but toolkit, and every path dependency in
 //!    it lives under the workspace's `vendor/` (the vendored iced family).
@@ -21,8 +21,6 @@ const FORBIDDEN: [&str; 5] = ["mixos", "cosmix", "/opt/", "mixos_", "dev.mixos"]
 /// ignored by cargo and by any project that takes the crate). Compared after
 /// trimming, so it never matches a longer line.
 const ALLOWED_LINES: [&str; 1] = ["[package.metadata.mixos]"];
-
-const SCANNED: [&str; 6] = ["src", "examples", "tests", "i18n", "README.md", "Cargo.toml"];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -48,10 +46,11 @@ fn no_file_names_the_host_project() {
     let root = crate_root();
     let this = root.join("tests/generic.rs");
     let mut files = Vec::new();
-    for name in SCANNED {
-        files_under(&root.join(name), &mut files);
+    files_under(&root, &mut files);
+    for required in ["Cargo.toml", "README.md", "src/lib.rs", "i18n/en/toolkit.ftl"] {
+        assert!(files.contains(&root.join(required)), "missing {required}");
     }
-    assert!(files.len() > 10, "scanned only {} files", files.len());
+    assert!(files.len() > 20, "scanned only {} files", files.len());
     let mut violations = Vec::new();
     for file in files.iter().filter(|file| **file != this) {
         let text = String::from_utf8_lossy(&std::fs::read(file).expect("read file")).into_owned();
