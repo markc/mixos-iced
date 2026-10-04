@@ -15,6 +15,9 @@ gate (`tests/generic.rs`) keeps it that way.
 | `Waveform`, `WaveformPeaks` | peak-file waveform with playhead and seek |
 | `PianoRoll`, `RollNotes`, `RollView` | tiled, cached piano roll for very large note sets |
 | `Icon` (`icon(name)`) | a named glyph from the installed icon font, as text |
+| `KeyRouter`, `Keys`, `Inert`, `FocusProbe` (`keys`) | chord routing at the root, lossless key capture, input blocking under a modal, focus clicks |
+| `Dialog`, `Modal`, `ModalQueue` (`dialog`) | message, confirm, prompt, secret, choice and progress dialogs over a scrim, keyboard-operable |
+| `Toaster`, `Toast` (`toast`) | stacked corner notices with severity, action, dismiss and expiry |
 
 Everything is a plain `iced_core::Widget`. The library selects no renderer
 and links no window shell; the host enables the `wgpu` or `tiny-skia`
@@ -153,6 +156,69 @@ chooses the directories and theme (`Lookup::new`, `in_data_dirs`); only
 `from_xdg` reads the XDG environment and the GTK/KDE settings files.
 `Resolver` adds a bounded cache that re-checks the file on every hit.
 
+## Keys, dialogs and toasts
+
+These are transport-free: the application owns the state, draws it, feeds
+the events back and acts on the outcomes; nothing here knows about a bus
+or a command.
+
+```rust
+use toolkit::keys::{self, Bindings, Routed};
+use toolkit::dialog::{self, Dialog, Outcome};
+use toolkit::toast::{self, Toast, Toaster};
+
+// Chords: "Ctrl+Shift+S", "F3", "Alt+Up"; letters by Latin layout position.
+let bindings = Bindings::from_table([("Ctrl+S", Action::Save), ("F3", Action::Next)])?;
+let label = bindings.label(&Action::Save);              // Some("Ctrl+S") for a menu
+
+// The window content, wrapped in order: toasts, then the modal, then the router.
+let content = toast::overlay(content, &app.toaster, tokens, Message::Toast);
+let content = match &app.dialog {
+    Some(dialog) => dialog::modal(content, dialog, tokens, Message::Dialog),
+    None => content,
+};
+keys::router(content, &bindings, Message::Route)
+    .modal(app.dialog.is_some())          // a dialog owns the keyboard
+    .text_field(app.find_bar_focused)     // it keeps Ctrl+C/V/Z and friends
+    .mnemonics(['f', 'e', 'h'])        // Alt+E -> Routed::Menu(1)
+    .on_unclaimed(|key, modifiers| ...)   // what no child took
+
+// In update:
+Message::Dialog(event) => if let Some(outcome) = app.dialog.as_mut()?.update(event) {
+    app.dialog = None;                    // Cancelled, Accepted, Text(s), Chosen(i), Button(i)
+    app.queue.next(&mut app.dialog, |_| true);
+}
+Message::Toast(event) => if let Some(id) = app.toaster.update(event) { /* the action */ }
+
+app.queue.offer(&mut app.dialog, Dialog::confirm("Delete?", "This cannot be undone."));
+let handle = app.toaster.push(Toast::new("Saved").severity(Severity::Success));
+```
+
+- `Dialog::{message, confirm, prompt, secret, choice, progress}` with
+  `.severity`, `.buttons([Button::primary(..), Button::destructive(..),
+  Button::cancel(..)])`, `.strings(&Strings { ok, cancel, close })`,
+  `.value`, `.placeholder`, `.selected`, `.cancellable`, `.width`;
+  `set_error` (disables the primary button), `set_progress`
+  (`Progress::Indeterminate` or `Fraction`), `set_body`.
+- Keyboard: Tab and Shift+Tab move between the field, the list and the
+  buttons; Enter activates the focused control, or the default button from
+  the field or list; Escape cancels; Up and Down move the choice; Left and
+  Right move between buttons. The frame captures every key, withholds
+  keyboard and IME input from the content under it, and focuses the
+  prompt's field itself, so no focus task is needed.
+- `Toaster::new().limit(5).default_timeout(Some(d))`; `push` returns the
+  `ToastId` and deadline; `sweep(now)` for an application timer, or let
+  `toast::overlay` request a redraw at the nearest deadline and publish
+  `Event::Expired`. `Toast::new(title).body(..).severity(..).action(..)
+  .sticky().dismissable(false)`.
+- `Keys` is the lossless root capture for a terminal (`on_press`,
+  `input_method`, `on_mouse`, `on_pointer`, `on_redraw`); `Inert` shows
+  content but withholds keyboard and IME input; `FocusProbe` reports a
+  click over a text field.
+- Styles: `dialog::{card, scrim, focus_ring, button_style, option_style}`
+  and `toast::style` are functions of the theme; `Severity::colour` is the
+  text colour, `primary`, a softened `destructive` and `destructive`.
+
 ## Strings
 
 The widgets draw only what the application gives them. The gallery's own
@@ -174,7 +240,8 @@ Light and Custom buttons swap the tokens while it runs.
 cargo test -p toolkit --features gallery-tiny-skia --test snapshots
 ```
 
-renders the gallery page offscreen (iced's headless simulator, software
+renders the gallery page offscreen (and `--test services` the dialogs and
+toasts page, dark and light, plus keyboard-only runs of every dialog) (iced's headless simulator, software
 renderer, embedded Fira Sans) under each token set and writes
 `target/tmp/toolkit-snapshots/gallery-{dark,light,custom}.png` plus a
 before/after pair for the live swap, checking the clear colour, a

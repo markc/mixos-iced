@@ -177,3 +177,38 @@ freedesktop behaviour.
 The widgets draw only what the application gives them; `Item` labels and
 accelerator strings are plain text. The gallery's labels come from
 `i18n/en/toolkit.ftl` through `fluent-bundle`, a gallery-only dependency.
+
+## Keys, dialogs and toasts
+
+The key router, the lossless `Keys` capture, `Inert` and `FocusProbe`
+came from two editors where the chord table named the applications'
+actions; here `Bindings<A>` is generic over the action and keeps table
+order, so an action's first chord is its accelerator label. Chords are
+modifiers plus one key, spelled `Ctrl+Shift+S`; a letter is taken from the
+Latin layout position (`Key::to_latin`) so the same chord works on a
+non-Latin layout. F10 is left to the menu bar, which opens itself;
+Alt+letter routes `Routed::Menu(index)` for `menu::open_operation`.
+
+Dialogs follow the application-owned pattern: `Dialog` is state, `view`
+draws it, `update(Event)` returns an `Outcome` when it is answered. iced
+buttons are not focusables, so the dialog tracks keyboard focus itself as
+a slot index (field or list, then the buttons) and draws the focus ring;
+only the prompt's text input is an iced focusable, and the `Modal` frame
+focuses or unfocuses it by running `operation::focusable::focus` or
+`unfocus` on its layer whenever the dialog's declared focus target
+changes. That keeps focus right on a fresh widget tree too, which is how
+the simulator test can drive a prompt by keyboard. The frame takes Tab and
+Escape before the layer (no text input uses them), everything else after,
+and captures every key so nothing reaches the content under it; mouse
+events stop at the opaque scrim. The sliding bar for indeterminate
+progress asks for a redraw on every frame while it is on screen and
+nothing otherwise.
+
+Toasts keep per-toast deadlines in the `Toaster`; nothing in the crate
+runs a timer. The overlay widget asks the runtime for a redraw at the
+nearest deadline (iced's `request_redraw_at`) and publishes
+`Event::Expired` when a redraw finds it passed, so a winit application
+needs no timer executor; an application with its own clock calls
+`sweep(now)` instead. The warning colour is derived (`destructive` mixed
+towards the text colour) because the palette has no warning role; adding
+one would change `Palette` for every taker.

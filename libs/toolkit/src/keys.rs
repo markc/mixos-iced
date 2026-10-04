@@ -116,8 +116,9 @@ fn unshift(c: char) -> char {
 }
 
 impl Chord {
-    /// Parses `Ctrl+Alt+Shift+Super+S`: modifiers in any order (`Ctrl`,
-    /// `Alt`, `Shift`, `Super`), the key last. Letters are case-insensitive.
+    /// Parses `Ctrl+Alt+Shift+Super+S`: modifiers in any order (`Ctrl` or
+    /// `Control`, `Alt`, `Shift`, `Super` or `Logo`, case-insensitive), the
+    /// key last; a letter is case-insensitive, a named key is not.
     pub fn parse(text: &str) -> Option<Self> {
         let mut chord = Self {
             ctrl: false,
@@ -129,11 +130,11 @@ impl Chord {
         let parts: Vec<&str> = text.split('+').collect();
         let (key, modifiers) = parts.split_last()?;
         for modifier in modifiers {
-            match *modifier {
-                "Ctrl" => chord.ctrl = true,
-                "Alt" => chord.alt = true,
-                "Shift" => chord.shift = true,
-                "Super" => chord.logo = true,
+            match modifier.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => chord.ctrl = true,
+                "alt" => chord.alt = true,
+                "shift" => chord.shift = true,
+                "super" | "logo" => chord.logo = true,
                 _ => return None,
             }
         }
@@ -994,7 +995,8 @@ mod tests {
         ] {
             assert_eq!(chord(text).to_string(), text);
         }
-        assert_eq!(chord("ctrl+s"), Chord::parse("ctrl+s").unwrap());
+        assert_eq!(chord("ctrl+s"), chord("Ctrl+S"));
+        assert_eq!(chord("Control+Logo+Up"), chord("Ctrl+Super+Up"));
         assert_eq!(chord("Ctrl+s"), chord("Ctrl+S"));
         assert_eq!(chord("Up").named(), Some(Named::ArrowUp));
         assert_eq!(chord("a").named(), None);

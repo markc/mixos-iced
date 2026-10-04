@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Keys: `keys::Chord` (parsed from and shown as `Ctrl+Shift+S`; from key
+  events by the Latin layout position), `keys::Bindings<A>` (chord → action
+  in table order, accelerator labels), `keys::route` (modal, text-field and
+  Alt+mnemonic precedence) and the root widgets `KeyRouter`, `Keys`
+  (lossless key, IME, mouse and redraw reporting), `Inert` and `FocusProbe`.
+- Dialogs: `dialog::Dialog` (message, confirm, prompt, secret, choice,
+  progress) as application state with `update(Event) -> Option<Outcome>`,
+  `view` and `key`; `dialog::modal` and the `Modal` frame (scrim, focus
+  trap, declared focus), `Indeterminate` bar, `ModalQueue`, `Strings`.
+  Keyboard only: Tab, Shift+Tab, Enter, Escape, arrows.
+- Toasts: `toast::Toaster` with ids, limits and deadlines (`push`, `sweep`,
+  `next_deadline`, `update`), `toast::overlay` stacking the cards in a
+  corner and publishing `Event::Expired` from redraws; `Severity` shared
+  with dialogs.
+- Gallery: a "Dialogs & toasts" page driven from buttons and keys;
+  `tests/services.rs` snapshots it dark and light and drives it through
+  the simulator by keyboard alone.
+
 ## 0.2.0
 
 - Theming: `theme::Theme`, a complete iced theme made of `Tokens`:
