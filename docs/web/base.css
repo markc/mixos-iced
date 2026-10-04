@@ -95,7 +95,7 @@
            a page shows one (web/fonts.css unicode-range). */
         --font-sans: "Inter", "Quicksand", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif, "MixOS Emoji";
         --font-heading: "Quicksand", sans-serif, "MixOS Emoji";
-        --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace, "MixOS Emoji";
+        --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Monaco, monospace, "MixOS Emoji";
 
         /* Z-index - dropdown/fixed/toast */
         --z-dropdown: 100;
