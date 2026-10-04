@@ -8,9 +8,13 @@
 //!
 //! `cargo test -p toolkit --features gallery-tiny-skia --test snapshots`
 //! (the `[[test]]` entry requires the feature, so a plain `cargo test`
-//! skips it). No window, GPU or host font is used.
-#![cfg(feature = "gallery-tiny-skia")]
+//! skips it). No window, GPU or host font is used. With the `wgpu` feature
+//! on as well (`--all-features`) iced's fallback renderer would try a GPU
+//! first, so the tests are compiled out.
+#![cfg(all(feature = "gallery-tiny-skia", not(feature = "wgpu")))]
 
+// The gallery program as a whole; its `run` is for the examples.
+#[allow(dead_code)]
 #[path = "../examples/gallery/app.rs"]
 mod app;
 
@@ -24,6 +28,9 @@ use toolkit::fonts;
 
 /// Logical size of the simulated window; the snapshot is taken at 2x.
 const VIEWPORT: Size = Size::new(1280.0, 1900.0);
+
+/// `Snapshot::matches_image` writes `<stem>-<renderer>.png`.
+const RENDERER: &str = "tiny-skia";
 
 fn output_dir() -> PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).join("toolkit-snapshots")
@@ -56,13 +63,16 @@ fn render(gallery: &Gallery, path: &Path) -> (u32, u32, Vec<u8>) {
     };
     let mut ui = Simulator::with_size(settings, VIEWPORT, gallery.view());
     let snapshot = ui.snapshot(&gallery.theme()).expect("render the gallery");
-    let _ = std::fs::remove_file(path);
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    let written = path.with_file_name(format!("{stem}-{RENDERER}.png"));
+    let _ = std::fs::remove_file(&written);
     assert!(
         snapshot.matches_image(path).unwrap(),
         "{} written",
-        path.display()
+        written.display()
     );
-    read_png(path)
+    eprintln!("wrote {}", written.display());
+    read_png(&written)
 }
 
 #[test]
@@ -99,7 +109,6 @@ fn gallery_renders_under_every_token_set() {
                 .any(|y| (0..width).step_by(2).any(|x| close(pixel(x, y), primary))),
             "{mode:?}: no pixel in the primary colour {primary:?}"
         );
-        eprintln!("{mode:?}: {}", path.display());
         frames.push(rgba);
     }
     assert_ne!(frames[0], frames[1], "dark and light differ");

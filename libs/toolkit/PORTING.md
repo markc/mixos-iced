@@ -85,7 +85,53 @@ read on their own. The widget styles derive from the palette:
 
 An application with its own theme fills the same fields; the crate parses
 no theme format. Hard-coded colours remain only in `tokens.rs` (the
-gallery's preview track colours and the menu's standalone default).
+gallery's preview track colours and the menu's standalone default);
+`tests/colours.rs` scans every other file under `src/` for colour
+constructors and hex literals, with an empty allowlist and a planted
+fixture that proves the scanner catches each kind.
+
+### `theme::Theme`
+
+`Theme { tokens, name, labelled }` is the iced theme type. Each iced
+widget's `Catalog` is implemented with `Class<'a> = StyleFn<'a, Theme>`,
+exactly as iced's own theme does, so `.style(|theme, status| ...)` and
+`.class(...)` keep working, and the default class is the toolkit style
+function for that widget (`theme::button::primary`,
+`theme::container::transparent`, ...). The style functions read
+`theme.tokens` on every call and hold nothing, so a theme swap is complete
+on the next frame. Derived shades (hover, pressed) are `Color::mix` of two
+palette colours, which keeps the colour gate green.
+
+`theme::Base::name` returns `toolkit-<hash>` where the hash covers every
+channel of every palette colour and every metric: iced's text editor
+compares theme names to decide when to re-highlight, so the name must move
+with the tokens. `Theme::named` keeps a caller's label instead (for a
+picker) and so should only label distinct token sets.
+
+The crate's own widgets take their colours from the theme through
+`theme::Catalog` (`menu_style`, `audio_style`), implemented for `Theme`
+and for `iced_core::Theme` (from its extended palette), unless given an
+explicit style. Layout has no theme, so a theme-styled `Menu` or `Panel`
+uses the default row metrics and only the colours and radius from the
+theme; an explicit `MenuStyle` sets both. `Waveform` and `PianoRoll` key
+their geometry caches on the style resolved at draw time (a `Cell` in the
+widget state), so a swap redraws their cached bodies and tiles.
+`TextField` is generic over the theme type with the same
+`text_input::Catalog` bound as iced's `TextInput`.
+
+`Theme::iced_seed`/`to_iced` map the palette onto iced's `Seed` (surface,
+text, primary; success from primary, warning from selection, danger from
+destructive) for third-party widgets that only style from `iced::Theme`.
+
+### Snapshots
+
+`tests/snapshots.rs` includes the gallery's `app.rs` by path, builds the
+page element and renders it with `iced_test::Simulator` (the vendored
+`iced/test` crate) on the tiny-skia renderer at 2x, which needs neither a
+window nor a GPU. The test is `required-features = ["gallery-tiny-skia"]`
+so a plain `cargo test -p toolkit` stays renderer-free. `iced_test` and
+`png` are dev-dependencies only, so they never enter the library's
+closure or the `generic` gate.
 
 ## Fonts and icons
 
@@ -113,7 +159,18 @@ fallback family never renders ExtraLight.
 `IconFont::parse_codepoints` reads the `name hex` table format one line
 per glyph, rejecting a bad row with its line number; `fonts::icon(name)`
 returns the glyph and a font naming the icon family, ready for a text
-widget.
+widget, and `icon(name)` is that text widget (relative line height 1,
+advanced shaping, colour inherited unless set). A missing glyph renders
+the name so the gap is seen, not blank.
+
+`icons::freedesktop` came from a compositor's scene host, where it was a
+process-wide resolver reading the XDG environment. Here the directories
+and theme are a `Lookup` value the caller builds (`from_xdg` is the one
+constructor that reads the environment), the cache is a `Resolver` value
+rather than a static, the host's application IDs are gone from the tests,
+and the GTK/KDE theme-name discovery, the `-symbolic` round trip, the
+shell-glyph aliases and the category fallback are kept as generic
+freedesktop behaviour.
 
 ## Strings
 

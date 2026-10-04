@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0
+
+- Theming: `theme::Theme`, a complete iced theme made of `Tokens`:
+  `theme::Base` plus the `Catalog` of button, text_input, checkbox, radio,
+  toggler, slider, pick_list and its menu, combo_box, scrollable,
+  container, progress_bar, rule, pane_grid, text_editor, text, table,
+  float and svg (feature `svg`), with named classes for the button, container
+  and text variants. The name fingerprints the tokens, so a live swap
+  restyles the next frame. `Theme::named`, `Theme::to_iced`.
+- `theme::Catalog` (`menu_style`, `audio_style`) for `Theme` and
+  `iced_core::Theme`; `Menu`, `Panel`, `Fader`, `Knob`, `LevelMeter`,
+  `Toggle`, `Waveform` and `PianoRoll` take their colours from the theme
+  unless styled explicitly. **Breaking:** those widgets' `Theme` parameter
+  now needs `theme::Catalog`, and `TextField` has a `Theme` type parameter
+  (`TextField<'a, Message, Theme, Renderer>`).
+- Icons: `icon(name)` / `Icon`, a glyph from the installed `IconFont` as a
+  text widget; `icons::freedesktop::{Lookup, Resolver}`, a std-only icon
+  theme and desktop-entry resolver.
+- Gates: `tests/colours.rs` (no colour literal outside `src/tokens.rs`,
+  with a planted self-check); `tests/snapshots.rs` renders the gallery
+  offscreen to PNG under every token set (feature `gallery-tiny-skia`).
+- Gallery: Dark, Light and Custom token sets switchable at runtime, and a
+  page of iced's built-in widgets under the theme.
+
 ## 0.1.0
 
 First release, for iced 0.15.0-dev.
