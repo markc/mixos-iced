@@ -452,7 +452,7 @@ pub mod button {
     pub fn secondary(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
         let m = theme.tokens.metrics;
-        let (background, text_color, outline) = match status {
+        let (background, text_color, edge) = match status {
             Status::Active => (p.card, p.card_text, p.border),
             Status::Hovered => (p.elevated, p.elevated_text, p.border),
             Status::Pressed => (p.muted_surface, p.text, p.ring),
@@ -461,7 +461,7 @@ pub mod button {
         Style {
             background: Some(background.into()),
             text_color,
-            border: outline(outline, m, m.radius.md),
+            border: outline(edge, m, m.radius.md),
             shadow: Shadow::default(),
             snap: true,
         }
@@ -533,7 +533,7 @@ pub mod checkbox {
             Status::Hovered { is_checked } => (is_checked, true, false),
             Status::Disabled { is_checked } => (is_checked, false, true),
         };
-        let (background, icon_color, outline) = match (is_checked, disabled) {
+        let (background, icon_color, edge) = match (is_checked, disabled) {
             (_, true) => (p.muted_surface, p.muted_text, p.input),
             (true, false) => (
                 if hovered {
@@ -553,7 +553,7 @@ pub mod checkbox {
         Style {
             background: background.into(),
             icon_color,
-            border: outline(outline, m, m.radius.sm),
+            border: outline(edge, m, m.radius.sm),
             text_color: disabled.then_some(p.muted_text),
         }
     }
@@ -681,7 +681,7 @@ pub mod pick_list {
         let p = theme.tokens.palette;
         let m = theme.tokens.metrics;
         let disabled = matches!(status, Status::Disabled);
-        let outline = match status {
+        let edge = match status {
             Status::Active => p.input,
             Status::Hovered => p.border,
             Status::Opened { .. } => p.ring,
@@ -692,7 +692,7 @@ pub mod pick_list {
             placeholder_color: p.muted_text,
             handle_color: if disabled { p.muted_text } else { p.text },
             background: if disabled { p.muted_surface } else { p.surface }.into(),
-            border: outline(outline, m, m.radius.md),
+            border: outline(edge, m, m.radius.md),
         }
     }
 }

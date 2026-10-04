@@ -61,6 +61,7 @@ impl Icon {
         Theme: Catalog + 'a,
         Theme::Class<'a>: From<StyleFn<'a, Theme>>,
         Renderer: text::Renderer + 'a,
+        Renderer::Font: From<Font>,
     {
         let mut text = match self.glyph() {
             Some((glyph, font)) => Text::new(glyph.to_string())
@@ -82,6 +83,7 @@ where
     Theme: Catalog + 'a,
     Theme::Class<'a>: From<StyleFn<'a, Theme>>,
     Renderer: text::Renderer + 'a,
+    Renderer::Font: From<Font>,
 {
     fn from(icon: Icon) -> Self {
         icon.view().into()
