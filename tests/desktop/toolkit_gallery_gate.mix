@@ -1,0 +1,104 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- toolkit_gallery_gate.mix — map, resize and capture the toolkit widget
+-- gallery inside a nested compd, as evidence that the generic widget set
+-- runs on the desktop.
+-- version: 0.2.0
+--
+--   mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--no-build]
+--
+-- Builds compd (release-fast) and the gallery example (debug, gallery-wgpu)
+-- unless --no-build, starts a private Bus and a software-rendered nested
+-- compd on a headless weston host (nested_host_lib.mix), launches the
+-- gallery on it, waits for its window, places it at 1280x1500, captures it
+-- with comp.capture.frame and prints the PNG base64 between
+-- TOOLKIT_GALLERY_PNG_BEGIN/END so a cluster log carries the picture.
+--
+-- Checks: the gallery maps exactly one window titled "Toolkit widget
+-- gallery"; it accepts the placement; the capture file exists.
+-- Exit 0 on PASS, 1 on FAIL.
+$n = require("nested_host_lib.mix")
+$root = trim(run_argv_must(["git", "rev-parse", "--show-toplevel"]))
+$bin = $root .. "/target/release-fast/compd"
+$config = $root .. "/tests/desktop/smoke-settings.json"
+$build = true
+$av = args()
+$i = 0
+while $i < len($av)
+  $a = $av[$i]
+  if $a == "--bin" then
+    $bin = $av[$i + 1]
+    $i = $i + 2
+    continue
+  elif $a == "--config-file" then
+    $config = $av[$i + 1]
+    $i = $i + 2
+    continue
+  elif $a == "--no-build" then
+    $build = false
+  else
+    eprint("usage: mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--no-build]")
+    exit(2)
+  end
+  $i = $i + 1
+end
+$run = $n.new_run($root .. "/target/toolkit-gallery")
+$session = nil
+$bus = nil
+$gallery = nil
+$ok = false
+try
+  if $build then
+    print(run_argv_must(["cargo", "build", "--profile", "release-fast", "-p", "compd"], {timeout: 7200}))
+    print(run_argv_must(["cargo", "build", "-p", "toolkit", "--example", "gallery", "--features", "gallery-wgpu"], {timeout: 7200}))
+  end
+  $bus = $n.private_bus({dir: $run.path, name: "toolkit-gallery"})
+  $session = $n.start({bin: $bin, tag: "toolkit", run: $run, config: $config,
+    width: 1400, height: 1600, software: true})
+  if not $n.wait_ready($session, 30) then
+    raise("GALLERY_START", "nested compositor did not answer comp.ping: " .. $session.log)
+  end
+  $gallery = spawn([$root .. "/target/debug/examples/gallery"], {
+    env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket,
+      DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", WGPU_BACKEND: "gl",
+      DBUS_SESSION_BUS_ADDRESS: $session.dbus},
+    stdout: {file: $run.path .. "/gallery.log"}, stderr: "stdout", detach: true
+  })
+  $window = $n.call($session.service, "comp.window.wait", {
+    match: {title: "Toolkit widget gallery"}, until: "mapped", timeout_ms: 15000
+  })
+  print(json_encode($window))
+  if $window.rc != 0 then raise("GALLERY_MAP", "gallery did not map") end
+  $rows = $n.call($session.service, "comp.windows.list", {})
+  $matching = filter($rows.result.windows ?? [], fn($w) = $w.title == "Toolkit widget gallery")
+  if len($matching) != 1 then raise("GALLERY_WINDOW", "expected one gallery window") end
+  $win = $matching[0]
+  $placed = $n.call($session.service, "comp.window.place", {
+    id: $win.id, generation: $win.generation, x: 0, y: 0, width: 1280, height: 1500
+  })
+  if $placed.rc != 0 then raise("GALLERY_RESIZE", json_encode($placed)) end
+  $sized = $n.call($session.service, "comp.window.wait", {
+    match: {id: $win.id, generation: $win.generation}, until: "size",
+    width: 1280, height: 1500, timeout_ms: 15000
+  })
+  if $sized.rc != 0 then raise("GALLERY_SIZE", json_encode($sized)) end
+  sleep(1)
+  $png = $run.path .. "/gallery.png"
+  $shot = $n.call($session.service, "comp.capture.frame", {
+    path: $png, window: {id: $win.id, generation: $win.generation}
+  })
+  if $shot.rc != 0 or not is_file($png) then raise("GALLERY_CAPTURE", json_encode($shot)) end
+  print("PASS toolkit gallery mapped, resized and captured: " .. $png)
+  print("TOOLKIT_GALLERY_PNG_BEGIN")
+  print(base64_encode(read_file_bytes($png)))
+  print("TOOLKIT_GALLERY_PNG_END")
+  $ok = true
+catch $message
+  print("FAIL toolkit gallery: " .. $message)
+  if is_file($run.path .. "/gallery.log") then print(read_file($run.path .. "/gallery.log")) end
+finally
+  if $gallery != nil and process_alive($gallery) then $k = kill($gallery, 15) end
+  if $session != nil then $n.stop($session) end
+  if $bus != nil then $n.stop_bus($bus) end
+  print("gallery evidence: " .. $run.path)
+end
+exit(if $ok then 0 else 1 end)

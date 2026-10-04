@@ -22,6 +22,12 @@ Two kinds of script:
 Gates whose subject is a MixOS application rather than compd (the editor, the
 file manager, the panel host and its scenes) return with each application.
 
+`toolkit_gallery_gate.mix` runs the generic widget toolkit's gallery
+(`libs/toolkit`, `cargo build -p toolkit --example gallery --features
+gallery-wgpu`) inside a nested compd, waits for its window, places it and
+captures it (`--bin`, `--config-file`, `--no-build`). It is the desktop-side
+evidence for toolkit; toolkit's own tests never start a compositor.
+
 Helpers: `nested_host_lib.mix` (the shared harness), `bus_watch.mix` and
 `panel_holder.mix` (`mix --serve` helpers the smokes start), the HTML fixtures
 and `smoke-settings.json` (the settings file compd is started with).
