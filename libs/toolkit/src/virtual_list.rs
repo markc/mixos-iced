@@ -1115,17 +1115,34 @@ where
         let body = self.body(bounds);
         let hovered = cursor.is_over(clip);
         let style = self.resolve_style(theme, state, hovered);
-        if style.background.is_some() || style.border.width > 0.0 {
+        if let Some(background) = style.background {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds,
-                    border: style.border,
+                    border: Border {
+                        radius: style.border.radius,
+                        ..Border::default()
+                    },
                     ..renderer::Quad::default()
                 },
-                style.background.unwrap_or(Background::Color(Color::TRANSPARENT)),
+                background,
             );
         }
+        // The outline goes on last, over the rows that reach the edge.
+        let outline = |renderer: &mut Renderer| {
+            if style.border.width > 0.0 {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        border: style.border,
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(Color::TRANSPARENT),
+                );
+            }
+        };
         let Some(body_clip) = body.intersection(&clip) else {
+            outline(renderer);
             return;
         };
         let hover_row = cursor
@@ -1250,6 +1267,7 @@ where
                 });
             }
         }
+        outline(renderer);
     }
 
     fn mouse_interaction(

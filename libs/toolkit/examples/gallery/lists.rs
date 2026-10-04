@@ -59,6 +59,18 @@ pub struct Branch {
     name: String,
 }
 
+/// `label` with the named icon before it when the installed icon font has
+/// the glyph (without one the icon widget would show the name).
+fn labelled<'a>(icon_name: &str, label: String, tokens: Tokens) -> iced::widget::Row<'a, Message, Theme> {
+    let mut row = iced::widget::Row::new()
+        .spacing(tokens.metrics.spacing.sm)
+        .align_y(iced::Center);
+    if toolkit::fonts::icon(icon_name).is_some() {
+        row = row.push(icon(icon_name).size(tokens.metrics.text.md));
+    }
+    row.push(text(label))
+}
+
 pub struct Lists {
     selection: Selection,
     activated: Option<usize>,
@@ -181,13 +193,7 @@ impl Lists {
         let list: VirtualList<'_, Message, Theme, iced::Renderer> = VirtualList::new(ROWS, move |index| {
             let item = Item::at(row_of(index));
             columns.row([
-                row![
-                    icon(item.icon()).size(tokens.metrics.text.md),
-                    text(item.name())
-                ]
-                .spacing(spacing.sm)
-                .align_y(iced::Center)
-                .into(),
+                labelled(item.icon(), item.name(), tokens).into(),
                 text(item.size()).into(),
                 text(label(item.kind_label())).into(),
             ])
@@ -226,17 +232,15 @@ impl Lists {
         .style(theme::text::muted);
 
         let tree: TreeView<'_, String, Branch, Message, Theme, iced::Renderer> = TreeView::new(&self.tree, move |node| {
-            row![
-                icon(if node.has_children() {
+            labelled(
+                if node.has_children() {
                     "folder"
                 } else {
                     "description"
-                })
-                .size(tokens.metrics.text.md),
-                text(node.data.name.clone())
-            ]
-            .spacing(spacing.sm)
-            .align_y(iced::Center)
+                },
+                node.data.name.clone(),
+                tokens,
+            )
         })
         .on_toggle(Message::TreeToggle)
         .on_select(Message::TreeSelect)
