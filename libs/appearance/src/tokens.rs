@@ -257,28 +257,28 @@ mod tests {
     fn palette_takes_the_rendered_halves_of_each_pair() {
         let theme = Theme::embedded();
         let colours = &theme.dictionary().colours;
-        let palette = palette(colours);
+        let mapped = palette(colours);
         for (name, surface, text) in [
-            ("base", palette.surface, palette.text),
-            ("popover", palette.popover, palette.popover_text),
-            ("elevated", palette.elevated, palette.elevated_text),
-            ("card", palette.card, palette.card_text),
-            ("primary", palette.primary, palette.primary_text),
-            ("destructive", palette.destructive, palette.destructive_text),
-            ("muted", palette.muted_surface, palette.muted_text),
-            ("accent", palette.selection, palette.selection_text),
+            ("base", mapped.surface, mapped.text),
+            ("popover", mapped.popover, mapped.popover_text),
+            ("elevated", mapped.elevated, mapped.elevated_text),
+            ("card", mapped.card, mapped.card_text),
+            ("primary", mapped.primary, mapped.primary_text),
+            ("destructive", mapped.destructive, mapped.destructive_text),
+            ("muted", mapped.muted_surface, mapped.muted_text),
+            ("accent", mapped.selection, mapped.selection_text),
         ] {
             let pair = &colours.pairs[name];
             assert_eq!(surface, colour(pair.rendered_surface), "{name}");
             assert_eq!(text, colour(pair.rendered_foreground), "{name}");
         }
-        assert_eq!(palette.border, colour(colours.non_text["border"].value));
-        assert_eq!(palette.input, colour(colours.non_text["input"].value));
-        assert_eq!(palette.ring, colour(colours.non_text["ring"].value));
+        assert_eq!(mapped.border, colour(colours.non_text["border"].value));
+        assert_eq!(mapped.input, colour(colours.non_text["input"].value));
+        assert_eq!(mapped.ring, colour(colours.non_text["ring"].value));
         // The card surface is authored transparent over the base backdrop:
         // what arrives is the composite, never the transparent source.
-        assert_eq!(palette.card.a, 1.0);
-        assert_eq!(palette.popover, palette.elevated);
+        assert_eq!(mapped.card.a, 1.0);
+        assert_eq!(mapped.popover, mapped.elevated);
     }
 
     #[test]
@@ -287,10 +287,10 @@ mod tests {
         let mut colours = theme.dictionary().colours.clone();
         colours.pairs.remove("accent");
         colours.non_text.remove("ring");
-        let palette = palette(&colours);
-        assert_eq!(palette.selection, palette.surface);
-        assert_eq!(palette.selection_text, palette.text);
-        assert_eq!(palette.ring, palette.text);
+        let mapped = palette(&colours);
+        assert_eq!(mapped.selection, mapped.surface);
+        assert_eq!(mapped.selection_text, mapped.text);
+        assert_eq!(mapped.ring, mapped.text);
         let empty = palette(&ResolvedColours::default());
         assert_eq!(empty.surface, Palette::light().surface);
         assert_eq!(empty.ring, Palette::light().text);
