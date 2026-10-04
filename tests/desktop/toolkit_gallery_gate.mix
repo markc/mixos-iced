@@ -4,10 +4,11 @@
 -- runs on the desktop.
 -- version: 0.2.0
 --
---   mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--no-build]
+--   mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--noded PATH] [--no-build]
 --
 -- Builds compd (release-fast) and the gallery example (debug, gallery-wgpu)
--- unless --no-build, starts a private Bus and a software-rendered nested
+-- unless --no-build, starts a private Bus (noded from --noded, else
+-- /opt/mixos/bin) and a software-rendered nested
 -- compd on a headless weston host (nested_host_lib.mix), launches the
 -- gallery on it, waits for its window, places it at 1280x1500, captures it
 -- with comp.capture.frame and prints the PNG base64 between
@@ -20,6 +21,7 @@ $n = require("nested_host_lib.mix")
 $root = trim(run_argv_must(["git", "rev-parse", "--show-toplevel"]))
 $bin = $root .. "/target/release-fast/compd"
 $config = $root .. "/tests/desktop/smoke-settings.json"
+$noded = ""
 $build = true
 $av = args()
 $i = 0
@@ -33,10 +35,14 @@ while $i < len($av)
     $config = $av[$i + 1]
     $i = $i + 2
     continue
+  elif $a == "--noded" then
+    $noded = $av[$i + 1]
+    $i = $i + 2
+    continue
   elif $a == "--no-build" then
     $build = false
   else
-    eprint("usage: mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--no-build]")
+    eprint("usage: mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--noded PATH] [--no-build]")
     exit(2)
   end
   $i = $i + 1
@@ -51,7 +57,7 @@ try
     print(run_argv_must(["cargo", "build", "--profile", "release-fast", "-p", "compd"], {timeout: 7200}))
     print(run_argv_must(["cargo", "build", "-p", "toolkit", "--example", "gallery", "--features", "gallery-wgpu"], {timeout: 7200}))
   end
-  $bus = $n.private_bus({dir: $run.path, name: "toolkit-gallery"})
+  $bus = $n.private_bus({dir: $run.path, name: "toolkit-gallery", noded: $noded})
   $session = $n.start({bin: $bin, tag: "toolkit", run: $run, config: $config,
     width: 1400, height: 1600, software: true})
   if not $n.wait_ready($session, 30) then

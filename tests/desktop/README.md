@@ -25,7 +25,7 @@ file manager, the panel host and its scenes) return with each application.
 `toolkit_gallery_gate.mix` runs the generic widget toolkit's gallery
 (`libs/toolkit`, `cargo build -p toolkit --example gallery --features
 gallery-wgpu`) inside a nested compd, waits for its window, places it and
-captures it (`--bin`, `--config-file`, `--no-build`). It is the desktop-side
+captures it (`--bin`, `--config-file`, `--noded`, `--no-build`). It is the desktop-side
 evidence for toolkit; toolkit's own tests never start a compositor.
 
 Helpers: `nested_host_lib.mix` (the shared harness), `bus_watch.mix` and
