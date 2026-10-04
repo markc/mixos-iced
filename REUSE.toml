@@ -63,22 +63,30 @@ precedence = "override"
 SPDX-FileCopyrightText = "Google LLC (Material Symbols)"
 SPDX-License-Identifier = "Apache-2.0"
 
+# Web fonts: subsets gen-site.mix cuts from the pinned asset set
+# (docs/build/site.conf.mix fonts.faces); the role names are its.
 [[annotations]]
-path = ["docs/web/fonts/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa*.woff2"]
+path = ["docs/web/fonts/sans.woff2", "docs/web/fonts/LICENSE-Inter.txt"]
 precedence = "override"
 SPDX-FileCopyrightText = "2016 The Inter Project Authors (https://github.com/rsms/inter)"
 SPDX-License-Identifier = "OFL-1.1"
 
 [[annotations]]
-path = ["docs/web/fonts/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKP*.woff2"]
+path = ["docs/web/fonts/mono.woff2", "docs/web/fonts/mono-italic.woff2", "docs/web/fonts/LICENSE-JetBrainsMono.txt"]
 precedence = "override"
 SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
 SPDX-License-Identifier = "OFL-1.1"
 
 [[annotations]]
-path = ["docs/web/fonts/6xKtdSZaM9iE8KbpRA_h*.woff2"]
+path = ["docs/web/fonts/display.woff2", "docs/web/fonts/LICENSE-Quicksand.txt"]
 precedence = "override"
-SPDX-FileCopyrightText = "2011 The Quicksand Project Authors (https://github.com/andrew-paglinawan/QuicksandFamily)"
+SPDX-FileCopyrightText = "2011 The Quicksand Project Authors (https://github.com/andrew-paglinawan/QuicksandFamily), with Reserved Font Name Quicksand"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = ["docs/web/fonts/emoji.woff2", "docs/web/fonts/LICENSE-NotoColorEmoji.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "Google LLC (Noto Color Emoji, COLRv1 build)"
 SPDX-License-Identifier = "OFL-1.1"
 
 # Provenance not yet recorded; clear it (or replace it) before a release.

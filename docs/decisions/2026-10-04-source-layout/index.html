@@ -14,14 +14,15 @@
     <title>Decision — source layout and naming — MixOS</title>
     <link rel="canonical" href="https://mixos.dev/decisions/2026-10-04-source-layout/">
     <link rel="alternate" type="text/markdown" href="/decisions/2026-10-04-source-layout.md" title="Markdown source">
-    <meta name="mixos-build" content="1774f0b81074">
+    <meta name="mixos-build" content="66d88465ef14">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/web/fonts.css?v=a690d4a03f"><!-- vendored Inter / Quicksand / JetBrains Mono (woff2 in web/fonts/) -->
+    <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="/web/fonts.css?v=b1859e7656"><!-- generated: Inter / Quicksand / JetBrains Mono / emoji cut from the asset set -->
     <!-- FOUC prevention: paint theme/scheme synchronously before first paint (dcs.spa convention). -->
     <script>(function(){var s=JSON.parse(localStorage.getItem('base-state')||'{}'),t=s.theme,c=(s.scheme||'mono'),h=document.documentElement;h.className='preload '+(t||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'))+(c&&c!=='default'?' scheme-'+c:'')+(s.width==='wide'?' wide':(s.width==='narrow'?' narrow':''));})()</script>
-    <link rel="stylesheet" href="/web/base.css?v=f5ea7e5d0e">
+    <link rel="stylesheet" href="/web/base.css?v=db432a367e">
     <link rel="stylesheet" href="/web/site.css?v=cc5e468d34">
-    <link rel="stylesheet" href="/web/icons.css?v=c004f72c3e"><!-- generated: Material Symbols Rounded subset -->
+    <link rel="stylesheet" href="/web/icons.css?v=662ff180d9"><!-- generated: Material Symbols Rounded subset -->
     <!-- Icons are CSS glyphs keyed on data-lucide/data-icon (web/icons.css), so
          base.js's lucide.createIcons() calls only need this no-op stand-in. -->
     <script>window.lucide={createIcons:function(){}};</script>

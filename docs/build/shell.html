@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="{{asset:web/brand/apple-touch-icon.png}}">
     <title>{{title}}</title>
 {{head}}
-    <link rel="stylesheet" href="{{asset:web/fonts.css}}"><!-- vendored Inter / Quicksand / JetBrains Mono (woff2 in web/fonts/) -->
+    <link rel="stylesheet" href="{{asset:web/fonts.css}}"><!-- generated: Inter / Quicksand / JetBrains Mono / emoji cut from the asset set -->
     <!-- FOUC prevention: paint theme/scheme synchronously before first paint (dcs.spa convention). -->
     <script>(function(){var s=JSON.parse(localStorage.getItem('base-state')||'{}'),t=s.theme,c=(s.scheme||'mono'),h=document.documentElement;h.className='preload '+(t||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'))+(c&&c!=='default'?' scheme-'+c:'')+(s.width==='wide'?' wide':(s.width==='narrow'?' narrow':''));})()</script>
     <link rel="stylesheet" href="{{asset:web/base.css}}">

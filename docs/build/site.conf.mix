@@ -15,7 +15,7 @@ site: {
   -- MixOS desktop draws from, so site and desktop share one icon language.
   -- The source font is verified by sha256 before anything is subset.
   icons: {
-    asset_set: "/opt/mixos/share/assets/sets/2026-10-01-core-2",
+    asset_set: "/opt/mixos/share/assets/sets/2026-10-04-core-3",
     font: "icons/MaterialSymbolsRounded.ttf",
     codepoints: "icons/MaterialSymbolsRounded.codepoints",
     licence: "licences/MaterialSymbols-Apache.txt",
@@ -50,6 +50,61 @@ site: {
       "chevron-right": "chevron_right",
       "cpu": "memory",
       "file-text": "description"
+    }
+  },
+
+  -- Text and emoji faces: cut from the SAME pinned asset set as the icons,
+  -- so mixos.dev sets type in exactly the files the MixOS desktop renders
+  -- (share/assets/core.conf.mix is the lock; the sha256 values are its).
+  -- gen-site.mix verifies each source, subsets it with hb-subset (variation
+  -- axes kept), compresses it with woff2_compress, writes
+  -- web/fonts/<role>.woff2 and GENERATES web/fonts.css. Neither is edited
+  -- by hand. CSS family names are the ones web/base.css already uses.
+  fonts: {
+    asset_set: "/opt/mixos/share/assets/sets/2026-10-04-core-3",
+    -- Coverage every text face is cut to: Basic Latin + Latin-1 Supplement,
+    -- Latin Extended-A, General Punctuation, Arrows, Currency Symbols, plus
+    -- the trade mark, minus and division signs, ZWNBSP and U+FFFD. Nothing
+    -- outside it is served; Greek, Cyrillic and Vietnamese fall through to
+    -- the visitor's own fonts.
+    unicodes: "U+0000-00FF,U+0100-017F,U+2000-206F,U+2190-21FF,U+20A0-20CF,U+2122,U+2212,U+2215,U+FEFF,U+FFFD",
+    -- Preloaded on every page (the body face); the rest load on first use.
+    preload: ["sans"],
+    faces: [
+      {role: "sans", family: "Inter", file: "fonts/InterVariable.ttf",
+       sha256: "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+       style: "normal", weight: "100 900", licence: "LICENSE-Inter.txt"},
+      {role: "mono", family: "JetBrains Mono", file: "fonts/JetBrainsMono.ttf",
+       sha256: "662a196d58f1183bf2d77428b6d5283fe3f45161ab021bea4036bc98e5cac016",
+       style: "normal", weight: "100 800", licence: "LICENSE-JetBrainsMono.txt"},
+      {role: "mono-italic", family: "JetBrains Mono", file: "fonts/JetBrainsMono-Italic.ttf",
+       sha256: "f115aaa12113718c02ce72864fe6823b87241bc23d3e44cf1220155f861063f2",
+       style: "italic", weight: "100 800", licence: "LICENSE-JetBrainsMono.txt"},
+      {role: "display", family: "Quicksand", file: "fonts/Quicksand.ttf",
+       sha256: "39c9b64223561f56aaff6062a6f04063c4fc86809ad6768722c06614d977e1cc",
+       style: "normal", weight: "300 700", licence: "LICENSE-Quicksand.txt"},
+      -- Noto Color Emoji, COLRv1 build: the set's web emoji. Its own
+      -- coverage is the emoji presentation blocks and the joiners that make
+      -- sequences (ZWJ, keycap, VS16, tags); deliberately NOT (c), (R), TM
+      -- or the arrows, which the text faces own. The generated CSS carries
+      -- that coverage as unicode-range, so a browser fetches the file only
+      -- for a page that shows an emoji.
+      {role: "emoji", family: "MixOS Emoji", file: "web/NotoColorEmoji-COLRv1.ttf",
+       sha256: "0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2",
+       style: "normal", weight: "400", licence: "LICENSE-NotoColorEmoji.txt",
+       unicodes: "U+200D,U+20E3,U+FE0F,U+203C,U+2049,U+2139,U+231A-231B,U+2328,U+23CF,U+23E9-23FA,U+24C2,U+25AA-25AB,U+25B6,U+25C0,U+25FB-25FE,U+2600-27BF,U+2934-2935,U+2B05-2B07,U+2B1B-2B1C,U+2B50,U+2B55,U+3030,U+303D,U+3297,U+3299,U+1F000-1FAFF,U+E0020-E007F"}
+    ],
+    -- Each face's licence, copied from the set into web/fonts/ under the
+    -- name the face refers to; verified by sha256 like the fonts.
+    licences: {
+      "LICENSE-Inter.txt": {file: "licences/Inter-OFL.txt",
+        sha256: "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"},
+      "LICENSE-JetBrainsMono.txt": {file: "licences/JetBrainsMono-OFL.txt",
+        sha256: "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad"},
+      "LICENSE-Quicksand.txt": {file: "licences/Quicksand-OFL.txt",
+        sha256: "14d28541780d90f6577bb7abcc6f005bf6969614294e75c82abb8758a696ad46"},
+      "LICENSE-NotoColorEmoji.txt": {file: "licences/NotoColorEmoji-OFL.txt",
+        sha256: "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"}
     }
   },
 

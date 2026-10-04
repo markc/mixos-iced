@@ -14,15 +14,16 @@
 -- same-site clicks, and every link works without it.
 --
 -- Inputs (all in build/): shell.html (the DCS page chrome, with {{slots}}),
--- home.html (the landing content), site.conf.mix (sidebar, icons, redirects).
--- Outputs: index.html, 404.html, <page>/index.html, redirect pages,
--- llms.txt, llms-full.txt, sitemap.xml, robots.txt, web/icons.css,
--- web/fonts/icons.woff2 (+ its licence), and the favicons from share/brand
--- (web/favicon.svg, favicon.ico, web/brand/*).
+-- home.html (the landing content), site.conf.mix (sidebar, icons, fonts,
+-- redirects). Outputs: index.html, 404.html, <page>/index.html, redirect
+-- pages, llms.txt, llms-full.txt, sitemap.xml, robots.txt, web/icons.css,
+-- web/fonts.css, web/fonts/<role>.woff2 (icons, text faces and emoji, each
+-- cut from the pinned asset set, + their licences), and the favicons from
+-- share/brand (web/favicon.svg, favicon.ico, web/brand/*).
 --
 -- Runs locally with /opt/mixos/bin/mix; GitHub Pages only serves the
 -- committed result, so there is no CI step. External tools: git, hb-subset
--- (harfbuzz-utils) and woff2_compress (woff2) for the icon font.
+-- (harfbuzz-utils) and woff2_compress (woff2) for the fonts.
 --
 -- Deterministic by construction: sorted inputs, no timestamps, content-hash
 -- asset versions. A rebuild with no source change writes nothing.
@@ -68,7 +69,7 @@ end
 
 -- ---------------------------------------------------------------- config
 $cfg = load_data($build .. "/site.conf.mix").site
-for each $k in ["url", "name", "home_title", "description", "llms_summary", "icons", "left_panels", "home_toc", "redirects"]
+for each $k in ["url", "name", "home_title", "description", "llms_summary", "icons", "fonts", "left_panels", "home_toc", "redirects"]
   if not has_key($cfg, $k) then
     raise("SITE_CONFIG", "site.conf.mix is missing site." .. $k)
   end
@@ -194,17 +195,49 @@ for each $p in sort(walk($root))
   end
 end
 
+-- ---------------------------------------------------------------- fonts (shared)
+-- Every web font is cut from the pinned asset set: the source is verified
+-- by sha256 first, hb-subset keeps only the wanted codepoints (variation
+-- axes intact, or pinned to one instance), woff2_compress packs it. The
+-- result is keyed by its output path under docs/ and versioned by content
+-- hash; $bins is compared and copied with the text outputs below.
+$tmp = trim(run_argv_must(["mktemp", "-d"]))
+$bins = {}        -- "web/fonts/<role>.woff2" -> built file in $tmp
+$font_ver = {}    -- role -> 10-hex content version for ?v= URLs
+
+fn pinned($set, $rel, $sha, $code, $what)
+  $p = $set .. "/" .. $rel
+  if not is_file($p) then
+    raise($code, "pinned " .. $what .. " not found: " .. $p)
+  end
+  if hash_file($p, "sha256") != $sha then
+    raise($code, $what .. " does not match the pinned sha256: " .. $p)
+  end
+  return $p
+end
+
+-- Subset + compress one face. $instance is "" to keep every variation axis
+-- or an hb-subset axis location ("opsz=14,wght=400") to pin one.
+fn cut_font($role, $src, $unicodes, $instance, $code)
+  $ttf = $tmp .. "/" .. $role .. ".ttf"
+  $cmd = ["hb-subset", $src, "--unicodes=" .. $unicodes, "--output-file=" .. $ttf]
+  if $instance != "" then
+    push($cmd, "--instance=" .. $instance)
+  end
+  run_argv_must($cmd)
+  run_argv_must(["woff2_compress", $ttf])
+  $out = $tmp .. "/" .. $role .. ".woff2"
+  if not is_file($out) then
+    raise($code, "woff2_compress produced no output for " .. $role)
+  end
+  return $out
+end
+
 -- ---------------------------------------------------------------- icons
 $shell_src = read_file($build .. "/shell.html")
 $home_src = read_file($build .. "/home.html")
 $ic = $cfg.icons
-$font = $ic.asset_set .. "/" .. $ic.font
-if not is_file($font) then
-  raise("SITE_ICONS", "pinned icon font not found: " .. $font)
-end
-if hash_file($font, "sha256") != $ic.sha256 then
-  raise("SITE_ICONS", "icon font does not match the pinned sha256: " .. $font)
-end
+$font = pinned($ic.asset_set, $ic.font, $ic.sha256, "SITE_ICONS", "icon font")
 $cp = {}
 for each $line in lines(read_file($ic.asset_set .. "/" .. $ic.codepoints))
   $parts = split(trim($line), " ")
@@ -257,15 +290,10 @@ for each $mat in sort(unique($direct))
 end
 $unicodes = join(map(sort(keys($glyphs)), fn($h) = "U+" .. upper($h)), ",")
 
-$tmp = trim(run_argv_must(["mktemp", "-d"]))
-$woff2 = $tmp .. "/icons.woff2"
-run_argv_must(["hb-subset", $font, "--unicodes=" .. $unicodes, "--instance=" .. $ic.instance,
-  "--output-file=" .. $tmp .. "/icons.ttf"])
-run_argv_must(["woff2_compress", $tmp .. "/icons.ttf"])
-if not is_file($woff2) then
-  raise("SITE_ICONS", "woff2_compress produced no output")
-end
+$woff2 = cut_font("icons", $font, $unicodes, $ic.instance, "SITE_ICONS")
 $woff2_ver = substr(hash_file($woff2, "sha256"), 0, 10)
+$bins["web/fonts/icons.woff2"] = $woff2
+$font_ver["icons"] = $woff2_ver
 
 $icons_css = "/* " .. $MARKER .. "\n" ..
      "   Material Symbols Rounded (Apache-2.0, (c) Google), " .. to_string(len(keys($glyphs))) .. " glyphs subset from\n" ..
@@ -297,6 +325,67 @@ $icons_css = "/* " .. $MARKER .. "\n" ..
      "}\n" ..
      join($rules, "\n") .. "\n"
 
+-- ---------------------------------------------------------------- text + emoji
+-- One @font-face per configured face, in config order. A face is cut to
+-- the shared coverage unless it names its own (the emoji does); the
+-- coverage is also declared as unicode-range, so the browser fetches a
+-- face only for a page that uses a character it holds. Variation axes are
+-- kept: Inter's opsz lets the browser pick the text cut (14) for body copy
+-- and the display cut for headings, as the desktop does.
+$fc = $cfg.fonts
+$face_css = []
+$face_notes = []
+$licence_out = {}
+for each $face in $fc.faces
+  for each $k in ["role", "family", "file", "sha256", "style", "weight", "licence"]
+    if not has_key($face, $k) then
+      raise("SITE_FONTS", "fonts.faces entry is missing " .. $k)
+    end
+  end
+  if not re_match($face.role, "^[a-z][a-z0-9-]*$") then
+    raise("SITE_FONTS", "font role is not a plain name: " .. $face.role)
+  end
+  if $face.role == "icons" or has_key($bins, "web/fonts/" .. $face.role .. ".woff2") then
+    raise("SITE_FONTS", "font role used twice: " .. $face.role)
+  end
+  if not has_key($fc.licences, $face.licence) then
+    raise("SITE_FONTS", "font '" .. $face.role .. "' names a licence that fonts.licences lacks: " .. $face.licence)
+  end
+  $src = pinned($fc.asset_set, $face.file, $face.sha256, "SITE_FONTS", $face.role .. " font")
+  $uni = if has_key($face, "unicodes") then $face.unicodes else $fc.unicodes end
+  $built = cut_font($face.role, $src, $uni, "", "SITE_FONTS")
+  $ver = substr(hash_file($built, "sha256"), 0, 10)
+  $bins["web/fonts/" .. $face.role .. ".woff2"] = $built
+  $font_ver[$face.role] = $ver
+  $licence_out[$face.licence] = true
+  push($face_notes, "   " .. $face.role .. ": " .. $face.family .. " (" .. $face.style .. ", " .. $face.weight .. ") from " ..
+    $face.file .. "; licence /web/fonts/" .. $face.licence)
+  push($face_css, "@font-face {\n" ..
+    "    font-family: \"" .. $face.family .. "\";\n" ..
+    "    font-style: " .. $face.style .. ";\n" ..
+    "    font-weight: " .. $face.weight .. ";\n" ..
+    "    font-display: swap;\n" ..
+    "    src: url(\"/web/fonts/" .. $face.role .. ".woff2?v=" .. $ver .. "\") format(\"woff2\");\n" ..
+    "    unicode-range: " .. replace($uni, ",", ", ") .. ";\n" ..
+    "}")
+end
+for each $role in $fc.preload
+  if not has_key($font_ver, $role) or $role == "icons" then
+    raise("SITE_FONTS", "fonts.preload names a face that is not configured: " .. $role)
+  end
+end
+$fonts_css = "/* " .. $MARKER .. "\n" ..
+     "   Web fonts cut from asset set " .. basename($fc.asset_set) .. " - the files the MixOS\n" ..
+     "   desktop renders - by hb-subset + woff2_compress. All OFL-1.1:\n" ..
+     join($face_notes, "\n") .. "\n" ..
+     "   Coverage is declared per face as unicode-range. */\n" ..
+     join($face_css, "\n") .. "\n"
+$licence_files = {}
+for each $name in sort(keys($licence_out))
+  $lic = $fc.licences[$name]
+  $licence_files["web/fonts/" .. $name] = read_file(pinned($fc.asset_set, $lic.file, $lic.sha256, "SITE_FONTS", "licence " .. $name))
+end
+
 -- ---------------------------------------------------------------- brand
 -- share/brand is the one source for MixOS brand art; the site never keeps a
 -- second original. favicon.svg is generated from the transparent mark and
@@ -325,6 +414,9 @@ $shell_src = replace($shell_src, "{{brand:mark}}", $mark_path)
 fn asset_ver($rel)
   if $rel == "web/icons.css" then
     return substr(hash_sha256($icons_css), 0, 10)
+  end
+  if $rel == "web/fonts.css" then
+    return substr(hash_sha256($fonts_css), 0, 10)
   end
   if $rel == "web/favicon.svg" then
     return substr(hash_sha256($favicon_svg), 0, 10)
@@ -361,7 +453,9 @@ fn head_html($canonical, $alt_href, $alt_title, $robots)
     push($h, "    <meta name=\"robots\" content=\"" .. $robots .. "\">")
   end
   push($h, "    <meta name=\"mixos-build\" content=\"" .. $BUILD .. "\">")
-  push($h, "    <link rel=\"preload\" href=\"/web/fonts/icons.woff2?v=" .. $woff2_ver .. "\" as=\"font\" type=\"font/woff2\" crossorigin>")
+  for each $role in concat(["icons"], $fc.preload)
+    push($h, "    <link rel=\"preload\" href=\"/web/fonts/" .. $role .. ".woff2?v=" .. $font_ver[$role] .. "\" as=\"font\" type=\"font/woff2\" crossorigin>")
+  end
   return join($h, "\n")
 end
 
@@ -633,8 +727,12 @@ push($sm, "</urlset>")
 $outputs["sitemap.xml"] = join($sm, "\n") .. "\n"
 $outputs["robots.txt"] = "User-agent: *\nAllow: /\n\nSitemap: " .. $SITE .. "/sitemap.xml\n"
 $outputs["web/icons.css"] = $icons_css
+$outputs["web/fonts.css"] = $fonts_css
 $outputs["web/favicon.svg"] = $favicon_svg
 $outputs["web/fonts/LICENSE-MaterialSymbols.txt"] = read_file($ic.asset_set .. "/" .. $ic.licence)
+for each $k in keys($licence_files)
+  $outputs[$k] = $licence_files[$k]
+end
 
 -- ---------------------------------------------------------------- link check
 -- Every internal href/src in every generated page must resolve: a page URL,
@@ -677,7 +775,7 @@ for each $k in sort(keys($outputs))
           end
         else
           $file = substr($path, 1, len($path) - 1)
-          if not has_key($outputs, $file) and not is_file($root .. "/" .. $file) and $file != "web/fonts/icons.woff2" and not has_key($copies, $file) then
+          if not has_key($outputs, $file) and not is_file($root .. "/" .. $file) and not has_key($bins, $file) and not has_key($copies, $file) then
             push($errors, $k .. ": link to a missing file: " .. $h)
           end
         end
@@ -692,7 +790,8 @@ for each $k in sort(keys($outputs))
 end
 
 -- ---------------------------------------------------------------- compare / write
-$fixed = ["llms.txt", "llms-full.txt", "sitemap.xml", "robots.txt", "web/icons.css", "web/fonts/LICENSE-MaterialSymbols.txt"]
+-- Stale: a generated page whose source is gone, or anything in web/fonts/
+-- this build did not produce (every web font must trace to the asset set).
 $stale = []
 for each $p in sort(walk($root))
   $rel = substr($p, len($root) + 1, len($p) - len($root) - 1)
@@ -700,6 +799,9 @@ for each $p in sort(walk($root))
     if contains(read_file($p), $MARKER) then
       push($stale, $rel)
     end
+  end
+  if starts_with($rel, "web/fonts/") and not has_key($outputs, $rel) and not has_key($bins, $rel) then
+    push($stale, $rel)
   end
 end
 
@@ -714,13 +816,11 @@ for each $k in sort(keys($outputs))
     push($changed, $k)
   end
 end
-$font_dest = $root .. "/web/fonts/icons.woff2"
-$font_same = false
-if is_file($font_dest) then
-  $font_same = hash_file($font_dest, "sha256") == hash_file($woff2, "sha256")
-end
-if not $font_same then
-  push($changed, "web/fonts/icons.woff2")
+for each $k in sort(keys($bins))
+  $dest = $root .. "/" .. $k
+  if not is_file($dest) or hash_file($dest, "sha256") != hash_file($bins[$k], "sha256") then
+    push($changed, $k)
+  end
 end
 for each $k in sort(keys($copies))
   $dest = $root .. "/" .. $k
@@ -759,9 +859,10 @@ if $check then
 end
 
 for each $c in $changed
-  if $c == "web/fonts/icons.woff2" then
-    mkdir(dirname($font_dest))
-    copy($woff2, $font_dest)
+  if has_key($bins, $c) then
+    $dest = $root .. "/" .. $c
+    mkdir(dirname($dest))
+    copy($bins[$c], $dest)
   elif has_key($copies, $c) then
     $dest = $root .. "/" .. $c
     mkdir(dirname($dest))

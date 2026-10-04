@@ -90,10 +90,12 @@
         --leading-normal: 1.5;
         --leading-relaxed: 1.625;
 
-        /* Font stacks (marketing Inter/Quicksand is the effective --font-sans) */
-        --font-sans: "Inter", "Quicksand", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        --font-heading: "Quicksand", sans-serif;
-        --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+        /* Font stacks (marketing Inter/Quicksand is the effective --font-sans).
+           "MixOS Emoji" last: the asset set's colour emoji, fetched only when
+           a page shows one (web/fonts.css unicode-range). */
+        --font-sans: "Inter", "Quicksand", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif, "MixOS Emoji";
+        --font-heading: "Quicksand", sans-serif, "MixOS Emoji";
+        --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, monospace, "MixOS Emoji";
 
         /* Z-index - dropdown/fixed/toast */
         --z-dropdown: 100;
