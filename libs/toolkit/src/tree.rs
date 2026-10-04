@@ -94,7 +94,10 @@ pub struct Nodes<K, T> {
     visible: OnceCell<Vec<Entry>>,
 }
 
-impl<K, T> Default for Nodes<K, T> {
+impl<K, T> Default for Nodes<K, T>
+where
+    K: Hash + Eq + Clone,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -451,16 +454,17 @@ where
             .key(move |row| nodes.visible(row).map_or(row as u64, |row| row_key(row.key)))
             .selection(&selection)
             .on_key(move |press| {
-                let row = nodes.visible(press.cursor?)?;
+                let cursor = press.cursor?;
+                let row = nodes.visible(cursor)?;
                 let KeyPress { key, .. } = &press;
                 match key {
                     keyboard::Key::Named(Named::ArrowRight) => {
                         if row.has_children() && !row.expanded {
                             toggle_keys.as_ref().map(|toggle| toggle(row.key.clone()))
-                        } else if row.expanded && nodes.visible_len() > press.cursor? + 1 {
+                        } else if row.expanded && nodes.visible_len() > cursor + 1 {
                             on_select
                                 .as_ref()
-                                .map(|select| select(Selection::single(press.cursor? + 1)))
+                                .map(|select| select(Selection::single(cursor + 1)))
                         } else {
                             None
                         }
@@ -960,23 +964,23 @@ mod tests {
             // Click the first root to focus and select it.
             let mut element = view(&nodes, &selection);
             let mut tree = Tree::new(element.as_widget());
-            let node = layout(&mut element, &mut tree);
+            let mut node = layout(&mut element, &mut tree);
             assert_eq!(
                 send(&mut element, &mut tree, &node, press(), click_row(0)),
                 [Msg::Select(Selection::single(0))]
             );
             selection = Selection::single(0);
             // Right on a collapsed node asks to expand it.
-            let mut element = view(&nodes, &selection);
-            let node = layout(&mut element, &mut tree);
+            element = view(&nodes, &selection);
+            node = layout(&mut element, &mut tree);
             assert_eq!(
                 send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
                 [Msg::Toggle("a")]
             );
             nodes.toggle(&"a");
             // Right on an expanded node moves to its first child.
-            let mut element = view(&nodes, &selection);
-            let node = layout(&mut element, &mut tree);
+            element = view(&nodes, &selection);
+            node = layout(&mut element, &mut tree);
             assert_eq!(
                 send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
                 [Msg::Select(Selection::single(1))]
@@ -984,15 +988,15 @@ mod tests {
             selection = Selection::single(1);
             // Left on a child goes to the parent; Left on the expanded
             // parent collapses it.
-            let mut element = view(&nodes, &selection);
-            let node = layout(&mut element, &mut tree);
+            element = view(&nodes, &selection);
+            node = layout(&mut element, &mut tree);
             assert_eq!(
                 send(&mut element, &mut tree, &node, arrow(Named::ArrowLeft), click_row(0)),
                 [Msg::Select(Selection::single(0))]
             );
             selection = Selection::single(0);
-            let mut element = view(&nodes, &selection);
-            let node = layout(&mut element, &mut tree);
+            element = view(&nodes, &selection);
+            node = layout(&mut element, &mut tree);
             assert_eq!(
                 send(&mut element, &mut tree, &node, arrow(Named::ArrowLeft), click_row(0)),
                 [Msg::Toggle("a")]
@@ -1010,8 +1014,8 @@ mod tests {
             );
             // The leaf root has no expander: a press there selects.
             nodes.set_expanded(&"a", false);
-            let mut element = view(&nodes, &selection);
-            let node = layout(&mut element, &mut tree);
+            element = view(&nodes, &selection);
+            node = layout(&mut element, &mut tree);
             let leaf_expander = mouse::Cursor::Available(Point::new(10.0, 28.0 + 14.0));
             assert_eq!(
                 send(&mut element, &mut tree, &node, press(), leaf_expander),
