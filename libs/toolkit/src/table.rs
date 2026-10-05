@@ -370,7 +370,7 @@ where
                     )
                 })
                 .chain(dummy_container(columns, min_width, min_column_width))),
-            style,
+            style.clone(),
         ))
         .id(header)
         .direction(scrollable::Direction::Both {
@@ -1139,7 +1139,7 @@ mod tests {
 
         // The whole table builds into an element with a resize grip
         // wired for every column.
-        let element: Element<'_, (), iced_core::Theme, LayoutRenderer> = built
+        let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = built
             .on_column_resize(|_, _| (), ())
             .into();
         let mut tree = Tree::new(&element);
