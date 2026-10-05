@@ -12,6 +12,7 @@ use toolkit::iced::widget::{
     scrollable, slider, text, text_editor, toggler, tooltip,
 };
 use toolkit::iced::{self, Color, Fill};
+pub mod flows;
 #[path = "lists.rs"]
 mod lists;
 #[path = "more.rs"]
@@ -48,7 +49,7 @@ const CHOICES: [&str; 3] = ["Alpha", "Beta", "Gamma"];
 
 /// Run the gallery with whatever `toolkit::fonts` has installed.
 pub fn run() -> iced::Result {
-    iced::application(Gallery::new, Gallery::update, Gallery::view)
+    iced::application(Gallery::new, Gallery::update_with_tasks, Gallery::view)
         .default_font(fonts::default_ui_font())
         .title(|_: &Gallery| label("gallery-title"))
         .theme(Gallery::theme)
@@ -121,10 +122,11 @@ pub enum Page {
     More,
     Pickers,
     Patterns,
+    Flows,
 }
 
 impl Page {
-    pub const ALL: [Page; 7] = [
+    pub const ALL: [Page; 8] = [
         Page::Widgets,
         Page::Services,
         Page::Lists,
@@ -132,6 +134,7 @@ impl Page {
         Page::More,
         Page::Pickers,
         Page::Patterns,
+        Page::Flows,
     ];
 
     pub fn name(self) -> &'static str {
@@ -143,6 +146,7 @@ impl Page {
             Page::More => "more",
             Page::Pickers => "pickers",
             Page::Patterns => "patterns",
+            Page::Flows => "flows",
         }
     }
 }
@@ -180,6 +184,7 @@ pub struct Gallery {
     more: more::State,
     pickers: pickers::State,
     patterns: patterns::State,
+    flows: flows::State,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +211,7 @@ pub enum Message {
     More(more::Message),
     Pickers(pickers::Message),
     Patterns(patterns::Message),
+    Flows(flows::Message),
     Seek(f32),
     View(RollView),
     PickNote(usize),
@@ -299,6 +305,7 @@ impl Gallery {
             more: more::State::new(),
             pickers: pickers::State::new(),
             patterns: patterns::State::new(),
+            flows: flows::State::new(),
         }
     }
 
@@ -328,6 +335,27 @@ impl Gallery {
         self.patterns
             .view(self.theme.tokens())
             .map(Message::Patterns)
+    }
+
+    pub fn flows_page(&self) -> Element<'_> {
+        self.flows.view(self.theme.tokens()).map(Message::Flows)
+    }
+
+    pub fn flows_window(&self) -> Element<'_> {
+        self.flows.wrap(self.flows_page(), self.theme.tokens())
+    }
+
+    pub fn update_with_tasks(&mut self, message: Message) -> iced::Task<Message> {
+        let task = if let Message::Flows(flows::Message::Sync(offset)) = &message {
+            iced::widget::scrollable::scroll_to(
+                iced::widget::Id::new("flows-table-header"),
+                *offset,
+            )
+        } else {
+            iced::Task::none()
+        };
+        self.update(message);
+        task
     }
 
     #[allow(dead_code)]
@@ -360,6 +388,7 @@ impl Gallery {
             Message::Mode(mode) => {
                 self.mode = mode;
                 self.theme.set_tokens(mode.tokens());
+                self.flows.retheme(mode.tokens());
             }
             Message::Page(page) => self.page = page,
             Message::Services(message) => self.services.update(message),
@@ -367,6 +396,7 @@ impl Gallery {
             Message::More(message) => self.more.update(message),
             Message::Pickers(message) => self.pickers.update(message),
             Message::Patterns(message) => self.patterns.update(message),
+            Message::Flows(message) => self.flows.update(message),
             Message::Text(value) => self.value = value,
             Message::Password(value) => self.password = value,
             Message::Action(action) => self.last_action = label(action),
@@ -696,6 +726,13 @@ impl Gallery {
                 .width(Fill)
                 .height(Fill)
                 .into();
+        }
+        if self.page == Page::Flows {
+            let page = page.push(self.flows_page());
+            let content = column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill);
+            return self.flows.wrap(content.into(), tokens);
         }
         if let Some(fonts) = self.fonts_section(tokens) {
             page = page.push(fonts);

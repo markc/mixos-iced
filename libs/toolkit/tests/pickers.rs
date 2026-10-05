@@ -145,3 +145,69 @@ fn application_patterns_render_and_remain_reachable_in_a_narrow_window() {
         }
     }
 }
+
+#[test]
+fn composed_widgets_render_all_tokens_and_palette_activates_by_keyboard() {
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("toolkit-snapshots");
+    std::fs::create_dir_all(&directory).unwrap();
+    for mode in Mode::ALL {
+        let mut gallery = Gallery::new();
+        gallery.update(Message::Mode(mode));
+        let mut ui = Simulator::with_size(
+            Settings::default(),
+            Size::new(1100.0, 1400.0),
+            gallery.flows_window(),
+        );
+        for label in [
+            "Typed number",
+            "Command palette",
+            "Show popover",
+            "File requester",
+            "Drag this item",
+            "Drop here",
+        ] {
+            assert!(
+                ui.find(label).unwrap().visible_bounds().is_some(),
+                "{mode:?}: {label}"
+            );
+        }
+        let path = directory.join(format!("flows-{}.png", mode.name()));
+        let written = directory.join(format!("flows-{}-tiny-skia.png", mode.name()));
+        let _ = std::fs::remove_file(written);
+        assert!(
+            ui.snapshot(&gallery.theme())
+                .unwrap()
+                .matches_image(path)
+                .unwrap()
+        );
+        ui.click("Command palette").unwrap();
+        for message in ui.into_messages() {
+            gallery.update(message);
+        }
+        let mut ui = Simulator::with_size(
+            Settings::default(),
+            Size::new(1100.0, 1400.0),
+            gallery.flows_window(),
+        );
+        ui.tap_key(Named::ArrowDown);
+        for message in ui.into_messages() {
+            gallery.update(message);
+        }
+        let mut ui = Simulator::with_size(
+            Settings::default(),
+            Size::new(1100.0, 1400.0),
+            gallery.flows_window(),
+        );
+        ui.tap_key(Named::Enter);
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(
+            messages.iter().any(|message| matches!(
+                message,
+                Message::Flows(app::flows::Message::Palette(
+                    toolkit::command_palette::Event::Activated(1)
+                ))
+            )),
+            "{mode:?}: {messages:?}"
+        );
+    }
+}

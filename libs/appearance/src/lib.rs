@@ -31,7 +31,7 @@ use iced_core::{Color, Font};
 pub use design::{Contrast, DesignContext, Mode, Scheme};
 pub use fonts::{FontOrigin, FontSources, fonts, fonts_in, fonts_of};
 pub use theme::{Error, Resolved, THEME_FILE, Theme, theme_path};
-pub use tokens::{colour, metrics, palette, tokens};
+pub use tokens::{colour, metrics, palette, semantic, tokens};
 
 use design::{ResolvedTypeRecord, TypographyRole};
 use toolkit::fonts::{Fonts, Role};
@@ -43,6 +43,7 @@ use toolkit::{Theme as ToolkitTheme, Tokens};
 pub struct Appearance {
     /// Colours and metrics for the widgets' `style` calls.
     pub tokens: Tokens,
+    semantic: toolkit::tokens::Semantic,
     /// The scheme, mode and contrast the tokens were mapped from.
     pub context: DesignContext,
     /// The registered fonts (`toolkit::fonts::install`'s result).
@@ -68,6 +69,7 @@ pub fn install_with(theme: &Theme, sources: FontSources) -> Result<Appearance, E
     let fonts = toolkit::fonts::install(sources.set, sources.icons)?;
     let mut look = Appearance {
         tokens: Tokens::default(),
+        semantic: semantic(theme),
         context: theme.context().clone(),
         fonts,
         origin: sources.origin,
@@ -84,6 +86,7 @@ impl Appearance {
     /// installed.
     pub fn retheme(&mut self, theme: &Theme) {
         self.tokens = tokens(theme);
+        self.semantic = semantic(theme);
         self.context = theme.context().clone();
         self.ui = role(theme, TypographyRole::Ui);
         self.display = role(theme, TypographyRole::UiDisplay);
@@ -135,7 +138,7 @@ impl Appearance {
     /// `iced::application(...).theme`: every iced and toolkit widget then
     /// takes the MixOS look, and a `retheme` restyles the next frame.
     pub fn theme(&self) -> ToolkitTheme {
-        ToolkitTheme::new(self.tokens)
+        ToolkitTheme::new(self.tokens).with_semantic(self.semantic)
     }
 
     /// The installed family of `role` at the record's weight, trusting the

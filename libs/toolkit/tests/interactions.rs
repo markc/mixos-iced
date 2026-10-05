@@ -283,7 +283,7 @@ fn tab_strip_scrolls_to_later_tabs_and_middle_click_closes_the_target() {
     }
     let mut bar = TabBar::new(Message::Select)
         .on_close(Message::Close)
-        .tab_width(120);
+        .tab_width(120.into());
     for index in 0..40 {
         bar = bar.push(index, TabLabel::Text(format!("Document {index}")));
     }

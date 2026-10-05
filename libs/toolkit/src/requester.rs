@@ -552,7 +552,7 @@ impl Requester {
         }
 
         crate::keys::keys(body, |_| None)
-            .on_key_before(|event| {
+            .on_key_before_focused(iced_core::widget::Id::new(PATH_INPUT), |event| {
                 use iced_core::keyboard::{Event as KeyEvent, Key, key::Named};
                 let KeyEvent::KeyPressed { key, modifiers, .. } = event else {
                     return None;

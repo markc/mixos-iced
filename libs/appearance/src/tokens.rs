@@ -50,6 +50,62 @@ pub fn tokens(design: &impl Resolved) -> Tokens {
     )
 }
 
+/// Success/warning primitives adapted to readable foregrounds on the toolkit
+/// surface. Keep the authored hue where it already clears AA; otherwise blend
+/// towards the design's base foreground until the status is readable.
+pub fn semantic(design: &impl Resolved) -> toolkit::tokens::Semantic {
+    let colours = &design.dictionary().colours;
+    let palette = palette(colours);
+    let fallback = toolkit::Theme::new(tokens(design)).semantic();
+    let status = |name: &str, default| {
+        let Some(value) = colours.primitives.get(name) else {
+            return default;
+        };
+        let authored = colour(*value);
+        let luminance = |colour: Color| {
+            let channel = |c: f32| {
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(colour.r) + 0.7152 * channel(colour.g) + 0.0722 * channel(colour.b)
+        };
+        let readable = |colour| {
+            let a = luminance(colour);
+            let b = luminance(palette.surface);
+            (a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5
+        };
+        if readable(authored) {
+            return authored;
+        }
+        if !readable(palette.text) {
+            return default;
+        }
+        let blend = |weight: f32| Color {
+            r: authored.r + (palette.text.r - authored.r) * weight,
+            g: authored.g + (palette.text.g - authored.g) * weight,
+            b: authored.b + (palette.text.b - authored.b) * weight,
+            a: 1.0,
+        };
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..24 {
+            let mid = (lo + hi) / 2.0;
+            if readable(blend(mid)) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        blend(hi)
+    };
+    toolkit::tokens::Semantic {
+        success: status("status.success", fallback.success),
+        warning: status("status.warning", fallback.warning),
+    }
+}
+
 /// The palette: every pair's rendered (composited) halves, so a translucent
 /// surface arrives as the colour it reads at. A pair the design lacks takes
 /// the base pair; a missing non-text colour takes the base foreground.
@@ -58,13 +114,23 @@ pub fn palette(colours: &ResolvedColours) -> Palette {
     let base = colours
         .pairs
         .get("base")
-        .map(|pair| (colour(pair.rendered_surface), colour(pair.rendered_foreground)))
+        .map(|pair| {
+            (
+                colour(pair.rendered_surface),
+                colour(pair.rendered_foreground),
+            )
+        })
         .unwrap_or((fallback.surface, fallback.text));
     let pair = |name: &str| {
         colours
             .pairs
             .get(name)
-            .map(|pair| (colour(pair.rendered_surface), colour(pair.rendered_foreground)))
+            .map(|pair| {
+                (
+                    colour(pair.rendered_surface),
+                    colour(pair.rendered_foreground),
+                )
+            })
             .unwrap_or(base)
     };
     let non_text = |name: &str| {
@@ -223,6 +289,13 @@ mod tests {
         for theme in shipped() {
             let palette = tokens(&theme).palette;
             let label = format!("{} {}", theme.scheme().name(), theme.mode().name());
+            let semantic = semantic(&theme);
+            for colour in [semantic.success, semantic.warning] {
+                assert!(
+                    contrast(palette.surface, colour) >= 4.5,
+                    "{label}: status {colour:?}"
+                );
+            }
             for (surface, text) in [
                 (palette.surface, palette.text),
                 (palette.popover, palette.popover_text),
@@ -301,7 +374,13 @@ mod tests {
         let theme = Theme::embedded();
         let m = metrics(theme.dictionary(), theme.typography());
         assert_eq!(
-            [m.spacing.xs, m.spacing.sm, m.spacing.md, m.spacing.lg, m.spacing.xl],
+            [
+                m.spacing.xs,
+                m.spacing.sm,
+                m.spacing.md,
+                m.spacing.lg,
+                m.spacing.xl
+            ],
             [2.0, 4.0, 8.0, 16.0, 24.0]
         );
         assert_eq!([m.radius.sm, m.radius.md, m.radius.lg], [4.0, 6.0, 12.0]);
