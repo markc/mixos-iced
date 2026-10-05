@@ -34,7 +34,7 @@ pub use crate::anchor::{Align, Placement, Side};
 ///     open: bool,
 /// ) -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
-///     Theme: 'a,
+///     Theme: iced_core::widget::text::Catalog + 'a,
 ///     Renderer: iced_core::renderer::Renderer + 'a,
 /// {
 ///     Popover::new(
