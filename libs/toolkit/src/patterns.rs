@@ -123,6 +123,7 @@ impl<Message: Clone> Breadcrumbs<Message> {
                 scrollable::Scrollbar::new(),
             ))
             .width(Length::Fill)
+            .height(Length::Shrink)
             .into()
     }
 }

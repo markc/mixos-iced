@@ -866,11 +866,11 @@ where
     Renderer: renderer::Renderer,
 {
     fn tag(&self) -> Tag {
-        Tag::stateless()
+        self.content.as_widget().tag()
     }
 
     fn state(&self) -> TreeState {
-        TreeState::None
+        self.content.as_widget().state()
     }
 
     fn diff(&mut self, tree: &mut Tree) {

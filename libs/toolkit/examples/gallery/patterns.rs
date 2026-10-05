@@ -126,7 +126,7 @@ impl State {
             path,
             search,
             settings,
-            container(about).height(180),
+            container(about).id("patterns-about").height(180),
             text(&self.outcome)
         ]
         .spacing(tokens.metrics.spacing.md);

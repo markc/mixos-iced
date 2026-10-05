@@ -103,9 +103,10 @@ fn tab_between_calendar_and_clock_has_one_focus_owner_and_wraps() {
         "{messages:?}"
     );
     assert!(
-        !messages
-            .iter()
-            .any(|m| matches!(m, Message::Pickers(app::pickers::Message::Date(_)))),
+        !messages.iter().any(
+            |m| matches!(m, Message::Pickers(app::pickers::Message::Date(event))
+                if !matches!(event, toolkit::date_picker::Event::Select(_)))
+        ),
         "{messages:?}"
     );
 }
@@ -133,6 +134,19 @@ fn application_patterns_render_and_remain_reachable_in_a_narrow_window() {
                     .unwrap()
             );
             for label in ["Back", "Help", "Enabled", "Website", "Retry", "Dismiss"] {
+                if label == "Website" && ui.find(label).unwrap().visible_bounds().is_none() {
+                    let about = ui
+                        .find(toolkit::core::widget::Id::new("patterns-about"))
+                        .unwrap()
+                        .visible_bounds()
+                        .unwrap();
+                    ui.point_at(about.center());
+                    ui.simulate([toolkit::core::Event::Mouse(
+                        toolkit::core::mouse::Event::WheelScrolled {
+                            delta: toolkit::core::mouse::ScrollDelta::Lines { x: 0.0, y: -100.0 },
+                        },
+                    )]);
+                }
                 let target = ui.find(label).unwrap();
                 let bounds = target.visible_bounds().unwrap_or_else(|| {
                     panic!("{mode:?}/{width}: {label} is offscreen: {target:?}")

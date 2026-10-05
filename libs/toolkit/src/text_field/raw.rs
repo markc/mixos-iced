@@ -34,10 +34,7 @@ use iced_core::widget;
 use iced_core::widget::operation::{self, Focusable, Operation};
 use iced_core::widget::tree::{self, Tree};
 use iced_core::window;
-use iced_core::{
-    Background, Border, Color, Element, Event, Layout, Length, Padding, Pixels, Rectangle, Shell,
-    Size, Theme, Widget,
-};
+use iced_core::{Element, Event, Layout, Length, Padding, Pixels, Rectangle, Shell, Size, Widget};
 use iced_widget::text_input::{Catalog, Status, Style, StyleFn};
 
 /// A field that can be filled with text.
