@@ -3,10 +3,13 @@
 //! [`NumberInput`], a [`TypedInput`] with bounds, a step, and up/down
 //! modifier buttons (mouse, wheel and Arrow Up/Down all step).
 //!
-//! Typing filters character by character: a change that would leave the
-//! text unparseable or out of bounds simply never reaches the inner
-//! input. The modifier glyphs are text (`▲` `▼`, or `+` `-` beside a
-//! tight padding), so no icon font is needed.
+//! A value is only published when the text parses and lies within the
+//! bounds. (iced_aw also refuses each keystroke that would leave the text
+//! unparseable, but this iced base no longer exposes the text input's
+//! cursor internals, so the field can transiently hold text that does
+//! not parse; it never publishes it.) The modifier glyphs are text
+//! (`▲` `▼`, or `+` `-` beside a tight padding), so no icon font is
+//! needed.
 
 use iced_core::layout::{Limits, Node};
 use iced_core::mouse::{self, Cursor};
@@ -105,8 +108,6 @@ where
     on_change: Option<Box<dyn 'a + Fn(T) -> Message>>,
     /// The `on_submit` event of the [`NumberInput`].
     on_submit: Option<Message>,
-    /// The `on_paste` event of the [`NumberInput`].
-    on_paste: Option<Box<dyn 'a + Fn(T) -> Message>>,
     /// The style of the [`NumberInput`].
     class: <Theme as Catalog>::Class<'a>,
     /// Ignore mouse scroll events; `false` by default.
@@ -119,7 +120,6 @@ where
 enum InternalMessage<T> {
     OnChange(T),
     OnSubmit(Result<T, String>),
-    OnPaste(T),
 }
 
 impl<'a, T, Message, Theme, Renderer> NumberInput<'a, T, Message, Theme, Renderer>
@@ -148,7 +148,6 @@ where
                 .width(Length::Fixed(127.0)),
             on_change: Some(Box::new(on_change)),
             on_submit: None,
-            on_paste: None,
             class: <Theme as Catalog>::default(),
             ignore_scroll_events: false,
             ignore_buttons: false,
@@ -181,17 +180,6 @@ where
             .on_input(InternalMessage::OnChange)
             .on_submit(InternalMessage::OnSubmit);
         self.on_submit = Some(message);
-        self
-    }
-
-    /// Sets the message produced when a pasted value parses and is valid.
-    #[must_use]
-    pub fn on_paste<F>(mut self, callback: F) -> Self
-    where
-        F: 'a + Fn(T) -> Message,
-    {
-        self.content = self.content.on_paste(InternalMessage::OnPaste);
-        self.on_paste = Some(Box::new(callback));
         self
     }
 
@@ -581,24 +569,17 @@ where
         let mouse_over_button = mouse_over_inc || mouse_over_dec;
 
         let modifiers = state.state.downcast_mut::<ModifierState>();
-        let mut value = self.content.text().to_owned();
 
         let child = state.children.get_mut(0).expect("fail to get child");
-        let is_focused = {
-            let input = child
-                .state
-                .downcast_ref::<text_input::State<Renderer::Paragraph>>();
-            input.is_focused()
-        };
 
-        // A secondary shell drives the underlying input; each change is
-        // validated before it is allowed through.
+        // A secondary shell drives the underlying input. This vendored iced
+        // base no longer exposes the text input's cursor internals, so
+        // unlike iced_aw we cannot pre-validate each keystroke; the
+        // `TypedInput` underneath still refuses to publish anything that
+        // does not parse, which is the guarantee callers rely on.
         let mut messages = Vec::new();
         let mut sub_shell = shell.local(&mut messages);
 
-        // Forwards the event to the underlying input. This is also how
-        // clipboard copy/cut/paste happen: the inner iced text input is the
-        // only widget in the chain touching the clipboard.
         let mut forward_to_text = |widget: &mut Self, child| {
             widget.content.update(
                 child,
@@ -611,116 +592,20 @@ where
             );
         };
 
-        let supports_negative = self.min() < T::zero();
-        let mut check_value = |value: &str, widget: &mut Self| {
-            if let Ok(value) = T::from_str(value) {
-                widget.valid(&value)
-            } else if value.is_empty() || value == "-" && supports_negative {
-                widget.value = T::zero();
-                true
-            } else {
-                false
-            }
-        };
-
         match &event {
             Event::Keyboard(key) => {
-                if !is_focused {
-                    return;
-                }
-
                 match key {
                     keyboard::Event::ModifiersChanged(_) => forward_to_text(self, child),
                     keyboard::Event::KeyReleased { .. } => return,
                     keyboard::Event::KeyPressed { key, text, modifiers, .. } => {
-                        let input = child
-                            .state
-                            .downcast_mut::<text_input::State<Renderer::Paragraph>>();
-                        let cursor = input.cursor();
-                        let v = text_input::Value::new(&value);
-
-                        // Numpad arrows arrive with `text` set; treat those as
-                        // number entry, not movement (iced#2278).
+                        // Numpad arrows arrive with `text` set; treat those
+                        // as number entry, not stepping (iced#2278).
                         let has_value = !modifiers.command()
                             && text
                                 .as_ref()
                                 .is_some_and(|t| t.chars().any(|c| !c.is_control()));
 
                         match key.as_ref() {
-                            // Enter
-                            keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                                forward_to_text(self, child);
-                            }
-                            // Copy and select-all
-                            keyboard::Key::Character("c" | "a") if modifiers.command() => {
-                                forward_to_text(self, child);
-                            }
-                            // Cut: only when the rest still parses
-                            keyboard::Key::Character("x") if modifiers.command() => {
-                                if let Some((start, end)) = cursor.selection(&v) {
-                                    let _ = value.drain(start..end);
-                                    if check_value(&value, self) {
-                                        forward_to_text(self, child);
-                                    }
-                                }
-                            }
-                            // Paste
-                            keyboard::Key::Character("v")
-                                if modifiers.command() && !modifiers.alt() =>
-                            {
-                                forward_to_text(self, child);
-                            }
-                            // Backspace
-                            keyboard::Key::Named(keyboard::key::Named::Backspace) => {
-                                match cursor.state(&v) {
-                                    text_input::cursor::State::Selection { start, end } => {
-                                        let _ = value.drain(sorted_range(start, end));
-                                    }
-                                    text_input::cursor::State::Index(idx) if idx > 0 => {
-                                        if modifiers.command() {
-                                            // Ctrl+Backspace erases to the left, not
-                                            // including a leading minus.
-                                            let _ = value
-                                                .drain((value.starts_with('-').into())..idx);
-                                        } else {
-                                            let _ = value.remove(idx - 1);
-                                        }
-                                    }
-                                    text_input::cursor::State::Index(_) => return,
-                                }
-
-                                shell.capture_event();
-
-                                if check_value(&value, self) {
-                                    forward_to_text(self, child);
-                                }
-                            }
-                            // Delete
-                            keyboard::Key::Named(keyboard::key::Named::Delete) => {
-                                match cursor.state(&v) {
-                                    text_input::cursor::State::Selection { start, end } => {
-                                        let _ = value.drain(sorted_range(start, end));
-                                    }
-                                    text_input::cursor::State::Index(idx)
-                                        if idx < value.len() =>
-                                    {
-                                        if idx == 0 && value.starts_with('-') {
-                                            let _ = value.remove(0);
-                                        } else if modifiers.command() {
-                                            let _ = value.drain(idx..);
-                                        } else {
-                                            let _ = value.remove(idx);
-                                        }
-                                    }
-                                    text_input::cursor::State::Index(_) => return,
-                                }
-
-                                shell.capture_event();
-
-                                if check_value(&value, self) {
-                                    forward_to_text(self, child);
-                                }
-                            }
                             // Arrow Down decreases by a step
                             keyboard::Key::Named(keyboard::key::Named::ArrowDown)
                                 if can_decrease && !has_value =>
@@ -737,34 +622,8 @@ where
                                 shell.request_redraw();
                                 self.increase_value(shell);
                             }
-                            // Cursor movement
-                            keyboard::Key::Named(
-                                keyboard::key::Named::ArrowLeft
-                                | keyboard::key::Named::ArrowRight
-                                | keyboard::key::Named::Home
-                                | keyboard::key::Named::End,
-                            ) if !has_value => forward_to_text(self, child),
-                            // Everything else: typed text
-                            _ => match text {
-                                Some(text) => {
-                                    match cursor.state(&v) {
-                                        text_input::cursor::State::Index(idx) => {
-                                            value.insert_str(idx, text);
-                                        }
-                                        text_input::cursor::State::Selection { start, end } => {
-                                            value.replace_range(sorted_range(start, end), text);
-                                        }
-                                    }
-
-                                    shell.capture_event();
-                                    shell.request_redraw();
-
-                                    if check_value(&value, self) {
-                                        forward_to_text(self, child);
-                                    }
-                                }
-                                None => return,
-                            },
+                            // Everything else belongs to the text input.
+                            _ => forward_to_text(self, child),
                         }
                     }
                 }
@@ -842,19 +701,6 @@ where
                     }
                     if let Some(on_submit) = &self.on_submit {
                         shell.publish(on_submit.clone());
-                    }
-                    shell.invalidate_layout();
-                }
-                InternalMessage::OnPaste(value) => {
-                    if self.value != value {
-                        if !self.valid(&value) {
-                            shell.invalidate_layout();
-                            continue;
-                        }
-                        self.value = value.clone();
-                        if let Some(on_paste) = &self.on_paste {
-                            shell.publish(on_paste(value));
-                        }
                     }
                     shell.invalidate_layout();
                 }
@@ -1036,11 +882,6 @@ where
             inc_bounds,
         );
     }
-}
-
-/// A selection range as a `Range`, whichever way round the cursor holds it.
-fn sorted_range(a: usize, b: usize) -> std::ops::Range<usize> {
-    if a < b { a..b } else { b..a }
 }
 
 /// The modifier state of a [`NumberInput`].

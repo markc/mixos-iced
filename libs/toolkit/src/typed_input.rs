@@ -37,16 +37,12 @@ where
     on_change: Option<Box<dyn 'a + Fn(T) -> Message>>,
     /// The `on_submit` event of the [`TypedInput`].
     on_submit: Option<Box<dyn 'a + Fn(Result<T, String>) -> Message>>,
-    /// The `on_paste` event of the [`TypedInput`].
-    on_paste: Option<Box<dyn 'a + Fn(T) -> Message>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum InternalMessage {
     OnChange(String),
     OnSubmit,
-    #[allow(dead_code)]
-    OnPaste(String),
 }
 
 impl<'a, T, Message, Theme, Renderer> TypedInput<'a, T, Message, Theme, Renderer>
@@ -71,7 +67,6 @@ where
             text: value.to_string(),
             on_change: None,
             on_submit: None,
-            on_paste: None,
         }
     }
 
@@ -114,17 +109,6 @@ where
             .on_input(InternalMessage::OnChange)
             .on_submit(InternalMessage::OnSubmit);
         self.on_submit = Some(Box::new(callback));
-        self
-    }
-
-    /// Sets the message produced when a value parses after a paste.
-    #[must_use]
-    pub fn on_paste<F>(mut self, callback: F) -> Self
-    where
-        F: 'a + Fn(T) -> Message,
-    {
-        self.text_input = self.text_input.on_paste(InternalMessage::OnPaste);
-        self.on_paste = Some(Box::new(callback));
         self
     }
 
@@ -331,19 +315,6 @@ where
                     {
                         self.value = value.clone();
                         shell.publish(on_change(value));
-                    }
-
-                    shell.invalidate_layout();
-                }
-                InternalMessage::OnPaste(value) => {
-                    self.text = value;
-
-                    if let Ok(value) = T::from_str(&self.text)
-                        && self.value != value
-                        && let Some(on_paste) = &self.on_paste
-                    {
-                        self.value = value.clone();
-                        shell.publish(on_paste(value));
                     }
 
                     shell.invalidate_layout();
