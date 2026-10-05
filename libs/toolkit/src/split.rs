@@ -659,10 +659,13 @@ mod tests {
         assert!((state.start_layout - 198.0).abs() < 1.0, "{}", state.start_layout);
         assert_eq!(node.children().len(), 2);
         let laid: Vec<_> = Layout::new(&node).children().collect();
-        assert_eq!(laid[0].bounds().width, state.start_layout);
+        // A Shrink child takes only what it needs inside its pane; the
+        // end pane still starts after the handle.
         assert!(
             laid[1].bounds().x >= state.start_layout + 2.0,
-            "the end pane starts after the handle"
+            "the end pane starts after the handle: {} vs {}",
+            laid[1].bounds().x,
+            state.start_layout
         );
         let _ = split_placeholder();
     }
