@@ -4303,6 +4303,7 @@ dependencies = [
  "image",
  "num-traits",
  "png 0.18.1",
+ "resvg",
  "serde_json",
  "tempfile",
  "unicode-segmentation",
