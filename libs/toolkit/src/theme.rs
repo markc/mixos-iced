@@ -991,7 +991,7 @@ pub mod badge {
     use super::*;
     use crate::badge::{Style, Status};
 
-    fn filled(theme: &Theme, status: Status, fill: Color, text: Color) -> Style {
+    fn filled(status: Status, fill: Color, text: Color) -> Style {
         let background = match status {
             Status::Active => fill,
             Status::Hovered => towards(fill, text, 0.12),
@@ -1008,19 +1008,19 @@ pub mod badge {
     /// The `primary` pair.
     pub fn primary(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
-        filled(theme, status, p.primary, p.primary_text)
+        filled(status, p.primary, p.primary_text)
     }
 
     /// The `muted` pair: an understated chip.
     pub fn neutral(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
-        filled(theme, status, p.muted_surface, p.muted_text)
+        filled(status, p.muted_surface, p.muted_text)
     }
 
     /// The `destructive` pair.
     pub fn destructive(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
-        filled(theme, status, p.destructive, p.destructive_text)
+        filled(status, p.destructive, p.destructive_text)
     }
 }
 

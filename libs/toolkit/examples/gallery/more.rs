@@ -146,7 +146,7 @@ impl State {
         column![
             text(label("badges")).size(heading),
             badges,
-            text(label("card")).size(heading),
+            text(label("more-card")).size(heading),
             card,
             text(label("frames")).size(heading),
             frame,

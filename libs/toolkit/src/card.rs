@@ -301,7 +301,7 @@ where
 
         let head_node = head_node(
             renderer,
-            &limits,
+            limits,
             &mut self.head,
             self.padding_head,
             self.width,

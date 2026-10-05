@@ -9,7 +9,7 @@ use iced_core::layout::{Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
 use iced_core::text::paragraph::{self, Paragraph};
-use iced_core::text::{Paragraph as _, Text};
+use iced_core::text::Text;
 use iced_core::widget::tree::{self, Tree};
 use iced_core::widget::Operation;
 use iced_core::{
