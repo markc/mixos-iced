@@ -4,3 +4,8 @@
 //! launchers, task lists and anything else that shows other programs' icons.
 
 pub mod freedesktop;
+
+#[cfg(feature = "image")]
+pub mod assets;
+#[cfg(feature = "image")]
+pub use assets::{Assets, Ready};

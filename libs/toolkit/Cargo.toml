@@ -27,7 +27,7 @@ default = []
 # Eager raster decoding (`images`). iced's workspace turns the `image`
 # crate on with no codecs, so the png codec is enabled here too: a
 # standalone `cargo test -p toolkit` must decode its fixtures.
-image = ["iced_graphics/image", "dep:image", "image/png"]
+image = ["iced_graphics/image", "iced_widget/image", "dep:image", "image/png", "dep:resvg"]
 # Styles iced's `svg` widget too (`iced_widget/svg`).
 svg = ["iced_widget/svg"]
 wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]
@@ -47,6 +47,7 @@ iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
 iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "x11", "thread-pool", "fira-sans"] }
 fluent-bundle = { version = "0.15", optional = true }
 image = { workspace = true, optional = true }
+resvg = { version = "=0.45.1", default-features = false, optional = true }
 # `slide_bar` steps generic numeric values; the version is already in the lock.
 num-traits = { workspace = true }
 # `elide` walks grapheme boundaries; the version is already in the lock.
