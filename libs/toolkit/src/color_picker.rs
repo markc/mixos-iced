@@ -1016,11 +1016,14 @@ mod tests {
 
     #[test]
     fn to_rgba8_round_trips_bytes() {
+        // A byte step quantises to 1/255, so allow half a step per channel.
+        let close_byte = |a: f32, b: f32| (a - b).abs() <= 1.0 / 255.0;
         let color = hsv(300.0, 0.5, 1.0);
         let rgba8 = color.to_rgba8();
         let back = Hsv::from_rgba8(rgba8);
-        assert!(close(Color::from(color).r, Color::from(back).r));
-        assert!(close(Color::from(color).g, Color::from(back).g));
-        assert!(close(Color::from(color).b, Color::from(back).b));
+        let (from, back) = (Color::from(color), Color::from(back));
+        assert!(close_byte(from.r, back.r));
+        assert!(close_byte(from.g, back.g));
+        assert!(close_byte(from.b, back.b));
     }
 }
