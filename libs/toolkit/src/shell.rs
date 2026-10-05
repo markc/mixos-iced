@@ -537,36 +537,39 @@ impl<'a, Message: Clone + 'a> From<Shell<'a, Message>> for Element<'a, Message, 
             height,
         } = shell;
 
-        let mut app = column![].width(width).height(height);
-
-        if let Some(items) = menu {
-            app = app.push(menu::Menu::bar(items));
-        }
-        if let Some(toolbar) = toolbar {
-            app = app.push(toolbar.view(tokens));
-        }
-
-        let mut body = content;
-        if let Some((sidebar, px)) = sidebar_left {
-            let mut split = Split::new(px, sidebar, body).strategy(split::Strategy::Start);
+        // Keep both split nodes and every chrome slot at a stable position.
+        // Toggling a panel must not rebuild the content's widget state.
+        let empty = || -> Element<'a, Message, Theme, Renderer> {
+            iced_widget::Space::new().width(0).height(0).into()
+        };
+        let left_open = sidebar_left.is_some();
+        let (left, left_width) = sidebar_left.unwrap_or_else(|| (empty(), 0.0));
+        let mut body = Split::new(left_width, left, content).strategy(split::Strategy::Start);
+        if left_open {
             if let Some(on_split) = on_split.clone() {
-                split = split.on_drag(move |v| on_split(Side::Left, v));
+                body = body.on_drag(move |v| on_split(Side::Left, v));
             }
-            body = split.into();
+        } else {
+            body = body.handle_width(0);
         }
-        if let Some((sidebar, px)) = sidebar_right {
-            let mut split = Split::new(px, body, sidebar).strategy(split::Strategy::End);
+        let right_open = sidebar_right.is_some();
+        let (right, right_width) = sidebar_right.unwrap_or_else(|| (empty(), 0.0));
+        let mut body = Split::new(right_width, body, right).strategy(split::Strategy::End);
+        if right_open {
             if let Some(on_split) = on_split {
-                split = split.on_drag(move |v| on_split(Side::Right, v));
+                body = body.on_drag(move |v| on_split(Side::Right, v));
             }
-            body = split.into();
+        } else {
+            body = body.handle_width(0);
         }
-        app = app.push(body);
-
-        if let Some(status) = status {
-            app = app.push(status.view(tokens));
-        }
-
-        app.into()
+        column![
+            menu.map_or_else(empty, |items| menu::Menu::bar(items).into()),
+            toolbar.map_or_else(empty, |toolbar| toolbar.view(tokens)),
+            body,
+            status.map_or_else(empty, |status| status.view(tokens)),
+        ]
+        .width(width)
+        .height(height)
+        .into()
     }
 }

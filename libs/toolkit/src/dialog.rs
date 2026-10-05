@@ -1125,6 +1125,26 @@ where
                 && let Some(message) = on_key(key, modifiers)
             {
                 shell.publish(message);
+            } else if matches!(key, Key::Named(Named::Tab))
+                && !modifiers.control()
+                && !modifiers.alt()
+                && !modifiers.logo()
+            {
+                let mut operation: Box<dyn widget::Operation> =
+                    Box::new(crate::focus::cycle(modifiers.shift()));
+                loop {
+                    self.layer.as_widget_mut().operate(
+                        &mut tree.children[1],
+                        layer_layout,
+                        renderer,
+                        operation.as_mut(),
+                    );
+                    match operation.finish() {
+                        operation::Outcome::Chain(next) => operation = next,
+                        _ => break,
+                    }
+                }
+                shell.request_redraw();
             }
             shell.capture_event();
             return;
@@ -1536,6 +1556,15 @@ mod tests {
             &mut tree,
             &node,
             key(Key::Character("a".into()), Modifiers::CTRL, None),
+        );
+        send(
+            &mut closed,
+            &mut tree,
+            &node,
+            CoreEvent::InputMethod(iced_core::input_method::Event::Preedit(
+                "界".into(),
+                Some(0..3),
+            )),
         );
         let first = Dialog::prompt("First", "Body");
         let mut opened = view("draft", Some(&first));

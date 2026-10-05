@@ -345,7 +345,6 @@ impl TimePicker {
             )
             .then(|| on_event(Event::Cancel))
         })
-        .tab_navigation()
         .into()
     }
 }

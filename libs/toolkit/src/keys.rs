@@ -741,6 +741,11 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if self.modal
+            && let Some((_, state)) = self.sequence
+        {
+            state.borrow_mut().clear();
+        }
         match event {
             Event::Window(iced_core::window::Event::Unfocused) => {
                 if let Some((_, state)) = self.sequence {
@@ -1040,11 +1045,8 @@ where
             }) = event
         {
             if !modifiers.control() && !modifiers.alt() && !modifiers.logo() {
-                let mut operation: Box<dyn Operation> = if modifiers.shift() {
-                    Box::new(iced_core::widget::operation::focusable::focus_previous::<()>())
-                } else {
-                    Box::new(iced_core::widget::operation::focusable::focus_next::<()>())
-                };
+                let mut operation: Box<dyn Operation> =
+                    Box::new(crate::focus::cycle(modifiers.shift()));
                 // Focus-next chains a count pass to the mutation pass.
                 loop {
                     self.content.as_widget_mut().operate(

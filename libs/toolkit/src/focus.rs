@@ -13,6 +13,53 @@
 use iced_core::border::Border;
 use iced_core::{Background, Color, Rectangle, Renderer, renderer};
 
+/// Cycles through a complete focus domain, wrapping at both ends and ensuring
+/// exactly one focusable owns focus. Apply this to the shared parent of peers.
+pub fn cycle(backwards: bool) -> impl iced_core::widget::Operation {
+    use iced_core::widget::{Operation, operation};
+    struct Cycle {
+        target: Option<usize>,
+        current: usize,
+    }
+    impl Operation for Cycle {
+        fn focusable(
+            &mut self,
+            _: Option<&iced_core::widget::Id>,
+            _: Rectangle,
+            state: &mut dyn operation::Focusable,
+        ) {
+            if Some(self.current) == self.target {
+                state.focus();
+            } else {
+                state.unfocus();
+            }
+            self.current += 1;
+        }
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+    }
+    operation::then(operation::focusable::count(), move |count| {
+        let target = if count.total == 0 {
+            None
+        } else {
+            Some(match count.focused {
+                Some(current) if backwards => {
+                    if current == 0 {
+                        count.total - 1
+                    } else {
+                        current - 1
+                    }
+                }
+                Some(current) => (current + 1) % count.total,
+                None if backwards => count.total - 1,
+                None => 0,
+            })
+        };
+        Cycle { target, current: 0 }
+    })
+}
+
 /// A focusable region around a composite keyboard control. Its children keep
 /// their own state; keyboard/IME input enters the region only while focused.
 /// Clicks focus it, and the normal focus operations support Tab traversal.

@@ -956,7 +956,9 @@ where
             })
         ) && state.drag_origin.take().is_some()
         {
-            if let Some(message) = &self.on_cancel {
+            // Legacy callers have a completion callback only: commit their
+            // last preview rather than leave a permanently suspended resize.
+            if let Some(message) = self.on_cancel.as_ref().or(self.on_release.as_ref()) {
                 shell.publish(message.clone());
             }
             shell.capture_event();

@@ -325,6 +325,31 @@ where
     ) {
         self.input
             .operate(&mut tree.children[0], layout, renderer, operation);
+        if tree.state.downcast_ref::<History>().composing
+            && !tree.children[0]
+                .state
+                .downcast_ref::<text_input::State<Renderer>>()
+                .is_focused()
+        {
+            // A modal can suspend this subtree before the IME sends Closed.
+            // Cancel only preedit; committed text, selection and undo survive.
+            let mut bus = iced_core::shell::Bus::new();
+            let mut shell = Shell::new(
+                &iced_core::window::Headless,
+                iced_core::shell::Waker::noop(),
+                &mut bus,
+            );
+            self.input.update(
+                &mut tree.children[0],
+                &Event::InputMethod(iced_core::input_method::Event::Closed),
+                layout,
+                mouse::Cursor::Unavailable,
+                renderer,
+                &mut shell,
+                &layout.bounds(),
+            );
+            tree.state.downcast_mut::<History>().composing = false;
+        }
     }
 
     fn update(

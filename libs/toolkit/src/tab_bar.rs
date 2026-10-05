@@ -12,9 +12,9 @@ use iced_core::layout::{Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
 use iced_core::text::{self, LineHeight, Shaping, Wrapping};
+use iced_core::widget::text::Text;
 use iced_core::widget::tree::{State, Tag};
 use iced_core::widget::{Operation, Tree, Widget};
-use iced_core::widget::text::Text;
 use iced_core::{
     Alignment, Background, Border, Color, Element, Event, Font, Layout, Length, Padding, Pixels,
     Point, Rectangle, Shadow, Shell, Size, alignment, alignment::Vertical, window,
@@ -161,6 +161,29 @@ where
     Theme: Catalog,
     TabId: Eq + Clone,
 {
+    /// A horizontally scrolling strip. Fill-width tabs use their intrinsic
+    /// width; fixed widths are retained. The returned scrollable can receive
+    /// a caller ID for runtime scroll operations (for example, revealing the
+    /// newly active tab).
+    pub fn scrollable(mut self) -> iced_widget::Scrollable<'a, Message, Theme, Renderer>
+    where
+        Message: Clone + 'a,
+        TabId: 'a,
+        Theme: iced_widget::scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
+        Renderer: 'a,
+    {
+        self.width = Length::Shrink;
+        if self.tab_width.is_fill() {
+            self.tab_width = Length::Shrink;
+        }
+        iced_widget::scrollable(self)
+            .direction(iced_widget::scrollable::Direction::Horizontal(
+                iced_widget::scrollable::Scrollbar::new(),
+            ))
+            .width(Length::Fill)
+            .height(Length::Shrink)
+    }
+
     /// Creates an empty [`TabBar`] that produces a message when a tab is
     /// selected.
     pub fn new<F>(on_select: F) -> Self
@@ -342,7 +365,11 @@ where
     }
 }
 
-fn layout_icon<Theme, Renderer>(icon: &char, size: f32, font: Option<Font>) -> Text<'_, Theme, Renderer>
+fn layout_icon<Theme, Renderer>(
+    icon: &char,
+    size: f32,
+    font: Option<Font>,
+) -> Text<'_, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer,
     Renderer::Font: From<Font>,
@@ -397,110 +424,116 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
-        let row = self
-            .tab_labels
-            .iter()
-            .fold(Row::<Message, Theme, Renderer>::new(), |row, tab_label| {
-                let mut label_row = Row::new()
-                    .push(match tab_label {
-                        TabLabel::Icon(icon) => Column::new().align_x(Alignment::Center).push(
-                            layout_icon::<Theme, Renderer>(icon, self.icon_size + 1.0, self.font),
-                        ),
-                        TabLabel::Text(label) => Column::new()
-                            .padding(5.0)
-                            .align_x(Alignment::Center)
-                            .push(layout_text::<Theme, Renderer>(
-                                label,
-                                self.text_size + 1.0,
-                                self.text_font,
-                            )),
-                        TabLabel::IconText(icon, label) => {
-                            let mut column = Column::new().align_x(Alignment::Center);
-                            match self.position {
-                                Position::Top => {
-                                    column = column
-                                        .push(layout_icon::<Theme, Renderer>(
-                                            icon,
-                                            self.icon_size + 1.0,
-                                            self.font,
-                                        ))
-                                        .push(layout_text::<Theme, Renderer>(
-                                            label,
-                                            self.text_size + 1.0,
-                                            self.text_font,
-                                        ));
-                                }
-                                Position::Right => {
-                                    column = column.push(
-                                        Row::new()
-                                            .align_y(Alignment::Center)
-                                            .push(layout_text::<Theme, Renderer>(
-                                                label,
-                                                self.text_size + 1.0,
-                                                self.text_font,
-                                            ))
-                                            .push(layout_icon::<Theme, Renderer>(
-                                                icon,
-                                                self.icon_size + 1.0,
-                                                self.font,
-                                            )),
-                                    );
-                                }
-                                Position::Left => {
-                                    column = column.push(
-                                        Row::new()
-                                            .align_y(Alignment::Center)
-                                            .push(layout_icon::<Theme, Renderer>(
-                                                icon,
-                                                self.icon_size + 1.0,
-                                                self.font,
-                                            ))
-                                            .push(layout_text::<Theme, Renderer>(
-                                                label,
-                                                self.text_size + 1.0,
-                                                self.text_font,
-                                            )),
-                                    );
-                                }
-                                Position::Bottom => {
-                                    column = column
-                                        .height(Length::Fill)
-                                        .push(layout_text::<Theme, Renderer>(
-                                            label,
-                                            self.text_size + 1.0,
-                                            self.text_font,
-                                        ))
-                                        .push(layout_icon::<Theme, Renderer>(
-                                            icon,
-                                            self.icon_size + 1.0,
-                                            self.font,
-                                        ));
+        let row =
+            self.tab_labels
+                .iter()
+                .fold(Row::<Message, Theme, Renderer>::new(), |row, tab_label| {
+                    let mut label_row = Row::new()
+                        .push(
+                            match tab_label {
+                                TabLabel::Icon(icon) => Column::new()
+                                    .align_x(Alignment::Center)
+                                    .push(layout_icon::<Theme, Renderer>(
+                                        icon,
+                                        self.icon_size + 1.0,
+                                        self.font,
+                                    )),
+                                TabLabel::Text(label) => Column::new()
+                                    .padding(5.0)
+                                    .align_x(Alignment::Center)
+                                    .push(layout_text::<Theme, Renderer>(
+                                        label,
+                                        self.text_size + 1.0,
+                                        self.text_font,
+                                    )),
+                                TabLabel::IconText(icon, label) => {
+                                    let mut column = Column::new().align_x(Alignment::Center);
+                                    match self.position {
+                                        Position::Top => {
+                                            column = column
+                                                .push(layout_icon::<Theme, Renderer>(
+                                                    icon,
+                                                    self.icon_size + 1.0,
+                                                    self.font,
+                                                ))
+                                                .push(layout_text::<Theme, Renderer>(
+                                                    label,
+                                                    self.text_size + 1.0,
+                                                    self.text_font,
+                                                ));
+                                        }
+                                        Position::Right => {
+                                            column = column.push(
+                                                Row::new()
+                                                    .align_y(Alignment::Center)
+                                                    .push(layout_text::<Theme, Renderer>(
+                                                        label,
+                                                        self.text_size + 1.0,
+                                                        self.text_font,
+                                                    ))
+                                                    .push(layout_icon::<Theme, Renderer>(
+                                                        icon,
+                                                        self.icon_size + 1.0,
+                                                        self.font,
+                                                    )),
+                                            );
+                                        }
+                                        Position::Left => {
+                                            column = column.push(
+                                                Row::new()
+                                                    .align_y(Alignment::Center)
+                                                    .push(layout_icon::<Theme, Renderer>(
+                                                        icon,
+                                                        self.icon_size + 1.0,
+                                                        self.font,
+                                                    ))
+                                                    .push(layout_text::<Theme, Renderer>(
+                                                        label,
+                                                        self.text_size + 1.0,
+                                                        self.text_font,
+                                                    )),
+                                            );
+                                        }
+                                        Position::Bottom => {
+                                            column = column
+                                                .height(Length::Fill)
+                                                .push(layout_text::<Theme, Renderer>(
+                                                    label,
+                                                    self.text_size + 1.0,
+                                                    self.text_font,
+                                                ))
+                                                .push(layout_icon::<Theme, Renderer>(
+                                                    icon,
+                                                    self.icon_size + 1.0,
+                                                    self.font,
+                                                ));
+                                        }
+                                    }
+                                    column
                                 }
                             }
-                            column
-                        }
+                            .width(self.tab_width)
+                            .height(self.height),
+                        )
+                        .align_y(Alignment::Center)
+                        .padding(self.padding)
+                        .width(self.tab_width);
+
+                    if self.on_close.is_some() {
+                        label_row = label_row.push(
+                            Row::new()
+                                .width(Length::Fixed(self.close_size * 1.3 + 1.0))
+                                .height(Length::Fixed(self.close_size * 1.3 + 1.0))
+                                .align_y(Alignment::Center),
+                        );
                     }
-                    .width(self.tab_width)
-                    .height(self.height))
-                    .align_y(Alignment::Center)
-                    .padding(self.padding)
-                    .width(self.tab_width);
 
-                if self.on_close.is_some() {
-                    label_row = label_row.push(
-                        Row::new()
-                            .width(Length::Fixed(self.close_size * 1.3 + 1.0))
-                            .height(Length::Fixed(self.close_size * 1.3 + 1.0))
-                            .align_y(Alignment::Center),
-                    );
-                }
-
-                row.push(label_row)
-            })
-            .width(self.width)
-            .height(self.height)
-            .spacing(self.spacing)
-            .align_y(Alignment::Center);
+                    row.push(label_row)
+                })
+                .width(self.width)
+                .height(self.height)
+                .spacing(self.spacing)
+                .align_y(Alignment::Center);
 
         let mut element: Element<Message, Theme, Renderer> = Element::new(row);
         let tab_tree = if let Some(child_tree) = tree.children.get_mut(0) {
@@ -530,6 +563,7 @@ where
     ) {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle))
             | Event::Touch(iced_core::touch::Event::FingerPressed { .. })
                 if cursor
                     .position()
@@ -545,6 +579,13 @@ where
                     .collect();
 
                 if let Some(new_selected) = tabs_map.iter().position(|b| *b) {
+                    let middle = matches!(
+                        event,
+                        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle))
+                    );
+                    if middle && self.on_close.is_none() {
+                        return;
+                    }
                     shell.publish(
                         self.on_close
                             .as_ref()
@@ -557,9 +598,10 @@ where
                                     .nth(1)
                                     .expect("widget: Layout should have a close layout");
 
-                                cursor
-                                    .position()
-                                    .is_some_and(|pos| cross_layout.bounds().contains(pos))
+                                middle
+                                    || cursor
+                                        .position()
+                                        .is_some_and(|pos| cross_layout.bounds().contains(pos))
                             })
                             .map_or_else(
                                 || (self.on_select)(self.tab_indices[new_selected].clone()),
@@ -703,61 +745,61 @@ where
 
         // Rebuild the internal row so operations (focus, measurement,
         // accessibility) can see each label.
-        let row = self
-            .tab_labels
-            .iter()
-            .fold(Row::<(), Theme, Renderer>::new(), |row, tab_label| {
-                let label_content: Element<'_, (), Theme, Renderer> = match tab_label {
-                    TabLabel::Icon(icon) => Text::<Theme, Renderer>::new(icon.to_string())
-                        .size(self.icon_size)
-                        .font(self.font.unwrap_or_default())
-                        .into(),
-                    TabLabel::Text(label) => Text::<Theme, Renderer>::new(label.clone())
-                        .size(self.text_size)
-                        .font(self.text_font.unwrap_or_default())
-                        .into(),
-                    TabLabel::IconText(icon, label) => {
-                        let (first, second) = match self.position {
-                            Position::Top | Position::Left => (
-                                Text::<Theme, Renderer>::new(icon.to_string())
-                                    .size(self.icon_size)
-                                    .font(self.font.unwrap_or_default()),
-                                Text::<Theme, Renderer>::new(label.clone())
-                                    .size(self.text_size)
-                                    .font(self.text_font.unwrap_or_default()),
-                            ),
-                            Position::Bottom | Position::Right => (
-                                Text::<Theme, Renderer>::new(label.clone())
-                                    .size(self.text_size)
-                                    .font(self.text_font.unwrap_or_default()),
-                                Text::<Theme, Renderer>::new(icon.to_string())
-                                    .size(self.icon_size)
-                                    .font(self.font.unwrap_or_default()),
-                            ),
-                        };
-                        if matches!(self.position, Position::Top | Position::Bottom) {
-                            Column::<(), Theme, Renderer>::new()
-                                .push(first)
-                                .push(second)
-                                .into()
-                        } else {
-                            Row::<(), Theme, Renderer>::new()
-                                .push(first)
-                                .push(second)
-                                .into()
+        let row =
+            self.tab_labels
+                .iter()
+                .fold(Row::<(), Theme, Renderer>::new(), |row, tab_label| {
+                    let label_content: Element<'_, (), Theme, Renderer> = match tab_label {
+                        TabLabel::Icon(icon) => Text::<Theme, Renderer>::new(icon.to_string())
+                            .size(self.icon_size)
+                            .font(self.font.unwrap_or_default())
+                            .into(),
+                        TabLabel::Text(label) => Text::<Theme, Renderer>::new(label.clone())
+                            .size(self.text_size)
+                            .font(self.text_font.unwrap_or_default())
+                            .into(),
+                        TabLabel::IconText(icon, label) => {
+                            let (first, second) = match self.position {
+                                Position::Top | Position::Left => (
+                                    Text::<Theme, Renderer>::new(icon.to_string())
+                                        .size(self.icon_size)
+                                        .font(self.font.unwrap_or_default()),
+                                    Text::<Theme, Renderer>::new(label.clone())
+                                        .size(self.text_size)
+                                        .font(self.text_font.unwrap_or_default()),
+                                ),
+                                Position::Bottom | Position::Right => (
+                                    Text::<Theme, Renderer>::new(label.clone())
+                                        .size(self.text_size)
+                                        .font(self.text_font.unwrap_or_default()),
+                                    Text::<Theme, Renderer>::new(icon.to_string())
+                                        .size(self.icon_size)
+                                        .font(self.font.unwrap_or_default()),
+                                ),
+                            };
+                            if matches!(self.position, Position::Top | Position::Bottom) {
+                                Column::<(), Theme, Renderer>::new()
+                                    .push(first)
+                                    .push(second)
+                                    .into()
+                            } else {
+                                Row::<(), Theme, Renderer>::new()
+                                    .push(first)
+                                    .push(second)
+                                    .into()
+                            }
                         }
+                    };
+
+                    let mut label_row = Row::<(), Theme, Renderer>::new().push(label_content);
+
+                    if self.on_close.is_some() {
+                        label_row =
+                            label_row.push(Text::<Theme, Renderer>::new("×").size(self.close_size));
                     }
-                };
 
-                let mut label_row = Row::<(), Theme, Renderer>::new().push(label_content);
-
-                if self.on_close.is_some() {
-                    label_row = label_row
-                        .push(Text::<Theme, Renderer>::new("×").size(self.close_size));
-                }
-
-                row.push(label_row)
-            });
+                    row.push(label_row)
+                });
 
         let mut element: Element<(), Theme, Renderer> = Element::new(row);
         let tab_tree = if let Some(child_tree) = tree.children.get_mut(0) {
@@ -839,38 +881,36 @@ fn draw_tab<Theme, Renderer>(
             let text_bounds = text_bound_rectangle(label_layout_children.next());
             (Rectangle::default(), Some(text_bounds))
         }
-        TabLabel::IconText(..) => {
-            match position {
-                Position::Top => {
-                    let icon_bounds = icon_bound_rectangle(label_layout_children.next());
-                    let text_bounds = text_bound_rectangle(label_layout_children.next());
-                    (icon_bounds, Some(text_bounds))
-                }
-                Position::Right => {
-                    let mut row_children = label_layout_children
-                        .next()
-                        .expect("Graphics: Right Layout should have a row child")
-                        .children();
-                    let text_bounds = text_bound_rectangle(row_children.next());
-                    let icon_bounds = icon_bound_rectangle(row_children.next());
-                    (icon_bounds, Some(text_bounds))
-                }
-                Position::Left => {
-                    let mut row_children = label_layout_children
-                        .next()
-                        .expect("Graphics: Left Layout should have a row child")
-                        .children();
-                    let icon_bounds = icon_bound_rectangle(row_children.next());
-                    let text_bounds = text_bound_rectangle(row_children.next());
-                    (icon_bounds, Some(text_bounds))
-                }
-                Position::Bottom => {
-                    let text_bounds = text_bound_rectangle(label_layout_children.next());
-                    let icon_bounds = icon_bound_rectangle(label_layout_children.next());
-                    (icon_bounds, Some(text_bounds))
-                }
+        TabLabel::IconText(..) => match position {
+            Position::Top => {
+                let icon_bounds = icon_bound_rectangle(label_layout_children.next());
+                let text_bounds = text_bound_rectangle(label_layout_children.next());
+                (icon_bounds, Some(text_bounds))
             }
-        }
+            Position::Right => {
+                let mut row_children = label_layout_children
+                    .next()
+                    .expect("Graphics: Right Layout should have a row child")
+                    .children();
+                let text_bounds = text_bound_rectangle(row_children.next());
+                let icon_bounds = icon_bound_rectangle(row_children.next());
+                (icon_bounds, Some(text_bounds))
+            }
+            Position::Left => {
+                let mut row_children = label_layout_children
+                    .next()
+                    .expect("Graphics: Left Layout should have a row child")
+                    .children();
+                let icon_bounds = icon_bound_rectangle(row_children.next());
+                let text_bounds = text_bound_rectangle(row_children.next());
+                (icon_bounds, Some(text_bounds))
+            }
+            Position::Bottom => {
+                let text_bounds = text_bound_rectangle(label_layout_children.next());
+                let icon_bounds = icon_bound_rectangle(label_layout_children.next());
+                (icon_bounds, Some(text_bounds))
+            }
+        },
     };
 
     match tab {
@@ -897,7 +937,9 @@ fn draw_tab<Theme, Renderer>(
         _ => {}
     }
 
-    if let (TabLabel::Text(label) | TabLabel::IconText(_, label), Some(text_bounds)) = (tab, text_bounds) {
+    if let (TabLabel::Text(label) | TabLabel::IconText(_, label), Some(text_bounds)) =
+        (tab, text_bounds)
+    {
         renderer.fill_text(
             iced_core::text::Text {
                 content: label.clone(),
@@ -1004,7 +1046,9 @@ mod tests {
         let mut tree = Tree::new(&element);
         element.as_widget_mut().diff(&mut tree);
         let limits = Limits::new(Size::ZERO, Size::new(600.0, 40.0));
-        let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let node = element
+            .as_widget_mut()
+            .layout(&mut tree, &renderer, &limits);
         let laid: Vec<_> = Layout::new(&node).children().collect();
         assert_eq!(laid.len(), 3, "one child per tab");
         assert_eq!(laid[0].bounds().y, laid[1].bounds().y, "one row");

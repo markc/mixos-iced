@@ -272,3 +272,44 @@ fn header_controls_do_not_start_a_window_drag_and_input_clear_is_disabled_when_e
         );
     }
 }
+
+#[test]
+fn tab_strip_scrolls_to_later_tabs_and_middle_click_closes_the_target() {
+    use toolkit::tab_bar::{TabBar, TabLabel};
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Select(usize),
+        Close(usize),
+    }
+    let mut bar = TabBar::new(Message::Select)
+        .on_close(Message::Close)
+        .tab_width(120);
+    for index in 0..40 {
+        bar = bar.push(index, TabLabel::Text(format!("Document {index}")));
+    }
+    let mut ui = simulation(bar.scrollable().into());
+    assert!(ui.find("Document 39").unwrap().visible_bounds().is_none());
+    ui.point_at(Point::new(400.0, 16.0));
+    ui.simulate([Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Pixels {
+            x: -10000.0,
+            y: 0.0,
+        },
+    })]);
+    let bounds = ui.find("Document 39").unwrap().visible_bounds().unwrap();
+    ui.point_at(bounds.center());
+    ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+        mouse::Button::Middle,
+    ))]);
+    assert_eq!(
+        ui.into_messages().collect::<Vec<_>>(),
+        vec![Message::Close(39)]
+    );
+    let bar = TabBar::new(Message::Select).push(0, TabLabel::Text("Only".into()));
+    let mut ui = simulation(bar.into());
+    ui.point_at(Point::new(20.0, 15.0));
+    ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+        mouse::Button::Middle,
+    ))]);
+    assert!(ui.into_messages().next().is_none());
+}

@@ -83,6 +83,34 @@ fn calendar_keys_and_clock_keys_do_not_steal_each_others_focus() {
 }
 
 #[test]
+fn tab_between_calendar_and_clock_has_one_focus_owner_and_wraps() {
+    let gallery = Gallery::new();
+    let mut ui = Simulator::with_size(
+        Settings::default(),
+        Size::new(1000.0, 650.0),
+        gallery.pickers_page(),
+    );
+    ui.click("29").unwrap();
+    ui.tap_key(Named::Tab);
+    ui.tap_key(Named::ArrowUp);
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| matches!(m, Message::Pickers(app::pickers::Message::Time(_))))
+            .count(),
+        1,
+        "{messages:?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|m| matches!(m, Message::Pickers(app::pickers::Message::Date(_)))),
+        "{messages:?}"
+    );
+}
+
+#[test]
 fn application_patterns_render_and_remain_reachable_in_a_narrow_window() {
     let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("toolkit-snapshots");
     std::fs::create_dir_all(&directory).unwrap();
@@ -95,13 +123,6 @@ fn application_patterns_render_and_remain_reachable_in_a_narrow_window() {
                 Size::new(width, 1200.0),
                 gallery.patterns_page(),
             );
-            for label in ["Back", "Help", "Enabled", "Website", "Retry", "Dismiss"] {
-                let bounds = ui.find(label).unwrap().visible_bounds().unwrap();
-                assert!(
-                    bounds.width > 0.0 && bounds.x + bounds.width <= width + 1.0,
-                    "{mode:?}/{width}: {label} {bounds:?}"
-                );
-            }
             let path = directory.join(format!("patterns-{}-{width}.png", mode.name()));
             let written = directory.join(format!("patterns-{}-{width}-tiny-skia.png", mode.name()));
             let _ = std::fs::remove_file(written);
@@ -111,6 +132,16 @@ fn application_patterns_render_and_remain_reachable_in_a_narrow_window() {
                     .matches_image(path)
                     .unwrap()
             );
+            for label in ["Back", "Help", "Enabled", "Website", "Retry", "Dismiss"] {
+                let target = ui.find(label).unwrap();
+                let bounds = target.visible_bounds().unwrap_or_else(|| {
+                    panic!("{mode:?}/{width}: {label} is offscreen: {target:?}")
+                });
+                assert!(
+                    bounds.width > 0.0 && bounds.x + bounds.width <= width + 1.0,
+                    "{mode:?}/{width}: {label} {bounds:?}"
+                );
+            }
         }
     }
 }

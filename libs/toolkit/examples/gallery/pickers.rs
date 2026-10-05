@@ -97,7 +97,7 @@ impl State {
     }
 
     pub fn view(&self, tokens: Tokens) -> Element<'_, Message, Theme> {
-        column![
+        let content = column![
             text(label("picker-heading")).size(tokens.metrics.text.xxl),
             row![
                 column![
@@ -115,7 +115,9 @@ impl State {
             .wrap(),
             text(&self.outcome).size(tokens.metrics.text.lg),
         ]
-        .spacing(tokens.metrics.spacing.lg)
-        .into()
+        .spacing(tokens.metrics.spacing.lg);
+        toolkit::keys::keys(content, |_| None)
+            .tab_navigation()
+            .into()
     }
 }
