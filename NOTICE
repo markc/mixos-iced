@@ -128,3 +128,9 @@ Only what the workspace members reach is listed.
 - libpulse (LGPL-2.1-or-later) and libdbus (AFL-2.1 OR GPL-2.0-or-later),
   dynamically linked by drivers through libpulse-binding and mpris/dbus.
   compd does not ship them.
+
+winit (iced fork), vendor/winit
+  https://github.com/iced-rs/winit.git
+  Base: 05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed
+  Apache-2.0; upstream licence retained in vendor/winit/LICENSE.
+  Local Wayland data-device extension documented in vendor/winit/PATCHES.md.

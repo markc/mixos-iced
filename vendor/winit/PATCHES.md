@@ -1,0 +1,31 @@
+# winit Wayland drag and drop
+
+Upstream: `https://github.com/iced-rs/winit.git`, exact base
+`05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed` (0.30.8).
+The full upstream tree and Apache-2.0 licence are retained.
+
+Local changes add a native source/offer lifecycle to the existing SCTK
+data-device backend. No second connection, dispatch thread or transfer
+transport is introduced. `drag` defines bounded MIME payloads, action
+negotiation, gesture/offer identities and completion events.
+
+`WindowExtWayland` queues requests onto the existing event-loop wakeup.
+Pointer presses retain their own seat, origin surface and serial; a start
+consumes one still-held press belonging to the requesting window. Releases
+invalidate unused presses. The backend never uses the global latest-button
+serial as a drag authorisation.
+
+Data-device callbacks maintain one offer record per enter, and retain a
+dropped offer until delivery and explicit completion. Nonblocking native
+pipes are registered with calloop for read/write readiness. Reads deliver
+once at EOF with a 16 MiB cap; writes handle partial progress. Only
+`dnd_finished` publishes successful source completion. Window/seat removal,
+rejection and cancellation retire resources.
+
+The SCTK source factory sets actions once; its 0.19.2 `DragSource::set_actions`
+helper is deliberately unused because it sends a duplicate protocol request.
+`rustix` gains its `fs` feature solely for nonblocking FD flags.
+
+Guards: backend unit tests for payload validation and the desktop native
+drag test exercise MIME/action negotiation, bytes, exactly-once completion,
+invalid presses, cancellation, closures and transfer sizes above pipe capacity.
