@@ -207,6 +207,8 @@ fn a_tool_can_be_enabled_after_being_disabled() {
 fn existing_shell_restyles_without_rebuilding_its_elements() {
     let app = App::new();
     let mut ui = Simulator::with_size(settings(), VIEWPORT, app.view());
+    let toolbar_y = ui.find("New").unwrap().bounds().center_y();
+    let selected_y = ui.find("Overview").unwrap().bounds().center_y();
     // A theme swap at draw time must resolve the new chrome colours.
     let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("toolkit-snapshots");
     std::fs::create_dir_all(&directory).unwrap();
@@ -216,6 +218,25 @@ fn existing_shell_restyles_without_rebuilding_its_elements() {
         let written = directory.join(format!("shell-swap-{name}-tiny-skia.png"));
         let _ = std::fs::remove_file(&written);
         assert!(ui.snapshot(&theme).unwrap().matches_image(&path).unwrap());
+        let decoder = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(&written).unwrap(),
+        ));
+        let mut reader = decoder.read_info().unwrap();
+        let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut bytes).unwrap();
+        for (y, colour) in [
+            (toolbar_y, theme.tokens().palette.muted_surface),
+            (selected_y, theme.tokens().palette.selection),
+        ] {
+            let at = ((y * 2.0) as usize * info.width as usize + 2) * 4;
+            assert!(
+                bytes[at..at + 4]
+                    .iter()
+                    .zip(colour.into_rgba8())
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 3),
+                "{name}: chrome did not resolve its colour from the drawing theme"
+            );
+        }
         frames.push(std::fs::read(written).unwrap());
     }
     assert_ne!(frames[0], frames[1]);
