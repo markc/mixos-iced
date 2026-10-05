@@ -418,7 +418,9 @@ impl<S: Source> OfferData for WlOfferData<S> {
             .wl_offers
             .iter()
             .any(|o| o.version() >= wl_data_offer::REQ_SET_ACTIONS_SINCE);
-        data.accepted && (!requires_action || !data.chosen_action.is_empty())
+        // compd: destroying the last offer before release withdraws acceptance.
+        data.active && self.wl_offers.iter().any(Resource::is_alive)
+            && data.accepted && (!requires_action || !data.chosen_action.is_empty())
     }
 }
 

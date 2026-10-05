@@ -21,6 +21,17 @@ gate (`tests/generic.rs`) keeps it that way.
 | `VirtualList`, `Selection`, `virtual_list::Columns` | a list that builds and draws only the rows in view (100,000 rows cost a screenful), keyboard navigation, single/multiple selection, activation, type-ahead, a column header, `scroll_to_row` |
 | `TreeView`, `Nodes` | a tree over the virtual list: a keyed node model with lazy children, expand/collapse by expander, double-click, Right and Left, indentation guides |
 | `shell::{Shell, Toolbar, StatusBar, places}` | optional menu bar, centred tools with pinned edge groups, independently resizable sidebars and a status strip, composed from the existing widgets |
+| `DatePicker`, `TimePicker` (in their modules) | caller-owned Gregorian dates and clock times, validation, ranges, localisable calendar and 12/24-hour controls |
+| `TypedInput`, `NumberInput`, `ColorPicker` | parsed values, bounded numeric steps and an HSV colour field |
+| `TabBar`, `Tabs`, `Sidebar`, `FlushColumn` | scrollable tabs, middle-click close, selected page and aligned navigation |
+| `Table`, `Split` | sortable and resizable columns, synchronised scrolling and draggable panes |
+| `Badge`, `Card`, `LabeledFrame`, `SelectionList`, `SlideBar`, `Wrap`, `DropDown` | token-styled compositions, selections and flow layouts |
+| `anchor`, `Popover`, `Collapsible`, `Spinner`, `spinners` | viewport placement, dismissable popovers, expansion and indeterminate progress |
+| `command_palette` | fuzzy command search with keyboard, pointer and scroll handling |
+| `patterns` | info strips, breadcrumbs, path/search fields, settings rows, header bar and About card |
+| `requester` | Open/Save state and view over a caller-selected filesystem, completion, recents and overwrite outcome |
+| `dnd`, `dnd::native` | in-window typed gestures and a backend-independent native source/offer session |
+| `measure`, `timers`, `ime`, `elide`, `FitText`, `focus`, `tips`, `images` | bounds, deadlines, composition ownership, fitted/elided text, focus traversal, tips and optional decoded images |
 
 Everything is a plain `iced_core::Widget`. The library selects no renderer
 and links no window shell; the host enables the `wgpu` or `tiny-skia`
@@ -162,8 +173,8 @@ text(glyph.to_string()).font(font);
   work before and after `install` (before it, they resolve to iced's
   generic families).
 
-The crate never reads a path, an environment variable or a manifest; the
-caller decides where fonts come from.
+The caller supplies the font bytes or paths; the crate discovers no font
+configuration or manifest.
 
 ### Icon widgets: `icon`
 
@@ -198,6 +209,12 @@ chooses the directories and theme (`Lookup::new`, `in_data_dirs`); only
 `from_xdg` reads the XDG environment and the GTK/KDE settings files.
 `Resolver` adds a bounded cache that re-checks the file on every hit.
 
+With `image`, `icons::Assets` renders resolved PNG or SVG files as eager
+RGBA handles, with optional symbolic tint and scale. Its bounded cache
+keys include file metadata, size, tint and scale; external SVG resources
+are disabled. Missing files fall back to the visible icon name. The host
+supplies the resolver and owns the asset cache.
+
 ## Keys, dialogs and toasts
 
 These are transport-free: the application owns the state, draws it, feeds
@@ -215,10 +232,7 @@ let label = bindings.label(&Action::Save);              // Some("Ctrl+S") for a 
 
 // The window content, wrapped in order: toasts, then the modal, then the router.
 let content = toast::overlay(content, &app.toaster, tokens, Message::Toast);
-let content = match &app.dialog {
-    Some(dialog) => dialog::modal(content, dialog, tokens, Message::Dialog),
-    None => content,
-};
+let content = dialog::Modal::host(content, app.dialog.as_ref(), tokens, Message::Dialog);
 keys::router(content, &bindings, Message::Route)
     .modal(app.dialog.is_some())          // a dialog owns the keyboard
     .text_field(app.find_bar_focused)     // it keeps Ctrl+C/V/Z and friends
@@ -259,7 +273,16 @@ let handle = app.toaster.push(Toast::new("Saved").severity(Severity::Success));
   click over a text field.
 - Styles: `dialog::{card, scrim, focus_ring, button_style, option_style}`
   and `toast::style` are functions of the theme; `Severity::colour` is the
-  text colour, `primary`, a softened `destructive` and `destructive`.
+  text colour, semantic success/warning or destructive. Set semantic roles
+  with `Theme::with_semantic`; the existing `Palette` shape stays compatible.
+- `keys::SequenceBindings` parses two-stroke sequences such as
+  `Ctrl+K Ctrl+C`. The router keeps a pending prefix per widget/window,
+  expires it on a deadline, and clears it when a modal takes ownership.
+- Keep `Modal::host` mounted while closed to preserve the base widget tree,
+  focus, selection and undo. Closing the input method prevents stale queued
+  composition events from reaching the restored field.
+- `keys::KeyRouter::tab_navigation` supplies one root Tab owner and wraps traversal;
+  `focus::cycle` is the explicit operation for a caller-owned focus task.
 ## Data widgets: `VirtualList` and `TreeView`
 
 ```rust
@@ -294,6 +317,12 @@ TreeView::new(&nodes, |row| text(&row.data.name))
   `key(|i| ...)` for stable row keys so a row keeps its widget state when
   rows are inserted above it. `Selection` is sorted ranges with a cursor
   and anchor (`Mode::{None, Single, Multiple}`).
+- `RowHeights::new(heights)` builds a reusable prefix index. Supply it with
+  `.row_heights(&index)`; top offsets are constant time and visible-range
+  searches are logarithmic. Rebuild the index only when caller data changes.
+  `Columns::resizable_header` reports `Resize::{Preview, Commit, Cancel}`;
+  apply preview widths to the same columns used for body rows, persist them
+  on Commit and restore them on Cancel.
 - `TreeView::new(&nodes, build)`: rows are the model's visible nodes
   (`Nodes::visible(row)`), each with guides and an expander (the icon
   font's `chevron_right`/`expand_more`, else a drawn box) before `build`'s
@@ -301,6 +330,26 @@ TreeView::new(&nodes, |row| text(&row.data.name))
 - Styles: `virtual_list::Catalog` (`Style` with `Status::{Active, Hovered,
   Focused}`) and `tree::Catalog` (guides and expander), implemented for
   `Theme` from the tokens and for iced's theme.
+
+## Native drag sessions
+
+`dnd::native::Session<P, WindowId>` is a portable state machine. A `Codec<P>`
+encodes one MIME payload; `Text` supplies UTF-8 text. The host feeds backend
+events into `event`, executes `Effect::Request` on its native data device,
+and applies `Effect::Delivery` to its target model. Then it calls `applied`
+with the offer identity and whether application succeeded. Only a subsequent
+successful source `Effect::Finished` authorises removing the source for Move.
+Copy retains it. Failed, rejected, cancelled and closed windows never
+produce successful completion. Feed pointer release to `released` and
+window closure to `closed` so unused presses and offers cannot be reused.
+
+The session selects no window backend. A host adapter must supply real
+held-press identities, native MIME/action negotiation, bounded nonblocking
+transfer and the protocol's final completion event. It must reject stale or
+wrong-window identities. A backend without these facilities should report
+unsupported capability explicitly. Payloads are bounded to 16 MiB and MIME
+names to 255 bytes. This API and the other library widgets compile against
+pristine iced; an optional native host extension belongs outside the crate.
 
 ## Strings
 

@@ -109,6 +109,39 @@ fn tab_between_calendar_and_clock_has_one_focus_owner_and_wraps() {
         ),
         "{messages:?}"
     );
+
+    // The calendar region and three clock fields are the four focus owners.
+    // A whole cycle returns to the calendar; its keys must act once.
+    let mut ui = Simulator::with_size(
+        Settings::default(),
+        Size::new(1000.0, 650.0),
+        gallery.pickers_page(),
+    );
+    ui.click("29").unwrap();
+    for _ in 0..4 {
+        ui.tap_key(Named::Tab);
+    }
+    ui.tap_key(Named::ArrowRight);
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| matches!(
+                message,
+                Message::Pickers(app::pickers::Message::Date(
+                    toolkit::date_picker::Event::MoveDays(1)
+                ))
+            ))
+            .count(),
+        1,
+        "{messages:?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, Message::Pickers(app::pickers::Message::Time(_)))),
+        "{messages:?}"
+    );
 }
 
 #[test]

@@ -1,25 +1,25 @@
 //! Native drag source/offer ownership on winit's existing Wayland queue.
 //! Transfers use calloop readiness and bounded nonblocking pipes.
-use super::{make_wid, state::WinitState, WindowId};
+use super::{WindowId, make_wid, state::WinitState};
 use crate::{
     drag::{self, Action, Actions, Gesture, Offer},
     event::WindowEvent,
 };
 use ahash::AHashMap;
 use sctk::data_device_manager::{
+    DataDeviceManagerState, WritePipe,
     data_device::{DataDevice, DataDeviceData, DataDeviceHandler},
     data_offer::{DataOfferHandler, DragOffer},
     data_source::{DataSourceHandler, DragSource},
-    DataDeviceManagerState, WritePipe,
 };
-use sctk::reexports::calloop::{generic::Generic, Interest, Mode, PostAction, RegistrationToken};
+use sctk::reexports::calloop::{Interest, Mode, PostAction, RegistrationToken, generic::Generic};
 use sctk::reexports::client::{
+    Connection, Proxy, QueueHandle,
     backend::ObjectId,
     protocol::{
         wl_data_device::WlDataDevice, wl_data_device_manager::DndAction,
         wl_data_source::WlDataSource, wl_seat::WlSeat, wl_surface::WlSurface,
     },
-    Connection, Proxy, QueueHandle,
 };
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
@@ -176,7 +176,7 @@ impl WinitState {
         }
     }
     pub fn drag_remove_seat(&mut self, seat: &WlSeat) {
-        self.drag.presses.retain(|_, press| press.seat != *seat);
+        self.drag_pointer_removed(seat);
         if let Some(device) = self.drag.devices.remove(&seat.id()) {
             let targets: Vec<_> = self
                 .drag
@@ -189,6 +189,9 @@ impl WinitState {
                 self.discard_target(offer);
             }
         }
+    }
+    pub fn drag_pointer_removed(&mut self, seat: &WlSeat) {
+        self.drag.presses.retain(|_, press| press.seat != *seat);
         // A removed seat cannot continue its pointer grab. The compositor
         // also cancels its source, but retire our ownership immediately.
         let sources: Vec<_> = self
@@ -374,7 +377,7 @@ impl WinitState {
                 }
                 let mut buffer = [0u8; 16384];
                 loop {
-                match rustix::io::read(&*fd, &mut buffer) {
+                    match rustix::io::read(&*fd, &mut buffer) {
                         Ok(0) => {
                             let target = state.drag.targets.get_mut(&offer).unwrap();
                             target.delivered = true;
@@ -473,7 +476,9 @@ impl DataDeviceHandler for WinitState {
             window,
             drag::Event::Enter { offer, position: crate::dpi::LogicalPosition::new(x, y), mimes },
         );
-        if action.is_some() { self.drag_event(window, drag::Event::Action { offer, action }); }
+        if action.is_some() {
+            self.drag_event(window, drag::Event::Action { offer, action });
+        }
     }
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
         if let Some(offer) = self.offer_for_device(device) {
@@ -559,6 +564,12 @@ impl DataSourceHandler for WinitState {
         else {
             return;
         };
+        // A hostile receiver may request the same MIME repeatedly. Bound the
+        // registrations retained for this source's lifetime.
+        if owned.pipes.len() >= 16 {
+            self.discard_source(source.id(), false);
+            return;
+        }
         let bytes = owned.payload.bytes.clone();
         let id = source.id();
         let fd: OwnedFd = pipe.into();
@@ -575,11 +586,17 @@ impl DataSourceHandler for WinitState {
                 }
                 while offset < bytes.len() {
                     match rustix::io::write(&*fd, &bytes[offset..]) {
-                        Ok(0) => return Ok(PostAction::Remove),
+                        Ok(0) => {
+                            state.discard_source(id.clone(), false);
+                            return Ok(PostAction::Remove);
+                        },
                         Ok(count) => offset += count,
                         Err(rustix::io::Errno::INTR) => continue,
                         Err(rustix::io::Errno::AGAIN) => return Ok(PostAction::Continue),
-                        Err(_) => return Ok(PostAction::Remove),
+                        Err(_) => {
+                            state.discard_source(id.clone(), false);
+                            return Ok(PostAction::Remove);
+                        },
                     }
                 }
                 Ok(PostAction::Remove)

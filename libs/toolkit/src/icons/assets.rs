@@ -237,9 +237,15 @@ mod tests {
             .fallback("asset-fixture", &path, false)
             .fallback("symbolic-fixture", &path, true);
         let resolve = |name, scale, tint| image(assets.resolve(Icon::new(name), 10.0, scale, tint));
-        let first = resolve("asset-fixture", 1.0, Color::BLACK);
-        assert_eq!(first.id(), resolve("asset-fixture", 1.0, Color::WHITE).id());
-        assert_ne!(first.id(), resolve("asset-fixture", 2.0, Color::BLACK).id());
+        let first = resolve("asset-fixture", 1.0, crate::Tokens::light().palette.text);
+        assert_eq!(
+            first.id(),
+            resolve("asset-fixture", 1.0, crate::Tokens::dark().palette.text).id()
+        );
+        assert_ne!(
+            first.id(),
+            resolve("asset-fixture", 2.0, crate::Tokens::light().palette.text).id()
+        );
         let Handle::Rgba {
             width,
             height,
@@ -252,27 +258,70 @@ mod tests {
         assert_eq!((width, height), (10, 10));
         assert_eq!(&pixels[..3], &[255, 0, 0]);
         assert!((126..=129).contains(&pixels[3]));
-        let black = resolve("symbolic-fixture", 1.0, Color::BLACK);
-        let white = resolve("symbolic-fixture", 1.0, Color::WHITE);
+        let black = resolve("symbolic-fixture", 1.0, crate::Tokens::light().palette.text);
+        let white = resolve("symbolic-fixture", 1.0, crate::Tokens::dark().palette.text);
         assert_ne!(black.id(), white.id());
         assert_eq!(
             white.id(),
-            resolve("symbolic-fixture", 1.0, Color::WHITE).id()
+            resolve("symbolic-fixture", 1.0, crate::Tokens::dark().palette.text).id()
         );
     }
     #[test]
     fn deleted_corrupt_blank_and_invalid_size_assets_have_visible_names() {
         let (_directory, path) = fixture_svg();
         let assets = Assets::new().fallback("fixture", &path, false);
-        let first = image(assets.resolve(Icon::new("fixture"), 16.0, 1.0, Color::WHITE));
+        let first = image(assets.resolve(
+            Icon::new("fixture"),
+            16.0,
+            1.0,
+            crate::Tokens::dark().palette.text,
+        ));
+        std::fs::write(
+            &path,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            assets.resolve(
+                Icon::new("fixture"),
+                16.0,
+                1.0,
+                crate::Tokens::dark().palette.text
+            ),
+            Ready::Text(_)
+        ));
+        let external = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/icon.png");
+        std::fs::write(&path, format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" xlink:href="{}"/></svg>"#, external.display())).unwrap();
+        assert!(
+            matches!(
+                assets.resolve(
+                    Icon::new("fixture"),
+                    16.0,
+                    1.0,
+                    crate::Tokens::dark().palette.text
+                ),
+                Ready::Text(_)
+            ),
+            "external files must not be rendered"
+        );
         std::fs::write(&path, "invalid SVG").unwrap();
         assert!(matches!(
-            assets.resolve(Icon::new("fixture"), 16.0, 1.0, Color::WHITE),
+            assets.resolve(
+                Icon::new("fixture"),
+                16.0,
+                1.0,
+                crate::Tokens::dark().palette.text
+            ),
             Ready::Text(_)
         ));
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(
-            assets.resolve(Icon::new("fixture"), 16.0, 1.0, Color::WHITE),
+            assets.resolve(
+                Icon::new("fixture"),
+                16.0,
+                1.0,
+                crate::Tokens::dark().palette.text
+            ),
             Ready::Text(_)
         ));
         for (size, scale) in [
@@ -282,11 +331,44 @@ mod tests {
             (16.0, 0.0),
         ] {
             assert!(matches!(
-                assets.resolve(Icon::new("fixture"), size, scale, Color::WHITE),
+                assets.resolve(
+                    Icon::new("fixture"),
+                    size,
+                    scale,
+                    crate::Tokens::dark().palette.text
+                ),
                 Ready::Text(_)
             ));
         }
         assert!(matches!(first, Handle::Rgba { .. }));
+    }
+    #[test]
+    fn same_length_asset_change_invalidates_cached_pixels_by_mtime() {
+        let (_directory, path) = fixture_svg();
+        let assets = Assets::new().fallback("fixture", &path, false);
+        let tint = crate::Tokens::dark().palette.text;
+        let first = image(assets.resolve(Icon::new("fixture"), 16.0, 1.0, tint));
+        let before = path.metadata().unwrap();
+        let changed = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("#ff0000", "#00ff00");
+        std::fs::write(&path, changed).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(before.modified().unwrap() + std::time::Duration::from_secs(2)),
+            )
+            .unwrap();
+        assert_eq!(before.len(), path.metadata().unwrap().len());
+        let second = image(assets.resolve(Icon::new("fixture"), 16.0, 1.0, tint));
+        assert_ne!(first.id(), second.id());
+        let Handle::Rgba { pixels, .. } = second else {
+            panic!()
+        };
+        assert_eq!(&pixels[..3], &[0, 255, 0]);
     }
     #[test]
     fn corrupt_primary_asset_can_fall_back_to_a_ready_raster() {
@@ -297,11 +379,17 @@ mod tests {
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/icon.png"),
                 true,
             );
-        let Handle::Rgba { pixels, .. } =
-            image(assets.resolve(Icon::new("fixture"), 24.0, 2.0, Color::WHITE))
-        else {
+        let Handle::Rgba { pixels, .. } = image(assets.resolve(
+            Icon::new("fixture"),
+            24.0,
+            2.0,
+            crate::Tokens::dark().palette.text,
+        )) else {
             panic!()
         };
-        assert_eq!(&pixels[..3], &[255, 255, 255]);
+        assert_eq!(
+            &pixels[..3],
+            &crate::Tokens::dark().palette.text.into_rgba8()[..3]
+        );
     }
 }

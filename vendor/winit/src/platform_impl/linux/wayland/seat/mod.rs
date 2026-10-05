@@ -146,6 +146,9 @@ impl SeatHandler for WinitState {
         seat: WlSeat,
         capability: SeatCapability,
     ) {
+        if capability == SeatCapability::Pointer {
+            self.drag_pointer_removed(&seat);
+        }
         let seat_state = match self.seats.get_mut(&seat.id()) {
             Some(seat_state) => seat_state,
             None => {

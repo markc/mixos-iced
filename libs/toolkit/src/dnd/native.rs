@@ -173,6 +173,7 @@ struct Outgoing<P, W> {
     gesture: Gesture,
     payload: P,
     started: bool,
+    actions: Actions,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -235,6 +236,7 @@ impl<P, W: Clone + Eq + std::hash::Hash> Session<P, W> {
             gesture,
             payload,
             started: false,
+            actions,
         });
         Ok(Effect::Request {
             window,
@@ -307,7 +309,10 @@ impl<P, W: Clone + Eq + std::hash::Hash> Session<P, W> {
             }
             Event::Finished { gesture, action } => {
                 if self.outgoing.as_ref().is_some_and(|source| {
-                    source.window == window && source.gesture == gesture && source.started
+                    source.window == window
+                        && source.gesture == gesture
+                        && source.started
+                        && source.actions.contains(action)
                 }) {
                     let source = self.outgoing.take().unwrap();
                     effects.push(Effect::Finished {

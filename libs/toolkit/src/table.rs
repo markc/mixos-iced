@@ -956,9 +956,14 @@ where
             })
         ) && state.drag_origin.take().is_some()
         {
-            // Legacy callers have a completion callback only: commit their
-            // last preview rather than leave a permanently suspended resize.
-            shell.publish(self.on_cancel.as_ref().unwrap_or(&self.on_release).clone());
+            if let Some(cancel) = &self.on_cancel {
+                shell.publish(cancel.clone());
+            } else {
+                // Restore the legacy caller's preview offset before completing
+                // its existing resize lifecycle.
+                shell.publish((self.on_drag)(0.0));
+                shell.publish(self.on_release.clone());
+            }
             shell.capture_event();
             shell.request_redraw();
             return;
@@ -1119,6 +1124,72 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
+
+    #[test]
+    fn legacy_resize_restores_the_offset_on_interruption_once() {
+        #[derive(Debug, Clone, PartialEq)]
+        enum Message {
+            Drag(f32),
+            Release,
+        }
+        let mut divider: Divider<'_, Message, iced_core::Theme, LayoutRenderer> = Divider::new(
+            iced_widget::text("Name"),
+            3.0,
+            Message::Drag,
+            Message::Release,
+            (),
+        );
+        let mut tree = Tree::new(&divider as &dyn Widget<_, _, _>);
+        divider.diff(&mut tree);
+        let renderer = LayoutRenderer::new();
+        let node = divider.layout(
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, Size::new(200.0, 32.0)),
+        );
+        let x = node.bounds().width - 1.0;
+        let mut bus = iced_core::shell::Bus::new();
+        let events = [
+            (
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Point::new(x, 10.0),
+            ),
+            (
+                Event::Mouse(mouse::Event::CursorMoved {
+                    position: Point::new(x + 30.0, 10.0),
+                }),
+                Point::new(x + 30.0, 10.0),
+            ),
+            (
+                Event::Window(iced_core::window::Event::Unfocused),
+                Point::new(x + 30.0, 10.0),
+            ),
+            (
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                Point::new(x + 30.0, 10.0),
+            ),
+        ];
+        for (event, position) in events {
+            let mut shell = Shell::new(
+                &iced_core::window::Headless,
+                std::task::Waker::noop(),
+                &mut bus,
+            );
+            divider.update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                Cursor::Available(position),
+                &renderer,
+                &mut shell,
+                &Rectangle::with_size(Size::new(400.0, 100.0)),
+            );
+        }
+        assert_eq!(
+            bus.drain().collect::<Vec<_>>(),
+            vec![Message::Drag(30.0), Message::Drag(0.0), Message::Release]
+        );
+    }
 
     /// A three-column table over (name, size, kind) rows, resizable.
     struct TestColumn {

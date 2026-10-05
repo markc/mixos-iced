@@ -1,5 +1,6 @@
 //! Native Wayland drag and drop. Tokens identify a compositor-authorised
-//! pointer press or an offer on this event loop; they cannot be forged.
+//! pointer press or an offer on this event loop. The backend validates their
+//! ownership and lifecycle before accepting adapter requests.
 use std::sync::Arc;
 
 /// A pointer press that can authorise one drag from its originating window.
@@ -8,9 +9,13 @@ pub struct Gesture(pub(crate) u64);
 impl Gesture {
     /// Opaque identity for adapters. Start requests still require a held press
     /// from the requesting window on this event loop.
-    pub fn token(self) -> u64 { self.0 }
+    pub fn token(self) -> u64 {
+        self.0
+    }
     /// Reconstitute an adapter token; the backend validates its ownership.
-    pub fn from_token(token: u64) -> Self { Self(token) }
+    pub fn from_token(token: u64) -> Self {
+        Self(token)
+    }
 }
 
 /// An offer addressed to a particular window.
@@ -18,9 +23,13 @@ impl Gesture {
 pub struct Offer(pub(crate) u64);
 impl Offer {
     /// Opaque identity for adapters; offers are validated against their window.
-    pub fn token(self) -> u64 { self.0 }
+    pub fn token(self) -> u64 {
+        self.0
+    }
     /// Reconstitute an adapter token; the backend validates its ownership.
-    pub fn from_token(token: u64) -> Self { Self(token) }
+    pub fn from_token(token: u64) -> Self {
+        Self(token)
+    }
 }
 
 /// A negotiated operation. Move completes only after the target finishes.
@@ -116,7 +125,11 @@ mod tests {
     use super::*;
     #[test]
     fn native_source_refuses_invalid_mime_actions_and_oversized_bytes() {
-        let mut source = Source { mime: "text/plain;charset=utf-8".into(), bytes: Arc::from(&b"text"[..]), actions: Actions::BOTH };
+        let mut source = Source {
+            mime: "text/plain;charset=utf-8".into(),
+            bytes: Arc::from(&b"text"[..]),
+            actions: Actions::BOTH,
+        };
         assert!(source.valid());
         for mime in ["", "text/plain\0extra", "text/plain\nheader"] {
             source.mime = mime.into();

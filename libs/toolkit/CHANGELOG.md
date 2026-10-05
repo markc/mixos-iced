@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Caller-owned `date_picker` and `time_picker`: validated Gregorian dates,
+  leap years and ranges; localised calendars and 12/24-hour time editing,
+  optional seconds, stable field identities and a single Tab owner.
+- `patterns`: info strips, breadcrumbs, path/search fields, settings rows,
+  header bars and scrollable About cards. All appear in the gallery under
+  default and custom tokens, including narrow-window checks.
+- Services: two-stroke bindings with pending-prefix cancellation and expiry,
+  semantic success/warning roles, persistent `Modal::host`, focus traversal,
+  palette pointer/keyboard/backdrop interaction and requester completion keys.
+- Data widgets: reusable `RowHeights` prefix index and `Columns` resize
+  Preview/Commit/Cancel lifecycle; scrollable tabs and middle-click close.
+- Icons: PNG/SVG fallback assets with symbolic tint, scale-aware bounded
+  metadata cache and external SVG resources disabled (`image` feature).
+- Native DnD: portable `dnd::native::Session` and MIME codecs with explicit
+  target acknowledgement and source completion; failed/cancelled transfers
+  cannot remove a Move source. Native window adapters remain host-owned.
+- `TextField` owns its input adapter over public iced editor traits; it
+  needs no upstream state accessors. Secure Unicode input, selection-aware
+  undo and composition ownership are covered against pristine iced.
+- Shell chrome preserves the body widget tree when bars or sidebars change.
+  The gallery covers the absorbed widgets with dark, light and custom
+  tokens, variable rows, resizing and composed interaction flows.
 - Application chrome in `shell::{Shell, Toolbar, Tool, StatusBar, Field,
   Side}` and the `tool`, `field`, `place`, `places` helpers: optional menu
   bar, centred toolbar with pinned edge tools, independent draggable

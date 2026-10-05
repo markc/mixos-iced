@@ -92,6 +92,7 @@ fn run_case($root, $session, $binary, $run, $case)
                 $e = trace($root, $target_trace, "enter", "target")
                 if $case.kind == "target-close" then
                     $e = trace($root, $target_trace, "closed", "target")
+                    $gone = rpc($session, "comp.window.wait", {match: {id: $target.id, generation: $target.generation}, until: "gone", timeout_ms: 15000})
                     $b = button($session, "release")
                     $e = trace($root, $source_trace, "cancelled", "source")
                 elif $case.kind == "reject" then

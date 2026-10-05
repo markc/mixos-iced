@@ -206,10 +206,14 @@ fn private_bus($opts)
     noded: {port: $port, admission: "off", unix_socket: $dir .. "/bus.sock"}}))
   $log = $dir .. "/noded.log"
   $p = spawn([$noded, "serve", "--listen", "127.0.0.1:" .. to_string($port), "--node", $name, "--no-monitor", "--no-log"],
-    {env: {MIXOS_NODE_CONFIG: $conf}, stdout: {file: $log}, stderr: "stdout", detach: true})
+    {env: {MIXOS_NODE_CONFIG: $conf, COSMIX_NODE_CONFIG: $conf}, stdout: {file: $log}, stderr: "stdout", detach: true})
   $url = "ws://127.0.0.1:" .. to_string($port) .. "/ws"
   export MIXOS_NODE_CONFIG=$conf
   export MIXOS_NODED_URL=$url
+  -- The staged runtime still uses the frozen pre-transplant config names.
+  -- Both generations must reach this owned broker, never the host broker.
+  export COSMIX_NODE_CONFIG=$conf
+  export COSMIX_NODED_URL=$url
   $t = 0
   while call("noded", "noded.ping", {})["rc"] != 0 and $t < 60
     sleep(0.25)

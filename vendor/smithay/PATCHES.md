@@ -172,6 +172,16 @@ hunk is marked `// compd: …`.
 
 ### Later patches
 
+**DnD acceptance is withdrawn when its target disappears** (2026-10-06).
+`DnDGrab::drop` requires a live target surface. `WlOfferData::validated`
+requires an active offer and at least one live `wl_data_offer` resource.
+The native toolkit drag gate's target-close case exposed stale acceptance
+after a receiver closed before release. The release now emits physical
+drop-performed followed by cancellation, never successful completion.
+Guard: `tests/desktop/toolkit_native_drag_gate.mix --case target-close`
+drives the real primary-seat data-device protocol and waits for the target
+generation to disappear before releasing the held button.
+
 **Lost page-flip recovery needs NO vendor patch.**
 - A flip whose completion event never arrives leaves `pending_frame` set. While it is set, `queue_frame` parks the next frame and issues no commit, so the surface stays wedged.
 - compd's stall rescue (`services/compd/crates/native/src/wire/frame/frame.rs` `rescue_pipe`) calls the stock `DrmCompositor::frame_submitted()` for a pipe that has been in flight for 2 s. That treats the flip as completed: the pending frame becomes current, and its buffer, which is the one on screen, is not handed back for reuse.

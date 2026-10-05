@@ -347,7 +347,9 @@ where
         self.live_token = None;
 
         // the user dropped, proceed to the drop
-        let validated = self.offer_data.as_ref().is_some_and(|data| data.validated());
+        // compd: a negotiated offer cannot survive its target surface.
+        let validated = self.current_focus.as_ref().is_some_and(|focus| focus.alive())
+            && self.offer_data.as_ref().is_some_and(|data| data.validated());
         if let Some(ref focus) = self.current_focus {
             focus.drop(data, self.offer_data.as_mut(), &self.seat);
         }
