@@ -185,7 +185,7 @@ impl<'a, T, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
 where
     T: Display + FromStr + Clone + PartialEq,
     Message: 'a + Clone,
-    Renderer: 'a + iced_core::text::Renderer,
+    Renderer: 'a + iced_core::text::Renderer + 'static,
     Theme: text_input::Catalog,
 {
     fn tag(&self) -> Tag {
@@ -200,7 +200,7 @@ where
     }
 
     fn size(&self) -> Size<Length> {
-        self.text_input.size()
+        <TextInput<'_, _, _> as Widget<'_, _, _>>::size(&self.text_input)
     }
 
     fn layout(&mut self, state: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
@@ -309,7 +309,7 @@ impl<'a, T, Message, Theme, Renderer> From<TypedInput<'a, T, Message, Theme, Ren
 where
     T: 'a + Display + FromStr + Clone + PartialEq,
     Message: 'a + Clone,
-    Renderer: 'a + iced_core::text::Renderer,
+    Renderer: 'a + iced_core::text::Renderer + 'static,
     Theme: 'a + text_input::Catalog,
 {
     fn from(typed_input: TypedInput<'a, T, Message, Theme, Renderer>) -> Self {
