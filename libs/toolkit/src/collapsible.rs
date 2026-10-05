@@ -157,7 +157,6 @@ mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
     use iced_core::layout::{Layout, Limits};
-    use iced_core::widget::Widget;
     use iced_core::Size;
 
     #[test]

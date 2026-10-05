@@ -240,12 +240,11 @@ pub enum Event<Message> {
 pub fn command_palette<'a, Message, Theme, Renderer>(
     query: &'a str,
     selection: Option<usize>,
-    commands: &[Command<Message>],
+    commands: &'a [Command<Message>],
     tokens: &crate::tokens::Tokens,
 ) -> Element<'a, Event<Message>, Theme, Renderer>
 where
     Message: Clone + 'a,
-    Command<Message>: 'a,
     Theme: iced_widget::container::Catalog
         + iced_widget::text_input::Catalog
         + iced_core::widget::text::Catalog
