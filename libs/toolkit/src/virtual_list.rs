@@ -1912,7 +1912,7 @@ mod tests {
     #[test]
     fn variable_heights_drive_layout_selection_paging_and_reveal() {
         let heights = RowHeights::new(
-            (0..100_000).map(|row| if row.is_multiple_of(3) { 60.0 } else { 20.0 }),
+            (0usize..100_000).map(|row| if row.is_multiple_of(3) { 60.0 } else { 20.0 }),
         )
         .unwrap();
         let built = Cell::new(0);
