@@ -166,7 +166,6 @@ where
     P: Clone + Send,
 {
     /// Wraps `content` in the drag layer over `shared`.
-    #[must_use]
     pub fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
         shared: Shared<P>,
@@ -575,7 +574,6 @@ where
     P: Clone + Send,
 {
     /// Wraps `content` as draggable, carrying `payload`.
-    #[must_use]
     pub fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
         payload: P,
@@ -789,7 +787,6 @@ where
     /// Wraps `content` as a drop target participating in `shared`.
     /// The target highlight needs [`Tokens`]; without them the area
     /// still claims, it just draws nothing.
-    #[must_use]
     pub fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
         shared: Shared<P>,
