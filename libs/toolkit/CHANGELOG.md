@@ -6,7 +6,8 @@
   `measure::Measure` (widget bounds by id, scroll-corrected),
   `timers::Timers<K>` (one-shot debounces on one wake-on-deadline thread),
   `ime::Composition<Id>` (IME ownership across focus changes),
-  `images::Images` (eager RGBA decode, mtime/len-validated cache),
+  `images::Images` (eager RGBA decode, mtime/len-validated cache; behind
+  the new `image` feature, which links iced's decoder),
   `elide::middle` + `elide::Label` (middle elision that keeps the
   extension, bounded measured search), `fit_text::FitText` (font size
   solved from the bounds), `focus::Source` + `focus::ring`

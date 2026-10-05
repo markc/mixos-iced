@@ -24,6 +24,9 @@ mod_module_files = "deny"
 # features, for the examples.
 [features]
 default = []
+# Eager raster decoding (`images`): pulls iced_graphics's decoder. Off by
+# default, like every renderer choice in this crate.
+image = ["iced_graphics/image"]
 # Styles iced's `svg` widget too (`iced_widget/svg`).
 svg = ["iced_widget/svg"]
 wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]

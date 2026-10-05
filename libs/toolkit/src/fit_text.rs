@@ -512,7 +512,7 @@ mod tests {
         };
         let wide = fit::<Para>(
             "OK",
-            Size::new(400.0, 24.0),
+            Size::new(400.0, 40.0),
             iced_core::Font::DEFAULT,
             Pixels(8.0),
             Pixels(20.0),

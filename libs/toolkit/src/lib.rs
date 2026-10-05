@@ -18,6 +18,9 @@ pub mod fonts;
 pub mod icon;
 pub mod icons;
 pub mod ime;
+/// Eager raster decoding; opt-in (`image` feature) because it links a
+/// decoder.
+#[cfg(feature = "image")]
 pub mod images;
 pub mod keys;
 pub mod knob;
@@ -48,6 +51,7 @@ pub use fit_text::FitText;
 pub use fonts::{FontSet, FontSource, Fonts, IconFont, Role};
 pub use icon::{Icon, icon};
 pub use ime::Composition;
+#[cfg(feature = "image")]
 pub use images::Images;
 pub use keys::{Bindings, Chord, KeyRouter};
 pub use knob::Knob;
