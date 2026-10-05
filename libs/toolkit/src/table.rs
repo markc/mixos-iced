@@ -591,6 +591,18 @@ where
     }
 }
 
+impl<'a, Message, Theme, Renderer> From<Divider<'a, Message, Theme, Renderer>>
+    for Element<'a, Message, Theme, Renderer>
+where
+    Message: Clone + 'a,
+    Renderer: renderer::Renderer + 'a,
+    Theme: Catalog + 'a,
+{
+    fn from(divider: Divider<'a, Message, Theme, Renderer>) -> Self {
+        Element::new(divider)
+    }
+}
+
 // Enforces `min_width` with a trailing spacer.
 fn dummy_container<'a, Column, Row, Message, Theme, Renderer>(
     columns: &'a [Column],
