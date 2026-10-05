@@ -65,6 +65,7 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
             TextInputEvent::Enter { surface } => {
                 let window_id = wayland::make_wid(&surface);
                 text_input_data.surface = Some(surface);
+                text_input_data.enabled_at = None;
                 text_input_data.retire_pending();
                 drop(text_input_data);
 
@@ -168,7 +169,8 @@ pub trait ZwpTextInputV3Ext {
 impl ZwpTextInputV3Ext for ZwpTextInputV3 {
     fn commit_tracked(&self, enabled: Option<bool>) {
         let data = self.data::<TextInputData>().expect("owned text input data");
-        data.inner.lock().unwrap().commit_epoch(enabled);
+        let mut inner = data.inner.lock().unwrap();
+        inner.commit_epoch(enabled);
         self.commit();
     }
     fn set_content_type_by_purpose(&self, purpose: ImePurpose) {
