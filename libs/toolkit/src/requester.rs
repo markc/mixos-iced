@@ -137,7 +137,7 @@ pub enum Outcome {
 }
 
 /// The requester's state.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Requester {
     mode: Mode,
     dir: PathBuf,
