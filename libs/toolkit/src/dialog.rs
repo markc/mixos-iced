@@ -1459,6 +1459,129 @@ impl<T> ModalQueue<T> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn persistent_modal_host_restores_selection_and_undo_after_a_queue() {
+        use crate::test_renderer::LayoutRenderer;
+        use iced_core::shell::{Bus, Waker};
+        use iced_core::window::Headless;
+        #[derive(Debug, Clone, PartialEq)]
+        enum Message {
+            Input(String),
+            Dialog(Event),
+        }
+        fn key(key: Key, modifiers: Modifiers, text: Option<&str>) -> CoreEvent {
+            CoreEvent::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers,
+                text: text.map(Into::into),
+                repeat: false,
+            })
+        }
+        fn view<'a>(
+            value: &'a str,
+            dialog: Option<&'a Dialog>,
+        ) -> Element<'a, Message, Theme, LayoutRenderer> {
+            let base = crate::TextField::new("", value)
+                .id(widget::Id::new("base-field"))
+                .on_input(Message::Input);
+            modal_host(base, dialog, Tokens::dark(), Message::Dialog)
+        }
+        fn build(
+            element: &mut Element<'_, Message, Theme, LayoutRenderer>,
+            tree: &mut Tree,
+        ) -> layout::Node {
+            tree.diff(element.as_widget_mut());
+            element.as_widget_mut().layout(
+                tree,
+                &LayoutRenderer::new(),
+                &layout::Limits::new(Size::ZERO, Size::new(800.0, 600.0)),
+            )
+        }
+        fn send(
+            element: &mut Element<'_, Message, Theme, LayoutRenderer>,
+            tree: &mut Tree,
+            node: &layout::Node,
+            event: CoreEvent,
+        ) -> Vec<Message> {
+            let mut bus = Bus::new();
+            let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
+            element.as_widget_mut().update(
+                tree,
+                &event,
+                Layout::new(node),
+                mouse::Cursor::Unavailable,
+                &LayoutRenderer::new(),
+                &mut shell,
+                &Rectangle::with_size(Size::new(800.0, 600.0)),
+            );
+            bus.drain().collect()
+        }
+        let mut closed = view("draft", None);
+        let mut tree = Tree::new(closed.as_widget());
+        let node = build(&mut closed, &mut tree);
+        let mut focus = operation::focusable::focus::<()>(widget::Id::new("base-field"));
+        closed.as_widget_mut().operate(
+            &mut tree,
+            Layout::new(&node),
+            &LayoutRenderer::new(),
+            &mut focus,
+        );
+        send(
+            &mut closed,
+            &mut tree,
+            &node,
+            key(Key::Character("a".into()), Modifiers::CTRL, None),
+        );
+        let first = Dialog::prompt("First", "Body");
+        let mut opened = view("draft", Some(&first));
+        let node = build(&mut opened, &mut tree);
+        assert_eq!(
+            send(
+                &mut opened,
+                &mut tree,
+                &node,
+                key(Key::Named(Named::Escape), Modifiers::empty(), None)
+            ),
+            vec![Message::Dialog(Event::Cancel)]
+        );
+        let queued = Dialog::confirm("Second", "Body");
+        let mut opened = view("draft", Some(&queued));
+        let node = build(&mut opened, &mut tree);
+        send(
+            &mut opened,
+            &mut tree,
+            &node,
+            key(Key::Named(Named::Enter), Modifiers::empty(), None),
+        );
+        let mut closed = view("draft", None);
+        let node = build(&mut closed, &mut tree);
+        assert_eq!(
+            send(
+                &mut closed,
+                &mut tree,
+                &node,
+                key(Key::Character("x".into()), Modifiers::empty(), Some("x"))
+            ),
+            vec![Message::Input("x".into())]
+        );
+        let mut closed = view("x", None);
+        let node = build(&mut closed, &mut tree);
+        assert_eq!(
+            send(
+                &mut closed,
+                &mut tree,
+                &node,
+                key(Key::Character("z".into()), Modifiers::CTRL, None)
+            ),
+            vec![Message::Input("draft".into())]
+        );
+    }
+
     fn tab(dialog: &mut Dialog) -> Option<Outcome> {
         let event = dialog
             .key(&Key::Named(Named::Tab), Modifiers::empty())

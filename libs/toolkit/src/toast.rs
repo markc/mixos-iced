@@ -20,9 +20,9 @@ use iced_core::{
 };
 use iced_widget::{button, column, container, row, space, stack, text as text_widget};
 
+use crate::Tokens;
 pub use crate::dialog::Severity;
 use crate::dialog::darker;
-use crate::Tokens;
 use crate::keys::forward_to_content;
 use crate::theme::{self, Theme};
 
@@ -317,7 +317,11 @@ pub fn style(theme: &Theme, severity: Severity) -> container::Style {
 pub const WIDTH: f32 = 320.0;
 
 /// One toast card.
-pub fn card<Renderer>(id: ToastId, toast: &Toast, tokens: Tokens) -> Element<'_, Event, Theme, Renderer>
+pub fn card<Renderer>(
+    id: ToastId,
+    toast: &Toast,
+    tokens: Tokens,
+) -> Element<'_, Event, Theme, Renderer>
 where
     Renderer: text::Renderer + 'static,
 {
@@ -414,7 +418,8 @@ struct Expiry<'a, Message, Theme, Renderer> {
     on_expire: Box<dyn Fn(ToastId) -> Message + 'a>,
 }
 
-impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Expiry<'_, Message, Theme, Renderer>
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for Expiry<'_, Message, Theme, Renderer>
 where
     Renderer: iced_core::Renderer,
 {
@@ -484,7 +489,10 @@ mod tests {
         assert_eq!(sticky.deadline, None);
         assert_eq!(toaster.next_deadline(), Some(at(start, 3)));
         assert_eq!(
-            toaster.iter().map(|(_, toast)| toast.title_text()).collect::<Vec<_>>(),
+            toaster
+                .iter()
+                .map(|(_, toast)| toast.title_text())
+                .collect::<Vec<_>>(),
             ["one", "two", "three"],
             "oldest first"
         );
@@ -493,7 +501,11 @@ mod tests {
         assert_eq!(toaster.len(), 2);
         assert_eq!(toaster.next_deadline(), Some(at(start, 5)));
         assert_eq!(toaster.sweep(at(start, 60)), [first.id]);
-        assert_eq!(toaster.next_deadline(), None, "a sticky toast has no deadline");
+        assert_eq!(
+            toaster.next_deadline(),
+            None,
+            "a sticky toast has no deadline"
+        );
         assert!(toaster.contains(sticky.id));
 
         let fourth = toaster.push_at(Toast::new("four"), start);
@@ -521,15 +533,25 @@ mod tests {
                 .dismissable(false),
         );
         assert_eq!(plain.deadline, None, "no default timeout");
-        assert_eq!(toaster.get(acting.id).and_then(Toast::action_label), Some("Undo"));
+        assert_eq!(
+            toaster.get(acting.id).and_then(Toast::action_label),
+            Some("Undo")
+        );
         assert!(!toaster.get(acting.id).unwrap().is_dismissable());
         assert_eq!(toaster.get(acting.id).unwrap().body_text(), "one file");
-        assert_eq!(toaster.get(plain.id).unwrap().severity_level(), Severity::Success);
+        assert_eq!(
+            toaster.get(plain.id).unwrap().severity_level(),
+            Severity::Success
+        );
         assert_eq!(toaster.update(Event::Dismiss(plain.id)), None);
         assert!(!toaster.contains(plain.id));
         assert_eq!(toaster.update(Event::Action(acting.id)), Some(acting.id));
         assert!(toaster.is_empty());
-        assert_eq!(toaster.update(Event::Action(acting.id)), None, "already gone");
+        assert_eq!(
+            toaster.update(Event::Action(acting.id)),
+            None,
+            "already gone"
+        );
         assert_eq!(toaster.update(Event::Expired(acting.id)), None);
         assert!(!toaster.dismiss(acting.id));
         assert_eq!(toaster.deadline(acting.id), None);
@@ -541,8 +563,17 @@ mod tests {
         let p = theme.palette();
         assert_eq!(style(&theme, Severity::Info).border.color, p.border);
         assert_eq!(style(&theme, Severity::Error).border.color, p.destructive);
-        assert_eq!(style(&theme, Severity::Success).border.color, p.primary);
-        assert_eq!(style(&theme, Severity::Info).background, Some(p.elevated.into()));
-        assert!(style(&theme, Severity::Warning).border.width > style(&theme, Severity::Info).border.width);
+        assert_eq!(
+            style(&theme, Severity::Success).border.color,
+            theme.semantic().success
+        );
+        assert_eq!(
+            style(&theme, Severity::Info).background,
+            Some(p.elevated.into())
+        );
+        assert!(
+            style(&theme, Severity::Warning).border.width
+                > style(&theme, Severity::Info).border.width
+        );
     }
 }

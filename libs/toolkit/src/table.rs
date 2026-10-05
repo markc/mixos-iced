@@ -18,14 +18,14 @@ use iced_core::layout::{self, Layout, Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::padding;
 use iced_core::renderer;
+use iced_core::widget::text::Text;
 use iced_core::widget::tree::{State, Tag};
 use iced_core::widget::{Id, Operation, Tree, Widget};
-use iced_core::widget::text::Text;
 use iced_core::{
     Background, Color, Element, Event, Length, Padding, Point, Rectangle, Shell, Size, Vector,
     overlay,
 };
-use iced_widget::{column, container, row, scrollable, space, Space};
+use iced_widget::{Space, column, container, row, scrollable, space};
 
 /// A background/text pair, what a band of the table paints.
 #[derive(Clone, Copy, Debug, Default)]
@@ -84,14 +84,7 @@ impl Catalog for crate::theme::Theme {
 
     fn divider(&self, _style: &Self::Style, hovered: bool) -> Option<Background> {
         let p = self.tokens().palette;
-        Some(
-            if hovered {
-                p.primary
-            } else {
-                p.border
-            }
-            .into(),
-        )
+        Some(if hovered { p.primary } else { p.border }.into())
     }
 }
 
@@ -247,8 +240,7 @@ where
     scrollbar: scrollable::Scrollbar,
 }
 
-impl<'a, Column, Row, Message, Theme>
-    Table<'a, Column, Row, Message, Theme>
+impl<'a, Column, Row, Message, Theme> Table<'a, Column, Row, Message, Theme>
 where
     Theme: Catalog + container::Catalog,
 {
@@ -257,11 +249,7 @@ where
     /// `on_release` fires when it finishes (apply the last offset to the
     /// stored width).
     #[must_use]
-    pub fn on_column_resize(
-        self,
-        on_drag: fn(usize, f32) -> Message,
-        on_release: Message,
-    ) -> Self {
+    pub fn on_column_resize(self, on_drag: fn(usize, f32) -> Message, on_release: Message) -> Self {
         Self {
             on_column_drag: Some(on_drag),
             on_column_release: Some(on_release),
@@ -327,8 +315,7 @@ where
     }
 }
 
-impl<'a, Column, Row, Message, Theme, Renderer>
-    From<Table<'a, Column, Row, Message, Theme>>
+impl<'a, Column, Row, Message, Theme, Renderer> From<Table<'a, Column, Row, Message, Theme>>
     for Element<'a, Message, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer + 'a,
@@ -354,7 +341,12 @@ where
             scrollbar,
         } = table;
 
-        let hidden = || scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+        let hidden = || {
+            scrollable::Scrollbar::new()
+                .width(0)
+                .margin(0)
+                .scroller_width(0)
+        };
 
         let header = scrollable(Wrapper::header(
             row(columns
@@ -571,8 +563,7 @@ where
     Column: self::Column<'a, Message, Theme, Renderer, Row = Row>,
     Message: 'a + Clone,
 {
-    let width =
-        (column.width() + column.resize_offset().unwrap_or_default()).max(min_column_width);
+    let width = (column.width() + column.resize_offset().unwrap_or_default()).max(min_column_width);
 
     if let Some((on_drag, on_release)) = on_drag.zip(on_release) {
         let old_width = column.width();
@@ -591,9 +582,12 @@ where
         .width(width)
         .into()
     } else {
-        row![content, Space::new().width(divider_width).height(Length::Shrink)]
-            .width(width)
-            .into()
+        row![
+            content,
+            Space::new().width(divider_width).height(Length::Shrink)
+        ]
+        .width(width)
+        .into()
     }
 }
 
@@ -701,12 +695,7 @@ where
         self.content.as_widget().size()
     }
 
-    fn layout(
-        &mut self,
-        state: &mut Tree,
-        renderer: &Renderer,
-        limits: &Limits,
-    ) -> Node {
+    fn layout(&mut self, state: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
         self.content.as_widget_mut().layout(state, renderer, limits)
     }
 
@@ -782,9 +771,9 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        self.content.as_widget_mut().update(
-            state, event, layout, cursor, renderer, shell, viewport,
-        );
+        self.content
+            .as_widget_mut()
+            .update(state, event, layout, cursor, renderer, shell, viewport);
     }
 
     fn mouse_interaction(
@@ -828,7 +817,7 @@ where
 
 /// The resize grip on a column's trailing edge: drag to resize, release
 /// to commit, highlighted while hovered or dragged.
-struct Divider<'a, Message, Theme, Renderer>
+pub(crate) struct Divider<'a, Message, Theme, Renderer>
 where
     Theme: Catalog,
 {
@@ -836,6 +825,9 @@ where
     width: f32,
     on_drag: Box<dyn Fn(f32) -> Message + 'a>,
     on_release: Message,
+    on_cancel: Option<Message>,
+    on_width_drag: Option<Box<dyn Fn(f32) -> Message + 'a>>,
+    min_width: f32,
     style: <Theme as Catalog>::Style,
 }
 
@@ -843,13 +835,14 @@ where
 struct DividerState {
     drag_origin: Option<Point>,
     is_divider_hovered: bool,
+    start_width: f32,
 }
 
 impl<'a, Message, Theme, Renderer> Divider<'a, Message, Theme, Renderer>
 where
     Theme: Catalog,
 {
-    fn new(
+    pub(crate) fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
         width: f32,
         on_drag: impl Fn(f32) -> Message + 'a,
@@ -861,8 +854,23 @@ where
             width,
             on_drag: Box::new(on_drag),
             on_release,
+            on_cancel: None,
+            on_width_drag: None,
+            min_width: 1.0,
             style,
         }
+    }
+
+    pub(crate) fn resizing(
+        mut self,
+        min_width: f32,
+        on_width: impl Fn(f32) -> Message + 'a,
+        cancel: Message,
+    ) -> Self {
+        self.min_width = min_width.max(1.0);
+        self.on_width_drag = Some(Box::new(on_width));
+        self.on_cancel = Some(cancel);
+        self
     }
 
     fn divider_bounds(&self, bounds: Rectangle) -> Rectangle {
@@ -912,12 +920,7 @@ where
         self.content.as_widget().size()
     }
 
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &Limits,
-    ) -> Node {
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
         let padding = padding::all(0).right(self.width);
 
         layout::padded(limits, Length::Fill, Length::Shrink, padding, |limits| {
@@ -943,11 +946,30 @@ where
 
         state.is_divider_hovered = cursor.is_over(divider_hover_bounds);
 
+        if matches!(
+            event,
+            Event::Window(
+                iced_core::window::Event::Unfocused | iced_core::window::Event::Resized(_)
+            ) | Event::Keyboard(iced_core::keyboard::Event::KeyPressed {
+                key: iced_core::keyboard::Key::Named(iced_core::keyboard::key::Named::Escape),
+                ..
+            })
+        ) && state.drag_origin.take().is_some()
+        {
+            if let Some(message) = &self.on_cancel {
+                shell.publish(message.clone());
+            }
+            shell.capture_event();
+            shell.request_redraw();
+            return;
+        }
+
         if let Event::Mouse(event) = event {
             match event {
                 mouse::Event::ButtonPressed(mouse::Button::Left) => {
                     if let Some(origin) = cursor.position_over(divider_hover_bounds) {
                         state.drag_origin = Some(origin);
+                        state.start_width = layout.bounds().width;
                         shell.capture_event();
                     }
                 }
@@ -961,12 +983,22 @@ where
                     if let Some(position) = cursor.position()
                         && let Some(origin) = state.drag_origin
                     {
-                        shell.publish((self.on_drag)((position - origin).x));
+                        let delta = (position - origin).x;
+                        if let Some(on_width) = &self.on_width_drag {
+                            shell
+                                .publish(on_width((state.start_width + delta).max(self.min_width)));
+                        } else {
+                            shell.publish((self.on_drag)(delta));
+                        }
                         shell.capture_event();
                     }
                 }
                 _ => {}
             }
+        }
+
+        if shell.is_event_captured() {
+            return;
         }
 
         self.content.as_widget_mut().update(
@@ -1122,9 +1154,21 @@ mod tests {
 
     fn columns() -> [TestColumn; 3] {
         [
-            TestColumn { label: "Name", width: 120.0, resize: None },
-            TestColumn { label: "Size", width: 80.0, resize: Some(10.0) },
-            TestColumn { label: "Kind", width: 60.0, resize: None },
+            TestColumn {
+                label: "Name",
+                width: 120.0,
+                resize: None,
+            },
+            TestColumn {
+                label: "Size",
+                width: 80.0,
+                resize: Some(10.0),
+            },
+            TestColumn {
+                label: "Kind",
+                width: 60.0,
+                resize: None,
+            },
         ]
     }
 
@@ -1145,14 +1189,15 @@ mod tests {
 
         // The whole table builds into an element with a resize grip
         // wired for every column.
-        let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = built
-            .on_column_resize(|_, _| (), ())
-            .into();
+        let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> =
+            built.on_column_resize(|_, _| (), ()).into();
         let mut tree = Tree::new(&element);
         element.as_widget_mut().diff(&mut tree);
         let renderer = LayoutRenderer::new();
         let limits = Limits::new(Size::ZERO, Size::new(400.0, 300.0));
-        let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let node = element
+            .as_widget_mut()
+            .layout(&mut tree, &renderer, &limits);
         assert!(node.bounds().width > 0.0);
     }
 }

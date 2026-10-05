@@ -173,3 +173,61 @@ fn selection_arithmetic_accepts_stale_and_extreme_indices() {
         Some(usize::MAX - 2_147_483_648)
     );
 }
+
+#[test]
+fn column_resize_reports_absolute_preview_commit_cancel_and_sort_separately() {
+    use toolkit::virtual_list::{Columns, Resize};
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Sort(usize),
+        Resize(Resize),
+    }
+    let columns = Columns::new()
+        .column("Name", toolkit::core::Length::Fill)
+        .column("Size", 80)
+        .spacing(0.0);
+    let header = columns.resizable_header(None, Message::Sort, Message::Resize, 90.0, 3.0);
+    let view = iced_widget::container(header)
+        .height(32)
+        .width(toolkit::core::Length::Fill)
+        .into();
+    let mut ui = simulation(view);
+    ui.click("Name").unwrap();
+    ui.point_at(Point::new(719.0, 16.0));
+    ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+        mouse::Button::Left,
+    ))]);
+    ui.point_at(Point::new(749.0, 16.0));
+    ui.simulate([Event::Mouse(mouse::Event::CursorMoved {
+        position: Point::new(749.0, 16.0),
+    })]);
+    ui.point_at(Point::new(759.0, 16.0));
+    ui.simulate([
+        Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(759.0, 16.0),
+        }),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ]);
+    ui.point_at(Point::new(719.0, 16.0));
+    ui.simulate([
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Window(window::Event::Unfocused),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ]);
+    assert_eq!(
+        ui.into_messages().collect::<Vec<_>>(),
+        vec![
+            Message::Sort(0),
+            Message::Resize(Resize::Preview {
+                column: 0,
+                width: 750.0
+            }),
+            Message::Resize(Resize::Preview {
+                column: 0,
+                width: 760.0
+            }),
+            Message::Resize(Resize::Commit { column: 0 }),
+            Message::Resize(Resize::Cancel { column: 0 }),
+        ]
+    );
+}

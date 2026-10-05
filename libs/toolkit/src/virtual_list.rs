@@ -4,7 +4,7 @@
 //!
 //! [`VirtualList::new(rows, build)`](VirtualList::new) takes the row count
 //! and a row builder; the caller's data is never cloned or walked. Rows are
-//! a fixed height. The widget owns its scroll offset and scrollbar, keeps
+//! a fixed height or use a reusable [`RowHeights`] index. The widget owns its scroll offset and scrollbar, keeps
 //! only the visible rows' widget state (keyed, so a row keeps its state
 //! while it scrolls), and handles keyboard navigation (arrows, Page Up and
 //! Down, Home and End, Space, Enter, Ctrl+A, Escape and a type-ahead hook),
@@ -47,6 +47,71 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const TYPE_AHEAD: Duration = Duration::from_secs(1);
 /// The shortest the scroller gets, in pixels.
 const MIN_SCROLLER: f32 = 16.0;
+
+/// Caller-owned cumulative row metrics, reused between frames. Building this
+/// index walks the heights once; hit testing and visible ranges use binary
+/// search. Widgets are never built to measure offscreen rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowHeights {
+    offsets: Vec<f32>,
+}
+
+/// A bad metric, or a total that cannot preserve positive row extents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeightError {
+    pub row: usize,
+}
+
+impl std::fmt::Display for HeightError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid or unrepresentable height at row {}", self.row)
+    }
+}
+impl std::error::Error for HeightError {}
+
+impl RowHeights {
+    pub fn new(heights: impl IntoIterator<Item = f32>) -> Result<Self, HeightError> {
+        let mut offsets = vec![0.0];
+        let mut total = 0.0;
+        for (row, height) in heights.into_iter().enumerate() {
+            let next = total + height;
+            if !height.is_finite() || height < 1.0 || !next.is_finite() || next <= total {
+                return Err(HeightError { row });
+            }
+            total = next;
+            offsets.push(total);
+        }
+        Ok(Self { offsets })
+    }
+    pub fn len(&self) -> usize {
+        self.offsets.len() - 1
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn total(&self) -> f32 {
+        *self.offsets.last().expect("initial zero")
+    }
+    pub fn top(&self, row: usize) -> Option<f32> {
+        (row < self.len()).then(|| self.offsets[row])
+    }
+    pub fn height(&self, row: usize) -> Option<f32> {
+        (row < self.len()).then(|| self.offsets[row + 1] - self.offsets[row])
+    }
+    /// Exact boundaries belong to the following row; total and non-finite
+    /// coordinates are outside the list.
+    pub fn row_at(&self, y: f32) -> Option<usize> {
+        if !y.is_finite() || y < 0.0 || y >= self.total() {
+            return None;
+        }
+        Some(self.offsets.partition_point(|offset| *offset <= y) - 1)
+    }
+    fn end_at(&self, y: f32) -> usize {
+        self.offsets
+            .partition_point(|offset| *offset < y)
+            .min(self.len())
+    }
+}
 
 /// Which rows are selected, plus the keyboard cursor and the Shift anchor.
 /// Sorted, disjoint ranges, so "select all" on a million rows is one entry.
@@ -243,6 +308,7 @@ where
     id: Option<Id>,
     rows: usize,
     row_height: f32,
+    heights: Option<&'a RowHeights>,
     key: Box<dyn Fn(usize) -> u64 + 'a>,
     build: Box<dyn Fn(usize) -> Element<'a, Message, Theme, Renderer> + 'a>,
     header: Option<Element<'a, Message, Theme, Renderer>>,
@@ -284,6 +350,7 @@ where
             id: None,
             rows,
             row_height: 28.0,
+            heights: None,
             key: Box::new(|index| index as u64),
             build: Box::new(move |index| build(index).into()),
             header: None,
@@ -315,6 +382,9 @@ where
         E: Into<Element<'a, Message, Theme, Renderer>>,
     {
         self.rows = rows;
+        if self.heights.is_some_and(|heights| heights.len() != rows) {
+            self.heights = None;
+        }
         self.build = Box::new(move |index| build(index).into());
         self
     }
@@ -328,6 +398,16 @@ where
     /// The height of every row (default 28).
     pub fn row_height(mut self, height: f32) -> Self {
         self.row_height = height.max(1.0);
+        self.heights = None;
+        self
+    }
+
+    /// Supplies known variable heights and makes their count authoritative.
+    /// Rebuild the index when row ordering/expansion changes. A subsequent
+    /// `with_rows` with a different count returns to fixed-height mode.
+    pub fn row_heights(mut self, heights: &'a RowHeights) -> Self {
+        self.rows = heights.len();
+        self.heights = Some(heights);
         self
     }
 
@@ -375,10 +455,7 @@ where
 
     /// Published on a right press with the row under the pointer, if any,
     /// and the pointer's window position.
-    pub fn on_context(
-        mut self,
-        on_context: impl Fn(Option<usize>, Point) -> Message + 'a,
-    ) -> Self {
+    pub fn on_context(mut self, on_context: impl Fn(Option<usize>, Point) -> Message + 'a) -> Self {
         self.on_context = Some(Box::new(on_context));
         self
     }
@@ -445,7 +522,31 @@ where
     }
 
     fn content_height(&self) -> f32 {
-        self.rows as f32 * self.row_height
+        self.heights
+            .map_or(self.rows as f32 * self.row_height, RowHeights::total)
+    }
+
+    fn row_top(&self, row: usize) -> f32 {
+        self.heights
+            .map_or(row as f32 * self.row_height, |heights| {
+                heights.top(row).unwrap_or(heights.total())
+            })
+    }
+
+    fn row_size(&self, row: usize) -> f32 {
+        self.heights
+            .and_then(|heights| heights.height(row))
+            .unwrap_or(self.row_height)
+    }
+
+    fn index_at(&self, y: f32) -> Option<usize> {
+        if !y.is_finite() || y < 0.0 || y >= self.content_height() {
+            return None;
+        }
+        self.heights.map_or_else(
+            || Some((y / self.row_height) as usize),
+            |heights| heights.row_at(y),
+        )
     }
 
     fn header_height_if_any(&self) -> f32 {
@@ -508,17 +609,16 @@ where
         if y < 0.0 || self.rows == 0 {
             return None;
         }
-        let index = ((y + state.offset) / self.row_height) as usize;
-        (index < self.rows).then_some(index)
+        self.index_at(y + state.offset)
     }
 
     /// Bounds of `row` in window space, given the body.
     fn row_bounds(&self, state: &State, body: Rectangle, row: usize) -> Rectangle {
         Rectangle {
             x: body.x,
-            y: body.y + row as f32 * self.row_height - state.offset,
+            y: body.y + self.row_top(row) - state.offset,
             width: body.width - self.rail_width(body.height),
-            height: self.row_height,
+            height: self.row_size(row),
         }
     }
 
@@ -533,9 +633,9 @@ where
     /// Scrolls so `row` is in view; true if the offset moved.
     fn reveal_row(&self, state: &mut State, body_height: f32, row: usize) -> bool {
         let before = state.offset;
-        let top = row as f32 * self.row_height;
-        let bottom = top + self.row_height;
-        if top < state.offset {
+        let top = self.row_top(row);
+        let bottom = top + self.row_size(row);
+        if top < state.offset || self.row_size(row) > body_height {
             state.offset = top;
         } else if bottom > state.offset + body_height {
             state.offset = bottom - body_height;
@@ -604,6 +704,28 @@ where
         ((body_height / self.row_height).floor() as usize).max(1)
     }
 
+    fn page_target(&self, cursor: usize, body_height: f32, down: bool) -> usize {
+        if self.heights.is_none() {
+            let page = self.visible_rows(body_height).saturating_sub(1).max(1);
+            return if down {
+                cursor.saturating_add(page).min(self.rows.saturating_sub(1))
+            } else {
+                cursor.saturating_sub(page)
+            };
+        }
+        let distance = (body_height - self.row_size(cursor)).max(1.0);
+        if down {
+            self.index_at(self.row_top(cursor) + distance)
+                .unwrap_or(self.rows.saturating_sub(1))
+                .max(cursor.saturating_add(1))
+                .min(self.rows.saturating_sub(1))
+        } else {
+            self.index_at((self.row_top(cursor) - distance).max(0.0))
+                .unwrap_or(0)
+                .min(cursor.saturating_sub(1))
+        }
+    }
+
     /// Keyboard handling while focused. Returns whether the key was used.
     fn on_key_press(
         &mut self,
@@ -620,13 +742,14 @@ where
         } = press;
         let key = &key;
         let last = self.rows.saturating_sub(1);
-        let page = self.visible_rows(body_height).saturating_sub(1).max(1);
         let target = match key {
             keyboard::Key::Named(Named::ArrowDown) => Some(cursor.map_or(0, |c| (c + 1).min(last))),
             keyboard::Key::Named(Named::ArrowUp) => Some(cursor.map_or(0, |c| c.saturating_sub(1))),
-            keyboard::Key::Named(Named::PageDown) => Some(cursor.map_or(0, |c| (c + page).min(last))),
+            keyboard::Key::Named(Named::PageDown) => {
+                Some(cursor.map_or(0, |c| self.page_target(c, body_height, true)))
+            }
             keyboard::Key::Named(Named::PageUp) => {
-                Some(cursor.map_or(0, |c| c.saturating_sub(page)))
+                Some(cursor.map_or(0, |c| self.page_target(c, body_height, false)))
             }
             keyboard::Key::Named(Named::Home) => Some(0),
             keyboard::Key::Named(Named::End) => Some(last),
@@ -701,7 +824,13 @@ where
                         cursor.map_or(0, |c| c + 1)
                     };
                     if let Some(row) = find(&state.typed, from).filter(|row| *row < self.rows) {
-                        self.move_cursor(state, shell, body_height, row, keyboard::Modifiers::empty());
+                        self.move_cursor(
+                            state,
+                            shell,
+                            body_height,
+                            row,
+                            keyboard::Modifiers::empty(),
+                        );
                     }
                     return true;
                 }
@@ -816,10 +945,18 @@ where
         let row_width = (size.width - self.rail_width(body_height)).max(0.0);
 
         // The window of rows to build: the viewport plus the overscan.
-        let first = ((state.offset / self.row_height).floor() as usize)
+        let first = self
+            .index_at(state.offset)
+            .unwrap_or(self.rows)
             .saturating_sub(self.overscan)
             .min(self.rows);
-        let end = (((state.offset + body_height) / self.row_height).ceil() as usize + self.overscan)
+        let end = self
+            .heights
+            .map_or_else(
+                || ((state.offset + body_height) / self.row_height).ceil() as usize,
+                |heights| heights.end_at(state.offset + body_height),
+            )
+            .saturating_add(self.overscan)
             .min(self.rows);
         let keys: Vec<u64> = (first..end).map(|index| (self.key)(index)).collect();
         let mut rows: Vec<_> = (first..end).map(|index| (self.build)(index)).collect();
@@ -831,11 +968,8 @@ where
         } else {
             None
         };
-        let mut old: HashMap<u64, Tree> = state
-            .keys
-            .drain(..)
-            .zip(tree.children.drain(..))
-            .collect();
+        let mut old: HashMap<u64, Tree> =
+            state.keys.drain(..).zip(tree.children.drain(..)).collect();
         for (key, row) in keys.iter().zip(rows.iter_mut()) {
             let mut child = old
                 .remove(key)
@@ -846,14 +980,13 @@ where
         drop(old);
         state.keys = keys;
 
-        let row_limits = layout::Limits::new(
-            Size::new(row_width, self.row_height),
-            Size::new(row_width, self.row_height),
-        );
         let mut nodes: Vec<layout::Node> = Vec::with_capacity(rows.len() + 1);
         for (offset, (row, child)) in rows.iter_mut().zip(tree.children.iter_mut()).enumerate() {
             let index = first + offset;
-            let y = header + index as f32 * self.row_height - state.offset;
+            let height = self.row_size(index);
+            let row_limits =
+                layout::Limits::new(Size::new(row_width, height), Size::new(row_width, height));
+            let y = header + self.row_top(index) - state.offset;
             nodes.push(
                 row.as_widget_mut()
                     .layout(child, renderer, &row_limits)
@@ -900,7 +1033,8 @@ where
                 .zip(tree.children.iter_mut())
                 .zip(layout.children())
             {
-                row.as_widget_mut().operate(child, node, renderer, operation);
+                row.as_widget_mut()
+                    .operate(child, node, renderer, operation);
             }
         });
     }
@@ -917,8 +1051,12 @@ where
     ) {
         let bounds = layout.bounds();
         let body = self.body(bounds);
-        let clip = bounds.intersection(viewport).unwrap_or(Rectangle::new(bounds.position(), Size::ZERO));
-        let body_clip = body.intersection(&clip).unwrap_or(Rectangle::new(body.position(), Size::ZERO));
+        let clip = bounds
+            .intersection(viewport)
+            .unwrap_or(Rectangle::new(bounds.position(), Size::ZERO));
+        let body_clip = body
+            .intersection(&clip)
+            .unwrap_or(Rectangle::new(body.position(), Size::ZERO));
 
         // The visible rows and the header see the event first.
         {
@@ -1122,7 +1260,9 @@ where
                     border: style.border,
                     ..renderer::Quad::default()
                 },
-                style.background.unwrap_or(Background::Color(Color::TRANSPARENT)),
+                style
+                    .background
+                    .unwrap_or(Background::Color(Color::TRANSPARENT)),
             );
         }
         // Row, header and rail fills stay inside the outline.
@@ -1319,8 +1459,7 @@ where
                     .overlay(child, node, renderer, viewport, translation)
             })
             .collect::<Vec<_>>();
-        (!children.is_empty())
-            .then(|| iced_core::overlay::Group::with_children(children).overlay())
+        (!children.is_empty()).then(|| iced_core::overlay::Group::with_children(children).overlay())
     }
 }
 
@@ -1376,6 +1515,15 @@ pub struct Columns {
     padding: f32,
 }
 
+/// Caller-owned column resize lifecycle. Preview widths are applied to both
+/// header and body; Commit persists them and Cancel discards the preview.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Resize {
+    Preview { column: usize, width: f32 },
+    Commit { column: usize },
+    Cancel { column: usize },
+}
+
 impl Columns {
     pub fn new() -> Self {
         Self {
@@ -1421,6 +1569,84 @@ impl Columns {
     /// The width of column `index`.
     pub fn width(&self, index: usize) -> Length {
         self.widths.get(index).copied().unwrap_or(Length::Shrink)
+    }
+
+    /// Applies a caller-owned preview or committed width. Non-finite values
+    /// and unknown columns are refused.
+    pub fn set_width(&mut self, index: usize, width: f32) -> bool {
+        if !width.is_finite() || width < 1.0 {
+            return false;
+        }
+        let Some(slot) = self.widths.get_mut(index) else {
+            return false;
+        };
+        *slot = Length::Fixed(width);
+        true
+    }
+
+    /// Header with the same drag primitive as [`crate::table::Table`]. Fill
+    /// columns resolve to their actual width at press time. Sizes are caller
+    /// metrics; resize keys and window interruption cancel once.
+    pub fn resizable_header<'a, Message, Theme, Renderer>(
+        &self,
+        sorted: Option<(usize, bool)>,
+        on_sort: impl Fn(usize) -> Message + 'a,
+        on_resize: impl Fn(Resize) -> Message + Clone + 'a,
+        minimum: f32,
+        grip: f32,
+    ) -> Element<'a, Message, Theme, Renderer>
+    where
+        Message: Clone + 'a,
+        Theme: iced_widget::container::Catalog
+            + iced_core::widget::text::Catalog
+            + crate::table::Catalog
+            + 'a,
+        Renderer: iced_core::text::Renderer + 'a,
+    {
+        let cells = self.titles.iter().enumerate().map(|(index, title)| {
+            let mark = match sorted {
+                Some((column, true)) if column == index => " ↑",
+                Some((column, false)) if column == index => " ↓",
+                _ => "",
+            };
+            let label = iced_widget::text(format!("{title}{mark}"))
+                .wrapping(iced_core::text::Wrapping::None)
+                .ellipsis(iced_core::text::Ellipsis::End);
+            let cell = iced_widget::mouse_area(
+                iced_widget::container(label)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding([0.0, self.padding])
+                    .clip(true),
+            )
+            .on_press(on_sort(index));
+            let resize = on_resize.clone();
+            let divider = crate::table::Divider::new(
+                cell,
+                grip.max(1.0),
+                |_| unreachable!("absolute width callback installed"),
+                on_resize(Resize::Commit { column: index }),
+                Default::default(),
+            )
+            .resizing(
+                minimum,
+                move |width| {
+                    resize(Resize::Preview {
+                        column: index,
+                        width,
+                    })
+                },
+                on_resize(Resize::Cancel { column: index }),
+            );
+            iced_widget::container(divider)
+                .width(self.width(index))
+                .height(Length::Fill)
+                .into()
+        });
+        iced_widget::Row::with_children(cells)
+            .spacing(self.spacing)
+            .height(Length::Fill)
+            .into()
     }
 
     /// The header row: each title in its column, the sorted one marked with
@@ -1665,6 +1891,73 @@ mod tests {
     /// Ten rows fit.
     const VIEW: Size = Size::new(300.0, 240.0);
 
+    #[test]
+    fn height_index_validates_metrics_and_exact_boundaries() {
+        let heights = RowHeights::new([10.0, 30.0, 20.0]).unwrap();
+        assert_eq!(heights.total(), 60.0);
+        assert_eq!(heights.row_at(0.0), Some(0));
+        assert_eq!(heights.row_at(9.99), Some(0));
+        assert_eq!(heights.row_at(10.0), Some(1));
+        assert_eq!(heights.row_at(40.0), Some(2));
+        assert_eq!(heights.row_at(60.0), None);
+        assert_eq!(heights.row_at(f32::NAN), None);
+        assert_eq!(heights.top(3), None);
+        assert!(RowHeights::new([]).unwrap().is_empty());
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(RowHeights::new([10.0, bad]), Err(HeightError { row: 1 }));
+        }
+        assert!(RowHeights::new([f32::MAX, 1.0]).is_err());
+    }
+
+    #[test]
+    fn variable_heights_drive_layout_selection_paging_and_reveal() {
+        let heights = RowHeights::new(
+            (0..100_000).map(|row| if row.is_multiple_of(3) { 60.0 } else { 20.0 }),
+        )
+        .unwrap();
+        let built = Cell::new(0);
+        let mut list = list(heights.len(), &built).row_heights(&heights);
+        let mut tree = Tree::new(&list as &dyn Widget<_, _, _>);
+        let node = lay(&mut list, &mut tree);
+        assert!(built.get() < 20, "100,000 rows build one screenful");
+        assert_eq!(list.row_at(state(&tree), 59.0), Some(0));
+        assert_eq!(list.row_at(state(&tree), 60.0), Some(1));
+        assert_eq!(
+            list.row_bounds(state(&tree), Rectangle::with_size(VIEW), 1)
+                .height,
+            20.0
+        );
+        assert_eq!(node.children()[0].size().height, 60.0);
+        let (messages, _) = send(
+            &mut list,
+            &mut tree,
+            &node,
+            press(),
+            mouse::Cursor::Available(Point::new(20.0, 61.0)),
+        );
+        assert_eq!(messages, vec![Msg::Select(Selection::single(1))]);
+        let target = list.page_target(1, VIEW.height, true);
+        assert!(target > 1 && target < 10);
+        let node = lay(&mut list, &mut tree);
+        let (messages, _) = send(
+            &mut list,
+            &mut tree,
+            &node,
+            named(Named::PageDown, keyboard::Modifiers::empty()),
+            mouse::Cursor::Unavailable,
+        );
+        assert_eq!(messages, vec![Msg::Select(Selection::single(target))]);
+        assert!(list.reveal_row(tree.state.downcast_mut::<State>(), VIEW.height, 99_999));
+        built.set(0);
+        let _ = lay(&mut list, &mut tree);
+        assert!(built.get() < 20);
+        assert!(built_range(&list).contains(&99_999));
+        let (rail, scroller) = list
+            .scrollbar(state(&tree), Rectangle::with_size(VIEW))
+            .unwrap();
+        assert!((scroller.y + scroller.height - rail.height).abs() < 0.01);
+    }
+
     fn list(rows: usize, built: &Cell<usize>) -> List<'_> {
         VirtualList::new(rows, move |_| {
             built.set(built.get() + 1);
@@ -1844,8 +2137,13 @@ mod tests {
         // in it.
         let (_, relayout) = send(&mut list, &mut tree, &node, press(), at(0));
         assert!(!relayout);
-        let (messages, relayout) =
-            send(&mut list, &mut tree, &node, named(Named::End, keyboard::Modifiers::empty()), at(0));
+        let (messages, relayout) = send(
+            &mut list,
+            &mut tree,
+            &node,
+            named(Named::End, keyboard::Modifiers::empty()),
+            at(0),
+        );
         assert!(relayout);
         assert_eq!(messages, [Msg::Select(Selection::single(ROWS - 1))]);
         built.set(0);
@@ -1877,13 +2175,12 @@ mod tests {
     #[test]
     fn draw_fills_only_the_rows_in_view() {
         let built = Cell::new(0);
-        let list: VirtualList<'_, Msg, iced_core::Theme, Quads> =
-            VirtualList::new(100_000, |_| {
-                built.set(built.get() + 1);
-                Element::new(iced_widget::Space::new())
-            })
-            .row_height(ROW)
-            .selection(&Selection::all(100_000));
+        let list: VirtualList<'_, Msg, iced_core::Theme, Quads> = VirtualList::new(100_000, |_| {
+            built.set(built.get() + 1);
+            Element::new(iced_widget::Space::new())
+        })
+        .row_height(ROW)
+        .selection(&Selection::all(100_000));
         let mut list = list;
         let mut tree = Tree::new(&list as &dyn Widget<Msg, iced_core::Theme, Quads>);
         let node = Widget::layout(
@@ -1920,13 +2217,24 @@ mod tests {
         let ctrl = keyboard::Modifiers::CTRL;
 
         // Keys do nothing until the list is focused by a click.
-        assert_eq!(send(&mut list, &mut tree, &node, named(Named::ArrowDown, none), at(0)).0, Vec::<Msg>::new());
+        assert_eq!(
+            send(
+                &mut list,
+                &mut tree,
+                &node,
+                named(Named::ArrowDown, none),
+                at(0)
+            )
+            .0,
+            Vec::<Msg>::new()
+        );
         assert!(!state(&tree).is_focused());
         let (messages, _) = send(&mut list, &mut tree, &node, press(), at(2));
         assert_eq!(messages, [Msg::Select(Selection::single(2))]);
         assert!(state(&tree).is_focused());
 
-        let step = |list: &mut List<'_>, tree: &mut Tree, event| send(list, tree, &node, event, at(0)).0;
+        let step =
+            |list: &mut List<'_>, tree: &mut Tree, event| send(list, tree, &node, event, at(0)).0;
         assert_eq!(
             step(&mut list, &mut tree, named(Named::ArrowDown, none)),
             [Msg::Select(Selection::single(3))]
@@ -1947,7 +2255,10 @@ mod tests {
         let mut toggled = moved;
         toggled.toggle(5);
         assert_eq!(toggled.ranges(), &[3..6]);
-        assert_eq!(step(&mut list, &mut tree, named(Named::Space, none)), [Msg::Select(toggled)]);
+        assert_eq!(
+            step(&mut list, &mut tree, named(Named::Space, none)),
+            [Msg::Select(toggled)]
+        );
         assert_eq!(
             step(&mut list, &mut tree, named(Named::Enter, none)),
             [Msg::Activate(5)]
@@ -1969,16 +2280,26 @@ mod tests {
             step(&mut list, &mut tree, named(Named::Home, none)),
             [Msg::Select(Selection::single(0))]
         );
-        assert_eq!(step(&mut list, &mut tree, named(Named::ArrowUp, none)), [Msg::Select(Selection::single(0))]);
+        assert_eq!(
+            step(&mut list, &mut tree, named(Named::ArrowUp, none)),
+            [Msg::Select(Selection::single(0))]
+        );
         // Ctrl+A, Escape.
         let all = Selection::all(50).with_cursor(0);
         assert_eq!(
-            step(&mut list, &mut tree, key(keyboard::Key::Character("a".into()), ctrl, None)),
+            step(
+                &mut list,
+                &mut tree,
+                key(keyboard::Key::Character("a".into()), ctrl, None)
+            ),
             [Msg::Select(all)]
         );
         let mut cleared = Selection::all(50).with_cursor(0);
         cleared.clear();
-        assert_eq!(step(&mut list, &mut tree, named(Named::Escape, none)), [Msg::Select(cleared)]);
+        assert_eq!(
+            step(&mut list, &mut tree, named(Named::Escape, none)),
+            [Msg::Select(cleared)]
+        );
         // Unhandled keys reach the hook.
         assert_eq!(
             step(&mut list, &mut tree, named(Named::ArrowRight, none)),
@@ -1986,7 +2307,10 @@ mod tests {
         );
         // A click outside unfocuses.
         let outside = mouse::Cursor::Available(Point::new(500.0, 500.0));
-        assert_eq!(send(&mut list, &mut tree, &node, press(), outside).0, Vec::<Msg>::new());
+        assert_eq!(
+            send(&mut list, &mut tree, &node, press(), outside).0,
+            Vec::<Msg>::new()
+        );
         assert!(!state(&tree).is_focused());
     }
 
@@ -1996,35 +2320,69 @@ mod tests {
         let mut list = list(50, &built);
         let mut tree = Tree::new(&list as &dyn Widget<Msg, iced_core::Theme, LayoutRenderer>);
         let node = lay(&mut list, &mut tree);
-        let modifiers = |m: keyboard::Modifiers| Event::Keyboard(keyboard::Event::ModifiersChanged(m));
+        let modifiers =
+            |m: keyboard::Modifiers| Event::Keyboard(keyboard::Event::ModifiersChanged(m));
         assert_eq!(
             send(&mut list, &mut tree, &node, press(), at(1)).0,
             [Msg::Select(Selection::single(1))]
         );
-        let _ = send(&mut list, &mut tree, &node, modifiers(keyboard::Modifiers::CTRL), at(1));
+        let _ = send(
+            &mut list,
+            &mut tree,
+            &node,
+            modifiers(keyboard::Modifiers::CTRL),
+            at(1),
+        );
         let mut toggled = Selection::single(1);
         toggled.toggle(3);
-        assert_eq!(send(&mut list, &mut tree, &node, press(), at(3)).0, [Msg::Select(toggled.clone())]);
-        let _ = send(&mut list, &mut tree, &node, modifiers(keyboard::Modifiers::SHIFT), at(1));
+        assert_eq!(
+            send(&mut list, &mut tree, &node, press(), at(3)).0,
+            [Msg::Select(toggled.clone())]
+        );
+        let _ = send(
+            &mut list,
+            &mut tree,
+            &node,
+            modifiers(keyboard::Modifiers::SHIFT),
+            at(1),
+        );
         let mut extended = toggled;
         extended.extend_to(6, false);
         assert_eq!(extended.ranges(), &[3..7]);
-        assert_eq!(send(&mut list, &mut tree, &node, press(), at(6)).0, [Msg::Select(extended)]);
-        let _ = send(&mut list, &mut tree, &node, modifiers(keyboard::Modifiers::empty()), at(1));
+        assert_eq!(
+            send(&mut list, &mut tree, &node, press(), at(6)).0,
+            [Msg::Select(extended)]
+        );
+        let _ = send(
+            &mut list,
+            &mut tree,
+            &node,
+            modifiers(keyboard::Modifiers::empty()),
+            at(1),
+        );
         // Two quick presses on one row activate it (one selection, then the
         // activation).
         assert_eq!(
             send(&mut list, &mut tree, &node, press(), at(8)).0,
             [Msg::Select(Selection::single(8))]
         );
-        assert_eq!(send(&mut list, &mut tree, &node, press(), at(8)).0, [Msg::Activate(8)]);
+        assert_eq!(
+            send(&mut list, &mut tree, &node, press(), at(8)).0,
+            [Msg::Activate(8)]
+        );
         // Right press reports the row, or none below the last row.
         let right = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right));
-        assert_eq!(send(&mut list, &mut tree, &node, right.clone(), at(4)).0, [Msg::Context(Some(4))]);
+        assert_eq!(
+            send(&mut list, &mut tree, &node, right.clone(), at(4)).0,
+            [Msg::Context(Some(4))]
+        );
         let short = list.with_rows(2, |_| Element::new(iced_widget::Space::new()));
         let mut list = short;
         let node = lay(&mut list, &mut tree);
-        assert_eq!(send(&mut list, &mut tree, &node, right, at(4)).0, [Msg::Context(None)]);
+        assert_eq!(
+            send(&mut list, &mut tree, &node, right, at(4)).0,
+            [Msg::Context(None)]
+        );
     }
 
     #[test]
@@ -2050,7 +2408,10 @@ mod tests {
             [Msg::Select(Selection::single(3))]
         );
         // No match: nothing published, key still consumed.
-        assert_eq!(send(&mut list, &mut tree, &node, typed("z"), at(0)).0, Vec::<Msg>::new());
+        assert_eq!(
+            send(&mut list, &mut tree, &node, typed("z"), at(0)).0,
+            Vec::<Msg>::new()
+        );
     }
 
     #[test]
@@ -2101,11 +2462,25 @@ mod tests {
         assert_eq!(node.children()[0].bounds().y, 28.0);
         // A press on the header does not select.
         assert_eq!(
-            send(&mut list, &mut tree, &node, press(), mouse::Cursor::Available(Point::new(10.0, 10.0))).0,
+            send(
+                &mut list,
+                &mut tree,
+                &node,
+                press(),
+                mouse::Cursor::Available(Point::new(10.0, 10.0))
+            )
+            .0,
             Vec::<Msg>::new()
         );
         assert_eq!(
-            send(&mut list, &mut tree, &node, press(), mouse::Cursor::Available(Point::new(10.0, 28.0 + ROW * 1.5))).0,
+            send(
+                &mut list,
+                &mut tree,
+                &node,
+                press(),
+                mouse::Cursor::Available(Point::new(10.0, 28.0 + ROW * 1.5))
+            )
+            .0,
             [Msg::Select(Selection::single(1))]
         );
         // Relayout after a scroll keeps the header child.
@@ -2169,7 +2544,11 @@ mod tests {
         let mut tree = Tree::new(&short as &dyn Widget<Msg, iced_core::Theme, LayoutRenderer>);
         let node = lay(&mut short, &mut tree);
         assert_eq!(node.children()[0].bounds().width, VIEW.width);
-        assert!(short.scrollbar(state(&tree), Rectangle::with_size(VIEW)).is_none());
+        assert!(
+            short
+                .scrollbar(state(&tree), Rectangle::with_size(VIEW))
+                .is_none()
+        );
     }
 
     #[test]
