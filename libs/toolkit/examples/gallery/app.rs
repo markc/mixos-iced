@@ -12,16 +12,18 @@ use toolkit::iced::widget::{
     scrollable, slider, text, text_editor, toggler, tooltip,
 };
 use toolkit::iced::{self, Color, Fill};
-#[path = "strings.rs"]
-mod strings;
-#[path = "services.rs"]
-pub mod services;
 #[path = "lists.rs"]
 mod lists;
-#[path = "typography.rs"]
-mod typography;
 #[path = "more.rs"]
 mod more;
+#[path = "pickers.rs"]
+pub mod pickers;
+#[path = "services.rs"]
+pub mod services;
+#[path = "strings.rs"]
+mod strings;
+#[path = "typography.rs"]
+mod typography;
 use strings::label;
 use toolkit::fonts::{self, Role};
 use toolkit::scale::format_db;
@@ -115,15 +117,17 @@ pub enum Page {
     Lists,
     Text,
     More,
+    Pickers,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::Widgets,
         Page::Services,
         Page::Lists,
         Page::Text,
         Page::More,
+        Page::Pickers,
     ];
 
     pub fn name(self) -> &'static str {
@@ -133,6 +137,7 @@ impl Page {
             Page::Lists => "lists",
             Page::Text => "text",
             Page::More => "more",
+            Page::Pickers => "pickers",
         }
     }
 }
@@ -168,6 +173,7 @@ pub struct Gallery {
     lists: lists::Lists,
     typography: typography::State,
     more: more::State,
+    pickers: pickers::State,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +198,7 @@ pub enum Message {
     Solo(usize, bool),
     Levels(bool),
     More(more::Message),
+    Pickers(pickers::Message),
     Seek(f32),
     View(RollView),
     PickNote(usize),
@@ -283,6 +290,7 @@ impl Gallery {
             lists: lists::Lists::new(),
             typography: typography::State::new(),
             more: more::State::new(),
+            pickers: pickers::State::new(),
         }
     }
 
@@ -302,6 +310,14 @@ impl Gallery {
     /// The "More widgets" page on its own (same reason as `lists_page`).
     pub fn more_page(&self) -> Element<'_> {
         self.more.view(self.theme.tokens()).map(Message::More)
+    }
+
+    pub fn pickers_page(&self) -> Element<'_> {
+        self.pickers.view(self.theme.tokens()).map(Message::Pickers)
+    }
+
+    pub fn pickers(&self) -> &pickers::State {
+        &self.pickers
     }
 
     /// The current theme; iced asks for it every frame, so a new `Tokens`
@@ -334,6 +350,7 @@ impl Gallery {
             Message::Services(message) => self.services.update(message),
             Message::Lists(message) => self.lists.update(message),
             Message::More(message) => self.more.update(message),
+            Message::Pickers(message) => self.pickers.update(message),
             Message::Text(value) => self.value = value,
             Message::Password(value) => self.password = value,
             Message::Action(action) => self.last_action = label(action),
@@ -645,6 +662,13 @@ impl Gallery {
         }
         if self.page == Page::More {
             let page = page.push(self.more_page());
+            return column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill)
+                .into();
+        }
+        if self.page == Page::Pickers {
+            let page = page.push(self.pickers_page());
             return column![bar, scrollable(page).height(Fill)]
                 .width(Fill)
                 .height(Fill)

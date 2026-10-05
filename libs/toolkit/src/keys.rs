@@ -846,6 +846,8 @@ pub struct Keys<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_press: KeyHandler<'a, Message>,
     before: Option<KeyHandler<'a, Message>>,
+    before_focus: Option<iced_core::widget::Id>,
+    tab_navigation: bool,
     on_ime: Option<ImeHandler<'a, Message>>,
     ime: input_method::InputMethod,
     on_pointer: Option<PointerHandler<'a, Message>>,
@@ -863,6 +865,8 @@ pub fn keys<'a, Message, Theme, Renderer>(
         content: content.into(),
         on_press: Box::new(on_press),
         before: None,
+        before_focus: None,
+        tab_navigation: false,
         on_ime: None,
         ime: input_method::InputMethod::Disabled,
         on_pointer: None,
@@ -879,6 +883,24 @@ impl<'a, Message, Theme, Renderer> Keys<'a, Message, Theme, Renderer> {
         callback: impl Fn(&keyboard::Event) -> Option<Message> + 'a,
     ) -> Self {
         self.before = Some(Box::new(callback));
+        self
+    }
+
+    /// Claims owned keys only while `id` in the content has focus.
+    pub fn on_key_before_focused(
+        mut self,
+        id: iced_core::widget::Id,
+        callback: impl Fn(&keyboard::Event) -> Option<Message> + 'a,
+    ) -> Self {
+        self.before_focus = Some(id);
+        self.before = Some(Box::new(callback));
+        self
+    }
+
+    /// Tab/Shift+Tab traverse this composite's focusable children when no
+    /// child or caller key handler claims Tab.
+    pub fn tab_navigation(mut self) -> Self {
+        self.tab_navigation = true;
         self
     }
 
@@ -940,7 +962,21 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if let Event::Keyboard(key_event) = event
+        let before_focused = self.before_focus.as_ref().is_none_or(|id| {
+            let mut query = iced_core::widget::operation::focusable::is_focused(id.clone());
+            {
+                let mut adapter = iced_core::widget::operation::black_box(&mut query);
+                self.content
+                    .as_widget_mut()
+                    .operate(tree, layout, renderer, &mut adapter);
+            }
+            matches!(
+                query.finish(),
+                iced_core::widget::operation::Outcome::Some(true)
+            )
+        });
+        if before_focused
+            && let Event::Keyboard(key_event) = event
             && let Some(callback) = &self.before
             && let Some(message) = callback(key_event)
         {
@@ -994,6 +1030,37 @@ where
         {
             shell.publish(message);
             shell.capture_event();
+            return;
+        }
+        if self.tab_navigation
+            && let Event::Keyboard(keyboard::Event::KeyPressed {
+                key: Key::Named(Named::Tab),
+                modifiers,
+                ..
+            }) = event
+        {
+            if !modifiers.control() && !modifiers.alt() && !modifiers.logo() {
+                let mut operation: Box<dyn Operation> = if modifiers.shift() {
+                    Box::new(iced_core::widget::operation::focusable::focus_previous::<()>())
+                } else {
+                    Box::new(iced_core::widget::operation::focusable::focus_next::<()>())
+                };
+                // Focus-next chains a count pass to the mutation pass.
+                loop {
+                    self.content.as_widget_mut().operate(
+                        tree,
+                        layout,
+                        renderer,
+                        operation.as_mut(),
+                    );
+                    match operation.finish() {
+                        iced_core::widget::operation::Outcome::Chain(next) => operation = next,
+                        _ => break,
+                    }
+                }
+                shell.capture_event();
+                shell.request_redraw();
+            }
         }
     }
 }

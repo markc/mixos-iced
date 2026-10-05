@@ -362,8 +362,7 @@ where
             },
             ..iced_widget::container::Style::default()
         })
-        .width(Length::Fill)
-        .max_width(520);
+        .width(Length::Fill.max(520));
 
     let backdrop = mouse_area(
         container(
