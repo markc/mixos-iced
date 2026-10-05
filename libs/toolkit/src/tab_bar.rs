@@ -432,36 +432,34 @@ where
                                 }
                                 Position::Right => {
                                     column = column.push(
-                                        Row::new().align_y(Alignment::Center).push(
-                                            layout_text::<Theme, Renderer>(
+                                        Row::new()
+                                            .align_y(Alignment::Center)
+                                            .push(layout_text::<Theme, Renderer>(
                                                 label,
                                                 self.text_size + 1.0,
                                                 self.text_font,
-                                            ),
-                                        ).push(
-                                            layout_icon::<Theme, Renderer>(
+                                            ))
+                                            .push(layout_icon::<Theme, Renderer>(
                                                 icon,
                                                 self.icon_size + 1.0,
                                                 self.font,
-                                            ),
-                                        ),
+                                            )),
                                     );
                                 }
                                 Position::Left => {
                                     column = column.push(
-                                        Row::new().align_y(Alignment::Center).push(
-                                            layout_icon::<Theme, Renderer>(
+                                        Row::new()
+                                            .align_y(Alignment::Center)
+                                            .push(layout_icon::<Theme, Renderer>(
                                                 icon,
                                                 self.icon_size + 1.0,
                                                 self.font,
-                                            ),
-                                        ).push(
-                                            layout_text::<Theme, Renderer>(
+                                            ))
+                                            .push(layout_text::<Theme, Renderer>(
                                                 label,
                                                 self.text_size + 1.0,
                                                 self.text_font,
-                                            ),
-                                        ),
+                                            )),
                                     );
                                 }
                                 Position::Bottom => {
