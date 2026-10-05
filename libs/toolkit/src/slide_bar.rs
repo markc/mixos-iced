@@ -353,6 +353,7 @@ fn draw<T, R, Message, Theme>(
     T: Into<f64> + Copy,
     Message: Clone,
     R: renderer::Renderer,
+    Theme: Catalog,
 {
     let bounds = layout.bounds();
     let value = slider.value.into() as f32;
