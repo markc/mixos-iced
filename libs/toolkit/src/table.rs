@@ -167,7 +167,6 @@ pub trait Column<'a, Message, Theme, Renderer> {
 
 /// A sort-header label: the column name with `↑` or `↓` when it is the
 /// active sort — the generic shape of a file manager's column header.
-#[must_use]
 pub fn sort_label<Theme, Renderer>(
     label: &str,
     active: bool,

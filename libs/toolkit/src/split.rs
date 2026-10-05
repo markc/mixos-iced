@@ -133,8 +133,8 @@ impl Default for Status {
 ///     split_at: f32,
 /// ) -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
-///     Theme: toolkit::split::Catalog + 'a,
-///     Renderer: iced_core::Renderer + 'a,
+///     Theme: toolkit::split::Catalog + iced_core::widget::text::Catalog + 'a,
+///     Renderer: iced_core::text::Renderer + 'static,
 /// {
 ///     Split::new(split_at, iced_widget::text("Start"), iced_widget::text("End"))
 ///         .on_drag(Message::Resized)
