@@ -321,8 +321,6 @@ where
         _cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        use iced_core::Renderer as _;
-
         let bounds = layout.bounds();
         if !bounds.intersects(viewport) || self.period.is_zero() {
             return;

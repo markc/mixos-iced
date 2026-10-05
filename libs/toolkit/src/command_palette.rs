@@ -11,8 +11,8 @@
 //! from the dialog-ready helpers below.
 
 use iced_core::{Color, Element, Length};
-use iced_widget::column;
-use iced_widget::{container, row, text, text_input};
+use iced_widget::Column;
+use iced_widget::{column, container, row, text, text_input};
 
 /// The widget id of the palette's query field, so the app can focus it
 /// on open.
@@ -296,7 +296,7 @@ where
         })
         .collect();
 
-    let results_column = column::Column::with_children(results).spacing(2);
+    let results_column = Column::with_children(results).spacing(2);
     let body = column![field, results_column]
         .spacing(tokens.metrics.spacing.sm)
         .padding(tokens.metrics.spacing.md)
