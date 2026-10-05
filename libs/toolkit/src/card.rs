@@ -196,12 +196,14 @@ where
         button(glyph)
             .padding(0)
             .style(|theme: &Theme, _status| {
-                let card_style = theme.style(&Theme::default());
+                let card_style =
+                    <Theme as Catalog>::style(theme, &<Theme as Catalog>::default());
                 button::Style {
                     background: None,
                     text_color: card_style.close_color,
                     border: Border::default(),
                     shadow: Shadow::default(),
+                    snap: false,
                 }
             })
             .on_press(msg)
@@ -1024,16 +1026,12 @@ mod tests {
 
     #[test]
     fn the_head_sits_above_the_body_and_the_foot_below() {
-        let mut card = TestCard::new("Head", "Body").foot("Foot");
+        let card = TestCard::new("Head", "Body").foot("Foot");
         let renderer = LayoutRenderer::new();
-        let mut tree = Tree::new(&card);
+        let mut element: Element<'_, String, iced_core::Theme, LayoutRenderer> = card.into();
+        let mut tree = Tree::new(&element);
         let limits = Limits::new(Size::ZERO, Size::new(300.0, f32::INFINITY));
-        let node = Widget::<String, iced_core::Theme, LayoutRenderer>::layout(
-            &mut card,
-            &mut tree,
-            &renderer,
-            &limits,
-        );
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
         let laid: Vec<_> = Layout::new(&node).children().collect();
         assert_eq!(laid.len(), 3);
         assert!(laid[0].bounds().y <= laid[1].bounds().y, "head at top");

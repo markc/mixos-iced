@@ -65,7 +65,7 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 /// }
 /// ```
 #[allow(missing_debug_implementations)]
-pub struct SlideBar<'a, T, Message, Theme = crate::Theme, Renderer = crate::Renderer>
+pub struct SlideBar<'a, T, Message, Theme, Renderer>
 where
     Message: Clone,
     Theme: Catalog,
@@ -436,6 +436,9 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_renderer::LayoutRenderer;
+
+    type Bar<'a> = SlideBar<'a, u32, Message, iced_core::Theme, LayoutRenderer>;
 
     #[derive(Clone, Debug)]
     enum Message {
@@ -445,17 +448,17 @@ mod tests {
 
     #[test]
     fn the_value_is_clamped_into_the_range() {
-        let slider: SlideBar<'_, u32, Message> = SlideBar::new(10..=100, 5, Message::Changed);
+        let slider = Bar::new(10..=100, 5, Message::Changed);
         assert_eq!(slider.value, 10);
-        let slider: SlideBar<'_, u32, Message> = SlideBar::new(0..=50, 100, Message::Changed);
+        let slider = Bar::new(0..=50, 100, Message::Changed);
         assert_eq!(slider.value, 50);
-        let slider: SlideBar<'_, u32, Message> = SlideBar::new(0..=100, 50, Message::Changed);
+        let slider = Bar::new(0..=100, 50, Message::Changed);
         assert_eq!(slider.value, 50);
     }
 
     #[test]
     fn builders_set_their_values() {
-        let slider: SlideBar<'_, u32, Message> = SlideBar::new(0u32..=100, 50, Message::Changed)
+        let slider = Bar::new(0u32..=100, 50, Message::Changed)
             .step(10u32)
             .on_release(Message::Changed(0))
             .width(Length::Fixed(300.0))

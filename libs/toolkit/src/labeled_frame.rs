@@ -464,22 +464,17 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
-    use iced_core::widget::text;
+    use iced_core::widget::text::Text;
 
     #[test]
     fn the_title_sits_higher_than_the_content() {
         let frame: LabeledFrame<'_, (), iced_core::Theme, LayoutRenderer> =
-            LabeledFrame::new(text("Title"), text("Content"));
+            LabeledFrame::new(Text::new("Title"), Text::new("Content"));
         let renderer = LayoutRenderer::new();
-        let mut frame = frame;
-        let mut tree = Tree::new(&frame);
+        let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = frame.into();
+        let mut tree = Tree::new(&element);
         let limits = Limits::new(iced_core::Size::ZERO, iced_core::Size::new(400.0, 400.0));
-        let node = Widget::<(), iced_core::Theme, LayoutRenderer>::layout(
-            &mut frame,
-            &mut tree,
-            &renderer,
-            &limits,
-        );
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
         let laid: Vec<_> = Layout::new(&node).children().collect();
         assert_eq!(laid.len(), 2);
         assert!(

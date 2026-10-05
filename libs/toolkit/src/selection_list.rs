@@ -12,7 +12,9 @@ use iced_core::text::paragraph::{self, Paragraph};
 use iced_core::text::{Paragraph as _, Text};
 use iced_core::widget::tree::{self, Tree};
 use iced_core::widget::Operation;
-use iced_core::{Border, Element, Event, Layout, Length, Padding, Shell, Size, Widget};
+use iced_core::{
+    Border, Element, Event, Layout, Length, Padding, Rectangle, Shell, Size, Widget,
+};
 use iced_widget::container::{self, Container};
 use iced_widget::scrollable::{self, Scrollable};
 use iced_widget::text::{LineHeight, Wrapping};
@@ -442,7 +444,8 @@ mod tests {
 
     #[test]
     fn new_has_default_values() {
-        let list = TestList::new(&options(), |_, value| value);
+        let options = options();
+        let list = TestList::new(&options, |_, value| value);
         assert_eq!(list.options.len(), 2);
         assert_eq!(list.width, Length::Fill);
         assert_eq!(list.height, Length::Fill);
