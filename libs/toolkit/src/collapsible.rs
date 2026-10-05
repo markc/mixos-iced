@@ -30,7 +30,6 @@ const DEFAULT_TEXT_SIZE: f32 = 14.0;
 ///         .into()
 /// }
 /// ```
-#[must_use]
 pub struct Collapsible<'a, Message, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer,
@@ -51,7 +50,6 @@ where
 {
     /// Creates a new [`Collapsible`] with a title, the expanded state and
     /// the message produced on toggle (carrying the new state).
-    #[must_use]
     pub fn new(
         title: impl Into<String>,
         expanded: bool,
