@@ -986,6 +986,260 @@ pub mod float {
     }
 }
 
+/// Badge variants. `primary` is the default class.
+pub mod badge {
+    use super::*;
+    use crate::badge::{Style, Status};
+
+    fn filled(theme: &Theme, status: Status, fill: Color, text: Color) -> Style {
+        let background = match status {
+            Status::Active => fill,
+            Status::Hovered => towards(fill, text, 0.12),
+        };
+        Style {
+            background: background.into(),
+            border_radius: None,
+            border_width: 0.0,
+            border_color: None,
+            text_color: text,
+        }
+    }
+
+    /// The `primary` pair.
+    pub fn primary(theme: &Theme, status: Status) -> Style {
+        let p = theme.tokens.palette;
+        filled(theme, status, p.primary, p.primary_text)
+    }
+
+    /// The `muted` pair: an understated chip.
+    pub fn neutral(theme: &Theme, status: Status) -> Style {
+        let p = theme.tokens.palette;
+        filled(theme, status, p.muted_surface, p.muted_text)
+    }
+
+    /// The `destructive` pair.
+    pub fn destructive(theme: &Theme, status: Status) -> Style {
+        let p = theme.tokens.palette;
+        filled(theme, status, p.destructive, p.destructive_text)
+    }
+}
+
+/// The card frame: a `card` panel with an `elevated` head.
+pub mod card {
+    use super::*;
+    use crate::card::Style;
+
+    pub fn default(theme: &Theme) -> Style {
+        let p = theme.tokens.palette;
+        let m = theme.tokens.metrics;
+        Style {
+            background: p.card.into(),
+            border_radius: m.radius.md,
+            border_width: m.border.width,
+            border_color: p.border,
+            head_background: p.elevated.into(),
+            head_text_color: p.elevated_text,
+            body_background: Color::TRANSPARENT.into(),
+            body_text_color: p.card_text,
+            foot_background: Color::TRANSPARENT.into(),
+            foot_text_color: p.card_text,
+            close_color: p.muted_text,
+        }
+    }
+}
+
+/// A labelled frame drawn in the border colour.
+pub mod labeled_frame {
+    use super::*;
+    use crate::labeled_frame::Style;
+
+    pub fn default(theme: &Theme) -> Style {
+        let p = theme.tokens.palette;
+        let m = theme.tokens.metrics;
+        Style {
+            color: p.border.into(),
+            radius: m.radius.sm.into(),
+        }
+    }
+}
+
+/// Selection list rows: the `selection` pair on the chosen row, the
+/// `muted` pair under the pointer.
+pub mod selection_list {
+    use super::*;
+    use crate::selection_list::{Style, Status};
+
+    pub fn default(theme: &Theme, status: Status) -> Style {
+        let p = theme.tokens.palette;
+        let m = theme.tokens.metrics;
+        let (background, text_color) = match status {
+            Status::Active => (p.card, p.card_text),
+            Status::Hovered => (p.muted_surface, p.text),
+            Status::Selected => (p.selection, p.selection_text),
+        };
+        Style {
+            background: background.into(),
+            text_color,
+            border: outline(p.border, m, m.radius.md),
+        }
+    }
+}
+
+/// A slider bar: the `primary` fill on the `muted` track.
+pub mod slide_bar {
+    use super::*;
+    use crate::slide_bar::Style;
+
+    pub fn default(theme: &Theme) -> Style {
+        let p = theme.tokens.palette;
+        let m = theme.tokens.metrics;
+        Style {
+            background: p.muted_surface.into(),
+            bar: p.primary,
+            border: outline(p.border, m, m.radius.md),
+            radius: m.radius.md,
+        }
+    }
+}
+
+catalog!(crate::badge, badge::primary);
+catalog!(crate::card, card::default, stateless);
+catalog!(crate::labeled_frame, labeled_frame::default, stateless);
+catalog!(crate::selection_list, selection_list::default);
+catalog!(crate::slide_bar, slide_bar::default, stateless);
+
+impl crate::badge::Catalog for iced_core::Theme {
+    type Class<'a> = crate::badge::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme, status| {
+            let p = theme.palette();
+            let fill = match status {
+                crate::badge::Status::Active => p.primary.base.color,
+                crate::badge::Status::Hovered => towards(p.primary.base.color, p.primary.base.text, 0.12),
+            };
+            crate::badge::Style {
+                background: fill.into(),
+                border_radius: None,
+                border_width: 0.0,
+                border_color: None,
+                text_color: p.primary.base.text,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: crate::badge::Status) -> crate::badge::Style {
+        class(self, status)
+    }
+}
+
+impl crate::card::Catalog for iced_core::Theme {
+    type Class<'a> = crate::card::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let p = theme.palette();
+            crate::card::Style {
+                background: p.background.weak.color.into(),
+                border_radius: 0.0,
+                border_width: 1.0,
+                border_color: p.background.strong.color,
+                head_background: p.background.strong.color.into(),
+                head_text_color: p.background.strong.text,
+                body_background: Color::TRANSPARENT.into(),
+                body_text_color: p.background.weak.text,
+                foot_background: Color::TRANSPARENT.into(),
+                foot_text_color: p.background.weak.text,
+                close_color: p.background.base.text,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::card::Style {
+        class(self)
+    }
+}
+
+impl crate::labeled_frame::Catalog for iced_core::Theme {
+    type Class<'a> = crate::labeled_frame::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let p = theme.palette();
+            crate::labeled_frame::Style {
+                color: p.background.strong.color.into(),
+                radius: iced_core::border::Radius::default(),
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::labeled_frame::Style {
+        class(self)
+    }
+}
+
+impl crate::selection_list::Catalog for iced_core::Theme {
+    type Class<'a> = crate::selection_list::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme, status| {
+            let p = theme.palette();
+            let (background, text_color) = match status {
+                crate::selection_list::Status::Active => {
+                    (p.background.weak.color, p.background.weak.text)
+                }
+                crate::selection_list::Status::Hovered => {
+                    (p.background.strong.color, p.background.strong.text)
+                }
+                crate::selection_list::Status::Selected => {
+                    (p.primary.strong.color, p.primary.strong.text)
+                }
+            };
+            crate::selection_list::Style {
+                background: background.into(),
+                text_color,
+                border: iced_core::Border {
+                    color: p.background.strong.color,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+            }
+        })
+    }
+
+    fn style(
+        &self,
+        class: &Self::Class<'_>,
+        status: crate::selection_list::Status,
+    ) -> crate::selection_list::Style {
+        class(self, status)
+    }
+}
+
+impl crate::slide_bar::Catalog for iced_core::Theme {
+    type Class<'a> = crate::slide_bar::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let p = theme.palette();
+            crate::slide_bar::Style {
+                background: p.background.strong.color.into(),
+                bar: p.primary.base.color,
+                border: iced_core::Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 0.0.into(),
+                },
+                radius: 0.0,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::slide_bar::Style {
+        class(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

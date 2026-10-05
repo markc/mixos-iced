@@ -69,6 +69,27 @@ text-tips = Tooltips
 text-tip-hover = Hover me
 text-tip-region = Region { $index }
 
+# The "More widgets" page
+page-more = More
+badges = Badges
+badge-primary = new
+badge-neutral = draft
+badge-destructive = removed
+card = Card
+card-head = Card head
+card-body = The card body holds the content of one item.
+card-foot = Card foot
+frames = Labeled frame
+frame-title = Frame
+frame-body = The frame title sits in the top edge of the border.
+slide-bar = Slide bar
+wrap = Wrap
+selection-list = Selection list
+drop-down = Drop-down
+drop-down-open = Open
+drop-down-close = Close
+drop-down-item = Item { $index }
+
 services = Dialogs and toasts
 services-hint = Open each from its button or its key. Tab, Shift+Tab, Enter and Escape drive a dialog; arrows move the choice; Escape dismisses the newest toast.
 action-key = { $label } ({ $chord })

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Widgets absorbed from iced_aw (master `f80f659`, MIT; sources in
+  `NOTICE`), each restyled from `Tokens` through its own `Catalog`
+  (implemented for `Theme` and `iced_core::Theme`): `badge::Badge`
+  (primary/neutral/destructive), `card::Card` (head/body/foot, close
+  glyph), `labeled_frame::LabeledFrame` (title in the frame edge),
+  `selection_list::SelectionList` (scrollable, hover/selection rows,
+  virtual text operations), `slide_bar::SlideBar` (token-styled track and
+  fill, stepped drags), `spinner::Spinner` (self-redrawing orbit),
+  `drop_down::DropDown` (nine alignments, viewport-clamped, dismiss on
+  outside click or Escape) and `wrap::Wrap` (horizontal and vertical
+  flow). New `num-traits` dependency for `SlideBar`'s stepped values.
+- Gallery: a "More widgets" page with all eight;
+  `tests/snapshots.rs` writes `more-{dark,light}.png`.
 - Small services and helpers, each absorbed generic (sources in `NOTICE`):
   `measure::Measure` (widget bounds by id, scroll-corrected),
   `timers::Timers<K>` (one-shot debounces on one wake-on-deadline thread),

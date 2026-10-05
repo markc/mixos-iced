@@ -189,6 +189,38 @@ fn text_page_renders_dark_and_light() {
     assert_ne!(frames[0], frames[1], "dark and light differ");
 }
 
+/// The "More widgets" page on its own, dark and light: a `primary`-filled
+/// badge and the slide bar fill are on screen, and the two token sets
+/// differ.
+#[test]
+fn more_page_renders_dark_and_light() {
+    const PAGE: Size = Size::new(1280.0, 520.0);
+    let dir = output_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut gallery = Gallery::new();
+    let mut frames = Vec::new();
+    for mode in [Mode::Dark, Mode::Light] {
+        gallery.update(Message::Mode(mode));
+        let path = dir.join(format!("more-{}.png", mode.name()));
+        let (width, height, rgba) =
+            render_element(gallery.more_page(), &gallery.theme(), PAGE, &path);
+        assert_eq!((width, height), (2560, 1040), "{mode:?}: 2x the page");
+        let pixel = |x: u32, y: u32| {
+            let at = ((y * width + x) * 4) as usize;
+            [rgba[at], rgba[at + 1], rgba[at + 2]]
+        };
+        let primary = rgb8(mode.tokens().palette.primary);
+        assert!(
+            (0..height)
+                .step_by(2)
+                .any(|y| (0..width).step_by(2).any(|x| close(pixel(x, y), primary))),
+            "{mode:?}: no pixel in the primary colour {primary:?}"
+        );
+        frames.push(rgba);
+    }
+    assert_ne!(frames[0], frames[1], "dark and light differ");
+}
+
 /// Swapping tokens in a running program restyles the next frame: the same
 /// gallery state renders two different frames with no rebuild.
 #[test]

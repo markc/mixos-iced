@@ -40,6 +40,8 @@ iced_wgpu = { path = "vendor/iced/wgpu", version = "0.15.0-dev", default-feature
 # No renderer here: toolkit selects none by default; compd's iced hosts add `wgpu`.
 iced_widget = { path = "vendor/iced/widget", version = "0.15.0-dev", features = ["advanced", "image", "svg"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
+# `slide_bar` steps generic numeric values; the version is already in the lock.
+num-traits = "0.2"
 libc = { version = "=0.2.189" }
 libpulse-binding = { version = "=2.30.1" }
 mpris = { version = "=2.1.0" }

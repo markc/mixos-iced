@@ -9,6 +9,13 @@ Incorporated code
   https://github.com/y5-snowies/nourish, Copyright (c) 2026 Yarden Apelker,
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its
   copyright line is carried in LICENSE-MIT.
+- toolkit (libs/toolkit) incorporates code from iced_aw,
+  https://github.com/iced-rs/iced_aw, Copyright (c) 2025 the iced_aw
+  contributors (Kaiden42, Andrew Wheeler, Redhawk18), licensed MIT:
+  `src/{badge,card,drop_down,labeled_frame,selection_list,selection_list/list,
+  slide_bar,spinner,wrap}.rs` adapted from `src/widget/*` at commit
+  `f80f659` (master, 2026-10-05). The close glyph is a text `×`; iced_aw's
+  iced_fonts glyph (whose upstream repo is deleted) is not used.
 - toolkit (libs/toolkit) incorporates code from sweeten,
   https://github.com/airstrike/sweeten, Copyright (c) 2026 Andy Terra,
   licensed MIT: `src/fit_text.rs` (the `FitText` widget, adapted) and

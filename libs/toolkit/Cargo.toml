@@ -47,6 +47,8 @@ iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
 iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "x11", "thread-pool", "fira-sans"] }
 fluent-bundle = { version = "0.15", optional = true }
 image = { workspace = true, optional = true }
+# `slide_bar` steps generic numeric values; the version is already in the lock.
+num-traits = { workspace = true }
 # `elide` walks grapheme boundaries; the version is already in the lock.
 unicode-segmentation = "1.13"
 

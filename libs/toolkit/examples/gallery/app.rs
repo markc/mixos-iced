@@ -20,6 +20,8 @@ pub mod services;
 mod lists;
 #[path = "typography.rs"]
 mod typography;
+#[path = "more.rs"]
+mod more;
 use strings::label;
 use toolkit::fonts::{self, Role};
 use toolkit::scale::format_db;
@@ -112,10 +114,17 @@ pub enum Page {
     Services,
     Lists,
     Text,
+    More,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Widgets, Page::Services, Page::Lists, Page::Text];
+    pub const ALL: [Page; 5] = [
+        Page::Widgets,
+        Page::Services,
+        Page::Lists,
+        Page::Text,
+        Page::More,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -123,6 +132,7 @@ impl Page {
             Page::Services => "services",
             Page::Lists => "lists",
             Page::Text => "text",
+            Page::More => "more",
         }
     }
 }
@@ -157,6 +167,7 @@ pub struct Gallery {
     picked: Option<usize>,
     lists: lists::Lists,
     typography: typography::State,
+    more: more::State,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +191,7 @@ pub enum Message {
     Mute(usize, bool),
     Solo(usize, bool),
     Levels(bool),
+    More(more::Message),
     Seek(f32),
     View(RollView),
     PickNote(usize),
@@ -270,6 +282,7 @@ impl Gallery {
             picked: None,
             lists: lists::Lists::new(),
             typography: typography::State::new(),
+            more: more::State::new(),
         }
     }
 
@@ -282,6 +295,11 @@ impl Gallery {
     /// The "Text" page on its own (same reason as `lists_page`).
     pub fn text_page(&self) -> Element<'_> {
         self.typography.view(self.theme.tokens())
+    }
+
+    /// The "More widgets" page on its own (same reason as `lists_page`).
+    pub fn more_page(&self) -> Element<'_> {
+        self.more.view(self.theme.tokens()).map(Message::More)
     }
 
     /// The current theme; iced asks for it every frame, so a new `Tokens`
@@ -313,6 +331,7 @@ impl Gallery {
             Message::Page(page) => self.page = page,
             Message::Services(message) => self.services.update(message),
             Message::Lists(message) => self.lists.update(message),
+            Message::More(message) => self.more.update(message),
             Message::Text(value) => self.value = value,
             Message::Password(value) => self.password = value,
             Message::Action(action) => self.last_action = label(action),
@@ -617,6 +636,13 @@ impl Gallery {
         }
         if self.page == Page::Text {
             let page = page.push(self.typography.view(tokens));
+            return column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill)
+                .into();
+        }
+        if self.page == Page::More {
+            let page = page.push(self.more_page());
             return column![bar, scrollable(page).height(Fill)]
                 .width(Fill)
                 .height(Fill)
