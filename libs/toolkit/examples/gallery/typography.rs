@@ -32,18 +32,21 @@ impl State {
         let body = tokens.metrics.text.md;
         let pad = tokens.metrics.spacing.md;
         let gap = tokens.metrics.spacing.sm;
-        let card = move |content| {
+        let card = move |content: Element<'_>| {
             container(content)
                 .width(CARD)
                 .padding(pad)
                 .style(theme::container::card)
         };
-        let elided = column![
-            elide::Label::new(label("text-sample-short")).size(body),
-            elide::Label::new(label("text-sample-path")).size(body),
-            elide::Label::new(label("text-sample-long")).size(body),
-        ]
-        .spacing(gap);
+        let elided = card(
+            column![
+                elide::Label::new(label("text-sample-short")).size(body),
+                elide::Label::new(label("text-sample-path")).size(body),
+                elide::Label::new(label("text-sample-long")).size(body),
+            ]
+            .spacing(gap)
+            .into(),
+        );
         let fitted = FitText::<Theme, iced::Renderer>::new(label("text-fit-sample"))
             .min_size(10)
             .max_size(72)

@@ -61,7 +61,7 @@ fn render(gallery: &Gallery, path: &Path) -> (u32, u32, Vec<u8>) {
 }
 
 fn render_element<M>(
-    element: toolkit::core::Element<'_, M, toolkit::Theme>,
+    element: toolkit::iced::Element<'_, M, toolkit::Theme>,
     theme: &toolkit::Theme,
     viewport: Size,
     path: &Path,
