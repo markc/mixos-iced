@@ -195,7 +195,7 @@ impl Assets {
             (side, side, pixels)
         } else {
             let bitmap = iced_graphics::image::load(&Handle::from_path(path)).ok()?;
-            (bitmap.width(), bitmap.height(), bitmap.into_raw())
+            (bitmap.width(), bitmap.height(), bitmap.into_raw().to_vec())
         };
         if !pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
             return None;
