@@ -17,9 +17,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced_core::widget::text_input::{self, Catalog as TextInputCatalog};
 use iced_core::{Element, Length, Padding};
-use iced_widget::{button, column, container, row, scrollable, text, text_input};
+use iced_widget::text_input;
+use iced_widget::{button, column, container, row, scrollable, text};
 
 use crate::theme::{self, Theme};
 use crate::tokens::Tokens;
@@ -419,7 +419,7 @@ impl Requester {
     where
         Message: From<Event> + Clone + 'a,
         Renderer: iced_core::text::Renderer + 'static,
-        Theme: TextInputCatalog
+        Theme: text_input::Catalog
             + iced_widget::button::Catalog
             + iced_core::widget::text::Catalog
             + iced_widget::scrollable::Catalog
