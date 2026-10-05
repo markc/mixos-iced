@@ -14,6 +14,16 @@
 //! never change.
 
 pub mod wire;
+// Source compatibility names refer to the same message and parser implementation.
+pub use wire as bus;
+pub mod native_session;
+mod protocol;
+pub mod service_info;
+pub use protocol::*;
+pub use service_info::{NodeInfo, RegisterProvenance, SCHEMA_VERSION, ServiceInfo};
+
+#[cfg(feature = "client")]
+pub mod native_client;
 
 pub use wire::{
     BusMessage, EMPTY_MESSAGE, MAX_HEADERS, MAX_MESSAGE_BYTES, ParseError, ParseReport,

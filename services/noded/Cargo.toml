@@ -1,0 +1,53 @@
+[package]
+name = "noded"
+description = "Native ABP broker, session authority and mesh router"
+version = "0.18.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "noded"
+kind = "service"
+layer = "core"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+bus = { workspace = true, features = ["native"] }
+config.workspace = true
+props = { workspace = true, features = ["bus"] }
+mesh.workspace = true
+mesh-trust.workspace = true
+buildinfo.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+arc-swap.workspace = true
+base64.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+clap.workspace = true
+ed25519-dalek.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+mimalloc.workspace = true
+notify.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sysinfo = "0.35"
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "signal", "fs"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[build-dependencies]
+buildinfo.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite.workspace = true

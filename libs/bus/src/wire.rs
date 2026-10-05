@@ -61,6 +61,45 @@ impl BusMessage {
         Self::new()
     }
 
+    /// Construct a command from header pairs, preserving the frozen wire shape.
+    pub fn command(headers: impl IntoIterator<Item = (&'static str, String)>) -> Self {
+        Self {
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v))
+                .collect(),
+            body: String::new(),
+        }
+    }
+
+    pub fn from_addr(&self) -> Option<&str> {
+        self.get("from")
+    }
+    pub fn to_addr(&self) -> Option<&str> {
+        self.get("to")
+    }
+    pub fn args(&self) -> Option<serde_json::Value> {
+        self.get("args").and_then(|s| serde_json::from_str(s).ok())
+    }
+    pub fn json_payload(&self) -> Option<serde_json::Value> {
+        self.get("json").and_then(|s| serde_json::from_str(s).ok())
+    }
+    pub fn ui_id(&self) -> Option<&str> {
+        self.get("id")
+    }
+    pub fn target(&self) -> Option<&str> {
+        self.get("target")
+    }
+    pub fn parent(&self) -> Option<&str> {
+        self.get("parent")
+    }
+    pub fn source(&self) -> Option<&str> {
+        self.get("source")
+    }
+    pub fn is_ui_command(&self) -> bool {
+        self.command_name().is_some_and(|c| c.starts_with("ui."))
+    }
+
     /// Add a header (builder form).
     pub fn with_header(mut self, key: &str, value: &str) -> Self {
         self.headers.insert(key.to_string(), value.to_string());
@@ -446,7 +485,10 @@ mod tests {
     fn parse_lenient_clean_message() {
         let (msg, report) = parse_lenient("---\ncommand: status\nrc: 0\n---\n").unwrap();
         assert_eq!(msg.get("command"), Some("status"));
-        assert!(report.is_empty(), "clean Bus should report empty: {report:?}");
+        assert!(
+            report.is_empty(),
+            "clean Bus should report empty: {report:?}"
+        );
     }
 
     #[test]
@@ -536,12 +578,18 @@ mod tests {
         let unified = BusMessage::new().with_body(
             r#"{"error_code":"EMPTY_EDGE","message":"edge has no registered pages","edge":"top"}"#,
         );
-        assert_eq!(unified.error_message(), "EMPTY_EDGE: edge has no registered pages");
+        assert_eq!(
+            unified.error_message(),
+            "EMPTY_EDGE: edge has no registered pages"
+        );
         // A reply with a code beside `error` keeps its exact text.
         let legacy = BusMessage::new().with_body(
             r#"{"error_code":"PANEL_THICKNESS_BUDGET","error":"panel thickness exceeds output budget"}"#,
         );
-        assert_eq!(legacy.error_message(), "panel thickness exceeds output budget");
+        assert_eq!(
+            legacy.error_message(),
+            "panel thickness exceeds output budget"
+        );
         // `message` without a code is not the unified shape; the raw body stands.
         let bare = BusMessage::new().with_body(r#"{"message":"hello"}"#);
         assert_eq!(bare.error_message(), r#"{"message":"hello"}"#);
@@ -550,7 +598,9 @@ mod tests {
     #[test]
     fn error_message_falls_back_to_raw_body_then_unknown() {
         assert_eq!(
-            BusMessage::new().with_body("plain text failure").error_message(),
+            BusMessage::new()
+                .with_body("plain text failure")
+                .error_message(),
             "plain text failure"
         );
         assert_eq!(BusMessage::new().error_message(), "unknown error");
@@ -565,7 +615,10 @@ mod tests {
         raw.push_str("---\n");
         let (msg, report) = parse_lenient(&raw).unwrap();
         assert_eq!(msg.headers.len(), MAX_HEADERS);
-        assert!(!report.is_empty(), "overflow is recorded so strict callers reject");
+        assert!(
+            !report.is_empty(),
+            "overflow is recorded so strict callers reject"
+        );
         assert!(parse_strict(&raw).is_err());
     }
 
@@ -579,14 +632,461 @@ mod tests {
         raw.push_str("---\n");
         let (msg, report) = parse_lenient(&raw).unwrap();
         assert_eq!(msg.headers.len(), 1);
-        assert!(report.skipped_lines.iter().any(|(_, l)| l.contains("exceeds")));
+        assert!(
+            report
+                .skipped_lines
+                .iter()
+                .any(|(_, l)| l.contains("exceeds"))
+        );
     }
 
     #[test]
     fn headers_under_cap_parse_fully() {
-        let (msg, report) = parse_lenient("---\ncommand: get\nrc: 0\nfrom: node1\n---\nbody").unwrap();
+        let (msg, report) =
+            parse_lenient("---\ncommand: get\nrc: 0\nfrom: node1\n---\nbody").unwrap();
         assert_eq!(msg.headers.len(), 3);
         assert!(report.is_empty());
         assert_eq!(msg.body, "body");
     }
+}
+
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+#[cfg(feature = "native")]
+mod transport {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Read a Bus message from a Unix stream (reads until EOF).
+    ///
+    /// The sender must shut down their write side to signal EOF.
+    pub async fn read_from_stream(
+        stream: &mut tokio::net::UnixStream,
+    ) -> anyhow::Result<BusMessage> {
+        let mut buf = Vec::with_capacity(4096);
+
+        // Read with a timeout (hung clients) AND a byte cap (memory DoS):
+        // `take` one byte past the limit so an over-cap frame still reads
+        // enough to be detected, then reject. Without the cap, a local
+        // peer could force an unbounded `read_to_end` allocation.
+        let mut limited = stream.take(MAX_MESSAGE_BYTES as u64 + 1);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            limited.read_to_end(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => anyhow::bail!("Read error: {e}"),
+            Err(_) => anyhow::bail!("Bus read timed out (10s)"),
+        }
+
+        if buf.is_empty() {
+            anyhow::bail!("Empty Bus message (no data received)");
+        }
+        if buf.len() > MAX_MESSAGE_BYTES {
+            anyhow::bail!("Bus message exceeds {MAX_MESSAGE_BYTES} byte limit");
+        }
+
+        let raw = String::from_utf8(buf)?;
+        Ok(parse(&raw)?)
+    }
+
+    /// Write a Bus message to a Unix stream.
+    pub async fn write_to_stream(
+        stream: &mut tokio::net::UnixStream,
+        msg: &BusMessage,
+    ) -> anyhow::Result<()> {
+        stream.write_all(&msg.to_bytes()).await?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "native")]
+pub use transport::{read_from_stream, write_to_stream};
+
+// ── Bus Address ──
+
+/// Maximum length of a single DNS-style label.
+const MAX_LABEL_LEN: usize = 63;
+
+/// Maximum total length of a Bus address (including `@<mesh-fqdn>` suffix).
+const MAX_ADDRESS_LEN: usize = 253;
+
+/// A local Bus address, per SPEC 01 §4.1.
+///
+/// Canonical forms (`.bus` suffix optional on 2-/3-label forms):
+/// - `<service>.<node>[.bus]` — service on a node
+/// - `<sub>.<service>.<node>[.bus]` — sub-protocol/instance on a service on a node
+/// - `<node>.bus` — the node itself (its broker; service implicit `noded`)
+///
+/// The `<sub>` slot is opaque to the broker: the broker routes by
+/// `<service>.<node>`, and the destination service interprets `<sub>` to
+/// demultiplex internal endpoints (e.g. `maild` treats `imap` as the IMAP
+/// sub-protocol; `disp-skia` treats `editor` as a window/instance ID).
+///
+/// Bare `<service>` (no dot, no `.bus` suffix) is NOT a parseable address;
+/// it is a local-only shorthand the caller hands to the broker registry
+/// directly. See `BusTarget::parse` for the full target shape including
+/// cross-mesh.
+///
+/// Examples:
+/// ```
+/// # use bus::wire::{BusAddress, BusTarget};
+/// let t = BusTarget::parse("imap.maild.alpha.bus").unwrap();
+/// let addr = t.local();
+/// assert_eq!(addr.sub.as_deref(), Some("imap"));
+/// assert_eq!(addr.service.as_deref(), Some("maild"));
+/// assert_eq!(addr.node, "alpha");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BusAddress {
+    /// Optional sub-protocol/instance label. Opaque to the broker;
+    /// interpreted by the destination service.
+    pub sub: Option<String>,
+    /// Service name. `None` only for the `<node>.bus` form, which
+    /// implicitly addresses the node's broker (noded).
+    pub service: Option<String>,
+    /// Node name. Always present.
+    pub node: String,
+}
+
+/// A resolved Bus routing target, per SPEC 01 §4.
+///
+/// `Local` is the in-mesh form (no `@`). `CrossMesh` is the cross-mesh form
+/// (`<local-bus>@<mesh-fqdn>`); routers MUST refuse this with `cross-mesh
+/// routing not implemented` until federation transport exists.
+///
+/// The enum makes the routing distinction type-level: every router branch
+/// must explicitly handle (or refuse) `CrossMesh` — a passive `mesh:
+/// Option<String>` field on `BusAddress` would allow code to accidentally
+/// deliver a cross-mesh address to a local service whose node name happened
+/// to match.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BusTarget {
+    /// In-mesh address.
+    Local(BusAddress),
+    /// Cross-mesh address. Reserved at the parser; refused at the router
+    /// until federation transport is designed.
+    CrossMesh {
+        /// The mesh-local part (left of `@`).
+        local: BusAddress,
+        /// The destination mesh FQDN (right of `@`). Strict
+        /// IDNA-canonical: lowercase ASCII, contains at least one `.`,
+        /// labels 1..=63 chars from `[a-z0-9-]` with no leading/trailing
+        /// hyphen, no `xn--` punycode pending homograph review.
+        mesh_fqdn: String,
+    },
+}
+
+impl BusTarget {
+    /// Parse a Bus target string per SPEC 01 §4.
+    ///
+    /// Returns `None` for inputs that are not Bus addresses (bare service
+    /// shorthand without `.bus` and without dots, malformed labels, more
+    /// than three left-side labels, invalid FQDN on the right of `@`,
+    /// etc.). Callers fall back to direct service-registry lookup when
+    /// this returns `None`.
+    pub fn parse(s: &str) -> Option<Self> {
+        if s.is_empty() || s.len() > MAX_ADDRESS_LEN {
+            return None;
+        }
+
+        // Split on `@` for cross-mesh. Exactly one `@` permitted.
+        let (local_str, mesh_fqdn) = match s.split_once('@') {
+            Some((l, r)) => {
+                if r.contains('@') || r.is_empty() || l.is_empty() {
+                    return None;
+                }
+                (l, Some(r))
+            }
+            None => (s, None),
+        };
+
+        let local = BusAddress::parse_local(local_str)?;
+
+        match mesh_fqdn {
+            None => Some(BusTarget::Local(local)),
+            Some(fqdn) => {
+                let normalised = validate_mesh_fqdn(fqdn)?;
+                Some(BusTarget::CrossMesh {
+                    local,
+                    mesh_fqdn: normalised,
+                })
+            }
+        }
+    }
+
+    /// Borrow the local component regardless of variant. Useful when a
+    /// caller has already verified (or refused) the `CrossMesh` case.
+    pub fn local(&self) -> &BusAddress {
+        match self {
+            BusTarget::Local(a) => a,
+            BusTarget::CrossMesh { local, .. } => local,
+        }
+    }
+
+    /// True if this is a cross-mesh target. Routers MUST check this before
+    /// dispatching and refuse with `cross-mesh routing not implemented`.
+    pub fn is_cross_mesh(&self) -> bool {
+        matches!(self, BusTarget::CrossMesh { .. })
+    }
+}
+
+impl BusAddress {
+    /// Parse a *local* (no `@`) Bus address per SPEC 01 §4.1. Prefer
+    /// `BusTarget::parse` which also handles the cross-mesh form.
+    ///
+    /// Accepts (with optional `.bus` suffix on 2-/3-label forms):
+    /// - `<node>.bus` — node only (service implicit, sub absent)
+    /// - `<service>.<node>` or `<service>.<node>.bus`
+    /// - `<sub>.<service>.<node>` or `<sub>.<service>.<node>.bus`
+    pub fn parse_local(s: &str) -> Option<Self> {
+        if s.is_empty() || s.contains('@') {
+            return None;
+        }
+
+        // Strip optional `.bus` suffix. Remember whether the suffix was
+        // explicit, since single-label inputs require it (`alpha.bus`
+        // is the node form; bare `alpha` is service shorthand and is
+        // NOT a parseable address).
+        let (stem, had_bus_suffix) = match s.strip_suffix(".bus") {
+            Some(stripped) => (stripped, true),
+            None => (s, false),
+        };
+
+        if stem.is_empty() {
+            return None;
+        }
+
+        let parts: Vec<&str> = stem.split('.').collect();
+
+        // Reject empty labels (`.foo`, `foo..bar`, `foo.`) and >3 labels.
+        if parts.iter().any(|p| p.is_empty()) || parts.len() > 3 {
+            return None;
+        }
+
+        // Validate each label as a DNS-style ASCII label.
+        for part in &parts {
+            if !is_valid_label(part) {
+                return None;
+            }
+        }
+
+        match parts.len() {
+            1 => {
+                // Single label is the node-only form `<node>.bus` and
+                // requires the explicit `.bus` suffix. Bare `<service>`
+                // is shorthand and must not parse as an address.
+                if !had_bus_suffix {
+                    return None;
+                }
+                Some(Self {
+                    sub: None,
+                    service: None,
+                    node: parts[0].to_string(),
+                })
+            }
+            2 => Some(Self {
+                sub: None,
+                service: Some(parts[0].to_string()),
+                node: parts[1].to_string(),
+            }),
+            3 => Some(Self {
+                sub: Some(parts[0].to_string()),
+                service: Some(parts[1].to_string()),
+                node: parts[2].to_string(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Check if this address targets a specific node.
+    pub fn is_for_node(&self, node_name: &str) -> bool {
+        self.node == node_name
+    }
+
+    /// Resolve the service name for routing. `None` indicates the node's
+    /// broker (the `<node>.bus` form); callers typically map this to
+    /// `"noded"`.
+    pub fn service_name(&self) -> Option<&str> {
+        self.service.as_deref()
+    }
+}
+
+impl fmt::Display for BusAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(sub) = &self.sub {
+            write!(f, "{sub}.")?;
+        }
+        if let Some(service) = &self.service {
+            write!(f, "{service}.")?;
+        }
+        write!(f, "{}.bus", self.node)
+    }
+}
+
+impl fmt::Display for BusTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BusTarget::Local(a) => write!(f, "{a}"),
+            BusTarget::CrossMesh { local, mesh_fqdn } => {
+                write!(f, "{local}@{mesh_fqdn}")
+            }
+        }
+    }
+}
+
+/// Validate a DNS-style label per SPEC 01 §4.1: 1..=63 ASCII characters
+/// from `[a-z0-9-]`, not starting or ending with `-`.
+///
+/// This is the fleet-wide label grammar authority; inventory and routing
+/// validators must use it rather than maintaining a parallel grammar.
+pub fn is_valid_label(label: &str) -> bool {
+    let bytes = label.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_LABEL_LEN {
+        return false;
+    }
+    if bytes[0] == b'-' || *bytes.last().unwrap() == b'-' {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+/// Validate a mesh FQDN (right-hand side of `@`) per SPEC 01 §4.2.
+/// Returns the normalised form (currently identical to input on success)
+/// or `None` if invalid.
+///
+/// Rules: total ≤ 253 chars, contains at least one `.`, each label
+/// 1..=63 chars from `[a-z0-9-]` with no leading/trailing hyphen, no
+/// trailing dot, no `xn--` punycode (pending homograph review).
+fn validate_mesh_fqdn(fqdn: &str) -> Option<String> {
+    if fqdn.is_empty() || fqdn.len() > MAX_ADDRESS_LEN {
+        return None;
+    }
+    if !fqdn.contains('.') || fqdn.ends_with('.') {
+        return None;
+    }
+    for label in fqdn.split('.') {
+        if !is_valid_label(label) {
+            return None;
+        }
+        if label.starts_with("xn--") {
+            return None;
+        }
+    }
+    Some(fqdn.to_string())
+}
+
+// ── Validation ──
+
+/// Known Bus header fields.
+pub const KNOWN_HEADERS: &[&str] = &[
+    // Core protocol
+    "bus",
+    "type",
+    "id",
+    "from",
+    "to",
+    "command",
+    "args",
+    "json",
+    "reply-to",
+    "ttl",
+    "error",
+    "timestamp",
+    "rc",
+    // Display protocol — window
+    "parent",
+    "title",
+    "width",
+    "height",
+    "position",
+    "decorations",
+    "layer",
+    "sticky",
+    // Display protocol — layout
+    "layout",
+    "gap",
+    "padding",
+    "align",
+    "scrollable",
+    "overflow",
+    // Display protocol — style
+    "background",
+    "text_color",
+    "border_color",
+    "border_width",
+    "border_radius",
+    "font_size",
+    "opacity",
+    // Display protocol — targeting
+    "target",
+    "source",
+    "name",
+    // Display protocol — permissions (federated)
+    "source_peer",
+    "permissions",
+];
+
+/// Valid message types.
+pub const VALID_TYPES: &[&str] = &["request", "response", "event", "stream"];
+
+/// Validate a Bus message for protocol conformance.
+///
+/// Returns a list of warnings (not errors — Bus is permissive).
+/// An empty Vec means the message is fully conformant.
+pub fn validate(msg: &BusMessage) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    // Empty messages are always valid
+    if msg.is_empty_message() {
+        return warnings;
+    }
+
+    // Check for unknown headers
+    for key in msg.headers.keys() {
+        if !KNOWN_HEADERS.contains(&key.as_str()) {
+            warnings.push(format!("unknown header: {key}"));
+        }
+    }
+
+    // Validate type field
+    if let Some(msg_type) = msg.get("type")
+        && !VALID_TYPES.contains(&msg_type)
+    {
+        warnings.push(format!("invalid type: {msg_type}"));
+    }
+
+    // Validate args is valid JSON
+    if let Some(args) = msg.get("args")
+        && serde_json::from_str::<serde_json::Value>(args).is_err()
+    {
+        warnings.push("args is not valid JSON".to_string());
+    }
+
+    // Validate json payload is valid JSON
+    if let Some(json) = msg.get("json")
+        && serde_json::from_str::<serde_json::Value>(json).is_err()
+    {
+        warnings.push("json payload is not valid JSON".to_string());
+    }
+
+    // Validate rc is numeric
+    if let Some(rc) = msg.get("rc")
+        && rc.parse::<u8>().is_err()
+    {
+        warnings.push(format!("rc is not a valid integer: {rc}"));
+    }
+
+    // Validate ttl is numeric
+    if let Some(ttl) = msg.get("ttl")
+        && ttl.parse::<u32>().is_err()
+    {
+        warnings.push(format!("ttl is not a valid integer: {ttl}"));
+    }
+
+    warnings
 }

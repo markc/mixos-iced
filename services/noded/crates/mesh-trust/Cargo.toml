@@ -1,0 +1,32 @@
+[package]
+name = "mesh-trust"
+description = "noded's signed inventory, admission and grant verification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "noded"
+kind = "service"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+bus = { workspace = true, default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+ed25519-dalek.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+rand.workspace = true

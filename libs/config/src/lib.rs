@@ -22,6 +22,11 @@
 //! ```
 
 mod dir;
+pub mod node;
 
 pub use dir::{Dir, Dirs, Environment, path};
 pub use strict::{Error, ErrorKind, Map, Value, parse, parse_file};
+pub use strict::{
+    from_file as load_conf_mix_path, from_str as from_conf_mix_str,
+    to_string_pretty as to_conf_mix_string,
+};

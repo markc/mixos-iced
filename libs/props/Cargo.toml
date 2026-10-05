@@ -1,0 +1,28 @@
+[package]
+name = "props"
+description = "Property read surface, revisions and native Bus publication builders"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "props"
+kind = "lib"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[features]
+default = []
+bus = ["dep:bus", "dep:chrono"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+bus = { workspace = true, optional = true, default-features = false }
+chrono = { workspace = true, optional = true }
