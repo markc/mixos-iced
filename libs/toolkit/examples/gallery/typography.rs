@@ -22,6 +22,17 @@ const FIT_HEIGHT: f32 = 96.0;
 #[derive(Default)]
 pub struct State;
 
+/// A fixed-width card frame for the samples.
+fn card<'a>(
+    tokens: Tokens,
+    content: impl Into<Element<'a>>,
+) -> iced::widget::Container<'a, super::Message, Theme> {
+    container(content)
+        .width(CARD)
+        .padding(tokens.metrics.spacing.md)
+        .style(theme::container::card)
+}
+
 impl State {
     pub fn new() -> Self {
         Self
@@ -32,20 +43,14 @@ impl State {
         let body = tokens.metrics.text.md;
         let pad = tokens.metrics.spacing.md;
         let gap = tokens.metrics.spacing.sm;
-        let card = move |content: Element<'_>| {
-            container(content)
-                .width(CARD)
-                .padding(pad)
-                .style(theme::container::card)
-        };
         let elided = card(
+            tokens,
             column![
                 elide::Label::new(label("text-sample-short")).size(body),
                 elide::Label::new(label("text-sample-path")).size(body),
                 elide::Label::new(label("text-sample-long")).size(body),
             ]
-            .spacing(gap)
-            .into(),
+            .spacing(gap),
         );
         let fitted = FitText::<Theme, iced::Renderer>::new(label("text-fit-sample"))
             .min_size(10)
