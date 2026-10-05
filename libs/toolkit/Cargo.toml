@@ -61,6 +61,8 @@ iced_test = { workspace = true }
 png = { version = "=0.18.1" }
 # The `generic` gate reads `cargo metadata`.
 serde_json = { workspace = true }
+# The requester round-trips a temp directory.
+tempfile = { workspace = true }
 
 [[example]]
 name = "gallery"

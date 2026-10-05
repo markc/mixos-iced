@@ -55,6 +55,8 @@ serde_json = { version = "=1.0.151" }
 # scene-host's scene digest; already in the lock (0.10.9).
 sha2 = { version = "=0.10.9" }
 smithay = { path = "vendor/smithay", version = "0.7.0", default-features = false, features = ["backend_drm", "backend_egl", "backend_gbm", "backend_libinput", "backend_session_libseat", "backend_udev", "backend_winit", "desktop", "drm", "gbm", "renderer_gl", "renderer_multi", "renderer_pixman", "use_system_lib", "wayland-egl", "wayland_frontend", "xwayland"] }
+# Dev-dep temp directories (toolkit requester round trip); already in the lock.
+tempfile = "=3.27.0"
 thiserror = { version = "=2.0.20" }
 # comp-service only (a current-thread runtime on its worker); the bus client and zbus
 # ask for the tokio features they need themselves.
