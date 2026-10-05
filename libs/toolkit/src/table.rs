@@ -958,9 +958,7 @@ where
         {
             // Legacy callers have a completion callback only: commit their
             // last preview rather than leave a permanently suspended resize.
-            if let Some(message) = self.on_cancel.as_ref().or(self.on_release.as_ref()) {
-                shell.publish(message.clone());
-            }
+            shell.publish(self.on_cancel.as_ref().unwrap_or(&self.on_release).clone());
             shell.capture_event();
             shell.request_redraw();
             return;

@@ -39,25 +39,33 @@ pub fn cycle(backwards: bool) -> impl iced_core::widget::Operation {
             operate(self);
         }
     }
-    operation::then(operation::focusable::count(), move |count| {
-        let target = if count.total == 0 {
-            None
-        } else {
-            Some(match count.focused {
-                Some(current) if backwards => {
-                    if current == 0 {
-                        count.total - 1
-                    } else {
-                        current - 1
+    impl Cycle {
+        fn new(count: operation::focusable::Count, backwards: bool) -> Self {
+            let target = if count.total == 0 {
+                None
+            } else {
+                Some(match count.focused {
+                    Some(current) if backwards => {
+                        if current == 0 {
+                            count.total - 1
+                        } else {
+                            current - 1
+                        }
                     }
-                }
-                Some(current) => (current + 1) % count.total,
-                None if backwards => count.total - 1,
-                None => 0,
-            })
-        };
-        Cycle { target, current: 0 }
-    })
+                    Some(current) => (current + 1) % count.total,
+                    None if backwards => count.total - 1,
+                    None => 0,
+                })
+            };
+            Cycle { target, current: 0 }
+        }
+    }
+    let choose: fn(operation::focusable::Count) -> Cycle = if backwards {
+        |count| Cycle::new(count, true)
+    } else {
+        |count| Cycle::new(count, false)
+    };
+    operation::then(operation::focusable::count(), choose)
 }
 
 /// A focusable region around a composite keyboard control. Its children keep

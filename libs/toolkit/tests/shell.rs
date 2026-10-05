@@ -15,6 +15,133 @@ use toolkit::{Theme, Tokens, fonts};
 
 const VIEWPORT: Size = Size::new(1000.0, 600.0);
 
+#[test]
+fn toggling_shell_chrome_preserves_editor_focus_selection_and_undo() {
+    use toolkit::core::shell::{Bus, Waker};
+    use toolkit::core::{
+        Element, Layout, layout,
+        renderer::Headless,
+        widget::{Id, Tree, operation},
+    };
+    fn view(value: &str, visible: bool) -> Element<'_, String, Theme, iced_widget::Renderer> {
+        let mut shell = shell::Shell::new(
+            toolkit::TextField::new("", value)
+                .id(Id::new("editor"))
+                .on_input(|s| s),
+        );
+        if visible {
+            shell = shell
+                .sidebar(Side::Left, 180.0, iced_widget::text("Left"))
+                .sidebar(Side::Right, 180.0, iced_widget::text("Right"))
+                .menu(Some(vec![]))
+                .toolbar(Toolbar::new().push(shell::tool("Tool", String::new())))
+                .status(shell::StatusBar::new().left(vec![shell::field("Ready")]));
+        }
+        shell.into()
+    }
+    let renderer = iced_futures::futures::executor::block_on(iced_widget::Renderer::new(
+        Default::default(),
+        None,
+    ))
+    .unwrap();
+    let mut element = view("draft", false);
+    let mut tree = Tree::new(element.as_widget());
+    let build = |element: &mut Element<'_, String, Theme, iced_widget::Renderer>,
+                 tree: &mut Tree,
+                 renderer: &iced_widget::Renderer| {
+        tree.diff(element.as_widget_mut());
+        element
+            .as_widget_mut()
+            .layout(tree, renderer, &layout::Limits::new(Size::ZERO, VIEWPORT))
+    };
+    let node = build(&mut element, &mut tree, &renderer);
+    element.as_widget_mut().operate(
+        &mut tree,
+        Layout::new(&node),
+        &renderer,
+        &mut operation::focusable::focus::<()>(Id::new("editor")),
+    );
+    let send = |element: &mut Element<'_, String, Theme, iced_widget::Renderer>,
+                tree: &mut Tree,
+                renderer: &iced_widget::Renderer,
+                node: &layout::Node,
+                events: Vec<Event>| {
+        let mut bus = Bus::new();
+        let mut shell =
+            toolkit::core::Shell::new(&toolkit::core::window::Headless, Waker::noop(), &mut bus);
+        for event in events {
+            element.as_widget_mut().update(
+                tree,
+                &event,
+                Layout::new(node),
+                mouse::Cursor::Unavailable,
+                renderer,
+                &mut shell,
+                &toolkit::core::Rectangle::with_size(VIEWPORT),
+            );
+        }
+        bus.drain().collect::<Vec<_>>()
+    };
+    let key = |letter: &str, modifiers| {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(letter.into()),
+            modified_key: keyboard::Key::Character(letter.into()),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: (modifiers == keyboard::Modifiers::empty()).then(|| letter.into()),
+            repeat: false,
+        })
+    };
+    send(
+        &mut element,
+        &mut tree,
+        &renderer,
+        &node,
+        vec![key("a", keyboard::Modifiers::CTRL)],
+    );
+    for visible in [true, false, true] {
+        element = view("draft", visible);
+        let node = build(&mut element, &mut tree, &renderer);
+        let mut focused = operation::focusable::is_focused(Id::new("editor"));
+        element.as_widget_mut().operate(
+            &mut tree,
+            Layout::new(&node),
+            &renderer,
+            &mut operation::black_box(&mut focused),
+        );
+        assert!(matches!(
+            operation::Operation::finish(&focused),
+            operation::Outcome::Some(true)
+        ));
+    }
+    let node = build(&mut element, &mut tree, &renderer);
+    assert_eq!(
+        send(
+            &mut element,
+            &mut tree,
+            &renderer,
+            &node,
+            vec![key("x", keyboard::Modifiers::empty())]
+        ),
+        ["x"]
+    );
+    element = view("x", false);
+    let node = build(&mut element, &mut tree, &renderer);
+    assert_eq!(
+        send(
+            &mut element,
+            &mut tree,
+            &renderer,
+            &node,
+            vec![key("z", keyboard::Modifiers::CTRL)]
+        ),
+        ["draft"]
+    );
+}
+
 fn settings() -> Settings {
     Settings {
         default_font: fonts::default_ui_font(),
