@@ -4,7 +4,7 @@
 
 [workspace]
 resolver = "3"
-members = ["libs/*", "services/compd", "services/compd/crates/*"]
+members = ["libs/*", "services/compd", "services/compd/crates/*", "tools/native-gallery"]
 # The comp policy cores (surfaces, ledger, comp-model, policy, comp-service)
 # keep their own default lints: they do not opt into [workspace.lints].
 exclude = ["vendor"]

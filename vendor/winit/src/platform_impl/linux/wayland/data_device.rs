@@ -39,7 +39,7 @@ struct Press {
     serial: u32,
 }
 struct Source {
-    native: DragSource,
+    _native: DragSource,
     gesture: Gesture,
     window: WindowId,
     seat: ObjectId,
@@ -269,7 +269,7 @@ impl WinitState {
                     self.drag.sources.insert(
                         id,
                         Source {
-                            native,
+                            _native: native,
                             gesture,
                             window,
                             seat: press.seat.id(),

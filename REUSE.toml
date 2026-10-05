@@ -58,6 +58,12 @@ SPDX-FileCopyrightText = "2025 The gfx-rs developers"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
+path = "vendor/winit/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The winit contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = ["docs/web/fonts/icons.woff2", "docs/web/fonts/LICENSE-MaterialSymbols.txt"]
 precedence = "override"
 SPDX-FileCopyrightText = "Google LLC (Material Symbols)"

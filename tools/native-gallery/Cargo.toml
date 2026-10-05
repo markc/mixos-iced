@@ -1,0 +1,34 @@
+[package]
+name = "native-gallery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.mixos]
+component = "native-gallery"
+kind = "tool"
+layer = "desktop"
+contract = "none"
+
+[features]
+default = ["gallery-tiny-skia", "image"]
+gallery = []
+gallery-tiny-skia = ["gallery", "tiny-skia", "toolkit/gallery-tiny-skia"]
+tiny-skia = ["toolkit/tiny-skia"]
+wgpu = ["toolkit/wgpu"]
+gallery-wgpu = ["gallery", "wgpu", "toolkit/gallery-wgpu"]
+image = ["toolkit/image"]
+
+[dependencies]
+toolkit = { workspace = true }
+iced = { workspace = true, features = ["advanced", "wayland", "thread-pool", "fira-sans"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+fluent-bundle = "0.15"
+iced_futures = { workspace = true }
+
+[lints.clippy]
+mod_module_files = "deny"

@@ -134,3 +134,6 @@ winit (iced fork), vendor/winit
   Base: 05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed
   Apache-2.0; upstream licence retained in vendor/winit/LICENSE.
   Local Wayland data-device extension documented in vendor/winit/PATCHES.md.
+  examples/data/{cross,cross2,gradient,icon}.png: upstream Apache-2.0 fixtures.
+  docs/res/keyboard_{standard_1,numpad_1,left_shift,right_shift}_key.svg:
+  original replacement diagrams, 2026 Mark Constable, MIT OR Apache-2.0.

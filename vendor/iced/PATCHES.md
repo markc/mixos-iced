@@ -3,8 +3,8 @@
 iced 0.15.0-dev from git master. The code delta is a local port of
 `iced_wgpu` to the wgpu 30 snapshot in `vendor/wgpu`, plus the manifest
 re-wiring that makes iced build against `vendor/wgpu` and `vendor/cryoglyph`,
-and the native window drag bridge documented below.
-Nothing else differs from upstream.
+and the native window drag bridge documented below. Other differences
+are limited to the code and guard files recorded here.
 
 ## Upstream base: `3de451447bd28217bb535632867550908e29d5d0`
 
@@ -97,3 +97,14 @@ The former public text-input state and cursor accessors were removed after
 Toolkit adopted its own MIT-attributed input adapter over iced public editor
 traits. Its isolated pristine-upstream gate passed on 2026-10-06, including
 unit tests, rendered interaction tests and doctests.
+
+## Native window drag bridge
+
+`core/src/window/drag.rs` carries renderer-independent MIME/action/event
+types. `runtime::window::drag_drop` queues an operation and returns an
+explicit Unsupported/Invalid result if it cannot be queued. The winit
+adapter converts events and dispatches requests to the window's existing
+Wayland data device. Logical offer coordinates account for both output
+scale and the application's own zoom. No raw-handle downcasts or second
+connection are used. The toolkit library uses its own neutral session
+types; tools/native-gallery is the concrete bridge and acceptance host.

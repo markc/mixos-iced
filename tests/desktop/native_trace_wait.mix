@@ -1,0 +1,28 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Event-driven inspection of acceptance-client JSON evidence. The caller
+-- bounds this process with run_argv's timeout, so a missing event fails.
+$arguments = args()
+if len($arguments) != 2 then raise("TRACE_ARGUMENTS", "expected trace path and event") end
+$path = $arguments[0]
+$wanted = $arguments[1]
+$watch = fs_watch($path)
+try
+    while true
+        if is_file($path) then
+            for each $line in lines(read_file($path))
+                try
+                    $row = json_parse($line)
+                    if $row.event == $wanted then
+                        print(json_encode($row))
+                        exit(0)
+                    end
+                catch $error
+                    -- The final line may still be being appended.
+                end
+            end
+        end
+        $batch = fs_wait($watch)
+    end
+finally
+    fs_unwatch($watch)
+end

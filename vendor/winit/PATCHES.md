@@ -2,7 +2,9 @@
 
 Upstream: `https://github.com/iced-rs/winit.git`, exact base
 `05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed` (0.30.8).
-The full upstream tree and Apache-2.0 licence are retained.
+The upstream source tree and Apache-2.0 licence are retained. The four
+CC-BY-SA documentation key figures are replaced by original permissively
+licensed vectors; their file attribution is in docs/res/ATTRIBUTION.md.
 
 Local changes add a native source/offer lifecycle to the existing SCTK
 data-device backend. No second connection, dispatch thread or transfer

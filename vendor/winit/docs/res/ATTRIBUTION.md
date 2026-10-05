@@ -1,11 +1,9 @@
-# Image Attribution
+# Image attribution
 
-These images are used in the documentation of `winit`.
-
-## keyboard_*.svg
-
-These files are a modified version of "[ANSI US QWERTY (Windows)](https://commons.wikimedia.org/wiki/File:ANSI_US_QWERTY_(Windows).svg)"
-by [Tomiĉo] (https://commons.wikimedia.org/wiki/User:Tomi%C4%89o). It was
-originally released under the [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.en)
-License. Minor modifications have been made by [John Nunley](https://github.com/notgull),
-which have been released under the same license as a derivative work.
+The four `keyboard_*.svg` key diagrams in this vendor tree are original
+replacement vectors, copyright 2026 Mark Constable, MIT OR Apache-2.0.
+They replace the upstream CC-BY-SA documentation figures so that the
+local tree contains only assets cleared under the repository's licences.
+Upstream's source documentation still links to its own external figures.
+The four `examples/data/*.png` fixtures are retained under the upstream
+Apache-2.0 package licence.
