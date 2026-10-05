@@ -128,13 +128,13 @@ fn gallery_renders_under_every_token_set() {
 /// first row is selected, so the selection colour is on screen, and the
 /// two token sets differ.
 #[test]
-fn lists_page_renders_dark_and_light() {
+fn lists_page_renders_every_token_set() {
     const PAGE: Size = Size::new(1280.0, 520.0);
     let dir = output_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut gallery = Gallery::new();
     let mut frames = Vec::new();
-    for mode in [Mode::Dark, Mode::Light] {
+    for mode in Mode::ALL {
         gallery.update(Message::Mode(mode));
         let tokens = mode.tokens();
         let path = dir.join(format!("lists-{}.png", mode.name()));
@@ -161,13 +161,13 @@ fn lists_page_renders_dark_and_light() {
 /// fitted headline are on screen (text drawn, not just boxes), and the
 /// two token sets differ.
 #[test]
-fn text_page_renders_dark_and_light() {
+fn text_page_renders_every_token_set() {
     const PAGE: Size = Size::new(1280.0, 520.0);
     let dir = output_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut gallery = Gallery::new();
     let mut frames = Vec::new();
-    for mode in [Mode::Dark, Mode::Light] {
+    for mode in Mode::ALL {
         gallery.update(Message::Mode(mode));
         let path = dir.join(format!("text-{}.png", mode.name()));
         let (width, height, rgba) =
@@ -193,7 +193,7 @@ fn text_page_renders_dark_and_light() {
 /// badge and the slide bar fill are on screen, and the two token sets
 /// differ.
 #[test]
-fn more_page_renders_dark_and_light() {
+fn more_page_renders_every_token_set() {
     // Taller than the other pages: the whole set, including the number
     // input, tabs, selection list and drop-down, must be on screen.
     const PAGE: Size = Size::new(1280.0, 1400.0);
@@ -201,7 +201,7 @@ fn more_page_renders_dark_and_light() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut gallery = Gallery::new();
     let mut frames = Vec::new();
-    for mode in [Mode::Dark, Mode::Light] {
+    for mode in Mode::ALL {
         gallery.update(Message::Mode(mode));
         let path = dir.join(format!("more-{}.png", mode.name()));
         let (width, height, rgba) =

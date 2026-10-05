@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The "Text" page: middle elision that keeps the extension, text that
 //! solves its own size, and themed tooltips.
+use toolkit::Tokens;
 use toolkit::elide;
 use toolkit::fit_text::FitText;
 use toolkit::iced::widget::{column, container, row, text};
 use toolkit::iced::{self, Center, Fill};
 use toolkit::theme::{self, Theme};
 use toolkit::tips;
-use toolkit::Tokens;
 
 use super::strings::{format, label};
 

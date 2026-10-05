@@ -2,11 +2,11 @@
 //! The "Lists & trees" page: a 100,000-row `VirtualList` with a column
 //! header, selection, activation and type-ahead, beside a lazy `TreeView`
 //! whose children are made up when a node is first expanded.
-use toolkit::iced::widget::{column, row, text};
+use toolkit::iced::widget::{checkbox, column, row, text};
 use toolkit::iced::{self, Fill};
 use toolkit::theme::{self, Theme};
 use toolkit::tree::{Children, Nodes, TreeView};
-use toolkit::virtual_list::{self, Columns, Selection, VirtualList};
+use toolkit::virtual_list::{self, Columns, Resize, RowHeights, Selection, VirtualList};
 use toolkit::{Tokens, icon};
 
 use super::strings::{format, label};
@@ -61,7 +61,11 @@ pub struct Branch {
 
 /// `label` with the named icon before it when the installed icon font has
 /// the glyph (without one the icon widget would show the name).
-fn labelled<'a>(icon_name: &str, label: String, tokens: Tokens) -> iced::widget::Row<'a, Message, Theme> {
+fn labelled<'a>(
+    icon_name: &str,
+    label: String,
+    tokens: Tokens,
+) -> iced::widget::Row<'a, Message, Theme> {
     let mut row = iced::widget::Row::new()
         .spacing(tokens.metrics.spacing.sm)
         .align_y(iced::Center);
@@ -72,6 +76,10 @@ fn labelled<'a>(icon_name: &str, label: String, tokens: Tokens) -> iced::widget:
 }
 
 pub struct Lists {
+    variable: bool,
+    heights: RowHeights,
+    widths: [Option<f32>; 3],
+    preview: Option<(usize, f32)>,
     selection: Selection,
     activated: Option<usize>,
     /// Sorted column and whether ascending (only ascending/descending by
@@ -84,6 +92,8 @@ pub struct Lists {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Variable(bool),
+    Resize(Resize),
     Select(Selection),
     Activate(usize),
     Sort(usize),
@@ -99,6 +109,16 @@ impl Default for Lists {
 }
 
 impl Lists {
+    fn heights(tokens: Tokens) -> RowHeights {
+        let base = tokens.metrics.text.md + 2.0 * tokens.metrics.spacing.sm;
+        RowHeights::new((0..ROWS).map(|row| base * if row % 5 == 0 { 2.0 } else { 1.0 }))
+            .expect("valid token metrics")
+    }
+
+    pub fn retheme(&mut self, tokens: Tokens) {
+        self.heights = Self::heights(tokens);
+    }
+
     pub fn new() -> Self {
         let mut tree = Nodes::new();
         for index in 0..4 {
@@ -113,6 +133,10 @@ impl Lists {
             );
         }
         let mut lists = Self {
+            variable: false,
+            heights: Self::heights(Tokens::dark()),
+            widths: [None; 3],
+            preview: None,
             selection: Selection::single(0),
             activated: None,
             sort: (0, true),
@@ -154,6 +178,19 @@ impl Lists {
 
     pub fn update(&mut self, message: Message) {
         match message {
+            Message::Variable(variable) => self.variable = variable,
+            Message::Resize(Resize::Preview { column, width }) => {
+                self.preview = Some((column, width));
+            }
+            Message::Resize(Resize::Commit { column }) => {
+                if let Some((previewed, width)) = self.preview.take()
+                    && previewed == column
+                    && let Some(slot) = self.widths.get_mut(column)
+                {
+                    *slot = Some(width);
+                }
+            }
+            Message::Resize(Resize::Cancel { .. }) => self.preview = None,
             Message::Select(selection) => self.selection = selection,
             Message::Activate(row) => self.activated = Some(row),
             Message::Sort(column) => {
@@ -177,41 +214,58 @@ impl Lists {
     pub fn view(&self, tokens: Tokens) -> Element<'_> {
         let spacing = tokens.metrics.spacing;
         let heading = tokens.metrics.text.xxl;
-        let columns = Columns::new()
+        let mut columns = Columns::new()
             .column(label("column-name"), Fill)
-            .column(label("column-size"), 110.0)
-            .column(label("column-kind"), 120.0);
-        let header = columns.header(Some(self.sort), Message::Sort);
+            .column(label("column-size"), tokens.metrics.text.md * 7.0)
+            .column(label("column-kind"), tokens.metrics.text.md * 8.0)
+            .spacing(spacing.sm)
+            .padding(spacing.sm);
+        for (column, width) in self.widths.iter().enumerate() {
+            if let Some(width) = width {
+                columns.set_width(column, *width);
+            }
+        }
+        if let Some((column, width)) = self.preview {
+            columns.set_width(column, width);
+        }
+        let header = columns.resizable_header(
+            Some(self.sort),
+            Message::Sort,
+            Message::Resize,
+            tokens.metrics.text.md * 4.0,
+            spacing.xs,
+        );
         let ascending = self.sort.1;
         let row_of = move |index: usize| {
-            if ascending {
-                index
-            } else {
-                ROWS - 1 - index
-            }
+            if ascending { index } else { ROWS - 1 - index }
         };
-        let list: VirtualList<'_, Message, Theme, iced::Renderer> = VirtualList::new(ROWS, move |index| {
-            let item = Item::at(row_of(index));
-            columns.row([
-                labelled(item.icon(), item.name(), tokens).into(),
-                text(item.size()).into(),
-                text(label(item.kind_label())).into(),
-            ])
-        })
-        .header(header)
-        .selection(&self.selection)
-        .on_select(Message::Select)
-        .on_activate(Message::Activate)
-        .type_ahead(move |prefix, from| {
-            let prefix = prefix.to_lowercase();
-            (from..ROWS).find(|index| {
-                Item::at(row_of(*index))
-                    .name()
-                    .to_lowercase()
-                    .starts_with(&prefix)
+        let mut list: VirtualList<'_, Message, Theme, iced::Renderer> =
+            VirtualList::new(ROWS, move |index| {
+                let item = Item::at(row_of(index));
+                columns.row([
+                    labelled(item.icon(), item.name(), tokens).into(),
+                    text(item.size()).into(),
+                    text(label(item.kind_label())).into(),
+                ])
             })
-        })
-        .height(LIST_HEIGHT);
+            .header(header)
+            .row_height(tokens.metrics.text.md + 2.0 * spacing.sm)
+            .selection(&self.selection)
+            .on_select(Message::Select)
+            .on_activate(Message::Activate)
+            .type_ahead(move |prefix, from| {
+                let prefix = prefix.to_lowercase();
+                (from..ROWS).find(|index| {
+                    Item::at(row_of(*index))
+                        .name()
+                        .to_lowercase()
+                        .starts_with(&prefix)
+                })
+            })
+            .height(LIST_HEIGHT);
+        if self.variable {
+            list = list.row_heights(&self.heights);
+        }
         let list_status = text(format(
             "list-selected",
             &[
@@ -231,25 +285,26 @@ impl Lists {
         ))
         .style(theme::text::muted);
 
-        let tree: TreeView<'_, String, Branch, Message, Theme, iced::Renderer> = TreeView::new(&self.tree, move |node| {
-            labelled(
-                if node.has_children() {
-                    "folder"
-                } else {
-                    "description"
-                },
-                node.data.name.clone(),
-                tokens,
-            )
-        })
-        .on_toggle(Message::TreeToggle)
-        .on_select(Message::TreeSelect)
-        .selection(&self.tree_selection)
-        .list(|list| {
-            list.mode(virtual_list::Mode::Single)
-                .on_activate(Message::TreeActivate)
-                .height(LIST_HEIGHT)
-        });
+        let tree: TreeView<'_, String, Branch, Message, Theme, iced::Renderer> =
+            TreeView::new(&self.tree, move |node| {
+                labelled(
+                    if node.has_children() {
+                        "folder"
+                    } else {
+                        "description"
+                    },
+                    node.data.name.clone(),
+                    tokens,
+                )
+            })
+            .on_toggle(Message::TreeToggle)
+            .on_select(Message::TreeSelect)
+            .selection(&self.tree_selection)
+            .list(|list| {
+                list.mode(virtual_list::Mode::Single)
+                    .on_activate(Message::TreeActivate)
+                    .height(LIST_HEIGHT)
+            });
         let tree_status = text(format(
             "tree-selected",
             &[
@@ -262,7 +317,9 @@ impl Lists {
                 ),
                 (
                     "activated",
-                    self.tree_activated.clone().unwrap_or_else(|| "-".to_owned()),
+                    self.tree_activated
+                        .clone()
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
             ],
         ))
@@ -270,6 +327,9 @@ impl Lists {
 
         column![
             text(label("lists")).size(heading),
+            checkbox(self.variable)
+                .label(label("list-variable"))
+                .on_toggle(Message::Variable),
             row![
                 column![
                     text(format("list-rows", &[("count", ROWS.to_string())])),

@@ -155,6 +155,7 @@ outcome-button = pressed button { $index }
 outcome-toast-action = toast action: { $id }
 queued = Queued: { $count }
 lists = Lists & trees
+list-variable = Variable row heights
 list-rows = Virtual list of { $count } rows: click, arrows, Page Up/Down, Home/End, Shift and Ctrl, Enter; type "item 5"
 list-selected = Selected { $count } · cursor { $cursor } · activated { $activated }
 column-name = Name

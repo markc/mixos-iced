@@ -189,7 +189,7 @@ impl App {
         match message {
             Message::Measure(id) => toolkit::runtime::task::widget(toolkit::dnd::find_zones(
                 |_| true,
-                Some(vec![toolkit::core::widget::Id::new(format!(
+                Some(vec![toolkit::core::widget::Id::from(format!(
                     "native-target-{id}"
                 ))]),
                 None,
@@ -365,7 +365,7 @@ impl App {
                 text(label("target-label")),
                 text(format!("{}: {}", label("received-label"), pane.received))
             ])
-            .id(toolkit::core::widget::Id::new(format!(
+            .id(toolkit::core::widget::Id::from(format!(
                 "native-target-{id}"
             )))
             .height(strip_height)

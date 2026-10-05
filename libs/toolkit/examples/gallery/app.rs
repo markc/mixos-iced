@@ -390,6 +390,7 @@ impl Gallery {
                 self.mode = mode;
                 self.theme.set_tokens(mode.tokens());
                 self.flows.retheme(mode.tokens());
+                self.lists.retheme(mode.tokens());
             }
             Message::Page(page) => self.page = page,
             Message::Services(message) => self.services.update(message),
@@ -664,7 +665,8 @@ impl Gallery {
             }
             choice.on_press(Message::Mode(mode)).into()
         }))
-        .spacing(tokens.metrics.spacing.md);
+        .spacing(tokens.metrics.spacing.md)
+        .wrap();
         let pages = row(Page::ALL.into_iter().map(|page| {
             let mut choice = button(text(label(&format!("page-{}", page.name()))));
             if page != self.page() {
@@ -672,7 +674,9 @@ impl Gallery {
             }
             choice.on_press(Message::Page(page)).into()
         }))
-        .spacing(tokens.metrics.spacing.md);
+        .spacing(tokens.metrics.spacing.md)
+        .width(Fill)
+        .wrap();
         let mut page = column![
             row![
                 modes,
@@ -680,7 +684,8 @@ impl Gallery {
                 text(self.theme.to_string()).style(theme::text::muted)
             ]
             .spacing(tokens.metrics.spacing.lg)
-            .align_y(iced::Center),
+            .align_y(iced::Center)
+            .wrap(),
         ]
         .spacing(tokens.metrics.spacing.lg)
         .padding(tokens.metrics.spacing.xl);

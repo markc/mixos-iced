@@ -155,7 +155,9 @@ impl State {
         let options: Vec<String> = OPTIONS.iter().map(|option| (*option).to_owned()).collect();
         let mut list = SelectionList::new(options, Message::Picked).height(120);
         let picked_text = match (&self.picked, &self.picked_value) {
-            (Some(_), Some(value)) => super::strings::format("picked-option", &[("option", value.clone())]),
+            (Some(_), Some(value)) => {
+                super::strings::format("picked-option", &[("option", value.clone())])
+            }
             _ => String::new(),
         };
         if let Some(picked) = self.picked {
@@ -204,7 +206,10 @@ impl State {
         // The colour picker: a saturation/value field, a hue strip, and
         // a swatch of the picked colour. Before the first pick a default
         // shows, so the demo starts painted.
-        let shown = self.color.unwrap_or_else(|| Hsv::from_rgb8([0x3E, 0xA6, 0xA0]));
+        let shown = self.color.unwrap_or_else(|| {
+            let [r, g, b, _] = tokens.palette.primary.into_rgba8();
+            Hsv::from_rgb8([r, g, b])
+        });
         let field = color_picker::color_picker(shown, Message::ColorPicked)
             .spectrum(color_picker::saturation_value())
             .width(PICKER_SIDE)
