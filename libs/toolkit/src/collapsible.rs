@@ -23,7 +23,7 @@ const DEFAULT_TEXT_SIZE: f32 = 14.0;
 /// ) -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
 ///     Theme: iced_widget::button::Catalog + iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::text::Renderer + 'a,
+///     Renderer: iced_core::text::Renderer + 'static,
 /// {
 ///     Collapsible::new("Section", expanded, Message::Toggled)
 ///         .body(iced_widget::text("The section body."))
