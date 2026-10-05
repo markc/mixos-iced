@@ -125,7 +125,12 @@ mod tests {
             let _other = images.raster(&other).unwrap();
             let second = images.raster(&fixture()).unwrap();
             assert_eq!(first.id(), second.id(), "keep_live={keep_live}");
-            assert_eq!(images.cache.lock().unwrap().len(), if keep_live { CAP + 2 } else { 3 });
+            // Live entries (the fixture, shared with `first`, plus the held
+            // clones) survive the sweep; unused ones do not.
+            assert_eq!(
+                images.cache.lock().unwrap().len(),
+                if keep_live { CAP + 1 } else { 2 }
+            );
             drop(live);
         }
     }
