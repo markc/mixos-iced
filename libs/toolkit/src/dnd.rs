@@ -418,7 +418,7 @@ where
                     iced_core::text::Text {
                         content: active.label.clone(),
                         bounds: Size::new(bounds.width - 2.0 * m.spacing.sm, bounds.height),
-                        size: m.text.sm,
+                        size: iced_core::Pixels(m.text.sm),
                         font: renderer.default_font(),
                         align_x: iced_core::text::Alignment::Left,
                         align_y: iced_core::alignment::Vertical::Center,
@@ -477,7 +477,7 @@ where
                         iced_core::text::Text {
                             content: (*label).to_owned(),
                             bounds: Size::new(row.width - 2.0 * m.spacing.sm, row.height),
-                            size: m.text.sm,
+                            size: iced_core::Pixels(m.text.sm),
                             font: renderer.default_font(),
                             align_x: iced_core::text::Alignment::Left,
                             align_y: iced_core::alignment::Vertical::Top,
@@ -993,11 +993,11 @@ pub fn find_zones<F>(
     filter: F,
     options: Option<Vec<Id>>,
     depth: Option<usize>,
-) -> impl Operation<Vec<(Id, Rectangle)>>
+) -> FindZones<F>
 where
     F: Fn(&Rectangle) -> bool + Send + 'static,
 {
-    struct FindZones<F> {
+    FindZones {
         filter: F,
         options: Option<Vec<Id>>,
         zones: Vec<(Id, Rectangle)>,
@@ -1144,10 +1144,10 @@ mod tests {
         .into();
 
         let mut op = find_zones(|_| true, None, None);
+        let renderer = iced_widget::Renderer::new(iced_core::Font::DEFAULT, iced_core::Pixels(16.0));
+        let limits = Limits::new(Size::ZERO, Size::new(400.0, 300.0));
         for element in [&mut first, &mut second] {
-            let mut tree = WTree::new(&*element);
-            let renderer = iced_widget::Renderer::default();
-            let limits = Limits::new(Size::ZERO, Size::new(400.0, 300.0));
+            let mut tree = WTree::new(element.as_widget());
             let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
             element
                 .as_widget_mut()
@@ -1158,8 +1158,8 @@ mod tests {
             Outcome::Some(zones) => zones,
             _ => panic!("zones must finish"),
         };
-        let names: Vec<&str> = zones.iter().map(|(id, _)| id.as_ref()).collect();
-        assert!(names.contains(&"zone-a") && names.contains(&"zone-c"), "{names:?}");
+        let names: Vec<String> = zones.iter().map(|(id, _)| format!("{id:?}")).collect();
+        assert!(names.iter().any(|n| n.contains("zone-a")) && names.iter().any(|n| n.contains("zone-c")), "{names:?}");
         let a_bounds = zones
             .iter()
             .find(|(id, _)| id == &a)
@@ -1198,20 +1198,20 @@ mod tests {
             shared: Shared<u8>,
             tokens: Tokens,
         ) -> Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> {
-            let source: Element<'a, u8, _, _> =
+            let source: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> =
                 DragArea::new(iced_widget::text("drag me"), 1u8)
                     .label(|p| format!("item {p}"))
                     .start_directly(shared.clone())
                     .into();
-            let target: Element<'a, u8, _, _> = DropArea::new(
+            let target: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> = DropArea::new(
                 container(iced_widget::text("drop here")).padding(8),
                 shared.clone(),
             )
             .tokens(tokens)
             .into();
             let _ = (source, target);
-            let layer: Element<'a, u8, _, _> =
-                Layer::new(column![iced_widget::text("hi")], shared, tokens, |f| {
+            let layer: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> =
+                Layer::new(iced_widget::Column::with_children(vec![iced_widget::text("hi").into()]), shared, tokens, |f| {
                     u8::from(f.choice == Choice::Move)
                 })
                 .into();
