@@ -9,6 +9,11 @@ Incorporated code
   https://github.com/y5-snowies/nourish, Copyright (c) 2026 Yarden Apelker,
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its
   copyright line is carried in LICENSE-MIT.
+- toolkit (libs/toolkit) incorporates code from iced_drop,
+  https://github.com/jhannyj/iced_drop, Copyright (c) 2024 Jonathan
+  Hanney Jimenez, licensed MIT (crate tarball; the repo Cargo.toml
+  lacks the field): `dnd::find_zones` in `src/dnd.rs` from
+  `src/widget/operation/drop.rs` at commit `3036537`.
 - toolkit (libs/toolkit) incorporates code from iced-color-picker,
   https://github.com/B0ney/iced-color-picker, Copyright (c) 2025 B0ney,
   licensed MIT: `src/color_picker.rs` (Hsv conversions, Spectrum
@@ -64,7 +69,9 @@ Incorporated code
   `src/elide.rs` and `src/tips.rs` from dopus
   (`apps/dopus/src/view/{elide,tips}.rs`, `7aeeb68`), `src/timers.rs` from
   ced (`apps/ced/src/chrome/timer.rs`, `248c928`), `src/ime.rs` from term
-  (`apps/term/src/ime.rs`, `cae5196`), and `src/measure.rs` /
+  (`apps/term/src/ime.rs`, `cae5196`), `src/requester.rs` from ced
+  (`apps/ced/src/chrome/dialogs/file.rs`) and `src/dnd.rs` in part from
+  dopus (`apps/dopus/src/view/drag.rs`), and `src/measure.rs` /
   `src/images.rs` from this repository's scene-host
   (`services/compd/crates/scene-host/src/{layout,images}.rs`).
 

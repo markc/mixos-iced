@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- The file requester and widget-level drag and drop (T5; sources in
+  `NOTICE`): `requester::{Filesystem, StdFs, Requester}` — an Open/Save
+  picker as application state over a filesystem trait (std by default,
+  a fake in tests; no GTK/rfd/portals), with `~` and relative-path
+  resolution, Tab completion, directories-first capped listings, a
+  hidden toggle, recents, and a token-styled view with localisable
+  strings. `dnd::{DragArea, DropArea, Layer, State, find_zones}` — a
+  generic-payload drag gesture shared between source, targets and the
+  window-wrapping layer that draws the preview and Move/Copy/Cancel
+  choice card (dopus's drag layer) plus iced_drop's drop-zone
+  operation.
 - Colour picker from B0ney's iced-color-picker (MIT; source in `NOTICE`):
   `color_picker::{Hsv, Component, Spectrum, ColorPicker}` — HSV/RGBA
   conversions round-trip tested, saturation×value matrix and hue strips
