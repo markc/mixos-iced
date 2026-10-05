@@ -95,8 +95,11 @@ pub trait Catalog {
 pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 
 /// The interaction state of a [`Split`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum Status {
+    /// Nothing.
+    #[default]
+    Idle,
     /// The handle is being dragged.
     Dragging,
     /// The handle was pressed but has not moved.
@@ -105,8 +108,6 @@ enum Status {
     DoubleClicked,
     /// The pointer is over the handle.
     Hovering,
-    /// Nothing.
-    Idle,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -114,12 +115,6 @@ struct SplitState {
     status: Status,
     last_click: Option<(iced_core::time::Instant, Point)>,
     start_layout: f32,
-}
-
-impl Default for Status {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// A two-pane split with a draggable handle.
@@ -648,7 +643,7 @@ mod tests {
         element.as_widget_mut().diff(&mut tree);
         let limits = Limits::new(Size::ZERO, Size::new(400.0, 300.0));
         let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
-        let state = tree.state.downcast_ref::<SplitState>().clone();
+        let state = *tree.state.downcast_ref::<SplitState>();
         (node, state)
     }
 

@@ -71,7 +71,11 @@ impl Catalog for crate::theme::Theme {
 
     fn row(&self, _style: &Self::Style, index: usize) -> Band {
         let p = self.tokens().palette;
-        let background = if index % 2 == 0 { p.card } else { p.muted_surface };
+        let background = if index.is_multiple_of(2) {
+            p.card
+        } else {
+            p.muted_surface
+        };
         Band {
             background: Some(background.into()),
             text: Some(p.card_text),
@@ -108,7 +112,7 @@ impl Catalog for iced_core::Theme {
 
     fn row(&self, _style: &Self::Style, index: usize) -> Band {
         let palette = self.palette();
-        let pair = if index % 2 == 0 {
+        let pair = if index.is_multiple_of(2) {
             palette.background.base
         } else {
             palette.background.weak
@@ -406,7 +410,7 @@ where
             (on_sync)(scrollable::AbsoluteOffset { y: 0.0, ..offset })
         })
         .direction(scrollable::Direction::Both {
-            horizontal: scrollbar.clone(),
+            horizontal: scrollbar,
             vertical: scrollbar,
         })
         .height(Length::Fill);
@@ -449,6 +453,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn header_container<'a, Column, Row, Message, Theme, Renderer>(
     index: usize,
     column: &'a Column,
@@ -510,6 +515,7 @@ where
         .into()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn footer_container<'a, Column, Row, Message, Theme, Renderer>(
     index: usize,
     column: &'a Column,
@@ -548,6 +554,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn with_divider<'a, Column, Row, Message, Theme, Renderer>(
     index: usize,
     column: &'a Column,
