@@ -326,18 +326,21 @@ fn toasts_open_from_keys_and_escape_dismisses_the_newest() {
 }
 
 #[test]
-fn dialogs_and_toasts_render_under_dark_and_light() {
+fn dialogs_and_toasts_render_under_every_token_set() {
     let dir = output_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let cases = [
-        (Mode::Dark, Action::Confirm, "confirm"),
-        (Mode::Light, Action::Prompt, "prompt"),
-        (Mode::Dark, Action::Choice, "choice"),
-        (Mode::Light, Action::Progress, "progress"),
-        (Mode::Dark, Action::Message, "message"),
-        (Mode::Light, Action::Busy, "busy"),
+        (Action::Confirm, "confirm"),
+        (Action::Prompt, "prompt"),
+        (Action::Choice, "choice"),
+        (Action::Progress, "progress"),
+        (Action::Message, "message"),
+        (Action::Busy, "busy"),
     ];
-    for (mode, action, name) in cases {
+    for (mode, (action, name)) in Mode::ALL
+        .into_iter()
+        .flat_map(|mode| cases.into_iter().map(move |case| (mode, case)))
+    {
         let mut gallery = services(mode);
         open(&mut gallery, action);
         assert!(gallery.services().dialog().is_some());
@@ -370,7 +373,7 @@ fn dialogs_and_toasts_render_under_dark_and_light() {
             "{name} {mode:?}: no dialog control colour found"
         );
     }
-    for mode in [Mode::Dark, Mode::Light] {
+    for mode in Mode::ALL {
         let mut gallery = services(mode);
         for action in [
             Action::ToastInfo,

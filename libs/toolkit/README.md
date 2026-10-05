@@ -373,7 +373,7 @@ cargo test -p toolkit --features gallery-tiny-skia --test snapshots
 ```
 
 renders the gallery page offscreen (and `--test services` the dialogs and
-toasts page, dark and light, plus keyboard-only runs of every dialog) (iced's headless simulator, software
+toasts under Dark, Light and Custom tokens, plus keyboard-only runs of every dialog) (iced's headless simulator, software
 renderer, embedded Fira Sans) under each token set and writes
 `target/tmp/toolkit-snapshots/gallery-{dark,light,custom}.png` plus a
 before/after pair for the live swap and the "Lists & trees" page as

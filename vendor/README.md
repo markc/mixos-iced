@@ -19,6 +19,13 @@ tests that fail if a re-vendor drops an edit.
 | input (input-rs) | `input/` | crates.io 0.10.0 (SHA-256 `f9793345…`, upstream `691c8502…` = master HEAD 2026-10-03), proved by archive diff | `[patch.crates-io]` | **yes**: +15 lines, tablet-pad DIAL routed in `event.rs` and parsed in `event/tablet_pad.rs` (both `libinput_1_26`, enabled by vendor/smithay). See `input/PATCHES.md` | guard `event::tablet_pad::compd_dial_patch_guard` (2 source tests); drop when upstream routes DIAL |
 | calloop | `calloop/` | crates.io 0.14.4 (SHA-256 `4dbf9978…`, upstream `7e4d3ac5…`), proved by archive diff | `[patch.crates-io]` | **yes**: delta exactly `src/sources/channel.rs` +57/−2 (+ one CHANGELOG whitespace line). See `calloop/PATCHES.md` | see below |
 | font (Inter variable) | `font/` | Inter 4.001 (`git-66647c0bb`), byte-identical to the Google Fonts download v20 (SHA-256 `0be2399e…`, `fonts.gstatic.com/s/inter/v20/UcCo3FwrK3iLTfvlaQc78lA2.ttf`); not an rsms release file | `include_bytes!` in `ui::font::default`: the no-set fallback (the asset set's `sans` role wins when one is installed) and scene-host's hermetic test renderer | none (unmodified) | SIL OFL 1.1, text in `font/OFL.txt` (rsms/inter `LICENSE.txt`) |
+| winit | `winit/` | iced-rs fork 0.30.8, `05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed` | git-source patch | native Wayland data-device source/offer lifecycle and held-press ownership | Apache-2.0; `PATCHES.md`, validation tests and native desktop acceptance |
+| smithay-client-toolkit | `sctk/` | 0.19.2, `c583de8dd5651f8168c6513cd282137c42aae049` | `[patch.crates-io]` | transfer dropped-offer ownership to the native adapter | MIT; overlapping native-transfer acceptance |
+
+The iced fork also exposes the neutral drag event/request bridge used by the
+native gallery; `iced/PATCHES.md` records it. The toolkit library does not
+require that bridge or the former text-input accessor patch: its separate
+pristine-upstream gate checks that boundary.
 
 ## calloop 0.14.4: composed-channel idle wakeups
 
