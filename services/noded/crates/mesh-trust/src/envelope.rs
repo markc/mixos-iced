@@ -137,8 +137,8 @@ pub enum EnvelopeError {
     Json(#[from] serde_json::Error),
 
     #[error(
-        "unsupported envelope_version: {0:?} (this crate accepts only {})",
-        ENVELOPE_VERSION_V1
+        "unsupported envelope_version: {0:?} (this crate accepts only {version})",
+        version = ENVELOPE_VERSION_V1
     )]
     UnsupportedVersion(String),
 

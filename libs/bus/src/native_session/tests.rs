@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
-use crate::bus::{self, BusMessage};
+use crate::bus::BusMessage;
 
 fn principal() -> BrokerPrincipal {
     BrokerPrincipal {

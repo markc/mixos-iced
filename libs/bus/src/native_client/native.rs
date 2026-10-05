@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
-use crate::wire::{self, BusMessage};
-use anyhow::{Context, Result};
+use crate::wire::BusMessage;
+use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::WebSocketStream;
@@ -35,13 +35,14 @@ type WsSink = std::pin::Pin<
 >;
 type PendingMap = HashMap<String, oneshot::Sender<BusMessage>>;
 
-pub(crate) enum NativeIncomingReceiver {
+/// Incoming delivery lane. A bounded lane reports overflow explicitly.
+pub enum NativeIncomingReceiver {
     Unbounded(mpsc::UnboundedReceiver<IncomingCommand>),
     Bounded(BoundedIncomingReceiver),
 }
 
 impl NativeIncomingReceiver {
-    pub(crate) async fn recv(&mut self) -> Option<BoundedIncomingEvent> {
+    pub async fn recv(&mut self) -> Option<BoundedIncomingEvent> {
         match self {
             Self::Unbounded(receiver) => receiver.recv().await.map(BoundedIncomingEvent::Command),
             Self::Bounded(receiver) => receiver.recv().await,
@@ -1001,7 +1002,7 @@ impl NodedClient {
         }
     }
 
-    pub(crate) async fn take_native_incoming(&self) -> Option<NativeIncomingReceiver> {
+    pub async fn take_native_incoming(&self) -> Option<NativeIncomingReceiver> {
         self.incoming_rx.lock().await.take()
     }
 
