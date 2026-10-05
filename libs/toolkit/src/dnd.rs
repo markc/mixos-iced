@@ -1021,52 +1021,51 @@ pub struct FindZones<F> {
 }
 
 impl<F> Operation<Vec<(Id, Rectangle)>> for FindZones<F>
-    where
-        F: Fn(&Rectangle) -> bool + Send + 'static,
-    {
-        fn traverse(
-            &mut self,
-            operate: &mut dyn FnMut(&mut dyn Operation<Vec<(Id, Rectangle)>>),
-        ) {
-            if self.goto_next {
-                operate(self);
-            }
+where
+    F: Fn(&Rectangle) -> bool + Send + 'static,
+{
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn Operation<Vec<(Id, Rectangle)>>),
+    ) {
+        if self.goto_next {
+            operate(self);
         }
+    }
 
-        fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
-            if let Some(id) = id {
-                let is_option = match &self.options {
-                    Some(options) => options.contains(id),
-                    None => true,
-                };
-                let bounds = bounds - self.offset;
-                if is_option && (self.filter)(&bounds) {
-                    self.c_depth += 1;
-                    self.zones.push((id.clone(), bounds));
-                }
-            }
-            self.goto_next = match &self.max_depth {
-                Some(m_depth) => self.c_depth < *m_depth,
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if let Some(id) = id {
+            let is_option = match &self.options {
+                Some(options) => options.contains(id),
                 None => true,
             };
-        }
-
-        fn scrollable(
-            &mut self,
-            _id: Option<&Id>,
-            bounds: Rectangle,
-            _content_bounds: Rectangle,
-            translation: Vector,
-            _state: &mut dyn Scrollable,
-        ) {
-            if (self.filter)(&bounds) {
-                self.offset += translation;
+            let bounds = bounds - self.offset;
+            if is_option && (self.filter)(&bounds) {
+                self.c_depth += 1;
+                self.zones.push((id.clone(), bounds));
             }
         }
+        self.goto_next = match &self.max_depth {
+            Some(m_depth) => self.c_depth < *m_depth,
+            None => true,
+        };
+    }
 
-        fn finish(&self) -> Outcome<Vec<(Id, Rectangle)>> {
-            Outcome::Some(self.zones.clone())
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        bounds: Rectangle,
+        _content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        if (self.filter)(&bounds) {
+            self.offset += translation;
         }
+    }
+
+    fn finish(&self) -> Outcome<Vec<(Id, Rectangle)>> {
+        Outcome::Some(self.zones.clone())
     }
 }
 
