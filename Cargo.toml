@@ -119,6 +119,7 @@ x11-wm = { path = "services/compd/crates/x11-wm" }
 # local fixes. See vendor/README.md.
 calloop = { path = "vendor/calloop" }
 input = { path = "vendor/input" }
+smithay-client-toolkit = { path = "vendor/sctk" }
 
 [patch."https://github.com/iced-rs/winit.git"]
 # Native DnD on the iced fork's existing Wayland data-device queue.

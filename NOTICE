@@ -137,3 +137,7 @@ winit (iced fork), vendor/winit
   examples/data/{cross,cross2,gradient,icon}.png: upstream Apache-2.0 fixtures.
   docs/res/keyboard_{standard_1,numpad_1,left_shift,right_shift}_key.svg:
   original replacement diagrams, 2026 Mark Constable, MIT OR Apache-2.0.
+# Smithay client toolkit — vendor/sctk
+smithay-client-toolkit 0.19.2, VCS c583de8dd5651f8168c6513cd282137c42aae049.
+Copyright the Smithay client toolkit contributors. MIT (vendor/sctk/LICENSE.txt).
+Local dropped-offer ownership change recorded in vendor/sctk/PATCHES.md.

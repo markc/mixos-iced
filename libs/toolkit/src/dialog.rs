@@ -843,6 +843,8 @@ pub struct Modal<'a, Message, Theme, Renderer> {
 
 #[derive(Debug, Default)]
 struct Applied {
+    ime_reset: bool,
+    layer_composing: bool,
     once: bool,
     target: Option<widget::Id>,
     open: bool,
@@ -966,7 +968,19 @@ impl<'a, Message, Theme, Renderer> Modal<'a, Message, Theme, Renderer> {
                 renderer,
                 &mut unfocus,
             );
+            let mut pending = crate::text_field::suspended_ime();
+            let mut adapter = operation::black_box(&mut pending);
+            self.base.as_widget_mut().operate(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                &mut adapter,
+            );
+            drop(adapter);
+            applied.ime_reset |= matches!(pending.finish(), operation::Outcome::Some(true));
         } else if !self.open && applied.open {
+            applied.ime_reset |= applied.layer_composing;
+            applied.layer_composing = false;
             if let Some(id) = applied
                 .previous
                 .take()
@@ -1078,6 +1092,28 @@ where
         let (Some(base_layout), Some(layer_layout)) = (layouts.next(), layouts.next()) else {
             return;
         };
+        let applied = tree.state.downcast_mut::<Applied>();
+        if matches!(
+            event,
+            CoreEvent::InputMethod(iced_core::input_method::Event::Closed)
+        ) {
+            applied.ime_reset = false;
+            applied.layer_composing = false;
+        } else if applied.ime_reset && matches!(event, CoreEvent::InputMethod(_)) {
+            // Disable the real native IME before the replacement can enable it.
+            // Queued events from the old owner are withheld until Closed.
+            *shell.input_method_mut() = iced_core::InputMethod::Disabled;
+            return;
+        }
+        let resetting = applied.ime_reset;
+        if let CoreEvent::InputMethod(iced_core::input_method::Event::Preedit(text, _)) = event {
+            applied.layer_composing = self.open && !text.is_empty();
+        } else if matches!(
+            event,
+            CoreEvent::InputMethod(iced_core::input_method::Event::Commit(_))
+        ) {
+            applied.layer_composing = false;
+        }
         if !self.open {
             self.base.as_widget_mut().update(
                 &mut tree.children[0],
@@ -1088,6 +1124,9 @@ where
                 shell,
                 viewport,
             );
+            if resetting {
+                *shell.input_method_mut() = iced_core::InputMethod::Disabled;
+            }
             return;
         }
         self.apply_focus(tree, layer_layout, renderer);
@@ -1130,6 +1169,9 @@ where
             shell,
             viewport,
         );
+        if resetting {
+            *shell.input_method_mut() = iced_core::InputMethod::Disabled;
+        }
         if shell.is_event_captured() {
             return;
         }
@@ -1582,6 +1624,39 @@ mod tests {
         let first = Dialog::prompt("First", "Body");
         let mut opened = view("draft", Some(&first));
         let node = build(&mut opened, &mut tree);
+        let mut bus = Bus::new();
+        let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
+        opened.as_widget_mut().update(
+            &mut tree,
+            &CoreEvent::Window(iced_core::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            )),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &LayoutRenderer::new(),
+            &mut shell,
+            &Rectangle::with_size(Size::new(800.0, 600.0)),
+        );
+        assert!(
+            matches!(shell.input_method(), iced_core::InputMethod::Disabled),
+            "the native IME must disable before the prompt can enable it"
+        );
+        assert!(
+            send(
+                &mut opened,
+                &mut tree,
+                &node,
+                CoreEvent::InputMethod(iced_core::input_method::Event::Commit("stale".into()))
+            )
+            .is_empty()
+        );
+        send(
+            &mut opened,
+            &mut tree,
+            &node,
+            CoreEvent::InputMethod(iced_core::input_method::Event::Closed),
+        );
+        assert!(!tree.state.downcast_ref::<Applied>().ime_reset);
         assert_eq!(
             send(
                 &mut opened,

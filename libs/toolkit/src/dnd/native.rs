@@ -309,17 +309,18 @@ impl<P, W: Clone + Eq + std::hash::Hash> Session<P, W> {
             }
             Event::Finished { gesture, action } => {
                 if self.outgoing.as_ref().is_some_and(|source| {
-                    source.window == window
-                        && source.gesture == gesture
-                        && source.started
-                        && source.actions.contains(action)
+                    source.window == window && source.gesture == gesture && source.started
                 }) {
                     let source = self.outgoing.take().unwrap();
-                    effects.push(Effect::Finished {
-                        window,
-                        payload: source.payload,
-                        action,
-                    });
+                    if source.actions.contains(action) {
+                        effects.push(Effect::Finished {
+                            window,
+                            payload: source.payload,
+                            action,
+                        });
+                    } else {
+                        effects.push(Effect::Cancelled { window });
+                    }
                 }
             }
             Event::Enter {
@@ -493,6 +494,27 @@ impl<P, W: Clone + Eq + std::hash::Hash> Session<P, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_outside_source_capabilities_cancels_without_removing_a_move_source() {
+        let mut session = Session::new(Text);
+        session.event(1u8, Event::Gesture(Gesture(1)), accept);
+        session.start(1, "keep".to_owned(), Actions::COPY).unwrap();
+        session.event(1, Event::Started(Gesture(1)), accept);
+        assert!(matches!(
+            session
+                .event(
+                    1,
+                    Event::Finished {
+                        gesture: Gesture(1),
+                        action: Action::Move
+                    },
+                    accept
+                )
+                .as_slice(),
+            [Effect::Cancelled { window: 1 }]
+        ));
+        assert!(!session.pending());
+    }
     fn accept(_: &u8, _: iced_core::Point) -> Option<Action> {
         Some(Action::Move)
     }

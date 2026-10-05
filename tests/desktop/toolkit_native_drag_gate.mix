@@ -46,10 +46,13 @@ fn run_case($root, $session, $binary, $run, $case)
     $source_trace = $directory .. "/source.jsonl"
     $target_trace = if $case.separate then $directory .. "/target.jsonl" else $source_trace end
     $roles = if $case.separate then ["source", "target"] else ["both"] end
+    $overlap = get_or($case, "overlap", false)
+    $ack_count = if $overlap then "2" else "1" end
+    $second_trace = $directory .. "/second.jsonl"
     try
         for each $role in $roles
             $path = if $role == "target" then $target_trace else $source_trace end
-            $p = spawn([$binary, "--role", $role, "--trace", $path, "--case", $case.kind, "--action", $case.action, "--bytes", to_string($case.bytes), "--target-scale", to_string($case.scale)], {
+            $p = spawn([$binary, "--role", $role, "--trace", $path, "--case", $case.kind, "--action", $case.action, "--bytes", to_string($case.bytes), "--target-scale", to_string($case.scale), "--ack-count", $ack_count], {
                 env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket, DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", DBUS_SESSION_BUS_ADDRESS: $session.dbus},
                 stdout: {file: $directory .. "/" .. $role .. ".log"}, stderr: "stdout", detach: true
             })
@@ -81,6 +84,14 @@ fn run_case($root, $session, $binary, $run, $case)
         else
             $m = move($session, $source, 95, 60)
             $e = trace($root, $source_trace, "started", "source")
+            if $case.kind == "rearm" then
+                $e = trace($root, $source_trace, "cancelled", "source")
+                $b = button($session, "release")
+                $m = move($session, $source, 70, 60)
+                $b = button($session, "press")
+                $m = move($session, $source, 95, 60)
+                $e = trace($root, $source_trace, "rearmed", "source")
+            end
             if $case.kind == "cancel" then
                 $e = trace($root, $source_trace, "cancelled", "source")
                 $b = button($session, "release")
@@ -102,6 +113,28 @@ fn run_case($root, $session, $binary, $run, $case)
                     $e = trace($root, $target_trace, "negotiated", "target")
                     $b = button($session, "release")
                     $delivery = trace($root, $target_trace, "delivery", "target")
+                    if $overlap then
+                        if len(filter(records($source_trace), fn($row) = $row.event == "finished")) != 0 then raise("NATIVE_EARLY", "first source finished before target application") end
+                        $p = spawn([$binary, "--role", "source", "--title", "Second native source", "--trace", $second_trace, "--bytes", to_string($case.bytes)], {
+                            env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket, DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", DBUS_SESSION_BUS_ADDRESS: $session.dbus},
+                            stdout: {file: $directory .. "/second.log"}, stderr: "stdout", detach: true
+                        })
+                        push($processes, $p)
+                        $mapped = rpc($session, "comp.window.wait", {match: {title: "Second native source"}, until: "mapped", timeout_ms: 15000})
+                        $rows = rpc($session, "comp.windows.list", {})
+                        $second = filter($rows.windows, fn($window) = $window.title == "Second native source")[0]
+                        push($windows, $second)
+                        $placed = rpc($session, "comp.window.place", {id: $second.id, generation: $second.generation, x: 0, y: 0, width: 620, height: 850})
+                        $m = move($session, $second, 70, 60)
+                        $b = button($session, "press")
+                        $m = move($session, $second, 95, 60)
+                        $e = trace($root, $second_trace, "started", "source")
+                        $m = move($session, $target, 70, 60)
+                        $e = trace($root, $target_trace, "second-negotiated", "target")
+                        $b = button($session, "release")
+                        $second_done = trace($root, $second_trace, "finished", "source")
+                        if $second_done.bytes != $delivery.bytes or $second_done.sha256 != $delivery.sha256 or $second_done.action != "Move" then raise("NATIVE_OVERLAP", "second source completion differs") end
+                    end
                     $finished = trace($root, $source_trace, "finished", "source")
                     $state = trace($root, $source_trace, "source-state", "source")
                     $expected = if $case.action == "copy" then "Copy" else "Move" end
@@ -118,9 +151,10 @@ fn run_case($root, $session, $binary, $run, $case)
         end
         $all = records($source_trace)
         if $case.separate then $all = concat($all, records($target_trace)) end
+        if $overlap then $all = concat($all, records($second_trace)) end
         $delivered = len(filter($all, fn($row) = $row.event == "delivery"))
         $finished_count = len(filter($all, fn($row) = $row.event == "finished"))
-        $expected_count = if $case.kind == "transfer" then 1 else 0 end
+        $expected_count = if $overlap then 2 elif $case.kind == "transfer" or $case.kind == "rearm" then 1 else 0 end
         if $delivered != $expected_count or $finished_count != $expected_count then raise("NATIVE_ONCE", "delivery/completion count mismatch: " .. to_string([$delivered, $finished_count])) end
         if len(filter($all, fn($row) = $row.event == "queue-error" or $row.event == "backend-failed" or $row.event == "start-error")) != 0 then raise("NATIVE_ERRORS", "unexpected backend errors in trace") end
         print("PASS native DnD " .. $case.name .. ": " .. $directory)
@@ -139,8 +173,10 @@ $cases = [
     {name: "large-pipe", kind: "transfer", action: "move", bytes: 2097152, scale: 1, separate: false},
     {name: "scaled", kind: "transfer", action: "copy", bytes: 512, scale: 1.5, separate: false},
     {name: "separate-processes", kind: "transfer", action: "move", bytes: 1024, scale: 1, separate: true},
+    {name: "overlap", kind: "transfer", action: "move", bytes: 2097152, scale: 1, separate: true, overlap: true},
     {name: "reject", kind: "reject", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "cancel", kind: "cancel", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "cancel-rearm", kind: "rearm", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "source-close", kind: "source-close", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "target-close", kind: "target-close", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "stale", kind: "stale", action: "move", bytes: 128, scale: 1, separate: false},

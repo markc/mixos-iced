@@ -22,7 +22,7 @@ use sctk::reexports::client::{
     },
 };
 use std::os::fd::OwnedFd;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub enum Request {
@@ -173,6 +173,11 @@ impl WinitState {
             };
             self.drag_event(source.window, event);
             // Drop is the unique owner of wl_data_source.destroy.
+        }
+    }
+    fn retire_source_pipe(&mut self, source: &ObjectId, token: Option<RegistrationToken>) {
+        if let Some(source) = self.drag.sources.get_mut(source) {
+            source.pipes.retain(|registered| Some(*registered) != token);
         }
     }
     pub fn drag_remove_seat(&mut self, seat: &WlSeat) {
@@ -509,7 +514,7 @@ impl DataDeviceHandler for WinitState {
             let target = self.drag.targets.get_mut(&offer).unwrap();
             target.dropped = true;
             if let Some(current) =
-                device.data::<DataDeviceData>().and_then(DataDeviceData::drag_offer)
+                device.data::<DataDeviceData>().and_then(DataDeviceData::take_dropped_offer)
             {
                 target.action = action(current.selected_action);
             }
@@ -565,7 +570,7 @@ impl DataSourceHandler for WinitState {
             return;
         };
         // A hostile receiver may request the same MIME repeatedly. Bound the
-        // registrations retained for this source's lifetime.
+        // concurrent registrations for this source.
         if owned.pipes.len() >= 16 {
             self.discard_source(source.id(), false);
             return;
@@ -578,6 +583,8 @@ impl DataSourceHandler for WinitState {
             return;
         }
         let mut offset = 0;
+        let registered = Arc::new(Mutex::new(None));
+        let completed = registered.clone();
         let token = self.loop_handle.insert_source(
             Generic::new(fd, Interest::WRITE, Mode::Level),
             move |_, fd, state| {
@@ -587,6 +594,7 @@ impl DataSourceHandler for WinitState {
                 while offset < bytes.len() {
                     match rustix::io::write(&*fd, &bytes[offset..]) {
                         Ok(0) => {
+                            state.retire_source_pipe(&id, *completed.lock().unwrap());
                             state.discard_source(id.clone(), false);
                             return Ok(PostAction::Remove);
                         },
@@ -594,16 +602,21 @@ impl DataSourceHandler for WinitState {
                         Err(rustix::io::Errno::INTR) => continue,
                         Err(rustix::io::Errno::AGAIN) => return Ok(PostAction::Continue),
                         Err(_) => {
+                            state.retire_source_pipe(&id, *completed.lock().unwrap());
                             state.discard_source(id.clone(), false);
                             return Ok(PostAction::Remove);
                         },
                     }
                 }
+                state.retire_source_pipe(&id, *completed.lock().unwrap());
                 Ok(PostAction::Remove)
             },
         );
         match token {
-            Ok(token) => self.drag.sources.get_mut(&source.id()).unwrap().pipes.push(token),
+            Ok(token) => {
+                *registered.lock().unwrap() = Some(token);
+                self.drag.sources.get_mut(&source.id()).unwrap().pipes.push(token);
+            },
             Err(_) => self.discard_source(source.id(), false),
         }
     }

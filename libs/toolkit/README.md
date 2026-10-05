@@ -232,7 +232,7 @@ let label = bindings.label(&Action::Save);              // Some("Ctrl+S") for a 
 
 // The window content, wrapped in order: toasts, then the modal, then the router.
 let content = toast::overlay(content, &app.toaster, tokens, Message::Toast);
-let content = dialog::Modal::host(content, app.dialog.as_ref(), tokens, Message::Dialog);
+let content = dialog::modal_host(content, app.dialog.as_ref(), tokens, Message::Dialog);
 keys::router(content, &bindings, Message::Route)
     .modal(app.dialog.is_some())          // a dialog owns the keyboard
     .text_field(app.find_bar_focused)     // it keeps Ctrl+C/V/Z and friends

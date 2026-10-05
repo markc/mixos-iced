@@ -28,6 +28,11 @@ struct Pane {
     received: usize,
 }
 struct App {
+    starts: usize,
+    enters: usize,
+    acknowledgement_count: usize,
+    deliveries: Vec<(window::Id, drag::Offer)>,
+    source_title: String,
     zones: BTreeMap<window::Id, iced::Rectangle>,
     panes: BTreeMap<window::Id, Pane>,
     drag: drag::Session<String, window::Id>,
@@ -107,6 +112,11 @@ impl App {
             tasks.push(open.map(Message::Measure));
         }
         let app = Self {
+            starts: 0,
+            enters: 0,
+            acknowledgement_count: option("--ack-count", "1").parse().unwrap(),
+            deliveries: Vec::new(),
+            source_title: option("--title", ""),
             zones: BTreeMap::new(),
             panes,
             drag: drag::Session::new(drag::Text),
@@ -158,8 +168,13 @@ impl App {
                     if let Some(pane) = self.panes.get_mut(&window) {
                         pane.received += 1;
                     }
-                    if let Some(finish) = self.drag.applied(window, offer, true) {
-                        tasks.push(self.effects(vec![finish]));
+                    self.deliveries.push((window, offer));
+                    if self.deliveries.len() >= self.acknowledgement_count {
+                        for (window, offer) in std::mem::take(&mut self.deliveries) {
+                            if let Some(finish) = self.drag.applied(window, offer, true) {
+                                tasks.push(self.effects(vec![finish]));
+                            }
+                        }
                     }
                 }
                 drag::Effect::Finished {
@@ -236,18 +251,32 @@ impl App {
                     window::drag::Event::Cancelled(_) => "backend-cancelled",
                 };
                 self.record(serde_json::json!({"event":kind, "role":self.role(id)}));
+                if matches!(event, window::drag::Event::Enter { .. }) {
+                    self.enters += 1;
+                }
                 if let window::drag::Event::Action {
                     action: Some(selected),
                     ..
                 } = &event
                 {
                     self.record(serde_json::json!({"event":"negotiated", "role":self.role(id), "action":format!("{selected:?}")}));
+                    if self.enters > 1 {
+                        self.record(
+                            serde_json::json!({"event":"second-negotiated", "role":self.role(id)}),
+                        );
+                    }
                 }
                 if let window::drag::Event::Gesture(gesture) = &event {
                     self.last_press = Some(*gesture);
                 }
                 let target = self.panes.get(&id).is_some_and(|p| p.role == Role::Target);
                 let started = matches!(event, window::drag::Event::Started(_));
+                if started {
+                    self.starts += 1;
+                    if self.starts > 1 {
+                        self.record(serde_json::json!({"event":"rearmed", "role":self.role(id)}));
+                    }
+                }
                 let entered = matches!(event, window::drag::Event::Enter { .. });
                 let reject = self.case == "reject";
                 let action = self.action;
@@ -259,7 +288,8 @@ impl App {
                             .then_some(action)
                     });
                 let task = self.effects(effects);
-                if started && self.case == "cancel" {
+                if started && (self.case == "cancel" || (self.case == "rearm" && self.starts == 1))
+                {
                     return Task::batch([
                         task,
                         self.drag
@@ -387,6 +417,9 @@ impl App {
         .into()
     }
     fn title(&self, id: window::Id) -> String {
+        if self.role(id) == "source" && !self.source_title.is_empty() {
+            return self.source_title.clone();
+        }
         label(if self.role(id) == "source" {
             "source-title"
         } else {

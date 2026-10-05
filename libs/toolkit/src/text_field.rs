@@ -63,6 +63,24 @@ struct History {
     window_blurred: bool,
 }
 
+pub(crate) fn suspended_ime() -> impl widget::Operation<bool> {
+    struct Probe(bool);
+    impl widget::Operation<bool> for Probe {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn widget::Operation<bool>)) {
+            operate(self);
+        }
+        fn custom(&mut self, _: Option<&widget::Id>, _: Rectangle, state: &mut dyn std::any::Any) {
+            if let Some(history) = state.downcast_ref::<History>() {
+                self.0 |= history.ime_blocked;
+            }
+        }
+        fn finish(&self) -> widget::operation::Outcome<bool> {
+            widget::operation::Outcome::Some(self.0)
+        }
+    }
+    Probe(false)
+}
+
 impl History {
     fn record(&mut self, before: Snapshot, after: Snapshot, typing: bool, now: Instant) {
         if before.value == after.value {
@@ -357,6 +375,7 @@ where
             history.composing = false;
             history.ime_blocked = true;
         }
+        operation.custom(None, layout.bounds(), tree.state.downcast_mut::<History>());
     }
 
     fn update(
@@ -496,6 +515,9 @@ where
             viewport,
         );
         let input_state = child.state.downcast_ref::<raw::State<Renderer>>();
+        if history.ime_blocked && input_state.is_focused() {
+            *inner_shell.input_method_mut() = iced_core::InputMethod::Disabled;
+        }
         let previous_value = self.value.clone();
         let history = RefCell::new(history);
         let value = RefCell::new(&mut self.value);

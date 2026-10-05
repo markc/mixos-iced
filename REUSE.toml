@@ -52,6 +52,12 @@ SPDX-FileCopyrightText = "2017 Victor Berger and Victoria Brekenfeld"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = "vendor/sctk/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The Smithay client toolkit contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = "vendor/wgpu/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2025 The gfx-rs developers"

@@ -1172,7 +1172,7 @@ mod tests {
         for (event, position) in events {
             let mut shell = Shell::new(
                 &iced_core::window::Headless,
-                std::task::Waker::noop(),
+                iced_core::shell::Waker::noop(),
                 &mut bus,
             );
             divider.update(

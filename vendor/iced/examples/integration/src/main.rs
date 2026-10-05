@@ -331,9 +331,12 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
             }
 
             // Map window event to iced event
-            if let Some(event) =
-                conversion::window_event(event, window.scale_factor() as f32, *modifiers)
-            {
+            if let Some(event) = conversion::window_event(
+                event,
+                window.scale_factor() as f32,
+                window.scale_factor() as f32,
+                *modifiers,
+            ) {
                 events.push(event);
             }
 

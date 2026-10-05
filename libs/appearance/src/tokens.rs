@@ -61,7 +61,15 @@ pub fn semantic(design: &impl Resolved) -> toolkit::tokens::Semantic {
         let Some(value) = colours.primitives.get(name) else {
             return default;
         };
+        // Status colours are foreground roles. Resolve their alpha over the
+        // same surface used for the contrast check, then render opaquely.
         let authored = colour(*value);
+        let authored = Color {
+            r: authored.r * authored.a + palette.surface.r * (1.0 - authored.a),
+            g: authored.g * authored.a + palette.surface.g * (1.0 - authored.a),
+            b: authored.b * authored.a + palette.surface.b * (1.0 - authored.a),
+            a: 1.0,
+        };
         let luminance = |colour: Color| {
             let channel = |c: f32| {
                 if c <= 0.04045 {
@@ -323,6 +331,38 @@ mod tests {
                 theme.mode() == Mode::Dark,
                 "{label}"
             );
+        }
+    }
+
+    #[test]
+    fn translucent_status_primitives_become_readable_opaque_foregrounds() {
+        struct Fixture(ResolvedDictionary, ResolvedTypography);
+        impl Resolved for Fixture {
+            fn dictionary(&self) -> &ResolvedDictionary {
+                &self.0
+            }
+            fn typography(&self) -> &ResolvedTypography {
+                &self.1
+            }
+        }
+        for theme in shipped() {
+            for alpha in [0.0, 0.25, 0.75] {
+                let mut fixture = Fixture(theme.dictionary().clone(), theme.typography().clone());
+                for name in ["status.success", "status.warning"] {
+                    fixture.0.colours.primitives.insert(
+                        name.into(),
+                        LinearRgba {
+                            alpha,
+                            ..LinearRgba::WHITE
+                        },
+                    );
+                }
+                let roles = semantic(&fixture);
+                for foreground in [roles.success, roles.warning] {
+                    assert_eq!(foreground.a, 1.0);
+                    assert!(contrast(tokens(&fixture).palette.surface, foreground) >= 4.5);
+                }
+            }
         }
     }
 

@@ -194,8 +194,17 @@ impl Assets {
             }
             (side, side, pixels)
         } else {
-            let bitmap = iced_graphics::image::load(&Handle::from_path(path)).ok()?;
-            (bitmap.width(), bitmap.height(), bitmap.into_raw().to_vec())
+            let mut reader = image::ImageReader::open(path)
+                .ok()?
+                .with_guessed_format()
+                .ok()?;
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(MAX_SIDE as u32);
+            limits.max_image_height = Some(MAX_SIDE as u32);
+            limits.max_alloc = Some(64 * 1024 * 1024);
+            reader.limits(limits);
+            let bitmap = reader.decode().ok()?.into_rgba8();
+            (bitmap.width(), bitmap.height(), bitmap.into_raw())
         };
         if !pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
             return None;
