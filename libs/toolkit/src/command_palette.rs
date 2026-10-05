@@ -255,9 +255,12 @@ where
         From<iced_widget::container::StyleFn<'a, Theme>>,
     <Theme as iced_widget::button::Catalog>::Class<'a>:
         From<iced_widget::button::StyleFn<'a, Theme>>,
-    Renderer: iced_core::text::Renderer + 'a,
+    Renderer: iced_core::text::Renderer + 'static,
 {
     let hits = filter(query, commands);
+    // Tokens is Copy: own a copy in each style closure so nothing borrows
+    // the caller references for the element lifetime.
+    let tokens = *tokens;
     let palette = iced_core::Background::Color(tokens.palette.popover);
     let scrim = iced_core::Background::Color(Color {
         a: 0.55,
