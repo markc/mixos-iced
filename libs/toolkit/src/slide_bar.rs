@@ -60,6 +60,7 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 /// where
 ///     Theme: toolkit::slide_bar::Catalog + 'a,
 ///     Renderer: iced_core::renderer::Renderer + 'a,
+///     Message: Clone + 'a,
 /// {
 ///     SlideBar::new(0.0..=1.0, 0.5, Message::Seek).into()
 /// }

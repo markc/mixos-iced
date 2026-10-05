@@ -75,7 +75,9 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 /// where
 ///     Theme: toolkit::card::Catalog + iced_widget::button::Catalog
 ///         + iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::text::Renderer + 'a,
+///     <Theme as iced_widget::button::Catalog>::Class<'a>:
+///         From<iced_widget::button::StyleFn<'a, Theme>>,
+///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'a,
 /// {
 ///     Card::new("Head", "Body")
 ///         .foot("Foot")

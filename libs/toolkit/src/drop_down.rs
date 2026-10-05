@@ -83,6 +83,7 @@ impl From<f32> for Offset {
 /// where
 ///     Theme: iced_widget::button::Catalog + iced_core::widget::text::Catalog + 'a,
 ///     Renderer: iced_core::text::Renderer + 'a,
+///     Message: Clone + 'a,
 /// {
 ///     DropDown::new(
 ///         iced_widget::button("Open").on_press(Message::Toggled),

@@ -75,6 +75,7 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, Status) -> Style + 'a>;
 ///     Theme: toolkit::selection_list::Catalog + iced_widget::container::Catalog
 ///         + iced_widget::scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
 ///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'a,
+///     Message: 'static + Clone,
 /// {
 ///     SelectionList::new(options, Message::Picked).into()
 /// }
