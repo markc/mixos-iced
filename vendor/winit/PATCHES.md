@@ -38,3 +38,7 @@ old composition to a replacement field. Older cursor/content commits within
 the same context still apply as the protocol requires. Pending batches are
 cleared at enable/disable/leave. Guards: `epoch_tests` covers stale Done after
 replacement, in-context updates and serial wrap; all commit sites are tracked.
+Queued native IME events retain an epoch ticket and revalidate it individually
+at delivery, including after sink append. A threaded disable therefore also
+retires batches already queued by Done. `epoch_delivery_tests` covers that
+ordering and a context change between two events of one queued batch.

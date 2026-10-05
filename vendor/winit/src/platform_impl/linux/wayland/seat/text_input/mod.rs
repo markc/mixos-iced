@@ -1,4 +1,10 @@
-use std::ops::Deref;
+use std::{
+    ops::Deref,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use sctk::globals::GlobalData;
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
@@ -65,8 +71,7 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
             TextInputEvent::Enter { surface } => {
                 let window_id = wayland::make_wid(&surface);
                 text_input_data.surface = Some(surface);
-                text_input_data.enabled_at = None;
-                text_input_data.retire_pending();
+                text_input_data.retire_context();
                 drop(text_input_data);
 
                 let mut window = match windows.get(&window_id) {
@@ -78,7 +83,13 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
                     text_input.enable();
                     text_input.set_content_type_by_purpose(window.ime_purpose());
                     text_input.commit_tracked(Some(true));
-                    state.events_sink.push_window_event(WindowEvent::Ime(Ime::Enabled), window_id);
+                    let data = data.inner.lock().unwrap();
+                    state.events_sink.push_ime_event(
+                        WindowEvent::Ime(Ime::Enabled),
+                        window_id,
+                        data.delivery_epoch.clone(),
+                        data.delivery_epoch.load(Ordering::Acquire),
+                    );
                 }
 
                 window.text_input_entered(text_input);
@@ -130,16 +141,23 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
                 };
 
                 // Clear preedit at the start of `Done`.
-                state.events_sink.push_window_event(
+                let epoch = text_input_data.delivery_epoch.clone();
+                let expected = epoch.load(Ordering::Acquire);
+                state.events_sink.push_ime_event(
                     WindowEvent::Ime(Ime::Preedit(String::new(), None)),
                     window_id,
+                    epoch.clone(),
+                    expected,
                 );
 
                 // Send `Commit`.
                 if let Some(text) = commit {
-                    state
-                        .events_sink
-                        .push_window_event(WindowEvent::Ime(Ime::Commit(text)), window_id);
+                    state.events_sink.push_ime_event(
+                        WindowEvent::Ime(Ime::Commit(text)),
+                        window_id,
+                        epoch.clone(),
+                        expected,
+                    );
                 }
 
                 // Send preedit.
@@ -147,9 +165,11 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
                     let cursor_range =
                         preedit.cursor_begin.map(|b| (b, preedit.cursor_end.unwrap_or(b)));
 
-                    state.events_sink.push_window_event(
+                    state.events_sink.push_ime_event(
                         WindowEvent::Ime(Ime::Preedit(preedit.text, cursor_range)),
                         window_id,
+                        epoch,
+                        expected,
                     );
                 }
             },
@@ -191,6 +211,7 @@ pub struct TextInputData {
 
 #[derive(Default)]
 pub struct TextInputDataInner {
+    delivery_epoch: Arc<AtomicU64>,
     commit_serial: u32,
     enabled_at: Option<u32>,
     /// The `WlSurface` we're performing input to.
@@ -204,6 +225,11 @@ pub struct TextInputDataInner {
 }
 
 impl TextInputDataInner {
+    fn retire_context(&mut self) {
+        self.enabled_at = None;
+        self.delivery_epoch.fetch_add(1, Ordering::AcqRel);
+        self.retire_pending();
+    }
     fn retire_pending(&mut self) {
         self.pending_commit = None;
         self.pending_preedit = None;
@@ -212,8 +238,8 @@ impl TextInputDataInner {
     fn commit_epoch(&mut self, enabled: Option<bool>) {
         self.commit_serial = self.commit_serial.wrapping_add(1);
         if let Some(enabled) = enabled {
+            self.retire_context();
             self.enabled_at = enabled.then_some(self.commit_serial);
-            self.retire_pending();
         }
     }
 
