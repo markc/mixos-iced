@@ -27,8 +27,6 @@ use iced_core::window;
 use iced_core::{
     Border, Color, Element, Event, Length, Point, Rectangle, Shell, Size, Vector, keyboard,
 };
-use iced_widget::{column, container, row, text};
-
 use crate::tokens::Tokens;
 
 /// How far the pointer must move while held before a press becomes a
