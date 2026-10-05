@@ -120,20 +120,27 @@ impl From<Color> for Hsv {
 }
 
 impl Hsv {
-    /// From an `[r, g, b, a]` byte array.
+    /// From an `[r, g, b, a]` byte array. The byte-to-float scaling is
+    /// written out (a struct literal, not a colour constructor) so the
+    /// colour gate can tell model conversion from theme literals.
     #[must_use]
     pub fn from_rgba8(rgba: impl Into<[u8; 4]>) -> Self {
         let [r, g, b, a] = rgba.into();
+        let scale = |v: u8| f32::from(v) / 255.0;
 
-        Self::from(Color::from_rgba8(r, g, b, a as f32 / 255.0))
+        Self::from(Color {
+            r: scale(r),
+            g: scale(g),
+            b: scale(b),
+            a: scale(a),
+        })
     }
 
-    /// From an `[r, g, b]` byte array.
+    /// From an `[r, g, b]` byte array (opaque).
     #[must_use]
     pub fn from_rgb8(rgb: impl Into<[u8; 3]>) -> Self {
         let [r, g, b] = rgb.into();
-
-        Self::from(Color::from_rgb8(r, g, b))
+        Self::from_rgba8([r, g, b, u8::MAX])
     }
 
     /// From an `[r, g, b, a]` float array.
@@ -769,8 +776,6 @@ where
         _cursor: Cursor,
         _viewport: &Rectangle,
     ) {
-        use iced_core::Renderer as _;
-
         let PickerState {
             spectrum_cache,
             marker_cache,
