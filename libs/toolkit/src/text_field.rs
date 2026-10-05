@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 use iced_core::widget::operation::{Focusable as _, TextInput as _};
 use iced_core::{Element, Event, Length, Padding, Pixels, Rectangle, Size, keyboard, mouse};
 use iced_core::{Layout, Shell, Widget, layout, renderer, text, widget};
-use iced_widget::text_input::{self, TextInput};
+mod input;
+mod raw;
+use iced_widget::text_input;
+use raw::TextInput;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Selection {
@@ -56,6 +59,7 @@ struct History {
     redo: Vec<Edit>,
     typing_at: Option<Instant>,
     composing: bool,
+    ime_blocked: bool,
     window_blurred: bool,
 }
 
@@ -297,6 +301,7 @@ where
             *history = History {
                 expected: self.value.clone(),
                 composing: history.composing,
+                ime_blocked: history.ime_blocked,
                 window_blurred: history.window_blurred,
                 ..History::default()
             };
@@ -328,7 +333,7 @@ where
         if tree.state.downcast_ref::<History>().composing
             && !tree.children[0]
                 .state
-                .downcast_ref::<text_input::State<Renderer>>()
+                .downcast_ref::<raw::State<Renderer>>()
                 .is_focused()
         {
             // A modal can suspend this subtree before the IME sends Closed.
@@ -348,7 +353,9 @@ where
                 &mut shell,
                 &layout.bounds(),
             );
-            tree.state.downcast_mut::<History>().composing = false;
+            let history = tree.state.downcast_mut::<History>();
+            history.composing = false;
+            history.ime_blocked = true;
         }
     }
 
@@ -363,8 +370,18 @@ where
         viewport: &Rectangle,
     ) {
         let history = tree.state.downcast_mut::<History>();
+        if matches!(
+            event,
+            Event::InputMethod(iced_core::input_method::Event::Closed)
+        ) {
+            history.ime_blocked = false;
+        } else if history.ime_blocked && matches!(event, Event::InputMethod(_)) {
+            // Local suspension clears presentation immediately, but only the
+            // runtime acknowledgement permits a new composition epoch.
+            return;
+        }
         let child = &mut tree.children[0];
-        let state = child.state.downcast_mut::<text_input::State<Renderer>>();
+        let state = child.state.downcast_mut::<raw::State<Renderer>>();
         let selection = Selection::from(state.cursor());
         // iced 0.15 now has native undo bindings. Keep this wrapper's history
         // authoritative, including while the window is blurred or IME is active.
@@ -478,7 +495,7 @@ where
             &mut inner_shell,
             viewport,
         );
-        let input_state = child.state.downcast_ref::<text_input::State<Renderer>>();
+        let input_state = child.state.downcast_ref::<raw::State<Renderer>>();
         let previous_value = self.value.clone();
         let history = RefCell::new(history);
         let value = RefCell::new(&mut self.value);
@@ -663,7 +680,7 @@ mod widget_tests {
         );
         tree.children[0]
             .state
-            .downcast_mut::<text_input::State<LayoutRenderer>>()
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .focus();
         (field, tree)
     }
@@ -790,7 +807,7 @@ mod widget_tests {
         );
         tree.children[0]
             .state
-            .downcast_mut::<text_input::State<LayoutRenderer>>()
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .select_range(position(3), position(0));
         assert_eq!(
             send(
@@ -842,7 +859,7 @@ mod widget_tests {
         assert_eq!(field.value, "path");
         tree.children[0]
             .state
-            .downcast_mut::<text_input::State<LayoutRenderer>>()
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .unfocus();
         assert!(send(&mut field, &mut tree, enter).0.is_empty());
     }
@@ -984,7 +1001,7 @@ mod widget_tests {
         let (mut field, mut tree) = field("abcd");
         tree.children[0]
             .state
-            .downcast_mut::<text_input::State<LayoutRenderer>>()
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .select_range(position(3), position(1));
         assert!(
             send(
@@ -1030,7 +1047,7 @@ mod widget_tests {
             Selection::from(
                 tree.children[0]
                     .state
-                    .downcast_ref::<text_input::State<LayoutRenderer>>()
+                    .downcast_ref::<raw::State<LayoutRenderer>>()
                     .cursor()
             ),
             Selection::Selection { start: 3, end: 1 }
@@ -1122,7 +1139,7 @@ mod widget_tests {
         );
         tree.children[0]
             .state
-            .downcast_mut::<text_input::State<LayoutRenderer>>()
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .unfocus();
         send(
             &mut field,
@@ -1132,7 +1149,7 @@ mod widget_tests {
         assert!(!tree.state.downcast_ref::<History>().composing);
         tree.children[0]
             .state
-            .downcast_mut::<text_input::State<LayoutRenderer>>()
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .focus();
         assert_eq!(
             send(&mut field, &mut tree, key("z", keyboard::Modifiers::CTRL)).0,

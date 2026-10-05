@@ -1091,6 +1091,21 @@ where
             return;
         }
         self.apply_focus(tree, layer_layout, renderer);
+        if matches!(
+            event,
+            CoreEvent::InputMethod(iced_core::input_method::Event::Closed)
+        ) {
+            // The acknowledgement terminates suspended base composition too.
+            self.base.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                base_layout,
+                mouse::Cursor::Unavailable,
+                renderer,
+                shell,
+                viewport,
+            );
+        }
         let key_press = match event {
             CoreEvent::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 Some((key, *modifiers))

@@ -5,6 +5,14 @@ Licensed MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 Incorporated code
 -----------------
 
+- toolkit owns a small input adapter derived from iced at
+  `3de451447bd28217bb535632867550908e29d5d0`, MIT,
+  Copyright 2019 Héctor Ramón and Iced contributors:
+  `libs/toolkit/src/text_field/{input,raw}.rs` from
+  `core/src/text/input.rs` and `widget/src/text_input.rs`.
+  The MIT notice is retained in each file; the renderer's public editor
+  engine remains upstream code. No private input-state accessor is required.
+
 - compd (services/compd) incorporates code from y5 / Nourish,
   https://github.com/y5-snowies/nourish, Copyright (c) 2026 Yarden Apelker,
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its

@@ -99,6 +99,7 @@ fn requester_completion_navigation_and_save_outcomes_use_actual_keys() {
     assert_eq!(requester.dir(), temp.path().join("documents"));
     requester.update(requester::Event::Parent);
     let mut ui = simulation(requester.view::<requester::ViewMessage>(Tokens::light(), &strings));
+    ui.click(widget::Id::new(requester::PATH_INPUT)).unwrap();
     ui.tap_key(keyboard::key::Named::ArrowDown);
     ui.tap_key(keyboard::key::Named::ArrowDown);
     for message in ui.into_messages() {
