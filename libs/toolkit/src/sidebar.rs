@@ -21,7 +21,8 @@ use iced_widget::Row;
 use std::marker::PhantomData;
 
 use crate::flush_column::FlushColumn;
-use crate::tab_bar::TabLabel;
+
+pub use crate::tab_bar::TabLabel;
 
 /// The style of a [`Sidebar`], shared with the tab bar.
 pub use crate::tab_bar::Style;
@@ -87,7 +88,6 @@ impl From<Status> for crate::tab_bar::Status {
 ///
 /// ```no_run
 /// # use toolkit::sidebar::{Sidebar, TabLabel};
-/// # use toolkit::tab_bar::TabLabel as BarLabel;
 /// #[derive(Clone, PartialEq, Eq)]
 /// enum TabId { One, Two }
 /// #[derive(Clone)]
@@ -96,7 +96,7 @@ impl From<Status> for crate::tab_bar::Status {
 /// fn view<'a, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
 ///     Theme: toolkit::sidebar::Catalog + iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'a,
+///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'static,
 /// {
 ///     Sidebar::new(Message::Selected)
 ///         .push(TabId::One, TabLabel::Text("One".into()))

@@ -36,6 +36,7 @@ where
     /// The `on_change` event of the [`TypedInput`].
     on_change: Option<Box<dyn 'a + Fn(T) -> Message>>,
     /// The `on_submit` event of the [`TypedInput`].
+    #[allow(clippy::type_complexity)]
     on_submit: Option<Box<dyn 'a + Fn(Result<T, String>) -> Message>>,
 }
 

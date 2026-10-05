@@ -111,7 +111,7 @@ pub enum Position {
 /// fn view<'a, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
 ///     Theme: toolkit::tab_bar::Catalog + iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'a,
+///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'static,
 /// {
 ///     TabBar::new(Message::Selected)
 ///         .push(TabId::One, TabLabel::Text("One".into()))
@@ -998,7 +998,7 @@ mod tests {
 
     #[test]
     fn tabs_lay_out_as_one_row_of_labels() {
-        let mut bar = bar();
+        let bar = bar();
         let renderer = LayoutRenderer::new();
         let mut element: Element<'_, u8, iced_core::Theme, LayoutRenderer> = bar.into();
         let mut tree = Tree::new(&element);

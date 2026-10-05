@@ -1158,7 +1158,6 @@ pub mod tab_bar {
 pub mod sidebar {
     use super::*;
     use crate::sidebar::{Status, Style};
-    use crate::tab_bar;
 
     pub fn default(theme: &Theme, status: Status) -> Style {
         let style = super::tab_bar::default(theme, status.into());

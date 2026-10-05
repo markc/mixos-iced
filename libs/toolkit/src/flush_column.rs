@@ -449,7 +449,7 @@ mod tests {
             Row::new().push(Text::new("a considerably longer row")).into(),
             Row::new().push(Space::new()).into(),
         ];
-        let mut column = FlushColumn::from_vec(rows);
+        let column = FlushColumn::from_vec(rows);
         let renderer = LayoutRenderer::new();
         let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = column.into();
         let mut tree = Tree::new(&element);

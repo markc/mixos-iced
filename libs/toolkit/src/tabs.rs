@@ -37,7 +37,7 @@ pub enum TabBarPosition {
 /// fn view<'a, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
 ///     Theme: toolkit::tab_bar::Catalog + iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'a,
+///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'static,
 /// {
 ///     Tabs::new(Message::Selected)
 ///         .push(TabId::One, TabLabel::Text("One".into()), iced_widget::text("One"))
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn only_the_active_tab_content_is_laid_out() {
-        let mut tabs = tabs();
+        let tabs = tabs();
         let renderer = LayoutRenderer::new();
         let mut element: Element<'_, u8, iced_core::Theme, LayoutRenderer> = tabs.into();
         let mut tree = Tree::new(&element);
