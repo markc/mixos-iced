@@ -61,14 +61,12 @@ pub fn tool<Message>(label: impl Into<String>, on_press: Message) -> Tool<Messag
 
 impl<Message: Clone> Tool<Message> {
     /// Sets the tool's icon (rendered from the installed icon font).
-    #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// Enables or disables the tool (a disabled tool shows no press).
-    #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -76,7 +74,6 @@ impl<Message: Clone> Tool<Message> {
 
     /// Marks the tool toggled: it keeps the selection background (a
     /// panel button while its panel is open).
-    #[must_use]
     pub fn toggled(mut self, toggled: bool) -> Self {
         self.toggled = toggled;
         self
@@ -110,21 +107,18 @@ impl<Message: Clone> Toolbar<Message> {
     }
 
     /// Adds a centred tool.
-    #[must_use]
     pub fn push(mut self, tool: Tool<Message>) -> Self {
         self.tools.push(tool);
         self
     }
 
     /// Adds a leading (left-pinned) tool.
-    #[must_use]
     pub fn leading(mut self, tool: Tool<Message>) -> Self {
         self.leading.push(tool);
         self
     }
 
     /// Adds a trailing (right-pinned) tool.
-    #[must_use]
     pub fn trailing(mut self, tool: Tool<Message>) -> Self {
         self.trailing.push(tool);
         self
@@ -236,7 +230,6 @@ pub fn place<Message>(
 
 impl<Message: Clone> Place<Message> {
     /// Sets the entry's icon.
-    #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
@@ -353,7 +346,6 @@ pub fn field(text: impl Into<String>) -> Field {
 
 impl Field {
     /// Sets the kind.
-    #[must_use]
     pub fn kind(mut self, kind: FieldKind) -> Self {
         self.kind = kind;
         self
@@ -376,14 +368,12 @@ impl StatusBar {
     }
 
     /// Adds left-hand (leading) fields.
-    #[must_use]
     pub fn left(mut self, fields: Vec<Field>) -> Self {
         self.left.extend(fields);
         self
     }
 
     /// Adds right-hand (trailing) fields.
-    #[must_use]
     pub fn right(mut self, fields: Vec<Field>) -> Self {
         self.right.extend(fields);
         self
@@ -477,14 +467,12 @@ impl<'a, Message: Clone> Shell<'a, Message> {
 
     /// Sets the menu bar (toolkit's [`menu`](crate::menu)); `None`
     /// draws none.
-    #[must_use]
     pub fn menu(mut self, menu: Option<Vec<Item<Message>>>) -> Self {
         self.menu = menu;
         self
     }
 
     /// Sets the toolbar.
-    #[must_use]
     pub fn toolbar(mut self, toolbar: Toolbar<Message>) -> Self {
         self.toolbar = Some(toolbar);
         self
@@ -492,7 +480,6 @@ impl<'a, Message: Clone> Shell<'a, Message> {
 
     /// Adds a sidebar `width` px wide on `side`, split from the content
     /// with the grip.
-    #[must_use]
     pub fn sidebar(
         mut self,
         side: Side,
@@ -508,7 +495,6 @@ impl<'a, Message: Clone> Shell<'a, Message> {
 
     /// Makes the sidebar grips draggable: the message fires with the new
     /// split position and side (pixels from that side's outer edge).
-    #[must_use]
     pub fn on_split(mut self, on_split: impl Fn(Side, f32) -> Message + 'a) -> Self {
         self.on_split = Some(std::rc::Rc::new(on_split));
         self
@@ -517,21 +503,18 @@ impl<'a, Message: Clone> Shell<'a, Message> {
     /// Sets the layout metrics and tooltip tokens. Rebuild the view with
     /// the application's current tokens when its theme changes. Colours
     /// for bars, tools and places resolve from the live drawing theme.
-    #[must_use]
     pub fn tokens(mut self, tokens: Tokens) -> Self {
         self.tokens = tokens;
         self
     }
 
     /// Sets the status bar.
-    #[must_use]
     pub fn status(mut self, status: StatusBar) -> Self {
         self.status = Some(status);
         self
     }
 
     /// Sets the shell's size strategy.
-    #[must_use]
     pub fn size(mut self, width: impl Into<Length>, height: impl Into<Length>) -> Self {
         self.width = width.into();
         self.height = height.into();
