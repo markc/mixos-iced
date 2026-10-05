@@ -108,3 +108,8 @@ Wayland data device. Logical offer coordinates account for both output
 scale and the application's own zoom. No raw-handle downcasts or second
 connection are used. The toolkit library uses its own neutral session
 types; tools/native-gallery is the concrete bridge and acceptance host.
+
+The integration example passes native output scale as f64 to conversion.
+Its two surface configurations use `SurfaceColorSpace::Auto` and presentation
+uses `Queue::present`, matching the wgpu-30 renderer port. Guard: check the
+integration manifest with the pinned native forks and `iced_winit/wayland`.

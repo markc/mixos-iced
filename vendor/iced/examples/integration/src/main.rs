@@ -129,6 +129,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                         present_mode: wgpu::PresentMode::AutoVsync,
                         alpha_mode: wgpu::CompositeAlphaMode::Auto,
                         view_formats: vec![],
+                        color_space: wgpu::SurfaceColorSpace::Auto,
                         desired_maximum_frame_latency: 2,
                     },
                 );
@@ -227,6 +228,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                                 present_mode: wgpu::PresentMode::AutoVsync,
                                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
                                 view_formats: vec![],
+                                color_space: wgpu::SurfaceColorSpace::Auto,
                                 desired_maximum_frame_latency: 2,
                             },
                         );
@@ -304,7 +306,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                             renderer.present(None, frame.texture.format(), &view, viewport);
 
                             // Present the frame
-                            frame.present();
+                            queue.present(frame);
                         }
                         _ => {
                             // Try rendering again next frame.
