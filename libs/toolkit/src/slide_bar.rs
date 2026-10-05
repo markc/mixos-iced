@@ -56,7 +56,11 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 /// #[derive(Clone)]
 /// enum Message { Seek(f32) }
 ///
-/// fn view() -> iced_core::Element<'static, Message, toolkit::theme::Theme> {
+/// fn view<'a, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
+/// where
+///     Theme: toolkit::slide_bar::Catalog + 'a,
+///     Renderer: iced_core::renderer::Renderer + 'a,
+/// {
 ///     SlideBar::new(0.0..=1.0, 0.5, Message::Seek).into()
 /// }
 /// ```

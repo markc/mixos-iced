@@ -71,7 +71,12 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 /// #[derive(Clone)]
 /// enum Message { Closing }
 ///
-/// fn view() -> iced_core::Element<'static, Message, toolkit::theme::Theme> {
+/// fn view<'a, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
+/// where
+///     Theme: toolkit::card::Catalog + iced_widget::button::Catalog
+///         + iced_core::widget::text::Catalog + 'a,
+///     Renderer: iced_core::text::Renderer + 'a,
+/// {
 ///     Card::new("Head", "Body")
 ///         .foot("Foot")
 ///         .on_close(Message::Closing)
