@@ -167,7 +167,8 @@ pub fn list(dir: &Path, hidden: bool) -> std::io::Result<(Vec<Entry>, bool)> {
         })
         .collect();
     entries.sort_by(|a, b| {
-        b.dir.cmp(&a.dir)
+        b.dir
+            .cmp(&a.dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     let truncated = entries.len() > MAX_ENTRIES;
@@ -212,7 +213,10 @@ pub fn complete(fs: &dyn Filesystem, dir: &Path, input: &str, hidden: bool) -> O
         resolve(dir, head, fs.home().as_deref())
     };
     let (entries, _) = fs.list(&base, hidden || stem.starts_with('.')).ok()?;
-    let matches: Vec<&Entry> = entries.iter().filter(|e| e.name.starts_with(stem)).collect();
+    let matches: Vec<&Entry> = entries
+        .iter()
+        .filter(|e| e.name.starts_with(stem))
+        .collect();
     let first = matches.first()?;
     let mut prefix = first.name.clone();
     for m in &matches[1..] {
@@ -503,26 +507,28 @@ impl Requester {
             );
         }
 
-        let listing = container(
-            scrollable(list).height(Length::Fixed(260.0)),
-        )
-        .padding(4)
-        .style(move |_| container::Style {
-            background: Some(t.surface.into()),
-            border: iced_core::Border {
-                color: t.border,
-                width: m.border.width,
-                radius: m.radius.sm.into(),
-            },
-            ..container::Style::default()
-        });
+        let listing = container(scrollable(list).height(Length::Fixed(260.0)))
+            .padding(4)
+            .style(move |_| container::Style {
+                background: Some(t.surface.into()),
+                border: iced_core::Border {
+                    color: t.border,
+                    width: m.border.width,
+                    radius: m.radius.sm.into(),
+                },
+                ..container::Style::default()
+            });
 
         let mut body = column![location, listing, field].spacing(gap);
 
         if !self.recent.is_empty() && matches!(self.mode, Mode::Open) {
-            let mut recent = row![text(strings.recent.clone()).size(m.text.sm).color(t.muted_text)]
-                .spacing(gap)
-                .align_y(iced_core::alignment::Vertical::Center);
+            let mut recent = row![
+                text(strings.recent.clone())
+                    .size(m.text.sm)
+                    .color(t.muted_text)
+            ]
+            .spacing(gap)
+            .align_y(iced_core::alignment::Vertical::Center);
             for path in self.recent.iter().take(6) {
                 let name = Path::new(path)
                     .file_name()
@@ -535,15 +541,33 @@ impl Requester {
                         .style(theme::button::text),
                 );
             }
-            body = body.push(scrollable(recent).direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(3).scroller_width(3),
-            )));
+            body = body.push(
+                scrollable(recent).direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(3).scroller_width(3),
+                )),
+            );
         }
         if let Some(error) = &self.error {
             body = body.push(text(error.as_str()).size(m.text.sm).color(t.destructive));
         }
 
-        body.into()
+        crate::keys::keys(body, |_| None)
+            .on_key_before(|event| {
+                use iced_core::keyboard::{Event as KeyEvent, Key, key::Named};
+                let KeyEvent::KeyPressed { key, modifiers, .. } = event else {
+                    return None;
+                };
+                if !modifiers.is_empty() {
+                    return None;
+                }
+                match key {
+                    Key::Named(Named::Tab) => Some(Message::from(Event::Complete)),
+                    Key::Named(Named::ArrowUp) => Some(Message::from(Event::Up)),
+                    Key::Named(Named::ArrowDown) => Some(Message::from(Event::Down)),
+                    _ => None,
+                }
+            })
+            .into()
     }
 }
 
@@ -611,7 +635,11 @@ mod tests {
         assert_eq!(names, ["scenes", "src", "Readme.md", "scene.mix"]);
         assert!(!truncated);
         assert!(
-            list(d.path(), true).unwrap().0.iter().any(|e| e.name == ".hidden")
+            list(d.path(), true)
+                .unwrap()
+                .0
+                .iter()
+                .any(|e| e.name == ".hidden")
         );
     }
 
@@ -647,7 +675,10 @@ mod tests {
     #[test]
     fn resolve_tilde_and_relative() {
         let home = Path::new("/home/user");
-        assert_eq!(resolve(Path::new("/tmp"), "~", Some(home),), PathBuf::from("/home/user"));
+        assert_eq!(
+            resolve(Path::new("/tmp"), "~", Some(home),),
+            PathBuf::from("/home/user")
+        );
         assert_eq!(
             resolve(Path::new("/tmp"), "~/docs/a.md", Some(home)),
             PathBuf::from("/home/user/docs/a.md")
@@ -666,12 +697,7 @@ mod tests {
     fn submitting_navigates_directories_and_opens_files() {
         let d = tempfile::tempdir().unwrap();
         tree(d.path());
-        let mut dlg = Requester::new(
-            Mode::Open,
-            d.path().to_path_buf(),
-            Vec::new(),
-            std_fs(),
-        );
+        let mut dlg = Requester::new(Mode::Open, d.path().to_path_buf(), Vec::new(), std_fs());
         assert_eq!(dlg.update(Event::Input("src".into())), None);
         assert_eq!(dlg.update(Event::Submit), None);
         assert_eq!(dlg.dir(), d.path().join("src"));
@@ -693,22 +719,22 @@ mod tests {
     fn save_reports_existing_targets() {
         let d = tempfile::tempdir().unwrap();
         tree(d.path());
-        let mut dlg = Requester::new(
-            Mode::Save,
-            d.path().to_path_buf(),
-            Vec::new(),
-            std_fs(),
-        )
-        .with_name("scene.mix");
+        let mut dlg = Requester::new(Mode::Save, d.path().to_path_buf(), Vec::new(), std_fs())
+            .with_name("scene.mix");
         match dlg.update(Event::Submit) {
-            Some(Outcome::Save { exists: true, path, .. }) => {
+            Some(Outcome::Save {
+                exists: true, path, ..
+            }) => {
                 assert!(path.ends_with("scene.mix"))
             }
             other => panic!("{other:?}"),
         }
         dlg.update(Event::Input("nope/x.txt".into()));
         assert_eq!(dlg.update(Event::Submit), None);
-        assert!(dlg.error.as_ref().is_some_and(|e| !e.is_empty()), "a missing parent is refused");
+        assert!(
+            dlg.error.as_ref().is_some_and(|e| !e.is_empty()),
+            "a missing parent is refused"
+        );
     }
 
     /// A filesystem that never touches the disk: the listing is fixed.
@@ -734,8 +760,14 @@ mod tests {
                 .push(format!("{}:{hidden}", dir.display()));
             Ok((
                 vec![
-                    Entry { name: "docs".into(), dir: true },
-                    Entry { name: "notes.txt".into(), dir: false },
+                    Entry {
+                        name: "docs".into(),
+                        dir: true,
+                    },
+                    Entry {
+                        name: "notes.txt".into(),
+                        dir: false,
+                    },
                 ],
                 false,
             ))

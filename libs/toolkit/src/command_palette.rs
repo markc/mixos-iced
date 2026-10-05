@@ -12,7 +12,9 @@
 
 use iced_core::{Color, Element, Length};
 use iced_widget::Column;
-use iced_widget::{column, container, row, text, text_input};
+use iced_widget::{
+    button, column, container, mouse_area, opaque, row, scrollable, text, text_input,
+};
 
 /// The widget id of the palette's query field, so the app can focus it
 /// on open.
@@ -178,10 +180,7 @@ pub struct Hit<'a, Message: 'a> {
 
 /// Filters and ranks the commands against the query (best first; the
 /// original order when the query is empty).
-pub fn filter<'a, Message>(
-    query: &str,
-    commands: &'a [Command<Message>],
-) -> Vec<Hit<'a, Message>>
+pub fn filter<'a, Message>(query: &str, commands: &'a [Command<Message>]) -> Vec<Hit<'a, Message>>
 where
     Message: 'a,
 {
@@ -216,9 +215,8 @@ pub fn move_selection(current: Option<usize>, delta: i32, len: usize) -> Option<
     if len == 0 {
         return None;
     }
-    let current = current.unwrap_or(0) as i32;
-    let next = (current + delta).rem_euclid(len as i32);
-    Some(next as usize)
+    let current = current.unwrap_or(0).min(len - 1) as i128;
+    Some((current + i128::from(delta)).rem_euclid(len as i128) as usize)
 }
 
 /// The message a [`command_palette`] view produces.
@@ -257,6 +255,34 @@ where
         From<iced_widget::button::StyleFn<'a, Theme>>,
     Renderer: iced_core::text::Renderer + 'static,
 {
+    command_palette_with_placeholder(query, selection, commands, tokens, "Type a command…")
+}
+
+/// Builds the palette with the caller's localised query placeholder.
+/// Navigation is caller-owned: route arrows to [`move_selection`] and
+/// rebuild with the resulting selection. Enter and pointer activation
+/// publish the same [`Event::Activated`] message.
+pub fn command_palette_with_placeholder<'a, Message, Theme, Renderer>(
+    query: &'a str,
+    selection: Option<usize>,
+    commands: &'a [Command<Message>],
+    tokens: &crate::tokens::Tokens,
+    placeholder: &'a str,
+) -> Element<'a, Event<Message>, Theme, Renderer>
+where
+    Message: Clone + 'a,
+    Theme: iced_widget::container::Catalog
+        + iced_widget::text_input::Catalog
+        + iced_core::widget::text::Catalog
+        + iced_widget::scrollable::Catalog
+        + iced_widget::button::Catalog
+        + 'a,
+    <Theme as iced_widget::container::Catalog>::Class<'a>:
+        From<iced_widget::container::StyleFn<'a, Theme>>,
+    <Theme as iced_widget::button::Catalog>::Class<'a>:
+        From<iced_widget::button::StyleFn<'a, Theme>>,
+    Renderer: iced_core::text::Renderer + 'static,
+{
     let hits = filter(query, commands);
     // Tokens is Copy: own a copy in each style closure so nothing borrows
     // the caller references for the element lifetime.
@@ -267,14 +293,19 @@ where
         ..tokens.palette.surface
     });
 
-    let field = text_input("Type a command…", query)
+    let mut field = text_input(placeholder, query)
         .id(iced_core::widget::Id::new(INPUT_ID))
         .on_input(Event::QueryChanged)
         .size(tokens.metrics.text.md)
         .padding(tokens.metrics.spacing.md);
+    if let Some(message) = activate_selection(query, commands, selection) {
+        field = field.on_submit(Event::Activated(message.clone()));
+    }
 
-    let results: Vec<Element<'_, Event<Message>, Theme, Renderer>> =
-        hits.iter().take(MAX_RESULTS).enumerate().map(|(row, hit)| {
+    let results: Vec<Element<'_, Event<Message>, Theme, Renderer>> = hits
+        .iter()
+        .enumerate()
+        .map(|(row, hit)| {
             let selected = selection == Some(row);
             let name = text(hit.command.name.as_str()).size(tokens.metrics.text.md);
             let name = name;
@@ -292,18 +323,33 @@ where
             } else {
                 container(entry)
             };
-            entry
+            button(entry)
                 .width(Length::Fill)
                 .padding(tokens.metrics.spacing.sm)
+                .on_press(Event::Activated(hit.command.message.clone()))
+                .style(move |_, status| iced_widget::button::Style {
+                    background: (selected
+                        || matches!(status, iced_widget::button::Status::Hovered))
+                    .then_some(tokens.palette.selection.into()),
+                    text_color: if selected {
+                        tokens.palette.selection_text
+                    } else {
+                        tokens.palette.popover_text
+                    },
+                    ..iced_widget::button::Style::default()
+                })
                 .into()
         })
         .collect();
 
     let results_column = Column::with_children(results).spacing(2);
-    let body = column![field, results_column]
+    let results = scrollable(results_column).height(Length::Fixed(
+        MAX_RESULTS as f32 * (tokens.metrics.text.md + tokens.metrics.spacing.sm * 2.0 + 2.0),
+    ));
+    let body = column![field, results]
         .spacing(tokens.metrics.spacing.sm)
         .padding(tokens.metrics.spacing.md)
-        .width(520);
+        .width(Length::Fill);
 
     let card = container(body)
         .style(move |_| iced_widget::container::Style {
@@ -316,16 +362,29 @@ where
             },
             ..iced_widget::container::Style::default()
         })
-        .width(520);
+        .width(Length::Fill)
+        .max_width(520);
 
-    container(
-        container(card).center_x(Length::Fill).padding(80),
+    let backdrop = mouse_area(
+        container(
+            container(opaque(card))
+                .center_x(Length::Fill)
+                .padding(tokens.metrics.spacing.xl),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| iced_widget::container::Style {
+            background: Some(scrim),
+            ..iced_widget::container::Style::default()
+        }),
     )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(move |_| iced_widget::container::Style {
-        background: Some(scrim),
-        ..iced_widget::container::Style::default()
+    .on_press(Event::Dismissed);
+    crate::keys::keys(backdrop, |event| match event {
+        iced_core::keyboard::Event::KeyPressed {
+            key: iced_core::keyboard::Key::Named(iced_core::keyboard::key::Named::Escape),
+            ..
+        } => Some(Event::Dismissed),
+        _ => None,
     })
     .into()
 }
@@ -348,7 +407,9 @@ mod tests {
 
     fn commands() -> Vec<Command<u8>> {
         vec![
-            Command::new("Save file", 1).keyword("write").description("Save the current file"),
+            Command::new("Save file", 1)
+                .keyword("write")
+                .description("Save the current file"),
             Command::new("Save all files", 2),
             Command::new("Open recent", 3).keyword("history"),
             Command::new("Close editor", 4),

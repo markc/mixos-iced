@@ -146,13 +146,16 @@ impl State {
 
     fn dialog_for(action: Action) -> Option<Dialog> {
         Some(match action {
-            Action::Message => Dialog::message(label("dlg-message-title"), label("dlg-message-body"))
-                .severity(Severity::Error),
-            Action::Confirm => Dialog::confirm(label("dlg-confirm-title"), label("dlg-confirm-body"))
-                .buttons([
+            Action::Message => {
+                Dialog::message(label("dlg-message-title"), label("dlg-message-body"))
+                    .severity(Severity::Error)
+            }
+            Action::Confirm => {
+                Dialog::confirm(label("dlg-confirm-title"), label("dlg-confirm-body")).buttons([
                     Button::destructive(label("dlg-confirm-delete")),
                     Button::cancel(label("dlg-confirm-keep")),
-                ]),
+                ])
+            }
             Action::Prompt => Dialog::prompt(label("dlg-prompt-title"), label("dlg-prompt-body"))
                 .placeholder(label("dlg-prompt-placeholder"))
                 .value(label("dlg-prompt-value")),
@@ -169,8 +172,9 @@ impl State {
                 ],
             ),
             Action::Progress => {
-                let mut dialog = Dialog::progress(label("dlg-progress-title"), label("dlg-progress-body"))
-                    .cancellable(true);
+                let mut dialog =
+                    Dialog::progress(label("dlg-progress-title"), label("dlg-progress-body"))
+                        .cancellable(true);
                 dialog.set_progress(Progress::Fraction(0.35));
                 dialog
             }
@@ -183,7 +187,9 @@ impl State {
 
     fn toast_for(action: Action) -> Option<Toast> {
         Some(match action {
-            Action::ToastInfo => Toast::new(label("toast-info-title")).body(label("toast-info-body")),
+            Action::ToastInfo => {
+                Toast::new(label("toast-info-title")).body(label("toast-info-body"))
+            }
             Action::ToastSuccess => Toast::new(label("toast-success-title"))
                 .body(label("toast-success-body"))
                 .severity(Severity::Success),
@@ -287,7 +293,8 @@ impl State {
             text(label("services")).size(m.text.xxl),
             text(label("services-hint")),
             buttons,
-            text(format("queued", &[("count", self.queue.len().to_string())])).style(theme::text::muted),
+            text(format("queued", &[("count", self.queue.len().to_string())]))
+                .style(theme::text::muted),
             container(log)
                 .padding(m.spacing.lg)
                 .width(Fill)
@@ -313,21 +320,18 @@ impl State {
         let content = toast::overlay(content, &self.toaster, tokens, move |event| {
             toasts(Message::Toast(event))
         });
-        let content = match &self.dialog {
-            Some(dialog) => {
-                let answers = lift.clone();
-                dialog::modal(content, dialog, tokens, move |event| {
-                    answers(Message::Dialog(event))
-                })
-            }
-            None => content,
-        };
+        let answers = lift.clone();
+        let content = dialog::modal_host(content, self.dialog.as_ref(), tokens, move |event| {
+            answers(Message::Dialog(event))
+        });
         let routes = lift.clone();
-        keys::router(content, &self.bindings, move |routed| routes(Message::Route(routed)))
-            .modal(self.dialog.is_some())
-            .on_unclaimed(move |key, _modifiers| {
-                matches!(key.as_ref(), Key::Named(Named::Escape)).then(|| lift(Message::DismissToast))
-            })
-            .into()
+        keys::router(content, &self.bindings, move |routed| {
+            routes(Message::Route(routed))
+        })
+        .modal(self.dialog.is_some())
+        .on_unclaimed(move |key, _modifiers| {
+            matches!(key.as_ref(), Key::Named(Named::Escape)).then(|| lift(Message::DismissToast))
+        })
+        .into()
     }
 }

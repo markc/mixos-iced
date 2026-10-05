@@ -26,7 +26,10 @@ use iced_core::{
     Border, Color, Element, Event as CoreEvent, Layout, Length, Padding, Rectangle, Shadow, Shell,
     Size, Vector, Widget, layout, mouse, overlay, renderer, text, time::Instant,
 };
-use iced_widget::{button, center, column, container, mouse_area, opaque, progress_bar, row, scrollable, space, text as text_widget};
+use iced_widget::{
+    button, center, column, container, mouse_area, opaque, progress_bar, row, scrollable, space,
+    text as text_widget,
+};
 
 use crate::keys::is_input;
 use crate::theme::{self, Theme};
@@ -53,15 +56,13 @@ impl Severity {
         Severity::Error,
     ];
 
-    /// The accent colour: the text colour for information, `primary` for
-    /// success, `destructive` for an error and a softened `destructive`
-    /// for a warning.
+    /// The semantic accent colour, resolved from the drawing theme.
     pub fn colour(self, theme: &Theme) -> Color {
         let p = theme.palette();
         match self {
             Severity::Info => p.text,
-            Severity::Success => p.primary,
-            Severity::Warning => p.destructive.mix(p.text, 0.45),
+            Severity::Success => theme.semantic().success,
+            Severity::Warning => theme.semantic().warning,
             Severity::Error => p.destructive,
         }
     }
@@ -219,10 +220,7 @@ impl Dialog {
         let buttons = match kind {
             Kind::Message(_) => vec![Button::primary(strings.close)],
             Kind::Progress => Vec::new(),
-            _ => vec![
-                Button::primary(strings.ok),
-                Button::cancel(strings.cancel),
-            ],
+            _ => vec![Button::primary(strings.ok), Button::cancel(strings.cancel)],
         };
         let mut dialog = Self {
             kind,
@@ -484,7 +482,9 @@ impl Dialog {
             Key::Named(Named::Enter) => Some(Event::Activate),
             Key::Named(Named::Space) if on_button => Some(Event::Activate),
             Key::Named(Named::Escape) => self.cancellable.then_some(Event::Cancel),
-            Key::Named(Named::ArrowUp) if self.kind == Kind::Choice && self.is_leading_focused() => {
+            Key::Named(Named::ArrowUp)
+                if self.kind == Kind::Choice && self.is_leading_focused() =>
+            {
                 Some(Event::Up)
             }
             Key::Named(Named::ArrowDown)
@@ -605,19 +605,23 @@ impl Dialog {
                 let list_focused = self.is_leading_focused();
                 let options = self.options.iter().enumerate().map(|(index, option)| {
                     let selected = index == self.selected;
-                    button(text_widget(option.as_str()).size(m.text.md).width(Length::Fill))
-                        .width(Length::Fill)
-                        .padding(Padding {
-                            top: m.spacing.sm,
-                            right: m.spacing.md,
-                            bottom: m.spacing.sm,
-                            left: m.spacing.md,
-                        })
-                        .style(move |theme: &Theme, status| {
-                            option_style(theme, status, selected, selected && list_focused)
-                        })
-                        .on_press(Event::Select(index))
-                        .into()
+                    button(
+                        text_widget(option.as_str())
+                            .size(m.text.md)
+                            .width(Length::Fill),
+                    )
+                    .width(Length::Fill)
+                    .padding(Padding {
+                        top: m.spacing.sm,
+                        right: m.spacing.md,
+                        bottom: m.spacing.sm,
+                        left: m.spacing.md,
+                    })
+                    .style(move |theme: &Theme, status| {
+                        option_style(theme, status, selected, selected && list_focused)
+                    })
+                    .on_press(Event::Select(index))
+                    .into()
                 });
                 let list = column(options).spacing(m.spacing.xs).width(Length::Fill);
                 content = content.push(
@@ -728,7 +732,12 @@ pub fn focus_ring(theme: &Theme) -> Border {
 
 /// A dialog button by role, with the focus ring when it has keyboard
 /// focus.
-pub fn button_style(theme: &Theme, status: button::Status, role: Role, focused: bool) -> button::Style {
+pub fn button_style(
+    theme: &Theme,
+    status: button::Status,
+    role: Role,
+    focused: bool,
+) -> button::Style {
     let mut style = match role {
         Role::Primary => theme::button::primary(theme, status),
         Role::Destructive => theme::button::destructive(theme, status),
@@ -796,6 +805,25 @@ where
         .into()
 }
 
+/// A persistent modal host. Call this on every view, including when no
+/// dialog is open, so the base widget tree survives opening and closing.
+/// The identified base focus is restored after the last queued dialog.
+pub fn modal_host<'a, Message, Renderer>(
+    base: impl Into<Element<'a, Message, Theme, Renderer>>,
+    dialog: Option<&'a Dialog>,
+    tokens: Tokens,
+    on_event: impl Fn(Event) -> Message + Clone + 'a,
+) -> Element<'a, Message, Theme, Renderer>
+where
+    Message: Clone + 'a,
+    Renderer: text::Renderer + 'static,
+{
+    match dialog {
+        Some(dialog) => modal(base, dialog, tokens, on_event),
+        None => Modal::host(base, None).into(),
+    }
+}
+
 type KeyFn<'a, Message> = Box<dyn Fn(&Key, Modifiers) -> Option<Message> + 'a>;
 
 /// A layer over a base: the base gets no keyboard or IME input and the
@@ -809,25 +837,57 @@ pub struct Modal<'a, Message, Theme, Renderer> {
     layer: Element<'a, Message, Theme, Renderer>,
     focus: Option<widget::Id>,
     on_key: Option<KeyFn<'a, Message>>,
+    open: bool,
+    return_focus: Option<widget::Id>,
 }
 
 #[derive(Debug, Default)]
 struct Applied {
     once: bool,
     target: Option<widget::Id>,
+    open: bool,
+    previous: Option<widget::Id>,
 }
 
 impl<'a, Message, Theme, Renderer> Modal<'a, Message, Theme, Renderer> {
     pub fn new(
         base: impl Into<Element<'a, Message, Theme, Renderer>>,
         layer: impl Into<Element<'a, Message, Theme, Renderer>>,
-    ) -> Self {
+    ) -> Self
+    where
+        Renderer: iced_core::Renderer + 'a,
+        Message: 'a,
+        Theme: 'a,
+    {
+        Self::host(base, Some(layer.into()))
+    }
+
+    /// Keeps the base tree stable when the optional layer opens or closes.
+    /// Use the same host at the same tree position on every frame.
+    pub fn host(
+        base: impl Into<Element<'a, Message, Theme, Renderer>>,
+        layer: Option<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self
+    where
+        Renderer: iced_core::Renderer + 'a,
+        Message: 'a,
+        Theme: 'a,
+    {
+        let open = layer.is_some();
         Self {
             base: base.into(),
-            layer: layer.into(),
+            layer: layer.unwrap_or_else(|| iced_widget::Space::new().into()),
             focus: None,
             on_key: None,
+            open,
+            return_focus: None,
         }
+    }
+
+    /// Fallback focus after close when the prior control has no ID.
+    pub fn return_focus(mut self, target: widget::Id) -> Self {
+        self.return_focus = Some(target);
+        self
     }
 
     /// The layer widget to focus, or `None` to unfocus them all.
@@ -876,6 +936,54 @@ impl<'a, Message, Theme, Renderer> Modal<'a, Message, Theme, Renderer> {
             }
         }
     }
+
+    fn sync_base_focus(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer)
+    where
+        Renderer: iced_core::Renderer,
+    {
+        let applied = tree.state.downcast_mut::<Applied>();
+        if self.open && !applied.open {
+            let mut find = operation::focusable::find_focused();
+            // The helper returns an ID; our widget's operate expects a unit
+            // operation, so capture it through the type-erasing adapter.
+            let mut adapter = operation::black_box(&mut find);
+            self.base.as_widget_mut().operate(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                &mut adapter,
+            );
+            drop(adapter);
+            applied.previous = match find.finish() {
+                operation::Outcome::Some(id) => Some(id),
+                _ => self.return_focus.clone(),
+            };
+            applied.once = false;
+            let mut unfocus = operation::focusable::unfocus::<()>();
+            self.base.as_widget_mut().operate(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                &mut unfocus,
+            );
+        } else if !self.open && applied.open {
+            if let Some(id) = applied
+                .previous
+                .take()
+                .or_else(|| self.return_focus.clone())
+            {
+                let mut focus = operation::focusable::focus::<()>(id);
+                self.base.as_widget_mut().operate(
+                    &mut tree.children[0],
+                    layout,
+                    renderer,
+                    &mut focus,
+                );
+            }
+            applied.once = false;
+        }
+        applied.open = self.open;
+    }
 }
 
 /// Keys the frame takes before the layer: no text input uses them.
@@ -904,7 +1012,12 @@ where
         self.base.as_widget().size()
     }
 
-    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
         let size = self.base.as_widget().size();
         let limits = limits.width(size.width).height(size.height);
         let base = self
@@ -917,7 +1030,13 @@ where
             renderer,
             &layout::Limits::new(Size::ZERO, bounds),
         );
-        layout::Node::with_children(bounds, vec![base, layer])
+        let node = layout::Node::with_children(bounds, vec![base, layer]);
+        let layout = Layout::new(&node);
+        self.sync_base_focus(tree, layout.children().next().expect("base"), renderer);
+        if self.open {
+            self.apply_focus(tree, layout.children().nth(1).expect("layer"), renderer);
+        }
+        node
     }
 
     fn operate(
@@ -929,11 +1048,15 @@ where
     ) {
         operation.container(None, layout.bounds());
         operation.traverse(&mut |operation| {
-            for ((child, state), layout) in [&mut self.base, &mut self.layer]
+            for (index, ((child, state), layout)) in [&mut self.base, &mut self.layer]
                 .into_iter()
                 .zip(&mut tree.children)
                 .zip(layout.children())
+                .enumerate()
             {
+                if (self.open && index == 0) || (!self.open && index == 1) {
+                    continue;
+                }
                 child
                     .as_widget_mut()
                     .operate(state, layout, renderer, operation);
@@ -955,6 +1078,18 @@ where
         let (Some(base_layout), Some(layer_layout)) = (layouts.next(), layouts.next()) else {
             return;
         };
+        if !self.open {
+            self.base.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                base_layout,
+                cursor,
+                renderer,
+                shell,
+                viewport,
+            );
+            return;
+        }
         self.apply_focus(tree, layer_layout, renderer);
         let key_press = match event {
             CoreEvent::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -969,9 +1104,9 @@ where
                 && let Some(message) = on_key(key, modifiers)
             {
                 shell.publish(message);
+                shell.capture_event();
+                return;
             }
-            shell.capture_event();
-            return;
         }
         self.layer.as_widget_mut().update(
             &mut tree.children[1],
@@ -1021,6 +1156,15 @@ where
         let (Some(base_layout), Some(layer_layout)) = (layouts.next(), layouts.next()) else {
             return mouse::Interaction::None;
         };
+        if !self.open {
+            return self.base.as_widget().mouse_interaction(
+                &tree.children[0],
+                base_layout,
+                cursor,
+                viewport,
+                renderer,
+            );
+        }
         let layer = self.layer.as_widget().mouse_interaction(
             &tree.children[1],
             layer_layout,
@@ -1031,13 +1175,7 @@ where
         if layer != mouse::Interaction::None {
             return layer;
         }
-        self.base.as_widget().mouse_interaction(
-            &tree.children[0],
-            base_layout,
-            cursor,
-            viewport,
-            renderer,
-        )
+        mouse::Interaction::None
     }
 
     fn draw(
@@ -1060,20 +1198,26 @@ where
             theme,
             style,
             base_layout,
-            cursor,
+            if self.open {
+                mouse::Cursor::Unavailable
+            } else {
+                cursor
+            },
             viewport,
         );
-        renderer.with_layer(*viewport, |renderer| {
-            self.layer.as_widget().draw(
-                &tree.children[1],
-                renderer,
-                theme,
-                style,
-                layer_layout,
-                cursor,
-                viewport,
-            );
-        });
+        if self.open {
+            renderer.with_layer(*viewport, |renderer| {
+                self.layer.as_widget().draw(
+                    &tree.children[1],
+                    renderer,
+                    theme,
+                    style,
+                    layer_layout,
+                    cursor,
+                    viewport,
+                );
+            });
+        }
     }
 
     fn overlay<'b>(
@@ -1084,6 +1228,16 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        if !self.open {
+            let base_layout = layout.children().next()?;
+            return self.base.as_widget_mut().overlay(
+                &mut tree.children[0],
+                base_layout,
+                renderer,
+                viewport,
+                translation,
+            );
+        }
         let layer_layout = layout.children().nth(1)?;
         self.layer.as_widget_mut().overlay(
             &mut tree.children[1],
@@ -1160,7 +1314,12 @@ where
         Size::new(Length::Fill, Length::Fixed(self.height))
     }
 
-    fn layout(&mut self, _tree: &mut Tree, _renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
         layout::Node::new(limits.resolve(Length::Fill, Length::Fixed(self.height), Size::ZERO))
     }
 
@@ -1203,7 +1362,12 @@ where
             snap: false,
         };
         renderer.fill_quad(quad(bounds), p.muted_surface);
-        let elapsed = tree.state.downcast_ref::<Started>().0.elapsed().as_secs_f32();
+        let elapsed = tree
+            .state
+            .downcast_ref::<Started>()
+            .0
+            .elapsed()
+            .as_secs_f32();
         let left = bounds.x + Self::phase(elapsed) * bounds.width;
         let right = (left + SEGMENT * bounds.width).min(bounds.x + bounds.width);
         let left = left.max(bounds.x);
@@ -1324,12 +1488,20 @@ mod tests {
         queue.offer(&mut open, 2);
         queue.offer(&mut open, 3);
         queue.offer(&mut open, 4);
-        assert_eq!((open, queue.len()), (Some(1), 3), "the open one stays; the rest wait");
+        assert_eq!(
+            (open, queue.len()),
+            (Some(1), 3),
+            "the open one stays; the rest wait"
+        );
         queue.next(&mut open, |_| true);
         assert_eq!(open, Some(1), "nothing shows over an open dialog");
         open = None;
         queue.next(&mut open, |dialog| *dialog != 2);
-        assert_eq!((open, queue.len()), (Some(3), 1), "oldest first; a stale one is skipped");
+        assert_eq!(
+            (open, queue.len()),
+            (Some(3), 1),
+            "oldest first; a stale one is skipped"
+        );
         open = None;
         queue.next(&mut open, |_| true);
         assert_eq!(open, Some(4));
@@ -1348,7 +1520,11 @@ mod tests {
         assert_eq!(dialog.slots(), 2);
         assert_eq!(dialog.focus(), 0, "the primary button has focus");
         assert_eq!(dialog.focused_button(), Some(0));
-        assert_eq!(dialog.focus_target(), None, "buttons are not iced focusables");
+        assert_eq!(
+            dialog.focus_target(),
+            None,
+            "buttons are not iced focusables"
+        );
         assert_eq!(tab(&mut dialog), None);
         assert_eq!(dialog.focused_button(), Some(1), "Tab moves to Cancel");
         assert_eq!(tab(&mut dialog), None);
@@ -1363,7 +1539,11 @@ mod tests {
             dialog.key(&Key::Named(Named::ArrowLeft), Modifiers::empty()),
             Some(Event::FocusPrevious)
         );
-        assert_eq!(enter(&mut dialog), Some(Outcome::Cancelled), "Enter on Cancel");
+        assert_eq!(
+            enter(&mut dialog),
+            Some(Outcome::Cancelled),
+            "Enter on Cancel"
+        );
         assert_eq!(dialog.update(Event::FocusPrevious), None);
         assert_eq!(dialog.focused_button(), Some(0));
         assert_eq!(enter(&mut dialog), Some(Outcome::Accepted), "Enter on OK");
@@ -1372,7 +1552,11 @@ mod tests {
             Some(Event::Activate)
         );
         assert_eq!(escape(&mut dialog), Some(Outcome::Cancelled));
-        assert_eq!(dialog.update(Event::Cancel), Some(Outcome::Cancelled), "the scrim");
+        assert_eq!(
+            dialog.update(Event::Cancel),
+            Some(Outcome::Cancelled),
+            "the scrim"
+        );
         assert_eq!(dialog.update(Event::Button(1)), Some(Outcome::Cancelled));
         assert_eq!(dialog.update(Event::Button(0)), Some(Outcome::Accepted));
         assert_eq!(dialog.update(Event::Button(7)), None, "no such button");
@@ -1391,10 +1575,8 @@ mod tests {
         assert_eq!(dialog.update(Event::Button(0)), Some(Outcome::Accepted));
         assert_eq!(dialog.update(Event::Button(1)), Some(Outcome::Button(1)));
         assert_eq!(dialog.update(Event::Button(2)), Some(Outcome::Cancelled));
-        let no_primary = Dialog::confirm("", "").buttons([
-            Button::cancel("No"),
-            Button::destructive("Yes"),
-        ]);
+        let no_primary =
+            Dialog::confirm("", "").buttons([Button::cancel("No"), Button::destructive("Yes")]);
         assert_eq!(no_primary.default_button(), Some(1), "the first non-cancel");
         assert_eq!(no_primary.focused_button(), Some(1));
         let none = Dialog::confirm("", "").buttons(Vec::new());
@@ -1425,7 +1607,11 @@ mod tests {
         );
         assert_eq!(dialog.update(Event::Input("final".into())), None);
         assert_eq!(dialog.text(), "final");
-        assert_eq!(enter(&mut dialog), Some(Outcome::Text("final".into())), "Enter in the field");
+        assert_eq!(
+            enter(&mut dialog),
+            Some(Outcome::Text("final".into())),
+            "Enter in the field"
+        );
         assert_eq!(tab(&mut dialog), None);
         assert_eq!(dialog.focus_target(), None, "Tab unfocuses the field");
         assert_eq!(dialog.focused_button(), Some(0));
@@ -1439,7 +1625,11 @@ mod tests {
         assert_eq!(dialog.error(), Some("taken"));
         assert_eq!(enter(&mut dialog), None, "an invalid prompt cannot submit");
         assert_eq!(dialog.update(Event::Button(0)), None);
-        assert_eq!(dialog.update(Event::Button(1)), Some(Outcome::Cancelled), "but can cancel");
+        assert_eq!(
+            dialog.update(Event::Button(1)),
+            Some(Outcome::Cancelled),
+            "but can cancel"
+        );
         assert_eq!(dialog.update(Event::Input("other".into())), None);
         assert_eq!(dialog.error(), None, "typing clears the error");
 
@@ -1450,7 +1640,8 @@ mod tests {
 
     #[test]
     fn choice_moves_with_arrows_and_returns_the_index() {
-        let mut dialog = Dialog::choice("Open with", "", ["Viewer", "Editor", "Terminal"]).selected(5);
+        let mut dialog =
+            Dialog::choice("Open with", "", ["Viewer", "Editor", "Terminal"]).selected(5);
         assert_eq!(dialog.selection(), 2, "clamped");
         let mut dialog2 = Dialog::choice("Open with", "", ["Viewer", "Editor", "Terminal"]);
         assert_eq!(dialog2.selection(), 0);
@@ -1465,7 +1656,11 @@ mod tests {
         assert_eq!(dialog2.selection(), 2, "stops at the end");
         assert_eq!(dialog2.update(Event::Up), None);
         assert_eq!(dialog2.selection(), 1);
-        assert_eq!(enter(&mut dialog2), Some(Outcome::Chosen(1)), "Enter in the list");
+        assert_eq!(
+            enter(&mut dialog2),
+            Some(Outcome::Chosen(1)),
+            "Enter in the list"
+        );
         assert_eq!(dialog2.update(Event::Select(0)), None);
         assert_eq!(dialog2.selection(), 0);
         assert_eq!(dialog2.update(Event::Select(9)), None);
@@ -1497,14 +1692,20 @@ mod tests {
         assert_eq!(relabelled.button_list()[0].label, "Ja");
         assert_eq!(relabelled.button_list()[1].label, "Nein");
         assert_eq!(
-            Dialog::message("", "").strings(&Strings {
-                ok: "Ja".into(),
-                cancel: "Nein".into(),
-                close: "Zu".into(),
-            }).button_list()[0].label,
+            Dialog::message("", "")
+                .strings(&Strings {
+                    ok: "Ja".into(),
+                    cancel: "Nein".into(),
+                    close: "Zu".into(),
+                })
+                .button_list()[0]
+                .label,
             "Zu"
         );
-        assert_eq!(Dialog::confirm("", "").severity(Severity::Error).kind(), Kind::Confirm);
+        assert_eq!(
+            Dialog::confirm("", "").severity(Severity::Error).kind(),
+            Kind::Confirm
+        );
 
         let mut busy = Dialog::progress("Copying", "3 of 10 files");
         assert!(!busy.is_cancellable());
@@ -1531,8 +1732,13 @@ mod tests {
     #[test]
     fn the_indeterminate_segment_sweeps_left_to_right() {
         assert_eq!(Indeterminate::phase(0.0), -SEGMENT);
-        assert!((Indeterminate::phase(SWEEP) - -SEGMENT).abs() < 1e-5, "periodic");
-        assert!((Indeterminate::phase(SWEEP / 2.0) - (-SEGMENT + (1.0 + SEGMENT) / 2.0)).abs() < 1e-5);
+        assert!(
+            (Indeterminate::phase(SWEEP) - -SEGMENT).abs() < 1e-5,
+            "periodic"
+        );
+        assert!(
+            (Indeterminate::phase(SWEEP / 2.0) - (-SEGMENT + (1.0 + SEGMENT) / 2.0)).abs() < 1e-5
+        );
         assert!(Indeterminate::phase(SWEEP * 0.999) > 0.9);
     }
 
@@ -1541,15 +1747,30 @@ mod tests {
         let theme = Theme::dark();
         let p = theme.palette();
         assert_eq!(Severity::Error.colour(&theme), p.destructive);
-        assert_eq!(Severity::Success.colour(&theme), p.primary);
+        assert_eq!(Severity::Success.colour(&theme), theme.semantic().success);
         assert_eq!(Severity::Info.colour(&theme), p.text);
         assert_ne!(Severity::Warning.colour(&theme), p.destructive);
         assert_eq!(card(&theme).background, Some(p.popover.into()));
-        assert_eq!(scrim(&theme).background, Some(Color { a: 0.55, ..p.surface }.into()));
+        assert_eq!(
+            scrim(&theme).background,
+            Some(
+                Color {
+                    a: 0.55,
+                    ..p.surface
+                }
+                .into()
+            )
+        );
         let light = Theme::light();
         assert_eq!(
             scrim(&light).background,
-            Some(Color { a: 0.55, ..light.palette().text }.into()),
+            Some(
+                Color {
+                    a: 0.55,
+                    ..light.palette().text
+                }
+                .into()
+            ),
             "the scrim darkens a light theme too"
         );
         let focused = button_style(&theme, button::Status::Active, Role::Primary, true);
@@ -1560,6 +1781,9 @@ mod tests {
         let selected = option_style(&theme, button::Status::Active, true, true);
         assert_eq!(selected.background, Some(p.selection.into()));
         assert_eq!(selected.border.color, p.ring);
-        assert_eq!(option_style(&theme, button::Status::Active, false, false).background, None);
+        assert_eq!(
+            option_style(&theme, button::Status::Active, false, false).background,
+            None
+        );
     }
 }

@@ -32,6 +32,7 @@ pub struct Theme {
     tokens: Tokens,
     name: String,
     labelled: bool,
+    semantic: Option<crate::tokens::Semantic>,
 }
 
 impl Theme {
@@ -42,6 +43,7 @@ impl Theme {
             tokens,
             name: fingerprint_name(&tokens),
             labelled: false,
+            semantic: None,
         }
     }
 
@@ -53,6 +55,7 @@ impl Theme {
             tokens,
             name: label.into(),
             labelled: true,
+            semantic: None,
         }
     }
 
@@ -83,8 +86,42 @@ impl Theme {
     pub fn set_tokens(&mut self, tokens: Tokens) {
         self.tokens = tokens;
         if !self.labelled {
-            self.name = fingerprint_name(&tokens);
+            self.name = self.identity();
         }
+    }
+
+    /// Semantic foregrounds, defaulting to the dark/light semantic sets.
+    pub fn semantic(&self) -> crate::tokens::Semantic {
+        self.semantic.unwrap_or_else(|| {
+            if self.is_dark() {
+                crate::tokens::Semantic::dark()
+            } else {
+                crate::tokens::Semantic::light()
+            }
+        })
+    }
+
+    /// Overrides status colours. Status-only changes get distinct identities,
+    /// including when applied to a labelled theme.
+    pub fn with_semantic(mut self, semantic: crate::tokens::Semantic) -> Self {
+        self.semantic = Some(semantic);
+        self.name = self.identity();
+        self.labelled = false;
+        self
+    }
+
+    fn identity(&self) -> String {
+        let Some(semantic) = self.semantic else {
+            return fingerprint_name(&self.tokens);
+        };
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        fingerprint(&self.tokens).hash(&mut hash);
+        for colour in [semantic.success, semantic.warning] {
+            for channel in [colour.r, colour.g, colour.b, colour.a] {
+                channel.to_bits().hash(&mut hash);
+            }
+        }
+        format!("toolkit-{:016x}", hash.finish())
     }
 
     /// Whether the surface is darker than the text on it.
@@ -94,16 +131,16 @@ impl Theme {
     }
 
     /// The seed of an equivalent iced built-in theme: surface, text and
-    /// primary as they are; success from primary, warning from the
-    /// selection colour, danger from destructive.
+    /// primary as they are; success and warning from the semantic colours,
+    /// danger from destructive.
     pub fn iced_seed(&self) -> Seed {
         let palette = self.tokens.palette;
         Seed {
             background: palette.surface,
             text: palette.text,
             primary: palette.primary,
-            success: palette.primary,
-            warning: palette.selection,
+            success: self.semantic().success,
+            warning: self.semantic().warning,
             danger: palette.destructive,
         }
     }
@@ -989,7 +1026,7 @@ pub mod float {
 /// Badge variants. `primary` is the default class.
 pub mod badge {
     use super::*;
-    use crate::badge::{Style, Status};
+    use crate::badge::{Status, Style};
 
     fn filled(status: Status, fill: Color, text: Color) -> Style {
         let background = match status {
@@ -1067,7 +1104,7 @@ pub mod labeled_frame {
 /// `muted` pair under the pointer.
 pub mod selection_list {
     use super::*;
-    use crate::selection_list::{Style, Status};
+    use crate::selection_list::{Status, Style};
 
     pub fn default(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
@@ -1105,13 +1142,16 @@ pub mod slide_bar {
 /// Number input modifier buttons: the `primary` pair.
 pub mod number_input {
     use super::*;
-    use crate::number_input::{Style, Status};
+    use crate::number_input::{Status, Style};
 
     pub fn primary(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
         let (background, icon_color) = match status {
             Status::Active => (Some(p.primary.into()), p.primary_text),
-            Status::Pressed => (Some(towards(p.primary, p.primary_text, 0.12).into()), p.primary_text),
+            Status::Pressed => (
+                Some(towards(p.primary, p.primary_text, 0.12).into()),
+                p.primary_text,
+            ),
             Status::Disabled => (None, p.muted_text),
         };
         Style {
@@ -1125,7 +1165,7 @@ pub mod number_input {
 /// edge, the hovered one `elevated`, the inactive ones `muted`.
 pub mod tab_bar {
     use super::*;
-    use crate::tab_bar::{Style, Status};
+    use crate::tab_bar::{Status, Style};
 
     pub fn default(theme: &Theme, status: Status) -> Style {
         let p = theme.tokens.palette;
@@ -1143,8 +1183,16 @@ pub mod tab_bar {
                 .top_left(m.radius.sm)
                 .top_right(m.radius.sm),
             tab_label_background: tab_label_background.into(),
-            tab_label_border_color: if status == Status::Active { p.border } else { p.muted_surface },
-            tab_label_border_width: if status == Status::Active { m.border.width } else { 0.0 },
+            tab_label_border_color: if status == Status::Active {
+                p.border
+            } else {
+                p.muted_surface
+            },
+            tab_label_border_width: if status == Status::Active {
+                m.border.width
+            } else {
+                0.0
+            },
             icon_color: text,
             icon_background: Some(p.muted_surface.into()),
             icon_border_radius: m.radius.sm.into(),
@@ -1227,7 +1275,9 @@ impl crate::badge::Catalog for iced_core::Theme {
             let p = theme.palette();
             let fill = match status {
                 crate::badge::Status::Active => p.primary.base.color,
-                crate::badge::Status::Hovered => towards(p.primary.base.color, p.primary.base.text, 0.12),
+                crate::badge::Status::Hovered => {
+                    towards(p.primary.base.color, p.primary.base.text, 0.12)
+                }
             };
             crate::badge::Style {
                 background: fill.into(),
@@ -1383,7 +1433,10 @@ impl crate::number_input::Catalog for iced_core::Theme {
     }
 }
 
-fn iced_tab_style(theme: &iced_core::Theme, status: crate::tab_bar::Status) -> crate::tab_bar::Style {
+fn iced_tab_style(
+    theme: &iced_core::Theme,
+    status: crate::tab_bar::Status,
+) -> crate::tab_bar::Style {
     let p = theme.palette();
     let (tab_label_background, text) = match status {
         crate::tab_bar::Status::Active => (p.background.base.color, p.background.base.text),
@@ -1467,7 +1520,11 @@ impl crate::sidebar::Catalog for iced_core::Theme {
         Box::new(|theme, status| iced_tab_style(theme, crate::tab_bar::Status::from(status)))
     }
 
-    fn style(&self, class: &Self::Class<'_>, status: crate::sidebar::Status) -> crate::sidebar::Style {
+    fn style(
+        &self,
+        class: &Self::Class<'_>,
+        status: crate::sidebar::Status,
+    ) -> crate::sidebar::Style {
         class(self, status)
     }
 }
@@ -1477,6 +1534,39 @@ mod tests {
     use super::*;
     use iced_core::theme::Base;
     use iced_widget::button::Status as ButtonStatus;
+
+    #[test]
+    fn semantic_overrides_reach_services_seed_and_identity() {
+        use crate::dialog::Severity;
+        for base in [Theme::dark(), Theme::light()] {
+            let semantic = base.semantic();
+            let contrast = |colour: Color| {
+                let a = colour.relative_luminance();
+                let b = base.palette().surface.relative_luminance();
+                (a.max(b) + 0.05) / (a.min(b) + 0.05)
+            };
+            assert!(contrast(semantic.success) >= 4.5);
+            assert!(contrast(semantic.warning) >= 4.5);
+            let override_ = crate::tokens::Semantic {
+                success: base.palette().text,
+                warning: base.palette().ring,
+            };
+            let changed = base.clone().with_semantic(override_);
+            assert_ne!(base.name(), changed.name());
+            assert_eq!(Severity::Success.colour(&changed), override_.success);
+            assert_eq!(Severity::Warning.colour(&changed), override_.warning);
+            assert_eq!(changed.iced_seed().success, override_.success);
+            assert_eq!(changed.iced_seed().warning, override_.warning);
+            assert_eq!(changed.tokens(), base.tokens());
+            let mut swapped = changed.clone();
+            swapped.set_tokens(Tokens::light());
+            assert_eq!(swapped.semantic(), override_);
+            assert_eq!(
+                swapped,
+                Theme::new(Tokens::light()).with_semantic(override_)
+            );
+        }
+    }
 
     #[test]
     fn base_follows_the_tokens() {

@@ -16,18 +16,16 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::tokens::Tokens;
 use iced_core::layout::{Layout, Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::overlay;
 use iced_core::renderer;
-use iced_core::widget::tree::{State as TreeState, Tag};
 use iced_core::widget::operation::{Outcome, Scrollable};
+use iced_core::widget::tree::{State as TreeState, Tag};
 use iced_core::widget::{Id, Operation, Tree, Widget};
 use iced_core::window;
-use iced_core::{
-    Border, Element, Event, Length, Point, Rectangle, Shell, Size, Vector, keyboard,
-};
-use crate::tokens::Tokens;
+use iced_core::{Border, Element, Event, Length, Point, Rectangle, Shell, Size, Vector, keyboard};
 
 /// How far the pointer must move while held before a press becomes a
 /// drag.
@@ -203,14 +201,24 @@ fn choice_at(point: Point, bounds: Rectangle) -> Option<Option<Choice>> {
 }
 
 /// The choice card's bounds: clamped into the target and the viewport.
-fn card_bounds(drag: &Gesture<impl Clone + Send>, viewport: Rectangle, tokens: &Tokens) -> Option<Rectangle> {
+fn card_bounds(
+    drag: &Gesture<impl Clone + Send>,
+    viewport: Rectangle,
+    tokens: &Tokens,
+) -> Option<Rectangle> {
     let target = drag.target.as_ref()?.bounds.intersection(&viewport)?;
     let m = &tokens.metrics;
     let width = (m.text.md * 20.0 + 2.0 * m.spacing.sm).min(target.width);
     let height = (m.text.md * 1.5 * 4.0 + 5.0 * m.spacing.xs).min(target.height);
     Some(Rectangle {
-        x: drag.pointer.x.clamp(target.x, target.x + target.width - width),
-        y: drag.pointer.y.clamp(target.y, target.y + target.height - height),
+        x: drag
+            .pointer
+            .x
+            .clamp(target.x, target.x + target.width - width),
+        y: drag
+            .pointer
+            .y
+            .clamp(target.y, target.y + target.height - height),
         width,
         height,
     })
@@ -313,10 +321,7 @@ where
                 // While the card is up, the content underneath gets
                 // nothing but modifier changes.
                 if matches!(event, Event::Mouse(_) | Event::Keyboard(_))
-                    && !matches!(
-                        event,
-                        Event::Keyboard(keyboard::Event::ModifiersChanged(_))
-                    )
+                    && !matches!(event, Event::Keyboard(keyboard::Event::ModifiersChanged(_)))
                 {
                     if matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. })) {
                         shell.request_redraw();
@@ -327,10 +332,7 @@ where
             }
             if state.active.is_some()
                 && matches!(event, Event::Keyboard(_))
-                && !matches!(
-                    event,
-                    Event::Keyboard(keyboard::Event::ModifiersChanged(_))
-                )
+                && !matches!(event, Event::Keyboard(keyboard::Event::ModifiersChanged(_)))
             {
                 shell.capture_event();
                 return;
@@ -351,9 +353,9 @@ where
                 active.target = None;
             }
         }
-        self.content.as_widget_mut().update(
-            tree, event, layout, cursor, renderer, shell, viewport,
-        );
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
         let mut state = lock(&self.shared);
         if state.active.is_some() {
             if matches!(
@@ -416,7 +418,9 @@ where
                         font: renderer.default_font(),
                         align_x: iced_core::text::Alignment::Left,
                         align_y: iced_core::alignment::Vertical::Center,
-                        line_height: iced_core::text::LineHeight::Absolute((m.text.sm * 1.4).into()),
+                        line_height: iced_core::text::LineHeight::Absolute(
+                            (m.text.sm * 1.4).into(),
+                        ),
                         shaping: iced_core::text::Shaping::Advanced,
                         wrapping: iced_core::text::Wrapping::None,
                         ellipsis: iced_core::text::Ellipsis::None,
@@ -475,7 +479,9 @@ where
                             font: renderer.default_font(),
                             align_x: iced_core::text::Alignment::Left,
                             align_y: iced_core::alignment::Vertical::Top,
-                            line_height: iced_core::text::LineHeight::Absolute((m.text.sm * 1.4).into()),
+                            line_height: iced_core::text::LineHeight::Absolute(
+                                (m.text.sm * 1.4).into(),
+                            ),
                             shaping: iced_core::text::Shaping::Advanced,
                             wrapping: iced_core::text::Wrapping::None,
                             ellipsis: iced_core::text::Ellipsis::None,
@@ -574,10 +580,7 @@ where
     P: Clone + Send,
 {
     /// Wraps `content` as draggable, carrying `payload`.
-    pub fn new(
-        content: impl Into<Element<'a, Message, Theme, Renderer>>,
-        payload: P,
-    ) -> Self {
+    pub fn new(content: impl Into<Element<'a, Message, Theme, Renderer>>, payload: P) -> Self {
         Self {
             content: content.into(),
             payload,
@@ -614,6 +617,7 @@ where
 struct DragAreaState {
     origin: Option<Point>,
     dragging: bool,
+    cancel_epoch: u64,
 }
 
 impl<Message, Theme, Renderer, P> Widget<Message, Theme, Renderer>
@@ -632,7 +636,7 @@ where
     }
 
     fn diff(&mut self, tree: &mut Tree) {
-        self.content.as_widget_mut().diff(tree);
+        tree.diff_children(&mut [&mut self.content]);
     }
 
     fn size(&self) -> Size<Length> {
@@ -640,7 +644,9 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
-        self.content.as_widget_mut().layout(tree, renderer, limits)
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
     }
 
     fn update(
@@ -656,7 +662,25 @@ where
         let bounds = layout.bounds();
         let state = tree.state.downcast_mut::<DragAreaState>();
 
+        if let Some(shared) = &self.shared {
+            let epoch = lock(shared).cancel_epoch;
+            if state.cancel_epoch != epoch {
+                state.origin = None;
+                state.dragging = false;
+                state.cancel_epoch = epoch;
+            }
+        }
+
         match event {
+            Event::Window(window::Event::Unfocused | window::Event::Resized(_))
+            | Event::Mouse(mouse::Event::CursorLeft)
+            | Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => {
+                state.origin = None;
+                state.dragging = false;
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if cursor.is_over(bounds) && !state.dragging =>
             {
@@ -694,7 +718,13 @@ where
         }
 
         self.content.as_widget_mut().update(
-            tree, event, layout, cursor, renderer, shell, viewport,
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            shell,
+            viewport,
         );
     }
 
@@ -708,9 +738,15 @@ where
         cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        self.content
-            .as_widget()
-            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
     }
 
     fn mouse_interaction(
@@ -721,9 +757,13 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        self.content
-            .as_widget()
-            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
     }
 
     fn overlay<'b>(
@@ -734,9 +774,13 @@ where
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        self.content
-            .as_widget_mut()
-            .overlay(tree, layout, renderer, viewport, translation)
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
     }
 
     fn operate(
@@ -748,7 +792,7 @@ where
     ) {
         self.content
             .as_widget_mut()
-            .operate(tree, layout, renderer, operation);
+            .operate(&mut tree.children[0], layout, renderer, operation);
     }
 }
 
@@ -865,17 +909,14 @@ where
                         width: bounds.width,
                         height: bounds.height,
                     };
-                    active.target = Some(Target {
-                        bounds,
-                        highlight,
-                    });
+                    active.target = Some(Target { bounds, highlight });
                 }
             }
         }
 
-        self.content.as_widget_mut().update(
-            tree, event, layout, cursor, renderer, shell, viewport,
-        );
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
     }
 
     fn draw(
@@ -979,11 +1020,7 @@ where
 /// nested zones are explored. Run it as a widget operation from the
 /// host runtime, or over a tree you hold.
 #[must_use]
-pub fn find_zones<F>(
-    filter: F,
-    options: Option<Vec<Id>>,
-    depth: Option<usize>,
-) -> FindZones<F>
+pub fn find_zones<F>(filter: F, options: Option<Vec<Id>>, depth: Option<usize>) -> FindZones<F>
 where
     F: Fn(&Rectangle) -> bool + Send + 'static,
 {
@@ -1014,10 +1051,7 @@ impl<F> Operation<Vec<(Id, Rectangle)>> for FindZones<F>
 where
     F: Fn(&Rectangle) -> bool + Send + 'static,
 {
-    fn traverse(
-        &mut self,
-        operate: &mut dyn FnMut(&mut dyn Operation<Vec<(Id, Rectangle)>>),
-    ) {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Vec<(Id, Rectangle)>>)) {
         if self.goto_next {
             operate(self);
         }
@@ -1075,9 +1109,19 @@ mod tests {
     #[test]
     fn the_choice_card_maps_rows_to_choices() {
         let b = card();
-        assert_eq!(choice_at(Point::new(120.0, 100.0), b), None, "the title row");
-        assert_eq!(choice_at(Point::new(120.0, 120.0), b), Some(Some(Choice::Move)));
-        assert_eq!(choice_at(Point::new(120.0, 140.0), b), Some(Some(Choice::Copy)));
+        assert_eq!(
+            choice_at(Point::new(120.0, 100.0), b),
+            None,
+            "the title row"
+        );
+        assert_eq!(
+            choice_at(Point::new(120.0, 120.0), b),
+            Some(Some(Choice::Move))
+        );
+        assert_eq!(
+            choice_at(Point::new(120.0, 140.0), b),
+            Some(Some(Choice::Copy))
+        );
         assert_eq!(choice_at(Point::new(120.0, 165.0), b), Some(None), "Cancel");
         assert_eq!(choice_at(Point::new(400.0, 140.0), b), None, "outside");
     }
@@ -1112,7 +1156,6 @@ mod tests {
         assert!(state.active.is_none() && state.pending.is_none());
     }
 
-
     #[test]
     fn labels_default_to_english() {
         let labels = Labels::english();
@@ -1133,18 +1176,21 @@ mod tests {
                     .label(|p| format!("item {p}"))
                     .start_directly(shared.clone())
                     .into();
-            let target: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> = DropArea::new(
-                container(iced_widget::text("drop here")).padding(8),
-                shared.clone(),
-            )
-            .tokens(tokens)
-            .into();
-            let _ = (source, target);
-            let layer: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> =
-                Layer::new(iced_widget::Column::with_children(vec![iced_widget::text("hi").into()]), shared, tokens, |f| {
-                    u8::from(f.choice == Choice::Move)
-                })
+            let target: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> =
+                DropArea::new(
+                    container(iced_widget::text("drop here")).padding(8),
+                    shared.clone(),
+                )
+                .tokens(tokens)
                 .into();
+            let _ = (source, target);
+            let layer: Element<'a, u8, crate::theme::Theme, iced_widget::Renderer> = Layer::new(
+                iced_widget::Column::with_children(vec![iced_widget::text("hi").into()]),
+                shared,
+                tokens,
+                |f| u8::from(f.choice == Choice::Move),
+            )
+            .into();
             layer
         }
         let _ = build;

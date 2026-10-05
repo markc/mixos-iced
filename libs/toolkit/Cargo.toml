@@ -80,6 +80,10 @@ required-features = ["gallery"]
 name = "shell"
 required-features = ["gallery-tiny-skia"]
 
+[[test]]
+name = "interactions"
+required-features = ["gallery-tiny-skia"]
+
 # Offscreen gallery snapshots: `cargo test -p toolkit --features gallery-tiny-skia --test snapshots`.
 [[test]]
 name = "snapshots"

@@ -145,6 +145,30 @@ impl Default for Palette {
     }
 }
 
+/// Semantic foregrounds on ordinary surfaces. Kept separate from [`Palette`]
+/// so existing caller palette literals stay source compatible.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Semantic {
+    pub success: Color,
+    pub warning: Color,
+}
+
+impl Semantic {
+    pub const fn dark() -> Self {
+        Self {
+            success: Color::from_rgb8(111, 211, 155),
+            warning: Color::from_rgb8(244, 193, 84),
+        }
+    }
+
+    pub const fn light() -> Self {
+        Self {
+            success: Color::from_rgb8(24, 109, 65),
+            warning: Color::from_rgb8(139, 84, 0),
+        }
+    }
+}
+
 /// The spacing scale, in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spacing {

@@ -83,9 +83,11 @@ impl Frame {
 
     fn has(&self, colour: Color) -> bool {
         let wanted = rgb8(colour);
-        (0..self.height)
-            .step_by(2)
-            .any(|y| (0..self.width).step_by(2).any(|x| close(self.pixel(x, y), wanted)))
+        (0..self.height).step_by(2).any(|y| {
+            (0..self.width)
+                .step_by(2)
+                .any(|x| close(self.pixel(x, y), wanted))
+        })
     }
 }
 
@@ -194,13 +196,25 @@ fn dialogs_are_driven_by_the_keyboard_alone() {
     simulate(&mut gallery, tap(Named::F3));
     assert_eq!(kind(&gallery), Some(Kind::Confirm), "F3 opens the confirm");
     simulate(&mut gallery, tap(Named::F2));
-    assert_eq!(kind(&gallery), Some(Kind::Confirm), "F2 is swallowed by the dialog");
+    assert_eq!(
+        kind(&gallery),
+        Some(Kind::Confirm),
+        "F2 is swallowed by the dialog"
+    );
     assert_eq!(gallery.services().queued(), 0);
 
     // Tab, Enter.
-    assert_eq!(dialog(&gallery).focused_button(), Some(0), "Delete has focus");
+    assert_eq!(
+        dialog(&gallery).focused_button(),
+        Some(0),
+        "Delete has focus"
+    );
     simulate(&mut gallery, tap(Named::Tab));
-    assert_eq!(dialog(&gallery).focused_button(), Some(1), "Tab moves to Keep");
+    assert_eq!(
+        dialog(&gallery).focused_button(),
+        Some(1),
+        "Tab moves to Keep"
+    );
     simulate(&mut gallery, tap(Named::Enter));
     assert_eq!(kind(&gallery), None, "Enter on Keep closes it");
     assert_eq!(last_outcome(&gallery), Some("cancelled"));
@@ -208,7 +222,11 @@ fn dialogs_are_driven_by_the_keyboard_alone() {
     // Shift+Tab wraps; Enter on the destructive button reports its index.
     simulate(&mut gallery, tap(Named::F3));
     simulate(&mut gallery, key(Key::Named(Named::Tab), Modifiers::SHIFT));
-    assert_eq!(dialog(&gallery).focused_button(), Some(1), "Shift+Tab wraps to Keep");
+    assert_eq!(
+        dialog(&gallery).focused_button(),
+        Some(1),
+        "Shift+Tab wraps to Keep"
+    );
     simulate(&mut gallery, key(Key::Named(Named::Tab), Modifiers::SHIFT));
     assert_eq!(dialog(&gallery).focused_button(), Some(0));
     simulate(&mut gallery, tap(Named::Enter));
@@ -227,7 +245,11 @@ fn dialogs_are_driven_by_the_keyboard_alone() {
     assert_eq!(dialog(&gallery).text(), "Untitled");
     assert!(dialog(&gallery).is_leading_focused());
     simulate(&mut gallery, typed("-2"));
-    assert_eq!(dialog(&gallery).text(), "Untitled-2", "typed into the focused field");
+    assert_eq!(
+        dialog(&gallery).text(),
+        "Untitled-2",
+        "typed into the focused field"
+    );
     simulate(&mut gallery, tap(Named::Enter));
     assert_eq!(kind(&gallery), None);
     assert_eq!(last_outcome(&gallery), Some("text: Untitled-2"));
@@ -281,12 +303,20 @@ fn dialogs_are_driven_by_the_keyboard_alone() {
 fn toasts_open_from_keys_and_escape_dismisses_the_newest() {
     let mut gallery = services(Mode::Light);
     simulate(&mut gallery, ctrl("1"));
-    assert_eq!(gallery.services().toaster().len(), 1, "Ctrl+1 pushes a toast");
+    assert_eq!(
+        gallery.services().toaster().len(),
+        1,
+        "Ctrl+1 pushes a toast"
+    );
     simulate(&mut gallery, ctrl("4"));
     assert_eq!(gallery.services().toaster().len(), 2);
     let newest = gallery.services().toaster().iter().last().unwrap().0;
     simulate(&mut gallery, tap(Named::Escape));
-    assert_eq!(gallery.services().toaster().len(), 1, "Escape dismisses one");
+    assert_eq!(
+        gallery.services().toaster().len(),
+        1,
+        "Escape dismisses one"
+    );
     assert!(!gallery.services().toaster().contains(newest), "the newest");
     // Escape with a dialog up goes to the dialog, not the toasts.
     simulate(&mut gallery, tap(Named::F3));
@@ -311,14 +341,20 @@ fn dialogs_and_toasts_render_under_dark_and_light() {
         let mut gallery = services(mode);
         open(&mut gallery, action);
         assert!(gallery.services().dialog().is_some());
-        let frame = render(&gallery, &dir.join(format!("services-{name}-{}.png", mode.name())));
+        let frame = render(
+            &gallery,
+            &dir.join(format!("services-{name}-{}.png", mode.name())),
+        );
         let palette = mode.tokens().palette;
         let surface = rgb8(palette.surface);
         let corner = frame.pixel(4, frame.height - 4);
         // The scrim: the darker of surface and text at 55%. Over a dark
         // surface that is the surface itself; over a light one it dims.
         if palette.surface.relative_luminance() <= palette.text.relative_luminance() {
-            assert!(close(corner, surface), "{name} {mode:?}: corner {corner:?} is not the surface");
+            assert!(
+                close(corner, surface),
+                "{name} {mode:?}: corner {corner:?} is not the surface"
+            );
         } else {
             assert!(
                 luminance(corner) < luminance(surface) - 40.0,
@@ -328,7 +364,9 @@ fn dialogs_and_toasts_render_under_dark_and_light() {
         // The card's controls are on screen: a primary or destructive fill
         // (buttons, the progress bar) or the sliding bar's track.
         assert!(
-            frame.has(palette.primary) || frame.has(palette.destructive) || frame.has(palette.muted_surface),
+            frame.has(palette.primary)
+                || frame.has(palette.destructive)
+                || frame.has(palette.muted_surface),
             "{name} {mode:?}: no dialog control colour found"
         );
     }
@@ -343,11 +381,23 @@ fn dialogs_and_toasts_render_under_dark_and_light() {
             open(&mut gallery, action);
         }
         assert_eq!(gallery.services().toaster().len(), 4);
-        let frame = render(&gallery, &dir.join(format!("services-toasts-{}.png", mode.name())));
+        let frame = render(
+            &gallery,
+            &dir.join(format!("services-toasts-{}.png", mode.name())),
+        );
         let palette = mode.tokens().palette;
-        assert!(close(frame.pixel(4, frame.height - 4), rgb8(palette.surface)), "{mode:?}: no scrim without a dialog");
-        assert!(frame.has(palette.destructive), "{mode:?}: the error toast's outline");
-        assert!(frame.has(palette.primary), "{mode:?}: the success toast's outline");
+        assert!(
+            close(frame.pixel(4, frame.height - 4), rgb8(palette.surface)),
+            "{mode:?}: no scrim without a dialog"
+        );
+        assert!(
+            frame.has(palette.destructive),
+            "{mode:?}: the error toast's outline"
+        );
+        assert!(
+            frame.has(gallery.theme().semantic().success),
+            "{mode:?}: the success toast's outline"
+        );
         assert!(frame.has(palette.elevated), "{mode:?}: the toast cards");
     }
 }

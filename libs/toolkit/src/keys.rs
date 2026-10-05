@@ -390,9 +390,7 @@ pub fn mnemonic(chord: &Chord, mnemonics: &[char]) -> Option<usize> {
     if chars.next().is_some() {
         return None;
     }
-    mnemonics
-        .iter()
-        .position(|m| m.to_ascii_lowercase() == c)
+    mnemonics.iter().position(|m| m.to_ascii_lowercase() == c)
 }
 
 /// What the router knows about the window when a key arrives.
@@ -416,7 +414,11 @@ pub enum Routed<A> {
 }
 
 /// The pure routing decision (tested without a widget tree).
-pub fn route<A: Clone>(bindings: &Bindings<A>, chord: &Chord, context: Context<'_>) -> Option<Routed<A>> {
+pub fn route<A: Clone>(
+    bindings: &Bindings<A>,
+    chord: &Chord,
+    context: Context<'_>,
+) -> Option<Routed<A>> {
     if context.modal {
         return None;
     }
@@ -427,6 +429,119 @@ pub fn route<A: Clone>(bindings: &Bindings<A>, chord: &Chord, context: Context<'
         return None;
     }
     bindings.get(chord).cloned().map(Routed::Action)
+}
+
+/// An unambiguous table of single strokes and two-stroke sequences.
+/// A stroke cannot be both an action and a sequence prefix.
+#[derive(Debug, Clone, Default)]
+pub struct SequenceBindings<A> {
+    singles: Bindings<A>,
+    pairs: HashMap<(Chord, Chord), A>,
+}
+
+impl<A> SequenceBindings<A> {
+    pub fn new() -> Self {
+        Self {
+            singles: Bindings::new(),
+            pairs: HashMap::new(),
+        }
+    }
+
+    pub fn bind(&mut self, stroke: &str, action: A) -> Result<(), BindError> {
+        let first = Chord::parse(stroke).ok_or_else(|| BindError::Unparsable(stroke.into()))?;
+        if self.pairs.keys().any(|(prefix, _)| prefix == &first) {
+            return Err(BindError::Taken(stroke.into()));
+        }
+        self.singles.bind(stroke, action)
+    }
+
+    pub fn bind_sequence(&mut self, first: &str, second: &str, action: A) -> Result<(), BindError> {
+        let parse =
+            |stroke: &str| Chord::parse(stroke).ok_or_else(|| BindError::Unparsable(stroke.into()));
+        let pair = (parse(first)?, parse(second)?);
+        if self.singles.get(&pair.0).is_some() || self.pairs.contains_key(&pair) {
+            return Err(BindError::Taken(format!("{first}, {second}")));
+        }
+        self.pairs.insert(pair, action);
+        Ok(())
+    }
+}
+
+/// Window-local sequence state. Keep one per window, across view rebuilds.
+#[derive(Debug, Clone, Default)]
+pub struct SequenceState {
+    pending: Option<(Chord, iced_core::time::Instant)>,
+}
+
+/// A sequence's synchronous dispatch decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SequenceRoute<A> {
+    Routed(Routed<A>),
+    Pending,
+    Cancelled,
+    Unclaimed,
+}
+
+impl SequenceState {
+    pub fn clear(&mut self) {
+        self.pending = None;
+    }
+
+    /// The pending prefix expires after one second. On mismatch the prefix
+    /// is discarded and the current stroke is routed anew. Editing keys
+    /// retain priority in focused inputs; modal/menu takeover clears state.
+    pub fn route<A: Clone>(
+        &mut self,
+        bindings: &SequenceBindings<A>,
+        chord: &Chord,
+        context: Context<'_>,
+        now: iced_core::time::Instant,
+        repeat: bool,
+    ) -> SequenceRoute<A> {
+        if context.modal {
+            self.clear();
+            return SequenceRoute::Unclaimed;
+        }
+        if let Some(menu) = mnemonic(chord, context.mnemonics) {
+            self.clear();
+            return SequenceRoute::Routed(Routed::Menu(menu));
+        }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(_, deadline)| now >= *deadline)
+        {
+            self.clear();
+        }
+        if self.pending.is_some() && chord.key == "Escape" && !chord.is_modified() {
+            self.clear();
+            return SequenceRoute::Cancelled;
+        }
+        if context.text_field && is_text_editing(chord) {
+            self.clear();
+            return SequenceRoute::Unclaimed;
+        }
+        if let Some((first, _)) = &self.pending {
+            if repeat {
+                return SequenceRoute::Pending;
+            }
+            let action = bindings.pairs.get(&(first.clone(), chord.clone())).cloned();
+            self.clear();
+            if let Some(action) = action {
+                return SequenceRoute::Routed(Routed::Action(action));
+            }
+        }
+        if let Some(action) = bindings.singles.get(chord) {
+            return SequenceRoute::Routed(Routed::Action(action.clone()));
+        }
+        if bindings.pairs.keys().any(|(first, _)| first == chord) {
+            if !repeat {
+                self.pending = Some((chord.clone(), now + std::time::Duration::from_secs(1)));
+            }
+            return SequenceRoute::Pending;
+        }
+        SequenceRoute::Unclaimed
+    }
 }
 
 /// The `Widget` methods a wrapper passes straight to its content, which it
@@ -530,6 +645,10 @@ pub struct KeyRouter<'a, A, Message, Theme, Renderer> {
     on_route: RouteFn<'a, A, Message>,
     on_unclaimed: Option<UnclaimedFn<'a, Message>>,
     on_zoom: Option<ZoomFn<'a, Message>>,
+    sequence: Option<(
+        &'a SequenceBindings<A>,
+        &'a std::cell::RefCell<SequenceState>,
+    )>,
 }
 
 /// Wraps `content`; a routed chord publishes `on_route`'s message.
@@ -547,7 +666,20 @@ pub fn router<'a, A, Message, Theme, Renderer>(
         on_route: Box::new(on_route),
         on_unclaimed: None,
         on_zoom: None,
+        sequence: None,
     }
+}
+
+/// A router with two-stroke bindings and caller-owned per-window state.
+pub fn sequence_router<'a, A, Message, Theme, Renderer>(
+    content: impl Into<Element<'a, Message, Theme, Renderer>>,
+    bindings: &'a SequenceBindings<A>,
+    state: &'a std::cell::RefCell<SequenceState>,
+    on_route: impl Fn(Routed<A>) -> Message + 'a,
+) -> KeyRouter<'a, A, Message, Theme, Renderer> {
+    let mut router = router(content, &bindings.singles, on_route);
+    router.sequence = Some((bindings, state));
+    router
 }
 
 impl<'a, A, Message, Theme, Renderer> KeyRouter<'a, A, Message, Theme, Renderer> {
@@ -610,13 +742,39 @@ where
         viewport: &Rectangle,
     ) {
         match event {
+            Event::Window(iced_core::window::Event::Unfocused) => {
+                if let Some((_, state)) = self.sequence {
+                    state.borrow_mut().clear();
+                }
+            }
             Event::Keyboard(key_event @ keyboard::Event::KeyPressed { .. }) => {
-                if let Some(chord) = Chord::from_event(key_event)
-                    && let Some(routed) = route(self.bindings, &chord, self.context())
-                {
-                    shell.publish((self.on_route)(routed));
-                    shell.capture_event();
-                    return;
+                if let Some(chord) = Chord::from_event(key_event) {
+                    let decision = if let Some((bindings, state)) = self.sequence {
+                        let repeat =
+                            matches!(key_event, keyboard::Event::KeyPressed { repeat: true, .. });
+                        state.borrow_mut().route(
+                            bindings,
+                            &chord,
+                            self.context(),
+                            iced_core::time::Instant::now(),
+                            repeat,
+                        )
+                    } else {
+                        route(self.bindings, &chord, self.context())
+                            .map_or(SequenceRoute::Unclaimed, SequenceRoute::Routed)
+                    };
+                    match decision {
+                        SequenceRoute::Routed(routed) => {
+                            shell.publish((self.on_route)(routed));
+                            shell.capture_event();
+                            return;
+                        }
+                        SequenceRoute::Pending | SequenceRoute::Cancelled => {
+                            shell.capture_event();
+                            return;
+                        }
+                        SequenceRoute::Unclaimed => {}
+                    }
                 }
             }
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
@@ -687,6 +845,7 @@ type Redraw<Message> = (
 pub struct Keys<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_press: KeyHandler<'a, Message>,
+    before: Option<KeyHandler<'a, Message>>,
     on_ime: Option<ImeHandler<'a, Message>>,
     ime: input_method::InputMethod,
     on_pointer: Option<PointerHandler<'a, Message>>,
@@ -703,6 +862,7 @@ pub fn keys<'a, Message, Theme, Renderer>(
     Keys {
         content: content.into(),
         on_press: Box::new(on_press),
+        before: None,
         on_ime: None,
         ime: input_method::InputMethod::Disabled,
         on_pointer: None,
@@ -712,6 +872,16 @@ pub fn keys<'a, Message, Theme, Renderer>(
 }
 
 impl<'a, Message, Theme, Renderer> Keys<'a, Message, Theme, Renderer> {
+    /// Claims explicitly owned keys before the children see them. Use this
+    /// for a composite control's navigation, leaving editing keys alone.
+    pub fn on_key_before(
+        mut self,
+        callback: impl Fn(&keyboard::Event) -> Option<Message> + 'a,
+    ) -> Self {
+        self.before = Some(Box::new(callback));
+        self
+    }
+
     /// Requests `ime` on every redraw (after the children, so a focused
     /// text input's own request wins) and reports IME events while it is
     /// enabled, plus the closing event.
@@ -753,7 +923,8 @@ impl<'a, Message, Theme, Renderer> Keys<'a, Message, Theme, Renderer> {
     }
 }
 
-impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Keys<'_, Message, Theme, Renderer>
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for Keys<'_, Message, Theme, Renderer>
 where
     Renderer: iced_core::Renderer,
 {
@@ -769,6 +940,14 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if let Event::Keyboard(key_event) = event
+            && let Some(callback) = &self.before
+            && let Some(message) = callback(key_event)
+        {
+            shell.publish(message);
+            shell.capture_event();
+            return;
+        }
         if let Event::Mouse(mouse::Event::CursorMoved { position }) = event
             && let Some(callback) = &self.on_pointer
             && let Some(message) = callback(*position)
@@ -793,7 +972,10 @@ where
             .as_widget_mut()
             .update(tree, event, layout, cursor, renderer, shell, viewport);
         // After the children: a focused text input's IME request wins.
-        if matches!(event, Event::Window(iced_core::window::Event::RedrawRequested(_))) {
+        if matches!(
+            event,
+            Event::Window(iced_core::window::Event::RedrawRequested(_))
+        ) {
             shell.request_input_method(&self.ime);
         }
         if shell.is_event_captured() {
@@ -852,7 +1034,8 @@ pub fn is_input(event: &Event) -> bool {
     )
 }
 
-impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Inert<'_, Message, Theme, Renderer>
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for Inert<'_, Message, Theme, Renderer>
 where
     Renderer: iced_core::Renderer,
 {
@@ -950,6 +1133,112 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequences_cover_timeout_mismatch_repeat_and_routing_priority() {
+        let mut bindings = SequenceBindings::new();
+        bindings.bind_sequence("Ctrl+k", "Ctrl+c", 1).unwrap();
+        bindings.bind("Ctrl+s", 2).unwrap();
+        assert!(bindings.bind("Ctrl+k", 3).is_err());
+        assert!(bindings.bind_sequence("Ctrl+s", "Ctrl+x", 3).is_err());
+        assert!(bindings.bind_sequence("Ctrl+k", "Ctrl+c", 3).is_err());
+        let now = iced_core::time::Instant::now();
+        let prefix = Chord::parse("Ctrl+k").unwrap();
+        let second = Chord::parse("Ctrl+c").unwrap();
+        let save = Chord::parse("Ctrl+s").unwrap();
+        let mut state = SequenceState::default();
+        assert_eq!(
+            state.route(&bindings, &prefix, Context::default(), now, false),
+            SequenceRoute::Pending
+        );
+        assert_eq!(
+            state.route(&bindings, &prefix, Context::default(), now, true),
+            SequenceRoute::Pending
+        );
+        assert_eq!(
+            state.route(&bindings, &second, Context::default(), now, false),
+            SequenceRoute::Routed(Routed::Action(1))
+        );
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            state.route(
+                &bindings,
+                &second,
+                Context::default(),
+                now + std::time::Duration::from_secs(1),
+                false
+            ),
+            SequenceRoute::Unclaimed
+        );
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            state.route(&bindings, &save, Context::default(), now, false),
+            SequenceRoute::Routed(Routed::Action(2))
+        );
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            state.route(
+                &bindings,
+                &Chord::parse("Escape").unwrap(),
+                Context::default(),
+                now,
+                false
+            ),
+            SequenceRoute::Cancelled
+        );
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            state.route(
+                &bindings,
+                &second,
+                Context {
+                    text_field: true,
+                    ..Context::default()
+                },
+                now,
+                false
+            ),
+            SequenceRoute::Unclaimed
+        );
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            state.route(
+                &bindings,
+                &second,
+                Context {
+                    modal: true,
+                    ..Context::default()
+                },
+                now,
+                false
+            ),
+            SequenceRoute::Unclaimed
+        );
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            state.route(
+                &bindings,
+                &Chord::parse("Alt+f").unwrap(),
+                Context {
+                    mnemonics: &['f'],
+                    ..Context::default()
+                },
+                now,
+                false
+            ),
+            SequenceRoute::Routed(Routed::Menu(0))
+        );
+        let mut other_window = SequenceState::default();
+        state.route(&bindings, &prefix, Context::default(), now, false);
+        assert_eq!(
+            other_window.route(&bindings, &second, Context::default(), now, false),
+            SequenceRoute::Unclaimed
+        );
+        assert_eq!(
+            state.route(&bindings, &second, Context::default(), now, false),
+            SequenceRoute::Routed(Routed::Action(1))
+        );
+    }
     use iced_core::keyboard::key::{Code, NativeCode};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1032,7 +1321,11 @@ mod tests {
             Some(chord("Shift+F3"))
         );
         assert_eq!(
-            Chord::from_key(&Key::Named(Named::ArrowUp), unidentified(), ctrl | Modifiers::LOGO),
+            Chord::from_key(
+                &Key::Named(Named::ArrowUp),
+                unidentified(),
+                ctrl | Modifiers::LOGO
+            ),
             Some(chord("Ctrl+Super+Up"))
         );
         // A Cyrillic layout: the logical key is с, the physical key is C.
@@ -1083,7 +1376,11 @@ mod tests {
         assert_eq!(b.len(), 6, "set replaces in place");
         assert_eq!(b.unbind(&chord("Ctrl+F")), Some(Action::Find));
         assert_eq!(b.unbind(&chord("Ctrl+F")), None);
-        assert_eq!(b.get(&chord("Ctrl+Shift+=")), Some(&Action::ZoomIn), "later rows reindexed");
+        assert_eq!(
+            b.get(&chord("Ctrl+Shift+=")),
+            Some(&Action::ZoomIn),
+            "later rows reindexed"
+        );
         assert_eq!(b.get(&chord("F3")), Some(&Action::Next));
         assert_eq!(b.iter().count(), 5);
         assert_eq!(
@@ -1112,7 +1409,11 @@ mod tests {
             Some(Routed::Menu(1)),
             "mnemonics open menus"
         );
-        assert_eq!(route(&b, &chord("Alt+E"), plain), None, "no bar, no mnemonic");
+        assert_eq!(
+            route(&b, &chord("Alt+E"), plain),
+            None,
+            "no bar, no mnemonic"
+        );
         assert_eq!(
             route(&b, &chord("Ctrl+Alt+F"), with_menus),
             None,
@@ -1122,7 +1423,11 @@ mod tests {
             modal: true,
             ..with_menus
         };
-        assert_eq!(route(&b, &chord("Ctrl+S"), modal), None, "a dialog owns the keyboard");
+        assert_eq!(
+            route(&b, &chord("Ctrl+S"), modal),
+            None,
+            "a dialog owns the keyboard"
+        );
         assert_eq!(route(&b, &chord("Alt+F"), modal), None);
         let field = Context {
             text_field: true,
@@ -1131,7 +1436,11 @@ mod tests {
         let mut editing = bindings();
         editing.bind("Ctrl+V", Action::Find).unwrap();
         editing.bind("Ctrl+Z", Action::Find).unwrap();
-        assert_eq!(route(&editing, &chord("Ctrl+V"), field), None, "the field pastes");
+        assert_eq!(
+            route(&editing, &chord("Ctrl+V"), field),
+            None,
+            "the field pastes"
+        );
         assert_eq!(route(&editing, &chord("Ctrl+Z"), field), None);
         assert_eq!(
             route(&editing, &chord("F3"), field),
@@ -1163,8 +1472,8 @@ mod tests {
         assert!(is_input(&press));
         assert!(is_input(&Event::InputMethod(input_method::Event::Closed)));
         assert!(!is_input(&Event::Mouse(mouse::Event::CursorEntered)));
-        assert!(!is_input(&Event::Keyboard(keyboard::Event::ModifiersChanged(
-            Modifiers::empty()
-        ))));
+        assert!(!is_input(&Event::Keyboard(
+            keyboard::Event::ModifiersChanged(Modifiers::empty())
+        )));
     }
 }
