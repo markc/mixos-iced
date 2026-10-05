@@ -15,7 +15,7 @@ use iced_core::renderer;
 use iced_core::widget::tree::{State, Tag};
 use iced_core::widget::{Operation, Tree};
 use iced_core::{
-    Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Shell, Size,
+    Border, Color, Element, Event, Length, Pixels, Point, Rectangle, Shell, Size,
     Vector, overlay,
 };
 
@@ -293,7 +293,7 @@ where
 /// The minimum along-direction size a pane declares, from its `Length`.
 fn min_along(length: Length) -> f32 {
     match length {
-        Length::Fixed(min) | Length::Shrink => min.max(0.0),
+        Length::Fixed(min) => min.max(0.0),
         _ => 0.0,
     }
 }
@@ -335,7 +335,7 @@ where
 
         let (cross, along) = self
             .direction
-            .select(limits.max.width, limits.max.height);
+            .select(limits.max().width, limits.max().height);
 
         let separation = 2.0 * self.spacing + self.handle_width;
         let state = tree.state.downcast_mut::<SplitState>();
@@ -366,7 +366,7 @@ where
             .layout(&mut tree.children[1], renderer, &end_limits)
             .move_to([offset_cross, offset_along]);
 
-        Node::with_children(limits.max, vec![start, end])
+        Node::with_children(limits.max(), vec![start, end])
     }
 
     fn update(

@@ -58,7 +58,7 @@ impl Catalog for crate::theme::Theme {
     type Style = ();
 
     fn header(&self, _style: &Self::Style) -> Band {
-        let p = self.tokens.palette;
+        let p = self.tokens().palette;
         Band {
             background: Some(p.elevated.into()),
             text: Some(p.elevated_text),
@@ -70,7 +70,7 @@ impl Catalog for crate::theme::Theme {
     }
 
     fn row(&self, _style: &Self::Style, index: usize) -> Band {
-        let p = self.tokens.palette;
+        let p = self.tokens().palette;
         let background = if index % 2 == 0 { p.card } else { p.muted_surface };
         Band {
             background: Some(background.into()),
@@ -79,7 +79,7 @@ impl Catalog for crate::theme::Theme {
     }
 
     fn divider(&self, _style: &Self::Style, hovered: bool) -> Option<Background> {
-        let p = self.tokens.palette;
+        let p = self.tokens().palette;
         Some(
             if hovered {
                 p.primary
@@ -199,7 +199,7 @@ pub fn table<'a, Column, Row, Message, Theme, Renderer>(
     columns: &'a [Column],
     rows: &'a [Row],
     on_sync: fn(scrollable::AbsoluteOffset) -> Message,
-) -> Table<'a, Column, Row, Message, Theme, Renderer>
+) -> Table<'a, Column, Row, Message, Theme>
 where
     Theme: Catalog + container::Catalog,
 {
@@ -224,7 +224,7 @@ where
 /// An element displaying rows of data into resizable columns, with the
 /// header (and optional footer) scroll-synced to the body.
 #[allow(missing_debug_implementations)]
-pub struct Table<'a, Column, Row, Message, Theme, Renderer>
+pub struct Table<'a, Column, Row, Message, Theme>
 where
     Theme: Catalog + container::Catalog,
 {
@@ -245,7 +245,7 @@ where
 }
 
 impl<'a, Column, Row, Message, Theme, Renderer>
-    Table<'a, Column, Row, Message, Theme, Renderer>
+    Table<'a, Column, Row, Message, Theme>
 where
     Theme: Catalog + container::Catalog,
 {
@@ -325,7 +325,7 @@ where
 }
 
 impl<'a, Column, Row, Message, Theme, Renderer>
-    From<Table<'a, Column, Row, Message, Theme, Renderer>>
+    From<Table<'a, Column, Row, Message, Theme>>
     for Element<'a, Message, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer + 'a,
@@ -333,7 +333,7 @@ where
     Column: self::Column<'a, Message, Theme, Renderer, Row = Row>,
     Message: 'a + Clone,
 {
-    fn from(table: Table<'a, Column, Row, Message, Theme, Renderer>) -> Self {
+    fn from(table: Table<'a, Column, Row, Message, Theme>) -> Self {
         let Table {
             header,
             body,
@@ -1114,7 +1114,7 @@ mod tests {
     fn rows_and_columns_build_into_a_table() {
         let rows: [(&str, u32, &str); 2] = [("one", 1, "doc"), ("two", 2, "img")];
         let cols = columns();
-        let built = table::<TestColumn, _, (), iced_core::Theme, LayoutRenderer>(
+        let built = table::<TestColumn, _, (), iced_core::Theme>(
             Id::new("header"),
             Id::new("body"),
             &cols,
