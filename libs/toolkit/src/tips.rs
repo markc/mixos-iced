@@ -43,6 +43,9 @@ where
         .wrapping(iced_core::text::Wrapping::WordOrGlyph);
     let pad = tokens.metrics.spacing.sm;
     let gap = tokens.metrics.spacing.xs;
+    // `Tokens` is plain data: the clone frees the tooltip's style closure
+    // from this borrow, so hit regions can be built as `'static` children.
+    let tokens = tokens.clone();
     Tooltip::new(content, tooltip_view, tooltip::Position::Bottom)
         .padding(pad)
         .gap(gap)
