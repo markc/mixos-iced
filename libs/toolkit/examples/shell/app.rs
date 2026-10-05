@@ -100,11 +100,11 @@ impl App {
             Message::Inspector => self.show_inspector = !self.show_inspector,
             Message::Select(selected) => self.selected = selected,
             Message::Theme => {
-                self.mode = match self.mode {
-                    Mode::Dark => Mode::Light,
-                    Mode::Light => Mode::Custom,
-                    Mode::Custom => Mode::Dark,
-                };
+                let current = Mode::ALL
+                    .iter()
+                    .position(|mode| *mode == self.mode)
+                    .expect("current theme mode");
+                self.mode = Mode::ALL[(current + 1) % Mode::ALL.len()];
             }
             Message::Resize(Side::Left, width) => self.left_width = width,
             Message::Resize(Side::Right, width) => self.right_width = width,
@@ -112,7 +112,10 @@ impl App {
     }
 
     pub fn theme(&self) -> Theme {
-        Theme::new(self.mode.tokens())
+        Theme::named(
+            self.mode.tokens(),
+            label(&format!("shell-{}", self.mode.name())),
+        )
     }
 
     pub fn view(&self) -> iced::Element<'_, Message, Theme> {
