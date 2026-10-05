@@ -41,6 +41,8 @@ iced_runtime = { workspace = true }
 iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
 iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "x11", "thread-pool", "fira-sans"] }
 fluent-bundle = { version = "0.15", optional = true }
+# `elide` walks grapheme boundaries; the version is already in the lock.
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 # Tests shape real text; iced's embedded Fira Sans means no host font is read.

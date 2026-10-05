@@ -60,8 +60,8 @@ fn render(gallery: &Gallery, path: &Path) -> (u32, u32, Vec<u8>) {
     render_element(gallery.view(), &gallery.theme(), VIEWPORT, path)
 }
 
-fn render_element(
-    element: app::Element<'_>,
+fn render_element<M>(
+    element: toolkit::core::Element<'_, M, toolkit::Theme>,
     theme: &toolkit::Theme,
     viewport: Size,
     path: &Path,
@@ -151,6 +151,38 @@ fn lists_page_renders_dark_and_light() {
                 .step_by(2)
                 .any(|y| (0..width).step_by(2).any(|x| close(pixel(x, y), selection))),
             "{mode:?}: no pixel in the selection colour {selection:?}"
+        );
+        frames.push(rgba);
+    }
+    assert_ne!(frames[0], frames[1], "dark and light differ");
+}
+
+/// The "Text" page on its own, dark and light: an elided label and a
+/// fitted headline are on screen (text drawn, not just boxes), and the
+/// two token sets differ.
+#[test]
+fn text_page_renders_dark_and_light() {
+    const PAGE: Size = Size::new(1280.0, 520.0);
+    let dir = output_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut gallery = Gallery::new();
+    let mut frames = Vec::new();
+    for mode in [Mode::Dark, Mode::Light] {
+        gallery.update(Message::Mode(mode));
+        let path = dir.join(format!("text-{}.png", mode.name()));
+        let (width, height, rgba) =
+            render_element(gallery.text_page(), &gallery.theme(), PAGE, &path);
+        assert_eq!((width, height), (2560, 1040), "{mode:?}: 2x the page");
+        let pixel = |x: u32, y: u32| {
+            let at = ((y * width + x) * 4) as usize;
+            [rgba[at], rgba[at + 1], rgba[at + 2]]
+        };
+        let text = rgb8(mode.tokens().palette.text);
+        assert!(
+            (0..height)
+                .step_by(2)
+                .any(|y| (0..width).step_by(2).any(|x| close(pixel(x, y), text))),
+            "{mode:?}: no pixel in the text colour {text:?}"
         );
         frames.push(rgba);
     }

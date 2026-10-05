@@ -56,6 +56,19 @@ piano-roll = Piano roll: { $count } notes (wheel, Shift+wheel, Ctrl+wheel) { $pi
 page-widgets = Widgets
 page-services = Dialogs & toasts
 page-lists = Lists & trees
+
+# The "Text" page
+page-text = Text
+text-elision = Middle elision (extension kept)
+text-sample-short = notes.txt
+text-sample-path = /home/fred/Documents/Deeper/Still/deeper/monthly-report-draft.md
+text-sample-long = quarterly-report-final-v3-really-final-this-time.tar.gz
+text-fit = Fit to bounds
+text-fit-sample = HEADLINE
+text-tips = Tooltips
+text-tip-hover = Hover me
+text-tip-region = Region { $index }
+
 services = Dialogs and toasts
 services-hint = Open each from its button or its key. Tab, Shift+Tab, Enter and Escape drive a dialog; arrows move the choice; Escape dismisses the newest toast.
 action-key = { $label } ({ $chord })

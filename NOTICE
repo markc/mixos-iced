@@ -9,6 +9,22 @@ Incorporated code
   https://github.com/y5-snowies/nourish, Copyright (c) 2026 Yarden Apelker,
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its
   copyright line is carried in LICENSE-MIT.
+- toolkit (libs/toolkit) incorporates code from sweeten,
+  https://github.com/airstrike/sweeten, Copyright (c) 2026 Andy Terra,
+  licensed MIT: `src/fit_text.rs` (the `FitText` widget, adapted) and
+  `src/focus.rs` (the `:focus-visible` ring) from
+  `src/widget/{fit_text,focus}.rs` at commit `83db68f` (master). The
+  custom-widget and quad-styling templates in `libs/toolkit/CONTRIBUTING.md`
+  are adapted from iced's MIT-licensed `examples/custom_widget` and
+  `examples/custom_quad` (vendor/iced).
+- toolkit absorbs code from the author's own MIT OR Apache-2.0 cosmix
+  workspace (https://github.com/markc/cosmix), rewritten generic on entry:
+  `src/elide.rs` and `src/tips.rs` from dopus
+  (`apps/dopus/src/view/{elide,tips}.rs`, `7aeeb68`), `src/timers.rs` from
+  ced (`apps/ced/src/chrome/timer.rs`, `248c928`), `src/ime.rs` from term
+  (`apps/term/src/ime.rs`, `cae5196`), and `src/measure.rs` /
+  `src/images.rs` from this repository's scene-host
+  (`services/compd/crates/scene-host/src/{layout,images}.rs`).
 
 Third-party vendored code under vendor/ keeps its own licence files, and each
 directory records its upstream base and local patches (vendor/README.md).

@@ -18,6 +18,8 @@ mod strings;
 pub mod services;
 #[path = "lists.rs"]
 mod lists;
+#[path = "typography.rs"]
+mod typography;
 use strings::label;
 use toolkit::fonts::{self, Role};
 use toolkit::scale::format_db;
@@ -109,16 +111,18 @@ pub enum Page {
     Widgets,
     Services,
     Lists,
+    Text,
 }
 
 impl Page {
-    pub const ALL: [Page; 3] = [Page::Widgets, Page::Services, Page::Lists];
+    pub const ALL: [Page; 4] = [Page::Widgets, Page::Services, Page::Lists, Page::Text];
 
     pub fn name(self) -> &'static str {
         match self {
             Page::Widgets => "widgets",
             Page::Services => "services",
             Page::Lists => "lists",
+            Page::Text => "text",
         }
     }
 }
@@ -152,6 +156,7 @@ pub struct Gallery {
     view: RollView,
     picked: Option<usize>,
     lists: lists::Lists,
+    typography: typography::State,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +269,7 @@ impl Gallery {
             view: RollView::default(),
             picked: None,
             lists: lists::Lists::new(),
+            typography: typography::State::new(),
         }
     }
 
@@ -271,6 +277,11 @@ impl Gallery {
     /// own size).
     pub fn lists_page(&self) -> Element<'_> {
         self.lists.view(self.theme.tokens()).map(Message::Lists)
+    }
+
+    /// The "Text" page on its own (same reason as `lists_page`).
+    pub fn text_page(&self) -> Element<'_, ()> {
+        self.typography.view(self.theme.tokens())
     }
 
     /// The current theme; iced asks for it every frame, so a new `Tokens`
@@ -599,6 +610,13 @@ impl Gallery {
         }
         if self.page == Page::Lists {
             let page = page.push(self.lists_page());
+            return column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill)
+                .into();
+        }
+        if self.page == Page::Text {
+            let page = page.push(self.typography.view(tokens));
             return column![bar, scrollable(page).height(Fill)]
                 .width(Fill)
                 .height(Fill)

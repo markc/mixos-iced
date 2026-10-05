@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Small services and helpers, each absorbed generic (sources in `NOTICE`):
+  `measure::Measure` (widget bounds by id, scroll-corrected),
+  `timers::Timers<K>` (one-shot debounces on one wake-on-deadline thread),
+  `ime::Composition<Id>` (IME ownership across focus changes),
+  `images::Images` (eager RGBA decode, mtime/len-validated cache),
+  `elide::middle` + `elide::Label` (middle elision that keeps the
+  extension, bounded measured search), `fit_text::FitText` (font size
+  solved from the bounds), `focus::Source` + `focus::ring`
+  (`:focus-visible` convention) and `tips::tip`/`tips::regions` (themed
+  tooltips, including hit regions over custom-drawn content).
+- Gallery: a "Text" page (elision, fit-to-bounds, tooltips);
+  `tests/snapshots.rs` writes `text-{dark,light}.png`.
+- `CONTRIBUTING.md`: the custom-widget and quad-styling templates adapted
+  from iced's `custom_widget`/`custom_quad` examples.
 - Keys: `keys::Chord` (parsed from and shown as `Ctrl+Shift+S`; from key
   events by the Latin layout position), `keys::Bindings<A>` (chord → action
   in table order, accelerator labels), `keys::route` (modal, text-field and
