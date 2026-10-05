@@ -84,6 +84,7 @@ frame-title = Frame
 frame-body = The frame title sits in the top edge of the border.
 slide-bar = Slide bar
 number-input = Number input
+color-picker = Colour picker
 tabs = Tabs
 tab-first = First
 tab-second = Second

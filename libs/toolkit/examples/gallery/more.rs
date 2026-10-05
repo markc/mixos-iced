@@ -3,6 +3,7 @@
 //! labeled frame, slide bar, spinner, wrap, selection list and drop-down.
 use toolkit::badge::Badge;
 use toolkit::card::Card;
+use toolkit::color_picker::{self, Hsv};
 use toolkit::iced::widget::{button, column, container, row, text};
 use toolkit::iced::{self, Center, Fill};
 use toolkit::labeled_frame::LabeledFrame;
@@ -14,7 +15,7 @@ use toolkit::tab_bar::TabLabel;
 use toolkit::tabs::Tabs;
 use toolkit::theme::{self, Theme};
 use toolkit::wrap::Wrap;
-use toolkit::{DropDown, Tokens};
+use toolkit::{Color, DropDown, Tokens};
 
 use super::strings::label;
 
@@ -22,6 +23,11 @@ pub type Element<'a> = iced::Element<'a, Message, Theme>;
 
 /// Options the selection list shows.
 const OPTIONS: [&str; 4] = ["Alpha", "Beta", "Gamma", "Delta"];
+
+/// The picker field and hue strip are square-ish; the swatch beside them.
+const PICKER_SIDE: f32 = 176.0;
+const HUE_STRIP: f32 = 24.0;
+const SWATCH: f32 = 48.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -37,6 +43,10 @@ pub enum Message {
     Picked(usize, String),
     /// A tab was selected.
     Tab(usize),
+    /// The colour picker's field moved.
+    ColorPicked(Hsv),
+    /// The colour picker's hue strip moved.
+    HuePicked(Hsv),
     /// The drop-down underlay was pressed.
     Toggle,
 }
@@ -49,6 +59,9 @@ pub struct State {
     picked: Option<usize>,
     picked_value: Option<String>,
     tab: usize,
+    /// The picked colour; `None` before the first pick — a pleasant
+    /// default (teal-ish) shows until then.
+    color: Option<Hsv>,
 }
 
 impl State {
@@ -66,6 +79,23 @@ impl State {
                 self.picked_value = Some(value);
             }
             Message::Tab(tab) => self.tab = tab,
+            Message::ColorPicked(field) => {
+                self.color = Some(match self.color {
+                    // The field sets saturation/value; keep the strip's hue.
+                    Some(color) => Hsv {
+                        s: field.s,
+                        v: field.v,
+                        ..color
+                    },
+                    None => field,
+                });
+            }
+            Message::HuePicked(hue) => {
+                self.color = Some(match self.color {
+                    Some(color) => Hsv { h: hue.h, ..color },
+                    None => hue,
+                });
+            }
             Message::Toggle => self.expanded = !self.expanded,
         }
     }
@@ -171,6 +201,49 @@ impl State {
             )
             .set_active_tab(&self.tab);
 
+        // The colour picker: a saturation/value field, a hue strip, and
+        // a swatch of the picked colour. Before the first pick a default
+        // shows, so the demo starts painted.
+        let shown = self.color.unwrap_or_else(|| Hsv::from_rgb8([0x3E, 0xA6, 0xA0]));
+        let field = color_picker::color_picker(shown, Message::ColorPicked)
+            .spectrum(color_picker::saturation_value())
+            .width(PICKER_SIDE)
+            .height(PICKER_SIDE);
+        let strip = color_picker::color_picker(shown, Message::HuePicked)
+            .spectrum(color_picker::hue_vertical())
+            .width(HUE_STRIP)
+            .height(PICKER_SIDE);
+        let picked_rgba = Color::from(shown);
+        let swatch = container(iced::widget::Space::new())
+            .width(SWATCH)
+            .height(SWATCH)
+            .style(move |_| iced::widget::container::Style {
+                background: Some(picked_rgba.into()),
+                border: iced::Border {
+                    color: tokens.palette.border,
+                    width: tokens.metrics.border.width,
+                    radius: tokens.metrics.radius.sm.into(),
+                },
+                ..iced::widget::container::Style::default()
+            });
+        let picker_row = row![
+            field,
+            strip,
+            column![
+                swatch,
+                text(format!(
+                    "#{:02X}{:02X}{:02X}",
+                    shown.to_rgb8()[0],
+                    shown.to_rgb8()[1],
+                    shown.to_rgb8()[2]
+                ))
+                .size(body)
+            ]
+            .spacing(gap)
+        ]
+        .spacing(gap)
+        .align_y(Center);
+
         column![
             text(label("badges")).size(heading),
             badges,
@@ -182,6 +255,8 @@ impl State {
             row![slide, spin].spacing(gap).align_y(Center),
             text(label("number-input")).size(heading),
             number,
+            text(label("color-picker")).size(heading),
+            picker_row,
             text(label("tabs")).size(heading),
             tabs,
             text(label("wrap")).size(heading),

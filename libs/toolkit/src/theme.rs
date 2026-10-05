@@ -1196,6 +1196,25 @@ pub mod split {
     }
 }
 
+/// The colour picker: a circular marker at the small text size.
+pub mod color_picker {
+    use super::*;
+    use crate::color_picker::{MarkerShape, Style};
+
+    pub fn default(theme: &Theme) -> Style {
+        let m = theme.tokens.metrics;
+        let size = m.text.sm;
+        Style {
+            marker_shape: MarkerShape::Circle {
+                radius: size / 2.0,
+                border_width: m.border.width.max(1.0),
+            },
+            preserve_hue: true,
+        }
+    }
+}
+
+catalog!(crate::color_picker, color_picker::default, stateless);
 catalog!(crate::slide_bar, slide_bar::default, stateless);
 catalog!(crate::split, split::default, stateless);
 catalog!(crate::tab_bar, tab_bar::default);
@@ -1419,6 +1438,24 @@ impl crate::split::Catalog for iced_core::Theme {
     }
 
     fn style(&self, class: &Self::Class<'_>) -> crate::split::Style {
+        class(self)
+    }
+}
+
+impl crate::color_picker::Catalog for iced_core::Theme {
+    type Class<'a> = crate::color_picker::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|_| crate::color_picker::Style {
+            marker_shape: crate::color_picker::MarkerShape::Circle {
+                radius: 6.0,
+                border_width: 2.0,
+            },
+            preserve_hue: true,
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::color_picker::Style {
         class(self)
     }
 }

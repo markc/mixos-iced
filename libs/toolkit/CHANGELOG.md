@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Colour picker from B0ney's iced-color-picker (MIT; source in `NOTICE`):
+  `color_picker::{Hsv, Component, Spectrum, ColorPicker}` — HSV/RGBA
+  conversions round-trip tested, saturation×value matrix and hue strips
+  drawn through iced's geometry API (both renderers, no extra feature),
+  picking on press, drag and touch with a separate right-click callback,
+  cached geometry redrawn only when the spectrum's own components move,
+  and the marker outline derived from the picked colour's achromatic
+  pole. Gallery: a picker field, hue strip and hex swatch on the "More"
+  page.
 - Overlay widgets (sources in `NOTICE`): `anchor` — the flip-then-shift
   placement core (Side, Align, Placement, `place`, safe hover corridors,
   viewport Anchor) from A-Disruption, pure math with tests;

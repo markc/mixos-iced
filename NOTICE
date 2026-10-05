@@ -9,6 +9,13 @@ Incorporated code
   https://github.com/y5-snowies/nourish, Copyright (c) 2026 Yarden Apelker,
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its
   copyright line is carried in LICENSE-MIT.
+- toolkit (libs/toolkit) incorporates code from iced-color-picker,
+  https://github.com/B0ney/iced-color-picker, Copyright (c) 2025 B0ney,
+  licensed MIT: `src/color_picker.rs` (Hsv conversions, Spectrum
+  drawing, the ColorPicker widget and its marker) adapted from
+  `src/widget.rs` and `src/widget/{hsv,spectrums,style}.rs` at commit
+  `2f84daa`. Won the census bake-off against iced_aw's color_picker:
+  already on 0.15-dev, a quarter of the size, no chrono.
 - toolkit (libs/toolkit) incorporates code from A-Disruption/widgets,
   https://github.com/A-Disruption/widgets (MIT, LICENSE.txt in repo),
   Copyright (c) 2025 A-Disruption: `src/anchor.rs` is the placement core
