@@ -622,7 +622,7 @@ where
         Tag::of::<PickerState<Renderer>>()
     }
 
-    fn state(&self) -> State {
+    fn state(&self) -> TreeState {
         TreeState::new(PickerState::<Renderer>::default())
     }
 
@@ -660,12 +660,12 @@ where
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let State {
+        let PickerState {
             spectrum_cache,
             pressed,
             current_color,
             marker_cache,
-        }: &mut PickerState<Renderer> = tree.state.downcast_mut();
+        } = tree.state.downcast_mut::<PickerState<Renderer>>();
 
         let cursor_in_bounds = cursor.is_over(layout.bounds());
         let bounds = layout.bounds();
@@ -771,12 +771,12 @@ where
     ) {
         use iced_core::Renderer as _;
 
-        let State {
+        let PickerState {
             spectrum_cache,
             marker_cache,
             current_color,
             ..
-        }: &PickerState<Renderer> = tree.state.downcast_ref();
+        } = tree.state.downcast_ref::<PickerState<Renderer>>();
 
         let Style {
             marker_shape,
