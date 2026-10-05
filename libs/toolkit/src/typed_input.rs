@@ -189,27 +189,22 @@ where
     Theme: text_input::Catalog,
 {
     fn tag(&self) -> Tag {
-        <TextInput<_, _, _> as Widget<_, _, _>>::tag(&self.text_input)
+        self.text_input.tag()
     }
     fn state(&self) -> State {
-        <TextInput<_, _, _> as Widget<_, _, _>>::state(&self.text_input)
+        self.text_input.state()
     }
 
     fn diff(&mut self, state: &mut Tree) {
-        <TextInput<_, _, _> as Widget<_, _, _>>::diff(&mut self.text_input, state);
+        self.text_input.diff(state);
     }
 
     fn size(&self) -> Size<Length> {
-        <TextInput<_, _, _> as Widget<_, _, _>>::size(&self.text_input)
+        self.text_input.size()
     }
 
     fn layout(&mut self, state: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
-        <TextInput<_, _, _> as Widget<_, _, _>>::layout(
-            &mut self.text_input,
-            state,
-            renderer,
-            limits,
-        )
+        self.text_input.layout(state, renderer, limits)
     }
 
     fn draw(
@@ -222,16 +217,8 @@ where
         cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        <TextInput<_, _, _> as Widget<_, _, _>>::draw(
-            &self.text_input,
-            state,
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
+        self.text_input
+            .draw(state, renderer, theme, style, layout, cursor, viewport);
     }
 
     fn mouse_interaction(
@@ -242,14 +229,7 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        <TextInput<_, _, _> as Widget<_, _, _>>::mouse_interaction(
-            &self.text_input,
-            state,
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
+        self.text_input.mouse_interaction(state, layout, cursor, viewport, renderer)
     }
 
     fn operate(
@@ -259,13 +239,8 @@ where
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        <TextInput<_, _, _> as Widget<_, _, _>>::operate(
-            &mut self.text_input,
-            state,
-            layout,
-            renderer,
-            operation,
-        );
+        self.text_input
+            .operate(state, layout, renderer, operation);
     }
 
     fn update(

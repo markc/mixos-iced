@@ -164,11 +164,12 @@ where
     where
         F: 'static + Fn(TabId) -> Message,
     {
+        let count = tab_labels.len();
         Self {
             active_tab: 0,
             tab_indices: tab_labels.iter().map(|(id, _)| id.clone()).collect(),
             tab_labels: tab_labels.into_iter().map(|(_, label)| label).collect(),
-            tab_statuses: vec![(None, None); tab_labels.len()],
+            tab_statuses: vec![(None, None); count],
             align_tabs: Alignment::Start,
             on_select: Box::new(on_select),
             on_close: None,
@@ -549,13 +550,14 @@ where
 
         // Track hover for restyling.
         let mut request_redraw = false;
+        let active_idx = self.get_active_tab_idx();
         let children = layout.children();
         for ((i, _tab), layout) in self.tab_labels.iter().enumerate().zip(children) {
             let tab_status = self.tab_statuses.get_mut(i).expect("Should have a status.");
 
             let current_status = if cursor.is_over(layout.bounds()) {
                 Status::Hovered
-            } else if i == self.get_active_tab_idx() {
+            } else if i == active_idx {
                 Status::Active
             } else {
                 Status::Disabled
