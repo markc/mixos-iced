@@ -238,13 +238,14 @@ pub enum Event<Message> {
 /// The app shows it while open, stacked over its content.
 #[allow(clippy::type_complexity)]
 pub fn command_palette<'a, Message, Theme, Renderer>(
-    query: &str,
+    query: &'a str,
     selection: Option<usize>,
     commands: &[Command<Message>],
     tokens: &crate::tokens::Tokens,
 ) -> Element<'a, Event<Message>, Theme, Renderer>
 where
     Message: Clone + 'a,
+    Command<Message>: 'a,
     Theme: iced_widget::container::Catalog
         + iced_widget::text_input::Catalog
         + iced_core::widget::text::Catalog
@@ -319,9 +320,7 @@ where
         .width(520);
 
     container(
-        container(card)
-            .center_x(Length::Fill)
-            .padding(80),
+        container(card).center_x(Length::Fill).padding(80),
     )
     .width(Length::Fill)
     .height(Length::Fill)
