@@ -1177,7 +1177,27 @@ catalog!(crate::labeled_frame, labeled_frame::default, stateless);
 catalog!(crate::number_input, number_input::primary);
 catalog!(crate::selection_list, selection_list::default);
 catalog!(crate::sidebar, sidebar::default);
+/// The split grip: the border colour at rest, the `primary` pair while
+/// active.
+pub mod split {
+    use super::*;
+    use crate::split::Style;
+
+    pub fn default(theme: &Theme) -> Style {
+        let p = theme.tokens.palette;
+        let m = theme.tokens.metrics;
+        Style {
+            color: p.border,
+            active_color: p.primary,
+            width: m.border.width.max(2.0),
+            active_width: m.border.width.max(2.0) + 1.0,
+            radius: m.radius.sm,
+        }
+    }
+}
+
 catalog!(crate::slide_bar, slide_bar::default, stateless);
+catalog!(crate::split, split::default, stateless);
 catalog!(crate::tab_bar, tab_bar::default);
 
 impl crate::badge::Catalog for iced_core::Theme {
@@ -1379,6 +1399,27 @@ impl crate::tab_bar::Catalog for iced_core::Theme {
         status: crate::tab_bar::Status,
     ) -> crate::tab_bar::Style {
         class(self, status)
+    }
+}
+
+impl crate::split::Catalog for iced_core::Theme {
+    type Class<'a> = crate::split::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme| {
+            let p = theme.palette();
+            crate::split::Style {
+                color: p.background.strong.color,
+                active_color: p.primary.base.color,
+                width: 2.0,
+                active_width: 3.0,
+                radius: 0.0,
+            }
+        })
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::split::Style {
+        class(self)
     }
 }
 
