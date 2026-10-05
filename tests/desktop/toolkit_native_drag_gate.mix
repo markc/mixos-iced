@@ -1,0 +1,166 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Native data-device acceptance, with a private compositor and primary-seat
+-- ABP input. Run with named cluster-built binaries; it never builds locally.
+$n = require("nested_host_lib.mix")
+$root = trim(run_argv_must(["git", "rev-parse", "--show-toplevel"]))
+$options = getopt(args(), {bin: {arg: true}, gallery: {arg: true}, noded: {arg: true}, case: {arg: true}})
+if len($options.errors) != 0 then raise("ARGUMENTS", join($options.errors, "; ")) end
+$bin = get_or($options.opts, "bin", $root .. "/target/release-fast/compd")
+$gallery = get_or($options.opts, "gallery", $root .. "/target/debug/native-gallery")
+$broker = get_or($options.opts, "noded", "")
+$only = get_or($options.opts, "case", "")
+if not is_file($bin) or not is_file($gallery) then raise("BINARIES", "name the built compositor and gallery binaries") end
+
+fn rpc($session, $verb, $args)
+    $answer = $n.call($session.service, $verb, $args)
+    if $answer.rc != 0 then raise("NATIVE_BUS", $verb .. ": " .. json_encode($answer)) end
+    return $answer.result
+end
+fn input($session, $verb, $args)
+    $args["seat"] = "human"
+    return rpc($session, $verb, $args)
+end
+fn trace($root, $path, $event, $role)
+    $r = run_argv(["/opt/cosmix/bin/mix", $root .. "/tests/desktop/native_trace_wait.mix", $path, $event, $role], {timeout: 20, stderr: "stdout"})
+    if not $r.ok then raise("NATIVE_TIMEOUT", "missing " .. $event .. "/" .. $role .. ": " .. $r.stdout) end
+    return json_parse(trim($r.stdout))
+end
+fn records($path)
+    $rows = []
+    for each $line in lines(read_file($path))
+        if trim($line) != "" then push($rows, json_parse($line)) end
+    end
+    return $rows
+end
+fn move($session, $window, $x, $y)
+    return input($session, "comp.input.pointer.move", {window: {id: $window.id, generation: $window.generation}, x: $x, y: $y, corners: false})
+end
+fn button($session, $action)
+    return input($session, "comp.input.pointer.button", {button: "left", action: $action})
+end
+fn run_case($root, $session, $binary, $run, $case)
+    $processes = []
+    $windows = []
+    $directory = $run.path .. "/" .. $case.name
+    mkdir($directory)
+    $source_trace = $directory .. "/source.jsonl"
+    $target_trace = if $case.separate then $directory .. "/target.jsonl" else $source_trace end
+    $roles = if $case.separate then ["source", "target"] else ["both"] end
+    try
+        for each $role in $roles
+            $path = if $role == "target" then $target_trace else $source_trace end
+            $p = spawn([$binary, "--role", $role, "--trace", $path, "--case", $case.kind, "--action", $case.action, "--bytes", to_string($case.bytes), "--target-scale", to_string($case.scale)], {
+                env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket, DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", DBUS_SESSION_BUS_ADDRESS: $session.dbus},
+                stdout: {file: $directory .. "/" .. $role .. ".log"}, stderr: "stdout", detach: true
+            })
+            push($processes, $p)
+        end
+        for each $title in ["Native toolkit gallery — source", "Native toolkit gallery — target"]
+            $mapped = rpc($session, "comp.window.wait", {match: {title: $title}, until: "mapped", timeout_ms: 15000})
+            $rows = rpc($session, "comp.windows.list", {})
+            $matches = filter($rows.windows, fn($window) = $window.title == $title)
+            if len($matches) != 1 then raise("NATIVE_WINDOWS", "expected exactly one " .. $title) end
+            push($windows, $matches[0])
+        end
+        $source = $windows[0]
+        $target = $windows[1]
+        for $index = 0 to 1
+            $window = $windows[$index]
+            $placed = rpc($session, "comp.window.place", {id: $window.id, generation: $window.generation, x: $index * 650, y: 0, width: 620, height: 850})
+            $sized = rpc($session, "comp.window.wait", {match: {id: $window.id, generation: $window.generation}, until: "size", width: 620, height: 850, timeout_ms: 15000})
+        end
+        $m = move($session, $source, 70, 60)
+        $b = button($session, "press")
+        if $case.kind == "stale" then
+            $b = button($session, "release")
+            $e = trace($root, $source_trace, "rejected", "source")
+        elif $case.kind == "wrong-window" then
+            $e = trace($root, $source_trace, "rejected", "target")
+            $b = button($session, "release")
+        else
+            $m = move($session, $source, 95, 60)
+            $e = trace($root, $source_trace, "started", "source")
+            if $case.kind == "cancel" then
+                $e = trace($root, $source_trace, "cancelled", "source")
+                $b = button($session, "release")
+            elif $case.kind == "source-close" then
+                $e = trace($root, $source_trace, "closed", "source")
+                $b = button($session, "release")
+            else
+                $m = move($session, $target, 70, 60)
+                $e = trace($root, $target_trace, "enter", "target")
+                if $case.kind == "target-close" then
+                    $e = trace($root, $target_trace, "closed", "target")
+                    $b = button($session, "release")
+                    $e = trace($root, $source_trace, "cancelled", "source")
+                elif $case.kind == "reject" then
+                    $b = button($session, "release")
+                    $e = trace($root, $source_trace, "cancelled", "source")
+                else
+                    $e = trace($root, $target_trace, "action", "target")
+                    $b = button($session, "release")
+                    $delivery = trace($root, $target_trace, "delivery", "target")
+                    $finished = trace($root, $source_trace, "finished", "source")
+                    $state = trace($root, $source_trace, "source-state", "source")
+                    $expected = if $case.action == "copy" then "Copy" else "Move" end
+                    if $delivery.bytes != $case.bytes or $finished.bytes != $case.bytes or $delivery.sha256 != $finished.sha256 or $delivery.action != $expected or $finished.action != $expected then
+                        raise("NATIVE_TRANSFER", json_encode({delivery: $delivery, finished: $finished}))
+                    end
+                    $remaining = if $case.action == "copy" then $case.bytes else 0 end
+                    if $state.remaining != $remaining then raise("NATIVE_SOURCE", "source retention differs from the completed action") end
+                    for each $window in $windows
+                        $shot = rpc($session, "comp.capture.frame", {path: $directory .. "/window-" .. to_string($window.id) .. ".png", window: {id: $window.id, generation: $window.generation}})
+                    end
+                end
+            end
+        end
+        $all = records($source_trace)
+        if $case.separate then $all = concat($all, records($target_trace)) end
+        $delivered = len(filter($all, fn($row) = $row.event == "delivery"))
+        $finished_count = len(filter($all, fn($row) = $row.event == "finished"))
+        $expected_count = if $case.kind == "transfer" then 1 else 0 end
+        if $delivered != $expected_count or $finished_count != $expected_count then raise("NATIVE_ONCE", "delivery/completion count mismatch: " .. to_string([$delivered, $finished_count])) end
+        if len(filter($all, fn($row) = $row.event == "queue-error" or $row.event == "backend-failed" or $row.event == "start-error")) != 0 then raise("NATIVE_ERRORS", "unexpected backend errors in trace") end
+        print("PASS native DnD " .. $case.name .. ": " .. $directory)
+    finally
+        for each $p in $processes
+            if process_alive($p) then $k = kill($p, 15) end
+        end
+        for each $window in $windows
+            $gone = rpc($session, "comp.window.wait", {match: {id: $window.id, generation: $window.generation}, until: "gone", timeout_ms: 15000})
+        end
+    end
+end
+$cases = [
+    {name: "move", kind: "transfer", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "copy", kind: "transfer", action: "copy", bytes: 128, scale: 1, separate: false},
+    {name: "large-pipe", kind: "transfer", action: "move", bytes: 2097152, scale: 1, separate: false},
+    {name: "scaled", kind: "transfer", action: "copy", bytes: 512, scale: 1.5, separate: false},
+    {name: "separate-processes", kind: "transfer", action: "move", bytes: 1024, scale: 1, separate: true},
+    {name: "reject", kind: "reject", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "cancel", kind: "cancel", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "source-close", kind: "source-close", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "target-close", kind: "target-close", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "stale", kind: "stale", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "wrong-window", kind: "wrong-window", action: "move", bytes: 128, scale: 1, separate: false}
+]
+$run = $n.new_run("/tmp/toolkit-native-drag")
+$bus = nil
+$session = nil
+$ok = false
+try
+    $bus = $n.private_bus({dir: $run.path, name: "toolkit-drag", noded: $broker})
+    $session = $n.start({bin: $bin, tag: "toolkit-drag", run: $run, config: $root .. "/tests/desktop/smoke-settings.json", width: 1400, height: 1000, software: true})
+    if not $n.wait_ready($session, 30) then raise("NATIVE_START", "the private compositor did not become ready") end
+    for each $case in $cases
+        if $only == "" or $only == $case.name then run_case($root, $session, $gallery, $run, $case) end
+    end
+    $ok = true
+catch $error
+    print("FAIL native toolkit drag: " .. $error)
+finally
+    if $session != nil then $n.stop($session) end
+    if $bus != nil then $n.stop_bus($bus) end
+    print("native drag evidence retained: " .. $run.path)
+end
+exit(if $ok then 0 else 1 end)

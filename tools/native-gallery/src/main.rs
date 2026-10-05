@@ -120,7 +120,7 @@ impl App {
                 .append(true)
                 .open(path)
                 .unwrap();
-            writeln!(file, "{value}").unwrap();
+            file.write_all(format!("{value}\n").as_bytes()).unwrap();
         }
     }
     fn role(&self, id: window::Id) -> &'static str {
@@ -166,6 +166,7 @@ impl App {
                     {
                         pane.payload.clear();
                     }
+                    self.record(serde_json::json!({"event":"source-state","role":self.role(window),"remaining":self.panes.get(&window).map_or(0, |pane| pane.payload.len())}));
                 }
                 drag::Effect::Cancelled { window } => {
                     self.record(serde_json::json!({"event":"cancelled", "role":self.role(window)}))

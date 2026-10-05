@@ -2,9 +2,10 @@
 -- Event-driven inspection of acceptance-client JSON evidence. The caller
 -- bounds this process with run_argv's timeout, so a missing event fails.
 $arguments = args()
-if len($arguments) != 2 then raise("TRACE_ARGUMENTS", "expected trace path and event") end
+if len($arguments) < 2 or len($arguments) > 3 then raise("TRACE_ARGUMENTS", "expected trace path, event and optional role") end
 $path = $arguments[0]
 $wanted = $arguments[1]
+$role = if len($arguments) == 3 then $arguments[2] else "" end
 $watch = fs_watch($path)
 try
     while true
@@ -12,7 +13,7 @@ try
             for each $line in lines(read_file($path))
                 try
                     $row = json_parse($line)
-                    if $row.event == $wanted then
+                    if $row.event == $wanted and ($role == "" or $row.role == $role) then
                         print(json_encode($row))
                         exit(0)
                     end
