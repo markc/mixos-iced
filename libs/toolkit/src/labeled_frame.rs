@@ -473,6 +473,7 @@ mod tests {
         let renderer = LayoutRenderer::new();
         let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = frame.into();
         let mut tree = Tree::new(&element);
+        element.as_widget_mut().diff(&mut tree);
         let limits = Limits::new(iced_core::Size::ZERO, iced_core::Size::new(400.0, 400.0));
         let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
         let laid: Vec<_> = Layout::new(&node).children().collect();

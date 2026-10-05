@@ -39,6 +39,7 @@ pub struct State {
     level: f32,
     expanded: bool,
     picked: Option<usize>,
+    picked_value: Option<String>,
 }
 
 impl State {
@@ -50,7 +51,10 @@ impl State {
         match message {
             Message::Close | Message::LevelDone => {}
             Message::Level(level) => self.level = level,
-            Message::Picked(index, _) => self.picked = Some(index),
+            Message::Picked(index, value) => {
+                self.picked = Some(index);
+                self.picked_value = Some(value);
+            }
             Message::Toggle => self.expanded = !self.expanded,
         }
     }
@@ -62,16 +66,14 @@ impl State {
         let gap = tokens.metrics.spacing.sm;
 
         let badges = row([
-            Badge::new(text(label("badge-primary")))
-                .padding(4)
-                .into(),
+            Badge::new(text(label("badge-primary"))).padding(4).into(),
             Badge::new(text(label("badge-neutral")))
                 .padding(4)
-                .style(|theme, status| theme::badge::neutral(theme, status))
+                .style(theme::badge::neutral)
                 .into(),
             Badge::new(text(label("badge-destructive")))
                 .padding(4)
-                .style(|theme, status| theme::badge::destructive(theme, status))
+                .style(theme::badge::destructive)
                 .into(),
         ])
         .spacing(gap)
@@ -111,6 +113,10 @@ impl State {
 
         let options: Vec<String> = OPTIONS.iter().map(|option| (*option).to_owned()).collect();
         let mut list = SelectionList::new(options, Message::Picked).height(120);
+        let picked_text = match (&self.picked, &self.picked_value) {
+            (Some(_), Some(value)) => super::strings::format("picked-option", &[("option", value.clone())]),
+            _ => String::new(),
+        };
         if let Some(picked) = self.picked {
             list = list.selected(Some(picked));
         }
@@ -150,6 +156,7 @@ impl State {
             chips,
             text(label("selection-list")).size(heading),
             list,
+            text(picked_text).size(body),
             text(label("drop-down")).size(heading),
             drop,
         ]

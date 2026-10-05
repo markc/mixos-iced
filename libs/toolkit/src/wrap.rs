@@ -527,6 +527,7 @@ mod tests {
         let renderer = LayoutRenderer::new();
         let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = wrap.into();
         let mut tree = Tree::new(&element);
+        element.as_widget_mut().diff(&mut tree);
         let limits = Limits::new(Size::ZERO, Size::new(limit, f32::INFINITY));
         element.as_widget_mut().layout(&mut tree, &renderer, &limits)
     }

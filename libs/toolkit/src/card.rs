@@ -1030,6 +1030,7 @@ mod tests {
         let renderer = LayoutRenderer::new();
         let mut element: Element<'_, String, iced_core::Theme, LayoutRenderer> = card.into();
         let mut tree = Tree::new(&element);
+        element.as_widget_mut().diff(&mut tree);
         let limits = Limits::new(Size::ZERO, Size::new(300.0, f32::INFINITY));
         let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
         let laid: Vec<_> = Layout::new(&node).children().collect();
