@@ -4,6 +4,43 @@ use surfaces::SurfaceRole;
 use testkit::Harness;
 use world::comp::CURRENT_WORKSPACE;
 
+#[test]
+fn retired_surface_ids_are_not_walked_as_live_trees() {
+    use protocols::window::ident::ident::tree_index;
+    use smithay::reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface};
+
+    let mut h = Harness::new();
+    let (surface, xdg, toplevel) = h.mapped_toplevel(64, 48);
+    let server = h
+        .wire
+        .inner
+        .space
+        .state
+        .elements()
+        .next()
+        .unwrap()
+        .toplevel()
+        .unwrap()
+        .wl_surface()
+        .clone();
+    let id = server.id();
+    let display = h.wire.state.output.display_handle.clone();
+    assert_eq!(tree_index(&server), Some(0));
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.roundtrip();
+    assert!(!server.is_alive());
+    assert_eq!(tree_index(&server), None);
+    // Some server backends retain reconstructible IDs until their final
+    // references go away. Such a proxy no longer has compositor userdata.
+    if let Ok(retired) = WlSurface::from_id(&display, id) {
+        assert!(!retired.is_alive());
+        assert_eq!(tree_index(&retired), None);
+        assert!(Some(retired).filter(Resource::is_alive).is_none());
+    }
+}
+
 /// (a) An xdg toplevel takes its role, maps only at the frame step that places
 /// it, goes dormant when its role object dies and leaves the registry with its
 /// surface.
@@ -42,10 +79,7 @@ fn xdg_toplevel_maps_at_frame_and_unmaps_on_destroy() {
     assert!(record.mapped());
     assert_eq!(record.workspace(), Some(CURRENT_WORKSPACE));
     assert!(record.is_window_row());
-    assert_eq!(
-        record.app_id().map(|id| &**id),
-        Some("testkit.toplevel")
-    );
+    assert_eq!(record.app_id().map(|id| &**id), Some("testkit.toplevel"));
     assert_eq!(h.comp().registry.windows().count(), 1);
 
     toplevel.destroy();

@@ -229,6 +229,9 @@ pub fn surface(
 pub fn tree_index(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
 ) -> Option<u32> {
+    if !surface.is_alive() {
+        return None;
+    }
     let mut root = surface.clone();
     while let Some(parent) = compositor::get_parent(&root) {
         root = parent;

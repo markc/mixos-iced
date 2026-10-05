@@ -784,7 +784,11 @@ fn project_stack(lp: &Loop, placements: &Placements) -> Vec<u64> {
 
 pub(crate) fn wl_surface(lp: &Loop, handle: &SurfaceHandle) -> Option<WlSurface> {
     match handle {
-        SurfaceHandle::Wl(id) => WlSurface::from_id(&lp.inner.loader.display_handle, id.clone()).ok(),
+        // from_id can reconstruct a retired ID without its surface userdata.
+        // The registry can still contain that ID while destruction is drained.
+        SurfaceHandle::Wl(id) => WlSurface::from_id(&lp.inner.loader.display_handle, id.clone())
+            .ok()
+            .filter(Resource::is_alive),
         SurfaceHandle::X11(_) => None,
     }
 }
