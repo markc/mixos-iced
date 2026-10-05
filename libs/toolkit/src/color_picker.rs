@@ -15,9 +15,8 @@
 use iced_core::layout::{self, Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
-use iced_core::text;
 use iced_core::touch;
-use iced_core::widget::tree::{State, Tag};
+use iced_core::widget::tree::{State as TreeState, Tag};
 use iced_core::widget::{Tree, Widget};
 use iced_core::{
     Color, Element, Event, Layout, Length, Point, Rectangle, Shell, Size,
@@ -126,7 +125,7 @@ impl Hsv {
     pub fn from_rgba8(rgba: impl Into<[u8; 4]>) -> Self {
         let [r, g, b, a] = rgba.into();
 
-        Self::from(Color::from_rgba8(r, g, b, a))
+        Self::from(Color::from_rgba8(r, g, b, a as f32 / 255.0))
     }
 
     /// From an `[r, g, b]` byte array.
@@ -263,20 +262,29 @@ impl Component {
 
 /// What a [`ColorPicker`] draws: a component along one axis, or two as a
 /// matrix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spectrum {
     /// The component varies left to right.
     Horizontal(Component),
     /// The component varies top to bottom.
     Vertical(Component),
     /// `x` varies left to right, `y` top to bottom.
-    #[default]
     Matrix {
         /// The horizontal component.
         x: Component,
         /// The vertical component.
         y: Component,
     },
+}
+
+impl Default for Spectrum {
+    /// Saturation over value: the classic picker field.
+    fn default() -> Self {
+        Spectrum::Matrix {
+            x: Component::Saturation,
+            y: Component::Value,
+        }
+    }
 }
 
 impl Spectrum {
@@ -611,11 +619,11 @@ where
     }
 
     fn tag(&self) -> Tag {
-        Tag::of::<State<Renderer>>()
+        Tag::of::<PickerState<Renderer>>()
     }
 
     fn state(&self) -> State {
-        State::new(State::<Renderer>::default())
+        TreeState::new(PickerState::<Renderer>::default())
     }
 
     fn layout(
@@ -657,7 +665,7 @@ where
             pressed,
             current_color,
             marker_cache,
-        }: &mut State<Renderer> = tree.state.downcast_mut();
+        }: &mut PickerState<Renderer> = tree.state.downcast_mut();
 
         let cursor_in_bounds = cursor.is_over(layout.bounds());
         let bounds = layout.bounds();
@@ -768,7 +776,7 @@ where
             marker_cache,
             current_color,
             ..
-        }: &State<Renderer> = tree.state.downcast_ref();
+        }: &PickerState<Renderer> = tree.state.downcast_ref();
 
         let Style {
             marker_shape,
@@ -816,14 +824,14 @@ enum Pressed {
 
 /// The picker's cached state: geometry caches, the pointer, and the
 /// colour the caches were built around.
-struct State<Renderer: geometry::Renderer> {
+struct PickerState<Renderer: geometry::Renderer> {
     spectrum_cache: geometry::Cache<Renderer>,
     marker_cache: geometry::Cache<Renderer>,
     pressed: Option<Pressed>,
     current_color: Hsv,
 }
 
-impl<Renderer: geometry::Renderer> Default for State<Renderer> {
+impl<Renderer: geometry::Renderer> Default for PickerState<Renderer> {
     fn default() -> Self {
         Self {
             spectrum_cache: geometry::Cache::default(),
