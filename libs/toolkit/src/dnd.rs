@@ -1128,14 +1128,14 @@ mod tests {
         let a = Id::new("zone-a");
         let c = Id::new("zone-c");
 
-        let mut first: Element<'_, (), iced_core::Theme, iced_widget::Renderer> = container(
+        let mut first: Element<'_, (), iced_core::Theme, LayoutRenderer> = container(
             iced_widget::text("A"),
         )
         .id(a.clone())
         .width(100)
         .height(50)
         .into();
-        let mut second: Element<'_, (), iced_core::Theme, iced_widget::Renderer> = container(
+        let mut second: Element<'_, (), iced_core::Theme, LayoutRenderer> = container(
             iced_widget::text("C"),
         )
         .id(c.clone())
@@ -1144,7 +1144,7 @@ mod tests {
         .into();
 
         let mut op = find_zones(|_| true, None, None);
-        let renderer = iced_widget::Renderer::new(iced_core::Font::DEFAULT, iced_core::Pixels(16.0));
+        let renderer = LayoutRenderer::new();
         let limits = Limits::new(Size::ZERO, Size::new(400.0, 300.0));
         for element in [&mut first, &mut second] {
             let mut tree = WTree::new(element.as_widget());
