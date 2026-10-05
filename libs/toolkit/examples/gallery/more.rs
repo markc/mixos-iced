@@ -6,9 +6,12 @@ use toolkit::card::Card;
 use toolkit::iced::widget::{button, column, container, row, text};
 use toolkit::iced::{self, Center, Fill};
 use toolkit::labeled_frame::LabeledFrame;
+use toolkit::number_input::NumberInput;
 use toolkit::selection_list::SelectionList;
 use toolkit::slide_bar::SlideBar;
 use toolkit::spinner::Spinner;
+use toolkit::tab_bar::TabLabel;
+use toolkit::tabs::Tabs;
 use toolkit::theme::{self, Theme};
 use toolkit::wrap::Wrap;
 use toolkit::{DropDown, Tokens};
@@ -28,8 +31,12 @@ pub enum Message {
     Level(f32),
     /// The slide bar was released.
     LevelDone,
+    /// The number input changed.
+    Amount(u32),
     /// An option was picked from the selection list.
     Picked(usize, String),
+    /// A tab was selected.
+    Tab(usize),
     /// The drop-down underlay was pressed.
     Toggle,
 }
@@ -37,9 +44,11 @@ pub enum Message {
 #[derive(Default)]
 pub struct State {
     level: f32,
+    amount: u32,
     expanded: bool,
     picked: Option<usize>,
     picked_value: Option<String>,
+    tab: usize,
 }
 
 impl State {
@@ -51,10 +60,12 @@ impl State {
         match message {
             Message::Close | Message::LevelDone => {}
             Message::Level(level) => self.level = level,
+            Message::Amount(amount) => self.amount = amount,
             Message::Picked(index, value) => {
                 self.picked = Some(index);
                 self.picked_value = Some(value);
             }
+            Message::Tab(tab) => self.tab = tab,
             Message::Toggle => self.expanded = !self.expanded,
         }
     }
@@ -143,6 +154,23 @@ impl State {
         .alignment(toolkit::drop_down::Alignment::Bottom)
         .on_dismiss(Message::Toggle);
 
+        let number = NumberInput::new(&self.amount, 0..=100, Message::Amount)
+            .step(5)
+            .width(180);
+
+        let tabs = Tabs::new(Message::Tab)
+            .push(
+                0,
+                TabLabel::Text(label("tab-first")),
+                text(label("tab-first-body")).size(body),
+            )
+            .push(
+                1,
+                TabLabel::Text(label("tab-second")),
+                text(label("tab-second-body")).size(body),
+            )
+            .set_active_tab(&self.tab);
+
         column![
             text(label("badges")).size(heading),
             badges,
@@ -152,6 +180,10 @@ impl State {
             frame,
             text(label("slide-bar")).size(heading),
             row![slide, spin].spacing(gap).align_y(Center),
+            text(label("number-input")).size(heading),
+            number,
+            text(label("tabs")).size(heading),
+            tabs,
             text(label("wrap")).size(heading),
             chips,
             text(label("selection-list")).size(heading),

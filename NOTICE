@@ -12,10 +12,14 @@ Incorporated code
 - toolkit (libs/toolkit) incorporates code from iced_aw,
   https://github.com/iced-rs/iced_aw, Copyright (c) 2025 the iced_aw
   contributors (Kaiden42, Andrew Wheeler, Redhawk18), licensed MIT:
-  `src/{badge,card,drop_down,labeled_frame,selection_list,selection_list/list,
-  slide_bar,spinner,wrap}.rs` adapted from `src/widget/*` at commit
-  `f80f659` (master, 2026-10-05). The close glyph is a text `×`; iced_aw's
-  iced_fonts glyph (whose upstream repo is deleted) is not used.
+  `src/{badge,card,drop_down,flush_column,labeled_frame,number_input,
+  selection_list,selection_list/list,sidebar,slide_bar,spinner,tab_bar,
+  tab_bar/tab_label,tabs,typed_input,wrap}.rs` adapted from
+  `src/widget/*` at commit `f80f659` (master, 2026-10-05). The close and
+  modifier glyphs are text (`×`, `▲`, `▼`); iced_aw's iced_fonts glyphs
+  (whose upstream repo is deleted) are not used. iced_aw's
+  `SidebarWithContent` was not taken (the plain `Sidebar` is the census
+  item; `tabs::Tabs` is the owning variant).
 - toolkit (libs/toolkit) incorporates code from sweeten,
   https://github.com/airstrike/sweeten, Copyright (c) 2026 Andy Terra,
   licensed MIT: `src/fit_text.rs` (the `FitText` widget, adapted) and

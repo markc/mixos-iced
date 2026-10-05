@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Inputs and tabs absorbed from iced_aw (MIT; sources in `NOTICE`):
+  `typed_input::TypedInput` (a text input whose value is `T: FromStr`),
+  `number_input::NumberInput` (bounds, step, ▲▼/+- modifiers, wheel and
+  arrows, character-level validation), `tab_bar::TabBar` +
+  `tab_bar::TabLabel` (icon/text labels, close glyphs, hover tracking),
+  `tabs::Tabs` (bar + active content, top or bottom),
+  `sidebar::Sidebar` (the vertical shape, rows sized by
+  `flush_column::FlushColumn`) and `flush_column::FlushColumn` itself
+  (rows of one width with a flushed edge). Catalogs for `Theme` and
+  `iced_core::Theme`; the bake-off with ced's tab strip went to the
+  iced_aw shape (ced's is an application view; it rebuilds on
+  `TabBar` when ced moves to toolkit).
 - Widgets absorbed from iced_aw (master `f80f659`, MIT; sources in
   `NOTICE`), each restyled from `Tokens` through its own `Catalog`
   (implemented for `Theme` and `iced_core::Theme`): `badge::Badge`

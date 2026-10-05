@@ -1102,11 +1102,84 @@ pub mod slide_bar {
     }
 }
 
+/// Number input modifier buttons: the `primary` pair.
+pub mod number_input {
+    use super::*;
+    use crate::number_input::{Style, Status};
+
+    pub fn primary(theme: &Theme, status: Status) -> Style {
+        let p = theme.tokens.palette;
+        let (background, icon_color) = match status {
+            Status::Active => (Some(p.primary.into()), p.primary_text),
+            Status::Pressed => (Some(towards(p.primary, p.primary_text, 0.12).into()), p.primary_text),
+            Status::Disabled => (None, p.muted_text),
+        };
+        Style {
+            button_background: background,
+            icon_color,
+        }
+    }
+}
+
+/// Tab bars and sidebars: the active tab is the `surface` sheet with an
+/// edge, the hovered one `elevated`, the inactive ones `muted`.
+pub mod tab_bar {
+    use super::*;
+    use crate::tab_bar::{Style, Status};
+
+    pub fn default(theme: &Theme, status: Status) -> Style {
+        let p = theme.tokens.palette;
+        let m = theme.tokens.metrics;
+        let (tab_label_background, text) = match status {
+            Status::Active => (p.surface, p.text),
+            Status::Hovered => (p.elevated, p.elevated_text),
+            Status::Disabled => (p.muted_surface, p.muted_text),
+        };
+        Style {
+            background: None,
+            border_color: None,
+            border_width: 0.0,
+            tab_border_radius: iced_core::border::Radius::default()
+                .top_left(m.radius.sm)
+                .top_right(m.radius.sm),
+            tab_label_background: tab_label_background.into(),
+            tab_label_border_color: if status == Status::Active { p.border } else { p.muted_surface },
+            tab_label_border_width: if status == Status::Active { m.border.width } else { 0.0 },
+            icon_color: text,
+            icon_background: Some(p.muted_surface.into()),
+            icon_border_radius: m.radius.sm.into(),
+            text_color: text,
+        }
+    }
+}
+
+/// Sidebar tabs: the active tab is the `surface` sheet, rounded on its
+/// leading corners.
+pub mod sidebar {
+    use super::*;
+    use crate::sidebar::{Status, Style};
+    use crate::tab_bar;
+
+    pub fn default(theme: &Theme, status: Status) -> Style {
+        let style = tab_bar::default(theme, status);
+        let m = theme.tokens.metrics;
+        Style {
+            tab_border_radius: iced_core::border::Radius::default()
+                .top_left(m.radius.sm)
+                .bottom_left(m.radius.sm),
+            ..style
+        }
+    }
+}
+
 catalog!(crate::badge, badge::primary);
 catalog!(crate::card, card::default, stateless);
 catalog!(crate::labeled_frame, labeled_frame::default, stateless);
+catalog!(crate::number_input, number_input::primary);
 catalog!(crate::selection_list, selection_list::default);
+catalog!(crate::sidebar, sidebar::default);
 catalog!(crate::slide_bar, slide_bar::default, stateless);
+catalog!(crate::tab_bar, tab_bar::default);
 
 impl crate::badge::Catalog for iced_core::Theme {
     type Class<'a> = crate::badge::StyleFn<'a, Self>;
@@ -1237,6 +1310,88 @@ impl crate::slide_bar::Catalog for iced_core::Theme {
 
     fn style(&self, class: &Self::Class<'_>) -> crate::slide_bar::Style {
         class(self)
+    }
+}
+
+impl crate::number_input::Catalog for iced_core::Theme {
+    type Class<'a> = crate::number_input::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme, status| {
+            let p = theme.palette();
+            let (background, icon_color) = match status {
+                crate::number_input::Status::Active => {
+                    (Some(p.primary.base.color.into()), p.primary.base.text)
+                }
+                crate::number_input::Status::Pressed => (
+                    Some(towards(p.primary.base.color, p.primary.base.text, 0.12).into()),
+                    p.primary.base.text,
+                ),
+                crate::number_input::Status::Disabled => (None, p.secondary.base.color),
+            };
+            crate::number_input::Style {
+                button_background: background,
+                icon_color,
+            }
+        })
+    }
+
+    fn style(
+        &self,
+        class: &Self::Class<'_>,
+        status: crate::number_input::Status,
+    ) -> crate::number_input::Style {
+        class(self, status)
+    }
+}
+
+fn iced_tab_style(theme: &iced_core::Theme, status: crate::tab_bar::Status) -> crate::tab_bar::Style {
+    let p = theme.palette();
+    let (tab_label_background, text) = match status {
+        crate::tab_bar::Status::Active => (p.background.base.color, p.background.base.text),
+        crate::tab_bar::Status::Hovered => (p.background.strong.color, p.background.strong.text),
+        crate::tab_bar::Status::Disabled => (p.secondary.weak.color, p.secondary.weak.text),
+    };
+    crate::tab_bar::Style {
+        background: None,
+        border_color: None,
+        border_width: 0.0,
+        tab_border_radius: iced_core::border::Radius::default(),
+        tab_label_background: tab_label_background.into(),
+        tab_label_border_color: Color::TRANSPARENT,
+        tab_label_border_width: 0.0,
+        icon_color: text,
+        icon_background: Some(p.background.strong.color.into()),
+        icon_border_radius: 0.0.into(),
+        text_color: text,
+    }
+}
+
+impl crate::tab_bar::Catalog for iced_core::Theme {
+    type Class<'a> = crate::tab_bar::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(iced_tab_style)
+    }
+
+    fn style(
+        &self,
+        class: &Self::Class<'_>,
+        status: crate::tab_bar::Status,
+    ) -> crate::tab_bar::Style {
+        class(self, status)
+    }
+}
+
+impl crate::sidebar::Catalog for iced_core::Theme {
+    type Class<'a> = crate::sidebar::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|theme, status| iced_tab_style(theme, crate::tab_bar::Status::from(status)))
+    }
+
+    fn style(&self, class: &Self::Class<'_>, status: crate::sidebar::Status) -> crate::sidebar::Style {
+        class(self, status)
     }
 }
 
