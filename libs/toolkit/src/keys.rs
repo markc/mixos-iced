@@ -1043,26 +1043,24 @@ where
                 modifiers,
                 ..
             }) = event
+            && !modifiers.control()
+            && !modifiers.alt()
+            && !modifiers.logo()
         {
-            if !modifiers.control() && !modifiers.alt() && !modifiers.logo() {
-                let mut operation: Box<dyn Operation> =
-                    Box::new(crate::focus::cycle(modifiers.shift()));
-                // Focus-next chains a count pass to the mutation pass.
-                loop {
-                    self.content.as_widget_mut().operate(
-                        tree,
-                        layout,
-                        renderer,
-                        operation.as_mut(),
-                    );
-                    match operation.finish() {
-                        iced_core::widget::operation::Outcome::Chain(next) => operation = next,
-                        _ => break,
-                    }
+            let mut operation: Box<dyn Operation> =
+                Box::new(crate::focus::cycle(modifiers.shift()));
+            // Focus-next chains a count pass to the mutation pass.
+            loop {
+                self.content
+                    .as_widget_mut()
+                    .operate(tree, layout, renderer, operation.as_mut());
+                match operation.finish() {
+                    iced_core::widget::operation::Outcome::Chain(next) => operation = next,
+                    _ => break,
                 }
-                shell.capture_event();
-                shell.request_redraw();
             }
+            shell.capture_event();
+            shell.request_redraw();
         }
     }
 }

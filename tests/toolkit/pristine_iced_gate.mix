@@ -1,0 +1,45 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Run on a build worker from the repository root. The fixture contains no
+-- local vendor code or patches, and retains its manifest, lock and log.
+fn check($command, $directory)
+    $result = run_argv($command, {cwd: $directory, timeout: 3600, stderr: "stdout"})
+    print($result.stdout)
+    if not $result.ok then exit(1) end
+end
+$root = cwd()
+$fixture = env("TMPDIR", "/tmp") .. "/toolkit-pristine-" .. uuid()
+mkdir($fixture)
+copy_tree($root .. "/libs/toolkit", $fixture .. "/toolkit")
+copy($root .. "/rust-toolchain.toml", $fixture .. "/rust-toolchain.toml")
+check(["git", "init", "--quiet", "iced"], $fixture)
+check(["git", "-C", "iced", "fetch", "--quiet", "--depth", "1", "https://github.com/iced-rs/iced", "3de451447bd28217bb535632867550908e29d5d0"], $fixture)
+check(["git", "-C", "iced", "checkout", "--quiet", "--detach", "FETCH_HEAD"], $fixture)
+$manifest = <<TOML
+[workspace]
+resolver = "3"
+members = ["toolkit"]
+exclude = ["iced"]
+[workspace.package]
+repository = "https://example.org/toolkit"
+[workspace.dependencies]
+iced = { path = "iced", default-features = false }
+iced_core = { path = "iced/core" }
+iced_futures = { path = "iced/futures" }
+iced_widget = { path = "iced/widget", features = ["advanced"] }
+iced_graphics = { path = "iced/graphics", features = ["web-colors"] }
+iced_renderer = { path = "iced/renderer", default-features = false }
+iced_runtime = { path = "iced/runtime" }
+iced_wgpu = { path = "iced/wgpu", default-features = false, features = ["web-colors"] }
+iced_test = { path = "iced/test" }
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+num-traits = "0.2"
+serde_json = "=1.0.151"
+tempfile = "=3.27.0"
+TOML
+write_file($fixture .. "/Cargo.toml", $manifest)
+print("pristine fixture: " .. $fixture)
+check(["cargo", "generate-lockfile", "--manifest-path", $fixture .. "/Cargo.toml"], $fixture)
+check(["cargo", "test", "--manifest-path", $fixture .. "/Cargo.toml", "-p", "toolkit", "--no-default-features", "--lib", "--locked"], $fixture)
+check(["cargo", "test", "--manifest-path", $fixture .. "/Cargo.toml", "-p", "toolkit", "--features", "gallery-tiny-skia,image,svg", "--lib", "--test", "interactions", "--test", "services", "--test", "shell", "--test", "pickers", "--locked"], $fixture)
+check(["cargo", "test", "--manifest-path", $fixture .. "/Cargo.toml", "-p", "toolkit", "--features", "gallery-tiny-skia,image,svg", "--doc", "--locked"], $fixture)
+print("pristine upstream compatibility: passed")

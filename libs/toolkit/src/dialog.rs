@@ -1114,14 +1114,12 @@ where
         };
         if let Some((key, modifiers)) = key_press
             && is_frame_key(key)
+            && let Some(on_key) = &self.on_key
+            && let Some(message) = on_key(key, modifiers)
         {
-            if let Some(on_key) = &self.on_key
-                && let Some(message) = on_key(key, modifiers)
-            {
-                shell.publish(message);
-                shell.capture_event();
-                return;
-            }
+            shell.publish(message);
+            shell.capture_event();
+            return;
         }
         self.layer.as_widget_mut().update(
             &mut tree.children[1],

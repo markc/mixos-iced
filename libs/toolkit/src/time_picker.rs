@@ -273,14 +273,14 @@ impl TimePicker {
             let keys = on_event.clone();
             let field =
                 crate::keys::keys(field, |_| None).on_key_before_focused(id, move |event| {
-                    if let iced_core::keyboard::Event::KeyPressed { key, modifiers, .. } = event {
-                        if modifiers.is_empty() {
-                            return match key {
-                                Key::Named(Named::ArrowUp) => Some(keys(Event::Step(part, 1))),
-                                Key::Named(Named::ArrowDown) => Some(keys(Event::Step(part, -1))),
-                                _ => None,
-                            };
-                        }
+                    if let iced_core::keyboard::Event::KeyPressed { key, modifiers, .. } = event
+                        && modifiers.is_empty()
+                    {
+                        return match key {
+                            Key::Named(Named::ArrowUp) => Some(keys(Event::Step(part, 1))),
+                            Key::Named(Named::ArrowDown) => Some(keys(Event::Step(part, -1))),
+                            _ => None,
+                        };
                     }
                     None
                 });
