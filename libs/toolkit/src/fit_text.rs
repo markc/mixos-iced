@@ -585,17 +585,22 @@ mod tests {
 
     #[test]
     fn layout_reuses_the_cached_decision() {
-        let mut widget = FitText::<iced_core::Theme, LayoutRenderer>::new("cached")
+        let widget = FitText::<iced_core::Theme, LayoutRenderer>::new("cached")
             .max_size(24)
             .min_size(8);
         let renderer = LayoutRenderer::new();
-        let mut tree = Tree::new(&widget);
+        let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = widget.into();
+        let mut tree = Tree::new(&element);
         let limits = Limits::new(Size::new(160.0, 32.0), Size::new(160.0, 32.0));
-        let first = Widget::<(), _, _>::layout(&mut widget, &mut tree, &renderer, &limits);
+        let first = element
+            .as_widget_mut()
+            .layout(&mut tree, &renderer, &limits);
         let first_cache =
             tree.state.downcast_ref::<State<<LayoutRenderer as text::Renderer>::Paragraph>>()
                 .cache.clone();
-        let second = Widget::<(), _, _>::layout(&mut widget, &mut tree, &renderer, &limits);
+        let second = element
+            .as_widget_mut()
+            .layout(&mut tree, &renderer, &limits);
         let second_cache =
             tree.state.downcast_ref::<State<<LayoutRenderer as text::Renderer>::Paragraph>>()
                 .cache.clone();

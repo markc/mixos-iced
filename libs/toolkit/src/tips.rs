@@ -32,7 +32,7 @@ pub fn tip<'a, M, Theme, Renderer>(
 ) -> Element<'a, M, Theme, Renderer>
 where
     Theme: container::Catalog + text::Catalog + 'a,
-    Theme::Class<'a>: From<container::StyleFn<'a, Theme>>,
+    <Theme as container::Catalog>::Class<'a>: From<container::StyleFn<'a, Theme>>,
     Renderer: iced_core::text::Renderer + 'a,
     M: 'a,
 {
@@ -73,7 +73,7 @@ pub fn regions<M, Theme, Renderer>(
 ) -> layout::Node
 where
     Theme: container::Catalog + text::Catalog + 'static,
-    for<'a> Theme::Class<'a>: From<container::StyleFn<'a, Theme>>,
+    for<'a> <Theme as container::Catalog>::Class<'a>: From<container::StyleFn<'a, Theme>>,
     Renderer: iced_core::text::Renderer + 'static,
     M: 'static,
 {
@@ -87,7 +87,7 @@ where
             )
         })
         .collect();
-    tree.diff_children(children.as_slice());
+    tree.diff_children(children.as_mut_slice());
     let nodes = children
         .iter_mut()
         .zip(&mut tree.children)
@@ -118,7 +118,7 @@ mod tests {
         let mut children: Vec<Element<'static, (), iced_core::Theme, LayoutRenderer>> = Vec::new();
         let mut tree = Tree::empty();
         let renderer = LayoutRenderer::new();
-        let regions = vec![
+        let hits = vec![
             (
                 Rectangle { x: 8.0, y: 8.0, width: 40.0, height: 12.0 },
                 "first".to_owned(),
@@ -130,7 +130,7 @@ mod tests {
         ];
         let node = regions(
             &tokens,
-            regions,
+            hits,
             &mut children,
             &mut tree,
             &renderer,

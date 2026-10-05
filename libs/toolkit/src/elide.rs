@@ -141,8 +141,8 @@ where
 {
     /// The full, unelided text.
     pub text: String,
-    /// The font the label shapes with.
-    pub font: Renderer::Font,
+    /// The font the label shapes with; `None` is the renderer's default.
+    pub font: Option<Renderer::Font>,
     /// The font size in px.
     pub px: Pixels,
     color: Option<Color>,
@@ -158,7 +158,7 @@ where
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            font: Renderer::default_font(),
+            font: None,
             px: Pixels(16.0),
             color: None,
             class: Theme::default(),
@@ -167,7 +167,7 @@ where
 
     /// Sets the font.
     pub fn font(mut self, font: impl Into<Renderer::Font>) -> Self {
-        self.font = font.into();
+        self.font = Some(font.into());
         self
     }
 
@@ -204,24 +204,24 @@ where
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(shape::<Renderer::Paragraph>("", self.font, self.px))
+        // The paragraph is rebuilt from scratch in `layout`; the state only
+        // needs to exist with the right type.
+        tree::State::new(Renderer::Paragraph::default())
     }
 
     fn layout(
         &mut self,
         tree: &mut Tree,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
+        let font = self.font.unwrap_or_else(|| renderer.default_font());
         let width = limits.max().width;
         let value = middle(&self.text, width, |s| {
-            shape::<Renderer::Paragraph>(s, self.font, self.px)
-                .min_bounds()
-                .width
+            shape::<Renderer::Paragraph>(s, font, self.px).min_bounds().width
         });
-        let paragraph = shape::<Renderer::Paragraph>(&value, self.font, self.px);
-        let height =
-            shape::<Renderer::Paragraph>("Ag", self.font, self.px).min_bounds().height;
+        let paragraph = shape::<Renderer::Paragraph>(&value, font, self.px);
+        let height = shape::<Renderer::Paragraph>("Ag", font, self.px).min_bounds().height;
         *tree.state.downcast_mut::<Renderer::Paragraph>() = paragraph;
         layout::Node::new(limits.resolve(
             Length::Fill,
