@@ -11,7 +11,7 @@ use iced_core::renderer;
 use iced_core::text::paragraph::{self, Paragraph};
 use iced_core::text::{Paragraph as _, Text};
 use iced_core::widget::tree::{self, Tree};
-use iced_core::widget::{Operation, Tree};
+use iced_core::widget::Operation;
 use iced_core::{Border, Element, Event, Layout, Length, Padding, Shell, Size, Widget};
 use iced_widget::container::{self, Container};
 use iced_widget::scrollable::{self, Scrollable};

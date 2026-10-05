@@ -27,6 +27,7 @@ pub mod ime;
 pub mod images;
 pub mod keys;
 pub mod knob;
+pub mod labeled_frame;
 pub mod menu;
 pub mod measure;
 pub mod meter;

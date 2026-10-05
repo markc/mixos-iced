@@ -514,7 +514,7 @@ pub mod direction {
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
-    use iced_core::widget::Space;
+    use iced_widget::Space;
 
     type TestWrap<'a> =
         Wrap<'a, (), direction::Horizontal, iced_core::Theme, LayoutRenderer>;

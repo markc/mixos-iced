@@ -14,7 +14,7 @@ use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
 use iced_core::touch;
 use iced_core::widget::tree::{self, Tree};
-use iced_core::widget::{Operation, Tree};
+use iced_core::widget::Operation;
 use iced_core::{
     Background, Border, Color, Element, Event, Layout, Length, Point, Rectangle, Shell, Size,
     Widget,
