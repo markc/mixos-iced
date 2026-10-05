@@ -519,20 +519,16 @@ mod tests {
     type TestWrap<'a> =
         Wrap<'a, (), direction::Horizontal, iced_core::Theme, LayoutRenderer>;
 
-    fn wrap_with(widths: &[f32], limit: f32) -> layout::Node {
+    fn wrap_with(widths: &[f32], limit: f32) -> Node {
         let mut wrap = TestWrap::new();
         for width in widths {
             wrap = wrap.push(Space::new().width(*width).height(20.0));
         }
         let renderer = LayoutRenderer::new();
-        let mut tree = Tree::new(&wrap);
+        let mut element: Element<'_, (), iced_core::Theme, LayoutRenderer> = wrap.into();
+        let mut tree = Tree::new(&element);
         let limits = Limits::new(Size::ZERO, Size::new(limit, f32::INFINITY));
-        Widget::<(), iced_core::Theme, LayoutRenderer>::layout(
-            &mut wrap,
-            &mut tree,
-            &renderer,
-            &limits,
-        )
+        element.as_widget_mut().layout(&mut tree, &renderer, &limits)
     }
 
     #[test]

@@ -343,11 +343,11 @@ pub fn update<Message, T>(
 }
 
 /// Draws a [`SlideBar`].
-fn draw<T, R, Message>(
+fn draw<T, R, Message, Theme>(
     renderer: &mut R,
     layout: Layout<'_>,
     viewport: &Rectangle,
-    slider: &SlideBar<'_, T, Message>,
+    slider: &SlideBar<'_, T, Message, Theme, R>,
     style: &Style,
 ) where
     T: Into<f64> + Copy,
