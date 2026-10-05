@@ -998,16 +998,29 @@ where
     F: Fn(&Rectangle) -> bool + Send + 'static,
 {
     FindZones {
-        filter: F,
-        options: Option<Vec<Id>>,
-        zones: Vec<(Id, Rectangle)>,
-        max_depth: Option<usize>,
-        c_depth: usize,
-        offset: Vector,
-        goto_next: bool,
+        filter,
+        options,
+        zones: vec![],
+        max_depth: depth,
+        c_depth: 0,
+        offset: Vector { x: 0.0, y: 0.0 },
+        goto_next: false,
     }
+}
 
-    impl<F> Operation<Vec<(Id, Rectangle)>> for FindZones<F>
+/// The drop-zone-collecting operation [`find_zones`] builds; run it as
+/// any other widget operation.
+pub struct FindZones<F> {
+    filter: F,
+    options: Option<Vec<Id>>,
+    zones: Vec<(Id, Rectangle)>,
+    max_depth: Option<usize>,
+    c_depth: usize,
+    offset: Vector,
+    goto_next: bool,
+}
+
+impl<F> Operation<Vec<(Id, Rectangle)>> for FindZones<F>
     where
         F: Fn(&Rectangle) -> bool + Send + 'static,
     {
@@ -1054,16 +1067,6 @@ where
         fn finish(&self) -> Outcome<Vec<(Id, Rectangle)>> {
             Outcome::Some(self.zones.clone())
         }
-    }
-
-    FindZones {
-        filter,
-        options,
-        zones: vec![],
-        max_depth: depth,
-        c_depth: 0,
-        offset: Vector { x: 0.0, y: 0.0 },
-        goto_next: false,
     }
 }
 
