@@ -12,6 +12,7 @@
 
 use iced_core::{Color, Element, Length};
 use iced_widget::{column, container, row, text, text_input};
+use iced_widget::column;
 
 /// The widget id of the palette's query field, so the app can focus it
 /// on open.
@@ -295,7 +296,8 @@ where
         })
         .collect();
 
-    let body = column![field, column::with_children(results).spacing(2)]
+    let results_column = column::with_children(results).spacing(2);
+    let body = column![field, results_column]
         .spacing(tokens.metrics.spacing.sm)
         .padding(tokens.metrics.spacing.md)
         .width(520);

@@ -282,6 +282,7 @@ impl<Message, Theme, Renderer> overlay::Overlay<Message, Theme, Renderer>
     for PopoverSurface<'_, '_, Message, Theme, Renderer>
 where
     Renderer: renderer::Renderer,
+    Message: Clone,
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> iced_core::layout::Node {
         let base = Rectangle {
@@ -346,7 +347,7 @@ where
                 Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
                     if key == &keyboard::Key::Named(Named::Escape) =>
                 {
-                    shell.publish(on_dismiss.clone());
+                    shell.publish((*on_dismiss).clone());
                 }
 
                 Event::Mouse(mouse::Event::ButtonPressed(
@@ -356,7 +357,7 @@ where
                     if !cursor.is_over(layout.bounds())
                         && !cursor.is_over(self.trigger_bounds) =>
                 {
-                    shell.publish(on_dismiss.clone());
+                    shell.publish((*on_dismiss).clone());
                 }
 
                 _ => {}
