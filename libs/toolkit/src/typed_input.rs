@@ -54,13 +54,13 @@ where
 {
     /// Creates a new [`TypedInput`] showing `value`.
     #[must_use]
-    pub fn new(placeholder: &str, value: &T) -> Self
+    pub fn new(placeholder: &'a str, value: &T) -> Self
     where
         T: 'a + Clone,
     {
         Self {
             value: value.clone(),
-            text_input: TextInput::new(placeholder, format!("{value}").as_str())
+            text_input: TextInput::new(placeholder, value.to_string())
                 .padding(DEFAULT_PADDING)
                 .width(Length::Fixed(127.0))
                 .class(<Theme as text_input::Catalog>::default()),

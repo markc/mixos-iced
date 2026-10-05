@@ -186,7 +186,7 @@ where
     /// Sets the font of the [`NumberInput`].
     #[must_use]
     pub fn font(mut self, font: impl Into<Renderer::Font>) -> Self {
-        self.content = self.content.font(font);
+        self.content = self.content.font(font.into());
         self
     }
 
@@ -226,7 +226,7 @@ where
 
     /// Sets the horizontal alignment of the [`NumberInput`].
     #[must_use]
-    pub fn align_x(mut self, alignment: impl Into<iced_core::alignment::Horizontal>) -> Self {
+    pub fn align_x(mut self, alignment: iced_core::alignment::Horizontal) -> Self {
         self.content = self.content.align_x(alignment);
         self
     }
@@ -383,15 +383,13 @@ where
 
 /// The layout element for the modifier buttons: ▲▼ stacked, or +- beside
 /// when the padding is too tight to overlay them.
-fn modifier_element<T, Message, Theme, Renderer>(
+fn modifier_element<Theme, Renderer>(
     padding: &Padding,
     icon_size: f32,
 ) -> Element<'static, (), Theme, Renderer>
 where
     Theme: iced_widget::container::Catalog + iced_core::widget::text::Catalog + 'static,
     Renderer: renderer::Renderer + iced_core::text::Renderer + 'static,
-    T: 'static,
-    Message: 'static,
 {
     let btn_mod = |c| {
         Container::<(), Theme, Renderer>::new(
@@ -429,11 +427,12 @@ impl<'a, T, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
 where
     T: Num + NumAssignOps + PartialOrd + Display + FromStr + ToString + Clone + Bounded + 'a,
     Message: 'a + Clone,
-    Renderer: 'a + iced_core::text::Renderer<Font = iced_core::Font>,
+    Renderer: 'a + iced_core::text::Renderer<Font = iced_core::Font> + 'static,
     Theme: Catalog
         + text_input::Catalog
         + iced_core::widget::text::Catalog
-        + iced_widget::container::Catalog,
+        + iced_widget::container::Catalog
+        + 'static,
 {
     fn tag(&self) -> Tag {
         Tag::of::<ModifierState>()
@@ -470,7 +469,7 @@ where
         let icon_size = txt_size * 2.5 / 4.0;
 
         let mut element =
-            modifier_element::<T, Message, Theme, Renderer>(&self.padding, icon_size.0);
+            modifier_element::<Theme, Renderer>(&self.padding, icon_size.0);
 
         let input_tree = if let Some(child_tree) = tree.children.get_mut(1) {
             child_tree.diff(element.as_widget_mut());
@@ -515,7 +514,7 @@ where
             && !self.ignore_buttons
         {
             let txt_size = self.size.unwrap_or_else(|| renderer.default_size());
-            let mut element = modifier_element::<T, Message, Theme, Renderer>(
+            let mut element = modifier_element::<Theme, Renderer>(
                 &self.padding,
                 (txt_size * 2.5 / 4.0).0,
             );
@@ -896,12 +895,13 @@ impl<'a, T, Message, Theme, Renderer> From<NumberInput<'a, T, Message, Theme, Re
 where
     T: 'a + Num + NumAssignOps + PartialOrd + Display + FromStr + Clone + Bounded,
     Message: 'a + Clone,
-    Renderer: 'a + iced_core::text::Renderer<Font = iced_core::Font>,
+    Renderer: 'a + iced_core::text::Renderer<Font = iced_core::Font> + 'static,
     Theme: 'a
         + Catalog
         + text_input::Catalog
         + iced_core::widget::text::Catalog
-        + iced_widget::container::Catalog,
+        + iced_widget::container::Catalog
+        + 'static,
 {
     fn from(num_input: NumberInput<'a, T, Message, Theme, Renderer>) -> Self {
         Element::new(num_input)
