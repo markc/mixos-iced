@@ -347,7 +347,7 @@ impl Gallery {
 
     pub fn update_with_tasks(&mut self, message: Message) -> iced::Task<Message> {
         let task = if let Message::Flows(flows::Message::Sync(offset)) = &message {
-            iced::widget::scrollable::scroll_to(
+            iced_runtime::widget::operation::scroll_to(
                 iced::widget::Id::new("flows-table-header"),
                 *offset,
             )

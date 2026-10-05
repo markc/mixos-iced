@@ -1204,6 +1204,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pointer_only_modal_takeover_clears_a_pending_sequence() {
+        use crate::test_renderer::LayoutRenderer;
+        use iced_core::shell::{Bus, Waker};
+        use iced_core::{Event, Size, layout, mouse, widget::Tree};
+        let mut bindings = SequenceBindings::default();
+        bindings.bind_sequence("Ctrl+k", "Ctrl+c", 1).unwrap();
+        let state = std::cell::RefCell::new(SequenceState::default());
+        let chord = Chord::parse("Ctrl+k").unwrap();
+        state.borrow_mut().route(
+            &bindings,
+            &chord,
+            Context::default(),
+            iced_core::time::Instant::now(),
+            false,
+        );
+        let mut router = sequence_router(
+            iced_widget::Space::new().width(100).height(100),
+            &bindings,
+            &state,
+            |_| (),
+        )
+        .modal(true);
+        let mut tree = Tree::new(&router as &dyn Widget<(), crate::Theme, LayoutRenderer>);
+        let renderer = LayoutRenderer::new();
+        let node = router.layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(100.0, 100.0)),
+        );
+        let mut bus = Bus::new();
+        let mut shell = Shell::new(&iced_core::window::Headless, Waker::noop(), &mut bus);
+        router.update(
+            &mut tree,
+            &Event::Window(iced_core::window::Event::RedrawRequested(
+                iced_core::time::Instant::now(),
+            )),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut shell,
+            &Rectangle::with_size(Size::new(100.0, 100.0)),
+        );
+        assert!(state.borrow().pending.is_none());
+    }
+
+    #[test]
     fn sequences_cover_timeout_mismatch_repeat_and_routing_priority() {
         let mut bindings = SequenceBindings::new();
         bindings.bind_sequence("Ctrl+k", "Ctrl+c", 1).unwrap();

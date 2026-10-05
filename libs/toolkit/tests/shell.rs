@@ -39,10 +39,9 @@ fn toggling_shell_chrome_preserves_editor_focus_selection_and_undo() {
         }
         shell.into()
     }
-    let renderer = iced_futures::futures::executor::block_on(iced_widget::Renderer::new(
-        Default::default(),
-        None,
-    ))
+    let renderer = iced_futures::futures::executor::block_on(
+        <iced_widget::Renderer as Headless>::new(Default::default(), None),
+    )
     .unwrap();
     let mut element = view("draft", false);
     let mut tree = Tree::new(element.as_widget());
