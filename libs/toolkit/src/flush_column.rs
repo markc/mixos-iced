@@ -391,6 +391,7 @@ impl<'a, Message, Theme, Renderer> FlushColumn<'a, Message, Theme, Renderer>
 where
     Renderer: iced_core::Renderer,
 {
+    #[allow(clippy::too_many_arguments)]
     fn draw_children(
         &self,
         tree: &Tree,

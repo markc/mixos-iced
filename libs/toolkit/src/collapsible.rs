@@ -70,28 +70,24 @@ where
     }
 
     /// Sets the body shown while expanded.
-    #[must_use]
     pub fn body(mut self, body: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         self.body = Some(body.into());
         self
     }
 
     /// Sets the width.
-    #[must_use]
     pub fn width(mut self, width: impl Into<Length>) -> Self {
         self.width = width.into();
         self
     }
 
     /// Sets the padding inside the header and around the body.
-    #[must_use]
     pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
         self.padding = padding.into();
         self
     }
 
     /// Sets the title text size.
-    #[must_use]
     pub fn text_size(mut self, size: f32) -> Self {
         self.text_size = size;
         self
@@ -181,9 +177,11 @@ mod tests {
 
         let mut collapsed = collapsed;
         let mut tree = iced_core::widget::Tree::new(&collapsed);
+        collapsed.as_widget_mut().diff(&mut tree);
         let collapsed_node = collapsed.as_widget_mut().layout(&mut tree, &renderer, &limits);
         let mut expanded = expanded;
         let mut tree = iced_core::widget::Tree::new(&expanded);
+        expanded.as_widget_mut().diff(&mut tree);
         let expanded_node = expanded.as_widget_mut().layout(&mut tree, &renderer, &limits);
 
         assert!(
