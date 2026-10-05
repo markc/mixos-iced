@@ -5,7 +5,7 @@ use toolkit::badge::Badge;
 use toolkit::card::Card;
 use toolkit::color_picker::{self, Hsv};
 use toolkit::iced::widget::{button, column, container, row, text};
-use toolkit::iced::{self, Center, Fill};
+use toolkit::iced::{self, Center, Color, Fill};
 use toolkit::labeled_frame::LabeledFrame;
 use toolkit::number_input::NumberInput;
 use toolkit::selection_list::SelectionList;
@@ -15,7 +15,7 @@ use toolkit::tab_bar::TabLabel;
 use toolkit::tabs::Tabs;
 use toolkit::theme::{self, Theme};
 use toolkit::wrap::Wrap;
-use toolkit::{Color, DropDown, Tokens};
+use toolkit::{DropDown, Tokens};
 
 use super::strings::label;
 
