@@ -134,6 +134,7 @@ mod tests {
     fn concurrent_raster_lookups_share_one_handle() {
         let images = std::sync::Arc::new(Images::new());
         let start = std::sync::Barrier::new(8);
+        let start = &start;
         let handles = std::thread::scope(|scope| {
             let threads: Vec<_> = (0..8)
                 .map(|_| {

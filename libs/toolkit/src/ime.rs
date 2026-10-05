@@ -26,11 +26,17 @@
 /// The id type is whatever identifies the focusable surfaces sharing one
 /// input-method seat (a pane id, a tab index). `Default` is the closed,
 /// idle state.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Composition<Id = u64> {
     owner: Option<Id>,
     open: bool,
     resetting: bool,
+}
+
+impl<Id> Default for Composition<Id> {
+    fn default() -> Self {
+        Self { owner: None, open: false, resetting: false }
+    }
 }
 
 impl<Id: Clone + PartialEq> Composition<Id> {
@@ -67,7 +73,7 @@ impl<Id: Clone + PartialEq> Composition<Id> {
             return false;
         }
         if self.owner.is_none() {
-            self.owner = active;
+            self.owner = active.clone();
         }
         self.owner == active
     }

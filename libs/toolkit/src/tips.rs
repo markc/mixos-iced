@@ -32,6 +32,7 @@ pub fn tip<'a, M, Theme, Renderer>(
 ) -> Element<'a, M, Theme, Renderer>
 where
     Theme: container::Catalog + text::Catalog + 'a,
+    Theme::Class<'a>: From<container::StyleFn<'a, Theme>>,
     Renderer: iced_core::text::Renderer + 'a,
     M: 'a,
 {
@@ -72,6 +73,7 @@ pub fn regions<M, Theme, Renderer>(
 ) -> layout::Node
 where
     Theme: container::Catalog + text::Catalog + 'static,
+    for<'a> Theme::Class<'a>: From<container::StyleFn<'a, Theme>>,
     Renderer: iced_core::text::Renderer + 'static,
     M: 'static,
 {
@@ -134,7 +136,7 @@ mod tests {
             &renderer,
             Size::new(64.0, 64.0),
         );
-        let Layout { children: laid, .. } = Layout::new(&node);
+        let laid: Vec<_> = Layout::new(&node).children().collect();
         let first = laid[0].bounds();
         let second = laid[1].bounds();
         assert_eq!(

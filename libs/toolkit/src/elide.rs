@@ -240,8 +240,6 @@ where
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        use iced_core::Renderer as _;
-        use iced_core::text::Renderer as _;
         let Style { color } = theme.style(&self.class);
         let color = self.color.or(color).unwrap_or(defaults.text_color);
         if let Some(clip) = layout.bounds().intersection(viewport) {
