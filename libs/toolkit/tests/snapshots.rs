@@ -196,7 +196,7 @@ fn text_page_renders_dark_and_light() {
 fn more_page_renders_dark_and_light() {
     // Taller than the other pages: the whole eight-widget set, including
     // the selection list and the drop-down, must be on screen.
-    const PAGE: Size = Size::new(1280.0, 900.0);
+    const PAGE: Size = Size::new(1280.0, 1100.0);
     let dir = output_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut gallery = Gallery::new();
@@ -206,7 +206,7 @@ fn more_page_renders_dark_and_light() {
         let path = dir.join(format!("more-{}.png", mode.name()));
         let (width, height, rgba) =
             render_element(gallery.more_page(), &gallery.theme(), PAGE, &path);
-        assert_eq!((width, height), (2560, 1800), "{mode:?}: 2x the page");
+        assert_eq!((width, height), (2560, 2200), "{mode:?}: 2x the page");
         let pixel = |x: u32, y: u32| {
             let at = ((y * width + x) * 4) as usize;
             [rgba[at], rgba[at + 1], rgba[at + 2]]
