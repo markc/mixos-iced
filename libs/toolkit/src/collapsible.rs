@@ -180,10 +180,12 @@ mod tests {
         .body(iced_widget::text("Body text that occupies a line"))
         .into();
 
+        let mut collapsed = collapsed;
         let mut tree = iced_core::widget::Tree::new(&collapsed);
-        let collapsed_node = collapsed.as_widget().layout(&mut tree, &renderer, &limits);
+        let collapsed_node = collapsed.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut expanded = expanded;
         let mut tree = iced_core::widget::Tree::new(&expanded);
-        let expanded_node = expanded.as_widget().layout(&mut tree, &renderer, &limits);
+        let expanded_node = expanded.as_widget_mut().layout(&mut tree, &renderer, &limits);
 
         assert!(
             expanded_node.bounds().height > collapsed_node.bounds().height,

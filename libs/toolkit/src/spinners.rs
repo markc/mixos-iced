@@ -17,7 +17,7 @@ use iced_core::{
 };
 
 /// The default cycle time of a spinner.
-const DEFAULT_PERIOD: Duration = Duration::from_secs_f32(1.2);
+const DEFAULT_PERIOD: Duration = Duration::from_millis(1200);
 /// Redraw cadence while animating.
 const FRAMES_PER_SECOND: u64 = 60;
 
@@ -151,8 +151,6 @@ where
         _cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        use iced_core::Renderer as _;
-
         let bounds = layout.bounds();
         if !bounds.intersects(viewport) || self.period.is_zero() {
             return;

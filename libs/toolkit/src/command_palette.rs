@@ -11,7 +11,7 @@
 //! from the dialog-ready helpers below.
 
 use iced_core::{Color, Element, Length};
-use iced_widget::{column, container, row, scrollable, text, text_input};
+use iced_widget::{column, container, row, text, text_input};
 
 /// The widget id of the palette's query field, so the app can focus it
 /// on open.
@@ -166,7 +166,7 @@ fn is_word_boundary(chars: &[char], idx: usize) -> bool {
 
 /// A filtered command: its index into the caller's slice, its match
 /// against the query, and the precomputed message.
-pub struct Hit<'a, Message> {
+pub struct Hit<'a, Message: 'a> {
     /// The index into the original command slice.
     pub index: usize,
     /// The fuzzy match against the query.
@@ -180,8 +180,11 @@ pub struct Hit<'a, Message> {
 pub fn filter<'a, Message>(
     query: &str,
     commands: &'a [Command<Message>],
-) -> Vec<Hit<'a, Message>> {
-    let mut hits: Vec<Hit<'_>> = commands
+) -> Vec<Hit<'a, Message>>
+where
+    Message: 'a,
+{
+    let mut hits: Vec<Hit<'a, Message>> = commands
         .iter()
         .enumerate()
         .filter_map(|(index, command)| {
@@ -270,20 +273,12 @@ where
         hits.iter().take(MAX_RESULTS).enumerate().map(|(row, hit)| {
             let selected = selection == Some(row);
             let name = text(hit.command.name.as_str()).size(tokens.metrics.text.md);
-            let name = if selected {
-                name.color(tokens.palette.selection_text)
-            } else {
-                name
-            };
+            let name = name;
             let mut entry = row![name]
                 .spacing(tokens.metrics.spacing.sm)
                 .align_y(iced_core::alignment::Vertical::Center);
             if let Some(description) = &hit.command.description {
-                entry = entry.push(
-                    text(description.as_str())
-                        .size(tokens.metrics.text.sm)
-                        .color(tokens.palette.muted_text),
-                );
+                entry = entry.push(text(description.as_str()).size(tokens.metrics.text.sm));
             }
             let entry = if selected {
                 container(entry).style(move |_| iced_widget::container::Style {
@@ -321,7 +316,7 @@ where
     container(
         container(card)
             .center_x(Length::Fill)
-            .padding([80, 0, 0, 0]),
+            .padding(80),
     )
     .width(Length::Fill)
     .height(Length::Fill)
