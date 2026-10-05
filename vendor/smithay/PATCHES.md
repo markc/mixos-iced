@@ -182,6 +182,13 @@ Guard: `tests/desktop/toolkit_native_drag_gate.mix --case target-close`
 drives the real primary-seat data-device protocol and waits for the target
 generation to disappear before releasing the held button.
 
+The offer destruction callback also retires abandoned transfers when the
+receiver disconnects after Drop. Shared state counts outstanding offers and
+cancels once when the last offer disappears without Finish. Destruction after
+successful Finish never cancels. Guard: the same gate's `target-disconnect`
+case transfers a large payload, kills the unacknowledging receiver and checks
+that the source retains its Move payload.
+
 **Lost page-flip recovery needs NO vendor patch.**
 - A flip whose completion event never arrives leaves `pending_frame` set. While it is set, `queue_frame` parks the next frame and issues no commit, so the surface stays wedged.
 - compd's stall rescue (`services/compd/crates/native/src/wire/frame/frame.rs` `rescue_pipe`) calls the stock `DrmCompositor::frame_submitted()` for a pipe that has been in flight for 2 s. That treats the flip as completed: the pending frame becomes current, and its buffer, which is the one on screen, is not handed back for reuse.

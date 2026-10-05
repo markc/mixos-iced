@@ -230,7 +230,8 @@ mod tests {
     fn fixture_svg() -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("fallback.svg");
-        std::fs::write(&path, r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000" fill-opacity="0.5"/></svg>"##).unwrap();
+        let [red, green, blue, _] = crate::Tokens::dark().palette.primary.into_rgba8();
+        std::fs::write(&path, format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="rgb({red},{green},{blue})" fill-opacity="0.5"/></svg>"#)).unwrap();
         (directory, path)
     }
     fn image(ready: Ready) -> Handle {
@@ -265,7 +266,12 @@ mod tests {
             panic!()
         };
         assert_eq!((width, height), (10, 10));
-        assert_eq!(&pixels[..3], &[255, 0, 0]);
+        for (actual, expected) in pixels[..3]
+            .iter()
+            .zip(crate::Tokens::dark().palette.primary.into_rgba8())
+        {
+            assert!(actual.abs_diff(expected) <= 1);
+        }
         assert!((126..=129).contains(&pixels[3]));
         let black = resolve("symbolic-fixture", 1.0, crate::Tokens::light().palette.text);
         let white = resolve("symbolic-fixture", 1.0, crate::Tokens::dark().palette.text);
@@ -360,7 +366,7 @@ mod tests {
         let before = path.metadata().unwrap();
         let changed = std::fs::read_to_string(&path)
             .unwrap()
-            .replace("#ff0000", "#00ff00");
+            .replace("0.5", "0.4");
         std::fs::write(&path, changed).unwrap();
         std::fs::File::options()
             .write(true)
@@ -377,7 +383,7 @@ mod tests {
         let Handle::Rgba { pixels, .. } = second else {
             panic!()
         };
-        assert_eq!(&pixels[..3], &[0, 255, 0]);
+        assert!((100..=104).contains(&pixels[3]));
     }
     #[test]
     fn corrupt_primary_asset_can_fall_back_to_a_ready_raster() {

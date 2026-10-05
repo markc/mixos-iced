@@ -47,7 +47,8 @@ fn run_case($root, $session, $binary, $run, $case)
     $target_trace = if $case.separate then $directory .. "/target.jsonl" else $source_trace end
     $roles = if $case.separate then ["source", "target"] else ["both"] end
     $overlap = get_or($case, "overlap", false)
-    $ack_count = if $overlap then "2" else "1" end
+    $target_die = $case.kind == "target-die"
+    $ack_count = if $overlap or $target_die then "2" else "1" end
     $second_trace = $directory .. "/second.jsonl"
     try
         for each $role in $roles
@@ -113,7 +114,11 @@ fn run_case($root, $session, $binary, $run, $case)
                     $e = trace($root, $target_trace, "negotiated", "target")
                     $b = button($session, "release")
                     $delivery = trace($root, $target_trace, "delivery", "target")
-                    if $overlap then
+                    if $target_die then
+                        $k = kill($processes[1], 9)
+                        $cancelled = trace($root, $source_trace, "cancelled", "source")
+                        if $cancelled.remaining != $case.bytes then raise("NATIVE_SOURCE", "interrupted Move removed the source") end
+                    elif $overlap then
                         if len(filter(records($source_trace), fn($row) = $row.event == "finished")) != 0 then raise("NATIVE_EARLY", "first source finished before target application") end
                         $p = spawn([$binary, "--role", "source", "--title", "Second native source", "--trace", $second_trace, "--bytes", to_string($case.bytes)], {
                             env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket, DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", DBUS_SESSION_BUS_ADDRESS: $session.dbus},
@@ -135,6 +140,7 @@ fn run_case($root, $session, $binary, $run, $case)
                         $second_done = trace($root, $second_trace, "finished", "source")
                         if $second_done.bytes != $delivery.bytes or $second_done.sha256 != $delivery.sha256 or $second_done.action != "Move" then raise("NATIVE_OVERLAP", "second source completion differs") end
                     end
+                    if not $target_die then
                     $finished = trace($root, $source_trace, "finished", "source")
                     $state = trace($root, $source_trace, "source-state", "source")
                     $expected = if $case.action == "copy" then "Copy" else "Move" end
@@ -146,6 +152,7 @@ fn run_case($root, $session, $binary, $run, $case)
                     for each $window in $windows
                         $shot = rpc($session, "comp.capture.frame", {path: $directory .. "/window-" .. to_string($window.id) .. ".png", window: {id: $window.id, generation: $window.generation}})
                     end
+                    end
                 end
             end
         end
@@ -155,7 +162,8 @@ fn run_case($root, $session, $binary, $run, $case)
         $delivered = len(filter($all, fn($row) = $row.event == "delivery"))
         $finished_count = len(filter($all, fn($row) = $row.event == "finished"))
         $expected_count = if $overlap then 2 elif $case.kind == "transfer" or $case.kind == "rearm" then 1 else 0 end
-        if $delivered != $expected_count or $finished_count != $expected_count then raise("NATIVE_ONCE", "delivery/completion count mismatch: " .. to_string([$delivered, $finished_count])) end
+        $expected_delivery = if $target_die then 1 else $expected_count end
+        if $delivered != $expected_delivery or $finished_count != $expected_count then raise("NATIVE_ONCE", "delivery/completion count mismatch: " .. to_string([$delivered, $finished_count])) end
         if len(filter($all, fn($row) = $row.event == "queue-error" or $row.event == "backend-failed" or $row.event == "start-error")) != 0 then raise("NATIVE_ERRORS", "unexpected backend errors in trace") end
         print("PASS native DnD " .. $case.name .. ": " .. $directory)
     finally
@@ -179,6 +187,7 @@ $cases = [
     {name: "cancel-rearm", kind: "rearm", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "source-close", kind: "source-close", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "target-close", kind: "target-close", action: "move", bytes: 128, scale: 1, separate: false},
+    {name: "target-disconnect", kind: "target-die", action: "move", bytes: 2097152, scale: 1, separate: true},
     {name: "stale", kind: "stale", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "wrong-window", kind: "wrong-window", action: "move", bytes: 128, scale: 1, separate: false}
 ]

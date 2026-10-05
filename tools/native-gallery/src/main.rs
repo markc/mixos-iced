@@ -191,7 +191,7 @@ impl App {
                     self.record(serde_json::json!({"event":"source-state","role":self.role(window),"remaining":self.panes.get(&window).map_or(0, |pane| pane.payload.len())}));
                 }
                 drag::Effect::Cancelled { window } => {
-                    self.record(serde_json::json!({"event":"cancelled", "role":self.role(window)}))
+                    self.record(serde_json::json!({"event":"cancelled", "role":self.role(window), "remaining":self.panes.get(&window).map_or(0, |pane| pane.payload.len())}))
                 }
                 drag::Effect::Failed { window, .. } => {
                     self.record(serde_json::json!({"event":"failed", "role":self.role(window)}))
@@ -217,15 +217,17 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Gallery(id, message) => self
-                .panes
-                .get_mut(&id)
-                .map(|pane| {
-                    pane.gallery
-                        .update_with_tasks(message)
-                        .map(move |message| Message::Gallery(id, message))
-                })
-                .unwrap_or_else(Task::none),
+            Message::Gallery(id, message) => Task::batch([
+                self.panes
+                    .get_mut(&id)
+                    .map(|pane| {
+                        pane.gallery
+                            .update_with_tasks(message)
+                            .map(move |message| Message::Gallery(id, message))
+                    })
+                    .unwrap_or_else(Task::none),
+                Task::done(Message::Measure(id)),
+            ]),
             Message::Start(id, payload) => {
                 match self.drag.start(id, payload, drag::Actions::BOTH) {
                     Ok(effect) => self.effects(vec![effect]),

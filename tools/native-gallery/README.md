@@ -14,3 +14,8 @@ input API. `--trace PATH` writes bounded JSON evidence for the gate.
 `--role source|target` uses separate processes; `--action copy|move` chooses
 the target's preferred action. Other switches exercise rejection,
 cancellation, closure, stale presses and payloads exceeding pipe capacity.
+
+The desktop gate also checks overlapping dropped offers, cancellation followed
+by a fresh drag, and a receiver disconnecting before acknowledging a Move.
+`--ack-count 2` deliberately holds the first acknowledgement for those cases.
+The source retains its payload until the protocol reports a successful Move.

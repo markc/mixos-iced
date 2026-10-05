@@ -206,6 +206,7 @@ impl From<DndAction> for WlDndAction {
 
 #[derive(Debug)]
 struct WlOfferState {
+    live_offers: usize,
     active: bool,
     dropped: bool,
     accepted: bool,
@@ -246,6 +247,16 @@ where
         _client_id: ClientId,
         _object_id: ObjectId,
     ) {
+        let mut source = self.source.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        state.live_offers = state.live_offers.saturating_sub(1);
+        if state.live_offers == 0 && state.dropped && !state.finished {
+            state.active = false;
+            state.finished = true;
+            if let Some(source) = source.take() {
+                source.cancel();
+            }
+        }
     }
 }
 
@@ -297,13 +308,9 @@ fn handle_dnd<D, S>(
                 );
             }
         }
-        Request::Destroy => {
-            if data.dropped && !data.finished {
-                if let Some(source) = source.as_ref() {
-                    source.cancel();
-                }
-            }
-        }
+        // The object-destruction callback also covers a disconnected client,
+        // and cancels only when the last outstanding offer disappears.
+        Request::Destroy => {}
         Request::Finish => {
             if data.chosen_action.is_empty() {
                 offer.post_error(
@@ -419,8 +426,10 @@ impl<S: Source> OfferData for WlOfferData<S> {
             .iter()
             .any(|o| o.version() >= wl_data_offer::REQ_SET_ACTIONS_SINCE);
         // compd: destroying the last offer before release withdraws acceptance.
-        data.active && self.wl_offers.iter().any(Resource::is_alive)
-            && data.accepted && (!requires_action || !data.chosen_action.is_empty())
+        data.active
+            && self.wl_offers.iter().any(Resource::is_alive)
+            && data.accepted
+            && (!requires_action || !data.chosen_action.is_empty())
     }
 }
 
@@ -443,6 +452,7 @@ impl<D: SeatHandler + DataDeviceHandler + 'static> DndFocus<D> for WlSurface {
             .borrow();
         let mut offers = Vec::with_capacity(1);
         let offer_state = Arc::new(Mutex::new(WlOfferState {
+            live_offers: 0,
             active: true,
             dropped: false,
             accepted: true,
@@ -479,6 +489,7 @@ impl<D: SeatHandler + DataDeviceHandler + 'static> DndFocus<D> for WlSurface {
                     )
                     .unwrap();
                 let offer = WlDataOffer::from_id(dh, offer).unwrap();
+                offer_state.lock().unwrap().live_offers += 1;
 
                 // advertize the offer to the client
                 device.data_offer(&offer);
@@ -867,9 +878,15 @@ mod can_start_drag_guard {
         let body = &src[arm..];
         let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
         let check = at("handler.can_start_drag(&seat)");
-        assert!(check < at("used_sources"), "refusal must precede the used-source record");
+        assert!(
+            check < at("used_sources"),
+            "refusal must precede the used-source record"
+        );
         assert!(check < at("give_role"), "refusal must precede the icon role");
-        assert!(check < at("dnd_requested"), "refusal must precede the grab request");
+        assert!(
+            check < at("dnd_requested"),
+            "refusal must precede the grab request"
+        );
         assert!(body[check..].find("cancelled()").unwrap() < at("used_sources") - check);
     }
 }

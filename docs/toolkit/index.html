@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Why the MixOS repository is laid out by kind of artefact (apps, services, cli, libs) with plain, unique names and self-contained components, and what was rejected.">
+    <meta name="description" content="toolkit is a reusable iced widget library. Applications supply their own palette, metrics, fonts, icons, strings and state. It has no dependency on the…">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Decision — source layout and naming — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/decisions/2026-10-04-source-layout/">
-    <link rel="alternate" type="text/markdown" href="/decisions/2026-10-04-source-layout.md" title="Markdown source">
+    <title>Widget toolkit — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/toolkit/">
+    <link rel="alternate" type="text/markdown" href="/toolkit.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -125,9 +125,9 @@
                         <a href="/"><i data-lucide="home"></i> Home</a>
                         <div class="sidebar-divider"></div>
                         <a href="/try/"><i data-lucide="monitor"></i> Try it beside your desktop</a>
-                        <a href="/toolkit/"><i data-lucide="layers"></i> Widget toolkit</a>
+                        <a href="/toolkit/" class="active" aria-current="page"><i data-lucide="layers"></i> Widget toolkit</a>
                         <div class="sidebar-divider"></div>
-                        <a href="/decisions/2026-10-04-source-layout/" class="active" aria-current="page"><i data-lucide="file-text"></i> Decision: source layout</a>
+                        <a href="/decisions/2026-10-04-source-layout/"><i data-lucide="file-text"></i> Decision: source layout</a>
                     </nav>
                 </div>
             </div>
@@ -214,10 +214,10 @@
                 <div class="panel-title">On this page</div>
                 <div class="panel-content">
                     <nav id="toc-nav">
-                        <a href="#the-decision">The decision</a>
-                        <a href="#evidence-how-comparable-projects-do-it">Evidence: how comparable projects do it</a>
-                        <a href="#what-was-weighed">What was weighed</a>
-                        <a href="#review">Review</a>
+                        <a href="#widgets-and-composition">Widgets and composition</a>
+                        <a href="#services">Services</a>
+                        <a href="#drag-and-drop">Drag and drop</a>
+                        <a href="#build-and-test">Build and test</a>
                     </nav>
                 </div>
             </div>
@@ -242,95 +242,64 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="decision--source-layout-and-naming">Decision — source layout and naming</h1>
-<p><strong>Accepted 2026-10-04.</strong> The binding rules are in the repository's
-<a href="https://github.com/markc/mixos/blob/main/AGENTS.md"><code>AGENTS.md</code></a>. This page records why.</p>
-<h2 id="the-decision">The decision</h2>
-<ul>
-<li><strong>The top level is classified by kind of artefact, one axis only:</strong>
-<code>apps/</code>, <code>services/</code>, <code>cli/</code>, <code>libs/</code> and <code>session/</code>, beside <code>tests/</code>,
-<code>tools/</code>, <code>etc/</code>, <code>share/</code>, <code>docs/</code> and <code>vendor/</code>. Layer and domain are
-metadata checked by gates, never directories.</li>
-<li><strong>Components are self-contained.</strong> A component's crates, systemd units, Mix
-scripts, assets, translations and tests live in its one directory. Private
-crates nest in the component's own <code>crates/</code>.</li>
-<li><strong>Plain names:</strong> no brand or layer prefixes. Names are unique across the
-resolved dependency graph and never reused once retired.</li>
-<li><strong>Promotion to <code>libs/</code> is a reviewed decision, not an automatic move.</strong></li>
-<li><strong>The Mix language is two packages:</strong> the embeddable library <code>mix</code> in
-<code>libs/mix</code>, and the shell <code>mix-shell</code> in <code>cli/mix-shell</code>, which builds the
-<code>mix</code> binary. Daemons embed the interpreter without linking the shell.</li>
-</ul>
-<h2 id="evidence-how-comparable-projects-do-it">Evidence: how comparable projects do it</h2>
-<p>Checked against each project's repository on 2026-10-04.</p>
-<table><thead><tr><th>Project</th><th>Shape</th><th>Naming</th><th>Why</th></tr></thead><tbody>
-<tr><td>Zed</td><td>one workspace, flat <code>crates/</code> (249 crates)</td><td>plain</td><td>internal crates, never published</td></tr>
-<tr><td>rust-analyzer</td><td>flat <code>crates/</code> (35)</td><td>plain; renamed when published</td><td>same</td></tr>
-<tr><td>Servo, Deno</td><td><code>components/</code>, <code>ext/</code></td><td>plain</td><td>split by role</td></tr>
-<tr><td>Bevy, uv, nushell</td><td>flat <code>crates/</code></td><td>prefixed</td><td>every crate published to crates.io</td></tr>
-<tr><td>Haiku</td><td><code>src/{apps,kits,servers,libs,bin,…}</code></td><td>plain</td><td>by kind of artefact</td></tr>
-<tr><td>SerenityOS</td><td><code>Userland/{Applications,Libraries,Services,Utilities,…}</code></td><td><code>Lib*</code></td><td>by kind of artefact</td></tr>
-</tbody></table>
-<p>Two lessons:</p>
-<ul>
-<li><strong>Prefixes appear where crates are published</strong> into a global namespace.
-Unpublished workspaces use plain names successfully at very large scale.</li>
-<li><strong>Operating-system projects divide by kind of artefact,</strong> the most stable
-classifier: an app seldom becomes a library.</li>
-</ul>
-<h2 id="what-was-weighed">What was weighed</h2>
-<ul>
-<li><strong>Layer + kind + domain at one level</strong> (the earlier plan: <code>bus/</code>, <code>mix/</code>,
-<code>core/</code>, <code>services/</code>, <code>desktop/</code>). Rejected: three axes compete at one
-level. A desktop daemon could plausibly sit in either of two places, and a
-crate that changes layer has to move.</li>
-<li><strong>One flat <code>crates/</code> directory</strong> (Zed, rust-analyzer), with per-package
-co-location. Seriously considered: it gives fully stable paths, because
-nothing about classification is encoded in a path. Not chosen. With
-hundreds of siblings, a large compositor and a tiny parser look identical;
-the kind of a component (and therefore its lifecycle: units, man pages,
-install rules) would no longer be visible; and the case for stable paths
-is weaker than it looks, because an app becoming a library is exactly
-the kind of change that deserves a deliberate move and review.</li>
-<li><strong>Domain-first</strong> (<code>mail/</code>, <code>media/</code>, <code>mesh/</code>…). Rejected: domains blur and
-multiply, and cross-domain code has no home.</li>
-<li><strong>One repository per component</strong>. Rejected: MixOS keeps one
-workspace so one dependency graph can be gated, shared code can be
-consolidated, and changes across components are atomic. Its benefits
-(per-package distribution, separate teams) do not apply here.</li>
-</ul>
-<h2 id="review">Review</h2>
-<p>The proposal was reviewed cold by four model families: Codex, GLM, DeepSeek
-and, as tie-breaker, Gemini.</p>
-<ul>
-<li><strong>Kind-first layout:</strong> three of four. The dissent preferred the flat
-directory for path stability. That argument is recorded above.</li>
-<li><strong>What all reviewers converged on</strong> reshaped the rules:
-<ul>
-<li>artefacts co-located with their component;</li>
-<li><code>vendor/</code> shared at the top level;</li>
-<li>no automatic promotion;</li>
-<li>Mix out of <code>cli/</code> and split into two packages;</li>
-<li>layers derived from dependencies and cross-checked;</li>
-<li>removal as a reviewed operation;</li>
-<li>a Bus verb registry and a name-retirement registry;</li>
-<li>licence headers in the REUSE format, checked without Python;</li>
-<li>Fluent for translations;</li>
-<li>a test-tier taxonomy;</li>
-<li>public decision records like this one.</li>
-</ul>
-</li>
-<li><strong>Considered and declined:</strong>
-<ul>
-<li>top-level <code>sys/</code>, <code>init/</code>, <code>hw/</code> and <code>patches/</code>;</li>
-<li>a separate test workspace.
-FFI crates take a <code>-sys</code> suffix instead, and patch notes live with each
-vendored upstream.</li>
-</ul>
-</li>
-</ul>
+<h1 id="widget-toolkit">Widget toolkit</h1>
+<p><code>toolkit</code> is a reusable iced widget library. Applications supply their own
+palette, metrics, fonts, icons, strings and state. It has no dependency on the
+desktop, message bus or a particular asset set. <code>appearance</code> is the separate
+adapter that maps this system's design files into toolkit tokens.</p>
+<h2 id="widgets-and-composition">Widgets and composition</h2>
+<p>The library includes menus, tabs and sidebars; validated text, number, date
+and time inputs; colour and audio controls; tables, virtual lists and trees;
+split panes, overlays, popovers and a command palette. Application patterns
+include header bars, breadcrumbs, path bars, setting rows and About views.</p>
+<p><code>shell::Shell</code> composes an optional menu, toolbar, status bar and split
+sidebars around application content. Keep its shape stable across updates
+to retain child focus, selections and edit history. All widget colours and
+sizes come through <code>Tokens</code>; a <code>Theme</code> can be replaced while running.</p>
+<p>Virtual lists build only visible rows, including with caller-owned variable
+row heights. Resizable columns report preview, commit and cancellation so
+the application can keep header and body widths together.</p>
+<h2 id="services">Services</h2>
+<p>Keyboard routing supports ordinary shortcuts and two-stroke sequences.
+Persistent modal hosts preserve the underlying widget tree, trap focus and
+suspend old input-method composition during handover. Dialogs and toasts are
+caller-owned state machines. The application decides what an accepted
+dialog or activated toast does.</p>
+<p>The file requester uses a filesystem trait with a standard local adapter;
+tests or applications can supply another implementation. It supports Open
+and Save, completion, navigation, hidden files and recent locations.</p>
+<p>Named icons can use a caller-supplied font or freedesktop lookup. The optional
+<code>image</code> feature supplies bounded eager PNG/SVG decoding, symbolic tinting,
+scale-sensitive caching and a visible fallback for missing or invalid assets.</p>
+<h2 id="drag-and-drop">Drag and drop</h2>
+<p>Local drag areas and drop zones compose inside an iced widget tree.
+<code>dnd::native::Session</code> is a backend-neutral state machine for cross-window
+transfer. A host adapter supplies real gesture identities, MIME/action
+negotiation, nonblocking transfer and protocol completion. The target
+acknowledges application of the delivered payload. A source removes a Move
+payload only after successful native completion; Copy and interrupted
+transfers retain it.</p>
+<p>The developer tool <code>native-gallery</code> supplies a Wayland adapter outside the
+library. Its two windows contain the ordinary gallery and a native drag strip.
+The desktop acceptance gate drives the existing primary-seat Bus input path
+against an isolated compositor. It checks payload hashes, exactly-once
+delivery/completion, separate processes, overlapping offers, scaling,
+cancellation, rejection, closure and stale gesture identities.</p>
+<h2 id="build-and-test">Build and test</h2>
+<p>The crate README documents public APIs and integration examples. Its
+changelog records additions and compatibility changes. Use the pinned
+toolchain and dependency lockfile for repository builds:</p>
+<pre><code>cargo test -p toolkit --locked
+cargo test -p toolkit -p appearance --features toolkit/gallery-tiny-skia,toolkit/image,toolkit/svg --locked
+cargo run -p toolkit --example gallery --features gallery-tiny-skia
+</code></pre>
+<p>The headless renderer suite captures every gallery page with Dark, Light and
+Custom tokens, alongside narrow-layout and interaction tests. The pristine
+iced gate copies the library into a separate workspace and builds against
+unpatched upstream iced at its recorded base. Native desktop acceptance is
+a separate gate and requires built compositor and gallery binaries.</p>
         </article>
-        <p class="doc-source"><a href="/decisions/2026-10-04-source-layout.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/toolkit.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>

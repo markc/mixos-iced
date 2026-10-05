@@ -117,6 +117,7 @@ site: {
         {title: "Home", href: "/", icon: "home"},
         {divider: true},
         {title: "Try it beside your desktop", href: "/try/", icon: "monitor"},
+        {title: "Widget toolkit", href: "/toolkit/", icon: "layers"},
         {divider: true},
         {title: "Decision: source layout", href: "/decisions/2026-10-04-source-layout/", icon: "file-text"}
       ]
