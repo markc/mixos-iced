@@ -25,7 +25,7 @@ use iced_core::widget::operation::{Outcome, Scrollable};
 use iced_core::widget::{Id, Operation, Tree, Widget};
 use iced_core::window;
 use iced_core::{
-    Border, Color, Element, Event, Length, Point, Rectangle, Shell, Size, Vector, keyboard,
+    Border, Element, Event, Length, Point, Rectangle, Shell, Size, Vector, keyboard,
 };
 use crate::tokens::Tokens;
 

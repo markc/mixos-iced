@@ -153,7 +153,6 @@ pub struct Requester {
 
 /// Lists `dir` over `std::fs`: directories first, then files, each by
 /// case-insensitive name, dot-files only when `hidden`.
-#[must_use]
 pub fn list(dir: &Path, hidden: bool) -> std::io::Result<(Vec<Entry>, bool)> {
     let mut entries: Vec<Entry> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)

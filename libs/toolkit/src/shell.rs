@@ -197,7 +197,7 @@ fn tool_view<'a, Message: Clone + 'a>(
         press = press.on_press(on_press);
     }
 
-    press = press.style(move |theme, status| {
+    press = press.style(move |theme: &Theme, status| {
         let t = theme.tokens().palette;
         let mut style = theme::button::secondary(theme, status);
         if toggled && status != button::Status::Disabled {
@@ -273,7 +273,7 @@ pub fn places<'a, Message: Clone + 'a>(
                 .width(Length::Fill)
                 .wrapping(iced_core::text::Wrapping::None)
                 .ellipsis(iced_core::text::Ellipsis::End)
-                .style(move |theme| {
+                .style(move |theme: &Theme| {
                     let t = theme.tokens().palette;
                     iced_core::widget::text::Style {
                         color: Some(if selected {
@@ -289,7 +289,7 @@ pub fn places<'a, Message: Clone + 'a>(
             .padding(Padding::from([m.spacing.xs, m.spacing.sm]))
             .width(Length::Fill)
             .on_press(on_press)
-            .style(move |theme, status| {
+            .style(move |theme: &Theme, status| {
                 let t = theme.tokens().palette;
                 iced_widget::button::Style {
                     background: match (selected, status) {
@@ -398,7 +398,7 @@ impl StatusBar {
             let kind = field.kind;
             text(field.text)
                 .size(m.text.xs)
-                .style(move |theme| {
+                .style(move |theme: &Theme| {
                     let t = theme.tokens().palette;
                     iced_core::widget::text::Style {
                         color: Some(match kind {
