@@ -43,6 +43,7 @@ pub mod popover;
 pub mod requester;
 pub mod scale;
 pub mod selection_list;
+pub mod shell;
 pub mod sidebar;
 pub mod slide_bar;
 pub mod split;

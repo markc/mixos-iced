@@ -74,6 +74,9 @@ Incorporated code
   dopus (`apps/dopus/src/view/drag.rs`), and `src/measure.rs` /
   `src/images.rs` from this repository's scene-host
   (`services/compd/crates/scene-host/src/{layout,images}.rs`).
+  `src/shell.rs` composes the toolbar, places and status patterns from
+  dopus (`apps/dopus/src/view/{toolbar,places}.rs`) and ced
+  (`apps/ced/src/chrome/status.rs`) using the existing generic widgets.
 
 Third-party vendored code under vendor/ keeps its own licence files, and each
 directory records its upstream base and local patches (vendor/README.md).

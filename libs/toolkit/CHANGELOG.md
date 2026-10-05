@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Application chrome in `shell::{Shell, Toolbar, Tool, StatusBar, Field,
+  Side}` and the `tool`, `field`, `place`, `places` helpers: optional menu
+  bar, centred toolbar with pinned edge tools, independent draggable
+  sidebars, content and status. Labels and messages are caller-supplied;
+  layout reads the supplied tokens and colours resolve from the live
+  theme. The ordinary iced `shell` example has Fluent strings and
+  headless rendering and interaction tests under dark, light and custom
+  tokens.
 - The file requester and widget-level drag and drop (T5; sources in
   `NOTICE`): `requester::{Filesystem, StdFs, Requester}` — an Open/Save
   picker as application state over a filesystem trait (std by default,

@@ -20,10 +20,50 @@ gate (`tests/generic.rs`) keeps it that way.
 | `Toaster`, `Toast` (`toast`) | stacked corner notices with severity, action, dismiss and expiry |
 | `VirtualList`, `Selection`, `virtual_list::Columns` | a list that builds and draws only the rows in view (100,000 rows cost a screenful), keyboard navigation, single/multiple selection, activation, type-ahead, a column header, `scroll_to_row` |
 | `TreeView`, `Nodes` | a tree over the virtual list: a keyed node model with lazy children, expand/collapse by expander, double-click, Right and Left, indentation guides |
+| `shell::{Shell, Toolbar, StatusBar, places}` | optional menu bar, centred tools with pinned edge groups, independently resizable sidebars and a status strip, composed from the existing widgets |
 
 Everything is a plain `iced_core::Widget`. The library selects no renderer
 and links no window shell; the host enables the `wgpu` or `tiny-skia`
 feature.
+
+## Application shell
+
+`shell::Shell` composes toolkit's `Theme` and the selected renderer. Its
+menu is the existing `Menu`, its sidebars use `Split`, and the toolbar
+and status are ordinary iced compositions. It holds no application state.
+Labels, messages, optional icons and content all come from the caller:
+
+```rust,no_run
+use toolkit::{Tokens, widget::text};
+use toolkit::shell::{self, Shell, Side, StatusBar, Toolbar};
+
+#[derive(Clone)]
+enum Message { Save, Select, Resize(Side, f32) }
+
+let tokens = Tokens::light();
+let view: toolkit::core::Element<'_, Message, toolkit::Theme, toolkit::widget::Renderer> =
+    Shell::new(text("Document"))
+        .tokens(tokens)
+        .toolbar(Toolbar::new().push(shell::tool("Save", Message::Save)))
+        .sidebar(Side::Left, 180.0, shell::places(tokens, vec![
+            shell::place("Documents", true, Message::Select),
+        ]))
+        .on_split(Message::Resize)
+        .status(StatusBar::new().left(vec![shell::field("Ready")]))
+        .into();
+```
+
+Keep sidebar widths in the app and update the matching `Side` when its
+resize message arrives. Pass the current tokens when rebuilding the view
+so metrics and tooltips follow the app's theme; bar and tool colours
+resolve from the live theme at draw time. Toolbar edge groups take equal
+space, so the middle stays centred when their widths differ. Reduce the
+tools for windows too narrow to contain them.
+
+Run the complete sample with
+`cargo run -p toolkit --example shell --features gallery-tiny-skia`
+(or `gallery-wgpu`). `tests/shell.rs` exercises its menus, buttons,
+navigation, resizing and theme changes through the headless simulator.
 
 ## Theming: `Tokens` and `Theme`
 

@@ -72,6 +72,14 @@ required-features = ["gallery"]
 name = "gallery_fonts"
 required-features = ["gallery"]
 
+[[example]]
+name = "shell"
+required-features = ["gallery"]
+
+[[test]]
+name = "shell"
+required-features = ["gallery-tiny-skia"]
+
 # Offscreen gallery snapshots: `cargo test -p toolkit --features gallery-tiny-skia --test snapshots`.
 [[test]]
 name = "snapshots"
