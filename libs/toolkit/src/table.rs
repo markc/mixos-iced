@@ -95,7 +95,7 @@ impl Catalog for iced_core::Theme {
     type Style = ();
 
     fn header(&self, _style: &Self::Style) -> Band {
-        let pair = self.extended_palette().background.strong;
+        let pair = self.palette().background.strong;
         Band {
             background: Some(pair.color.into()),
             text: Some(pair.text),
@@ -107,7 +107,7 @@ impl Catalog for iced_core::Theme {
     }
 
     fn row(&self, _style: &Self::Style, index: usize) -> Band {
-        let palette = self.extended_palette();
+        let palette = self.palette();
         let pair = if index % 2 == 0 {
             palette.background.base
         } else {
@@ -120,7 +120,7 @@ impl Catalog for iced_core::Theme {
     }
 
     fn divider(&self, _style: &Self::Style, hovered: bool) -> Option<Background> {
-        let palette = self.extended_palette();
+        let palette = self.palette();
         Some(
             if hovered {
                 palette.primary.base.color
@@ -193,7 +193,7 @@ where
 /// header offset in step (answer it with
 /// [`scrollable::scroll_to`](iced_widget::scrollable) on the header id).
 #[must_use]
-pub fn table<'a, Column, Row, Message, Theme, Renderer>(
+pub fn table<'a, Column, Row, Message, Theme>(
     header: Id,
     body: Id,
     columns: &'a [Column],
@@ -244,7 +244,7 @@ where
     scrollbar: scrollable::Scrollbar,
 }
 
-impl<'a, Column, Row, Message, Theme, Renderer>
+impl<'a, Column, Row, Message, Theme>
     Table<'a, Column, Row, Message, Theme>
 where
     Theme: Catalog + container::Catalog,
@@ -395,7 +395,7 @@ where
                         )
                     })
                     .chain(dummy_container(columns, min_width, min_column_width))),
-                style,
+                style.clone(),
                 row_index,
             )
             .into()
@@ -423,11 +423,11 @@ where
                             column,
                             rows,
                             on_column_drag,
-                            on_column_release,
+                            on_column_release.clone(),
                             min_column_width,
                             divider_width,
                             cell_padding,
-                            style,
+                            style.clone(),
                         )
                     })
                     .chain(dummy_container(columns, min_width, min_column_width))),

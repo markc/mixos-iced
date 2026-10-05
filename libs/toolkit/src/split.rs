@@ -620,6 +620,7 @@ impl<'a, Message, Theme, Renderer> From<Split<'a, Message, Theme, Renderer>>
 where
     Theme: Catalog + 'a,
     Renderer: renderer::Renderer + 'a,
+    Message: 'a,
 {
     fn from(split: Split<'a, Message, Theme, Renderer>) -> Self {
         Element::new(split)
@@ -635,7 +636,7 @@ mod tests {
     type TestSplit<'a> = Split<'a, u8, iced_core::Theme, LayoutRenderer>;
 
     fn laid_out(split_at: f32, strategy: Strategy) -> (Node, SplitState) {
-        let mut split: TestSplit = Split::new(
+        let split: TestSplit = Split::new(
             split_at,
             Text::new("start"),
             Space::new().width(Length::Fill).height(Length::Fill),
