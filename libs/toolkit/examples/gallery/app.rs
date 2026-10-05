@@ -341,6 +341,7 @@ impl Gallery {
         self.flows.view(self.theme.tokens()).map(Message::Flows)
     }
 
+    #[allow(dead_code)] // Used by the multi-window gallery host.
     pub fn flows_window(&self) -> Element<'_> {
         self.flows.wrap(self.flows_page(), self.theme.tokens())
     }

@@ -69,6 +69,7 @@ fn run_case($root, $session, $binary, $run, $case)
             $placed = rpc($session, "comp.window.place", {id: $window.id, generation: $window.generation, x: $index * 650, y: 0, width: 620, height: 850})
             $sized = rpc($session, "comp.window.wait", {match: {id: $window.id, generation: $window.generation}, until: "size", width: 620, height: 850, timeout_ms: 15000})
         end
+        $zone = trace($root, $target_trace, "zones", "target")
         $m = move($session, $source, 70, 60)
         $b = button($session, "press")
         if $case.kind == "stale" then
@@ -97,7 +98,7 @@ fn run_case($root, $session, $binary, $run, $case)
                     $b = button($session, "release")
                     $e = trace($root, $source_trace, "cancelled", "source")
                 else
-                    $e = trace($root, $target_trace, "action", "target")
+                    $e = trace($root, $target_trace, "negotiated", "target")
                     $b = button($session, "release")
                     $delivery = trace($root, $target_trace, "delivery", "target")
                     $finished = trace($root, $source_trace, "finished", "source")
@@ -144,6 +145,7 @@ $cases = [
     {name: "stale", kind: "stale", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "wrong-window", kind: "wrong-window", action: "move", bytes: 128, scale: 1, separate: false}
 ]
+if $only != "" and len(filter($cases, fn($case) = $case.name == $only)) == 0 then raise("ARGUMENTS", "unknown native drag case: " .. $only) end
 $run = $n.new_run("/tmp/toolkit-native-drag")
 $bus = nil
 $session = nil

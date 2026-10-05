@@ -28,6 +28,7 @@ struct Pane {
     received: usize,
 }
 struct App {
+    zones: BTreeMap<window::Id, iced::Rectangle>,
     panes: BTreeMap<window::Id, Pane>,
     drag: drag::Session<String, window::Id>,
     trace: Option<PathBuf>,
@@ -38,6 +39,11 @@ struct App {
 }
 #[derive(Debug, Clone)]
 enum Message {
+    Measure(window::Id),
+    Zones(
+        window::Id,
+        Vec<(toolkit::core::widget::Id, iced::Rectangle)>,
+    ),
     Gallery(window::Id, gallery::Message),
     Native(window::Id, iced::window::drag::Event),
     Start(window::Id, String),
@@ -98,9 +104,10 @@ impl App {
                     received: 0,
                 },
             );
-            tasks.push(open.discard());
+            tasks.push(open.map(Message::Measure));
         }
         let app = Self {
+            zones: BTreeMap::new(),
             panes,
             drag: drag::Session::new(drag::Text),
             trace: (!trace.is_empty()).then(|| trace.into()),
@@ -180,6 +187,21 @@ impl App {
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Measure(id) => toolkit::runtime::task::widget(toolkit::dnd::find_zones(
+                |_| true,
+                Some(vec![toolkit::core::widget::Id::new(format!(
+                    "native-target-{id}"
+                ))]),
+                None,
+            ))
+            .map(move |zones| Message::Zones(id, zones)),
+            Message::Zones(id, zones) => {
+                if let Some((_, bounds)) = zones.into_iter().next() {
+                    self.zones.insert(id, bounds);
+                    self.record(serde_json::json!({"event":"zones", "role":self.role(id), "x":bounds.x,"y":bounds.y,"width":bounds.width,"height":bounds.height}));
+                }
+                Task::none()
+            }
             Message::Gallery(id, message) => self
                 .panes
                 .get_mut(&id)
@@ -214,6 +236,13 @@ impl App {
                     window::drag::Event::Cancelled(_) => "backend-cancelled",
                 };
                 self.record(serde_json::json!({"event":kind, "role":self.role(id)}));
+                if let window::drag::Event::Action {
+                    action: Some(selected),
+                    ..
+                } = &event
+                {
+                    self.record(serde_json::json!({"event":"negotiated", "role":self.role(id), "action":format!("{selected:?}")}));
+                }
                 if let window::drag::Event::Gesture(gesture) = &event {
                     self.last_press = Some(*gesture);
                 }
@@ -222,15 +251,11 @@ impl App {
                 let entered = matches!(event, window::drag::Event::Enter { .. });
                 let reject = self.case == "reject";
                 let action = self.action;
+                let bounds = self.zones.get(&id).copied();
                 let effects = self
                     .drag
                     .event(id, event_to_toolkit(event), move |_, point| {
-                        (target
-                            && !reject
-                            && point.x >= 16.0
-                            && point.x < 550.0
-                            && point.y >= 16.0
-                            && point.y < 120.0)
+                        (target && !reject && bounds.is_some_and(|bounds| bounds.contains(point)))
                             .then_some(action)
                     });
                 let task = self.effects(effects);
@@ -248,15 +273,15 @@ impl App {
                 {
                     return Task::batch([task, window::close(id)]);
                 }
-                if self.case == "wrong-window" && kind == "press" {
-                    if let Some(target) = self
+                if self.case == "wrong-window"
+                    && kind == "press"
+                    && let Some(target) = self
                         .panes
                         .iter()
                         .find(|(_, p)| p.role == Role::Target)
                         .map(|(id, _)| *id)
-                    {
-                        return Task::batch([task, self.stale_start(target)]);
-                    }
+                {
+                    return Task::batch([task, self.stale_start(target)]);
                 }
                 task
             }
@@ -289,6 +314,7 @@ impl App {
                 let effects = self.drag.closed(&id).into_iter().collect();
                 let task = self.effects(effects);
                 self.panes.remove(&id);
+                self.zones.remove(&id);
                 if self.panes.is_empty() {
                     iced::exit()
                 } else {
@@ -320,10 +346,11 @@ impl App {
             return iced::widget::space().into();
         };
         let tokens = pane.gallery.theme().tokens();
+        let strip_height = tokens.metrics.text.md + 3.0 * tokens.metrics.spacing.xl;
         let strip: Element<'_, Message, Theme> = match pane.role {
             Role::Source if !pane.payload.is_empty() => toolkit::dnd::DragArea::new(
                 container(text(label("source-label")))
-                    .height(88)
+                    .height(strip_height)
                     .width(iced::Fill)
                     .padding(tokens.metrics.spacing.md)
                     .style(toolkit::theme::container::card),
@@ -331,12 +358,17 @@ impl App {
             )
             .on_drag(move |gesture| Message::Start(id, gesture))
             .into(),
-            Role::Source => container(text(label("empty-label"))).height(88).into(),
+            Role::Source => container(text(label("empty-label")))
+                .height(strip_height)
+                .into(),
             Role::Target => container(column![
                 text(label("target-label")),
                 text(format!("{}: {}", label("received-label"), pane.received))
             ])
-            .height(88)
+            .id(toolkit::core::widget::Id::new(format!(
+                "native-target-{id}"
+            )))
+            .height(strip_height)
             .width(iced::Fill)
             .padding(tokens.metrics.spacing.md)
             .style(toolkit::theme::container::card)
@@ -351,7 +383,7 @@ impl App {
             ]
             .spacing(tokens.metrics.spacing.md),
         )
-        .padding(16)
+        .padding(tokens.metrics.spacing.md)
         .into()
     }
     fn title(&self, id: window::Id) -> String {
@@ -378,6 +410,9 @@ impl App {
         iced::event::listen_with(|event, _, id| match event {
             iced::Event::Window(window::Event::DragDrop(event)) => Some(Message::Native(id, event)),
             iced::Event::Window(window::Event::Closed) => Some(Message::Closed(id)),
+            iced::Event::Window(window::Event::Opened { .. } | window::Event::Resized(_)) => {
+                Some(Message::Measure(id))
+            }
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                 Some(Message::Released(id))
             }
