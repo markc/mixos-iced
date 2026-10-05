@@ -9,8 +9,11 @@
 //! deliberately selects neither renderer and links no window shell.
 
 pub mod audio_style;
+pub mod anchor;
 pub mod badge;
 pub mod card;
+pub mod collapsible;
+pub mod command_palette;
 pub mod dialog;
 pub mod drop_down;
 pub mod elide;
@@ -34,12 +37,14 @@ pub mod measure;
 pub mod meter;
 pub mod number_input;
 pub mod piano_roll;
+pub mod popover;
 pub mod scale;
 pub mod selection_list;
 pub mod sidebar;
 pub mod slide_bar;
 pub mod split;
 pub mod spinner;
+pub mod spinners;
 pub mod table;
 pub mod tab_bar;
 pub mod tabs;
@@ -62,6 +67,7 @@ mod test_renderer;
 pub use audio_style::AudioStyle;
 pub use badge::Badge;
 pub use card::Card;
+pub use command_palette::Command;
 pub use dialog::{Dialog, ModalQueue};
 pub use drop_down::{Alignment, DropDown, Offset};
 pub use elide::{Label, middle};
