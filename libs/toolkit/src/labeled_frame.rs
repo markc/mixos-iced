@@ -34,11 +34,7 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme) -> Style + 'a>;
 ///
 /// ```no_run
 /// # use toolkit::labeled_frame::LabeledFrame;
-/// fn view<'a, Message, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
-/// where
-///     Theme: toolkit::labeled_frame::Catalog + 'a,
-///     Renderer: iced_core::Renderer + 'a,
-/// {
+/// fn view() -> iced_core::Element<'static, toolkit::theme::Theme> {
 ///     LabeledFrame::new("Title", "Content").into()
 /// }
 /// ```

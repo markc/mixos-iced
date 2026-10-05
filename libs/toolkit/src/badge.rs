@@ -57,11 +57,7 @@ const BORDER_RADIUS_RATIO: f32 = 34.0 / 15.0;
 ///
 /// ```no_run
 /// # use toolkit::badge::Badge;
-/// fn view<'a, Message, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
-/// where
-///     Theme: toolkit::badge::Catalog + 'a,
-///     Renderer: iced_core::renderer::Renderer + 'a,
-/// {
+/// fn view() -> iced_core::Element<'static, toolkit::theme::Theme> {
 ///     Badge::new("new").into()
 /// }
 /// ```

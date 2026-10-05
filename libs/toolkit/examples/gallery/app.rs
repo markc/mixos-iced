@@ -292,7 +292,9 @@ impl Gallery {
         self.lists.view(self.theme.tokens()).map(Message::Lists)
     }
 
-    /// The "Text" page on its own (same reason as `lists_page`).
+    /// The "Text" page on its own (same reason as `lists_page`); read by
+    /// `tests/snapshots.rs`.
+    #[allow(dead_code)]
     pub fn text_page(&self) -> Element<'_> {
         self.typography.view(self.theme.tokens())
     }

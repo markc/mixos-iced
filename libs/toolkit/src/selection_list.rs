@@ -70,13 +70,8 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, Status) -> Style + 'a>;
 /// #[derive(Clone)]
 /// enum Message { Picked(usize, String) }
 ///
-/// fn view<'a, Theme, Renderer>(options: &'a [String]) -> iced_core::Element<'a, Message, Theme, Renderer>
-/// where
-///     Theme: toolkit::selection_list::Catalog + iced_widget::container::Catalog
-///         + iced_widget::scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'a,
-/// {
-///     SelectionList::new(options, Message::Picked).into()
+/// fn view(options: &[String]) -> iced_core::Element<'_, Message, toolkit::theme::Theme> {
+///     SelectionList::new(options.to_vec(), Message::Picked).into()
 /// }
 /// ```
 #[allow(missing_debug_implementations)]

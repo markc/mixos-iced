@@ -77,13 +77,7 @@ impl From<f32> for Offset {
 /// #[derive(Clone)]
 /// enum Message { Toggled, Dismissed }
 ///
-/// fn view<'a, Theme, Renderer>(
-///     expanded: bool,
-/// ) -> iced_core::Element<'a, Message, Theme, Renderer>
-/// where
-///     Theme: 'a,
-///     Renderer: iced_core::renderer::Renderer + 'a,
-/// {
+/// fn view(expanded: bool) -> iced_core::Element<'static, Message, toolkit::theme::Theme> {
 ///     DropDown::new(
 ///         iced_widget::button("Open").on_press(Message::Toggled),
 ///         iced_widget::text("The menu"),
