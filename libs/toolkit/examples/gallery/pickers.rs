@@ -54,11 +54,18 @@ impl State {
         }
     }
 
+    #[allow(dead_code)]
     pub fn date(&self) -> Date {
         self.date.selected()
     }
+    #[allow(dead_code)]
     pub fn time(&self) -> Option<Time> {
         self.time.selected()
+    }
+
+    #[allow(dead_code)]
+    pub fn time_field_id(&self, part: time_picker::Part) -> toolkit::core::widget::Id {
+        self.time.field_id(part)
     }
 
     pub fn update(&mut self, message: Message) {

@@ -16,6 +16,8 @@ use toolkit::iced::{self, Color, Fill};
 mod lists;
 #[path = "more.rs"]
 mod more;
+#[path = "patterns.rs"]
+pub mod patterns;
 #[path = "pickers.rs"]
 pub mod pickers;
 #[path = "services.rs"]
@@ -118,16 +120,18 @@ pub enum Page {
     Text,
     More,
     Pickers,
+    Patterns,
 }
 
 impl Page {
-    pub const ALL: [Page; 6] = [
+    pub const ALL: [Page; 7] = [
         Page::Widgets,
         Page::Services,
         Page::Lists,
         Page::Text,
         Page::More,
         Page::Pickers,
+        Page::Patterns,
     ];
 
     pub fn name(self) -> &'static str {
@@ -138,6 +142,7 @@ impl Page {
             Page::Text => "text",
             Page::More => "more",
             Page::Pickers => "pickers",
+            Page::Patterns => "patterns",
         }
     }
 }
@@ -174,6 +179,7 @@ pub struct Gallery {
     typography: typography::State,
     more: more::State,
     pickers: pickers::State,
+    patterns: patterns::State,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +205,7 @@ pub enum Message {
     Levels(bool),
     More(more::Message),
     Pickers(pickers::Message),
+    Patterns(patterns::Message),
     Seek(f32),
     View(RollView),
     PickNote(usize),
@@ -291,6 +298,7 @@ impl Gallery {
             typography: typography::State::new(),
             more: more::State::new(),
             pickers: pickers::State::new(),
+            patterns: patterns::State::new(),
         }
     }
 
@@ -316,6 +324,13 @@ impl Gallery {
         self.pickers.view(self.theme.tokens()).map(Message::Pickers)
     }
 
+    pub fn patterns_page(&self) -> Element<'_> {
+        self.patterns
+            .view(self.theme.tokens())
+            .map(Message::Patterns)
+    }
+
+    #[allow(dead_code)]
     pub fn pickers(&self) -> &pickers::State {
         &self.pickers
     }
@@ -351,6 +366,7 @@ impl Gallery {
             Message::Lists(message) => self.lists.update(message),
             Message::More(message) => self.more.update(message),
             Message::Pickers(message) => self.pickers.update(message),
+            Message::Patterns(message) => self.patterns.update(message),
             Message::Text(value) => self.value = value,
             Message::Password(value) => self.password = value,
             Message::Action(action) => self.last_action = label(action),
@@ -669,6 +685,13 @@ impl Gallery {
         }
         if self.page == Page::Pickers {
             let page = page.push(self.pickers_page());
+            return column![bar, scrollable(page).height(Fill)]
+                .width(Fill)
+                .height(Fill)
+                .into();
+        }
+        if self.page == Page::Patterns {
+            let page = page.push(self.patterns_page());
             return column![bar, scrollable(page).height(Fill)]
                 .width(Fill)
                 .height(Fill)

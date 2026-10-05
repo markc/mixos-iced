@@ -67,7 +67,12 @@ fn calendar_keys_and_clock_keys_do_not_steal_each_others_focus() {
         Size::new(1000.0, 650.0),
         gallery.pickers_page(),
     );
-    ui.click("12").unwrap();
+    ui.click(
+        gallery
+            .pickers()
+            .time_field_id(toolkit::time_picker::Part::Hour),
+    )
+    .unwrap();
     ui.tap_key(Named::ArrowUp);
     let messages: Vec<_> = ui.into_messages().collect();
     for message in messages {
@@ -75,4 +80,37 @@ fn calendar_keys_and_clock_keys_do_not_steal_each_others_focus() {
     }
     assert_eq!(gallery.pickers().time(), Time::new(13, 30, 45));
     assert_eq!(gallery.pickers().date(), Date::new(2024, 3, 1).unwrap());
+}
+
+#[test]
+fn application_patterns_render_and_remain_reachable_in_a_narrow_window() {
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("toolkit-snapshots");
+    std::fs::create_dir_all(&directory).unwrap();
+    for mode in Mode::ALL {
+        let mut gallery = Gallery::new();
+        gallery.update(Message::Mode(mode));
+        for width in [900.0, 240.0] {
+            let mut ui = Simulator::with_size(
+                Settings::default(),
+                Size::new(width, 1200.0),
+                gallery.patterns_page(),
+            );
+            for label in ["Back", "Help", "Enabled", "Website", "Retry", "Dismiss"] {
+                let bounds = ui.find(label).unwrap().visible_bounds().unwrap();
+                assert!(
+                    bounds.width > 0.0 && bounds.x + bounds.width <= width + 1.0,
+                    "{mode:?}/{width}: {label} {bounds:?}"
+                );
+            }
+            let path = directory.join(format!("patterns-{}-{width}.png", mode.name()));
+            let written = directory.join(format!("patterns-{}-{width}-tiny-skia.png", mode.name()));
+            let _ = std::fs::remove_file(written);
+            assert!(
+                ui.snapshot(&gallery.theme())
+                    .unwrap()
+                    .matches_image(path)
+                    .unwrap()
+            );
+        }
+    }
 }

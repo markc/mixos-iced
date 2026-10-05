@@ -231,3 +231,44 @@ fn column_resize_reports_absolute_preview_commit_cancel_and_sort_separately() {
         ]
     );
 }
+
+#[test]
+fn header_controls_do_not_start_a_window_drag_and_input_clear_is_disabled_when_empty() {
+    use toolkit::patterns::{HeaderBar, InputField};
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Control,
+        Drag,
+        Clear,
+        Input(String),
+        Submit,
+    }
+    let header = HeaderBar::new(iced_widget::text("Title"))
+        .end(iced_widget::button("Control").on_press(Message::Control))
+        .on_drag(Message::Drag)
+        .view(Tokens::dark());
+    let mut ui = simulation(header);
+    ui.click("Control").unwrap();
+    ui.click("Title").unwrap();
+    assert_eq!(
+        ui.into_messages().collect::<Vec<_>>(),
+        vec![Message::Control, Message::Drag]
+    );
+    for value in ["", "query"] {
+        let view = InputField::new("Search", value)
+            .on_input(Message::Input)
+            .on_submit(Message::Submit)
+            .clear("Clear", Message::Clear)
+            .view(Tokens::dark());
+        let mut ui = simulation(view);
+        ui.click("Clear").unwrap();
+        assert_eq!(
+            ui.into_messages().collect::<Vec<_>>(),
+            if value.is_empty() {
+                vec![]
+            } else {
+                vec![Message::Clear]
+            }
+        );
+    }
+}

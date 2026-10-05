@@ -39,6 +39,7 @@ pub mod menu;
 pub mod measure;
 pub mod meter;
 pub mod number_input;
+pub mod patterns;
 pub mod piano_roll;
 pub mod popover;
 pub mod requester;

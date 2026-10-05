@@ -149,6 +149,7 @@ pub struct Strings {
 #[derive(Debug, Clone)]
 pub struct TimePicker {
     fields: [String; 3],
+    ids: [Id; 3],
     pm: bool,
     format: Format,
     seconds: bool,
@@ -160,6 +161,7 @@ impl TimePicker {
     pub fn new(time: Time) -> Self {
         let mut picker = Self {
             fields: Default::default(),
+            ids: std::array::from_fn(|_| Id::unique()),
             pm: false,
             format: Format::Hour24,
             seconds: true,
@@ -188,6 +190,10 @@ impl TimePicker {
     }
     pub fn field(&self, part: Part) -> &str {
         &self.fields[part.index()]
+    }
+
+    pub fn field_id(&self, part: Part) -> Id {
+        self.ids[part.index()].clone()
     }
 
     pub fn selected(&self) -> Option<Time> {
@@ -256,7 +262,7 @@ impl TimePicker {
                 Part::Minute => &strings.minute,
                 Part::Second => &strings.second,
             };
-            let id = Id::unique();
+            let id = self.field_id(part);
             let input_messages = on_event.clone();
             let field = text_input("", self.field(part))
                 .id(id.clone())
