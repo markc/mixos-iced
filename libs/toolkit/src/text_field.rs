@@ -796,7 +796,7 @@ mod widget_tests {
     #[test]
     fn secure_unicode_selection_survives_undo_and_following_typing() {
         let (field, mut tree) = field("界ab");
-        let mut field = field.secure(true);
+        let mut field = field.secure(true).id(widget::Id::new("field"));
         // Layout activates masking before setting the original-text byte range.
         let bounds = Size::new(300.0, 40.0);
         Widget::layout(
@@ -993,6 +993,78 @@ mod widget_tests {
         assert_eq!(
             send(&mut field, &mut tree, key("z", keyboard::Modifiers::CTRL)).0,
             [""]
+        );
+    }
+
+    #[test]
+    fn secure_input_requests_secure_ime_and_suspended_preedit_rejects_stale_commits() {
+        let (field, mut tree) = field("secret");
+        let mut field = field.secure(true).id(widget::Id::new("field"));
+        let (_, ime) = send(
+            &mut field,
+            &mut tree,
+            Event::Window(iced_core::window::Event::RedrawRequested(Instant::now())),
+        );
+        assert!(matches!(
+            ime,
+            input_method::InputMethod::Enabled {
+                purpose: input_method::Purpose::Secure,
+                ..
+            }
+        ));
+        send(
+            &mut field,
+            &mut tree,
+            Event::InputMethod(input_method::Event::Preedit("界".into(), Some(0..3))),
+        );
+        let renderer = LayoutRenderer::new();
+        let node = field.layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(iced_core::Size::ZERO, iced_core::Size::new(300.0, 40.0)),
+        );
+        field.operate(
+            &mut tree,
+            Layout::new(&node),
+            &renderer,
+            &mut widget::operation::focusable::unfocus::<()>(),
+        );
+        assert!(tree.state.downcast_ref::<History>().ime_blocked);
+        field.operate(
+            &mut tree,
+            Layout::new(&node),
+            &renderer,
+            &mut widget::operation::focusable::focus::<()>(widget::Id::new("field")),
+        );
+        assert!(
+            send(
+                &mut field,
+                &mut tree,
+                Event::InputMethod(input_method::Event::Commit("stale".into()))
+            )
+            .0
+            .is_empty()
+        );
+        send(
+            &mut field,
+            &mut tree,
+            Event::InputMethod(input_method::Event::Closed),
+        );
+        assert!(!tree.state.downcast_ref::<History>().ime_blocked);
+        field.operate(
+            &mut tree,
+            Layout::new(&node),
+            &renderer,
+            &mut widget::operation::text_input::move_cursor_to_end::<()>(widget::Id::new("field")),
+        );
+        assert_eq!(
+            send(
+                &mut field,
+                &mut tree,
+                Event::InputMethod(input_method::Event::Commit("fresh".into()))
+            )
+            .0,
+            ["secretfresh"]
         );
     }
 

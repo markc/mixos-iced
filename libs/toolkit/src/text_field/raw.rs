@@ -38,7 +38,7 @@ use iced_core::{
     Background, Border, Color, Element, Event, Layout, Length, Padding, Pixels, Rectangle, Shell,
     Size, Theme, Widget,
 };
-use iced_widget::text_input::{Catalog, Status, StyleFn};
+use iced_widget::text_input::{Catalog, Status, Style, StyleFn};
 
 /// A field that can be filled with text.
 ///
@@ -466,7 +466,7 @@ where
 
 /// The state of a [`TextInput`].
 pub(super) struct State<R: text::Renderer> {
-    input: text::Input<R>,
+    input: input::Input<R>,
     value: String,
     transaction: Option<shell::Tracking>,
 }
@@ -491,7 +491,7 @@ impl<R: text::Renderer> State<R> {
     /// Creates a new [`State`], representing an unfocused [`TextInput`].
     fn new() -> Self {
         Self {
-            input: text::Input::new(),
+            input: input::Input::new(),
             value: String::new(),
             transaction: None,
         }
