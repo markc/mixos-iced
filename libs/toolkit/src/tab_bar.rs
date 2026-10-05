@@ -479,7 +479,7 @@ where
                             }
                             column
                         }
-                    })
+                    }
                     .width(self.tab_width)
                     .height(self.height))
                     .align_y(Alignment::Center)
