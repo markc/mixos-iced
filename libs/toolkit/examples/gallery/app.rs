@@ -280,7 +280,7 @@ impl Gallery {
     }
 
     /// The "Text" page on its own (same reason as `lists_page`).
-    pub fn text_page(&self) -> Element<'_, ()> {
+    pub fn text_page(&self) -> Element<'_> {
         self.typography.view(self.theme.tokens())
     }
 

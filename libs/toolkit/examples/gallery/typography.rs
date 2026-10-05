@@ -11,7 +11,8 @@ use toolkit::Tokens;
 
 use super::strings::{format, label};
 
-pub type Element<'a> = iced::Element<'a, (), Theme>;
+/// The page is static; it never produces the app's messages.
+pub type Element<'a> = iced::Element<'a, super::Message, Theme>;
 
 /// Width of the elision cards: narrow enough to force a cut.
 const CARD: f32 = 240.0;
