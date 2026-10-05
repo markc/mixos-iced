@@ -278,33 +278,27 @@ where
         shell: &mut iced_core::Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        // A secondary shell captures the inner input's messages so this
-        // widget can validate them before publishing anything.
-        let mut messages = Vec::new();
-        let mut sub_shell = shell.local(&mut messages);
-        self.text_input.update(
-            state,
-            event,
-            layout,
-            cursor,
-            renderer,
-            &mut sub_shell,
-            viewport,
-        );
+        // A local bus captures the inner input's messages so this widget
+        // can validate them before publishing anything.
+        let mut bus = iced_core::shell::Bus::new();
+        let sub_shell = {
+            let mut sub_shell = shell.local(&mut bus);
+            self.text_input.update(
+                state,
+                event,
+                layout,
+                cursor,
+                renderer,
+                &mut sub_shell,
+                viewport,
+            );
+            sub_shell
+        };
+        // Merge the inner shell's redraw request, IME request and layout
+        // invalidations upward; its messages all went to the bus.
+        shell.merge(sub_shell, |_| unreachable!("bus carried the messages"));
 
-        shell.request_redraw_at(sub_shell.redraw_request());
-        // Forward the inner input's IME request, so the platform knows a
-        // text field is focused and shows the on-screen keyboard.
-        shell.request_input_method(sub_shell.input_method());
-
-        if let Some(diff) = sub_shell.is_layout_invalid() {
-            shell.invalidate_layout_with(diff);
-        }
-        if sub_shell.are_widgets_invalid() {
-            shell.invalidate_widgets();
-        }
-
-        for message in messages {
+        for message in bus.drain() {
             match message {
                 InternalMessage::OnChange(value) => {
                     self.text = value;

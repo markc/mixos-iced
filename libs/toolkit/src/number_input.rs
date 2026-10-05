@@ -572,13 +572,13 @@ where
 
         let child = state.children.get_mut(0).expect("fail to get child");
 
-        // A secondary shell drives the underlying input. This vendored iced
+        // A local bus drives the underlying input. This vendored iced
         // base no longer exposes the text input's cursor internals, so
         // unlike iced_aw we cannot pre-validate each keystroke; the
         // `TypedInput` underneath still refuses to publish anything that
         // does not parse, which is the guarantee callers rely on.
-        let mut messages = Vec::new();
-        let mut sub_shell = shell.local(&mut messages);
+        let mut bus = iced_core::shell::Bus::new();
+        let mut sub_shell = shell.local(&mut bus);
 
         let mut forward_to_text = |widget: &mut Self, child| {
             widget.content.update(
@@ -671,17 +671,11 @@ where
             _ => forward_to_text(self, child),
         }
 
-        shell.request_redraw_at(sub_shell.redraw_request());
-        shell.request_input_method(sub_shell.input_method());
+        // Merge the inner shell's redraw request, IME request and layout
+        // invalidations upward; its messages all went to the bus.
+        shell.merge(sub_shell, |_| unreachable!("bus carried the messages"));
 
-        if let Some(diff) = sub_shell.is_layout_invalid() {
-            shell.invalidate_layout_with(diff);
-        }
-        if sub_shell.are_widgets_invalid() {
-            shell.invalidate_widgets();
-        }
-
-        for message in messages {
+        for message in bus.drain() {
             match message {
                 InternalMessage::OnChange(value) => {
                     if self.value != value || self.value.is_zero() {
