@@ -34,8 +34,10 @@ pub use crate::anchor::{Align, Placement, Side};
 ///     open: bool,
 /// ) -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
-///     Theme: iced_core::widget::text::Catalog + 'a,
-///     Renderer: iced_core::renderer::Renderer + 'a,
+///     Theme: iced_widget::button::Catalog + iced_core::widget::text::Catalog + 'a,
+///     <Theme as iced_widget::button::Catalog>::Class<'a>:
+///         From<iced_widget::button::StyleFn<'a, Theme>>,
+///     Renderer: iced_core::text::Renderer + 'static,
 /// {
 ///     Popover::new(
 ///         iced_widget::button("Show").on_press(Message::Toggled),
