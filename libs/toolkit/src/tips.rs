@@ -10,11 +10,12 @@
 //! out over its own drawing and returns the node, so the tips move and
 //! scroll with the content for free.
 
-use iced_core::layout::{self, Layout};
-use iced_core::widget::text::Text;
-use iced_core::widget::tooltip::Tooltip;
-use iced_core::widget::{Space, Tree, container, text, tooltip};
+use iced_core::layout;
+use iced_core::widget::Tree;
+use iced_core::widget::text::{self, Text};
 use iced_core::{Element, Rectangle, Size};
+use iced_widget::tooltip::{self, Tooltip};
+use iced_widget::{Space, container};
 
 use crate::tokens::Tokens;
 
@@ -107,6 +108,7 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
+    use iced_core::layout::Layout;
 
     #[test]
     fn regions_lay_out_at_their_bounds_in_parent_order() {
@@ -124,7 +126,7 @@ mod tests {
                 "second".to_owned(),
             ),
         ];
-        let node = regions::(
+        let node = regions(
             &tokens,
             regions,
             &mut children,

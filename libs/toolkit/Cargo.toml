@@ -34,6 +34,7 @@ gallery-tiny-skia = ["gallery", "tiny-skia", "iced/tiny-skia"]
 
 [dependencies]
 iced_core = { workspace = true, features = ["advanced"] }
+iced_futures = { workspace = true }
 iced_widget = { workspace = true }
 iced_graphics = { workspace = true, features = ["geometry"] }
 iced_renderer = { workspace = true }

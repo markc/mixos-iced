@@ -19,7 +19,10 @@ use std::hash::Hash;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use iced_runtime::futures::channel::mpsc::UnboundedReceiver;
+// The `futures` crate as re-exported by iced's futures crate: the streams
+// an iced host already runs are these types, so the returned receiver
+// plugs into its subscriptions unchanged.
+use iced_futures::futures::channel::mpsc::UnboundedReceiver;
 
 enum Command<K> {
     Arm(K, Instant),
@@ -39,7 +42,7 @@ impl<K: Clone + Eq + Hash + Send + 'static> Timers<K> {
     /// event loop however the host allows.
     pub fn start(name: &str) -> (Timers<K>, UnboundedReceiver<K>) {
         let (tx, rx) = mpsc::channel();
-        let (fire_tx, fire_rx) = iced_runtime::futures::channel::mpsc::unbounded();
+        let (fire_tx, fire_rx) = iced_futures::futures::channel::mpsc::unbounded();
         let spawned = std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || run(rx, fire_tx));
@@ -62,7 +65,10 @@ impl<K: Clone + Eq + Hash + Send + 'static> Timers<K> {
     }
 }
 
-fn run<K: Clone + Eq + Hash>(rx: mpsc::Receiver<Command<K>>, fire: iced_runtime::futures::channel::mpsc::UnboundedSender<K>) {
+fn run<K: Clone + Eq + Hash>(
+    rx: mpsc::Receiver<Command<K>>,
+    fire: iced_futures::futures::channel::mpsc::UnboundedSender<K>,
+) {
     let mut pending: HashMap<K, Instant> = HashMap::new();
     loop {
         let next = pending.values().min().copied();
@@ -102,7 +108,7 @@ fn run<K: Clone + Eq + Hash>(rx: mpsc::Receiver<Command<K>>, fire: iced_runtime:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced_runtime::futures::StreamExt;
+    use iced_futures::futures::StreamExt;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     enum Key {
@@ -119,14 +125,14 @@ mod tests {
         timers.arm(Key::Lint(7), 10);
         timers.arm(Key::StatusExpiry, 20);
         timers.cancel(Key::StatusExpiry);
-        let first = iced_runtime::futures::executor::block_on(fired.next());
-        let second = iced_runtime::futures::executor::block_on(fired.next());
+        let first = iced_futures::futures::executor::block_on(fired.next());
+        let second = iced_futures::futures::executor::block_on(fired.next());
         // The Save re-arm replaced the 40 ms deadline with 60 ms, so the
         // lint fires first; the cancelled status expiry never fires.
         assert_eq!((first, second), (Some(Key::Lint(7)), Some(Key::Save)));
         timers.arm(Key::StatusExpiry, 5);
         assert_eq!(
-            iced_runtime::futures::executor::block_on(fired.next()),
+            iced_futures::futures::executor::block_on(fired.next()),
             Some(Key::StatusExpiry),
             "the cancelled key never fired"
         );

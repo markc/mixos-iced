@@ -10,10 +10,8 @@
 //! (`None` = not focused), paints the ring only for
 //! [`Source::Keyboard`], and re-arms it on the next keyboard interaction.
 
-use iced_core::Renderer;
-use iced_core::background::Background;
 use iced_core::border::Border;
-use iced_core::{Color, Rectangle, renderer};
+use iced_core::{Background, Color, Rectangle, Renderer, renderer};
 
 /// How a focusable widget most recently gained focus.
 ///

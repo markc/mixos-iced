@@ -30,6 +30,7 @@ gbm = { version = "=0.18.0" }
 glow = { version = "=0.17.0" }
 iced = { path = "vendor/iced", version = "0.15.0-dev", default-features = false }
 iced_core = { path = "vendor/iced/core", version = "0.15.0-dev" }
+iced_futures = { path = "vendor/iced/futures", version = "0.15.0-dev" }
 iced_graphics = { path = "vendor/iced/graphics", version = "0.15.0-dev", features = ["web-colors"] }
 iced_renderer = { path = "vendor/iced/renderer", version = "0.15.0-dev", default-features = false }
 iced_runtime = { path = "vendor/iced/runtime", version = "0.15.0-dev" }
