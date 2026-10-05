@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Table and split, each absorbed generic (sources in `NOTICE`):
+  `table::Table` over the `table::Column` trait (header/cell/footer,
+  width + live resize offset), header and body (and optional footer) as
+  separately-id'd scrollables synced by one `on_sync` message,
+  drag-to-resize dividers per column, zebra rows and a lazy band catalog
+  (`Style` token resolved at draw; `()` default) for `Theme` and
+  `iced_core::Theme`, plus `table::sort_label` (a header label with
+  ↑/↓ on the active sort — the generic shape of dopus's column
+  header). `split::Split`: two panes with a draggable grip, relative
+  (`0.0..=1.0`) or absolute (start/end) positions, `on_drag`/`on_drag_start`/`on_drag_end`/`on_double_click`
+  (double-click reset), pane minimums from the children's own `Length`.
 - Inputs and tabs absorbed from iced_aw (MIT; sources in `NOTICE`):
   `typed_input::TypedInput` (a text input whose value is `T: FromStr`),
   `number_input::NumberInput` (bounds, step, ▲▼/+- modifiers, wheel and
