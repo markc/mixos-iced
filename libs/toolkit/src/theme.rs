@@ -1161,7 +1161,7 @@ pub mod sidebar {
     use crate::tab_bar;
 
     pub fn default(theme: &Theme, status: Status) -> Style {
-        let style = tab_bar::default(theme, status);
+        let style = super::tab_bar::default(theme, status);
         let m = theme.tokens.metrics;
         Style {
             tab_border_radius: iced_core::border::Radius::default()

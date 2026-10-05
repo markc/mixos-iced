@@ -14,7 +14,7 @@ use iced_core::text::{self, LineHeight, Shaping, Wrapping};
 use iced_core::widget::text::Text;
 use iced_core::widget::{Operation, Tree, tree};
 use iced_core::{
-    Alignment, Background, Border, Color, Element, Event, Font, Layout, Length, Padding, Pixels,
+    Alignment, Border, Color, Element, Event, Font, Layout, Length, Padding, Pixels,
     Point, Rectangle, Shadow, Shell, Size, alignment::Vertical,
 };
 use iced_widget::Row;

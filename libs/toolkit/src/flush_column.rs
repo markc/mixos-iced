@@ -162,7 +162,7 @@ where
     }
 }
 
-impl<'a, Message: 'a, Renderer> Default for FlushColumn<'a, Message, Renderer>
+impl<'a, Message: 'a, Theme: 'a, Renderer> Default for FlushColumn<'a, Message, Theme, Renderer>
 where
     Renderer: iced_core::Renderer + 'a,
 {

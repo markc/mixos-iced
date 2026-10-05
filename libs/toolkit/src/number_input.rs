@@ -88,7 +88,7 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, Status) -> Style + 'a>;
 pub struct NumberInput<'a, T, Message, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog,
+    Theme: Catalog + text_input::Catalog,
 {
     /// The current value of the [`NumberInput`].
     value: T,
@@ -388,7 +388,7 @@ fn modifier_element<T, Message, Theme, Renderer>(
     icon_size: f32,
 ) -> Element<'static, (), Theme, Renderer>
 where
-    Theme: 'static,
+    Theme: iced_widget::container::Catalog + 'static,
     Renderer: renderer::Renderer + iced_core::text::Renderer + 'static,
     T: 'static,
     Message: 'static,
@@ -466,7 +466,8 @@ where
 
         let icon_size = txt_size * 2.5 / 4.0;
 
-        let mut element = modifier_element::<T, Message, Theme, Renderer>(&self.padding, icon_size);
+        let mut element =
+            modifier_element::<T, Message, Theme, Renderer>(&self.padding, icon_size.0);
 
         let input_tree = if let Some(child_tree) = tree.children.get_mut(1) {
             child_tree.diff(element.as_widget_mut());
