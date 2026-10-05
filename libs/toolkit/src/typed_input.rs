@@ -115,7 +115,7 @@ where
     /// Sets the font of the [`TypedInput`].
     #[must_use]
     pub fn font(mut self, font: impl Into<Renderer::Font>) -> Self {
-        self.text_input = self.text_input.font(font);
+        self.text_input = self.text_input.font(font.into());
         self
     }
 
@@ -149,7 +149,7 @@ where
 
     /// Sets the horizontal alignment of the [`TypedInput`].
     #[must_use]
-    pub fn align_x(mut self, alignment: impl Into<iced_core::alignment::Horizontal>) -> Self {
+    pub fn align_x(mut self, alignment: iced_core::alignment::Horizontal) -> Self {
         self.text_input = self.text_input.align_x(alignment);
         self
     }

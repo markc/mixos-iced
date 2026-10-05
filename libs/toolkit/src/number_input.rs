@@ -388,7 +388,7 @@ fn modifier_element<T, Message, Theme, Renderer>(
     icon_size: f32,
 ) -> Element<'static, (), Theme, Renderer>
 where
-    Theme: iced_widget::container::Catalog + 'static,
+    Theme: iced_widget::container::Catalog + iced_core::widget::text::Catalog + 'static,
     Renderer: renderer::Renderer + iced_core::text::Renderer + 'static,
     T: 'static,
     Message: 'static,
@@ -430,7 +430,10 @@ where
     T: Num + NumAssignOps + PartialOrd + Display + FromStr + ToString + Clone + Bounded + 'a,
     Message: 'a + Clone,
     Renderer: 'a + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + text_input::Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog
+        + text_input::Catalog
+        + iced_core::widget::text::Catalog
+        + iced_widget::container::Catalog,
 {
     fn tag(&self) -> Tag {
         Tag::of::<ModifierState>()
@@ -514,7 +517,7 @@ where
             let txt_size = self.size.unwrap_or_else(|| renderer.default_size());
             let mut element = modifier_element::<T, Message, Theme, Renderer>(
                 &self.padding,
-                txt_size * 2.5 / 4.0,
+                (txt_size * 2.5 / 4.0).0,
             );
             let modifier_tree = if let Some(child_tree) = tree.children.get_mut(1) {
                 child_tree.diff(element.as_widget_mut());
@@ -894,7 +897,11 @@ where
     T: 'a + Num + NumAssignOps + PartialOrd + Display + FromStr + Clone + Bounded,
     Message: 'a + Clone,
     Renderer: 'a + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: 'a + Catalog + text_input::Catalog,
+    Theme: 'a
+        + Catalog
+        + text_input::Catalog
+        + iced_core::widget::text::Catalog
+        + iced_widget::container::Catalog,
 {
     fn from(num_input: NumberInput<'a, T, Message, Theme, Renderer>) -> Self {
         Element::new(num_input)
