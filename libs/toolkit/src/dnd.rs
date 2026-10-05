@@ -1125,6 +1125,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn layer_and_areas_compose() {
+        use iced_widget::container;
         // A compile check of the intended composition.
         fn build<'a>(
             shared: Shared<u8>,
