@@ -18,7 +18,7 @@ contract = "none"
 mod_module_files = "deny"
 
 [dependencies]
-bus.workspace = true
+bus = { workspace = true, features = ["client"] }
 config.workspace = true
 mesh-trust.workspace = true
 anyhow.workspace = true

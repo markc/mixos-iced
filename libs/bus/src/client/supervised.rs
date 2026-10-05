@@ -29,7 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 
-use super::command::IncomingCommand;
+use super::IncomingCommand;
 use super::connection::Connection;
 use super::error::{ClientError, SupervisedError};
 

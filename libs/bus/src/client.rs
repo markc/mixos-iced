@@ -17,13 +17,12 @@
 //! [`noded_url`] finds the broker: `MIXOS_NODED_URL`, else the node
 //! configuration file, else the loopback broker.
 
-mod command;
 mod connection;
 mod error;
 mod locate;
 mod supervised;
 
-pub use command::IncomingCommand;
+pub use crate::native_client::IncomingCommand;
 pub use connection::Connection;
 pub use error::{ClientError, RegistrationRejected, SupervisedError};
 pub use locate::{DEFAULT_NODED_URL, node_config_path, noded_url, url_from_node_config};

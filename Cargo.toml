@@ -89,7 +89,7 @@ zbus = { version = "=5.19.0", default-features = false, features = ["blocking-ap
 appearance = { path = "libs/appearance" }
 assets = { path = "libs/assets" }
 buildinfo = { path = "libs/buildinfo" }
-bus = { path = "libs/bus" }
+bus = { path = "libs/bus", default-features = false }
 config = { path = "libs/config" }
 props = { path = "libs/props" }
 mesh = { path = "services/noded/crates/mesh" }

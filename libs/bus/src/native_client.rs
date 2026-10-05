@@ -6,16 +6,15 @@
 mod bounded;
 mod native;
 pub mod session;
-mod supervised;
 mod types;
 mod unix;
 
 pub use crate::PortReply;
-pub use bounded::{BoundedIncomingEvent, BoundedIncomingReceiver};
-pub use native::{NameCollision, NodedClient, RegistrationRejected};
-pub use supervised::{
+pub use crate::client::{
     ConnState, MAX_INITIAL_ATTEMPTS, SubscriptionRegistry, SupervisedClient, SupervisedError,
 };
+pub use bounded::{BoundedIncomingEvent, BoundedIncomingReceiver};
+pub use native::{NameCollision, NodedClient, RegistrationRejected};
 pub use types::IncomingCommand;
 pub use unix::{
     BrokerAccount, ConnectError, Delivery, UnixConnectOptions, UnixConnectOutcome, VerifiedCommand,

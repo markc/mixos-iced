@@ -40,6 +40,8 @@ pub enum ClientError {
     Timeout { to: String },
     /// The request body could not be serialised.
     Json(serde_json::Error),
+    /// A native ingress or protocol failure retaining its underlying cause.
+    Native(anyhow::Error),
     /// The broker refused this connection's `noded.register`.
     Rejected(RegistrationRejected),
     /// The peer answered with `rc >= 10`: an application error, with the
@@ -55,6 +57,7 @@ impl fmt::Display for ClientError {
             ClientError::Closed => write!(f, "broker connection closed before response"),
             ClientError::Timeout { to } => write!(f, "send to '{to}' timed out"),
             ClientError::Json(e) => write!(f, "request body is not serialisable: {e}"),
+            ClientError::Native(e) => write!(f, "{e:#}"),
             ClientError::Rejected(r) => write!(f, "{r}"),
             ClientError::Refused { message, .. } => write!(f, "{message}"),
         }
@@ -66,6 +69,7 @@ impl std::error::Error for ClientError {
         match self {
             ClientError::Connect(e) | ClientError::Send(e) => Some(e.as_ref()),
             ClientError::Json(e) => Some(e),
+            ClientError::Native(e) => Some(e.as_ref()),
             ClientError::Rejected(r) => Some(r),
             _ => None,
         }
@@ -79,6 +83,20 @@ impl From<serde_json::Error> for ClientError {
 }
 
 impl ClientError {
+    pub(crate) fn from_native(error: anyhow::Error) -> Self {
+        if let Some((rc, message)) =
+            crate::native_client::NodedClient::registration_rejection(&error)
+        {
+            return Self::Rejected(RegistrationRejected {
+                rc,
+                message: message.to_owned(),
+            });
+        }
+        match error.downcast::<Self>() {
+            Ok(error) => error,
+            Err(error) => Self::Native(error),
+        }
+    }
     /// The broker's structured registration refusal, when that is what this
     /// error is.
     pub fn registration_rejection(&self) -> Option<(u8, &str)> {
@@ -113,7 +131,10 @@ impl fmt::Display for SupervisedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SupervisedError::Disconnected => {
-                write!(f, "broker disconnected (no outbound queue; caller must retry)")
+                write!(
+                    f,
+                    "broker disconnected (no outbound queue; caller must retry)"
+                )
             }
             SupervisedError::ShuttingDown => write!(f, "supervised client is shutting down"),
             SupervisedError::InitialConnectFailed { attempts, source } => write!(

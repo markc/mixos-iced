@@ -441,7 +441,7 @@ impl NodedClient {
     ) -> Result<Self> {
         let (ws_stream, _) = tokio_tungstenite::connect_async(noded_url)
             .await
-            .context("failed to connect to broker")?;
+            .map_err(|error| crate::ClientError::Connect(Box::new(error)))?;
 
         let (sink, stream) = ws_stream.split();
         let sink = Arc::new(Mutex::new(Box::pin(sink) as WsSink));
@@ -509,7 +509,7 @@ impl NodedClient {
     pub async fn connect_anonymous(noded_url: &str) -> Result<Self> {
         let (ws_stream, _) = tokio_tungstenite::connect_async(noded_url)
             .await
-            .context("failed to connect to broker")?;
+            .map_err(|error| crate::ClientError::Connect(Box::new(error)))?;
 
         let (sink, stream) = ws_stream.split();
         let sink = Arc::new(Mutex::new(Box::pin(sink) as WsSink));
@@ -640,8 +640,8 @@ impl NodedClient {
         // is unresponsive.
         let response = match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
             Ok(Ok(resp)) => resp,
-            Ok(Err(_)) => anyhow::bail!("broker connection closed before response"),
-            Err(_) => anyhow::bail!("send to '{to}' timed out after 60s"),
+            Ok(Err(_)) => return Err(crate::ClientError::Closed.into()),
+            Err(_) => return Err(crate::ClientError::Timeout { to: to.to_owned() }.into()),
         };
 
         // Response received — `reader_loop` already removed the pending
@@ -828,8 +828,8 @@ impl NodedClient {
 
         let response = match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
             Ok(Ok(resp)) => resp,
-            Ok(Err(_)) => anyhow::bail!("broker connection closed before response"),
-            Err(_) => anyhow::bail!("send to '{to}' timed out after 60s"),
+            Ok(Err(_)) => return Err(crate::ClientError::Closed.into()),
+            Err(_) => return Err(crate::ClientError::Timeout { to: to.to_owned() }.into()),
         };
         guard.disarm();
 
@@ -1152,7 +1152,7 @@ impl NodedClient {
             // here is the cheapest fix.
             self.connected.store(false, Ordering::Relaxed);
         }
-        result.context("failed to send message to broker")?;
+        result.map_err(|error| crate::ClientError::Send(Box::new(error)))?;
         Ok(())
     }
 

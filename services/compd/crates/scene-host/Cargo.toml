@@ -43,7 +43,7 @@ scene = { workspace = true }
 # Quoin's panel model: one active page per edge, modes, motion.
 edges = { workspace = true }
 # The host's own Bus registration (`shell`), separate from the comp port.
-bus = { workspace = true }
+bus = { workspace = true, features = ["client"] }
 serde_json = { workspace = true }
 # The scene digest (`shell.scene.watch`), as Quoin computes it.
 sha2 = { workspace = true }
