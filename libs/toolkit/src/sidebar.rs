@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn tabs_stack_vertically() {
-        let mut sidebar = TestSidebar::new(|id| id)
+        let sidebar = TestSidebar::new(|id| id)
             .push(0, TabLabel::Text("One".into()))
             .push(1, TabLabel::Text("Two".into()))
             .set_active_tab(&1);

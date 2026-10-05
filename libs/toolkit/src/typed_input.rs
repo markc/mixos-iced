@@ -200,7 +200,7 @@ where
     }
 
     fn size(&self) -> Size<Length> {
-        <TextInput<'_, _, _> as Widget<'_, _, _>>::size(&self.text_input)
+        <TextInput<_, _, _> as Widget<_, _, _>>::size(&self.text_input)
     }
 
     fn layout(&mut self, state: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
