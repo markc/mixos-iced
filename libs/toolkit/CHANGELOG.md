@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Overlay widgets (sources in `NOTICE`): `anchor` — the flip-then-shift
+  placement core (Side, Align, Placement, `place`, safe hover corridors,
+  viewport Anchor) from A-Disruption, pure math with tests;
+  `popover::Popover` — a trigger with an anchored surface using that
+  placement, outside-click/Escape dismiss; `collapsible::Collapsible` —
+  a focusable header button (▸/▾) that shows and hides a body;
+  `spinners::{Circular, Linear}` — self-redrawing indeterminate progress
+  from iced's loading_spinners example; and
+  `command_palette::{Command, fuzzy_match, filter, command_palette}` —
+  the Ctrl+Shift+P surface with Sublime-style fuzzy ranking from
+  iced_palette.
 - Table and split, each absorbed generic (sources in `NOTICE`):
   `table::Table` over the `table::Column` trait (header/cell/footer,
   width + live resize offset), header and body (and optional footer) as

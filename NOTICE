@@ -9,6 +9,18 @@ Incorporated code
   https://github.com/y5-snowies/nourish, Copyright (c) 2026 Yarden Apelker,
   licensed MIT OR Apache-2.0 and redistributed under the same terms. Its
   copyright line is carried in LICENSE-MIT.
+- toolkit (libs/toolkit) incorporates code from A-Disruption/widgets,
+  https://github.com/A-Disruption/widgets (MIT, LICENSE.txt in repo),
+  Copyright (c) 2025 A-Disruption: `src/anchor.rs` is the placement core
+  (`src/anchor.rs`, placement math and safe-corridor tests) at commit
+  `9c6bbdf` ported whole; `src/popover.rs` re-expresses their popover on
+  that placement core without the animation layer.
+- toolkit (libs/toolkit) incorporates code from iced_palette,
+  https://github.com/tuco86/iced_palette, Copyright (c) 2025 Its-Just-Nia
+  and contributors, licensed MIT: `src/command_palette.rs` (Command,
+  Sublime-style `fuzzy_match`, filter/rank, selection helpers and the
+  palette view) adapted from `src/{command,search,helpers}.rs` at commit
+  `dd70e2b`.
 - toolkit (libs/toolkit) incorporates code from iced_table,
   https://github.com/tarkah/iced_table, Copyright (c) 2024 Tom Dohrmann,
   licensed MIT: `src/table.rs` (table, Column trait, scroll-synced
