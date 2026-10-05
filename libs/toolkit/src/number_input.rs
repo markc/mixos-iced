@@ -77,7 +77,8 @@ pub type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, Status) -> Style + 'a>;
 /// fn view<'a, Theme, Renderer>() -> iced_core::Element<'a, Message, Theme, Renderer>
 /// where
 ///     Theme: toolkit::number_input::Catalog + iced_widget::text_input::Catalog
-///         + iced_core::widget::text::Catalog + iced_widget::container::Catalog + 'a,
+///         + iced_core::widget::text::Catalog + iced_widget::container::Catalog
+///         + 'a + 'static,
 ///     Renderer: iced_core::text::Renderer<Font = iced_core::Font> + 'static,
 /// {
 ///     NumberInput::new(&12, 0..=1275, Message::Amount)
