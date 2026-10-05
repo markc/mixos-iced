@@ -380,9 +380,6 @@ where
         cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        use iced_core::Renderer as _;
-        use iced_core::text::Renderer as _;
-
         self.content
             .as_widget()
             .draw(tree, renderer, theme, style, layout, cursor, viewport);
@@ -894,8 +891,6 @@ where
         cursor: Cursor,
         viewport: &Rectangle,
     ) {
-        use iced_core::Renderer as _;
-
         let state = lock(&self.shared);
         let claimed = state
             .active
