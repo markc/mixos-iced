@@ -93,7 +93,7 @@ impl State {
 
         let slide = SlideBar::new(0.0..=1.0, self.level, Message::Level)
             .on_release(Message::LevelDone)
-            .height(Some(12.0))
+            .height(Some(iced::Length::Fixed(12.0)))
             .width(360);
 
         let spin = Spinner::new().width(24).height(24);
