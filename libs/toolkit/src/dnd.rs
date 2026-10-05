@@ -7,14 +7,16 @@
 //!
 //! The payload is generic (`P: Clone + Send`) and the state is shared
 //! ([`Shared`]), so the source, the targets and the layer all see the
-//! same gesture. Everything is in-window; cross-window DnD belongs to
-//! the compositor, not a widget toolkit.
+//! same in-window gesture. [`native`] supplies a typed cross-window session
+//! for a caller-provided compositor backend, with explicit completion.
 //!
 //! [`find_zones`] is the geometry query: a widget operation that
 //! reports the bounds of every id'd container passing a filter — the
 //! drop zones — for hit-testing outside this module's own widgets.
 
 use std::sync::{Arc, Mutex, MutexGuard};
+
+pub mod native;
 
 use crate::tokens::Tokens;
 use iced_core::layout::{Layout, Limits, Node};

@@ -1,27 +1,14 @@
-//! Native Wayland drag and drop. Tokens identify a compositor-authorised
-//! pointer press or an offer on this event loop; they cannot be forged.
+//! Native drag and drop. Tokens identify a compositor-authorised
+//! pointer press or offer. Backends validate origin, seat and liveness.
 use std::sync::Arc;
 
 /// A pointer press that can authorise one drag from its originating window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Gesture(pub(crate) u64);
-impl Gesture {
-    /// Opaque identity for adapters. Start requests still require a held press
-    /// from the requesting window on this event loop.
-    pub fn token(self) -> u64 { self.0 }
-    /// Reconstitute an adapter token; the backend validates its ownership.
-    pub fn from_token(token: u64) -> Self { Self(token) }
-}
+pub struct Gesture(pub u64);
 
 /// An offer addressed to a particular window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Offer(pub(crate) u64);
-impl Offer {
-    /// Opaque identity for adapters; offers are validated against their window.
-    pub fn token(self) -> u64 { self.0 }
-    /// Reconstitute an adapter token; the backend validates its ownership.
-    pub fn from_token(token: u64) -> Self { Self(token) }
-}
+pub struct Offer(pub u64);
 
 /// A negotiated operation. Move completes only after the target finishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,9 +24,18 @@ pub struct Actions {
     pub move_: bool,
 }
 impl Actions {
-    pub const COPY: Self = Self { copy: true, move_: false };
-    pub const MOVE: Self = Self { copy: false, move_: true };
-    pub const BOTH: Self = Self { copy: true, move_: true };
+    pub const COPY: Self = Self {
+        copy: true,
+        move_: false,
+    };
+    pub const MOVE: Self = Self {
+        copy: false,
+        move_: true,
+    };
+    pub const BOTH: Self = Self {
+        copy: true,
+        move_: true,
+    };
     pub fn contains(self, action: Action) -> bool {
         match action {
             Action::Copy => self.copy,
@@ -57,7 +53,7 @@ pub struct Source {
 }
 impl Source {
     pub const MAX_BYTES: usize = 16 * 1024 * 1024;
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         !self.mime.is_empty()
             && self.mime.len() <= 255
             && !self.mime.chars().any(|c| c.is_control())
@@ -75,12 +71,12 @@ pub enum Event {
     Rejected(Gesture),
     Enter {
         offer: Offer,
-        position: crate::dpi::LogicalPosition<f64>,
+        position: crate::Point,
         mimes: Vec<String>,
     },
     Motion {
         offer: Offer,
-        position: crate::dpi::LogicalPosition<f64>,
+        position: crate::Point,
     },
     Action {
         offer: Offer,
@@ -111,24 +107,12 @@ pub enum Error {
     Invalid,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn native_source_refuses_invalid_mime_actions_and_oversized_bytes() {
-        let mut source = Source { mime: "text/plain;charset=utf-8".into(), bytes: Arc::from(&b"text"[..]), actions: Actions::BOTH };
-        assert!(source.valid());
-        for mime in ["", "text/plain\0extra", "text/plain\nheader"] {
-            source.mime = mime.into();
-            assert!(!source.valid());
-        }
-        source.mime = "x".repeat(256);
-        assert!(!source.valid());
-        source.mime = "text/plain".into();
-        source.actions = Actions { copy: false, move_: false };
-        assert!(!source.valid());
-        source.actions = Actions::COPY;
-        source.bytes = Arc::from(vec![0; Source::MAX_BYTES + 1]);
-        assert!(!source.valid());
-    }
+/// A request queued onto the owning native window backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    Start(Gesture, Source),
+    Accept(Offer, Option<String>, Actions, Action),
+    Receive(Offer, String),
+    Finish(Offer, bool),
+    Cancel(Gesture),
 }

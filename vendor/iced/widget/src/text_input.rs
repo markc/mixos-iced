@@ -472,7 +472,7 @@ where
 }
 
 /// The state of a [`TextInput`].
-pub struct State<R: text::Renderer> {
+struct State<R: text::Renderer> {
     input: text::Input<R>,
     value: String,
     transaction: Option<shell::Tracking>,
@@ -483,19 +483,6 @@ fn state<Renderer: text::Renderer + 'static>(tree: &mut Tree) -> &mut State<Rend
 }
 
 impl<R: text::Renderer> State<R> {
-    // toolkit: public access required by the selection-aware undo wrapper.
-    /// Returns the cursor and selection anchor in the unmasked text.
-    pub fn cursor(&self) -> editor::Cursor {
-        self.input.cursor()
-    }
-
-    /// Replaces the value immediately, including during an unprocessed event batch.
-    pub fn overwrite(&mut self, value: &str) {
-        self.input.overwrite(value);
-        self.value = value.to_owned();
-        self.transaction = None;
-    }
-
     /// Creates a new [`State`], representing an unfocused [`TextInput`].
     fn new() -> Self {
         Self {

@@ -11,6 +11,13 @@ use crate::task::{self, Task};
 
 /// An operation to be performed on some window.
 pub enum Action {
+    /// Queue a native data-device operation. The result confirms enqueueing;
+    /// protocol completion arrives in a DragDrop window event.
+    DragDrop(
+        Id,
+        crate::core::window::drag::Request,
+        oneshot::Sender<Result<(), crate::core::window::drag::Error>>,
+    ),
     /// Open a new window with some [`Settings`].
     Open(Id, Settings, oneshot::Sender<Id>),
 
@@ -419,6 +426,14 @@ pub fn show_system_menu<T>(id: Id) -> Task<T> {
 /// not to be confused with [`Id`].
 pub fn raw_id<Message>(id: Id) -> Task<u64> {
     task::oneshot(|channel| crate::Action::Window(Action::GetRawId(id, channel)))
+}
+
+/// Queue a native drag source/offer request without foreign raw handles.
+pub fn drag_drop(
+    id: Id,
+    request: crate::core::window::drag::Request,
+) -> Task<Result<(), crate::core::window::drag::Error>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::DragDrop(id, request, channel)))
 }
 
 /// Changes the [`Icon`] of the window.

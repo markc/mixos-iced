@@ -1055,6 +1055,7 @@ async fn run_instance<P>(
                             if let Some(event) = conversion::window_event(
                                 window_event,
                                 window.state.scale_factor(),
+                                window.raw.scale_factor(),
                                 window.state.modifiers(),
                             ) {
                                 events.push((id, event));
@@ -1369,6 +1370,13 @@ fn run_action<'a, P, C>(
                 if let Some(window) = window_manager.get_mut(id) {
                     let _ = window.raw.drag_window();
                 }
+            }
+            window::Action::DragDrop(id, request, channel) => {
+                let result = match window_manager.get_mut(id) {
+                    Some(window) => conversion::drag_request(&window.raw, request),
+                    None => Err(core::window::drag::Error::Invalid),
+                };
+                let _ = channel.send(result);
             }
             window::Action::DragResize(id, direction) => {
                 if let Some(window) = window_manager.get_mut(id) {

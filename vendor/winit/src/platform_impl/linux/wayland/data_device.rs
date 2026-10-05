@@ -374,7 +374,7 @@ impl WinitState {
                 }
                 let mut buffer = [0u8; 16384];
                 loop {
-                    match rustix::io::read(fd, &mut buffer) {
+                match rustix::io::read(&*fd, &mut buffer) {
                         Ok(0) => {
                             let target = state.drag.targets.get_mut(&offer).unwrap();
                             target.delivered = true;
@@ -473,6 +473,7 @@ impl DataDeviceHandler for WinitState {
             window,
             drag::Event::Enter { offer, position: crate::dpi::LogicalPosition::new(x, y), mimes },
         );
+        if action.is_some() { self.drag_event(window, drag::Event::Action { offer, action }); }
     }
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
         if let Some(offer) = self.offer_for_device(device) {
@@ -573,7 +574,7 @@ impl DataSourceHandler for WinitState {
                     return Ok(PostAction::Remove);
                 }
                 while offset < bytes.len() {
-                    match rustix::io::write(fd, &bytes[offset..]) {
+                    match rustix::io::write(&*fd, &bytes[offset..]) {
                         Ok(0) => return Ok(PostAction::Remove),
                         Ok(count) => offset += count,
                         Err(rustix::io::Errno::INTR) => continue,

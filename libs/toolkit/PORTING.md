@@ -1,8 +1,8 @@
 # Porting and design notes
 
 toolkit targets iced 0.15.0-dev at the revision vendored beside it, with
-wgpu 30. These notes record what the port to that iced required, the one
-vendor patch it depends on, and the design of the generic API, so the
+wgpu 30 in this workspace, or upstream's own renderer dependencies elsewhere.
+These notes record what the port required and the generic API, so the
 next iced refresh and anyone taking the crate can see what was deliberate.
 
 ## Features and layering
@@ -51,18 +51,20 @@ project.
   iced's self dev-dependency that selects upstream defaults for its own
   tests.
 
-## The one vendor patch
+## Owned text input
 
-`TextField`'s selection-aware undo reads the text input's cursor and
-restores its value, which upstream iced 0.15.0-dev keeps private. The
-vendored iced carries two narrow accessors, each line marked
-`// toolkit:`: `text::Input::cursor()` in `core/src/text/input.rs`, and a
-public `text_input::State<R>` with `cursor()` and `overwrite()` in
-`widget/src/text_input.rs` (`vendor/iced/PATCHES.md`, "Toolkit text-input
-state access"). `overwrite` clears pending message tracking so undo
-followed by typing in one event batch uses the restored value. Nothing
-else in the vendored iced is needed; a project vendoring the crate applies
-the same lines or leaves `TextField` out.
+`TextField` owns the adapter in `text_field/input.rs` and `text_field/raw.rs`,
+adapted from the pinned upstream input widget with its MIT notice retained.
+The editor engine is still iced's public `Renderer::Editor`. The adapter
+keeps cursor/selection state available to bounded undo, synchronises secure
+mask positions, and clears message tracking on immediate overwrite. Losing
+focus cancels local preedit and blocks queued IME events until the platform
+acknowledges closure. Password input requests the secure IME purpose.
+
+No patched iced APIs are needed. The pristine-upstream gate copies only this
+crate into an isolated workspace and fetches exact iced `3de451447`; it runs
+library tests, rendered interactions and doctests there. Repeat that gate
+when refreshing iced or the owned adapter.
 
 ## Theming
 

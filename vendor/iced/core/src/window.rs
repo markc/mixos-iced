@@ -2,6 +2,7 @@
 pub mod icon;
 pub mod screenshot;
 pub mod settings;
+pub mod drag;
 
 mod direction;
 mod event;

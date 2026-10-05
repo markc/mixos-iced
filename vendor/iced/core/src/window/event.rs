@@ -6,6 +6,8 @@ use std::path::PathBuf;
 /// A window-related event.
 #[derive(PartialEq, Clone, Debug)]
 pub enum Event {
+    /// Native source/offer lifecycle on the owning window's backend.
+    DragDrop(super::drag::Event),
     /// A window was opened.
     Opened {
         /// The position of the opened window. This is relative to the top-left corner of the desktop

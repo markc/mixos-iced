@@ -149,12 +149,17 @@ pub fn window_attributes(
 pub fn window_event(
     event: winit::event::WindowEvent,
     scale_factor: f32,
+    native_scale_factor: f64,
     modifiers: winit::keyboard::ModifiersState,
 ) -> Option<Event> {
     use winit::event::Ime;
     use winit::event::WindowEvent;
 
     match event {
+        WindowEvent::DragDrop(event) => Some(Event::Window(window::Event::DragDrop(drag_event(
+            event,
+            (native_scale_factor / f64::from(scale_factor)) as f32,
+        )))),
         WindowEvent::Resized(new_size) => {
             let logical_size = new_size.to_logical(f64::from(scale_factor));
 
@@ -1146,4 +1151,137 @@ pub fn ime_purpose(purpose: input_method::Purpose) -> winit::window::ImePurpose 
 // See: https://en.wikipedia.org/wiki/Private_Use_Areas
 fn is_private_use(c: char) -> bool {
     ('\u{E000}'..='\u{F8FF}').contains(&c)
+}
+
+/// Convert native lifecycle identities without exposing Wayland proxies.
+pub fn drag_event(event: winit::drag::Event, coordinate_scale: f32) -> window::drag::Event {
+    use window::drag as target;
+    use winit::drag::Event as Native;
+    let gesture = |id: winit::drag::Gesture| target::Gesture(id.token());
+    let offer = |id: winit::drag::Offer| target::Offer(id.token());
+    let action = |action| match action {
+        winit::drag::Action::Copy => target::Action::Copy,
+        winit::drag::Action::Move => target::Action::Move,
+    };
+    match event {
+        Native::Gesture(id) => target::Event::Gesture(gesture(id)),
+        Native::Started(id) => target::Event::Started(gesture(id)),
+        Native::Rejected(id) => target::Event::Rejected(gesture(id)),
+        Native::Enter {
+            offer: id,
+            position,
+            mimes,
+        } => target::Event::Enter {
+            offer: offer(id),
+            position: Point::new(
+                position.x as f32 * coordinate_scale,
+                position.y as f32 * coordinate_scale,
+            ),
+            mimes,
+        },
+        Native::Motion {
+            offer: id,
+            position,
+        } => target::Event::Motion {
+            offer: offer(id),
+            position: Point::new(
+                position.x as f32 * coordinate_scale,
+                position.y as f32 * coordinate_scale,
+            ),
+        },
+        Native::Action {
+            offer: id,
+            action: selected,
+        } => target::Event::Action {
+            offer: offer(id),
+            action: selected.map(action),
+        },
+        Native::Leave(id) => target::Event::Leave(offer(id)),
+        Native::Drop(id) => target::Event::Drop(offer(id)),
+        Native::Data {
+            offer: id,
+            mime,
+            bytes,
+            action: selected,
+        } => target::Event::Data {
+            offer: offer(id),
+            mime,
+            bytes,
+            action: action(selected),
+        },
+        Native::Failed(id) => target::Event::Failed(offer(id)),
+        Native::Finished {
+            gesture: id,
+            action: selected,
+        } => target::Event::Finished {
+            gesture: gesture(id),
+            action: action(selected),
+        },
+        Native::Cancelled(id) => target::Event::Cancelled(gesture(id)),
+    }
+}
+
+/// Queue a request on winit's owning data-device event loop.
+pub fn drag_request(
+    window: &winit::window::Window,
+    request: window::drag::Request,
+) -> Result<(), window::drag::Error> {
+    #[cfg(all(
+        feature = "wayland",
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        )
+    ))]
+    {
+        use window::drag as source;
+        use winit::platform::wayland::WindowExtWayland;
+        let gesture = |id: source::Gesture| winit::drag::Gesture::from_token(id.0);
+        let offer = |id: source::Offer| winit::drag::Offer::from_token(id.0);
+        let action = |action| match action {
+            source::Action::Copy => winit::drag::Action::Copy,
+            source::Action::Move => winit::drag::Action::Move,
+        };
+        let actions = |actions: source::Actions| winit::drag::Actions {
+            copy: actions.copy,
+            move_: actions.move_,
+        };
+        let result = match request {
+            source::Request::Start(id, payload) => window.start_drag(
+                gesture(id),
+                winit::drag::Source {
+                    mime: payload.mime,
+                    bytes: payload.bytes,
+                    actions: actions(payload.actions),
+                },
+            ),
+            source::Request::Accept(id, mime, allowed, preferred) => {
+                window.accept_drag_offer(offer(id), mime, actions(allowed), action(preferred))
+            }
+            source::Request::Receive(id, mime) => window.receive_drag_offer(offer(id), mime),
+            source::Request::Finish(id, applied) => window.finish_drag_offer(offer(id), applied),
+            source::Request::Cancel(id) => window.cancel_drag(gesture(id)),
+        };
+        result.map_err(|error| match error {
+            winit::drag::Error::Unsupported => source::Error::Unsupported,
+            winit::drag::Error::Invalid => source::Error::Invalid,
+        })
+    }
+    #[cfg(not(all(
+        feature = "wayland",
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        )
+    )))]
+    {
+        let _ = (window, request);
+        Err(window::drag::Error::Unsupported)
+    }
 }
