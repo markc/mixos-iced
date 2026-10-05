@@ -412,7 +412,7 @@ where
                         },
                         ..renderer::Quad::default()
                     },
-                    t.popover.into(),
+                    iced_core::Background::Color(t.popover),
                 );
                 renderer.fill_text(
                     iced_core::text::Text {
@@ -450,7 +450,7 @@ where
                         },
                         ..renderer::Quad::default()
                     },
-                    t.popover.into(),
+                    iced_core::Background::Color(t.popover),
                 );
                 let rows = [
                     pending.label.as_str(),
@@ -470,7 +470,7 @@ where
                                 bounds: row,
                                 ..renderer::Quad::default()
                             },
-                            t.muted_surface.into(),
+                            iced_core::Background::Color(t.muted_surface),
                         );
                     }
                     renderer.fill_text(
@@ -1124,6 +1124,7 @@ mod tests {
 
     #[test]
     fn find_zones_reports_id_matching_containers() {
+        use crate::test_renderer::LayoutRenderer;
         use iced_core::widget::{Tree as WTree, Widget};
         use iced_widget::container;
 
