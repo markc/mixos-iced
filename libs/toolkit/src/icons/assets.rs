@@ -203,7 +203,12 @@ impl Assets {
             limits.max_image_height = Some(MAX_SIDE as u32);
             limits.max_alloc = Some(64 * 1024 * 1024);
             reader.limits(limits);
-            let bitmap = reader.decode().ok()?.into_rgba8();
+            use image::ImageDecoder;
+            let mut decoder = reader.into_decoder().ok()?;
+            let orientation = decoder.orientation().ok()?;
+            let mut bitmap = image::DynamicImage::from_decoder(decoder).ok()?;
+            bitmap.apply_orientation(orientation);
+            let bitmap = bitmap.into_rgba8();
             (bitmap.width(), bitmap.height(), bitmap.into_raw())
         };
         if !pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
@@ -385,6 +390,44 @@ mod tests {
         };
         assert!((100..=104).contains(&pixels[3]));
     }
+    #[test]
+    fn limited_raster_decoder_preserves_exif_orientation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("oriented.png");
+        let mut info = png::Info::with_size(2, 1);
+        info.color_type = png::ColorType::Rgba;
+        info.bit_depth = png::BitDepth::Eight;
+        // TIFF IFD: Orientation = 6 (rotate clockwise).
+        info.exif_metadata = Some(std::borrow::Cow::Owned(vec![
+            73, 73, 42, 0, 8, 0, 0, 0, 1, 0, 18, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ]));
+        let tokens = crate::Tokens::dark();
+        let pixels = [
+            tokens.palette.primary.into_rgba8(),
+            tokens.palette.text.into_rgba8(),
+        ]
+        .concat();
+        let mut encoded = Vec::new();
+        {
+            let encoder = png::Encoder::with_info(&mut encoded, info).unwrap();
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&pixels).unwrap();
+        }
+        std::fs::write(&path, encoded).unwrap();
+        let assets = Assets::new().fallback("oriented", path, false);
+        let Handle::Rgba {
+            width,
+            height,
+            pixels: decoded,
+            ..
+        } = image(assets.resolve(Icon::new("oriented"), 16.0, 1.0, tokens.palette.text))
+        else {
+            panic!()
+        };
+        assert_eq!((width, height), (1, 2));
+        assert_eq!(decoded.as_ref(), pixels.as_slice());
+    }
+
     #[test]
     fn corrupt_primary_asset_can_fall_back_to_a_ready_raster() {
         let assets = Assets::new()

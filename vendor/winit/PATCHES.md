@@ -31,3 +31,10 @@ helper is deliberately unused because it sends a duplicate protocol request.
 Guards: backend unit tests for payload validation and the desktop native
 drag test exercise MIME/action negotiation, bytes, exactly-once completion,
 invalid presses, cancellation, closures and transfer sizes above pipe capacity.
+
+Wayland text-input commits are counted per object. Done batches are accepted
+only inside the latest enable context, so synthetic Disabled cannot expose
+old composition to a replacement field. Older cursor/content commits within
+the same context still apply as the protocol requires. Pending batches are
+cleared at enable/disable/leave. Guards: `epoch_tests` covers stale Done after
+replacement, in-context updates and serial wrap; all commit sites are tracked.

@@ -22,11 +22,11 @@ use sctk::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as 
 
 use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
 use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
-use sctk::shell::xdg::window::{DecorationMode, Window, WindowConfigure};
-use sctk::shell::xdg::XdgSurface;
 use sctk::shell::WaylandSurface;
-use sctk::shm::slot::SlotPool;
+use sctk::shell::xdg::XdgSurface;
+use sctk::shell::xdg::window::{DecorationMode, Window, WindowConfigure};
 use sctk::shm::Shm;
+use sctk::shm::slot::SlotPool;
 use sctk::subcompositor::SubcompositorState;
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur::OrgKdeKwinBlur;
 
@@ -955,7 +955,7 @@ impl WindowState {
             } else {
                 text_input.disable();
             }
-            text_input.commit();
+            text_input.commit_tracked(Some(allowed));
         }
 
         applied
@@ -970,7 +970,7 @@ impl WindowState {
         let (width, height) = (size.width as i32, size.height as i32);
         for text_input in self.text_inputs.iter() {
             text_input.set_cursor_rectangle(x, y, width, height);
-            text_input.commit();
+            text_input.commit_tracked(None);
         }
     }
 
@@ -980,7 +980,7 @@ impl WindowState {
 
         for text_input in &self.text_inputs {
             text_input.set_content_type_by_purpose(purpose);
-            text_input.commit();
+            text_input.commit_tracked(None);
         }
     }
 
