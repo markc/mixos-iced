@@ -11,6 +11,8 @@ mod rows;
 pub use header::Header;
 pub use rows::{Columns, FilePane, listing_size_width};
 
+type Tooltip<'a, M, T, R> = dyn Fn(String, Size) -> Element<'a, M, T, R> + 'a;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     Press,

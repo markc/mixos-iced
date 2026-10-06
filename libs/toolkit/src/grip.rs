@@ -7,6 +7,7 @@ use iced_core::{
 };
 use std::time::{Duration, Instant};
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+type DragCallback<'a, M> = dyn Fn(f32, &Rectangle) -> M + 'a;
 #[derive(Default)]
 struct DividerState {
     dragging: bool,
@@ -18,7 +19,7 @@ pub struct Grip<'a, Message> {
     edge: f32,
     border: Color,
     accent: Color,
-    on_drag: Box<dyn Fn(f32, &Rectangle) -> Message + 'a>,
+    on_drag: Box<DragCallback<'a, Message>>,
     reset: Message,
 }
 impl<'a, Message> Grip<'a, Message> {

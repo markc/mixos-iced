@@ -52,49 +52,6 @@ pub struct EditorPane<'a> {
     pub(super) view: EditorView,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::fixture::Text;
-    use super::*;
-
-    #[test]
-    fn document_switch_cancels_composition_and_discards_pending_interactions() {
-        let palette = Palette::from(crate::Tokens::default());
-        let view = EditorView::default();
-        let first = EditorPane::new(Text::from_text("alpha").unwrap(), &palette, &view);
-        let second = EditorPane::new(Text::from_text("bravo").unwrap(), &palette, &view);
-        let mut state = State::default();
-        state.metrics = Some(Metrics {
-            cell_w: 8.0,
-            line_h: 20.0,
-        });
-        first.sync_scroll(&mut state, Size::new(800.0, 600.0));
-        state.ime.preedit("ni");
-        state.ime.anchored = true;
-        state.drag = Some(Drag::Text);
-        state.drag_offset = Some(4);
-        state.primary_pending = true;
-        state.echo.push_back(Scroll {
-            first_line: 20,
-            x_cells: 4,
-        });
-        state.tint_seen.borrow_mut().insert(7, Instant::now());
-        state.max_cells.set(1000);
-        second.sync_scroll(&mut state, Size::new(800.0, 600.0));
-        assert_eq!(state.document, Some(second.text.identity()));
-        assert_eq!(state.scroll, Scroll::default());
-        assert!(state.echo.is_empty() && state.drag.is_none());
-        assert!(state.drag_offset.is_none() && !state.primary_pending);
-        assert!(state.tint_seen.borrow().is_empty());
-        assert_eq!(state.max_cells.get(), 0);
-        assert!(
-            !state.ime.commit(),
-            "queued commit belongs to the old document"
-        );
-        state.ime.closed();
-        assert!(state.ime.preedit("new") && state.ime.commit());
-    }
-}
 
 pub(super) type Editor<'a> = EditorPane<'a>;
 
@@ -788,5 +745,48 @@ where
         } else {
             mouse::Interaction::Text
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::fixture::Text;
+    use super::*;
+
+    #[test]
+    fn document_switch_cancels_composition_and_discards_pending_interactions() {
+        let palette = Palette::from(crate::Tokens::default());
+        let view = EditorView::default();
+        let first = EditorPane::new(Text::from_text("alpha").unwrap(), &palette, &view);
+        let second = EditorPane::new(Text::from_text("bravo").unwrap(), &palette, &view);
+        let mut state = State {
+            metrics: Some(Metrics { cell_w: 8.0, line_h: 20.0 }),
+            ..State::default()
+        };
+        first.sync_scroll(&mut state, Size::new(800.0, 600.0));
+        state.ime.preedit("ni");
+        state.ime.anchored = true;
+        state.drag = Some(Drag::Text);
+        state.drag_offset = Some(4);
+        state.primary_pending = true;
+        state.echo.push_back(Scroll {
+            first_line: 20,
+            x_cells: 4,
+        });
+        state.tint_seen.borrow_mut().insert(7, Instant::now());
+        state.max_cells.set(1000);
+        second.sync_scroll(&mut state, Size::new(800.0, 600.0));
+        assert_eq!(state.document, Some(second.text.identity()));
+        assert_eq!(state.scroll, Scroll::default());
+        assert!(state.echo.is_empty() && state.drag.is_none());
+        assert!(state.drag_offset.is_none() && !state.primary_pending);
+        assert!(state.tint_seen.borrow().is_empty());
+        assert_eq!(state.max_cells.get(), 0);
+        assert!(
+            !state.ime.commit(),
+            "queued commit belongs to the old document"
+        );
+        state.ime.closed();
+        assert!(state.ime.preedit("new") && state.ime.commit());
     }
 }

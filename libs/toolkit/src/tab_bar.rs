@@ -21,6 +21,7 @@ use iced_core::{
 };
 use iced_widget::{Column, Row};
 use std::marker::PhantomData;
+type TextColour<'a, Id> = dyn Fn(&Id) -> Option<Color> + 'a;
 
 /// The default icon size.
 const DEFAULT_ICON_SIZE: f32 = 16.0;
@@ -139,7 +140,7 @@ where
     on_select: Box<dyn Fn(TabId) -> Message>,
     /// The message produced when a tab's close glyph is pressed.
     on_close: Option<Box<dyn Fn(TabId) -> Message>>,
-    text_colour: Option<Box<dyn Fn(&TabId) -> Option<Color> + 'a>>,
+    text_colour: Option<Box<TextColour<'a, TabId>>>,
     width: Length,
     tab_width: Length,
     height: Length,

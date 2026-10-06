@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A sortable header sharing the listing's responsive column geometry.
-use super::{Columns, FilePane, Presentation};
+use super::{Columns, FilePane, Presentation, Tooltip};
 use iced_core::text::{self, Paragraph as _};
 use iced_core::{
     Color, Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Widget, layout, mouse,
@@ -18,7 +18,7 @@ pub struct Header<'a, Message, Theme, Renderer> {
     background: Color,
     foreground: Color,
     on_sort: Box<dyn Fn(usize) -> Message + 'a>,
-    tooltip: Option<Box<dyn Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a>>,
+    tooltip: Option<Box<Tooltip<'a, Message, Theme, Renderer>>>,
 }
 impl<'a, Message, Theme, Renderer> Header<'a, Message, Theme, Renderer>
 where

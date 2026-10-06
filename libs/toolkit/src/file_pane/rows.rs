@@ -7,6 +7,7 @@ use iced_core::{Event, Layout, Shell, Widget, alignment, keyboard, layout, mouse
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+type DecorationPainter<'a, R> = dyn Fn(&mut R, usize, Decoration, Rectangle, Rectangle) + 'a;
 /// One column contract for headers and rows. Secondary widths are measured
 /// in the resolved mono role, including the widest absolute time form.
 #[derive(Clone, Copy, Debug)]
@@ -184,8 +185,8 @@ pub struct FilePane<'a, Theme, Renderer> {
     look: Presentation,
     tint: &'a str,
     tips: Vec<Element<'a, Message, Theme, Renderer>>,
-    tooltip: Option<Box<dyn Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a>>,
-    decoration: Box<dyn Fn(&mut Renderer, usize, Decoration, Rectangle, Rectangle) + 'a>,
+    tooltip: Option<Box<Tooltip<'a, Message, Theme, Renderer>>>,
+    decoration: Box<DecorationPainter<'a, Renderer>>,
     open_label: String,
     transfer: Option<Box<dyn Transfer + 'a>>,
     busy: bool,
@@ -396,7 +397,7 @@ where
         // Reserve a complete viewport before shaping it. Evicting in
         // cache_row would discard earlier visible paragraphs mid-pass.
         // An unusually tall viewport may legitimately need more than 512.
-        let visible = (height / st.row_h).ceil().max(0.0) as usize + 2;
+        let visible = ((height / st.row_h).ceil().max(0.0) as usize).saturating_add(2);
         if st.cache.len().saturating_add(visible) > 512.max(visible) {
             st.cache.clear();
         }
