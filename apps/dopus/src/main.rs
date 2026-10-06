@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `mixos-dopus` — the MixOS twin-pane file manager (iced), the windowed
-//! frontend of the headless `mixos-dopus-core`. P2: twin panes.
-//! `mixos-dopus [PATH…]` starts the window registered on the Bus as
+//! `dopus` — the MixOS twin-pane file manager (iced), the windowed
+//! frontend of the headless `dopus-core`. P2: twin panes.
+//! `dopus [PATH…]` starts the window registered on the Bus as
 //! `dopus`, the first PATH in the left pane and the second in the right; a
 //! second launch forwards its paths to the running instance and exits.
 
 use dopus::dirs::{AppDirs, COMPONENT};
 
-const HELP: &str = "mixos-dopus — the MixOS twin-pane file manager (iced; twin panes,\n\
+const HELP: &str = "dopus — the MixOS twin-pane file manager (iced; twin panes,\n\
 Places sidebar, per-pane location bars, file operations: keyboard +\n\
 dialogs — new folder, rename, copy/move to the other pane, delete, and\n\
 `xdg-open` for files)\n\
-Usage: mixos-dopus [PATH…]\n\
+Usage: dopus [PATH…]\n\
   PATH…             the first PATH opens in the left pane, the second in\n\
                     the right; extras are ignored\n\
   --headless        no window: the twin-pane core and the `dopus` Bus port\n\
@@ -103,7 +103,7 @@ fn main() {
     let args = match parse(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(e) => {
-            eprintln!("mixos-dopus: {e}");
+            eprintln!("dopus: {e}");
             std::process::exit(2);
         }
     };
@@ -138,14 +138,14 @@ fn main() {
         // pane, second → right).
         if dopus::bus::probe_running(&noded_url, &args.service) {
             if paths.is_empty() {
-                eprintln!("mixos-dopus: already running as {}", args.service);
+                eprintln!("dopus: already running as {}", args.service);
                 return;
             }
             match dopus::bus::forward_open(&noded_url, &args.service, &paths) {
                 Ok(()) => return,
                 Err(e) => {
                     eprintln!(
-                        "mixos-dopus: a running instance answered but refused the paths: {e}"
+                        "dopus: a running instance answered but refused the paths: {e}"
                     );
                     std::process::exit(1);
                 }
@@ -154,7 +154,7 @@ fn main() {
         dopus::app::run(config, config_file, dirs, &args.service, &noded_url, &paths)
     };
     if let Err(e) = result {
-        eprintln!("mixos-dopus: {e:#}");
+        eprintln!("dopus: {e:#}");
         std::process::exit(1);
     }
 }

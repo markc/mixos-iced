@@ -707,4 +707,4 @@ mix what NAME         one-line description of a builtin or keyword
 ```
 
 The source of truth is the lexer and parser in the public
-[mix repo](https://github.com/markc/mixos/tree/main/src/crates/mixos-lib-mix/src).
+[mix repo](https://github.com/markc/mixos/tree/main/libs/mix/src).

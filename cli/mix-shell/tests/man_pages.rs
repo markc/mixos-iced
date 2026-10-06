@@ -203,7 +203,10 @@ fn no_stale_version_stamps_or_banned_citations() {
         let content = read_page(&page);
         for needle in banned {
             assert!(
-                !content.contains(needle),
+                !content.match_indices(needle).any(|(at, _)| {
+                    needle != "github.com/markc/mix" || !content[at + needle.len()..]
+                        .chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                }),
                 "docs/mix/{page} cites banned/retired location '{needle}'"
             );
         }

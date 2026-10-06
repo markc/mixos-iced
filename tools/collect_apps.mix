@@ -1,0 +1,26 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Collect component-owned desktop entries without installing them.
+$root = dirname(dirname(realpath($0)))
+$dest = $root .. "/target/mixos/share/applications"
+$entries = {}
+for each $source in glob($root .. "/apps/*/assets/*.desktop")
+  $owner = dirname(dirname($source))
+  $component = basename($owner)
+  $name = basename($source)
+  if not is_file($owner .. "/Cargo.toml") then raise("APP_ORPHAN", $source) end
+  if $name != "dev.mixos." .. $component .. ".desktop" then raise("APP_ID", $source) end
+  if has_key($entries, $name) then raise("APP_DUPLICATE", $source) end
+  $text = read_file($source)
+  if not contains($text, "Exec=/opt/mixos/bin/" .. $component) then raise("APP_EXEC", $source) end
+  $entries[$name] = $source
+end
+mkdir($dest, {parents:true})
+for each $existing in glob($dest .. "/*")
+  if is_file($existing) and not has_key($entries, basename($existing)) then
+    raise("APP_STALE", $existing)
+  end
+end
+for each $name in keys($entries)
+  copy($entries[$name], $dest .. "/" .. $name)
+end
+print(json_encode({destination:$dest, applications:keys($entries)}))

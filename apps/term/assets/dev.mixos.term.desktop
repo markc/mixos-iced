@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Desktop Entry]
+Type=Application
+Name=Term
+Comment=MixOS terminal
+Exec=/opt/mixos/bin/term
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=dev.mixos.term

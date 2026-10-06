@@ -240,7 +240,7 @@ async fn blob_upload_lost_create_reply_persisted_key_409_head_and_commit_replay(
             assert_eq!(saved["key"], key);
             let metadata = |offset| {
                 format!(
-                    "X-MixOS-Offset: {offset}\r\nX-MixOS-Size: 4\r\nX-MixOS-Owner: tester\r\nX-MixOS-Mime: application/octet-stream\r\nX-MixOS-Expect: b3:{hash}\r\nX-MixOS-Upload-Key: {key}\r\nX-MixOS-State: active\r\n"
+                    "X-Cosmix-Offset: {offset}\r\nX-Cosmix-Size: 4\r\nX-Cosmix-Owner: tester\r\nX-Cosmix-Mime: application/octet-stream\r\nX-Cosmix-Expect: b3:{hash}\r\nX-Cosmix-Upload-Key: {key}\r\nX-Cosmix-State: active\r\n"
                 )
             };
             match step {
@@ -261,7 +261,7 @@ async fn blob_upload_lost_create_reply_persisted_key_409_head_and_commit_replay(
                 3 => {
                     assert!(head.starts_with("PATCH "));
                     assert_eq!(body, b"ab");
-                    reply(&mut socket, 409, "X-MixOS-Offset: 2\r\n", "{}");
+                    reply(&mut socket, 409, "X-Cosmix-Offset: 2\r\n", "{}");
                 }
                 5 => {
                     assert!(head.starts_with("PATCH "));
@@ -340,7 +340,7 @@ async fn blob_upload_replays_stranded_committing_session_after_thirty_seconds() 
                     &mut socket,
                     200,
                     &format!(
-                        "X-MixOS-Offset: 0\r\nX-MixOS-Size: 0\r\nX-MixOS-Owner: tester\r\nX-MixOS-Mime: application/octet-stream\r\nX-MixOS-Expect: b3:{hash}\r\nX-MixOS-Upload-Key: {key}\r\nX-MixOS-State: {state}\r\n"
+                        "X-Cosmix-Offset: 0\r\nX-Cosmix-Size: 0\r\nX-Cosmix-Owner: tester\r\nX-Cosmix-Mime: application/octet-stream\r\nX-Cosmix-Expect: b3:{hash}\r\nX-Cosmix-Upload-Key: {key}\r\nX-Cosmix-State: {state}\r\n"
                     ),
                     "",
                 );
@@ -403,7 +403,7 @@ async fn blob_upload_polls_slow_commit_after_control_timeout_without_competing_p
                         &mut socket,
                         200,
                         &format!(
-                            "X-MixOS-Offset: 0\r\nX-MixOS-Size: 0\r\nX-MixOS-Owner: tester\r\nX-MixOS-Mime: application/octet-stream\r\nX-MixOS-Expect: b3:{hash}\r\nX-MixOS-Upload-Key: {key}\r\nX-MixOS-State: {state}\r\n"
+                            "X-Cosmix-Offset: 0\r\nX-Cosmix-Size: 0\r\nX-Cosmix-Owner: tester\r\nX-Cosmix-Mime: application/octet-stream\r\nX-Cosmix-Expect: b3:{hash}\r\nX-Cosmix-Upload-Key: {key}\r\nX-Cosmix-State: {state}\r\n"
                         ),
                         "",
                     );
@@ -500,7 +500,7 @@ async fn blob_upload_empty_unicode_name_commits_without_patch() {
                         &mut socket,
                         200,
                         &format!(
-                            "X-MixOS-Offset: 0\r\nX-MixOS-Size: 0\r\nX-MixOS-Owner: tester\r\nX-MixOS-Mime: application/octet-stream\r\nX-MixOS-Expect: b3:{hash}\r\nX-MixOS-Upload-Key: {key}\r\nX-MixOS-State: active\r\nX-MixOS-Name: caf%C3%A9+%20%25.txt\r\n"
+                            "X-Cosmix-Offset: 0\r\nX-Cosmix-Size: 0\r\nX-Cosmix-Owner: tester\r\nX-Cosmix-Mime: application/octet-stream\r\nX-Cosmix-Expect: b3:{hash}\r\nX-Cosmix-Upload-Key: {key}\r\nX-Cosmix-State: active\r\nX-Cosmix-Name: caf%C3%A9+%20%25.txt\r\n"
                         ),
                         "",
                     );

@@ -173,6 +173,6 @@ trust-split model.
 - [Bus messaging](bus.md) — `send`/`emit` semantics and the `$rc` bands
 - [shell dispatch](shell-mode.md) — `sh`, `$(…)`, pipes (all `Process`-gated)
 - Source of truth: `eval_expr_string` / `MAX_EXPR_DEPTH` in
-  [`evaluator.rs`](https://github.com/markc/mixos/blob/main/src/crates/mixos-lib-mix/src/evaluator.rs),
+  [`evaluator.rs`](https://github.com/markc/mixos/blob/main/libs/mix/src/evaluator.rs),
   `CategoryAllowList::deny_all` in
-  [`builtins.rs`](https://github.com/markc/mixos/blob/main/src/crates/mixos-lib-mix/src/builtins.rs)
+  [`builtins.rs`](https://github.com/markc/mixos/blob/main/libs/mix/src/builtins.rs)

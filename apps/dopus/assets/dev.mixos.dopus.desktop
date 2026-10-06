@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Desktop Entry]
+Type=Application
+Name=DOpus
+Comment=MixOS twin-pane file manager
+Exec=/opt/mixos/bin/dopus %F
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileManager;
+MimeType=inode/directory;
+StartupWMClass=dev.mixos.dopus

@@ -7,6 +7,9 @@ The compositor is built with `--no-default-features --features backend-all`;
 `desktop-dbus` is an explicit compatibility feature.
 
 Run `mix tools/collect_units.mix` to collect units under `target/mixos/units`.
+Run `mix tools/collect_apps.mix` to collect desktop entries under
+`target/mixos/share/applications`; install them in `/opt/mixos/share/applications`
+and include `/opt/mixos/share` in the session's `XDG_DATA_DIRS`.
 The collector never installs or starts them. An image installer supplies the
 `mixos` account, the `seat` group and `/etc/mixos/session/4.env`. Its account
 must have the numeric identity selected for the desktop profile; a controlled
@@ -17,7 +20,7 @@ The environment file defines absolute `MIXOS_ETC`, `MIXOS_VAR`, `MIXOS_RUN`,
 `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `SEATD_SOCK`, `MIXOS_OUTPUT_SCALE` and
 `MIXOS_BROKER_ACCOUNT`, with a PATH beginning `/opt/mixos/bin`. The node config
 pins its unique name and Unix socket inside this runtime directory. Compd's
-settings enable `scene_host`; the loader's `SCENES_DIR` holds the profile's
+`preferences.json` beside its settings file enables `scene_host`; the loader's `SCENES_DIR` holds the profile's
 private scene state, and `SCENES_TEMPLATES` points to the shipped catalogue.
 Every service clears inherited D-Bus variables even if the environment file
 sets them. The compositor's VT comes from the unit instance, not a host seat.

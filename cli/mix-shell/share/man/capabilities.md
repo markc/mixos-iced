@@ -251,6 +251,6 @@ A short decision guide for an embedder wiring up a `CategoryAllowList`:
 - `mix what NAME` — one-line description of a builtin or keyword
 - `mix builtins [CATEGORY]` — list builtins by (doc) category
 - `mix help` — the `mix` command surface and CLI flags
-- Source of truth: [`builtins.rs`](https://github.com/markc/mixos/blob/main/src/crates/mixos-lib-mix/src/builtins.rs) (`CapabilityClass`, `CategoryAllowList`, `capability_category`), [`evaluator.rs`](https://github.com/markc/mixos/blob/main/src/crates/mixos-lib-mix/src/evaluator.rs) (`CapabilityPolicy`, `EvalLimits`)
+- Source of truth: [`builtins.rs`](https://github.com/markc/mixos/blob/main/libs/mix/src/builtins.rs) (`CapabilityClass`, `CategoryAllowList`, `capability_category`), [`evaluator.rs`](https://github.com/markc/mixos/blob/main/libs/mix/src/evaluator.rs) (`CapabilityPolicy`, `EvalLimits`)
 - [AGENTS.md](https://github.com/markc/mixos/blob/main/AGENTS.md) — the agent orientation sheet (this manual is the language reference)
 - The [mix](https://github.com/markc/mixos) · [bus](https://github.com/markc/mixos) · [cos](https://github.com/markc/mixos) repos

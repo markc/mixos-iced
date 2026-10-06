@@ -390,7 +390,7 @@ fn symlink_reports_the_link_name_and_the_target_bytes() {
 #[test]
 fn lint_gates_serve_citizens_and_script_directories() {
     let d = tempfile::tempdir().unwrap();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     // The real shipped files carry headers: silent even under --require-version.
     for rel in ["services/compd/scripts/scenes.mix", "docs/build/gen-site.mix"] {
         let (code, out) = lint(&["--require-version", "--deny-warnings", root.join(rel).to_str().unwrap()]);

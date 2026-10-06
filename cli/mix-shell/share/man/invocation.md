@@ -9,7 +9,7 @@ start Mix in each mode and the rules that decide whether a `-c` / login-shell
 line runs as Mix code or dispatches a shell command.
 
 The binary is the oracle; page stamps are held fresh by `cargo test -p mix-shell --test man_pages`. Argument parsing
-lives in [`mix-shell/src/main.rs`](https://github.com/markc/mixos/blob/main/src/crates/mix-shell/src/main.rs);
+lives in [`mix-shell/src/main.rs`](https://github.com/markc/mixos/blob/main/cli/mix-shell/src/main.rs);
 the shell-first classifier is in `mix-shell/src/shell.rs`.
 
 ```text
