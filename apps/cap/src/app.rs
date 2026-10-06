@@ -1165,6 +1165,7 @@ impl App {
                     .center(iced::Fill),
                 ),
             )
+            .on_key(modal_key)
             .into()
         } else if let Some(picker) = &self.picker {
             toolkit::dialog::Modal::new(
@@ -1183,11 +1184,20 @@ impl App {
                     .center(iced::Fill),
                 ),
             )
+            .on_key(modal_key)
             .into()
         } else {
             base
         }
     }
+}
+
+fn modal_key(key: &iced::keyboard::Key, _: iced::keyboard::Modifiers) -> Option<Message> {
+    matches!(
+        key,
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
+    )
+    .then_some(Message::Keep)
 }
 
 struct Picture<'a> {
@@ -1219,6 +1229,34 @@ mod tests {
             })
             .clone();
         initial(look, PathBuf::from("/tmp"))
+    }
+    #[test]
+    fn escape_closes_each_modal_and_discards_its_pending_action() {
+        for confirmation in [false, true] {
+            let mut app = test_app();
+            app.pending = Some(Pending::Quit);
+            app.confirm = confirmation;
+            if !confirmation {
+                app.file_picker(requester::Mode::Open);
+            }
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(1040.0, 720.0),
+                app.view(),
+            );
+            ui.tap_key(iced::keyboard::key::Named::Escape);
+            let messages: Vec<_> = ui.into_messages().collect();
+            assert!(
+                matches!(messages.as_slice(), [Message::Keep]),
+                "{messages:?}"
+            );
+            for message in messages {
+                let _ = app.update(message);
+            }
+            assert!(!app.confirm);
+            assert!(app.picker.is_none());
+            assert!(app.pending.is_none());
+        }
     }
     #[test]
     fn activation_holds_the_job_slot_until_compositor_confirmation() {
