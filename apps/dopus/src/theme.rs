@@ -430,14 +430,22 @@ mod tests {
     fn shared_ui_face_uses_true_light_weight() {
         let set = appearance::fonts::register_installed().unwrap().unwrap();
         {
-            use application::iced::advanced::graphics::text::{cosmic_text::fontdb::Weight, font_system};
+            use application::iced::advanced::graphics::text::{
+                cosmic_text::fontdb::Weight, font_system,
+            };
             let mut system = font_system().write().unwrap();
-            let faces: Vec<_> = system.raw().db().faces().filter(|face| {
-                face.families.iter().any(|(name, _)| name == "Noto Sans")
-            }).map(|face| face.weight).collect();
+            let faces: Vec<_> = system
+                .raw()
+                .db()
+                .faces()
+                .filter(|face| face.families.iter().any(|(name, _)| name == "Noto Sans"))
+                .map(|face| face.weight)
+                .collect();
             assert!(!faces.is_empty());
-            assert!(faces.iter().all(|weight| *weight == Weight::NORMAL),
-                "the variable faces are indexed at 400, not separate light faces");
+            assert!(
+                faces.iter().all(|weight| *weight == Weight::NORMAL),
+                "the variable faces are indexed at 400, not separate light faces"
+            );
         }
         let theme = resolve_selection(
             &Selection {
