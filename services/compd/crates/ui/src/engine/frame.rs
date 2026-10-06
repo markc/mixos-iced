@@ -244,7 +244,7 @@ mod tests {
             fn is_animating(&self, _: Instant) -> bool { true }
         }
         let view = || -> Element<'_, u8, Theme, Paint> {
-            iced_widget::Transition::new(|| Resize(false), true, |size: &Resize, _| {
+            iced_widget::transition::Transition::new(|| Resize(false), true, |size: &Resize, _| {
                 iced_widget::Responsive::new(|_| self::view(true))
                     .height(if size.0 { 40 } else { 20 })
             }).into()
