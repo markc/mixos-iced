@@ -46,15 +46,6 @@ pub enum Tool {
     Crop,
     Draw(Kind),
 }
-impl Tool {
-    fn key(self) -> &'static str {
-        match self {
-            Self::Select => "select",
-            Self::Crop => "crop",
-            Self::Draw(k) => k.key(),
-        }
-    }
-}
 #[derive(Debug, Clone)]
 pub enum Gesture {
     Add(Shape),
@@ -380,23 +371,18 @@ impl App {
             self.error(error);
             return Task::none();
         }
-        let Some(own) = self.own.clone() else {
-            self.error("Cap window is not yet known to compd; refresh and retry");
-            return Task::none();
-        };
         let (tx, rx) = tokio::sync::watch::channel(false);
         self.cancel = Some(tx);
         self.busy = true;
         self.status = label("capturing");
+        let comp = self.comp.clone();
+        let request = self.request.clone();
+        let directory = self.directory.clone();
         Task::perform(
-            capture::take(
-                bus,
-                self.comp.clone(),
-                self.request.clone(),
-                Some(own),
-                self.directory.clone(),
-                rx,
-            ),
+            async move {
+                let own = capture::own_window(&bus, &comp).await?;
+                capture::take(bus, comp, request, Some(own), directory, rx).await
+            },
             Message::Captured,
         )
     }
@@ -724,6 +710,7 @@ impl App {
                 self.busy = false;
                 let task = match result {
                     Ok((path, doc)) => {
+                        self.metadata = Value::Null;
                         self.document = Some(doc);
                         self.path = Some(path);
                         self.selected = None;

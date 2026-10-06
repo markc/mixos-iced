@@ -113,6 +113,24 @@ pub async fn list(bus: &BusHandle, comp: &str) -> Result<Value, String> {
     bus.call(comp, "comp.windows.list", json!({}), Duration::from_secs(5))
         .await
 }
+pub async fn own_window(bus: &BusHandle, comp: &str) -> Result<Target, String> {
+    let rows = list(bus, comp).await?;
+    rows["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| {
+            row["app_id"] == crate::app::APP_ID
+                && row["pid"].as_u64() == Some(u64::from(std::process::id()))
+        })
+        .and_then(|row| {
+            Some(Target {
+                id: row["id"].as_u64()?,
+                generation: row["generation"].as_u64()?,
+            })
+        })
+        .ok_or_else(|| "Cap window is not yet known to compd".into())
+}
 
 #[derive(Debug, Clone)]
 pub struct Captured {

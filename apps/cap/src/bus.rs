@@ -256,6 +256,16 @@ async fn run(
         return;
     };
     let mut state = client.subscribe_state();
+    match tokio::time::timeout(CONNECT_TIMEOUT, client.subscribe_topic(THEME_TOPIC)).await {
+        Ok(Ok(())) => {}
+        other => {
+            let _ = ready.send(Err(StartError::Unreachable(format!(
+                "theme subscription failed: {other:?}"
+            ))));
+            let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
+            return;
+        }
+    }
     let _ = ready.send(Ok(()));
 
     // Commands awaiting a reply from the app.

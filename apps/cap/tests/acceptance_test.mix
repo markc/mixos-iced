@@ -10,7 +10,7 @@ for each $command in [
   ["cargo","clippy","--locked","-p","cap","--all-targets","--","-D","warnings"]
 ]
   print(join($command," "))
-  $result = run_argv($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stdout:"inherit",stderr:"stdout"})
-  if not $result.ok then raise("CAP_GATE_FAILED",join($command," ") .. ": " .. json_encode($result)) end
+  $output = run_argv_must($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stderr:"stdout",max_output:2000000})
+  print($output)
 end
 print("Cap format, document/compositor tests, native Bus acceptance and Clippy passed")

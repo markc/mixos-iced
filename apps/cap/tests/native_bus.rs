@@ -60,6 +60,8 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
     let address = socket.local_addr().unwrap();
     drop(socket);
     let url = format!("ws://{address}/ws");
+    let node_config = directory.path().join("node.conf.mix");
+    std::fs::write(&node_config,json!({"node":"cap-test","wg_ip":"127.0.0.1","noded":{"port":address.port(),"unix_socket":directory.path().join("bus.sock")}}).to_string()).unwrap();
     let mut broker_process = Process(
         Command::new(broker)
             .args([
@@ -72,6 +74,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
                 "--no-log",
             ])
             .env("MIXOS_VAR", directory.path().join("broker"))
+            .env("MIXOS_NODE_CONFIG", &node_config)
             .env("HOME", directory.path())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -121,6 +124,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
                 &url,
             ])
             .env("MIXOS_APP_HOME", directory.path().join("cap"))
+            .env("MIXOS_NODE_CONFIG", &node_config)
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
@@ -133,6 +137,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
     let duplicate = Command::new(env!("CARGO_BIN_EXE_cap"))
         .args(["--headless", "--service", "cap-test", "--noded-url", &url])
         .env("MIXOS_APP_HOME", directory.path().join("duplicate"))
+        .env("MIXOS_NODE_CONFIG", &node_config)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
