@@ -697,7 +697,10 @@ impl SceneUi {
         let gap = number(node, "gap").unwrap_or(0.0);
         let (width, height) = Self::sizing(node, parent);
         let inner_len = |l: Length| if matches!(l, Length::Shrink | Length::Bounded { sizing: iced_core::length::Sizing::Shrink, .. }) {
-            Length::Shrink
+            // Preserve the wrapper's minimum in the padded flex body too.
+            // Dropping it leaves centred fill spaces with no spare width and
+            // the intrinsic label at the left of an otherwise square button.
+            l
         } else { Length::Fill };
         let body: El<'a, R> = match main {
             Axis::Vertical => {

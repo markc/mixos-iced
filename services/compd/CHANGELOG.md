@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Centre panel workspace labels inside their full hit targets. The iced
+  scene renderer now preserves bounded shrink dimensions in the padded
+  content, allowing centred rows to use their allocated minimum width.
+
 ## 0.1.2
 
 - Extend `comp.capture.frame` with cursor inclusion, output-local logical
