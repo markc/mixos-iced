@@ -152,6 +152,10 @@ fn mesh_unavailable(detail: &str) -> mix::error::MixError {
 /// that had noded but lost the connection, the state transitions to
 /// `MeshState::Lost` and Bus forms raise `mesh unavailable: …`.
 pub struct MixBusHandler {
+    /// Only a native interactive shell reconciles its lazy lane when the
+    /// private attachment owner publishes a change. Scripts keep SPEC 18's
+    /// explicit reconnect contract, including the zero-cost absence latch.
+    native_attachment_generation: Option<Cell<u64>>,
     /// Cached probe state + broker client. `Mutex` rather than `OnceCell`
     /// so [`BusHandler::reconnect`] can reset to `Unprobed` (SPEC 18 §3.3:
     /// the WS8 acceptance harness induces a `noded` bounce and
@@ -308,6 +312,7 @@ impl<'a> Drop for ReceiverGuard<'a> {
 impl MixBusHandler {
     pub fn new() -> Self {
         MixBusHandler {
+            native_attachment_generation: None,
             mesh: tokio::sync::Mutex::new(MeshState::Unprobed),
             serve: tokio::sync::Mutex::new(None),
             incoming: RefCell::new(None),
@@ -315,6 +320,56 @@ impl MixBusHandler {
             incoming_broken: RefCell::new(false),
             incoming_generation: Cell::new(0),
         }
+    }
+
+    pub fn for_repl() -> Self {
+        let mut handler = Self::new();
+        if crate::session_state::enabled() {
+            handler.native_attachment_generation =
+                Some(Cell::new(crate::session_state::attachment_generation()));
+        }
+        handler
+    }
+
+    async fn reconcile_native_attachment(&self) {
+        if self.native_attachment_generation.is_some() {
+            self.reconcile_native_generation(crate::session_state::attachment_generation())
+                .await;
+        }
+    }
+
+    async fn reconcile_native_generation(&self, generation: u64) {
+        let Some(observed) = &self.native_attachment_generation else {
+            return;
+        };
+        if observed.get() == generation {
+            return;
+        }
+        let mut mesh = self.mesh.lock().await;
+        // Two evaluator futures can have noticed the same change before either
+        // obtained the lock. Reset once; do not erase the new caller's lane.
+        if observed.get() == generation {
+            return;
+        }
+        // Attachment resumption need not replace the ordinary Bus connection.
+        // Keep a live lane and its registrations. Leave the notification pending
+        // so a late disconnect of that lane can still trigger reconciliation.
+        if matches!(&*mesh, MeshState::Connected(lane) if lane.is_connected()) {
+            return;
+        }
+        let mut serve = self.serve.lock().await;
+        *mesh = MeshState::Unprobed;
+        *serve = None;
+        self.reset_incoming();
+        observed.set(generation);
+    }
+
+    fn reset_incoming(&self) {
+        *self.incoming.borrow_mut() = None;
+        *self.incoming_closed.borrow_mut() = false;
+        *self.incoming_broken.borrow_mut() = false;
+        self.incoming_generation
+            .set(self.incoming_generation.get().wrapping_add(1));
     }
 
     /// Probe-or-fetch the broker client per the lazy-probe state machine.
@@ -417,6 +472,7 @@ impl MixBusHandler {
     }
 
     async fn noded_access(&self) -> Result<std::sync::Arc<Lane>, MeshErr> {
+        self.reconcile_native_attachment().await;
         let mut state = self.mesh.lock().await;
         match &*state {
             MeshState::Connected(c) => Ok(c.clone()),
@@ -703,6 +759,7 @@ impl BusHandler for MixBusHandler {
 
     fn next_incoming<'a>(&'a self) -> Pin<Box<dyn Future<Output = Option<IncomingEvent>> + 'a>> {
         Box::pin(async move {
+            self.reconcile_native_attachment().await;
             if *self.incoming_closed.borrow() {
                 return None;
             }
@@ -1038,17 +1095,13 @@ impl BusHandler for MixBusHandler {
             // having a fresh broker handle. Resetting all three slots
             // makes the next call re-fetch the receiver from the new
             // client.
-            *self.incoming.borrow_mut() = None;
-            *self.incoming_closed.borrow_mut() = false;
-            *self.incoming_broken.borrow_mut() = false;
             // Bump the generation: any `ReceiverGuard` currently
             // awaiting `recv()` on the old receiver will, on Drop,
             // see the advanced generation and refuse to restore the
             // stale receiver into the (now-cleared) slot. Without
             // this, a future-cancellation drop could quietly revive
             // the old receiver and undo this reset.
-            self.incoming_generation
-                .set(self.incoming_generation.get().wrapping_add(1));
+            self.reset_incoming();
             Ok(())
         })
     }
@@ -1878,6 +1931,31 @@ mod tests {
     async fn new_handler_starts_unprobed() {
         let h = MixBusHandler::new();
         assert_eq!(h.test_state_label().await, "Unprobed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_attachment_change_rearms_once_and_preserves_script_latches() {
+        let script = MixBusHandler::new();
+        script.test_force_state(MeshState::Lost).await;
+        script.reconcile_native_generation(1).await;
+        assert_eq!(script.test_state_label().await, "Lost");
+
+        let mut interactive = MixBusHandler::new();
+        interactive.native_attachment_generation = Some(Cell::new(1));
+        interactive.test_force_state(MeshState::Lost).await;
+        *interactive.incoming_closed.borrow_mut() = true;
+        *interactive.incoming_broken.borrow_mut() = true;
+        interactive.reconcile_native_generation(1).await;
+        assert_eq!(interactive.test_state_label().await, "Lost");
+        interactive.reconcile_native_generation(2).await;
+        assert_eq!(interactive.test_state_label().await, "Unprobed");
+        assert!(!*interactive.incoming_closed.borrow());
+        assert!(!*interactive.incoming_broken.borrow());
+        let version = interactive.incoming_generation.get();
+        interactive.test_force_state(MeshState::NeverPresent).await;
+        interactive.reconcile_native_generation(2).await;
+        assert_eq!(interactive.test_state_label().await, "NeverPresent");
+        assert_eq!(interactive.incoming_generation.get(), version);
     }
 
     #[test]

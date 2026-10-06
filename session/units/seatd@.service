@@ -10,6 +10,8 @@ EnvironmentFile=/etc/mixos/session/%i.env
 UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
 RuntimeDirectory=mixos/seat/%i
 RuntimeDirectoryMode=0755
-ExecStart=/usr/bin/seatd -s ${SEATD_SOCK} -g seat
+# seatd uses /run/seatd.sock; give each instance its own view of /run.
+BindPaths=/run/mixos/seat/%i:/run
+ExecStart=/usr/bin/seatd -g seat
 KillMode=control-group
 TimeoutStopSec=10

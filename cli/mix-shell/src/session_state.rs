@@ -108,6 +108,7 @@ pub(crate) struct View {
 }
 
 pub(crate) struct Reducer {
+    attachment_generation: u64,
     origin: u64,
     snapshot: Snapshot,
     replay: VecDeque<Event>,
@@ -120,6 +121,7 @@ pub(crate) struct Reducer {
 impl Reducer {
     fn new() -> Self {
         Self {
+            attachment_generation: 0,
             origin: boottime_ms().unwrap_or(0),
             snapshot: Snapshot {
                 version: 1,
@@ -289,7 +291,12 @@ impl Reducer {
                 s.cwd.clone_from(cwd);
                 s.cwd_observed_ms = DecimalU64(now);
             }
-            Transition::AttachmentChanged { source } => s.source.clone_from(source),
+            Transition::AttachmentChanged { source } => {
+                if s.source != *source {
+                    self.attachment_generation = self.attachment_generation.saturating_add(1);
+                    s.source.clone_from(source);
+                }
+            }
             Transition::ShellExit | Transition::ShellReplacement => s.phase = Phase::Exiting,
         }
         s.sequence = DecimalU64(sequence);
@@ -331,6 +338,15 @@ pub(crate) fn enable() {
 }
 pub(crate) fn enabled() -> bool {
     STATE.get().is_some()
+}
+/// Internal notification version only; conveys no identity, scope or authority.
+pub(crate) fn attachment_generation() -> u64 {
+    STATE.get().map_or(0, |state| {
+        state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .attachment_generation
+    })
 }
 pub(crate) fn commit(transition: Transition) {
     if let Some(state) = STATE.get() {
@@ -592,19 +608,29 @@ mod tests {
         state.commit(Transition::AttachmentChanged {
             source: Some(source.clone()),
         });
+        assert_eq!(state.attachment_generation, 1);
+        state.commit(Transition::AttachmentChanged {
+            source: Some(source.clone()),
+        });
+        assert_eq!(
+            state.attachment_generation, 1,
+            "duplicate publication is no change"
+        );
         state.commit(Transition::PromptReady {
             continuation: false,
         });
         let original = state.snapshot.clone();
         state.commit(Transition::AttachmentChanged { source: None });
+        assert_eq!(state.attachment_generation, 2);
         source.record.binding_generation = DecimalU64(2);
         source.pane_generation = Some(DecimalU64(2));
         state.commit(Transition::AttachmentChanged {
             source: Some(source.clone()),
         });
+        assert_eq!(state.attachment_generation, 3);
         assert!(state.snapshot.sequence.0 > original.sequence.0);
         assert_eq!(state.snapshot.prompt_generation, original.prompt_generation);
-        assert_eq!(state.replay[1].source, original.source);
+        assert_eq!(state.replay[2].source, original.source);
         assert_eq!(state.snapshot.source, Some(source));
     }
 }

@@ -15,6 +15,20 @@ The collector never installs or starts them. An image installer supplies the
 must have the numeric identity selected for the desktop profile; a controlled
 test image can override `User=` in its private unit drop-ins.
 
+Seatd listens at its built-in `/run/seatd.sock`; it has no `-s` option.
+Each instance gets a private mount view of `/run`, backed by
+`/run/mixos/seat/<instance>`, so `SEATD_SOCK` must name
+`/run/mixos/seat/<instance>/seatd.sock` for its clients. This leaves other
+seat brokers' sockets alone. The image supplies `seatd`, `wpctl` and `pactl`;
+audio uses the selected native PipeWire/Pulse sockets. No session D-Bus
+server is required for this profile. A distribution's `libpulse` can still
+link `libdbus-1`; absence of a session bus does not imply a library-free
+dependency closure.
+
+Provision the profile's writable state directory for its service account,
+including `MIXOS_VAR/edit/recovery` with mode `0700`. Editor readiness must
+include `edit.info` reporting `volatile:false` and `recovery.ok:true`.
+
 The environment file defines absolute `MIXOS_ETC`, `MIXOS_VAR`, `MIXOS_RUN`,
 `MIXOS_SHARE`, `MIXOS_NODE_CONFIG`, `MIXOS_COMPD_CONFIG`, `HOME`,
 `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `SEATD_SOCK`, `MIXOS_OUTPUT_SCALE` and

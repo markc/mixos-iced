@@ -543,6 +543,9 @@ fn same_mix_child_scenarios(editor: &str) {
         let first = parent
             .wait(initial.record.record_id, BindingState::Attached, 1)
             .await;
+        // Populate the ordinary lazy Bus lane independently of attachment.
+        child.send("send \"noded\" noded.ping timeout=5; print(\"BUS_BEFORE=\" .. to_string($rc))\n");
+        child.until("BUS_BEFORE=0\r\n");
         let before = phase(&mut parent, &first, "prompt-ready").await;
         let pid = child.pid();
         parent.resume(&broker).await;
@@ -603,6 +606,9 @@ fn same_mix_child_scenarios(editor: &str) {
             .await
             .unwrap_err();
         assert!(stale.to_string().contains("STALE_GENERATION"));
+        // Same PTY/process, no explicit bus_reconnect and no fallback lane.
+        child.send("send \"noded\" noded.ping timeout=5; print(\"BUS_AFTER=\" .. to_string($rc))\n");
+        child.until("BUS_AFTER=0\r\n");
         child.send("print(\"SAME_CHILD_ALIVE\")\n");
         child.until("SAME_CHILD_ALIVE\r\n");
         child.exit();
