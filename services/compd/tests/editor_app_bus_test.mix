@@ -1,0 +1,116 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- New frontend verbs against a private native broker and the real loader.
+-- Renderer/Ced/apps fixtures are boundaries; loader I/O and files are real.
+$here=dirname(realpath($0))
+$repo=realpath($here .. "/../../..")
+$mix=env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
+$noded=env("MIXOS_TEST_NODED","/opt/mixos/bin/noded")
+$tmp="/tmp/editor-app-bus-" .. uuid()
+mkdir($tmp)
+$node=$tmp .. "/node.conf.mix"
+$env={MIXOS_NODE_CONFIG:$node,MIX_STATS:"off",PATH:"/usr/bin:/bin",HOME:$tmp,XDG_STATE_HOME:$tmp,XDG_RUNTIME_DIR:$tmp,XDG_CONFIG_HOME:$tmp .. "/config"}
+$pids=[]
+$checks={count:0}
+fn check($ok,$message)
+  $checks.count=$checks.count+1
+  if not $ok then raise("EDITOR_APP_BUS_TEST",$message) end
+end
+fn call($service,$verb,$body)
+  write_file($tmp .. "/call.mix","$body=$1\nsend " .. $service .. " " .. $verb .. " body=$body timeout=30\nprint(json_encode({rc:$rc,result:$result}))\n")
+  $r=run_argv([$mix,$tmp .. "/call.mix",json_encode($body)],{env:$env,clear_env:true,timeout:40,max_output:1000000})
+  check($r.ok and not $r.stdout_truncated,"native call failed: " .. $r.stderr)
+  return json_parse($r.stdout)
+end
+fn rpc($service,$verb,$body)
+  $r=call($service,$verb,$body)
+  check($r.rc==0,$verb .. ": " .. json_encode($r))
+  return $r.result
+end
+fn start($name,$script,$extra)
+  $e={}
+  for each $key in keys($env) $e[$key]=$env[$key] end
+  for each $key in keys($extra) $e[$key]=$extra[$key] end
+  $pid=spawn([$mix,"--serve",$script,"--name",$name],{detach:true,clear_env:true,env:$e,cwd:dirname($script),stdout:{file:$tmp .. "/" .. $name .. ".log"},stderr:"stdout"})
+  push($pids,$pid)
+  for each $i in range(1,100)
+    $r=call("noded","noded.props.get",{})
+    if $r.rc==0 and contains(($r.result.services ?? {}).registered ?? [],$name) then return end
+    sleep(0.1)
+  end
+  raise("EDITOR_APP_BUS_TEST","registration failed: " .. read_file($tmp .. "/" .. $name .. ".log"))
+end
+fn snapshot($selection)
+  return rpc("scenes","scenes.editor.snapshot",{selection:$selection})
+end
+fn logs($name,$verb)
+  $path=$tmp .. "/" .. $name .. ".jsonl"
+  if not is_file($path) then return [] end
+  return filter(map(read_lines($path),fn($line)=json_parse($line)),fn($row)=$row.verb==$verb)
+end
+try
+  $alive=false
+  for each $attempt in range(1,5)
+    $port=random(49000,49999)
+    write_file($node,json_encode({node:"editor-app-test",wg_ip:"",mesh:"example.invalid",noded:{port:$port,admission:"off",unix_socket:$tmp .. "/bus.sock"}}))
+    $pid=spawn([$noded,"serve","--listen","127.0.0.1:" .. to_string($port),"--node","editor-app-test","--no-monitor","--no-log"],{detach:true,clear_env:true,env:$env,stdout:{file:$tmp .. "/noded.log"},stderr:"stdout"})
+    push($pids,$pid);sleep(0.5)
+    if process_alive($pid) then $alive=true;break end
+  end
+  check($alive,"private broker exhausted port retries")
+  $fixtures=$here .. "/fixtures/scene-editor"
+  start("fakeshell",$fixtures .. "/fake_shell.mix",{FAKE_SHELL_LOG:$tmp .. "/shell.jsonl",FAKE_SHELL_OWNER:"scenes"})
+  start("apps",$fixtures .. "/fake_apps.mix",{FAKE_APPS_LOG:$tmp .. "/apps.jsonl"})
+  start("ced",$fixtures .. "/fake_ced.mix",{FAKE_CED_LOG:$tmp .. "/ced.jsonl"})
+  write_file($tmp .. "/observer.mix","subscribe scenes.changed\n$count=0\non scenes.changed\n  $count=$count+1\nend\non observer.count\n  reply(0,json_encode({count:$count}))\nend\n")
+  start("observer",$tmp .. "/observer.mix",{})
+  mkdir($tmp .. "/scenes")
+  start("scenes",$repo .. "/services/compd/scripts/scenes.mix",{SCENES_DIR:$tmp .. "/scenes",SCENES_TEMPLATES:$repo .. "/share/scenes",SCENE_HOST:"fakeshell",SCENES_LEGACY_SERVICE:"none",SCENES_FIRST_RUN:"0"})
+  $selection={view:"gallery",template:"notes"}
+  $snap=snapshot($selection)
+  check($snap.schema=="scene-editor.snapshot.v1","versioned frontend snapshot")
+  $first=rpc("observer","observer.count",{}).count
+  $installed=rpc("scenes","scenes.editor.action",{action:"install",selection:$selection,state_token:$snap.state_token})
+  check($installed.selection.scene=="notes" and is_file($tmp .. "/scenes/notes/scene.mix"),"install crosses native Bus and writes the actual scene")
+  check(not filter($installed.inventory.scenes,fn($scene)=$scene.name=="notes")[0].enabled,"install remains disabled")
+  $stale=call("scenes","scenes.editor.action",{action:"install",selection:$selection,state_token:$snap.state_token})
+  check($stale.rc==10 and $stale.result.failure.code=="SCENES_STALE" and not is_dir($tmp .. "/scenes/notes-2"),"native stale refusal never repeats installation")
+  for each $i in range(1,100)
+    if rpc("observer","observer.count",{}).count>$first then break end
+    sleep(0.1)
+  end
+  check(rpc("observer","observer.count",{}).count>$first,"real scenes.changed reaches a native subscriber")
+  $selection={view:"installed",scene:"notes"}
+  $snap=snapshot($selection)
+  $r=call("scenes","scenes.editor.action",{action:"remove",selection:$selection,state_token:$snap.state_token})
+  check($r.rc==10 and $r.result.error_code=="SCENES_CONFIRM","unconfirmed native removal refuses")
+  write_file($tmp .. "/scenes/notes/scene.mix",read_file($tmp .. "/scenes/notes/scene.mix") .. "\n-- saved after confirmation snapshot\n")
+  $r=call("scenes","scenes.editor.action",{action:"remove",selection:$selection,state_token:$snap.state_token,confirmed:true})
+  check($r.rc==10 and $r.result.failure.code=="SCENES_STALE" and is_dir($tmp .. "/scenes/notes"),"native confirmation detects a save ahead of the watcher")
+  $snap=snapshot($selection)
+  $r=rpc("scenes","scenes.editor.action",{action:"edit-scene",selection:$selection,state_token:$snap.state_token})
+  check(len(logs("ced","ced.open"))==1 and len(logs("ced","ced.diagnostics"))==1,"source opens in Ced with loader diagnostics")
+  $snap=snapshot($selection)
+  $r=rpc("scenes","scenes.editor.action",{action:"mode",edge:"bottom",mode:"pinned",selection:$selection,state_token:$snap.state_token})
+  check($r.panels.bottom.mode=="pinned","panel plan executes native host verb and returns its result")
+  $snap=snapshot($selection)
+  $r=rpc("scenes","scenes.editor.action",{action:"remove",selection:$selection,state_token:$snap.state_token,confirmed:true})
+  check($r.selection.scene==nil and not is_dir($tmp .. "/scenes/notes") and is_dir($tmp .. "/scenes/.recovery"),"confirmed native removal retains recovery data")
+  $r=rpc("scenes","scenes.editor.open",{view:"arrange"})
+  check($r.source=="application" and logs("apps","apps.launch")[0].args.uris[0]=="mixos-scene-editor:arrange/","default cold activation launches the desktop app")
+  check(len(logs("shell","shell.dialog.show"))==0,"normal activation does not create the legacy compositor dialog")
+  $r=call("scenes","scenes.editor.action",{action:"arbitrary",target:"noded",verb:"anything"})
+  check($r.rc==10 and $r.result.error_code=="SCENES_ARGUMENT","frontend cannot act as an arbitrary RPC relay")
+  print("native scene editor Bus acceptance: " .. to_string($checks.count) .. " checks passed")
+finally
+  for each $pid in reverse($pids)
+    if process_alive($pid) then $_=kill($pid,15) end
+  end
+  for each $i in range(1,50)
+    if not any($pids,fn($pid)=process_alive($pid)) then break end
+    sleep(0.1)
+  end
+  for each $pid in $pids
+    if process_alive($pid) then $_=kill($pid,9) end
+  end
+  if env("EDITOR_APP_KEEP","0")!="1" then run_argv_must(["rm","-rf","--",$tmp]) else print({evidence:$tmp}) end
+end
