@@ -1189,7 +1189,9 @@ impl App {
                     .spacing(gap)
                     .align_y(iced::Center),
                     text(label("colour")),
-                    toolkit::ColorPicker::new(self.colour, Message::Colour).width(iced::Fill),
+                    toolkit::ColorPicker::new(self.colour, Message::Colour)
+                        .width(iced::Fill)
+                        .height(tokens.metrics.spacing.xl * 4.0),
                     text(label("annotation-text")),
                     text_input(
                         crate::strings::label_ref("text-placeholder"),
@@ -1223,10 +1225,18 @@ impl App {
                 base,
                 widget::opaque(
                     container(
-                        container(body.push(action("done", Message::Keep, true)))
-                            .padding(tokens.metrics.spacing.lg)
-                            .width(520)
-                            .style(toolkit::theme::container::card),
+                        container(
+                            column![
+                                widget::scrollable(body).height(iced::Fill),
+                                action("done", Message::Keep, true),
+                            ]
+                            .spacing(gap),
+                        )
+                        .padding(tokens.metrics.spacing.lg)
+                        .width(tokens.metrics.spacing.xl * 22.0)
+                        .height(iced::Fill)
+                        .max_height(tokens.metrics.spacing.xl * 17.0)
+                        .style(toolkit::theme::container::card),
                     )
                     .center(iced::Fill),
                 ),
@@ -1365,6 +1375,28 @@ mod tests {
         assert_eq!(app.zoom, 1.25);
         let _ = app.update(Message::Menu(menu::Action::Fit));
         assert_eq!(app.zoom, 1.0);
+    }
+    #[test]
+    fn every_information_and_properties_dialog_keeps_done_visible_in_a_small_window() {
+        for dialog in [Dialog::Properties, Dialog::Shortcuts, Dialog::About] {
+            let mut app = test_app();
+            app.dialog = Some(dialog);
+            let mut ui = iced_test::Simulator::with_size(
+                iced::Settings::default(),
+                iced::Size::new(760.0, 450.0),
+                app.view(),
+            );
+            let bounds = ui.find("Done").unwrap().visible_bounds().unwrap();
+            assert!(
+                bounds.y >= 0.0 && bounds.y + bounds.height <= 450.0,
+                "{dialog:?}: {bounds:?}"
+            );
+            ui.click("Done").unwrap();
+            assert!(matches!(
+                ui.into_messages().collect::<Vec<_>>().as_slice(),
+                [Message::Keep]
+            ));
+        }
     }
     #[test]
     fn escape_closes_each_modal_and_discards_its_pending_action() {
@@ -1963,4 +1995,3 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
             mouse::Interaction::default()
         }
     }
-}
