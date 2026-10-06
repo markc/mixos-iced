@@ -202,22 +202,23 @@ try
   check($icon.rc == 0 and ends_with($icon.result.path, "/data/icons/hicolor/22x22/apps-bus-test-icon.png"),
     "apps.icon did not resolve the fixture icon")
 
-  -- Both real bundled weights remain selectable with the same icon name.
+  -- All real bundled weights remain selectable with the same icon name.
   print(run_argv_must([$mix,$root .. "/share/icons/install.mix","--root",$tmp .. "/sys"]))
   print(run_argv_must([$mix,$root .. "/share/brand/install.mix","--root",$tmp .. "/sys"]))
-  check(call("apps","apps.reload","{}").rc == 0,"reload after installing both weights")
+  check(call("apps","apps.reload","{}").rc == 0,"reload after installing all weights")
   $weight_paths={}
-  for each $theme in ["mixos","mixos-300","mixos"]
+  for each $theme in ["mixos","mixos-300","mixos-200","mixos"]
     check(call("apps","apps.props.set",json_encode({path:"apps.icon_theme",value:$theme})).rc == 0,"select theme through native property")
     $variant=call("apps","apps.icon",json_encode({name:"dev.mixos.term-symbolic",size:32}))
     check($variant.rc == 0 and contains($variant.result.path,"/icons/"+$theme+"/"),"default icon requests follow selected weight")
     $weight_paths[$theme]=$variant.result.path
     $brand=call("apps","apps.icon",json_encode({name:"dev.mixos-symbolic",size:28}))
-    check($brand.rc == 0 and contains($brand.result.path,"/icons/mixos/"),"both weights inherit the same M")
+    check($brand.rc == 0 and contains($brand.result.path,"/icons/mixos/"),"all weights inherit the same M")
   end
   check(hash_file($weight_paths.mixos,"sha256") != hash_file($weight_paths["mixos-300"],"sha256"),"selected weights contain different SVG geometry")
+  check(hash_file($weight_paths["mixos-300"],"sha256") != hash_file($weight_paths["mixos-200"],"sha256"),"200 and 300 contain different SVG geometry")
 
-  print("PASS apps Bus surface: list/get/launch, argv, reload, icon cache invalidation and native 400/300/400 selection")
+  print("PASS apps Bus surface: list/get/launch, argv, reload, icon cache invalidation and native 400/300/200/400 selection")
 finally
   if $svc_pid != nil then $_kill_svc = run_argv(["kill", "--", to_string($svc_pid)], {timeout: 10}) end
   if $noded_pid != nil then $_kill_noded = run_argv(["kill", "--", to_string($noded_pid)], {timeout: 10}) end

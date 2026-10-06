@@ -41,22 +41,27 @@ try
       check($apps.resolve_icon($ctx,$name+"-symbolic",22,1,"mixos").hit != nil,"every published status name has a shipped symbolic icon: "+$name)
     end
   end
-  -- The thinner set is additive: distinct files, same names and shared mark.
-  for each $pair in [{name:"dev.mixos.term-symbolic",source:"terminal"},{name:"dev.mixos.ced-symbolic",source:"edit_note"},{name:"dev.mixos.dopus-symbolic",source:"folder_open"},{name:"dev.mixos.cap-symbolic",source:"screenshot_monitor"},{name:"audio-volume-high-symbolic",source:"volume_up"}]
-    $regular=$apps.resolve_icon($ctx,$pair.name,32,1,"mixos").hit.path
-    $light=$apps.resolve_icon($ctx,$pair.name,32,1,"mixos-300").hit.path
-    check($regular != $light,"weights coexist at separate paths: "+$pair.name)
-    check(hash_file($regular,"sha256") == hash_file($repo+"/share/icons/material/"+$pair.source+".svg","sha256"),"original 400 bytes are retained")
-    check(hash_file($light,"sha256") == hash_file($repo+"/share/icons/material/300/"+$pair.source+".svg","sha256"),"300 lookup selects the thinner source")
-    check(hash_file($regular,"sha256") != hash_file($light,"sha256"),"variants have different geometry")
-  end
-  for each $name in $models.PANEL_THEMED_ICONS
-    if not starts_with($name,"start-here") then
-      check(contains($apps.resolve_icon($ctx,$name+"-symbolic",22,1,"mixos-300").hit.path,"/icons/mixos-300/"),"all status names resolve in the thinner theme")
+  -- Thinner sets are additive: distinct files, same names and shared mark.
+  for each $weight in [300,200]
+    $theme="mixos-"+to_string($weight)
+    for each $pair in [{name:"dev.mixos.term-symbolic",source:"terminal"},{name:"dev.mixos.ced-symbolic",source:"edit_note"},{name:"dev.mixos.dopus-symbolic",source:"folder_open"},{name:"dev.mixos.cap-symbolic",source:"screenshot_monitor"},{name:"audio-volume-high-symbolic",source:"volume_up"}]
+      $regular=$apps.resolve_icon($ctx,$pair.name,32,1,"mixos").hit.path
+      $light=$apps.resolve_icon($ctx,$pair.name,32,1,$theme).hit.path
+      check($regular != $light,"weights coexist at separate paths: "+$pair.name)
+      check(hash_file($regular,"sha256") == hash_file($repo+"/share/icons/material/"+$pair.source+".svg","sha256"),"original 400 bytes are retained")
+      check(hash_file($light,"sha256") == hash_file($repo+"/share/icons/material/"+to_string($weight)+"/"+$pair.source+".svg","sha256"),"lookup selects the thinner source")
+      check(hash_file($regular,"sha256") != hash_file($light,"sha256"),"variants have different geometry")
+    end
+    for each $name in $models.PANEL_THEMED_ICONS
+      if not starts_with($name,"start-here") then
+        check(contains($apps.resolve_icon($ctx,$name+"-symbolic",22,1,$theme).hit.path,"/icons/"+$theme+"/"),"all status names resolve in the thinner theme")
+      end
     end
   end
   $mark=$apps.resolve_icon($ctx,"dev.mixos-symbolic",28,1,"mixos").hit.path
-  check($apps.resolve_icon($ctx,"dev.mixos-symbolic",28,1,"mixos-300").hit.path == $mark,"both weights share the unchanged M logo")
+  for each $theme in ["mixos-300","mixos-200"]
+    check($apps.resolve_icon($ctx,"dev.mixos-symbolic",28,1,$theme).hit.path == $mark,"all weights share the unchanged M logo")
+  end
   check(hash_file($mark,"sha256") == hash_file($repo+"/share/brand/logos/mixos-black-transparent.svg","sha256"),"launcher is the canonical M vector")
   $model=$models.panel({windows:[],ws_count:1,ws_current:1},{themed:{"dev.mixos-symbolic":$mark,"start-here-kde":"/old-kde.svg"}},0)
   check($model.launcher.has_icon and $model.launcher.icon == $mark,"M takes precedence over an existing KDE launcher")

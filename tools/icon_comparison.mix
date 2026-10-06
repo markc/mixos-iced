@@ -1,12 +1,12 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.1.1
 -- Render a vector comparison from the real bundled SVG paths.
 $repo=dirname(dirname(realpath($0)))
 $output=$repo+"/target/mixos/icons/weight-comparison.svg"
 if len(args()) != 0 then raise("ARGS","No arguments expected") end
 $rows=[{name:"terminal",label:"Term"},{name:"edit_note",label:"Ced"},{name:"folder_open",label:"DOpus"},{name:"screenshot_monitor",label:"Cap"},{name:"notifications",label:"Notifications"},{name:"volume_up",label:"Volume"},{name:"wifi",label:"Network"}]
-$svg="<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1000\" height=\"650\" viewBox=\"0 0 1000 650\"><rect width=\"1000\" height=\"650\" fill=\"#040f13\"/><g fill=\"#dbeaf0\" font-family=\"sans-serif\">"
-for each $column in [{weight:400,x:0,folder:"material"},{weight:300,x:500,folder:"material/300"}]
+$svg="<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1500\" height=\"650\" viewBox=\"0 0 1500 650\"><rect width=\"1500\" height=\"650\" fill=\"#040f13\"/><g fill=\"#dbeaf0\" font-family=\"sans-serif\">"
+for each $column in [{weight:400,x:0,folder:"material"},{weight:300,x:500,folder:"material/300"},{weight:200,x:1000,folder:"material/200"}]
   $svg=$svg+"<text x=\""+to_string($column.x+32)+"\" y=\"48\" font-size=\"28\">Weight "+to_string($column.weight)+"</text><text x=\""+to_string($column.x+260)+"\" y=\"88\" font-size=\"16\">32 px</text><text x=\""+to_string($column.x+352)+"\" y=\"88\" font-size=\"16\">64 px</text>"
   $i=0
   for each $row in $rows
@@ -19,7 +19,7 @@ for each $column in [{weight:400,x:0,folder:"material"},{weight:300,x:500,folder
     $i=$i+1
   end
 end
-$svg=$svg+"</g><path d=\"M500 24V626\" stroke=\"#28414b\"/></svg>\n"
+$svg=$svg+"</g><path d=\"M500 24V626M1000 24V626\" stroke=\"#28414b\"/></svg>\n"
 mkdir(dirname($output),{parents:true})
 write_atomic($output,$svg,{mode:0o644})
 print($output)

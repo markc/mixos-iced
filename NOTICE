@@ -136,6 +136,24 @@ revision, per-file receipt and retained Apache-2.0 licence:
 - share/icons/material/300/screenshot_monitor.svg
 - share/icons/material/300/apps.svg
 
+The unmodified 200-weight variants also share that pinned revision,
+per-file receipt and retained Apache-2.0 licence:
+- share/icons/material/200/notifications.svg
+- share/icons/material/200/notifications_active.svg
+- share/icons/material/200/volume_off.svg
+- share/icons/material/200/volume_up.svg
+- share/icons/material/200/volume_down.svg
+- share/icons/material/200/volume_mute.svg
+- share/icons/material/200/wifi.svg
+- share/icons/material/200/wifi_off.svg
+- share/icons/material/200/settings_ethernet.svg
+- share/icons/material/200/desktop_windows.svg
+- share/icons/material/200/terminal.svg
+- share/icons/material/200/edit_note.svg
+- share/icons/material/200/folder_open.svg
+- share/icons/material/200/screenshot_monitor.svg
+- share/icons/material/200/apps.svg
+
 Third-party assets and licences in the compd binary
 ----------------------------------------------------
 
