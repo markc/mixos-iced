@@ -10,7 +10,7 @@ use dopus_core::{PaneId, SortColumn};
 
 pub struct Header;
 impl Header {
-    pub fn new(
+    pub fn view(
         look: Look,
         pane: PaneId,
         sort: SortColumn,

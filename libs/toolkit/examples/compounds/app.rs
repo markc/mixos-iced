@@ -175,7 +175,7 @@ impl Demo {
 pub fn run() -> iced::Result {
     iced::application(Demo::new, Demo::update, Demo::view)
         .theme(Demo::theme)
-        .title(strings::label("compound-title"))
+        .title(|_: &Demo| strings::label("compound-title"))
         .window_size(Size::new(1100.0, 700.0))
         .run()
 }

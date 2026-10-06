@@ -721,10 +721,9 @@ where
                     st.last_click = None;
                     shell.publish(Message::Toggle(row.path.to_path_buf()));
                 } else {
-                    let double = st
-                        .last_click
-                        .as_ref()
-                        .is_some_and(|(when, at, path)| when.elapsed() < DOUBLE_CLICK && *at == index && path.as_path() == row.path);
+                    let double = st.last_click.as_ref().is_some_and(|(when, at, path)| {
+                        when.elapsed() < DOUBLE_CLICK && *at == index && path.as_path() == row.path
+                    });
                     st.last_click = Some((Instant::now(), index, row.path.to_path_buf()));
                     if double && row.is_dir {
                         shell.publish(Message::Toggle(row.path.to_path_buf()));

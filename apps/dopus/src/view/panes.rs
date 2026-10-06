@@ -140,7 +140,7 @@ fn sort_header<'a>(
     actions: &[crate::verbs::ActionRow],
     columns: rows::Columns,
 ) -> Element<'a, Msg> {
-    super::columns::Header::new(look, pane_id, pane.sort, pane.ascending, actions, columns).into()
+    super::columns::Header::view(look, pane_id, pane.sort, pane.ascending, actions, columns)
 }
 
 // -- the divider --------------------------------------------------------------
