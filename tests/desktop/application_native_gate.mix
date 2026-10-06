@@ -13,6 +13,10 @@ end
 for each $support in ["bwrap", "sudo", "setpriv"]
   if which($support) == nil then raise("TEST_SUPPORT", $support .. " is required for the owned PTY mount namespace") end
 end
+-- This helper executes before UID/GID are dropped; never resolve it through
+-- the invoking user's PATH, which is restored only for the unprivileged app.
+$setpriv = "/usr/bin/setpriv"
+if not is_file($setpriv) then raise("TEST_SUPPORT", "system setpriv is required at /usr/bin/setpriv") end
 for each $probe in [["sudo", "-n", "bwrap", "--version"], ["sudo", "-n", "kill", "-0", "--", to_string(pid())]]
   $check_support = run_argv($probe, {timeout:10})
   if not $check_support.ok then raise("TEST_SUPPORT", "non-interactive sudo must permit bwrap and owned-launcher cleanup") end
@@ -124,7 +128,7 @@ for each $scale in [1, 2.5]
             $argv = concat($argv, ["--setenv", $name, to_string($launch[$name])])
           end
         end
-        $argv = concat($argv, ["--", "setpriv", "--reuid", to_string(uid()), "--regid", to_string(gid()), "--clear-groups", "--no-new-privs", $bins .. "/term"])
+        $argv = concat($argv, ["--", $setpriv, "--reuid", to_string(uid()), "--regid", to_string(gid()), "--clear-groups", "--no-new-privs", $bins .. "/term"])
       end
       $p = spawn($argv, {env: $client, stdout: {file: $run.path .. "/" .. $app .. ".log"}, stderr: "stdout", detach: true})
       push($children, {pid:$p, privileged_launcher:$app == "term"})
