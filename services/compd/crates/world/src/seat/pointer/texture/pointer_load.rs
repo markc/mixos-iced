@@ -228,7 +228,7 @@ fn builtin_arrow(size: u32) -> Cursor {
             delay: Duration::from_millis(1),
         }],
         hotspot: (0, 0).into(),
-        size: dimensions,
+        size: (size as i32, size as i32).into(),
         nominal: size,
     }
 }
@@ -279,13 +279,13 @@ mod tests {
 
     impl ThemeFixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("cursor-test-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("cursor-test-{}", uuid::Uuid::now_v7()));
             std::fs::create_dir_all(path.join("cursors")).unwrap();
             // An absolute theme path isolates lookup without process-wide env
             // changes. Prevent inheritance from the worker's default theme.
             std::fs::write(
                 path.join("index.theme"),
-                format!("Inherits=missing-{}\n", uuid::Uuid::new_v4()),
+                format!("Inherits=missing-{}\n", uuid::Uuid::now_v7()),
             )
             .unwrap();
             Self(path)
