@@ -437,6 +437,8 @@ impl Requester {
         <Theme as iced_widget::container::Catalog>::Class<'a>:
             From<iced_widget::container::StyleFn<'a, Theme>>,
         <Theme as text_input::Catalog>::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
+        <Theme as iced_core::widget::text::Catalog>::Class<'a>:
+            From<iced_core::widget::text::StyleFn<'a, Theme>>,
     {
         let t = tokens.palette;
         let m = tokens.metrics;

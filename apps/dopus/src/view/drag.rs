@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn multiple_selected_rows_draw_their_own_backgrounds() {
-        use crate::view::rows::{Columns, FileList, RowsMsg};
+        use crate::view::rows::{Columns, RowsMsg};
         let dir = tempfile::tempdir().unwrap();
         let rows: Vec<_> = ["first", "middle", "last"]
             .into_iter()
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn actual_list_events_preserve_clicks_and_drag_in_both_directions() {
-        use crate::view::rows::{Columns, FileList, RowsMsg};
+        use crate::view::rows::{Columns, RowsMsg};
         use dopus_core::{FileEntry, VisibleRow};
         let dir = tempfile::tempdir().unwrap();
         let roots = [dir.path().join("left"), dir.path().join("right")];
@@ -1173,7 +1173,7 @@ mod tests {
 
     #[test]
     fn selected_directory_draws_drop_outline_above_its_selection() {
-        use crate::view::rows::{Columns, FileList};
+        use crate::view::rows::Columns;
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("folder");
         let rows = vec![dopus_core::VisibleRow {

@@ -11,7 +11,7 @@ use application::cpu::{
 };
 use application::iced::advanced::{Renderer as _, image::Renderer as _};
 use application::iced::widget::image::{self, Handle};
-use application::iced::{Color, Font, Pixels, Rectangle, Size};
+use application::iced::{Color, Pixels, Rectangle, Size};
 use rgba_reference::RgbaBand;
 use std::time::Instant;
 use term_core::{config::Cursor, terminal::Cell};

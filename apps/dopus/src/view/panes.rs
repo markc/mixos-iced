@@ -51,27 +51,27 @@ pub fn pane_column<'a>(
     busy: bool,
 ) -> Element<'a, Msg> {
     toolkit::file_pane::column(
-            pane_header(look, first_row, pane, pane_id, active, editing),
-            sort_header(look, pane, pane_id, actions, columns),
-            Element::new(
-                rows::file_list(
-                    pane_rows,
-                    pane.selected.as_deref(),
-                    &pane.path,
-                    &pane.expanded,
-                    icons,
-                    tint,
-                    look,
-                    actions,
-                    columns,
-                    pane_id,
-                    drag,
-                    busy,
-                )
-                .selected_paths(&pane.selected_paths)
+        pane_header(look, first_row, pane, pane_id, active, editing),
+        sort_header(look, pane, pane_id, actions, columns),
+        Element::new(
+            rows::file_list(
+                pane_rows,
+                pane.selected.as_deref(),
+                &pane.path,
+                &pane.expanded,
+                icons,
+                tint,
+                look,
+                actions,
+                columns,
+                pane_id,
+                drag,
+                busy,
             )
-            .map(move |m| Msg::PaneRows(pane_id, m)),
-            summary_footer(look, footer),
+            .selected_paths(&pane.selected_paths),
+        )
+        .map(move |m| Msg::PaneRows(pane_id, m)),
+        summary_footer(look, footer),
         portion,
     )
 }
@@ -211,8 +211,15 @@ impl<'a> From<Divider> for Element<'a, Msg, application::iced::Theme, Renderer> 
             None => Msg::Split(0.5),
             Some(sidebar) => Msg::SidebarWidth(sidebar, sidebar.default_config().width),
         };
-        toolkit::Grip::new(divider.width, divider.edge, divider.border, divider.accent, reset,
-            move |x, viewport| divider.message_at(x, viewport)).into()
+        toolkit::Grip::new(
+            divider.width,
+            divider.edge,
+            divider.border,
+            divider.accent,
+            reset,
+            move |x, viewport| divider.message_at(x, viewport),
+        )
+        .into()
     }
 }
 

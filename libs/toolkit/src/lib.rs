@@ -24,11 +24,11 @@ pub mod editor_pane;
 pub mod elide;
 pub mod fader;
 pub mod file_pane;
-pub mod grip;
 pub mod fit_text;
 pub mod flush_column;
 pub mod focus;
 pub mod fonts;
+pub mod grip;
 pub mod icon;
 pub mod icons;
 /// Eager raster decoding; opt-in (`image` feature) because it links a
@@ -91,10 +91,10 @@ pub use editor_pane::EditorPane;
 pub use elide::{Label, middle};
 pub use fader::Fader;
 pub use file_pane::FilePane;
-pub use grip::Grip;
 pub use fit_text::FitText;
 pub use flush_column::FlushColumn;
 pub use fonts::{FontSet, FontSource, Fonts, IconFont, Role};
+pub use grip::Grip;
 pub use icon::{Icon, icon};
 #[cfg(feature = "image")]
 pub use images::Images;

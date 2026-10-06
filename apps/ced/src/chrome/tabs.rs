@@ -107,31 +107,54 @@ pub fn view<'a>(
     agent_edits: impl Fn(TabId) -> bool,
 ) -> Element<'a, Msg> {
     let tokens = look.tokens;
-    let badges: Vec<_> = tabs.iter().map(|tab| (tab.id, badge(tab, agent_edits(tab.id)))).collect();
-    let detached: Vec<_> = badges.iter().filter(|(_, badge)| badge.detached).map(|(id, _)| *id).collect();
+    let badges: Vec<_> = tabs
+        .iter()
+        .map(|tab| (tab.id, badge(tab, agent_edits(tab.id))))
+        .collect();
+    let detached: Vec<_> = badges
+        .iter()
+        .filter(|(_, badge)| badge.detached)
+        .map(|(id, _)| *id)
+        .collect();
     let mut strip = toolkit::TabBar::with_tab_labels(
-        badges.into_iter().map(|(id, badge)| (id, toolkit::TabLabel::Text(badge.label()))).collect(), Msg::SelectTab)
-        .on_close(Msg::CloseTab).text_font(look.ui).text_size(look.ui_px)
-        .close_size(look.ui_px).tab_width(Length::Shrink).width(Length::Shrink)
-        .height(Length::Fixed(TABS_H)).padding([5.0, 12.0]).spacing(1.0)
-        .text_colour(move |id| detached.contains(id).then_some(tokens.palette.muted_text))
-        .style(move |_, status| {
-            let mut style = toolkit::theme::tab_bar::default(&toolkit::Theme::new(tokens), status);
-            if status == toolkit::tab_bar::Status::Active {
-                style.tab_label_border_color = look.chrome.accent;
-            } else if status == toolkit::tab_bar::Status::Disabled {
-                style.tab_label_background = look.chrome.secondary.into();
-                style.text_color = look.chrome.secondary_text;
-            }
-            style
-        });
-    if let Some(active) = active { strip = strip.set_active_tab(&active); }
+        badges
+            .into_iter()
+            .map(|(id, badge)| (id, toolkit::TabLabel::Text(badge.label())))
+            .collect(),
+        Msg::SelectTab,
+    )
+    .on_close(Msg::CloseTab)
+    .text_font(look.ui)
+    .text_size(look.ui_px)
+    .close_size(look.ui_px)
+    .tab_width(Length::Shrink)
+    .width(Length::Shrink)
+    .height(Length::Fixed(TABS_H))
+    .padding([5.0, 12.0])
+    .spacing(1.0)
+    .text_colour(move |id| detached.contains(id).then_some(tokens.palette.muted_text))
+    .style(move |_, status| {
+        let mut style = toolkit::theme::tab_bar::default(&toolkit::Theme::new(tokens), status);
+        if status == toolkit::tab_bar::Status::Active {
+            style.tab_label_border_color = look.chrome.accent;
+        } else if status == toolkit::tab_bar::Status::Disabled {
+            style.tab_label_background = look.chrome.secondary.into();
+            style.text_color = look.chrome.secondary_text;
+        }
+        style
+    });
+    if let Some(active) = active {
+        strip = strip.set_active_tab(&active);
+    }
     let new_tab = toolkit::CenteredButton::new(look.text("+").color(look.chrome.secondary_text))
-        .padding([4.0, 10.0]).style(look.flat())
+        .padding([4.0, 10.0])
+        .style(look.flat())
         .on_press(Msg::Action(crate::actions::ActionId::FileNew));
     container(row![strip.scrollable().width(Length::Fill), new_tab].align_y(Alignment::End))
-        .width(Length::Fill).height(Length::Fixed(TABS_H))
-        .style(look.strip(look.chrome.secondary, look.chrome.secondary_text)).into()
+        .width(Length::Fill)
+        .height(Length::Fixed(TABS_H))
+        .style(look.strip(look.chrome.secondary, look.chrome.secondary_text))
+        .into()
 }
 
 #[cfg(test)]

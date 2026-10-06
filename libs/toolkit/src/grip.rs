@@ -1,25 +1,51 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A reusable drag grip. The caller translates pointer coordinates into its
 //! layout's ratio or absolute position; the control owns gesture and drawing.
+use iced_core::{
+    Color, Element, Event, Layout, Length, Rectangle, Shell, Size, Widget, layout, mouse, renderer,
+    widget::{Tree, tree},
+};
 use std::time::{Duration, Instant};
-use iced_core::{Color, Element, Event, Length, Rectangle, Size, Widget, Layout,
-    Shell, layout, mouse, renderer, widget::{Tree, tree}};
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 #[derive(Default)]
-struct DividerState { dragging: bool, moved: bool, last_click: Option<Instant> }
+struct DividerState {
+    dragging: bool,
+    moved: bool,
+    last_click: Option<Instant>,
+}
 pub struct Grip<'a, Message> {
-    width: f32, edge: f32, border: Color, accent: Color,
+    width: f32,
+    edge: f32,
+    border: Color,
+    accent: Color,
     on_drag: Box<dyn Fn(f32, &Rectangle) -> Message + 'a>,
     reset: Message,
 }
 impl<'a, Message> Grip<'a, Message> {
-    pub fn new(width: f32, edge: f32, border: Color, accent: Color, reset: Message,
-        on_drag: impl Fn(f32, &Rectangle) -> Message + 'a) -> Self {
-        assert!(width.is_finite() && width > 0.0 && edge.is_finite() && edge >= 0.0 && edge <= width);
-        Self { width, edge, border, accent, reset, on_drag: Box::new(on_drag) }
+    pub fn new(
+        width: f32,
+        edge: f32,
+        border: Color,
+        accent: Color,
+        reset: Message,
+        on_drag: impl Fn(f32, &Rectangle) -> Message + 'a,
+    ) -> Self {
+        assert!(
+            width.is_finite() && width > 0.0 && edge.is_finite() && edge >= 0.0 && edge <= width
+        );
+        Self {
+            width,
+            edge,
+            border,
+            accent,
+            reset,
+            on_drag: Box::new(on_drag),
+        }
     }
 }
-impl<Message: Clone, Theme, Renderer: iced_core::Renderer> Widget<Message, Theme, Renderer> for Grip<'_, Message> {
+impl<Message: Clone, Theme, Renderer: iced_core::Renderer> Widget<Message, Theme, Renderer>
+    for Grip<'_, Message>
+{
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<DividerState>()
     }
@@ -92,8 +118,7 @@ impl<Message: Clone, Theme, Renderer: iced_core::Renderer> Widget<Message, Theme
             // detected as orphaned per-event: losing focus or a resize ends
             // the drag instead (the split keeps its last published ratio).
             Event::Window(
-                iced_core::window::Event::Unfocused
-                | iced_core::window::Event::Resized(_),
+                iced_core::window::Event::Unfocused | iced_core::window::Event::Resized(_),
             ) => {
                 st.dragging = false;
             }
@@ -155,4 +180,10 @@ impl<Message: Clone, Theme, Renderer: iced_core::Renderer> Widget<Message, Theme
     }
 }
 
-impl<'a, M: Clone + 'a, T: 'a, R: iced_core::Renderer + 'a> From<Grip<'a, M>> for Element<'a, M, T, R> { fn from(grip: Grip<'a, M>) -> Self { Element::new(grip) } }
+impl<'a, M: Clone + 'a, T: 'a, R: iced_core::Renderer + 'a> From<Grip<'a, M>>
+    for Element<'a, M, T, R>
+{
+    fn from(grip: Grip<'a, M>) -> Self {
+        Element::new(grip)
+    }
+}

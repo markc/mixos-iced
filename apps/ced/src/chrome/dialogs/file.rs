@@ -1,34 +1,56 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Save intent and tab ownership around the shared Open/Save requester.
-use std::path::{Path, PathBuf};
-use application::iced::Element;
-use editor_model::types::{Intent, TabId};
 use super::{DialogMsg, frame};
 use crate::app::Msg;
 use crate::chrome::Look;
-use toolkit::requester::{self, Requester};
-pub use requester::{Event as FileMsg, PATH_INPUT};
+use application::iced::Element;
+use editor_model::types::{Intent, TabId};
 #[cfg(test)]
 use requester::list;
+pub use requester::{Event as FileMsg, PATH_INPUT};
+use std::path::{Path, PathBuf};
+use toolkit::requester::{self, Requester};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FileMode { Open, SaveAs { tab: TabId, intent: Intent } }
+pub enum FileMode {
+    Open,
+    SaveAs { tab: TabId, intent: Intent },
+}
 #[derive(Clone)]
-pub struct FileDialog { pub mode: FileMode, requester: Requester, strings: requester::Strings }
+pub struct FileDialog {
+    pub mode: FileMode,
+    requester: Requester,
+    strings: requester::Strings,
+}
 impl std::fmt::Debug for FileDialog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FileDialog").field("mode", &self.mode)
-            .field("dir", &self.requester.dir()).field("input", &self.requester.input()).finish()
+        f.debug_struct("FileDialog")
+            .field("mode", &self.mode)
+            .field("dir", &self.requester.dir())
+            .field("input", &self.requester.input())
+            .finish()
     }
 }
 impl std::ops::Deref for FileDialog {
     type Target = Requester;
-    fn deref(&self) -> &Requester { &self.requester }
+    fn deref(&self) -> &Requester {
+        &self.requester
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FileOutcome { Open(Vec<String>), SaveAs { tab: TabId, intent: Intent, path: String, exists: bool } }
+pub enum FileOutcome {
+    Open(Vec<String>),
+    SaveAs {
+        tab: TabId,
+        intent: Intent,
+        path: String,
+        exists: bool,
+    },
+}
 pub fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|path| path.is_absolute())
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 #[cfg(test)]
 fn complete(dir: &Path, input: &str, hidden: bool) -> Option<String> {
@@ -36,28 +58,64 @@ fn complete(dir: &Path, input: &str, hidden: bool) -> Option<String> {
 }
 impl FileDialog {
     pub fn new(mode: FileMode, dir: PathBuf, recent: Vec<String>) -> Self {
-        let kind = match mode { FileMode::Open => requester::Mode::Open, FileMode::SaveAs { .. } => requester::Mode::Save };
-        Self { mode, requester: Requester::new(kind, dir, recent, requester::std_fs()), strings: requester::Strings::english() }
+        let kind = match mode {
+            FileMode::Open => requester::Mode::Open,
+            FileMode::SaveAs { .. } => requester::Mode::Save,
+        };
+        Self {
+            mode,
+            requester: Requester::new(kind, dir, recent, requester::std_fs()),
+            strings: requester::Strings::english(),
+        }
     }
-    pub fn with_name(mut self, name: &str) -> Self { self.requester = self.requester.with_name(name); self }
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.requester = self.requester.with_name(name);
+        self
+    }
     pub fn update(&mut self, message: FileMsg) -> Option<FileOutcome> {
         match self.requester.update(message)? {
             requester::Outcome::Open(paths) => Some(FileOutcome::Open(paths)),
             requester::Outcome::Save { path, exists } => match &self.mode {
-                FileMode::SaveAs { tab, intent } => Some(FileOutcome::SaveAs { tab: *tab, intent: intent.clone(), path, exists }),
+                FileMode::SaveAs { tab, intent } => Some(FileOutcome::SaveAs {
+                    tab: *tab,
+                    intent: intent.clone(),
+                    path,
+                    exists,
+                }),
                 FileMode::Open => None,
             },
         }
     }
     pub fn view<'a>(&'a self, look: Look) -> Element<'a, Msg> {
-        let body = self.requester.view_for::<FileMsg, application::iced::Theme, application::cpu::Renderer>(look.tokens, &self.strings)
+        let body = self
+            .requester
+            .view_for::<FileMsg, application::iced::Theme, application::cpu::Renderer>(
+                look.tokens,
+                &self.strings,
+            )
             .map(|event| Msg::Dialog(DialogMsg::File(event)));
-        let action = match self.mode { FileMode::Open => "Open", FileMode::SaveAs { .. } => "Save" };
-        frame(look, self.requester.title(), body, vec![
-            look.button("Cancel", Some(Msg::Dialog(DialogMsg::Close))).style(look.secondary()).into(),
-            look.button(action, (!self.requester.input().trim().is_empty()).then_some(Msg::Dialog(DialogMsg::File(FileMsg::Submit))))
-                .style(look.primary()).into(),
-        ], 640.0)
+        let action = match self.mode {
+            FileMode::Open => "Open",
+            FileMode::SaveAs { .. } => "Save",
+        };
+        frame(
+            look,
+            self.requester.title(),
+            body,
+            vec![
+                look.button("Cancel", Some(Msg::Dialog(DialogMsg::Close)))
+                    .style(look.secondary())
+                    .into(),
+                look.button(
+                    action,
+                    (!self.requester.input().trim().is_empty())
+                        .then_some(Msg::Dialog(DialogMsg::File(FileMsg::Submit))),
+                )
+                .style(look.primary())
+                .into(),
+            ],
+            640.0,
+        )
     }
 }
 

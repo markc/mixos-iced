@@ -233,7 +233,8 @@ where
     /// Override a label's foreground by stable tab identity, for example a
     /// disconnected document. Selection and close behaviour stay enabled.
     pub fn text_colour(mut self, colour: impl Fn(&TabId) -> Option<Color> + 'a) -> Self {
-        self.text_colour = Some(Box::new(colour)); self
+        self.text_colour = Some(Box::new(colour));
+        self
     }
 
     /// The id of the active tab, if any.
@@ -737,7 +738,9 @@ where
                 (self.font.unwrap_or_default(), self.icon_size),
                 (self.text_font.unwrap_or_default(), self.text_size),
                 self.close_size,
-                self.text_colour.as_ref().and_then(|colour| colour(&self.tab_indices[i])),
+                self.text_colour
+                    .as_ref()
+                    .and_then(|colour| colour(&self.tab_indices[i])),
                 viewport,
             );
         }
@@ -858,8 +861,11 @@ fn draw_tab<Theme, Renderer>(
 
     let bounds = layout.bounds();
 
-    let mut style = <Theme as Catalog>::style(theme, class, tab_status.0.unwrap_or(Status::Disabled));
-    if let Some(colour) = text_colour { style.text_color = colour; }
+    let mut style =
+        <Theme as Catalog>::style(theme, class, tab_status.0.unwrap_or(Status::Disabled));
+    if let Some(colour) = text_colour {
+        style.text_color = colour;
+    }
 
     let mut children = layout.children();
     let label_layout = children

@@ -78,8 +78,16 @@ required-features = ["gallery"]
 name = "shell"
 required-features = ["gallery"]
 
+[[example]]
+name = "compounds"
+required-features = ["gallery"]
+
 [[test]]
 name = "shell"
+required-features = ["gallery-tiny-skia"]
+
+[[test]]
+name = "compounds"
 required-features = ["gallery-tiny-skia"]
 
 [[test]]

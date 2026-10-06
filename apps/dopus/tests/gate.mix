@@ -1,10 +1,13 @@
--- Focused DOpus gates. Run from the repository src directory on a build worker.
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Focused DOpus gates, run on a build worker from the current workspace.
+$root=dirname(dirname(dirname(dirname(realpath($0)))))
 for $command in [
-  ["cargo", "fmt", "-p", "mixos-dopus", "-p", "mixos-dopus-core", "--", "--check"],
-  ["cargo", "test", "-p", "mixos-dopus", "-p", "mixos-dopus-core", "-p", "mixos-iced-widgets"],
-  ["cargo", "clippy", "-p", "mixos-dopus", "-p", "mixos-dopus-core", "--all-targets", "--", "-D", "warnings"],
-  ["cargo", "build", "-p", "mixos-dopus", "--release"]
+  ["cargo", "fmt", "-p", "dopus", "-p", "dopus-core", "--", "--check"],
+  ["cargo", "test", "--locked", "-p", "dopus", "-p", "dopus-core", "-p", "toolkit"],
+  ["cargo", "clippy", "--locked", "-p", "dopus", "-p", "dopus-core", "--all-targets", "--no-deps", "--", "-D", "warnings"],
+  ["cargo", "build", "--locked", "-p", "dopus", "--release"]
 ]
   print(join($command, " "))
-  print(run_argv_must($command, {cwd: "desktop", timeout: 7200, stderr: "stdout"}))
+  print(run_argv_must($command, {cwd: $root, timeout: 7200, stderr: "stdout"}))
 end

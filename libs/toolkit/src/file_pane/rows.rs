@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Viewport-only file rows with cached paragraphs and stable click identity.
+use super::*;
+use iced_core::text::{self as atext, Paragraph as _};
+use iced_core::widget::{Tree, tree};
+use iced_core::{Event, Layout, Shell, Widget, alignment, keyboard, layout, mouse, renderer};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use iced_core::text::{self as atext, Paragraph as _};
-use iced_core::widget::{Tree, tree};
-use iced_core::{Layout, Shell, Widget, layout, mouse, renderer, Event, alignment, keyboard};
-use super::*;
 /// One column contract for headers and rows. Secondary widths are measured
 /// in the resolved mono role, including the widest absolute time form.
 #[derive(Clone, Copy, Debug)]
@@ -192,27 +192,63 @@ pub struct FilePane<'a, Theme, Renderer> {
 }
 
 impl<'a, Theme, Renderer> FilePane<'a, Theme, Renderer>
-where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
+where
+    Renderer: atext::Renderer<Font = iced_core::Font> + 'static,
+{
     pub fn new(source: impl Source + 'a, look: Presentation, columns: Columns) -> Self {
-        Self { source: Box::new(source), selected_paths: None, look, columns, tint: "", tips: Vec::new(),
-            tooltip: None, decoration: Box::new(|_, _, _, _, _| {}),
-            open_label: "Open".into(), transfer: None, busy: false }
+        Self {
+            source: Box::new(source),
+            selected_paths: None,
+            look,
+            columns,
+            tint: "",
+            tips: Vec::new(),
+            tooltip: None,
+            decoration: Box::new(|_, _, _, _, _| {}),
+            open_label: "Open".into(),
+            transfer: None,
+            busy: false,
+        }
     }
-    pub fn tint(mut self, tint: &'a str) -> Self { self.tint = tint; self }
-    pub fn busy(mut self, busy: bool) -> Self { self.busy = busy; self }
-    pub fn open_label(mut self, label: String) -> Self { self.open_label = label; self }
-    pub fn tooltip(mut self, build: impl Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a) -> Self {
-        self.tooltip = Some(Box::new(build)); self
+    pub fn tint(mut self, tint: &'a str) -> Self {
+        self.tint = tint;
+        self
     }
-    pub fn decoration(mut self, draw: impl Fn(&mut Renderer, usize, Decoration, Rectangle, Rectangle) + 'a) -> Self {
-        self.decoration = Box::new(draw); self
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
+        self
     }
-    pub fn transfer(mut self, bridge: impl Transfer + 'a) -> Self { self.transfer = Some(Box::new(bridge)); self }
+    pub fn open_label(mut self, label: String) -> Self {
+        self.open_label = label;
+        self
+    }
+    pub fn tooltip(
+        mut self,
+        build: impl Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a,
+    ) -> Self {
+        self.tooltip = Some(Box::new(build));
+        self
+    }
+    pub fn decoration(
+        mut self,
+        draw: impl Fn(&mut Renderer, usize, Decoration, Rectangle, Rectangle) + 'a,
+    ) -> Self {
+        self.decoration = Box::new(draw);
+        self
+    }
+    pub fn transfer(mut self, bridge: impl Transfer + 'a) -> Self {
+        self.transfer = Some(Box::new(bridge));
+        self
+    }
     pub fn selected_paths(mut self, paths: &'a HashSet<PathBuf>) -> Self {
-        self.selected_paths = Some(paths); self
+        self.selected_paths = Some(paths);
+        self
     }
     fn is_selected(&self, path: &Path) -> bool {
-        self.selected_paths.map_or_else(|| self.source.is_selected(path), |paths| paths.contains(path))
+        self.selected_paths.map_or_else(
+            || self.source.is_selected(path),
+            |paths| paths.contains(path),
+        )
     }
 
     /// Row height from the theme's font metrics (ced's `ensure_metrics`
@@ -273,7 +309,13 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
 
     /// Shape (or re-shape) a row's three columns. An entry whose source text
     /// differs — a relist or size landed — re-shapes.
-    fn cache_row(&self, st: &mut RowState<Renderer::Paragraph>, index: usize, row: &Row<'_>, width: f32) {
+    fn cache_row(
+        &self,
+        st: &mut RowState<Renderer::Paragraph>,
+        index: usize,
+        row: &Row<'_>,
+        width: f32,
+    ) {
         if st.tint != self.tint {
             // A re-tint means a new theme: fonts and colours may all differ.
             st.tint = self.tint.to_owned();
@@ -311,7 +353,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
             modified: Self::shape(&modified_text, self.look.mono_font, self.look.small_px),
             modified_of: modified_text,
         };
-        if st.cache.len() >= 512 { st.cache.clear(); }
+        if st.cache.len() >= 512 {
+            st.cache.clear();
+        }
         st.cache.insert(row.path.to_path_buf(), shaped);
         // The cache only ever holds what viewports asked for; drop anything
         // the current listing no longer shows once it grows past a screenful
@@ -340,8 +384,7 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
             return;
         }
         st.last_selected = Some(selected.to_path_buf());
-        if let Some(index) = self.source.selected_index()
-        {
+        if let Some(index) = self.source.selected_index() {
             let top = index as f32 * st.row_h;
             let bottom = top + st.row_h;
             if top < st.offset {
@@ -357,7 +400,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
     fn sync_cache(&self, st: &mut RowState<Renderer::Paragraph>, height: f32, width: f32) {
         let first = (st.offset / st.row_h).floor().max(0.0) as usize;
         for index in first..self.source.len() {
-            let Some(row) = self.source.row(index) else { break };
+            let Some(row) = self.source.row(index) else {
+                break;
+            };
             if index > first && !st.is_visible(index, height) {
                 break;
             }
@@ -367,7 +412,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
 }
 
 impl<Theme, Renderer> Widget<Message, Theme, Renderer> for FilePane<'_, Theme, Renderer>
-where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
+where
+    Renderer: atext::Renderer<Font = iced_core::Font> + 'static,
+{
     fn diff(&mut self, _tree: &mut Tree) {
         // Preserve hover state until layout reconciles visible icon regions.
     }
@@ -405,7 +452,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
         let mut regions = Vec::new();
         let first = (st.offset / st.row_h).floor().max(0.0) as usize;
         for index in first..self.source.len() {
-            let Some(row) = self.source.row(index) else { break };
+            let Some(row) = self.source.row(index) else {
+                break;
+            };
             let y = index as f32 * st.row_h - st.offset;
             if y >= size.height {
                 break;
@@ -453,16 +502,30 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
             }
         }
         self.tips = match &self.tooltip {
-            Some(build) => regions.iter().map(|(bounds, label)| build(label.clone(), bounds.size())).collect(),
+            Some(build) => regions
+                .iter()
+                .map(|(bounds, label)| build(label.clone(), bounds.size()))
+                .collect(),
             None => Vec::new(),
         };
         tree.diff_children(&mut self.tips);
-        let children = self.tips.iter_mut().zip(&mut tree.children).zip(regions)
-            .map(|((child, state), (bounds, _))| child.as_widget_mut()
-                .layout(state, renderer, &layout::Limits::new(Size::ZERO, bounds.size()))
-                .move_to(bounds.position())).collect();
+        let children = self
+            .tips
+            .iter_mut()
+            .zip(&mut tree.children)
+            .zip(regions)
+            .map(|((child, state), (bounds, _))| {
+                child
+                    .as_widget_mut()
+                    .layout(
+                        state,
+                        renderer,
+                        &layout::Limits::new(Size::ZERO, bounds.size()),
+                    )
+                    .move_to(bounds.position())
+            })
+            .collect();
         layout::Node::with_children(size, children)
-
     }
 
     fn update(
@@ -512,7 +575,8 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
         // Async listings and sorting can replace the pressed index before the
         // drag threshold. Never transfer whichever entry happens to occupy it.
         if st.press.as_ref().is_some_and(|(_, index, path)| {
-            self.source.row(*index)
+            self.source
+                .row(*index)
                 .is_none_or(|row| row.path != path.as_path())
         }) {
             st.press = None;
@@ -532,12 +596,28 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
                 if cursor.is_over(clip) {
                     let pointer = cursor.position().unwrap_or_default();
                     let index = st.row_at(pointer.y - bounds.y, self.source.len());
-                    let directory = index.and_then(|index| self.source.row(index)).filter(|row| row.is_dir);
+                    let directory = index
+                        .and_then(|index| self.source.row(index))
+                        .filter(|row| row.is_dir);
                     let highlight = if directory.is_some() {
-                        Rectangle { y: bounds.y + index.unwrap() as f32 * st.row_h - st.offset, height: st.row_h, ..clip }
-                            .intersection(&clip).unwrap_or(clip)
-                    } else { clip };
-                    transfer.hover(directory.map(|row| row.path), self.source.root(), clip, highlight, pointer, self.busy);
+                        Rectangle {
+                            y: bounds.y + index.unwrap() as f32 * st.row_h - st.offset,
+                            height: st.row_h,
+                            ..clip
+                        }
+                        .intersection(&clip)
+                        .unwrap_or(clip)
+                    } else {
+                        clip
+                    };
+                    transfer.hover(
+                        directory.map(|row| row.path),
+                        self.source.root(),
+                        clip,
+                        highlight,
+                        pointer,
+                        self.busy,
+                    );
                 }
                 return;
             }
@@ -550,7 +630,8 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
                         .sqrt()
                         > CLICK_SLOP
                     && let Some(row) = self.source.row(*index)
-                    && !self.busy && self.transfer.is_some()
+                    && !self.busy
+                    && self.transfer.is_some()
                 {
                     st.press = None;
                     st.last_click = None;
@@ -582,7 +663,11 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
                 shell.publish(Message::Press);
                 let position = cursor.position().unwrap_or_default();
                 if let Some(index) = st.row_at(position.y - bounds.y, self.source.len()) {
-                    st.press = Some((position, index, self.source.row(index).expect("hit row").path.to_path_buf()));
+                    st.press = Some((
+                        position,
+                        index,
+                        self.source.row(index).expect("hit row").path.to_path_buf(),
+                    ));
                 }
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
@@ -611,7 +696,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
                 if moved || index >= self.source.len() {
                     return;
                 }
-                let Some(row) = self.source.row(index) else { return };
+                let Some(row) = self.source.row(index) else {
+                    return;
+                };
                 // The toggle zone: the leftmost TOGGLE_W of the row, on a
                 // directory — click it to expand. A toggle is not a row
                 // click: it stays out of the double-click tracker, so a fast
@@ -680,7 +767,11 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
         let icon_px = self.look.chrome.icon;
         let row_pad = self.look.chrome.small;
         renderer.with_layer(clip, |renderer| {
-            if let Some(highlight) = self.transfer.as_ref().and_then(|bridge| bridge.highlight()).and_then(|highlight| highlight.intersection(&clip))
+            if let Some(highlight) = self
+                .transfer
+                .as_ref()
+                .and_then(|bridge| bridge.highlight())
+                .and_then(|highlight| highlight.intersection(&clip))
             {
                 renderer.fill_quad(
                     renderer::Quad {
@@ -694,7 +785,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
             let first = (st.offset / st.row_h).floor().max(0.0) as usize;
             let last = ((st.offset + clip.height) / st.row_h).ceil() as usize;
             for index in first..last.min(self.source.len()) {
-                let Some(row) = self.source.row(index) else { break };
+                let Some(row) = self.source.row(index) else {
+                    break;
+                };
                 if !self.is_selected(row.path) || !st.is_visible(index, clip.height) {
                     continue;
                 }
@@ -717,7 +810,11 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
 
             // Selection keeps its text/background contrast. Paint the target
             // outline afterwards so an already selected folder cannot hide it.
-            if let Some(highlight) = self.transfer.as_ref().and_then(|bridge| bridge.highlight()).and_then(|highlight| highlight.intersection(&clip))
+            if let Some(highlight) = self
+                .transfer
+                .as_ref()
+                .and_then(|bridge| bridge.highlight())
+                .and_then(|highlight| highlight.intersection(&clip))
             {
                 renderer.fill_quad(
                     renderer::Quad {
@@ -735,7 +832,9 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
 
             let first = (st.offset / st.row_h).floor().max(0.0) as usize;
             for index in first..self.source.len() {
-            let Some(row) = self.source.row(index) else { break };
+                let Some(row) = self.source.row(index) else {
+                    break;
+                };
                 let y = bounds.y + index as f32 * st.row_h - st.offset;
                 if y > clip.y + clip.height {
                     break;
@@ -857,14 +956,7 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: iced_core::Vector,
-    ) -> Option<
-        iced_core::overlay::Element<
-            'b,
-            Message,
-            Theme,
-            Renderer,
-        >,
-    > {
+    ) -> Option<iced_core::overlay::Element<'b, Message, Theme, Renderer>> {
         iced_core::overlay::from_children(
             &mut self.tips,
             tree,
@@ -876,8 +968,12 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
     }
 }
 
-impl<'a, Theme: 'a, Renderer: atext::Renderer<Font = iced_core::Font> + 'static> From<FilePane<'a, Theme, Renderer>> for Element<'a, Message, Theme, Renderer> {
-    fn from(list: FilePane<'a, Theme, Renderer>) -> Self { Element::new(list) }
+impl<'a, Theme: 'a, Renderer: atext::Renderer<Font = iced_core::Font> + 'static>
+    From<FilePane<'a, Theme, Renderer>> for Element<'a, Message, Theme, Renderer>
+{
+    fn from(list: FilePane<'a, Theme, Renderer>) -> Self {
+        Element::new(list)
+    }
 }
 
 #[cfg(test)]
@@ -886,43 +982,108 @@ mod tests {
     use crate::test_renderer::LayoutRenderer;
     use std::cell::Cell;
 
-    struct Listing<'a> { entries: &'a [(PathBuf, String)], reads: &'a Cell<usize> }
+    struct Listing<'a> {
+        entries: &'a [(PathBuf, String)],
+        reads: &'a Cell<usize>,
+    }
     impl Source for Listing<'_> {
-        fn root(&self) -> &Path { Path::new("/listing") }
-        fn len(&self) -> usize { self.entries.len() }
+        fn root(&self) -> &Path {
+            Path::new("/listing")
+        }
+        fn len(&self) -> usize {
+            self.entries.len()
+        }
         fn row(&self, index: usize) -> Option<Row<'_>> {
             self.reads.set(self.reads.get() + 1);
-            self.entries.get(index).map(|(path, name)| Row { path, name, depth: 0, is_dir: false })
+            self.entries.get(index).map(|(path, name)| Row {
+                path,
+                name,
+                depth: 0,
+                is_dir: false,
+            })
         }
-        fn size_text(&self, _index: usize) -> String { "1 KiB".into() }
-        fn modified_text(&self, _index: usize) -> String { "01/01/26 12:00".into() }
+        fn size_text(&self, _index: usize) -> String {
+            "1 KiB".into()
+        }
+        fn modified_text(&self, _index: usize) -> String {
+            "01/01/26 12:00".into()
+        }
     }
     fn columns() -> Columns {
-        Columns { name_min: 80.0, size: 80.0, modified: 100.0, gap: 8.0, pad: 8.0 }
+        Columns {
+            name_min: 80.0,
+            size: 80.0,
+            modified: 100.0,
+            gap: 8.0,
+            pad: 8.0,
+        }
     }
-    fn deliver(list: &mut FilePane<'_, crate::Theme, LayoutRenderer>, tree: &mut Tree,
-        renderer: &LayoutRenderer, event: Event) -> Vec<Message> {
+    fn deliver(
+        list: &mut FilePane<'_, crate::Theme, LayoutRenderer>,
+        tree: &mut Tree,
+        renderer: &LayoutRenderer,
+        event: Event,
+    ) -> Vec<Message> {
         let viewport = Rectangle::with_size(Size::new(600.0, 280.0));
-        let node = list.layout(tree, renderer, &layout::Limits::new(Size::ZERO, viewport.size()));
+        let node = list.layout(
+            tree,
+            renderer,
+            &layout::Limits::new(Size::ZERO, viewport.size()),
+        );
         let mut bus = iced_core::shell::Bus::new();
-        list.update(tree, &event, Layout::new(&node), mouse::Cursor::Available(Point::new(80.0, 10.0)),
-            renderer, &mut Shell::new(&iced_core::window::Headless, iced_core::shell::Waker::noop(), &mut bus), &viewport);
+        list.update(
+            tree,
+            &event,
+            Layout::new(&node),
+            mouse::Cursor::Available(Point::new(80.0, 10.0)),
+            renderer,
+            &mut Shell::new(
+                &iced_core::window::Headless,
+                iced_core::shell::Waker::noop(),
+                &mut bus,
+            ),
+            &viewport,
+        );
         bus.drain().collect()
     }
 
     #[test]
     fn hundred_thousand_entries_access_and_shape_only_the_viewport() {
-        let entries: Vec<_> = (0..100_000).map(|i| (PathBuf::from(format!("/listing/{i}")), format!("file-{i}.txt"))).collect();
+        let entries: Vec<_> = (0..100_000)
+            .map(|i| {
+                (
+                    PathBuf::from(format!("/listing/{i}")),
+                    format!("file-{i}.txt"),
+                )
+            })
+            .collect();
         let reads = Cell::new(0);
         let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
-            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns());
+            Listing {
+                entries: &entries,
+                reads: &reads,
+            },
+            Presentation::default(),
+            columns(),
+        );
         let renderer = LayoutRenderer::new();
         let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
         for _ in 0..20 {
-            deliver(&mut list, &mut tree, &renderer, Event::Window(iced_core::window::Event::Focused));
+            deliver(
+                &mut list,
+                &mut tree,
+                &renderer,
+                Event::Window(iced_core::window::Event::Focused),
+            );
         }
-        assert!(reads.get() < 1000, "accessed {} offscreen entries", reads.get());
-        let state = tree.state.downcast_ref::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+        assert!(
+            reads.get() < 1000,
+            "accessed {} offscreen entries",
+            reads.get()
+        );
+        let state = tree
+            .state
+            .downcast_ref::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
         assert!(state.cache.len() > 1 && state.cache.len() < 20);
     }
 
@@ -931,15 +1092,37 @@ mod tests {
         let first = [(PathBuf::from("/listing/first"), "first".into())];
         let replacement = [(PathBuf::from("/listing/other"), "other".into())];
         let reads = Cell::new(0);
-        let make = |entries| FilePane::<crate::Theme, LayoutRenderer>::new(
-            Listing { entries, reads: &reads }, Presentation::default(), columns());
+        let make = |entries| {
+            FilePane::<crate::Theme, LayoutRenderer>::new(
+                Listing {
+                    entries,
+                    reads: &reads,
+                },
+                Presentation::default(),
+                columns(),
+            )
+        };
         let mut list = make(&first);
         let renderer = LayoutRenderer::new();
         let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
-        assert_eq!(deliver(&mut list, &mut tree, &renderer,
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))), vec![Message::Press]);
+        assert_eq!(
+            deliver(
+                &mut list,
+                &mut tree,
+                &renderer,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            ),
+            vec![Message::Press]
+        );
         let mut list = make(&replacement);
-        assert!(deliver(&mut list, &mut tree, &renderer,
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))).is_empty());
+        assert!(
+            deliver(
+                &mut list,
+                &mut tree,
+                &renderer,
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            )
+            .is_empty()
+        );
     }
 }

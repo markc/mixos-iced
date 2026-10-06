@@ -2,6 +2,11 @@
 
 ## 0.2.2
 
+- Add a renderer-independent compound-pane example and offscreen checks for its
+  Unicode input and token sets. Use the same panes in production applications.
+- Add a reusable drag grip, per-tab text roles and a theme/renderer-generic
+  requester using the shared undo/IME text field and double-click activation.
+
 - Share virtual file rows through a borrowed listing provider, optional native
   transfer bridge and caller-supplied decorations. Cache and draw only visible
   rows; validate the pressed path after asynchronous relists.

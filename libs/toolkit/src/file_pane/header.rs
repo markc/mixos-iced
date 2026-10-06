@@ -1,30 +1,64 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A sortable header sharing the listing's responsive column geometry.
-use iced_core::text::{self, Paragraph as _};
-use iced_core::{Element, Event, Length, Point, Rectangle, Size, Color, Widget, Layout,
-    Shell, layout, mouse, renderer, widget::{Tree, tree}};
 use super::{Columns, FilePane, Presentation};
+use iced_core::text::{self, Paragraph as _};
+use iced_core::{
+    Color, Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Widget, layout, mouse,
+    renderer,
+    widget::{Tree, tree},
+};
 pub struct Header<'a, Message, Theme, Renderer> {
-    look: Presentation, sort: usize, ascending: bool,
-    titles: [String; 3], labels: [String; 3],
+    look: Presentation,
+    sort: usize,
+    ascending: bool,
+    titles: [String; 3],
+    labels: [String; 3],
     tips: Vec<Element<'a, Message, Theme, Renderer>>,
-    columns: Columns, background: Color, foreground: Color,
+    columns: Columns,
+    background: Color,
+    foreground: Color,
     on_sort: Box<dyn Fn(usize) -> Message + 'a>,
     tooltip: Option<Box<dyn Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a>>,
 }
 impl<'a, Message, Theme, Renderer> Header<'a, Message, Theme, Renderer>
-where Renderer: text::Renderer<Font = iced_core::Font> + 'static {
-    pub fn new(look: Presentation, columns: Columns, titles: [String; 3], sort: usize,
-        ascending: bool, on_sort: impl Fn(usize) -> Message + 'a) -> Self {
-        Self { look, columns, labels: titles.clone(), titles, sort, ascending,
-            tips: Vec::new(), on_sort: Box::new(on_sort), tooltip: None,
-            background: look.tokens.palette.muted_surface, foreground: look.tokens.palette.muted_text }
+where
+    Renderer: text::Renderer<Font = iced_core::Font> + 'static,
+{
+    pub fn new(
+        look: Presentation,
+        columns: Columns,
+        titles: [String; 3],
+        sort: usize,
+        ascending: bool,
+        on_sort: impl Fn(usize) -> Message + 'a,
+    ) -> Self {
+        Self {
+            look,
+            columns,
+            labels: titles.clone(),
+            titles,
+            sort,
+            ascending,
+            tips: Vec::new(),
+            on_sort: Box::new(on_sort),
+            tooltip: None,
+            background: look.tokens.palette.muted_surface,
+            foreground: look.tokens.palette.muted_text,
+        }
     }
     pub fn colours(mut self, background: Color, foreground: Color) -> Self {
-        self.background = background; self.foreground = foreground; self
+        self.background = background;
+        self.foreground = foreground;
+        self
     }
-    pub fn tooltip(mut self, labels: [String; 3], build: impl Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a) -> Self {
-        self.labels = labels; self.tooltip = Some(Box::new(build)); self
+    pub fn tooltip(
+        mut self,
+        labels: [String; 3],
+        build: impl Fn(String, Size) -> Element<'a, Message, Theme, Renderer> + 'a,
+    ) -> Self {
+        self.labels = labels;
+        self.tooltip = Some(Box::new(build));
+        self
     }
     fn labels(&self) -> [Renderer::Paragraph; 3] {
         std::array::from_fn(|sort| {
@@ -38,8 +72,11 @@ where Renderer: text::Renderer<Font = iced_core::Font> + 'static {
         })
     }
 }
-impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Header<'_, Message, Theme, Renderer>
-where Renderer: text::Renderer<Font = iced_core::Font> + 'static {
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
+    for Header<'_, Message, Theme, Renderer>
+where
+    Renderer: text::Renderer<Font = iced_core::Font> + 'static,
+{
     fn diff(&mut self, _tree: &mut Tree) {
         // Region children are reconciled in layout, once widths are known.
     }
@@ -80,17 +117,31 @@ where Renderer: text::Renderer<Font = iced_core::Font> + 'static {
                 )
             })
             .collect();
-                self.tips = match &self.tooltip {
-            Some(build) => regions.iter().map(|(bounds, label)| build(label.clone(), bounds.size())).collect(),
+        self.tips = match &self.tooltip {
+            Some(build) => regions
+                .iter()
+                .map(|(bounds, label)| build(label.clone(), bounds.size()))
+                .collect(),
             None => Vec::new(),
         };
         tree.diff_children(&mut self.tips);
-        let children = self.tips.iter_mut().zip(&mut tree.children).zip(regions)
-            .map(|((child, state), (bounds, _))| child.as_widget_mut()
-                .layout(state, renderer, &layout::Limits::new(Size::ZERO, bounds.size()))
-                .move_to(bounds.position())).collect();
+        let children = self
+            .tips
+            .iter_mut()
+            .zip(&mut tree.children)
+            .zip(regions)
+            .map(|((child, state), (bounds, _))| {
+                child
+                    .as_widget_mut()
+                    .layout(
+                        state,
+                        renderer,
+                        &layout::Limits::new(Size::ZERO, bounds.size()),
+                    )
+                    .move_to(bounds.position())
+            })
+            .collect();
         layout::Node::with_children(size, children)
-
     }
     fn update(
         &mut self,
@@ -200,9 +251,7 @@ where Renderer: text::Renderer<Font = iced_core::Font> + 'static {
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: iced_core::Vector,
-    ) -> Option<
-        iced_core::overlay::Element<'b, Message, Theme, Renderer>,
-    > {
+    ) -> Option<iced_core::overlay::Element<'b, Message, Theme, Renderer>> {
         iced_core::overlay::from_children(
             &mut self.tips,
             tree,
@@ -213,4 +262,10 @@ where Renderer: text::Renderer<Font = iced_core::Font> + 'static {
         )
     }
 }
-impl<'a, M: 'a, T: 'a, R: text::Renderer<Font = iced_core::Font> + 'static> From<Header<'a, M, T, R>> for Element<'a, M, T, R> { fn from(header: Header<'a, M, T, R>) -> Self { Element::new(header) } }
+impl<'a, M: 'a, T: 'a, R: text::Renderer<Font = iced_core::Font> + 'static>
+    From<Header<'a, M, T, R>> for Element<'a, M, T, R>
+{
+    fn from(header: Header<'a, M, T, R>) -> Self {
+        Element::new(header)
+    }
+}
