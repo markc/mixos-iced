@@ -227,55 +227,50 @@ where
                 ..
             } = tree.state.downcast_mut();
 
-            if instant == redraw {
-                // A host may retry one frame after reducing messages or
-                // relayout. An idle transition must not keep that host awake.
-                if animation.is_animating(*instant) {
-                    shell.request_redraw();
-                }
-            } else {
-                let was_animating = animation.is_animating(*instant);
+            // Message reduction may change the target or reset the animation
+            // while a host retries the SAME frame instant. Synchronise that
+            // state too; an idle retry must not request an unnecessary frame.
+            let was_animating = animation.is_animating(*instant);
 
-                if *should_reset {
-                    *animation = (self.init)();
-                    *should_reset = false;
-                }
+            if *should_reset {
+                *animation = (self.init)();
+                *should_reset = false;
+            }
 
-                *instant = *redraw;
-                animation.go(self.value, *instant);
+            *instant = *redraw;
+            animation.go(self.value, *instant);
 
-                let is_animating = animation.is_animating(*instant);
-                let just_finished = was_animating && !is_animating;
+            let is_animating = animation.is_animating(*instant);
+            let just_finished = was_animating && !is_animating;
 
-                if is_animating || just_finished {
-                    let size = *size;
+            if is_animating || just_finished {
+                let size = *size;
 
-                    let mut new = (self.view)(animation, *instant);
-                    tree.diff_children(&mut [new.as_widget_mut()]);
+                let mut new = (self.view)(animation, *instant);
+                tree.diff_children(&mut [new.as_widget_mut()]);
 
-                    let new_size = new.as_widget().size();
+                let new_size = new.as_widget().size();
 
-                    if size != Some(new_size) {
-                        self.next_element = Some(new);
-                        shell.invalidate_layout_with(shell::Diff::Perform);
+                if size != Some(new_size) {
+                    self.next_element = Some(new);
+                    shell.invalidate_layout_with(shell::Diff::Perform);
 
-                        let state = tree.state.downcast_mut::<State<P>>();
-                        state.size = Some(new_size);
-                    } else {
-                        self.element = new;
-                        self.new_layout = Some(self.element.as_widget_mut().layout(
-                            &mut tree.children[0],
-                            renderer,
-                            &self.last_limits,
-                        ));
-                    }
-
-                    shell.request_redraw();
+                    let state = tree.state.downcast_mut::<State<P>>();
+                    state.size = Some(new_size);
+                } else {
+                    self.element = new;
+                    self.new_layout = Some(self.element.as_widget_mut().layout(
+                        &mut tree.children[0],
+                        renderer,
+                        &self.last_limits,
+                    ));
                 }
 
-                if just_finished && let Some(on_finish) = &self.on_finish {
-                    shell.publish(on_finish());
-                }
+                shell.request_redraw();
+            }
+
+            if just_finished && let Some(on_finish) = &self.on_finish {
+                shell.publish(on_finish());
             }
         }
 

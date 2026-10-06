@@ -236,9 +236,11 @@ mod tests {
     }
 
     #[test]
-    fn idle_transition_with_redraw_callback_settles_without_future_frames() {
+    fn idle_transition_with_redraw_callback_sleeps_or_starts_a_new_target() {
+      for retarget in [false, true] {
         let now = Instant::now() + iced_core::time::Duration::from_secs(1);
         let mut last = None;
+        let mut target = 0.0_f32;
         let mut cache = Cache::default();
         let mut renderer = Paint::default();
         let waker = shell::Waker::new(|| {});
@@ -246,7 +248,7 @@ mod tests {
         for attempt in 0..3 {
             let transition = iced_widget::transition::Transition::new(
                 || iced_core::animation::Animation::new(0.0_f32),
-                0.0_f32,
+                target,
                 |_, _| Space::new(),
             );
             let view: Element<'_, Instant, Theme, Paint> = toolkit::keys::keys(transition, |_| None)
@@ -259,14 +261,47 @@ mod tests {
             next = after_update(next, state, now, true);
             cache = ui.into_cache();
             if pass == Pass::Draw {
-                assert_eq!(attempt, 1);
-                assert_eq!(next, window::RedrawRequest::Wait, "an idle transition must not extend a callback retry into another frame");
-                return;
+                assert_eq!(attempt, if retarget { 2 } else { 1 });
+                assert_eq!(next, if retarget { window::RedrawRequest::NextFrame } else { window::RedrawRequest::Wait },
+                    "idle callbacks sleep; reducer retargeting starts animation");
+                break;
             }
             assert_eq!(pass, Pass::Retry);
-            for at in emitted { last = Some(at); }
+            for at in emitted {
+                last = Some(at);
+                if retarget { target = 1.0; }
+            }
+            assert!(attempt < 2, "idle transition and callback failed to settle");
         }
-        panic!("idle transition and redraw callback failed to settle");
+      }
+    }
+
+    #[test]
+    fn completion_reducer_can_chain_a_transition_at_the_same_instant() {
+        let view = |target| -> Element<'_, u8, Theme, Paint> {
+            iced_widget::transition::Transition::new(
+                || iced_core::animation::Animation::new(0.0_f32), target, |_, _| Space::new(),
+            ).on_finish(9).into()
+        };
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let mut messages = shell::Bus::new();
+        let mut ui = UserInterface::build(view(1.0), Size::new(100.0, 50.0), Cache::default(), &mut renderer);
+        let start = Instant::now() + iced_core::time::Duration::from_secs(1);
+        prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, start);
+        assert_eq!(messages.drain().count(), 0);
+        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view(1.0), Size::new(100.0, 50.0), cache, &mut renderer);
+        let finish = start + iced_core::time::Duration::from_secs(2);
+        prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, finish);
+        assert_eq!(messages.drain().collect::<Vec<_>>(), vec![9]);
+        let cache = ui.into_cache();
+        // The completion reducer requests the return leg before this paint.
+        let mut ui = UserInterface::build(view(0.0), Size::new(100.0, 50.0), cache, &mut renderer);
+        let state = prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, finish);
+        assert_eq!(messages.drain().count(), 0, "completion is delivered exactly once");
+        assert_eq!(after_update(window::RedrawRequest::Wait, state, finish, true), window::RedrawRequest::NextFrame,
+            "the next leg must not wait for unrelated input");
     }
 
     #[test]
