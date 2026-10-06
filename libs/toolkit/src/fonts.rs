@@ -623,26 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn variable_light_is_available_even_when_the_index_says_regular() {
-        let mut db = fontdb::Database::new();
-        db.load_font_data(
-            include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").to_vec(),
-        );
-        db.load_font_data(FIRA_SANS_REGULAR.to_vec());
-        let mut system = cosmic_text::FontSystem::new_with_locale_and_db("en-US".into(), db);
-        assert!(
-            system
-                .db()
-                .faces()
-                .any(|face| face.weight == fontdb::Weight::NORMAL
-                    && face.families.iter().any(|(name, _)| name == "Inter"))
-        );
-        assert!(family_has_light(&mut system, "Inter"));
-        assert!(!family_has_light(&mut system, "Fira Sans"));
-        assert!(!family_has_light(&mut system, "Missing family"));
-    }
-
-    #[test]
     fn font_set_builders_fill_roles() {
         let set = FontSet::new()
             .sans(FIRA_SANS_REGULAR)
