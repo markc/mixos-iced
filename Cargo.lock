@@ -176,16 +176,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "application"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_program",
- "iced_runtime",
- "iced_tiny_skia",
-]
-
-[[package]]
 name = "appearance"
 version = "0.1.1"
 dependencies = [
@@ -208,6 +198,16 @@ name = "appendlist"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
+
+[[package]]
+name = "application"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_program",
+ "iced_runtime",
+ "iced_tiny_skia",
+]
 
 [[package]]
 name = "arbitrary"
@@ -810,9 +810,9 @@ dependencies = [
 name = "ced"
 version = "0.1.6"
 dependencies = [
- "application",
  "anyhow",
  "appearance",
+ "application",
  "blake3",
  "buildinfo",
  "bus",
@@ -1521,10 +1521,10 @@ dependencies = [
 name = "dopus"
 version = "0.4.3"
 dependencies = [
- "application",
  "actions",
  "anyhow",
  "appearance",
+ "application",
  "buildinfo",
  "bus",
  "chrono",
@@ -7244,8 +7244,8 @@ dependencies = [
 name = "term"
 version = "0.3.5"
 dependencies = [
- "application",
  "appearance",
+ "application",
  "buildinfo",
  "bus",
  "bytes",

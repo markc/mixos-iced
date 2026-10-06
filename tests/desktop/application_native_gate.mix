@@ -49,6 +49,16 @@ fn capture($session, $window, $path)
   rpc($session.service, "comp.capture.frame", {path: $path, window: {id: $window.id, generation: $window.generation}})
   check(is_file($path) and stat($path).size > 1000, "blank capture " .. $path)
 end
+fn wait_action($id, $enabled)
+  for each $i in range(1, 100)
+    $actions = rpc("dopus", "dopus.actions.list", {}).actions
+    $matches = filter($actions, fn($action) = $action.id == $id)
+    check(len($matches) == 1, "missing action state: " .. $id)
+    if $matches[0].enabled == $enabled then return end
+    sleep(0.1)
+  end
+  raise("APPLICATION_NATIVE", "action did not become " .. to_string($enabled) .. ": " .. $id)
+end
 for each $scale in [1, 2.5]
   $run = $n.new_run("/tmp/application-native")
   $session = nil
@@ -125,13 +135,17 @@ for each $scale in [1, 2.5]
       sleep(0.1)
     end
     check($copied and hash_file($source .. "/payload.txt", "sha256") == hash_file($target .. "/payload.txt", "sha256"), "native file copy failed")
+    wait_action("file.delete", true)
+    wait_action("location.focus", true)
     -- Copy/Move start directly; only destructive Delete raises a confirmation.
     -- Exercise the real cancellable dialog, rather than assuming Ctrl+X does.
     key($session, "Delete", [])
-    sleep(0.25)
+    -- Location focus is disabled while a modal owns the window. Observe
+    -- that real transition and its reversal through the existing Bus API.
+    wait_action("location.focus", false)
     capture($session, $dopus, $run.path .. "/dopus-cancel-dialog.png")
     key($session, "Escape", [])
-    sleep(0.25)
+    wait_action("location.focus", true)
     check(is_file($source .. "/payload.txt") and is_file($target .. "/payload.txt"), "cancelled deletion removed a file")
     capture($session, $dopus, $run.path .. "/dopus.png")
 
