@@ -88,10 +88,29 @@ try
   check($r.rc==10 and $r.result.failure.code=="SCENES_STALE" and is_dir($tmp .. "/scenes/notes"),"native confirmation detects a save ahead of the watcher")
   $snap=snapshot($selection)
   $r=rpc("scenes","scenes.editor.action",{action:"edit-scene",selection:$selection,state_token:$snap.state_token})
-  check(len(logs("ced","ced.open"))==1 and len(logs("ced","ced.diagnostics"))==1,"source opens in Ced with loader diagnostics")
+  check(len(logs("ced","ced.open"))==1 and len(logs("ced","ced.diagnostics"))>=1,"source opens in Ced with loader diagnostics")
   $snap=snapshot($selection)
   $r=rpc("scenes","scenes.editor.action",{action:"mode",edge:"bottom",mode:"pinned",selection:$selection,state_token:$snap.state_token})
   check($r.panels.bottom.mode=="pinned","panel plan executes native host verb and returns its result")
+  rpc("scenes","scenes.enable",{name:"notes"})
+  $path=$tmp .. "/scenes/notes/scene.mix"
+  $good=read_file($path)
+  $bad=replace($good,"\"title\":\"Notes\"","\"title\":\"BROKEN notes\"")
+  check($bad!=$good,"test scene carries the expected title")
+  write_file($path,$bad)
+  $pushed=false
+  for each $i in range(1,100)
+    if any(logs("ced","ced.diagnostics"),fn($row)=$row.args.path==$path and $row.args.digest==hash_sha256($bad) and len($row.args.diagnostics)>0) then $pushed=true;break end
+    sleep(0.1)
+  end
+  check($pushed,"filesystem changes continue pushing the loader's real verdict to Ced")
+  write_file($path,$good)
+  $cleared=false
+  for each $i in range(1,100)
+    if any(logs("ced","ced.diagnostics"),fn($row)=$row.args.path==$path and $row.args.digest==hash_sha256($good) and len($row.args.diagnostics)==0) then $cleared=true;break end
+    sleep(0.1)
+  end
+  check($cleared,"a fixed save clears Ced's loader verdict with the new digest")
   $snap=snapshot($selection)
   $r=rpc("scenes","scenes.editor.action",{action:"remove",selection:$selection,state_token:$snap.state_token,confirmed:true})
   check($r.selection.scene==nil and not is_dir($tmp .. "/scenes/notes") and is_dir($tmp .. "/scenes/.recovery"),"confirmed native removal retains recovery data")

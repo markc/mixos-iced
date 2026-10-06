@@ -976,8 +976,9 @@ mod tests {
             iced::Size::new(760.0, 450.0),
             app.view(),
         );
-        ui.click("View").expect("View menu is reachable");
-        ui.tap_key(Named::ArrowDown);
+        ui.tap_key(Named::F10);
+        ui.tap_key(Named::ArrowLeft);
+        ui.tap_key(Named::ArrowLeft);
         ui.tap_key(Named::ArrowDown);
         ui.tap_key(Named::Enter);
         let messages: Vec<_> = ui.into_messages().collect();

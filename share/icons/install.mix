@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.2
+-- version: 0.1.3
 -- Install the bundled desktop icons offline. --root names a share directory.
 $g=getopt(args(),{root:{arg:true},verify:{},help:{short:"h"}})
 if len($g.errors) != 0 or len($g.rest) != 0 then raise("ICON_ARGS","Use --root /absolute/share or --verify") end
@@ -18,7 +18,7 @@ end
 $aliases={
   "apps/dev.mixos.term-symbolic":"terminal", "apps/dev.mixos.ced-symbolic":"edit_note",
   "apps/dev.mixos.dopus-symbolic":"folder_open", "apps/dev.mixos.cap-symbolic":"screenshot_monitor",
-  "apps/dev.mixos.scene-editor-symbolic":"dashboard_customize",
+  "apps/dev.mixos.scene-editor-symbolic":"desktop_windows",
   "apps/application-x-executable-symbolic":"apps",
   "status/notification-active-symbolic":"notifications_active", "status/notification-inactive-symbolic":"notifications",
   "status/notifications-symbolic":"notifications", "status/audio-volume-muted-symbolic":"volume_off",

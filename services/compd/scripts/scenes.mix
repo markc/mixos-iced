@@ -26,6 +26,24 @@ $ROOT = $state.root
 
 $state.handover_delay = 1
 $state.handover_armed = false
+$state.editor_diagnostics_armed = false
+
+fn schedule_editor_diagnostics($s)
+  if $s.editor_app != true or $s.editor_diagnostics_armed or not contains($s.services ?? [], env("CED_SERVICE", "ced")) then return $s end
+  $s.editor_diagnostics_armed = true
+  task_start("scenes.editor.diagnostics", "{}")
+  return $s
+end
+
+on scenes.editor.diagnostics
+  if len(keys($event.headers)) != 0 then return end
+  $state.editor_diagnostics_armed = false
+  try
+    $state = $state.editor_frontend.diagnostics($state, $loader)
+  catch $message
+    eprint("Scene Editor diagnostics: " .. $message)
+  end
+end
 
 -- An owed legacy handover is retried on every services snapshot and panel
 -- notice. For a failure no later event would retry (an rpc timeout on an
@@ -58,6 +76,7 @@ on fs.changed
       $state.diagnostic = {error_code:$error.code, message:$message, context:$error.details}
     end
     $state = $loader.changed($state)
+    $state = schedule_editor_diagnostics($state)
   end
 end
 
@@ -88,6 +107,7 @@ on props.changed
       $state.diagnostic = {error_code:$error.code, message:$message, context:$error.details}
     end
     $state = $loader.changed($state)
+    $state = schedule_editor_diagnostics($state)
   end
 end
 
@@ -304,12 +324,14 @@ end
 on scenes.editor.snapshot desc "Native Scene Editor snapshot {selection?}; schema scene-editor.snapshot.v1"
   $state = $state.editor_frontend.request($state, "snapshot", $event.args ?? {}, $loader)
   reply($state.rc, json_encode($state.response))
+  $state = schedule_editor_diagnostics($state)
 end
 
 on scenes.editor.action desc "Native Scene Editor action {action,state_token,selection?,confirmed?,edge?,mode?,direction?}"
   $state = $state.editor_frontend.request($state, "action", $event.args ?? {}, $loader)
   reply($state.rc, json_encode($state.response))
   $state = $loader.changed($state)
+  $state = schedule_editor_diagnostics($state)
 end
 
 on scenes.fork desc "Copy an installation into a sandbox scene {name,as?,enable?=true}"

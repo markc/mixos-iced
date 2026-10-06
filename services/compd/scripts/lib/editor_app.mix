@@ -109,6 +109,15 @@ fn request($s, $kind, $args, $loader)
     -- Arm removal only for the explicitly confirmed, named scene.
     if $args.action == "remove" then $ui.armed = $ui.scene end
     $plan = $helpers.plan_click($cmd.verb, $cmd.args, $ui, $data)
+    if contains(["edit-scene", "edit-behaviour"], $args.action) then
+      $selected = $helpers.row($data.list, $ui.scene)
+      $path = $selected.files[$args.action == "edit-behaviour" ? "behaviour" : "scene"]
+      if type($path) == "string" then
+        $pending = $s.editor_pending_diagnostics ?? []
+        if not contains($pending, $path) then push($pending, $path) end
+        $s.editor_pending_diagnostics = $pending
+      end
+    end
     -- Source editing keeps the normal app open. The old scene editor's hide
     -- step would recursively ask this app to quit while it awaits this plan.
     $plan.steps = filter($plan.steps, fn($step) = $step.verb != "scenes.editor.close")
@@ -141,6 +150,38 @@ fn request($s, $kind, $args, $loader)
     $s.rc = 10
     $s.response = {error_code:$error.code, message:$message, context:$error.details}
   end
+  return $s
+end
+
+-- Preserve the legacy editor's live Ced verdicts with the same pure diff.
+-- This runs in one loader-local task, woken by inventory/registry events.
+fn diagnostics($s, $loader)
+  $ced = env("CED_SERVICE", "ced")
+  if not contains($s.services ?? [], $ced) then return $s end
+  $helpers = require($s.templates .. "/editor/lib.mix")
+  $current = $helpers.file_problems($loader.inventory($s))
+  $seen = $s.editor_seen_diagnostics ?? {}
+  $diff = $helpers.diag_diff($seen, $current)
+  $sends = $diff.changed
+  for each $path in $s.editor_pending_diagnostics ?? []
+    push($sends, $helpers.ced_request($path, $current[$path]))
+  end
+  if len($sends) == 0 then $s.editor_seen_diagnostics = $diff.seen; return $s end
+  $tabs = $s.io.rpc($ced, "ced.tabs", {})
+  $open = $helpers.open_paths($tabs)
+  $pending = []
+  for each $req in $sends
+    if not contains($open, $req.path) then continue end
+    try
+      $_ = $s.io.rpc($ced, "ced.diagnostics", $req)
+    catch $message
+      push($pending, $req.path)
+      if has_key($seen, $req.path) then $diff.seen[$req.path] = $seen[$req.path]
+      else $diff.seen = delete($diff.seen, $req.path) end
+    end
+  end
+  $s.editor_seen_diagnostics = $diff.seen
+  $s.editor_pending_diagnostics = $pending
   return $s
 end
 

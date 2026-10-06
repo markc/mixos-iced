@@ -35,7 +35,7 @@ node block here and nowhere else. The template mounts on the right edge; edit
 ## Gallery metadata
 
 `template.conf.mix` may carry these optional keys, which the
-[Scene Editor](../../docs/cos/scene-editor.md) gallery reads through
+[Scene Editor](../../docs/scene-editor.md) gallery reads through
 `scenes.templates`:
 
 | Key | Type | Meaning |
@@ -51,10 +51,15 @@ The five shipped templates are the Recommended set: `panel` (order 10,
 requires `comp` and `apps`), `launcher` (20, `apps`), `calendar` (30),
 `notes` (40, `notify`) and `settings` (50).
 
-## The editor template
+## The editor helpers and legacy template
 
-`editor/` is the Scene Editor itself. It has `hidden:true`, so the gallery
-never lists it. Its `scene.mix` header is a dialog:
+The normal Scene Editor is the Wayland app in `apps/scene-editor`. Its menus
+use the loader's `scenes.editor.snapshot/action` verbs, which reuse the pure
+model and action planner in `editor/lib.mix`.
+
+`editor/` also preserves the legacy compositor frontend, selected explicitly
+with `SCENES_EDITOR_APP=0`. It has `hidden:true`, so the gallery never lists
+it. Its `scene.mix` header is a dialog:
 `{"kind":"dialog","w":880,"h":620,"title":"Scene Editor","chrome":true}`.
 If a host cannot show dialogs, change it to
 `{"kind":"edge","edge":"right","w":480,"title":"Scene Editor"}`; the loader

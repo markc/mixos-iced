@@ -1,7 +1,7 @@
 # Desktop icons
 
 MixOS ships a small offline `mixos` icon theme for the panel, launcher and its
-four core apps, in 400, 300 and 200 weights. These are unmodified Material
+five core apps, in 400, 300 and 200 weights. These are unmodified Material
 Symbols Rounded SVGs at the same
 pinned Google revision as the symbol font in `share/assets/core.conf.mix`.
 The SVGs scale with the output and their `-symbolic` names make scene-host use
