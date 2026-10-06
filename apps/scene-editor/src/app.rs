@@ -269,7 +269,14 @@ impl App {
             }
             Action::Edge(edge) => {
                 self.notice = None;
-                if self.selection.page.as_ref().is_some_and(|page|page.edge != edge) { self.selection.page = None; }
+                if self
+                    .selection
+                    .page
+                    .as_ref()
+                    .is_some_and(|page| page.edge != edge)
+                {
+                    self.selection.page = None;
+                }
                 self.edge = edge;
                 self.selection.view = View::Arrange;
                 self.epoch += 1;
@@ -432,7 +439,9 @@ impl App {
                         selection.view = View::Installed;
                     }
                 }
-                if selection.view != View::Arrange { selection.page = None; }
+                if selection.view != View::Arrange {
+                    selection.page = None;
+                }
                 let refresh = if navigate {
                     self.select(selection)
                 } else {
@@ -1088,7 +1097,8 @@ mod tests {
             iced::Size::new(760.0, 450.0),
             app.view(),
         );
-        ui.click("Cancel").expect("Confirmation can be cancelled at minimum size");
+        ui.click("Cancel")
+            .expect("Confirmation can be cancelled at minimum size");
         assert!(matches!(
             ui.into_messages().collect::<Vec<_>>().as_slice(),
             [Message::Cancel]
