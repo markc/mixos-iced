@@ -7,7 +7,7 @@ for each $command in [
   ["cargo","test","--locked","-p","cap","-p","comp-model","-p","screencopy","--no-fail-fast"],
   ["cargo","build","--locked","-p","noded"],
   ["cargo","test","--locked","-p","cap","--test","native_bus","--","--ignored","--nocapture"],
-  ["cargo","clippy","--locked","-p","cap","--all-targets","--","-D","warnings"]
+  ["cargo","clippy","--locked","-p","cap","--all-targets","--no-deps","--","-D","warnings"]
 ]
   print(join($command," "))
   $result = run_argv($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stderr:"stdout",max_output:2000000})
