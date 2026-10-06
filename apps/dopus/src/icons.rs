@@ -306,12 +306,21 @@ fn validate_material_glyphs(
         .db()
         .query(&Query {
             families: &[Family::Name(family)],
+            weight: Weight::EXTRA_LIGHT,
             ..Default::default()
         })
         .ok_or_else(|| format!("Material family {family:?} is unavailable"))?;
     let selected = raw
         .get_font(id, Weight::EXTRA_LIGHT)
         .ok_or_else(|| format!("Material family {family:?} cannot be read"))?;
+    let has_200 = raw.db().face(id).is_some_and(|face| face.weight == Weight::EXTRA_LIGHT)
+        || selected.as_swash().variations().any(|axis| {
+            axis.tag() == u32::from_be_bytes(*b"wght")
+                && axis.min_value() <= 200.0 && axis.max_value() >= 200.0
+        });
+    if !has_200 {
+        return Err(format!("Material family {family:?} has no 200-weight face"));
+    }
     for (icon, (glyph, glyph_font)) in glyphs {
         if glyph_font.family != font.family || selected.as_swash().charmap().map(*glyph) == 0 {
             return Err(format!(
