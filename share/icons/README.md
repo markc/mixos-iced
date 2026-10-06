@@ -1,7 +1,7 @@
 # Desktop icons
 
 MixOS ships a small offline `mixos` icon theme for the panel, launcher and its
-four core apps. These are unmodified Material Symbols Rounded SVGs at the same
+four core apps, in both 400 and 300 weights. These are unmodified Material Symbols Rounded SVGs at the same
 pinned Google revision as the symbol font in `share/assets/core.conf.mix`.
 The SVGs scale with the output and their `-symbolic` names make scene-host use
 the current foreground colour. They need neither a host theme nor D-Bus.
@@ -25,3 +25,15 @@ theme metadata. The apps service selects the installed MixOS theme by default;
 explicit user theme preferences are preserved. The panel requests symbolic
 status names and prefers the M over legacy launcher
 icons. `apps.reload` clears theme misses when assets are installed while running.
+
+Both weights are installed together: `mixos` retains the original 400-weight
+files and remains the default; `mixos-300` supplies the thinner set and inherits
+the same M logo. Select either through the existing `apps.icon_theme` property
+(`apps.props.set` with `{path:"apps.icon_theme",value:"mixos-300"}` or `"mixos"`).
+The panel status icons, task icons and launcher app icons follow that choice.
+An explicit `PANEL_ICON_THEME` overrides only the panel status/brand theme.
+The property change lasts for the current apps citizen generation; for a
+persistent preference, set `[Icons] Theme=mixos-300` in `~/.config/kdeglobals`.
+
+`mix tools/icon_comparison.mix` writes a labelled side-by-side SVG under
+`target/mixos/icons/`, with both sets at identical sizes and colours.

@@ -1,4 +1,4 @@
--- version: 0.2.1
+-- version: 0.2.2
 -- The bottom panel's behaviour: compositor, tray, notification and popup
 -- state in; one complete model out through the loader (scenes.model). The
 -- layout is static in scene.mix. Clicks arrive as {scene,node,kind,item?};
@@ -15,7 +15,9 @@ $TRAY = env("TRAY_SERVICE", "tray")
 $NOTIFY = env("NOTIFY_SERVICE", "notify")
 $NODED = env("NODED_SERVICE", "noded")
 -- The shipped symbolic Material icons take the panel ink in either scheme.
-$ICON_THEME = env("PANEL_ICON_THEME", "mixos")
+-- Empty means the apps citizen's selected theme, for status and tasks alike.
+-- An explicit panel override remains supported.
+$ICON_THEME = env("PANEL_ICON_THEME", "")
 -- PipeWire lives in the login session's runtime dir, not the desktop's.
 $PW_RUNTIME = env("PIPEWIRE_RUNTIME_DIR", "/run/user/" .. to_string(uid()))
 -- The loader-owned popup scenes the panel's buttons toggle.

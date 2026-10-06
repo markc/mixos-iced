@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.1.1
 -- Install the bundled desktop icons offline. --root names a share directory.
 $g=getopt(args(),{root:{arg:true},verify:{},help:{short:"h"}})
 if len($g.errors) != 0 or len($g.rest) != 0 then raise("ICON_ARGS","Use --root /absolute/share or --verify") end
@@ -11,7 +11,7 @@ $manifest=load_data($source+"/material.conf.mix")
 if $manifest.version != 1 or $manifest.licence != "Apache-2.0" then raise("ICON_MANIFEST","Unsupported provenance receipt") end
 $files={}
 for each $file in $manifest.files
-  if not re_match($file.path,"^material/[a-zA-Z0-9_]+([.]svg)?$") or not re_match($file.sha256,"^[0-9a-f]{64}$") then raise("ICON_MANIFEST","Unsafe source path or checksum") end
+  if not re_match($file.path,"^material/(300/)?[a-zA-Z0-9_]+([.]svg)?$") or not re_match($file.sha256,"^[0-9a-f]{64}$") then raise("ICON_MANIFEST","Unsafe source path or checksum") end
   if hash_file($source+"/"+$file.path,"sha256") != $file.sha256 or stat($source+"/"+$file.path).size != $file.bytes then raise("ICON_HASH",$file.path) end
   $files[$file.name]=$file.path
 end
@@ -27,29 +27,31 @@ $aliases={
   "status/network-offline-symbolic":"wifi_off", "status/network-wired-symbolic":"settings_ethernet",
   "status/user-desktop-symbolic":"desktop_windows", "status/desktop-symbolic":"desktop_windows"
 }
-$theme=$root+"/icons/mixos"
 for each $alias,$name in $aliases
-  if not has_key($files,$name) then raise("ICON_SOURCE",$name) end
+  if not has_key($files,$name) or not has_key($files,$name+"-300") then raise("ICON_SOURCE",$name) end
 end
 if not has_key($files,"LICENSE") then raise("ICON_SOURCE","Missing Apache-2.0 licence") end
-if not $g.opts.verify then
-  for each $directory in ["symbolic/apps","symbolic/status"] mkdir($theme+"/"+$directory,{parents:true}); chmod($theme+"/"+$directory,0o755) end
-end
-for each $alias in sort(keys($aliases))
-  $input=$source+"/"+$files[$aliases[$alias]]
-  $output=$theme+"/symbolic/"+$alias+".svg"
-  if $g.opts.verify then
-    if not is_file($output) or hash_file($output,"sha256") != hash_file($input,"sha256") then raise("ICON_INSTALLED",$alias) end
-  else
-    write_atomic($output,read_file($input),{mode:0o644})
+for each $variant in [{name:"mixos",suffix:"",index:"index.theme"},{name:"mixos-300",suffix:"-300",index:"index-300.theme"}]
+  $theme=$root+"/icons/"+$variant.name
+  if not $g.opts.verify then
+    for each $directory in ["symbolic/apps","symbolic/status"] mkdir($theme+"/"+$directory,{parents:true}); chmod($theme+"/"+$directory,0o755) end
   end
-end
-for each $pair in [{source:"material/LICENSE",dest:"LICENSE"},{source:"index.theme",dest:"index.theme"}]
-  if $g.opts.verify then
-    if not is_file($theme+"/"+$pair.dest) or read_file($theme+"/"+$pair.dest) != read_file($source+"/"+$pair.source) then raise("ICON_INSTALLED",$pair.dest) end
-  else
-    write_atomic($theme+"/"+$pair.dest,read_file($source+"/"+$pair.source),{mode:0o644})
+  for each $alias in sort(keys($aliases))
+    $input=$source+"/"+$files[$aliases[$alias]+$variant.suffix]
+    $output=$theme+"/symbolic/"+$alias+".svg"
+    if $g.opts.verify then
+      if not is_file($output) or hash_file($output,"sha256") != hash_file($input,"sha256") then raise("ICON_INSTALLED",$variant.name+"/"+$alias) end
+    else
+      write_atomic($output,read_file($input),{mode:0o644})
+    end
   end
+  for each $pair in [{source:"material/LICENSE",dest:"LICENSE"},{source:$variant.index,dest:"index.theme"}]
+    if $g.opts.verify then
+      if not is_file($theme+"/"+$pair.dest) or read_file($theme+"/"+$pair.dest) != read_file($source+"/"+$pair.source) then raise("ICON_INSTALLED",$variant.name+"/"+$pair.dest) end
+    else
+      write_atomic($theme+"/"+$pair.dest,read_file($source+"/"+$pair.source),{mode:0o644})
+    end
+  end
+  if not $g.opts.verify then chmod($theme,0o755) end
+  print({theme:$variant.name,icons:len($aliases),verified:$g.opts.verify,root:$theme})
 end
-if not $g.opts.verify then chmod($theme,0o755) end
-print({theme:"mixos",icons:len($aliases),verified:$g.opts.verify,root:$theme})
