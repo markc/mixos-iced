@@ -632,6 +632,13 @@ impl SceneUi {
         let _ = id;
         let main = if node.family == "row" { Axis::Horizontal } else { Axis::Vertical };
         let align = port_text(node, "align");
+        let (width, height) = Self::sizing(node, parent);
+        // A bounded shrink flex compresses fill spacers to zero before its
+        // minimum is applied. Centre its intrinsic group in a bounded wrapper
+        // instead, so the unused part of a compact hit target is shared.
+        let centered_shrink = port_text(node, "justify") == "center"
+            && matches!(if matches!(main, Axis::Horizontal) { width } else { height },
+                Length::Bounded { sizing: iced_core::length::Sizing::Shrink, .. });
         let inner = Parent { main, stretch: align == "stretch" };
         let mut kids: Vec<El<'a, R>> = Vec::new();
         let mut footer_start = None;
@@ -651,7 +658,7 @@ impl SceneUi {
             }
         };
         match port_text(node, "justify") {
-            "center" => {
+            "center" if !centered_shrink => {
                 kids.insert(0, space(1));
                 kids.push(space(1));
             }
@@ -695,12 +702,8 @@ impl SceneUi {
             Padding { top: padding.top * ratio, bottom: padding.bottom * ratio, ..padding }
         } else { padding };
         let gap = number(node, "gap").unwrap_or(0.0);
-        let (width, height) = Self::sizing(node, parent);
         let inner_len = |l: Length| if matches!(l, Length::Shrink | Length::Bounded { sizing: iced_core::length::Sizing::Shrink, .. }) {
-            // Preserve the wrapper's minimum in the padded flex body too.
-            // Dropping it leaves centred fill spaces with no spare width and
-            // the intrinsic label at the left of an otherwise square button.
-            l
+            Length::Shrink
         } else { Length::Fill };
         let body: El<'a, R> = match main {
             Axis::Vertical => {
@@ -743,6 +746,13 @@ impl SceneUi {
                 })
                 .into(),
         };
+        let body = if centered_shrink {
+            let bounded = container(body).width(width).height(height);
+            match main {
+                Axis::Horizontal => bounded.align_x(Horizontal::Center).into(),
+                Axis::Vertical => bounded.align_y(Vertical::Center).into(),
+            }
+        } else { body };
         let normal = hex(port_text(node, "background"));
         let hover = hex(port_text(node, "hover")).or(normal);
         let radius = number(node, "radius").unwrap_or(0.0);
@@ -1041,6 +1051,38 @@ mod tests {
             assert!((digit.center().y - cell.center().y).abs() < 0.1);
             assert!(digit.x >= cell.x && digit.x + digit.width <= cell.x + cell.width);
             assert_eq!((cell.width, cell.height), (30.0, 30.0));
+        }
+    }
+
+    #[test]
+    fn bounded_centred_groups_keep_gaps_and_fit_constrained_rows_and_columns() {
+        let source = "---\nscene: 1\nname: centred\ncitizen: test\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":220}\n---\n```mix\nroot: {widget: \"column\", fill: true, children: [\"r\", \"c\"]}\nr: {widget: \"row\", height: 30, min_width: 60, max_width: 80, padding: 4, gap: 6, justify: \"center\", align: \"center\", children: [\"a\", \"b\"]}\nc: {widget: \"column\", width: 60, min_height: 60, max_height: 80, padding: 4, gap: 6, justify: \"center\", align: \"center\", children: [\"a\", \"b\"]}\na: {widget: \"text\", text: \"1\", size: 10}\nb: {widget: \"text\", text: \"2\", size: 10}\n```\n";
+        for width in [120.0, 45.0] {
+            let mut renderer = LayoutRenderer::new();
+            let ui = test_ui(source);
+            let mut element = ui.build_view::<LayoutRenderer>();
+            let mut state = iced_core::widget::Tree::empty();
+            state.diff(element.as_widget_mut());
+            let viewport = iced_core::Rectangle::with_size(iced_core::Size::new(width, 220.0));
+            let layout = element.as_widget_mut().layout(&mut state, &renderer,
+                &iced_core::layout::Limits::new(iced_core::Size::ZERO, viewport.size()));
+            let mut measure = crate::layout::Measure::default();
+            element.as_widget_mut().operate(&mut state, iced_core::Layout::new(&layout), &renderer, &mut measure);
+            element.as_widget().draw(&state, &mut renderer, &ui.theme,
+                &iced_core::renderer::Style::default(), iced_core::Layout::new(&layout),
+                iced_core::mouse::Cursor::Unavailable, &viewport);
+            assert_eq!(renderer.paragraphs.len(), 4);
+            let row = measure.found[&node_id("r")];
+            let column = measure.found[&node_id("c")];
+            let [a, b, c, d] = renderer.paragraphs[..] else { unreachable!() };
+            assert!(((a.x + b.x + b.width) / 2.0 - row.center().x).abs() < 0.1, "row={row:?}, a={a:?}, b={b:?}");
+            assert!(((c.y + d.y + d.height) / 2.0 - column.center().y).abs() < 0.1, "column={column:?}, c={c:?}, d={d:?}");
+            assert!((b.x - a.x - a.width - 6.0).abs() < 0.1);
+            assert!((d.y - c.y - c.height - 6.0).abs() < 0.1);
+            assert!((row.width - width.min(60.0)).abs() < 0.1);
+            assert!((column.height - 60.0).abs() < 0.1);
+            assert!(a.x >= row.x && b.x + b.width <= row.x + row.width);
+            assert!(c.y >= column.y && d.y + d.height <= column.y + column.height);
         }
     }
 

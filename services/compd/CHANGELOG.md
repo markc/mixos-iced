@@ -3,8 +3,8 @@
 ## 0.1.3
 
 - Centre panel workspace labels inside their full hit targets. The iced
-  scene renderer now preserves bounded shrink dimensions in the padded
-  content, allowing centred rows to use their allocated minimum width.
+  scene renderer positions intrinsic content in a bounded wrapper instead
+  of compressing centring spacers to zero inside minimum-sized rows.
 
 ## 0.1.2
 
