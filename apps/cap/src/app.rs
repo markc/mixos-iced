@@ -143,6 +143,8 @@ pub struct App {
     document: Option<Document>,
     preview: Option<iced::advanced::image::Handle>,
     revision: u64,
+    rendering: bool,
+    repaint: bool,
     path: Option<PathBuf>,
     metadata: Value,
     tool: Tool,
@@ -185,6 +187,8 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         document: None,
         preview: None,
         revision: 0,
+        rendering: false,
+        repaint: false,
         path: None,
         metadata: Value::Null,
         tool: Tool::Draw(Kind::Arrow),
@@ -289,9 +293,15 @@ impl App {
     fn preview(&mut self) -> Task<Message> {
         self.revision += 1;
         let revision = self.revision;
-        let Some(doc) = self.document.clone() else {
+        if self.rendering {
+            self.repaint = true;
+            return Task::none();
+        }
+        let Some(doc) = self.document.as_ref().map(Document::raster_snapshot) else {
             return Task::none();
         };
+        self.rendering = true;
+        self.repaint = false;
         Task::perform(work(move || doc.render()), move |result| {
             Message::Preview(revision, result)
         })
@@ -549,6 +559,7 @@ impl App {
                 Task::batch([task, self.refresh()])
             }
             Message::Preview(revision, result) => {
+                self.rendering = false;
                 if revision == self.revision {
                     match result {
                         Ok(image) => {
@@ -561,7 +572,11 @@ impl App {
                         Err(error) => self.error(error),
                     }
                 }
-                Task::none()
+                if self.repaint {
+                    self.preview()
+                } else {
+                    Task::none()
+                }
             }
             Message::Tool(tool) => {
                 self.tool = tool;
@@ -700,7 +715,7 @@ impl App {
             }
             Message::Opened(result) => {
                 self.busy = false;
-                match result {
+                let task = match result {
                     Ok((path, doc)) => {
                         self.document = Some(doc);
                         self.path = Some(path);
@@ -720,6 +735,11 @@ impl App {
                         self.error(error);
                         Task::none()
                     }
+                };
+                if let Some(action) = self.pending.take() {
+                    Task::batch([task, self.request_pending(action)])
+                } else {
+                    task
                 }
             }
             Message::Saved(result) => {
@@ -752,9 +772,10 @@ impl App {
                 if self.busy {
                     return Task::none();
                 };
-                let Some(doc) = self.document.clone() else {
+                let Some(doc) = self.document.as_ref().map(Document::raster_snapshot) else {
                     return Task::none();
                 };
+                self.busy = true;
                 Task::perform(work(move || doc.render()), Message::ClipboardImage)
             }
             Message::ClipboardImage(result) => match result {
@@ -766,18 +787,23 @@ impl App {
                 ))
                 .map(Message::Copied),
                 Err(error) => {
+                    self.busy = false;
                     self.error(error);
                     Task::none()
                 }
             },
             Message::Copied(result) => {
+                self.busy = false;
                 match result {
                     Ok(()) => self.status = label("copied"),
                     Err(error) => {
                         self.error(format!("{}: {error:?}", label("clipboard-unavailable")))
                     }
                 }
-                Task::none()
+                self.pending
+                    .take()
+                    .map(|action| self.request_pending(action))
+                    .unwrap_or_else(Task::none)
             }
             Message::Quit => self.request_pending(Pending::Quit),
             Message::Keep => {
@@ -788,9 +814,6 @@ impl App {
             }
             Message::Discard => {
                 self.confirm = false;
-                if let Some(doc) = &mut self.document {
-                    doc.mark_saved();
-                }
                 self.pending
                     .take()
                     .map(|action| self.perform_pending(action))
@@ -1064,9 +1087,12 @@ impl App {
         let settings = column![
             settings,
             row![
-                text_input(&label("text-placeholder"), &self.annotation_text)
-                    .on_input(Message::Text)
-                    .width(iced::Fill),
+                text_input(
+                    crate::strings::label_ref("text-placeholder"),
+                    &self.annotation_text
+                )
+                .on_input(Message::Text)
+                .width(iced::Fill),
                 text(label("text-size")),
                 text_input("8–256", &self.text_size)
                     .on_input(Message::TextSize)
@@ -1179,6 +1205,88 @@ struct Picture<'a> {
     selected: Option<u64>,
     revision: u64,
     busy: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn iced_drag_uses_original_pixels_after_crop_and_zoom() {
+        let mut doc = Document::new(image::RgbaImage::from_pixel(
+            120,
+            100,
+            image::Rgba([255, 255, 255, 255]),
+        ))
+        .unwrap();
+        doc.set_crop(Some(Crop {
+            x: 20,
+            y: 10,
+            width: 80,
+            height: 60,
+        }))
+        .unwrap();
+        let rendered = doc.render().unwrap();
+        let handle = iced::advanced::image::Handle::from_rgba(
+            rendered.width(),
+            rendered.height(),
+            rendered.into_raw(),
+        );
+        let colour = toolkit::Tokens::default().palette.destructive.into_rgba8();
+        let picture = Picture {
+            document: &doc,
+            image: &handle,
+            tool: Tool::Draw(Kind::Arrow),
+            colour,
+            width: 4.0,
+            zoom: 1.5,
+            pan: Point { x: 0.0, y: 0.0 },
+            selected: None,
+            revision: 1,
+            busy: false,
+        };
+        let element: Element<'_, Message, Theme> = canvas::Canvas::new(picture)
+            .width(iced::Fill)
+            .height(iced::Fill)
+            .into();
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(600.0, 400.0),
+            element,
+        );
+        ui.point_at(iced::Point::new(100.0, 100.0));
+        ui.simulate([iced::Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Left,
+        ))]);
+        ui.point_at(iced::Point::new(400.0, 300.0));
+        ui.simulate([
+            iced::Event::Mouse(mouse::Event::CursorMoved {
+                position: iced::Point::new(400.0, 300.0),
+            }),
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ]);
+        let messages: Vec<_> = ui.into_messages().collect();
+        let [Message::Gesture(Gesture::Add(shape))] = messages.as_slice() else {
+            panic!("one complete gesture: {messages:?}")
+        };
+        assert!((shape.points[0].x - 40.0).abs() < 0.001);
+        assert!((shape.points[0].y - 30.0).abs() < 0.001);
+        assert!((shape.points[1].x - 70.0).abs() < 0.001);
+        assert!((shape.points[1].y - 50.0).abs() < 0.001);
+        doc.add(shape.clone()).unwrap();
+        assert_eq!(doc.output_dimensions(), (80, 60));
+        assert_eq!(doc.objects().len(), 1);
+        doc.undo();
+        assert!(doc.objects().is_empty());
+        assert_eq!(
+            doc.crop(),
+            Some(Crop {
+                x: 20,
+                y: 10,
+                width: 80,
+                height: 60
+            })
+        );
+    }
 }
 #[derive(Default)]
 struct DragState {

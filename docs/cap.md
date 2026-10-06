@@ -13,7 +13,9 @@ Screen mode captures one output. Window mode captures the window's client
 image and does not include compositor decorations.
 
 The preview supports fit, zoom and middle-button panning. Draw arrows, lines,
-rectangles, ellipses, freehand strokes, highlights and opaque redactions. Select
+rectangles, ellipses, freehand strokes, highlights and opaque redactions. Type
+text and drag a box to place it, or use Number for successive numbered boxes.
+Text uses the bundled Inter font and shares the preview/export painter. Select
 an object to move it or delete it. Crop changes the export rectangle without
 discarding source pixels. Undo and redo operate on complete gestures. Source
 pixels remain immutable; preview, PNG export and image clipboard use the same
@@ -64,7 +66,7 @@ complete once; compd applies a three-second capture deadline. Region selection
 has its own bounded deadline. A remote cancel during selection is observed
 after that native selection finishes; Escape cancels immediately.
 
-Text, numbered markers, editable document persistence, recording, OCR and
+Editable document persistence, recording, OCR and
 sharing are subsequent work. The current release does not combine outputs into
 one desktop image.
 
@@ -78,3 +80,4 @@ fractional scale. Window and region selectors are mutually exclusive.
 The generation returned by `comp.region.select` is checked at admission and
 again before the image is written. Cursorless capture uses the existing
 cursorless render path, including when the native VT is inactive.
+Region capture currently refuses rotated or flipped outputs explicitly.

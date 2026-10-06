@@ -10,6 +10,8 @@ pub const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 256;
 const MAX_POINTS: usize = 16_384;
 const MAX_HISTORY: usize = 128;
+const MAX_DOCUMENT_POINTS: usize = 131_072;
+const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +163,18 @@ struct State {
     objects: Vec<Object>,
     crop: Option<Crop>,
 }
+impl State {
+    fn bytes(&self) -> usize {
+        self.objects
+            .iter()
+            .map(|o| {
+                std::mem::size_of::<Object>()
+                    + o.shape.points.len() * std::mem::size_of::<Point>()
+                    + o.shape.text.as_ref().map_or(0, String::len)
+            })
+            .sum()
+    }
+}
 #[derive(Debug, Clone)]
 pub struct Document {
     original: Arc<RgbaImage>,
@@ -224,12 +238,25 @@ impl Document {
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
+    /// Raster workers do not need undo history or the saved checkpoint.
+    pub fn raster_snapshot(&self) -> Self {
+        Self {
+            original: self.original.clone(),
+            state: self.state.clone(),
+            undo: vec![],
+            redo: vec![],
+            saved: State::default(),
+            next_id: self.next_id,
+        }
+    }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
     fn checkpoint(&mut self) {
         self.undo.push(self.state.clone());
-        if self.undo.len() > MAX_HISTORY {
+        while self.undo.len() > MAX_HISTORY
+            || self.undo.iter().map(State::bytes).sum::<usize>() > MAX_HISTORY_BYTES
+        {
             self.undo.remove(0);
         }
         self.redo.clear();
@@ -238,6 +265,17 @@ impl Document {
         shape.validate()?;
         if self.state.objects.len() >= MAX_OBJECTS {
             return Err("annotation limit reached".into());
+        }
+        if self
+            .state
+            .objects
+            .iter()
+            .map(|o| o.shape.points.len())
+            .sum::<usize>()
+            + shape.points.len()
+            > MAX_DOCUMENT_POINTS
+        {
+            return Err("document point budget exceeded".into());
         }
         let id = self.next_id;
         self.next_id = self

@@ -68,6 +68,10 @@ pub fn start(
         });
         return;
     };
+    if spec.region.is_some() && output.current_transform()!=smithay::utils::Transform::Normal {
+        answer(ControlReply::refused("unsupported_transform",json!({"output":output.name(),"message":"region capture requires an unrotated output"})));
+        return;
+    }
     if spec
         .output_generation
         .is_some_and(|expected| expected != lp.inner.comp.output_generation(&output.name()))

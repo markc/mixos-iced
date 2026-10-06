@@ -11,7 +11,7 @@ build = "build.rs"
 component = "compd"
 kind = "service"
 layer = "desktop"
-contract = "none"
+contract = "public"
 
 [[bin]]
 name = "compd"

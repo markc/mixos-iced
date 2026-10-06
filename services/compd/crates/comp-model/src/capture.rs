@@ -307,6 +307,9 @@ mod tests {
             "region":{"x":10,"y":20,"width":30,"height":40}}))
         .unwrap();
         assert!(!spec.cursor);
+        assert!(parse(&json!({"path":"/tmp/a","output_generation":1})).is_err());
+        for generation in [Value::Null,json!(-1),json!(1.5),json!("1")] {assert!(parse(&json!({"path":"/tmp/a","output":"DP-1","output_generation":generation})).is_err());}
+        assert_eq!(parse(&json!({"path":"/tmp/a","output":"DP-1","output_generation":3})).unwrap().output_generation,Some(3));
         assert_eq!(
             spec.region,
             Some(CaptureRegion {

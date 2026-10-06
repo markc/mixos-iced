@@ -336,6 +336,15 @@ mod tests {
         assert!(crop_region(&spec, 1, 1, &[0, 0, 0], 2.5).is_err());
     }
     #[test]
+    fn topology_fence_is_rechecked_before_file_creation(){
+        use smithay::output::{PhysicalProperties,Subpixel};
+        let output=Output::new("capture-generation-test".into(),PhysicalProperties{size:(0,0).into(),subpixel:Subpixel::Unknown,make:"test".into(),model:"test".into(),serial_number:"test".into()});
+        output.user_data().insert_if_missing(||comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(8)));
+        let spec=comp_model::capture::parse(&serde_json::json!({"path":"/tmp/never-created-cap-generation.png","output":"capture-generation-test","output_generation":7})).unwrap();
+        let result=complete(&spec,Readback{size:(1,1).into(),origin_bottom_left:false},&[0,0,0],&output,CaptureSource::Offscreen);
+        assert_eq!(result.unwrap_err(),"output changed after capture admission");
+    }
+    #[test]
     fn readback_channel_order_and_orientation() {
         let bgra = [3, 2, 1, 255, 6, 5, 4, 255];
         assert_eq!(rgb(&bgra, 1, 2, false, false).unwrap(), [1, 2, 3, 4, 5, 6]);

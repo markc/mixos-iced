@@ -274,6 +274,10 @@ async fn run(
                 if cmd.command.is_empty() {
                     continue;
                 }
+                if commands.len()>=32 {
+                    let _=tokio::time::timeout(Duration::from_secs(2),client.respond(&cmd,10,"{\"error\":\"too many pending Cap commands\"}")).await;
+                    continue;
+                }
                 next_command += 1;
                 let delivery = Delivery::Command(Command {
                     id: next_command,
@@ -281,9 +285,7 @@ async fn run(
                     body: if cmd.body.trim().is_empty() { "{}".to_string() } else { cmd.body.clone() },
                     caller_key: caller_key(&cmd),
                 });
-                if cmd.id.is_some() {
-                    commands.insert(next_command, cmd);
-                }
+                commands.insert(next_command, cmd);
                 let _ = dtx.unbounded_send(delivery);
             }
             effect = erx.recv() => {

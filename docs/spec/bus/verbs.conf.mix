@@ -1,0 +1,24 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Accepted registry, schema 1. Initial coverage: cap and its compositor
+-- capture contract. Existing unregistered component contracts are a migration
+-- gap; this file does not claim they have already been validated.
+{
+  schema: 1,
+  verbs: [
+    {name:"cap.ping", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.info", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.capture", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.cancel", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.open", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.annotate", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.move", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.delete", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.crop", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.undo", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.redo", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.export", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.show", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"cap.quit", owner:"cap", version:"0.1.0", status:"accepted"},
+    {name:"comp.capture.frame", owner:"compd", version:"0.1.2", status:"accepted"}
+  ]
+}
