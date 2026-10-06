@@ -23,4 +23,4 @@ control routes add incarnation, pane generation and request identity checks.
 PTY children run `/opt/mixos/bin/mix`. A sealed native session descriptor is
 handed to the child through the frozen `COSMIX_SESSION_FD` contract. Its bytes
 remain compatible with existing nodes. See [native session](native-session.md)
-and [the component](https://github.com/markc/mixos/blob/vt4-runtime/apps/term/README.md) for build and test details.
+and [the component](https://github.com/markc/mixos/blob/main/apps/term/README.md) for build and test details.

@@ -12,5 +12,5 @@ discovers navigation and view actions, and `dopus.action` invokes them.
 The inherited contract refuses `file.*` actions on the Bus. File creation,
 copy, move, rename and deletion use the window's keyboard or pointer actions
 and confirmation dialogs. This is a retained application contract, rather
-than a replacement transport. See [the component](https://github.com/markc/mixos/blob/vt4-runtime/apps/dopus/README.md)
+than a replacement transport. See [the component](https://github.com/markc/mixos/blob/main/apps/dopus/README.md)
 for the exact request types and tests.

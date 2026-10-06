@@ -20,5 +20,5 @@ block operations on another.
 Recovery defaults beneath `MIXOS_VAR/edit/recovery`.
 `MIXOS_EDIT_RECOVERY_DIR` selects an absolute recovery directory; `0` disables
 durable recovery. The session supplies its own state root. See
-[the component](https://github.com/markc/mixos/blob/vt4-runtime/services/editd/README.md) and
-[the shared contract](https://github.com/markc/mixos/blob/vt4-runtime/libs/edit/README.md).
+[the component](https://github.com/markc/mixos/blob/main/services/editd/README.md) and
+[the shared contract](https://github.com/markc/mixos/blob/main/libs/edit/README.md).

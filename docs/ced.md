@@ -13,4 +13,4 @@ supported actions. `ced.diagnostics` and `ced.problems` expose scene linting.
 Bus edits retain caller provenance and use the same editor model as keyboard
 input. Requests and refusal bodies are checked by committed golden fixtures.
 The [edit service](edit.md) exposes buffer operations directly for agents.
-See [the component](https://github.com/markc/mixos/blob/vt4-runtime/apps/ced/README.md) for its implementation and tests.
+See [the component](https://github.com/markc/mixos/blob/main/apps/ced/README.md) for its implementation and tests.

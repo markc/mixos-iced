@@ -280,7 +280,7 @@ supported actions. `ced.diagnostics` and `ced.problems` expose scene linting.
 Bus edits retain caller provenance and use the same editor model as keyboard
 input. Requests and refusal bodies are checked by committed golden fixtures.
 The [edit service](edit.md) exposes buffer operations directly for agents.
-See [the component](https://github.com/markc/mixos/blob/vt4-runtime/apps/ced/README.md) for its implementation and tests.
+See [the component](https://github.com/markc/mixos/blob/main/apps/ced/README.md) for its implementation and tests.
 
 ---
 
@@ -426,7 +426,7 @@ discovers navigation and view actions, and `dopus.action` invokes them.
 The inherited contract refuses `file.*` actions on the Bus. File creation,
 copy, move, rename and deletion use the window's keyboard or pointer actions
 and confirmation dialogs. This is a retained application contract, rather
-than a replacement transport. See [the component](https://github.com/markc/mixos/blob/vt4-runtime/apps/dopus/README.md)
+than a replacement transport. See [the component](https://github.com/markc/mixos/blob/main/apps/dopus/README.md)
 for the exact request types and tests.
 
 ---
@@ -455,8 +455,8 @@ block operations on another.
 Recovery defaults beneath `MIXOS_VAR/edit/recovery`.
 `MIXOS_EDIT_RECOVERY_DIR` selects an absolute recovery directory; `0` disables
 durable recovery. The session supplies its own state root. See
-[the component](https://github.com/markc/mixos/blob/vt4-runtime/services/editd/README.md) and
-[the shared contract](https://github.com/markc/mixos/blob/vt4-runtime/libs/edit/README.md).
+[the component](https://github.com/markc/mixos/blob/main/services/editd/README.md) and
+[the shared contract](https://github.com/markc/mixos/blob/main/libs/edit/README.md).
 
 ---
 
@@ -569,4 +569,4 @@ control routes add incarnation, pane generation and request identity checks.
 PTY children run `/opt/mixos/bin/mix`. A sealed native session descriptor is
 handed to the child through the frozen `COSMIX_SESSION_FD` contract. Its bytes
 remain compatible with existing nodes. See [native session](native-session.md)
-and [the component](https://github.com/markc/mixos/blob/vt4-runtime/apps/term/README.md) for build and test details.
+and [the component](https://github.com/markc/mixos/blob/main/apps/term/README.md) for build and test details.
