@@ -60,6 +60,10 @@ The app serves `scene-editor.ping/info/show/action/quit`, `app.describe` and
 busy/connection state and active dialogue. `show {view?,scene?}` restores and
 raises the native window. Navigation and mutation are refused during a
 confirmation or action; read-only queries remain available.
+`action` accepts the loader's action arguments. An explicit, validated
+`selection` is honoured; omitting it uses the app's current selection. An
+omitted token uses its current snapshot. Query fresh state before confirming
+an agent operation.
 
 The loader serves:
 
@@ -84,3 +88,9 @@ Bus. A later failure retains the planner's partial-progress reporting and
 recovery semantics; this is not a distributed transaction. Completion replies
 include a complete snapshot when available. Events request refetches; the app
 does not guess deltas or automatically retry an uncertain mutating request.
+An uncertain result remains in the status strip until a manual refresh or
+navigation; a successful background read alone cannot prove that action's
+outcome. First-run dismissal follows confirmed window activation, with one
+pending launch completed by the app's registration event. Loader inventory
+reports the frontend, registration and pending launch separately from the
+retained legacy scene record.

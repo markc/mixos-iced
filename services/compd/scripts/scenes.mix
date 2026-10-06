@@ -35,6 +35,10 @@ fn schedule_editor_diagnostics($s)
   return $s
 end
 
+on scenes.editor.diagnostics async
+  if len(keys($event.headers)) != 0 then return end
+end
+
 on scenes.editor.diagnostics
   if len(keys($event.headers)) != 0 then return end
   $state.editor_diagnostics_armed = false

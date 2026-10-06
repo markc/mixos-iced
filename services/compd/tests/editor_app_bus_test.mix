@@ -19,7 +19,11 @@ fn call($service,$verb,$body)
   write_file($tmp .. "/call.mix","$body=$1\nsend " .. $service .. " " .. $verb .. " body=$body timeout=30\nprint(json_encode({rc:$rc,result:$result}))\n")
   $r=run_argv([$mix,$tmp .. "/call.mix",json_encode($body)],{env:$env,clear_env:true,timeout:40,max_output:1000000})
   check($r.ok and not $r.stdout_truncated,"native call failed: " .. $r.stderr)
-  return json_parse($r.stdout)
+  $reply=json_parse($r.stdout)
+  if type($reply.result)=="string" then
+    try $reply.result=json_parse($reply.result) catch $ignored end
+  end
+  return $reply
 end
 fn rpc($service,$verb,$body)
   $r=call($service,$verb,$body)
@@ -61,7 +65,7 @@ try
   start("fakeshell",$fixtures .. "/fake_shell.mix",{FAKE_SHELL_LOG:$tmp .. "/shell.jsonl",FAKE_SHELL_OWNER:"scenes"})
   start("apps",$fixtures .. "/fake_apps.mix",{FAKE_APPS_LOG:$tmp .. "/apps.jsonl"})
   start("ced",$fixtures .. "/fake_ced.mix",{FAKE_CED_LOG:$tmp .. "/ced.jsonl"})
-  write_file($tmp .. "/observer.mix","subscribe scenes.changed\n$count=0\non scenes.changed\n  $count=$count+1\nend\non observer.count\n  reply(0,json_encode({count:$count}))\nend\n")
+  write_file($tmp .. "/observer.mix","subscribe(\"scenes.changed\")\n$count=0\non scenes.changed\n  $count=$count+1\nend\non observer.count\n  reply(0,json_encode({count:$count}))\nend\n")
   start("observer",$tmp .. "/observer.mix",{})
   mkdir($tmp .. "/scenes")
   start("scenes",$repo .. "/services/compd/scripts/scenes.mix",{SCENES_DIR:$tmp .. "/scenes",SCENES_TEMPLATES:$repo .. "/share/scenes",SCENE_HOST:"fakeshell",SCENES_LEGACY_SERVICE:"none",SCENES_FIRST_RUN:"0"})

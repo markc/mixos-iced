@@ -190,15 +190,19 @@ fn open($s, $args)
   $apps = env("APPS_SERVICE", "apps")
   if contains($s.services ?? [], $service) then
     $s.response = $s.io.rpc($service, "scene-editor.show", $args)
+    if $args.first_run == true then
+      $s.scenes.editor.dismissed = true
+      $s.editor_first_run_pending = false
+    end
   else
     $view = $args.view ?? ($args.scene != nil ? "installed" : "gallery")
     $uri = "mixos-scene-editor:" .. $view .. "/" .. ($args.scene ?? "")
     $receipt = $s.io.rpc($apps, "apps.launch", {id:"dev.mixos.scene-editor", uris:[$uri]})
     $s.response = {name:"editor", source:"application", service:$service, pending:true, launch:$receipt}
+    if $args.first_run == true then $s.editor_first_run_pending = true end
   end
-  -- A successful first-run launch is a one-shot; future registry snapshots
-  -- must not re-open it after the user closes the window.
-  if $args.first_run == true then $s.scenes.editor.dismissed = true end
+  -- Dismissal follows confirmed activation, never a spawn-only receipt.
+  -- A pending launch is completed on the service's registration event.
   return $s
 end
 

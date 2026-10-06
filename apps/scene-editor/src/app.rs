@@ -94,7 +94,6 @@ pub struct App {
     next_ticket: u64,
     operation: Option<Operation>,
     refetch: bool,
-    window: Option<window::Id>,
     dialog: Option<Dialog>,
     status: String,
     notice: Option<String>,
@@ -102,6 +101,14 @@ pub struct App {
     quitting: bool,
 }
 static STREAM: OnceLock<Mutex<Option<UnboundedReceiver<Delivery>>>> = OnceLock::new();
+fn command_selection(args: &Value, current: &Selection) -> Result<Selection, String> {
+    let selection: Selection = match args.get("selection") {
+        Some(value) => serde_json::from_value(value.clone()).map_err(|e| format!("invalid selection: {e}"))?,
+        None => current.clone(),
+    };
+    selection.validate()?;
+    Ok(selection)
+}
 fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     let rx = STREAM
         .get()
@@ -160,7 +167,6 @@ impl App {
             next_ticket: 0,
             operation: None,
             refetch: false,
-            window: None,
             dialog: None,
             status: label("waiting"),
             notice: None,
@@ -251,17 +257,20 @@ impl App {
         }
         match action {
             Action::View(view) => {
+                self.notice = None;
                 self.selection.view = view;
+                if view != View::Arrange { self.selection.page = None; }
                 self.epoch += 1;
                 self.refresh()
             }
             Action::Edge(edge) => {
+                self.notice = None;
                 self.edge = edge;
                 self.selection.view = View::Arrange;
                 self.epoch += 1;
                 self.refresh()
             }
-            Action::Refresh => self.refresh(),
+            Action::Refresh => { self.notice = None; self.refresh() },
             Action::Quit => self.quit(),
             Action::Shortcuts => {
                 self.dialog = Some(Dialog::Shortcuts);
@@ -305,6 +314,7 @@ impl App {
             return Task::none();
         }
         self.selection = selection;
+        self.notice = None;
         self.epoch += 1;
         self.refresh()
     }
@@ -313,6 +323,8 @@ impl App {
         let comp = self.settings.comp.clone();
         Task::perform(
             async move {
+                let mapped = bus.call(&comp, "comp.window.wait", json!({"match":{"app_id":APP_ID},"until":"mapped","timeout_ms":10000})).await?;
+                if mapped.rc != 0 { return Err(mapped.value.to_string()); }
                 let list = bus.call(&comp, "comp.windows.list", json!({})).await?;
                 if list.rc != 0 {
                     return Err(list.value.to_string());
@@ -399,6 +411,7 @@ impl App {
                         return Task::none();
                     };
                     selection.scene = Some(name.into());
+                    selection.page = None;
                     if args.get("view").is_none_or(Value::is_null) {
                         selection.view = View::Installed;
                     }
@@ -419,7 +432,11 @@ impl App {
                     .get("state_token")
                     .cloned()
                     .unwrap_or_else(|| self.snapshot.0["state_token"].clone());
-                self.request(args, self.selection.clone(), token, Some(id))
+                let selection = match command_selection(&args, &self.selection) {
+                    Ok(selection) => selection,
+                    Err(error) => { self.reply_error(id, "ARGUMENT", &error); return Task::none(); }
+                };
+                self.request(args, selection, token, Some(id))
             }
             "scene-editor.quit" | "app.quit" => {
                 if self.operation.is_some() || self.dialog.is_some() {
@@ -466,6 +483,7 @@ impl App {
             Message::SelectScene(choice) => {
                 let mut selection = self.selection.clone();
                 selection.scene = Some(choice.key);
+                selection.page = None;
                 self.select(selection)
             }
             Message::SelectPage(edge, choice) => {
@@ -537,7 +555,11 @@ impl App {
                                 }
                                 self.snapshot = snapshot;
                             }
-                            Ok(_) => self.refetch = true,
+                            Ok(_) => {
+                                self.notice = None;
+                                self.status = label("waiting");
+                                self.refetch = true;
+                            }
                             Err(error) => {
                                 self.status = format!(
                                     "{}: {}",
@@ -561,7 +583,7 @@ impl App {
                         Err(error)
                     }
                 };
-                if op.kind == Kind::Action {
+                if op.kind == Kind::Action && op.epoch == self.epoch {
                     self.notice = Some(self.status.clone());
                 }
                 if let Some(id) = op.reply {
@@ -601,10 +623,6 @@ impl App {
                         Err(error) => self.reply_error(id, "ACTIVATION", &error),
                     }
                 }
-                Task::none()
-            }
-            Message::Window(id, window::Event::Opened { .. }) => {
-                self.window = Some(id);
                 Task::none()
             }
             Message::Window(_, window::Event::CloseRequested) => {
@@ -809,7 +827,7 @@ impl App {
             .height(iced::Fill)
             .into();
         let Some(dialog) = &self.dialog else {
-            return base;
+            return toolkit::dialog::Modal::host(base).into();
         };
         let mut contents = column![].spacing(gap);
         let mut controls = row![].spacing(gap);
@@ -901,6 +919,47 @@ mod tests {
     }
     fn snapshot(selection: &Selection) -> Value {
         json!({"schema":"scene-editor.snapshot.v1","state_token":"a".repeat(64),"selection":selection,"model":{"status":"ready","scenes":[],"templates":[]},"inventory":{"state_ok":true,"scenes":[]},"templates":{"templates":[]},"panels":{}})
+    }
+    #[test]
+    fn remote_selection_is_validated_and_honoured() {
+        let current = Selection { scene: Some("panel".into()), ..Default::default() };
+        let named = command_selection(&json!({"selection":{"view":"installed","scene":"launcher"}}), &current).unwrap();
+        assert_eq!(named.scene.as_deref(), Some("launcher"));
+        assert_eq!(command_selection(&json!({}), &current).unwrap(), current);
+        assert!(command_selection(&json!({"selection":{"scene":"../panel"}}), &current).is_err());
+    }
+    #[test]
+    fn navigation_clears_old_page_and_stale_action_busy_status() {
+        let mut app = app();
+        app.selection.page = Some(Page { edge: "bottom".into(), page: "scene-panel".into() });
+        let initial = app.selection.clone();
+        let _ = app.request(json!({"action":"reload"}), initial.clone(), json!("a".repeat(64)), None);
+        let ticket = app.operation.as_ref().unwrap().ticket;
+        let _ = app.action(Action::View(View::Installed));
+        assert!(app.selection.page.is_none());
+        let _ = app.update(Message::Completed(ticket, Ok(Reply { rc:0, value:snapshot(&initial) })));
+        let ticket = app.operation.as_ref().unwrap().ticket;
+        let selection = app.selection.clone();
+        let _ = app.update(Message::Completed(ticket, Ok(Reply { rc:0, value:snapshot(&selection) })));
+        assert_eq!(app.status, "ready");
+        assert!(app.operation.is_none());
+        assert!(app.notice.is_none());
+    }
+    #[test]
+    fn uncertain_action_refetches_once_and_keeps_warning_until_manual_refresh() {
+        let mut app = app();
+        let _ = app.request(json!({"action":"reload"}), app.selection.clone(), json!("a".repeat(64)), None);
+        let ticket = app.operation.as_ref().unwrap().ticket;
+        let _ = app.update(Message::Completed(ticket, Err("connection lost".into())));
+        let op = app.operation.as_ref().unwrap();
+        assert_eq!(op.kind, Kind::Refresh);
+        let ticket = op.ticket;
+        let selection = app.selection.clone();
+        let _ = app.update(Message::Completed(ticket, Ok(Reply { rc:0, value:snapshot(&selection) })));
+        assert!(app.status.contains("connection lost"));
+        assert!(app.operation.is_none());
+        let _ = app.action(Action::Refresh);
+        assert!(app.notice.is_none());
     }
     #[test]
     fn stale_refresh_never_overwrites_newer_selection_or_model() {

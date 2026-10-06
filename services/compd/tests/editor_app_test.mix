@@ -57,10 +57,11 @@ try
   $s.editor_app=true;$s.editor_frontend=$app;$s.services=["apps"]
   $s=$loader.request($s,"editor.open",{view:"arrange",scene:"panel",first_run:true})
   check($s.rc==0 and $s.response.source=="application" and $s.response.launch.args.id=="dev.mixos.scene-editor","cold activation routes apps.launch")
-  check($s.response.launch.args.uris[0]=="mixos-scene-editor:arrange/panel" and $s.scenes.editor.dismissed,"cold activation preserves selection and first-run is one-shot")
+  check($s.response.launch.args.uris[0]=="mixos-scene-editor:arrange/panel" and $s.editor_first_run_pending and not $s.scenes.editor.dismissed,"cold activation preserves selection and waits for actual activation")
   $s.services=["apps","scene-editor"]
-  $s=$loader.request($s,"editor.open",{view:"installed",scene:"panel"})
+  $s=$loader.request($s,"editor.open",{view:"installed",scene:"panel",first_run:true})
   check($s.rc==0 and $s.response.shown and $s.response.args.scene=="panel","warm activation forwards selection")
+  check($s.scenes.editor.dismissed and not $s.editor_first_run_pending,"confirmed activation completes first-run dismissal")
   $s=$loader.request($s,"editor.close",{})
   check($s.rc==0 and $s.response.quitting,"close routes registered app")
   mkdir($tmp .. "/fresh")
@@ -69,9 +70,11 @@ try
   $boot=$loader.services($boot,["shell"],false)
   check(not $boot.scenes.editor.dismissed,"first-run launch waits for launcher registration")
   $boot=$loader.services($boot,["shell","apps"],false)
-  check($boot.scenes.editor.dismissed,"later launcher registration completes the owed first-run launch")
+  check($boot.editor_first_run_pending and not $boot.scenes.editor.dismissed,"later launcher registration starts the owed first-run launch")
   $boot=$loader.services($boot,["shell","apps","scene-editor"],false)
-  check($boot.scenes.editor.dismissed,"later registrations preserve first-run dismissal")
+  check($boot.scenes.editor.dismissed,"app registration confirms first-run activation")
+  $boot=$loader.services($boot,["shell","apps"],false)
+  check($boot.scenes.editor.dismissed,"closing the app never repeats first-run")
   print("native scene editor backend: snapshots, stale refusal, recovery, upstream failure and routing pass")
 finally
   run_argv_must(["rm","-rf","--",$tmp])

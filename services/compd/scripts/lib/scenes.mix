@@ -290,11 +290,18 @@ end
 
 fn editor_record($s)
   $e = $s.scenes.editor
-  return {user_copy:is_dir($s.root .. "/editor"), user_dirty:$e.user_dirty, mounted:$e.mounted,
+  $record = {user_copy:is_dir($s.root .. "/editor"), user_dirty:$e.user_dirty, mounted:$e.mounted,
     visible:editor_visible($s), source:$e.copy, safe:$e.safe, fallback:$e.fallback,
     behaviour:$e.status, view:$e.view, scene:$e.scene, first_run:$e.first_run,
     request_seq:$e.request_seq, generation:$e.generation, kind:$e.kind, dir:$e.dir,
     diagnostic:failure($e), problems:scene_problems($s, "editor", $e, failure($e), $e.diagnostics)}
+  if $s.editor_app == true then
+    $record.frontend = "application"
+    $record.service = env("SCENE_EDITOR_SERVICE", "scene-editor")
+    $record.registered = contains($s.services ?? [], $record.service)
+    $record.application_pending = $s.editor_first_run_pending ?? false
+  end
+  return $record
 end
 
 fn inventory($s)
@@ -1512,6 +1519,7 @@ fn first_run($s)
   -- A hot-reload commit is not a boot: never re-summon the editor gallery.
   if $s.reload_commit == true then return $s end
   if $s.editor_app == true and not contains($s.services ?? [], env("APPS_SERVICE", "apps")) then return $s end
+  if $s.editor_app == true and $s.editor_first_run_pending == true and not contains($s.services ?? [], env("SCENE_EDITOR_SERVICE", "scene-editor")) then return $s end
   $response = $s.response
   $rc = $s.rc
   $s = editor_open($s, {view:"gallery", first_run:true})

@@ -160,7 +160,10 @@ async fn worker(
                     let _ = send.unbounded_send(if topic == "theme.changed" { Delivery::Theme } else { Delivery::Changed });
                     continue;
                 }
-                if command.command.is_empty() { continue; }
+                if command.command.is_empty() {
+                    let _ = tokio::time::timeout(Duration::from_secs(2),client.respond(&command,10,"{\"error_code\":\"ARGUMENT\",\"message\":\"command verb is empty\"}")).await;
+                    continue;
+                }
                 if pending.len() >= 32 {
                     let _ = tokio::time::timeout(Duration::from_secs(2),client.respond(&command,10,"{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}")).await;
                     continue;
