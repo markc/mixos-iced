@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Reuse toolkit's `CenteredButton` and centred-content helper for compact
+  scene targets. Workspace labels retain their corrected placement and hit areas.
+
 ## 0.1.3
 
 - Centre panel workspace labels inside their full hit targets. The iced

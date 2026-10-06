@@ -746,13 +746,6 @@ impl SceneUi {
                 })
                 .into(),
         };
-        let body = if centered_shrink {
-            let bounded = container(body).width(width).height(height);
-            match main {
-                Axis::Horizontal => bounded.align_x(Horizontal::Center).into(),
-                Axis::Vertical => bounded.align_y(Vertical::Center).into(),
-            }
-        } else { body };
         let normal = hex(port_text(node, "background"));
         let hover = hex(port_text(node, "hover")).or(normal);
         let radius = number(node, "radius").unwrap_or(0.0);
@@ -761,16 +754,30 @@ impl SceneUi {
             // A press on a row reaches its handler, and a hover colour needs
             // the button's status; an inner button still takes its own press.
             let text_colour = self.ink();
-            return Some(
-                button(body)
-                    .padding(0.0)
+            let pressable = if centered_shrink {
+                toolkit::CenteredButton::new(body)
                     .width(width)
                     .height(height)
+                    .align_x(if matches!(main, Axis::Horizontal) { Horizontal::Center } else { Horizontal::Left })
+                    .align_y(if matches!(main, Axis::Vertical) { Vertical::Center } else { Vertical::Top })
+                    .build()
+            } else {
+                button(body).padding(0.0).width(width).height(height)
+            };
+            return Some(
+                pressable
                     .style(move |_theme: &Theme, status| scene_row_style(node, text_colour, status))
                     .on_press(SceneMessage::Click(route))
                     .into(),
             );
         }
+        let body = if centered_shrink {
+            let bounded = toolkit::centered(body).width(width).height(height);
+            match main {
+                Axis::Horizontal => bounded.align_y(Vertical::Top).into(),
+                Axis::Vertical => bounded.align_x(Horizontal::Left).into(),
+            }
+        } else { body };
         Some(
             container(body)
                 .width(width)

@@ -17,6 +17,32 @@ fn simulation<'a, M>(
 }
 
 #[test]
+fn centred_buttons_keep_the_whole_target_and_disabled_press_behaviour() {
+    for enabled in [true, false] {
+        let view = toolkit::CenteredButton::new(iced_widget::text("1"))
+            .square(60)
+            .padding(8)
+            .on_press_maybe(enabled.then_some(1_u8));
+        let mut ui = simulation(view.into());
+        // Hit the corner of the target, well outside the intrinsic label.
+        ui.point_at(Point::new(5.0, 5.0));
+        ui.simulate(iced_test::simulator::click());
+        assert_eq!(ui.into_messages().collect::<Vec<_>>(), if enabled { vec![1] } else { vec![] });
+    }
+}
+
+#[test]
+fn centred_buttons_allow_inner_controls_to_own_their_press() {
+    let view = toolkit::CenteredButton::new(iced_widget::button("Inner").on_press(2_u8))
+        .width(120)
+        .height(60)
+        .on_press(1);
+    let mut ui = simulation(view.into());
+    ui.click("Inner").unwrap();
+    assert_eq!(ui.into_messages().collect::<Vec<_>>(), vec![2]);
+}
+
+#[test]
 fn palette_pointer_enter_escape_and_later_results_are_reachable() {
     let commands: Vec<_> = (0..40)
         .map(|i| Command::new(format!("Command {i}"), i))

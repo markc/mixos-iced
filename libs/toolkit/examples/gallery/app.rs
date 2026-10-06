@@ -611,9 +611,23 @@ impl Gallery {
             .placeholder(label("editor"))
             .on_action(Message::Edit)
             .height(96);
+        let centered_buttons = row((1_u8..=4).map(|index| {
+            toolkit::CenteredButton::new(text(index.to_string()).size(tokens.metrics.text.md))
+                .square(tokens.metrics.text.md + 2.0 * spacing.md)
+                .padding(spacing.sm)
+                .style(move |theme, status| {
+                    if index == 1 { theme::button::primary(theme, status) }
+                    else { theme::button::secondary(theme, status) }
+                })
+                .on_press(Message::Action("centered"))
+                .into()
+        }))
+        .spacing(spacing.sm);
         column![
             text(label("controls")).size(tokens.metrics.text.xxl),
             buttons,
+            text(label("centered-buttons")).size(tokens.metrics.text.md),
+            centered_buttons,
             rule::horizontal(1),
             choices,
             ranges,

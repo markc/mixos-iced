@@ -6,6 +6,7 @@ theme-custom = Custom
 fonts = Installed fonts
 font-sample = { $role }: { $family } — The quick brown fox jumps over the lazy dog 0123456789
 controls = Controls
+centered-buttons = Centred button labels
 primary = Primary
 secondary = Secondary
 destructive = Destructive

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- `CenteredButton` and `centered`: intrinsic labels and groups centre inside
+  fixed, Fill or minimum-sized targets without compressible spacers. Generic
+  theme/renderer support, caller-owned dimensions/padding, ordinary iced button
+  press/style/disabled behaviour and gallery coverage under every token set.
+
 ## Unreleased
 
 - Native drag areas carry the host's press token in the same widget message

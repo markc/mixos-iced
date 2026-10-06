@@ -9,6 +9,7 @@ gate (`tests/generic.rs`) keeps it that way.
 
 | Widget | What |
 |---|---|
+| `CenteredButton`, `centered(content)` | centred intrinsic labels or groups within caller-sized targets, including minimum-sized Shrink boxes |
 | `TextField` | single-line input with bounded, selection-aware undo/redo, secure mode, submit |
 | `Menu`, `Item`, `Panel`, `Navigator` | menu bar and context menus with keyboard navigation; in-surface overlays by default, or app-owned popups via `MenuState` |
 | `Fader`, `Knob`, `LevelMeter`, `Toggle` | pro-audio strip controls (dB taper in `scale`, peak hold, mute/solo toggles) |
@@ -36,6 +37,34 @@ gate (`tests/generic.rs`) keeps it that way.
 Everything is a plain `iced_core::Widget`. The library selects no renderer
 and links no window shell; the host enables the `wgpu` or `tiny-skia`
 feature.
+
+## Centred buttons and content
+
+`CenteredButton` centres a label, icon or group inside the complete click
+target. Set its dimensions and padding on the builder; the default fits its
+content with no extra padding. It uses the host theme's normal button catalog
+and retains iced's disabled, hover and press behaviour:
+
+```rust,no_run
+use toolkit::{CenteredButton, Theme, Tokens, widget::text};
+use toolkit::core::{Element, Length};
+
+let tokens = Tokens::dark();
+let button: Element<'_, u8, Theme, toolkit::widget::Renderer> =
+    CenteredButton::new(text("1").size(tokens.metrics.text.md))
+        .width(Length::Shrink.min(tokens.metrics.text.md + 2.0 * tokens.metrics.spacing.md))
+        .height(tokens.metrics.text.md + 2.0 * tokens.metrics.spacing.md)
+        .padding(tokens.metrics.spacing.sm)
+        .on_press(1)
+        .into();
+```
+
+`centered(content)` provides the same placement as an ordinary iced container,
+with the standard width/height/padding/style builders. It centres both axes;
+`align_x` or `align_y` can override one axis. Padding defines the inner area,
+so asymmetric padding intentionally shifts the content relative to the full
+target. Minimum constraints are applied before centring; no Fill spacers are
+inserted into a compressed row. Intrinsic groups retain their own gaps.
 
 ## Application shell
 
