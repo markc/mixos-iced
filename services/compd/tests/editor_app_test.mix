@@ -48,7 +48,7 @@ try
   $s=$app.request($s,"snapshot",{selection:$selection},$loader)
   $token=$s.response.state_token
   $s=$app.request($s,"action",{action:"remove",selection:$selection,state_token:$token,confirmed:true},$loader)
-  check($s.rc==0 and not is_dir($tmp .. "/notes") and is_dir($tmp .. "/.recovery"),"confirmed removal retains real recovery copy")
+  check($s.rc==0 and not is_dir($tmp .. "/notes") and is_dir($tmp .. "/.recovery"),"confirmed removal retains real recovery copy: " .. json_encode($s.response))
   check($s.response.selection.scene==nil,"removed identity clears selection")
   $s=$app.request($s,"action",{action:"arbitrary",target:"noded",verb:"anything"},$loader)
   check($s.rc==10 and $s.response.error_code=="SCENES_ARGUMENT","caller cannot select arbitrary relay target")

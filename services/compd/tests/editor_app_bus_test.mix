@@ -95,7 +95,7 @@ try
   rpc("scenes","scenes.enable",{name:"notes"})
   $path=$tmp .. "/scenes/notes/scene.mix"
   $good=read_file($path)
-  $bad=replace($good,"\"title\":\"Notes\"","\"title\":\"BROKEN notes\"")
+  $bad=replace($good,"\"title\":\"Notifications\"","\"title\":\"BROKEN notes\"")
   check($bad!=$good,"test scene carries the expected title")
   write_file($path,$bad)
   $pushed=false
