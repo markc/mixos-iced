@@ -209,6 +209,8 @@ fn complete(
     kind: CaptureSource,
 ) -> Result<Value, String> {
     if let Some(expected) = spec.output_generation {
+        let topology=output.user_data().get::<comp_model::capture::OutputGeneration>();
+        if topology.is_some_and(|state|*state.1.lock().expect("output signature")!=output_signature(output)) {return Err("output topology changed after capture admission".into());}
         let actual = output
             .user_data()
             .get::<comp_model::capture::OutputGeneration>()
@@ -235,6 +237,10 @@ fn complete(
         spec.window,
         kind,
     ))
+}
+
+pub fn output_signature(output:&Output)->comp_model::capture::OutputSignature {
+    comp_model::capture::OutputSignature{mode:output.current_mode().map(|m|(m.size.w,m.size.h,m.refresh)),scale_bits:output.current_scale().fractional_scale().to_bits(),transform:format!("{:?}",output.current_transform())}
 }
 
 fn crop_region<'a>(
@@ -339,10 +345,14 @@ mod tests {
     fn topology_fence_is_rechecked_before_file_creation(){
         use smithay::output::{PhysicalProperties,Subpixel};
         let output=Output::new("capture-generation-test".into(),PhysicalProperties{size:(0,0).into(),subpixel:Subpixel::Unknown,make:"test".into(),model:"test".into(),serial_number:"test".into()});
-        output.user_data().insert_if_missing(||comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(8)));
+        output.user_data().insert_if_missing(||comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(8),std::sync::Mutex::new(output_signature(&output))));
         let spec=comp_model::capture::parse(&serde_json::json!({"path":"/tmp/never-created-cap-generation.png","output":"capture-generation-test","output_generation":7})).unwrap();
         let result=complete(&spec,Readback{size:(1,1).into(),origin_bottom_left:false},&[0,0,0],&output,CaptureSource::Offscreen);
         assert_eq!(result.unwrap_err(),"output changed after capture admission");
+        output.user_data().get::<comp_model::capture::OutputGeneration>().unwrap().0.store(7,std::sync::atomic::Ordering::Relaxed);
+        output.change_current_state(None,None,Some(smithay::output::Scale::Fractional(2.0)),None);
+        let result=complete(&spec,Readback{size:(1,1).into(),origin_bottom_left:false},&[0,0,0],&output,CaptureSource::Offscreen);
+        assert_eq!(result.unwrap_err(),"output topology changed after capture admission");
     }
     #[test]
     fn readback_channel_order_and_orientation() {

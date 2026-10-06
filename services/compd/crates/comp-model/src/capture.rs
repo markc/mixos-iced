@@ -22,7 +22,9 @@ pub struct CaptureFrameSpec {
 }
 
 /// Render-time topology fence, maintained by the compositor's output observer.
-pub struct OutputGeneration(pub std::sync::atomic::AtomicU64);
+pub struct OutputGeneration(pub std::sync::atomic::AtomicU64,pub std::sync::Mutex<OutputSignature>);
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub struct OutputSignature {pub mode:Option<(i32,i32,i32)>,pub scale_bits:u64,pub transform:String}
 
 /// Output-local displayed logical pixels, matching `comp.region.select`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

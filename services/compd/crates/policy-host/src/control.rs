@@ -141,12 +141,13 @@ fn refresh_output_generations(lp: &mut Loop) {
         let generation = lp.inner.comp.output_generation(&output.name());
         let data = output.user_data();
         data.insert_if_missing(|| {
-            comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(generation))
+            comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(generation),std::sync::Mutex::new(screencopy::file::output_signature(output)))
         });
         data.get::<comp_model::capture::OutputGeneration>()
             .expect("inserted generation")
             .0
             .store(generation, std::sync::atomic::Ordering::Relaxed);
+        *data.get::<comp_model::capture::OutputGeneration>().expect("inserted generation").1.lock().expect("output signature")=screencopy::file::output_signature(output);
     }
 }
 

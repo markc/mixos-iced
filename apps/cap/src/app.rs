@@ -75,6 +75,7 @@ pub enum Message {
     Window(window::Id, window::Event),
     Refresh,
     Refreshed(Result<(Value, Value), String>),
+    Shown(u64, Result<Value, String>),
     Mode(Mode),
     Output(String),
     Choose(Window),
@@ -368,11 +369,13 @@ impl App {
                 return Task::none();
             }
         };
-        self.request.window = if self.request.mode == Mode::Window {
-            self.selected_window.as_ref().map(|w| w.target.clone())
-        } else {
-            None
-        };
+        if self.pending_reply.is_none() {
+            self.request.window = if self.request.mode == Mode::Window {
+                self.selected_window.as_ref().map(|w| w.target.clone())
+            } else {
+                None
+            };
+        }
         if let Err(error) = self.request.validate() {
             self.error(error);
             return Task::none();
@@ -433,6 +436,10 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Refresh => self.refresh(),
+            Message::Shown(id, result) => {
+                self.reply(id, result);
+                Task::none()
+            }
             Message::Refreshed(result) => {
                 match result {
                     Ok((rows, outputs)) => {
@@ -833,7 +840,7 @@ impl App {
                             let _ = cancel.send(true);
                         }
                         self.selected = None;
-                        Task::none()
+                        self.preview()
                     }
                     Key::Named(Named::Delete) if !self.confirm && self.picker.is_none() => {
                         self.update(Message::Delete)
@@ -868,6 +875,10 @@ impl App {
                     self.reply(id, Ok(self.info()));
                     return Task::none();
                 }
+                if (self.picker.is_some() || self.confirm) && verb != "cap.show" {
+                    self.reply(id, Err("dialog active".into()));
+                    return Task::none();
+                }
                 if verb == "cap.cancel" {
                     if let Some(cancel) = &self.cancel {
                         let _ = cancel.send(true);
@@ -887,25 +898,25 @@ impl App {
                 }
                 match verbs::operation(verb, value.clone()) {
                     Ok(Operation::Show) => {
-                        self.reply(id, Ok(self.info()));
                         if let Some(target) = self.own.clone()
                             && let Some(bus) = self.bus.clone()
                         {
                             let comp = self.comp.clone();
                             return Task::perform(
                                 async move {
-                                    let _ = bus
-                                        .call(
-                                            &comp,
-                                            "comp.window.restore",
-                                            json!(target),
-                                            Duration::from_secs(5),
-                                        )
-                                        .await;
+                                    bus.call(
+                                        &comp,
+                                        "comp.window.restore",
+                                        json!(target),
+                                        Duration::from_secs(5),
+                                    )
+                                    .await?;
+                                    bus.call(&comp,"comp.window.focus",json!({"id":target.id,"generation":target.generation,"raise":true}),Duration::from_secs(5)).await
                                 },
-                                |_| Message::Noop,
+                                move |result| Message::Shown(id, result),
                             );
                         }
+                        self.reply(id, Err("Cap window is not yet known to compd".into()));
                         Task::none()
                     }
                     Ok(Operation::Quit) => {
@@ -1211,6 +1222,40 @@ struct Picture<'a> {
 mod tests {
     use super::*;
     #[test]
+    fn full_freehand_stroke_keeps_its_accumulated_geometry() {
+        use canvas::Program;
+        let doc = Document::new(image::RgbaImage::new(120, 100)).unwrap();
+        let handle = iced::advanced::image::Handle::from_rgba(120, 100, vec![0; 120 * 100 * 4]);
+        let picture = Picture {
+            document: &doc,
+            image: &handle,
+            tool: Tool::Draw(Kind::Pen),
+            colour: toolkit::Tokens::default().palette.destructive.into_rgba8(),
+            width: 4.0,
+            zoom: 1.0,
+            pan: Point { x: 0.0, y: 0.0 },
+            selected: None,
+            revision: 1,
+            busy: false,
+        };
+        let mut state = DragState {
+            points: vec![Point { x: 10.0, y: 20.0 }; 16_384],
+            revision: 1,
+            ..Default::default()
+        };
+        picture.update(
+            &mut state,
+            &iced::Event::Mouse(mouse::Event::CursorMoved {
+                position: iced::Point::new(30.0, 40.0),
+            }),
+            iced::Rectangle::with_size(iced::Size::new(120.0, 100.0)),
+            mouse::Cursor::Available(iced::Point::new(30.0, 40.0)),
+        );
+        assert_eq!(state.points.len(), 16_384);
+        assert_eq!(state.points[1], Point { x: 10.0, y: 20.0 });
+        assert_eq!(*state.points.last().unwrap(), Point { x: 30.0, y: 40.0 });
+    }
+    #[test]
     fn iced_drag_uses_original_pixels_after_crop_and_zoom() {
         let mut doc = Document::new(image::RgbaImage::from_pixel(
             120,
@@ -1357,9 +1402,12 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
                     let p = self.source(viewport.image(p));
                     if matches!(self.tool, Tool::Draw(Kind::Pen | Kind::Highlighter))
                         && !state.panning
-                        && state.points.len() < 16_384
                     {
-                        state.points.push(p)
+                        if state.points.len() < 16_384 {
+                            state.points.push(p)
+                        } else {
+                            *state.points.last_mut().expect("full stroke") = p;
+                        }
                     } else {
                         state.points.truncate(1);
                         state.points.push(p)
@@ -1442,6 +1490,8 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
             },
             iced::advanced::image::Image::new(self.image),
         );
+        let background = frame.into_geometry();
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
         let c = self.document.crop();
         let to_view = |p: Point| {
             let p = viewport.view(Point {
@@ -1495,7 +1545,7 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
                     .with_width(1.0),
             );
         }
-        vec![frame.into_geometry()]
+        vec![background, frame.into_geometry()]
     }
     fn mouse_interaction(
         &self,

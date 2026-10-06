@@ -216,6 +216,9 @@ pub async fn take(
         let metadata = bus
             .call(&comp, "comp.capture.frame", args, Duration::from_secs(8))
             .await?;
+        if *cancel.borrow() {
+            return Err("cancelled".into());
+        }
         let document = Document::open(&path)?;
         Ok(Captured {
             document,
@@ -246,7 +249,11 @@ pub async fn take(
             }
         }
     }
-    result
+    if *cancel.borrow() {
+        Err("cancelled".into())
+    } else {
+        result
+    }
 }
 pub fn absolute(path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
@@ -326,6 +333,43 @@ mod tests {
             Some(Target {
                 id: 4,
                 generation: 9,
+            }),
+            PathBuf::from("/tmp"),
+            rx,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "cancelled");
+        driver.await.unwrap();
+    }
+    #[tokio::test]
+    async fn cancellation_during_frame_restores_without_replacing_document() {
+        let (bus, mut effects) = BusHandle::response_sink();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let driver = tokio::spawn(async move {
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("minimise")
+            };
+            assert_eq!(verb, "comp.window.minimize");
+            reply.send(Ok(json!({"minimized":true}))).unwrap();
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("frame")
+            };
+            assert_eq!(verb, "comp.capture.frame");
+            tx.send(true).unwrap();
+            reply.send(Ok(json!({}))).unwrap();
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("restore")
+            };
+            assert_eq!(verb, "comp.window.restore");
+            reply.send(Ok(json!({"minimized":false}))).unwrap();
+        });
+        let result = take(
+            bus,
+            "comp.test".into(),
+            Request::default(),
+            Some(Target {
+                id: 1,
+                generation: 2,
             }),
             PathBuf::from("/tmp"),
             rx,
