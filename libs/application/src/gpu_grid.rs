@@ -249,20 +249,35 @@ mod tests {
             let mut pixels = vec![0; 272 * 3];
             for row in 0..3 {
                 for x in 0..64 {
-                    pixels[row * 272 + x * 4..row * 272 + x * 4 + 4]
-                        .copy_from_slice(&colour);
+                    pixels[row * 272 + x * 4..row * 272 + x * 4 + 4].copy_from_slice(&colour);
                 }
             }
-            Self { id: GridId::default(), pixels, damage: Vec::new() }
+            Self {
+                id: GridId::default(),
+                pixels,
+                damage: Vec::new(),
+            }
         }
     }
     impl FrameSource for TestFrame {
-        fn identity(&self) -> GridId { self.id.clone() }
-        fn dimensions(&self) -> (u32, u32) { (64, 3) }
-        fn stride(&self) -> usize { 272 }
-        fn pixels(&self) -> &[u8] { &self.pixels }
-        fn take_damage(&mut self) -> Vec<DamageBand> { std::mem::take(&mut self.damage) }
-        fn clear_damage(&mut self) { self.damage.clear(); }
+        fn identity(&self) -> GridId {
+            self.id.clone()
+        }
+        fn dimensions(&self) -> (u32, u32) {
+            (64, 3)
+        }
+        fn stride(&self) -> usize {
+            272
+        }
+        fn pixels(&self) -> &[u8] {
+            &self.pixels
+        }
+        fn take_damage(&mut self) -> Vec<DamageBand> {
+            std::mem::take(&mut self.damage)
+        }
+        fn clear_damage(&mut self) {
+            self.damage.clear();
+        }
     }
 
     fn render(
@@ -271,16 +286,24 @@ mod tests {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Vec<u8> {
-        let size = wgpu::Extent3d { width: 64, height: 3, depth_or_array_layers: 1 };
+        let size = wgpu::Extent3d {
+            width: 64,
+            height: 3,
+            depth_or_array_layers: 1,
+        };
         let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("grid acceptance target"), size, mip_level_count: 1,
-            sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            label: Some("grid acceptance target"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grid acceptance readback"), size: 256 * 3,
+            label: Some("grid acceptance readback"),
+            size: 256 * 3,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -290,14 +313,18 @@ mod tests {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("grid acceptance draw"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, depth_slice: None, resolve_target: None,
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None, timestamp_writes: None,
-                occlusion_query_set: None, multiview_mask: None,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
             });
             assert!(primitive.draw(pipeline, &mut pass));
         }
@@ -306,14 +333,19 @@ mod tests {
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0, bytes_per_row: Some(256), rows_per_image: Some(3),
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(3),
                 },
-            }, size,
+            },
+            size,
         );
         queue.submit([encoder.finish()]);
         let slice = buffer.slice(..);
         let (send, receive) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| send.send(result).unwrap());
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            send.send(result).unwrap()
+        });
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         receive.recv().unwrap().unwrap();
         let pixels = slice.get_mapped_range().unwrap().to_vec();
@@ -325,19 +357,24 @@ mod tests {
     fn gpu_renders_sparse_damage_without_replacing_other_panes_and_retires_closed_panes() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = iced::futures::executor::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default())
-        ).expect("GPU acceptance requires a real adapter, including Mesa software adapters");
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .expect("GPU acceptance requires a real adapter, including Mesa software adapters");
         let (device, queue) = iced::futures::executor::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor::default())
-        ).unwrap();
+            adapter.request_device(&wgpu::DeviceDescriptor::default()),
+        )
+        .unwrap();
         let mut pipeline = GridPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         let first = Arc::new(Mutex::new(TestFrame::new([20, 40, 60, 255])));
         let second = Arc::new(Mutex::new(TestFrame::new([80, 100, 120, 255])));
         let primitives = [first.clone(), second.clone()].map(|frame| GridPrimitive {
-            id: frame.lock().unwrap().identity(), frame: frame.clone(),
+            id: frame.lock().unwrap().identity(),
+            frame: frame.clone(),
         });
         let bounds = iced::Rectangle::with_size(iced::Size::new(64.0, 3.0));
-        let viewport = shader::Viewport::with_physical_size(iced::Size::new(64, 3), 1.0);
+        let viewport = shader::Viewport::with_physical_size(
+            iced::Size::new(64, 3), iced::advanced::renderer::Scale::default(),
+        );
         for primitive in &primitives {
             primitive.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
         }
@@ -353,7 +390,12 @@ mod tests {
             frame.pixels[272 + 12 * 4..272 + 12 * 4 + 4].copy_from_slice(&[180, 160, 140, 255]);
             // Changing an undamaged pixel must not leak into this upload.
             frame.pixels[..4].copy_from_slice(&[255, 0, 0, 255]);
-            frame.damage.push(DamageBand { x: 12, y: 1, width: 1, height: 1 });
+            frame.damage.push(DamageBand {
+                x: 12,
+                y: 1,
+                width: 1,
+                height: 1,
+            });
         }
         primitives[0].prepare(&mut pipeline, &device, &queue, &bounds, &viewport);
         assert_eq!(texture, pipeline.textures[&primitives[0].id].texture);
