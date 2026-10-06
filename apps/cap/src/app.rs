@@ -1234,8 +1234,7 @@ impl App {
                         )
                         .padding(tokens.metrics.spacing.lg)
                         .width(tokens.metrics.spacing.xl * 22.0)
-                        .height(iced::Fill)
-                        .max_height(tokens.metrics.spacing.xl * 17.0)
+                        .height(tokens.metrics.spacing.xl * 17.0)
                         .style(toolkit::theme::container::card),
                     )
                     .center(iced::Fill),
