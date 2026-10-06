@@ -236,14 +236,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
 async fn work<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let (tx, rx) = iced::futures::channel::oneshot::channel();
-    std::thread::Builder::new()
-        .name("cap-image".into())
-        .spawn(move || {
-            let _ = tx.send(f());
-        })
-        .map_err(|e| e.to_string())?;
-    rx.await.map_err(|_| "image worker stopped")?
+    crate::worker::run(f).await
 }
 impl App {
     fn subscription(&self) -> Subscription<Message> {
@@ -446,18 +439,8 @@ impl App {
                             });
                         self.windows
                             .retain(|w| self.own.as_ref() != Some(&w.target));
-                        if self
-                            .selected_window
-                            .as_ref()
-                            .is_none_or(|old| !self.windows.contains(old))
-                        {
-                            self.selected_window = self
-                                .windows
-                                .iter()
-                                .find(|w| w.focused)
-                                .or_else(|| self.windows.first())
-                                .cloned();
-                        }
+                        self.selected_window =
+                            capture::selected_window(&self.windows, self.selected_window.as_ref());
                         let outputs = outputs.get("value").unwrap_or(&outputs);
                         self.outputs = outputs
                             .as_object()
@@ -525,6 +508,7 @@ impl App {
                 self.cancel = None;
                 match result {
                     Ok(capture) => {
+                        self.preview = None;
                         self.document = Some(capture.document);
                         self.path = Some(capture.path);
                         self.metadata = capture.metadata;
@@ -710,6 +694,7 @@ impl App {
                 self.busy = false;
                 let task = match result {
                     Ok((path, doc)) => {
+                        self.preview = None;
                         self.metadata = Value::Null;
                         self.document = Some(doc);
                         self.path = Some(path);

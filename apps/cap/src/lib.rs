@@ -8,3 +8,4 @@ pub mod preview;
 pub mod strings;
 pub mod verbs;
 pub mod viewport;
+mod worker;

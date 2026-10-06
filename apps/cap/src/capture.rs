@@ -109,6 +109,13 @@ pub fn windows(value: &Value) -> Vec<Window> {
         })
         .collect()
 }
+pub fn selected_window(windows: &[Window], previous: Option<&Window>) -> Option<Window> {
+    previous
+        .and_then(|old| windows.iter().find(|w| w.target == old.target))
+        .or_else(|| windows.iter().find(|w| w.focused))
+        .or_else(|| windows.first())
+        .cloned()
+}
 pub async fn list(bus: &BusHandle, comp: &str) -> Result<Value, String> {
     bus.call(comp, "comp.windows.list", json!({}), Duration::from_secs(5))
         .await
@@ -245,7 +252,8 @@ pub async fn take(
         if *cancel.borrow() {
             return Err("cancelled".into());
         }
-        let document = Document::open(&path)?;
+        let source = path.clone();
+        let document = crate::worker::run(move || Document::open(&source)).await?;
         Ok(Captured {
             document,
             path,
@@ -295,6 +303,19 @@ pub fn absolute(path: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refreshed_window_metadata_preserves_the_selected_identity() {
+        let before =
+            windows(&json!({"windows":[{"id":3,"generation":9,"title":"Old","focused":true}]}));
+        let after = windows(
+            &json!({"windows":[{"id":1,"generation":1,"focused":true},{"id":3,"generation":9,"title":"New","minimized":true}]}),
+        );
+        let selected = selected_window(&after, before.first()).unwrap();
+        assert_eq!(selected.target, before[0].target);
+        assert_eq!(selected.title, "New");
+        assert!(selected.minimized);
+        assert!(!selected.focused);
+    }
     #[tokio::test]
     async fn lost_minimise_reply_still_restores_the_fenced_window() {
         let (bus, mut effects) = BusHandle::response_sink();
