@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn bounded_centred_groups_keep_gaps_and_fit_constrained_rows_and_columns() {
-        let source = "---\nscene: 1\nname: centred\ncitizen: test\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":220}\n---\n```mix\nroot: {widget: \"column\", fill: true, children: [\"r\", \"c\"]}\nr: {widget: \"row\", height: 30, min_width: 60, max_width: 80, padding: 4, gap: 6, justify: \"center\", align: \"center\", children: [\"a\", \"b\"]}\nc: {widget: \"column\", width: 60, min_height: 60, max_height: 80, padding: 4, gap: 6, justify: \"center\", align: \"center\", children: [\"a\", \"b\"]}\na: {widget: \"text\", text: \"1\", size: 10}\nb: {widget: \"text\", text: \"2\", size: 10}\n```\n";
+        let source = "---\nscene: 1\nname: centred\ncitizen: test\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":220}\n---\n```mix\nroot: {widget: \"column\", fill: true, children: [\"r\", \"c\"]}\nr: {widget: \"row\", height: 30, min_width: 60, max_width: 80, padding: 4, gap: 6, justify: \"center\", align: \"center\", children: [\"a\", \"b\"]}\nc: {widget: \"column\", min_width: 60, max_width: 60, min_height: 60, max_height: 80, padding: 4, gap: 6, justify: \"center\", align: \"center\", children: [\"cc\", \"dd\"]}\na: {widget: \"text\", text: \"1\", size: 10}\nb: {widget: \"text\", text: \"2\", size: 10}\ncc: {widget: \"text\", text: \"1\", size: 10}\ndd: {widget: \"text\", text: \"2\", size: 10}\n```\n";
         for width in [120.0, 45.0] {
             let mut renderer = LayoutRenderer::new();
             let ui = test_ui(source);
