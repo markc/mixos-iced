@@ -170,7 +170,7 @@ mod tests {
         let waker = shell::Waker::new(|| {});
         let mut reductions = 0;
         for attempt in 0..3 {
-            let view: Element<'_, Instant, Theme, Paint> = toolkit::keys::Keys::new(Space::new(), |_| None)
+            let view: Element<'_, Instant, Theme, Paint> = toolkit::keys::keys(Space::new(), |_| None)
                 .on_redraw(last, |at| at).into();
             let mut ui = UserInterface::build(view, Size::new(100.0, 50.0), cache, &mut renderer);
             let mut messages = shell::Bus::new();
