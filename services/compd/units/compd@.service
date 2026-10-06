@@ -14,6 +14,8 @@ SupplementaryGroups=seat
 EnvironmentFile=/etc/mixos/session/%i.env
 UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
 Environment=LIBSEAT_BACKEND=seatd MIXOS_CONTAIN_CHILDREN=1
+RuntimeDirectory=mixos/session/%i/desktop
+RuntimeDirectoryMode=0700
 ExecStart=/opt/mixos/bin/compd kms-live --socket ${WAYLAND_DISPLAY} --scale ${MIXOS_OUTPUT_SCALE} --config-file ${MIXOS_COMPD_CONFIG} --bus-service comp --scene-service shell
 TTYPath=/dev/tty%i
 StandardInput=tty

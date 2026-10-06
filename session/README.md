@@ -37,3 +37,8 @@ compd running so its native client can reconnect; a seatd or compositor crash
 recovers the dependent services. Stopping the target ends this recovery.
 Target activation alone is not a readiness verdict: the operator must check
 the broker, compositor and scene ports through ABP within the startup deadline.
+
+Set `MIXOS_RUN=/run/mixos/session/4` and
+`XDG_RUNTIME_DIR=/run/mixos/session/4/desktop`. Noded owns only the `noded`
+child directory and compd owns only `desktop`. Restarting the broker therefore
+preserves the compositor's Wayland socket and the clients' runtime directory.
