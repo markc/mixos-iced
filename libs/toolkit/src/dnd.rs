@@ -575,6 +575,8 @@ where
     label: Box<dyn Fn(&P) -> String + 'a>,
     shared: Option<Shared<P>>,
     on_drag: Option<Box<dyn Fn(P) -> Message + 'a>>,
+    on_native_drag: Option<Box<dyn Fn(P, native::Gesture) -> Message + 'a>>,
+    native_gesture: Option<Box<dyn Fn(&Event) -> Option<native::Gesture> + 'a>>,
 }
 
 impl<'a, Message, Theme, Renderer, P> DragArea<'a, Message, Theme, Renderer, P>
@@ -589,6 +591,8 @@ where
             label: Box::new(|_| String::new()),
             shared: None,
             on_drag: None,
+            on_native_drag: None,
+            native_gesture: None,
         }
     }
 
@@ -607,6 +611,22 @@ where
         self
     }
 
+    /// Publishes the payload together with this window's native press token.
+    /// The host mapper extracts tokens from its native window events. Both
+    /// values come from the ordered widget event stream, so the application need
+    /// not wait for an asynchronous window subscription before starting a drag.
+    /// The backend still validates the token's window, seat and held button.
+    #[must_use]
+    pub fn on_native_drag(
+        mut self,
+        gesture: impl Fn(&Event) -> Option<native::Gesture> + 'a,
+        on_drag: impl Fn(P, native::Gesture) -> Message + 'a,
+    ) -> Self {
+        self.native_gesture = Some(Box::new(gesture));
+        self.on_native_drag = Some(Box::new(on_drag));
+        self
+    }
+
     /// Starts the drag directly into `shared` (no message needed).
     #[must_use]
     pub fn start_directly(mut self, shared: Shared<P>) -> Self {
@@ -618,6 +638,7 @@ where
 #[derive(Debug, Clone, Copy, Default)]
 struct DragAreaState {
     origin: Option<Point>,
+    native_press: Option<native::Gesture>,
     dragging: bool,
     cancel_epoch: u64,
 }
@@ -668,11 +689,15 @@ where
             let epoch = lock(shared).cancel_epoch;
             if state.cancel_epoch != epoch {
                 state.origin = None;
+                state.native_press = None;
                 state.dragging = false;
                 state.cancel_epoch = epoch;
             }
         }
 
+        if let Some(gesture) = self.native_gesture.as_ref().and_then(|map| map(event)) {
+            state.native_press = Some(gesture);
+        }
         match event {
             Event::Window(window::Event::Unfocused | window::Event::Resized(_))
             | Event::Mouse(mouse::Event::CursorLeft)
@@ -681,6 +706,7 @@ where
                 ..
             }) => {
                 state.origin = None;
+                state.native_press = None;
                 state.dragging = false;
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
@@ -705,6 +731,12 @@ where
                             shell.capture_event();
                             shell.request_redraw();
                         }
+                    } else if let Some(on_drag) = &self.on_native_drag {
+                        if let Some(gesture) = state.native_press.take() {
+                            shell.publish(on_drag(payload, gesture));
+                            shell.capture_event();
+                            shell.request_redraw();
+                        }
                     } else if let Some(on_drag) = &self.on_drag {
                         shell.publish(on_drag(payload));
                         shell.capture_event();
@@ -714,6 +746,7 @@ where
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.origin = None;
+                state.native_press = None;
                 state.dragging = false;
             }
             _ => {}

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Native drag areas carry the host's press token in the same widget message
+  as the payload. `Session::start_with_gesture` avoids asynchronous subscription
+  ordering races while retaining backend window, seat and liveness checks.
+
 - Font sets accept additional faces alongside the named roles, for italic,
   bold and fallback faces chosen by the caller.
 

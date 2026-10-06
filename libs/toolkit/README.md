@@ -343,6 +343,12 @@ Copy retains it. Failed, rejected, cancelled and closed windows never
 produce successful completion. Feed pointer release to `released` and
 window closure to `closed` so unused presses and offers cannot be reused.
 
+Use `DragArea::on_native_drag` with a host event-to-token mapper and pass its
+token to `Session::start_with_gesture`. This keeps the native press and widget
+threshold in the same ordered event stream, even when asynchronous window
+subscriptions have not delivered their messages yet. Backend validation still
+rejects released, consumed and foreign-window tokens.
+
 The session selects no window backend. A host adapter must supply real
 held-press identities, native MIME/action negotiation, bounded nonblocking
 transfer and the protocol's final completion event. It must reject stale or

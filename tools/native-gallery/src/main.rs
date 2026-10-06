@@ -51,7 +51,7 @@ enum Message {
     ),
     Gallery(window::Id, gallery::Message),
     Native(window::Id, iced::window::drag::Event),
-    Start(window::Id, String),
+    Start(window::Id, String, drag::Gesture),
     Queued(window::Id, bool, Result<(), iced::window::drag::Error>),
     Released(window::Id),
     Cancel,
@@ -228,8 +228,11 @@ impl App {
                     .unwrap_or_else(Task::none),
                 Task::done(Message::Measure(id)),
             ]),
-            Message::Start(id, payload) => {
-                match self.drag.start(id, payload, drag::Actions::BOTH) {
+            Message::Start(id, payload, gesture) => {
+                match self
+                    .drag
+                    .start_with_gesture(id, payload, drag::Actions::BOTH, gesture)
+                {
                     Ok(effect) => self.effects(vec![effect]),
                     Err(error) => {
                         self.record(serde_json::json!({"event":"start-error","error":error}));
@@ -388,7 +391,15 @@ impl App {
                     .style(toolkit::theme::container::card),
                 pane.payload.clone(),
             )
-            .on_drag(move |gesture| Message::Start(id, gesture))
+            .on_native_drag(
+                |event| match event {
+                    iced::Event::Window(window::Event::DragDrop(window::drag::Event::Gesture(
+                        gesture,
+                    ))) => Some(drag::Gesture(gesture.0)),
+                    _ => None,
+                },
+                move |payload, gesture| Message::Start(id, payload, gesture),
+            )
             .into(),
             Role::Source => container(text(label("empty-label")))
                 .height(strip_height)

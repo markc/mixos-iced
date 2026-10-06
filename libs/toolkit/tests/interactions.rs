@@ -164,6 +164,66 @@ fn cancelled_drags_rearm_and_keep_stateful_children_working() {
 }
 
 #[test]
+fn native_drag_carries_press_before_any_subscription_message_is_processed() {
+    let view = dnd::DragArea::new(iced_widget::text("Source"), 7u8)
+        .on_native_drag(
+            |event| {
+                matches!(event, Event::Mouse(mouse::Event::CursorEntered))
+                    .then_some(dnd::native::Gesture(42))
+            },
+            |payload, gesture| (payload, gesture),
+        )
+        .into();
+    let mut ui = simulation(view);
+    let origin = Point::new(5.0, 5.0);
+    let end = Point::new(20.0, 5.0);
+    ui.point_at(origin);
+    ui.simulate([
+        Event::Mouse(mouse::Event::CursorEntered),
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Mouse(mouse::Event::CursorMoved { position: end }),
+    ]);
+    assert_eq!(
+        ui.into_messages().collect::<Vec<_>>(),
+        [(7, dnd::native::Gesture(42))]
+    );
+}
+
+#[test]
+fn native_drag_discards_press_on_release_and_focus_loss() {
+    for cancel in [
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        Event::Window(window::Event::Unfocused),
+        Event::Mouse(mouse::Event::CursorLeft),
+    ] {
+        let view = dnd::DragArea::new(iced_widget::text("Source"), 7u8)
+            .on_native_drag(
+                |event| {
+                    matches!(event, Event::Mouse(mouse::Event::CursorEntered))
+                        .then_some(dnd::native::Gesture(42))
+                },
+                |payload, gesture| (payload, gesture),
+            )
+            .into();
+        let mut ui = simulation(view);
+        ui.point_at(Point::new(5.0, 5.0));
+        ui.simulate([
+            Event::Mouse(mouse::Event::CursorEntered),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            cancel,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(20.0, 5.0),
+            }),
+        ]);
+        assert!(
+            ui.into_messages().next().is_none(),
+            "cancelled token cannot start a drag"
+        );
+    }
+}
+
+#[test]
 fn selection_arithmetic_accepts_stale_and_extreme_indices() {
     assert_eq!(
         command_palette::move_selection(Some(usize::MAX), i32::MAX, 3),

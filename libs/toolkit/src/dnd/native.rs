@@ -215,6 +215,26 @@ impl<P, W: Clone + Eq + std::hash::Hash> Session<P, W> {
         payload: P,
         actions: Actions,
     ) -> Result<Effect<P, W>, String> {
+        self.start_using(window, payload, actions, None)
+    }
+    /// Start with a token delivered directly by the source widget. Native
+    /// backends reject foreign, released or already consumed tokens.
+    pub fn start_with_gesture(
+        &mut self,
+        window: W,
+        payload: P,
+        actions: Actions,
+        gesture: Gesture,
+    ) -> Result<Effect<P, W>, String> {
+        self.start_using(window, payload, actions, Some(gesture))
+    }
+    fn start_using(
+        &mut self,
+        window: W,
+        payload: P,
+        actions: Actions,
+        gesture: Option<Gesture>,
+    ) -> Result<Effect<P, W>, String> {
         if self.outgoing.is_some() {
             return Err("a native drag is already active".into());
         }
@@ -227,9 +247,9 @@ impl<P, W: Clone + Eq + std::hash::Hash> Session<P, W> {
         if !source.valid() {
             return Err("invalid native drag payload".into());
         }
-        let gesture = self
-            .presses
-            .remove(&window)
+        let remembered = self.presses.remove(&window);
+        let gesture = gesture
+            .or(remembered)
             .ok_or("no held native press for this window")?;
         self.outgoing = Some(Outgoing {
             window: window.clone(),

@@ -246,6 +246,20 @@ fn stop_bus($bus)
   end
 end
 
+-- GUI clients use the same native/compatibility bus choice as their compositor.
+-- Nil environment values remove inherited addresses rather than setting "".
+fn client_env($session, $extra)
+  $result={XDG_RUNTIME_DIR:$session.runtime, WAYLAND_DISPLAY:$session.socket, DISPLAY:""}
+  for each $key in keys($extra ?? {})
+    $result[$key]=$extra[$key]
+  end
+  for each $key in ["DBUS_SESSION_BUS_ADDRESS","DBUS_STARTER_ADDRESS","DBUS_STARTER_BUS_TYPE","DBUS_SYSTEM_BUS_ADDRESS"]
+    $result[$key]=nil
+  end
+  if $session.dbus != "" then $result.DBUS_SESSION_BUS_ADDRESS=$session.dbus end
+  return $result
+end
+
 -- Start a private nested compd on a private headless weston host.
 --
 --   start({bin: PATH, tag: "control", config: PATH,

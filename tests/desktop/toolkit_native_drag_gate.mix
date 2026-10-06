@@ -54,7 +54,7 @@ fn run_case($root, $session, $binary, $run, $case)
         for each $role in $roles
             $path = if $role == "target" then $target_trace else $source_trace end
             $p = spawn([$binary, "--role", $role, "--trace", $path, "--case", $case.kind, "--action", $case.action, "--bytes", to_string($case.bytes), "--target-scale", to_string($case.scale), "--ack-count", $ack_count], {
-                env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket, DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", DBUS_SESSION_BUS_ADDRESS: $session.dbus},
+                env: $n.client_env($session,{LIBGL_ALWAYS_SOFTWARE:"1"}),
                 stdout: {file: $directory .. "/" .. $role .. ".log"}, stderr: "stdout", detach: true
             })
             push($processes, $p)
@@ -121,7 +121,7 @@ fn run_case($root, $session, $binary, $run, $case)
                     elif $overlap then
                         if len(filter(records($source_trace), fn($row) = $row.event == "finished")) != 0 then raise("NATIVE_EARLY", "first source finished before target application") end
                         $p = spawn([$binary, "--role", "source", "--title", "Second native source", "--trace", $second_trace, "--bytes", to_string($case.bytes)], {
-                            env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket, DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", DBUS_SESSION_BUS_ADDRESS: $session.dbus},
+                            env: $n.client_env($session,{LIBGL_ALWAYS_SOFTWARE:"1"}),
                             stdout: {file: $directory .. "/second.log"}, stderr: "stdout", detach: true
                         })
                         push($processes, $p)

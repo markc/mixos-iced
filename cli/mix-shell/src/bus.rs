@@ -156,6 +156,7 @@ pub struct MixBusHandler {
     /// private attachment owner publishes a change. Scripts keep SPEC 18's
     /// explicit reconnect contract, including the zero-cost absence latch.
     native_attachment_generation: Option<Cell<u64>>,
+    native_serve_generation: Cell<u64>,
     incoming_in_use: Cell<bool>,
     serve_epoch: Cell<Option<::bus::native_session::HexBytes<16>>>,
     /// Cached probe state + broker client. `Mutex` rather than `OnceCell`
@@ -345,6 +346,7 @@ impl MixBusHandler {
     pub fn new() -> Self {
         MixBusHandler {
             native_attachment_generation: None,
+            native_serve_generation: Cell::new(0),
             incoming_in_use: Cell::new(false),
             serve_epoch: Cell::new(None),
             mesh: tokio::sync::Mutex::new(MeshState::Unprobed),
@@ -359,8 +361,9 @@ impl MixBusHandler {
     pub fn for_repl() -> Self {
         let mut handler = Self::new();
         if crate::session_state::enabled() {
-            handler.native_attachment_generation =
-                Some(Cell::new(crate::session_state::attachment_generation()));
+            let generation = crate::session_state::attachment_generation();
+            handler.native_attachment_generation = Some(Cell::new(generation));
+            handler.native_serve_generation.set(generation);
         }
         handler
     }
@@ -380,55 +383,58 @@ impl MixBusHandler {
         let Some(observed) = &self.native_attachment_generation else {
             return;
         };
-        if observed.get() == generation {
+        if observed.get() >= generation && self.native_serve_generation.get() >= generation {
             return;
         }
         let mut mesh = self.mesh.lock().await;
         // Two evaluator futures can have noticed the same change before either
         // obtained the lock. Reset once; do not erase the new caller's lane.
-        if observed.get() == generation {
+        if observed.get() >= generation && self.native_serve_generation.get() >= generation {
             return;
         }
         // REPL's current-thread runtime parks at the prompt: a dead reader can
         // still report connected until it gets polled. Compare independently
         // verified broker context with the native owner's opaque epoch hint.
         // Same-broker resumption keeps a live lane and its registrations.
-        let keep = match (&*mesh, epoch) {
-            (MeshState::Connected(lane), Some(epoch)) if lane.is_connected() => {
-                if let Lane::Verified(connection) = lane.as_ref() {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(2),
-                        connection.session_context(),
-                    )
-                    .await
-                    .is_ok_and(|result| result.is_ok_and(|context| context.broker_epoch == epoch))
-                        && lane.is_connected()
-                } else {
-                    false
+        let main_pending = observed.get() < generation;
+        let keep = !main_pending
+            || match (&*mesh, epoch) {
+                (MeshState::Connected(lane), Some(epoch)) if lane.is_connected() => {
+                    if let Lane::Verified(connection) = lane.as_ref() {
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            connection.session_context(),
+                        )
+                        .await
+                        .is_ok_and(|result| {
+                            result.is_ok_and(|context| context.broker_epoch == epoch)
+                        }) && lane.is_connected()
+                    } else {
+                        false
+                    }
                 }
-            }
-            (MeshState::Connected(lane), None) => lane.is_connected(),
-            _ => false,
-        };
+                (MeshState::Connected(lane), None) => lane.is_connected(),
+                _ => false,
+            };
         let mut serve = self.serve.lock().await;
-        let keep_serve = serve.as_ref().is_some_and(|lane| {
-            lane.is_connected() && epoch.is_none_or(|epoch| self.serve_epoch.get() == Some(epoch))
-        });
-        // Leave the hint pending while all existing lanes remain healthy: a
-        // late EOF must still rearm them. A main-call timeout must not discard
-        // a same-epoch dedicated service connection and its registrations.
-        if keep && (serve.is_none() || keep_serve) {
-            return;
-        }
+        let serve_pending = self.native_serve_generation.get() < generation;
+        let keep_serve = !serve_pending
+            || serve.as_ref().is_some_and(|lane| {
+                lane.is_connected()
+                    && epoch.is_none_or(|epoch| self.serve_epoch.get() == Some(epoch))
+            });
+        // Each retained lane keeps its own notice pending for a late EOF.
+        // Repairing one must neither discard nor consume the other's notice.
         if !keep {
             *mesh = MeshState::Unprobed;
+            observed.set(generation);
         }
         if !keep_serve {
             *serve = None;
             self.serve_epoch.set(None);
             self.reset_incoming();
+            self.native_serve_generation.set(generation);
         }
-        observed.set(generation);
     }
 
     fn reset_incoming(&self) {
@@ -517,41 +523,49 @@ impl MixBusHandler {
     /// memo's rule that the verified socket must never become a hard dependency
     /// for something that does not need it.
     async fn serve_access(&self) -> Result<std::sync::Arc<Lane>, MeshErr> {
-        let lane = self.noded_access().await?;
-        if serve_lane_for(lane.kind()) == ServeChoice::ReuseMain {
-            return Ok(lane);
-        }
-        let mut serve = self.serve.lock().await;
-        if let Some(existing) = &*serve {
-            return Ok(existing.clone());
-        }
-        let url = crate::node_config::resolve_noded_url();
-        match ::bus::native_client::NodedClient::connect_anonymous(&url).await {
-            Ok(client) => {
-                if self.native_attachment_generation.is_some()
-                    && let Lane::Verified(connection) = lane.as_ref()
-                {
-                    // Bind service-lane continuity to independently verified
-                    // context, never the unverified TCP peer's assertions.
-                    self.serve_epoch.set(
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            connection.session_context(),
-                        )
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .map(|context| context.broker_epoch),
-                    );
-                }
-                let arc = std::sync::Arc::new(Lane::Anonymous(client));
-                *serve = Some(arc.clone());
-                Ok(arc)
+        loop {
+            let generation = self.incoming_generation.get();
+            let lane = self.noded_access().await?;
+            let mut serve = self.serve.lock().await;
+            if self.incoming_generation.get() != generation {
+                // A reset between fetching the main lane and acquiring this lock
+                // must not publish a dedicated connection derived from that lane.
+                continue;
             }
-            // The verified lane proved a broker is there, so failing to open a
-            // second plain connection to it is a LOST connection, not a bare
-            // host — and the serve paths raise on Lost rather than pretending.
-            Err(_) => Err(MeshErr::Lost),
+            if let Some(existing) = &*serve {
+                return Ok(existing.clone());
+            }
+            if serve_lane_for(lane.kind()) == ServeChoice::ReuseMain {
+                return Ok(lane);
+            }
+            let url = crate::node_config::resolve_noded_url();
+            return match ::bus::native_client::NodedClient::connect_anonymous(&url).await {
+                Ok(client) => {
+                    if self.native_attachment_generation.is_some()
+                        && let Lane::Verified(connection) = lane.as_ref()
+                    {
+                        // Bind service-lane continuity to independently verified
+                        // context, never the unverified TCP peer's assertions.
+                        self.serve_epoch.set(
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                connection.session_context(),
+                            )
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .map(|context| context.broker_epoch),
+                        );
+                    }
+                    let arc = std::sync::Arc::new(Lane::Anonymous(client));
+                    *serve = Some(arc.clone());
+                    Ok(arc)
+                }
+                // The verified lane proved a broker is there, so failing to open a
+                // second plain connection to it is a LOST connection, not a bare
+                // host — and the serve paths raise on Lost rather than pretending.
+                Err(_) => Err(MeshErr::Lost),
+            };
         }
     }
 
@@ -2066,7 +2080,7 @@ mod tests {
         let epoch = verified.session_context().await.unwrap().broker_epoch;
         let service = NodedClient::connect_anonymous(&broker.url).await.unwrap();
         service
-            .register_as("fixture.repl-continuity")
+            .register_as("fixture-repl-continuity")
             .await
             .unwrap();
         let receiver = service.incoming_async().await.unwrap();
@@ -2086,10 +2100,19 @@ mod tests {
             &lane
         ));
         assert_eq!(h.incoming_generation.get(), incoming_generation);
+        let fallback = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+        h.test_force_state(MeshState::Connected(std::sync::Arc::new(Lane::Anonymous(
+            fallback,
+        ))))
+        .await;
+        assert!(
+            std::sync::Arc::ptr_eq(&h.serve_access().await.unwrap(), &lane),
+            "anonymous main fallback must still reply and subscribe on the retained lane"
+        );
         let sender = NodedClient::connect_anonymous(&broker.url).await.unwrap();
         sender
             .send(
-                "fixture.repl-continuity",
+                "fixture-repl-continuity",
                 "fixture.current",
                 serde_json::Value::Null,
             )
@@ -2117,6 +2140,42 @@ mod tests {
         assert!(h.incoming.borrow().is_none());
         assert_ne!(h.incoming_generation.get(), incoming_generation);
         sender.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn partial_service_reset_keeps_main_notice_pending_for_late_failure() {
+        let broker = term_test_broker::Broker::start();
+        let verified = MixBusHandler::connect_verified_with(&broker.url, &broker.options())
+            .await
+            .unwrap();
+        let epoch = verified.session_context().await.unwrap().broker_epoch;
+        let main = std::sync::Arc::new(Lane::Verified(verified));
+        let service = ::bus::native_client::NodedClient::connect_anonymous(&broker.url)
+            .await
+            .unwrap();
+        service.close().await;
+        let mut h = MixBusHandler::new();
+        h.native_attachment_generation = Some(Cell::new(1));
+        h.native_serve_generation.set(1);
+        h.test_force_state(MeshState::Connected(main)).await;
+        *h.serve.lock().await = Some(std::sync::Arc::new(Lane::Anonymous(service)));
+        h.serve_epoch.set(Some(epoch));
+        h.reconcile_native_generation(2, Some(epoch)).await;
+        assert_eq!(h.test_state_label().await, "Connected");
+        assert!(h.serve.lock().await.is_none());
+        assert_eq!(h.native_serve_generation.get(), 2);
+        assert_eq!(h.native_attachment_generation.as_ref().unwrap().get(), 1);
+        // Its reader may report the EOF only after the service reset commits.
+        h.test_force_state(MeshState::Lost).await;
+        h.reconcile_native_generation(2, Some(epoch)).await;
+        assert_eq!(h.test_state_label().await, "Unprobed");
+        h.test_force_state(MeshState::NeverPresent).await;
+        h.reconcile_native_generation(2, Some(epoch)).await;
+        assert_eq!(
+            h.test_state_label().await,
+            "NeverPresent",
+            "each lane rearms once"
+        );
     }
 
     #[test]

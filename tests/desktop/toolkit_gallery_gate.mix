@@ -4,7 +4,7 @@
 -- runs on the desktop.
 -- version: 0.2.0
 --
---   mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--noded PATH] [--no-build]
+--   mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--gallery PATH] [--config-file PATH] [--noded PATH] [--no-build]
 --
 -- Builds compd (release-fast) and the gallery example (debug, gallery-wgpu)
 -- unless --no-build, starts a private Bus (noded from --noded, else
@@ -20,6 +20,7 @@
 $n = require("nested_host_lib.mix")
 $root = trim(run_argv_must(["git", "rev-parse", "--show-toplevel"]))
 $bin = $root .. "/target/release-fast/compd"
+$gallery_bin = $root .. "/target/debug/examples/gallery"
 $config = $root .. "/tests/desktop/smoke-settings.json"
 $noded = ""
 $build = true
@@ -29,6 +30,10 @@ while $i < len($av)
   $a = $av[$i]
   if $a == "--bin" then
     $bin = $av[$i + 1]
+    $i = $i + 2
+    continue
+  elif $a == "--gallery" then
+    $gallery_bin = $av[$i + 1]
     $i = $i + 2
     continue
   elif $a == "--config-file" then
@@ -42,7 +47,7 @@ while $i < len($av)
   elif $a == "--no-build" then
     $build = false
   else
-    eprint("usage: mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--config-file PATH] [--noded PATH] [--no-build]")
+    eprint("usage: mix tests/desktop/toolkit_gallery_gate.mix [--bin PATH] [--gallery PATH] [--config-file PATH] [--noded PATH] [--no-build]")
     exit(2)
   end
   $i = $i + 1
@@ -63,10 +68,8 @@ try
   if not $n.wait_ready($session, 30) then
     raise("GALLERY_START", "nested compositor did not answer comp.ping: " .. $session.log)
   end
-  $gallery = spawn([$root .. "/target/debug/examples/gallery"], {
-    env: {XDG_RUNTIME_DIR: $session.runtime, WAYLAND_DISPLAY: $session.socket,
-      DISPLAY: "", LIBGL_ALWAYS_SOFTWARE: "1", WGPU_BACKEND: "gl",
-      DBUS_SESSION_BUS_ADDRESS: $session.dbus},
+  $gallery = spawn([$gallery_bin], {
+    env: $n.client_env($session,{LIBGL_ALWAYS_SOFTWARE:"1",WGPU_BACKEND:"gl"}),
     stdout: {file: $run.path .. "/gallery.log"}, stderr: "stdout", detach: true
   })
   $window = $n.call($session.service, "comp.window.wait", {
