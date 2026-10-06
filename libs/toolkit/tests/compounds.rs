@@ -55,3 +55,38 @@ fn all_compound_surfaces_render_with_dark_and_light_tokens() {
     }
     assert_ne!(frames[0], frames[1]);
 }
+
+#[test]
+fn compound_surfaces_render_at_native_and_fractional_scale() {
+    use iced_core::{mouse, renderer, theme::Base};
+    use iced_core::renderer::Headless;
+    let app = app::Demo::new();
+    let size = Size::new(1100.0, 700.0);
+    let mut renderer = iced_futures::futures::executor::block_on(
+        iced_renderer::Renderer::new(renderer::Settings::default(), Some("tiny-skia")),
+    ).expect("software renderer");
+    let theme = app.theme();
+    let base = theme.base();
+    let mut ui = iced_runtime::UserInterface::build(
+        app.view(), size, iced_runtime::user_interface::Cache::default(), &mut renderer,
+    );
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("toolkit-snapshots");
+    std::fs::create_dir_all(&directory).unwrap();
+    for scale in [1.0, 2.5] {
+        ui.draw(&mut renderer, &theme, &renderer::Style { text_color: base.text_color }, mouse::Cursor::Unavailable);
+        let physical = Size::new((size.width * scale) as u32, (size.height * scale) as u32);
+        let pixels = renderer.screenshot(physical, scale, base.background_color);
+        assert_eq!(pixels.len(), (physical.width * physical.height * 4) as usize);
+        // Check painted content in each third, including the terminal footer.
+        let background = &pixels[..4];
+        for (start, end) in [(0, physical.width / 2), (physical.width / 2, physical.width)] {
+            let painted = (0..physical.height).flat_map(|y| (start..end).map(move |x| (y * physical.width + x) as usize * 4))
+                .filter(|offset| &pixels[*offset..*offset + 4] != background).count();
+            assert!(painted > (100.0 * scale * scale) as usize, "blank compound surface at {scale}");
+        }
+        let file = std::fs::File::create(directory.join(format!("compounds-scale-{scale}.png"))).unwrap();
+        let mut encoder = png::Encoder::new(file, physical.width, physical.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+    }
+}

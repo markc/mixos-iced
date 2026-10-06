@@ -179,7 +179,7 @@ $cases = [
     {name: "move", kind: "transfer", action: "move", bytes: 128, scale: 1, separate: false},
     {name: "copy", kind: "transfer", action: "copy", bytes: 128, scale: 1, separate: false},
     {name: "large-pipe", kind: "transfer", action: "move", bytes: 2097152, scale: 1, separate: false},
-    {name: "scaled", kind: "transfer", action: "copy", bytes: 512, scale: 1.5, separate: false},
+    {name: "scaled", kind: "transfer", action: "copy", bytes: 512, scale: 2.5, separate: false},
     {name: "separate-processes", kind: "transfer", action: "move", bytes: 1024, scale: 1, separate: true},
     {name: "overlap", kind: "transfer", action: "move", bytes: 2097152, scale: 1, separate: true, overlap: true},
     {name: "reject", kind: "reject", action: "move", bytes: 128, scale: 1, separate: false},
