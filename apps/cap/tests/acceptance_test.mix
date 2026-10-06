@@ -1,0 +1,16 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Run only on an authorised build worker at the exact pushed commit.
+$root = dirname(dirname(dirname(dirname(realpath($0)))))
+for each $command in [
+  ["cargo","fmt","-p","cap","--check"],
+  ["cargo","test","--locked","-p","cap","-p","comp-model","-p","screencopy","--no-fail-fast"],
+  ["cargo","build","--locked","-p","noded"],
+  ["cargo","test","--locked","-p","cap","--test","native_bus","--","--ignored","--nocapture"],
+  ["cargo","clippy","--locked","-p","cap","--all-targets","--","-D","warnings"]
+]
+  print(join($command," "))
+  $result = run_argv($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stdout:"inherit",stderr:"stdout"})
+  if not $result.ok then raise("CAP_GATE_FAILED",join($command," ") .. ": " .. json_encode($result)) end
+end
+print("Cap format, document/compositor tests, native Bus acceptance and Clippy passed")

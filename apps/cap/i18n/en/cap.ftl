@@ -1,4 +1,5 @@
 title = Cap
+# SPDX-License-Identifier: MIT OR Apache-2.0
 text-tool = Text
 number-tool = Number
 text-placeholder = Type annotation text, then drag a box
