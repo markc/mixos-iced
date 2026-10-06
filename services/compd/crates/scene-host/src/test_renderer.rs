@@ -5,8 +5,11 @@ use std::sync::Once;
 
 use iced_core::{Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation};
 use iced_core::{image, renderer, svg, text};
+use iced_core::text::Paragraph as _;
 
-pub(crate) struct LayoutRenderer;
+pub(crate) struct LayoutRenderer {
+    pub(crate) paragraphs: Vec<Rectangle>,
+}
 
 impl LayoutRenderer {
     pub(crate) fn new() -> Self {
@@ -23,7 +26,7 @@ impl LayoutRenderer {
             system.raw().db_mut().set_sans_serif_family("Inter");
             system.raw().db_mut().set_monospace_family("Inter");
         });
-        Self
+        Self { paragraphs: Vec::new() }
     }
 }
 
@@ -75,11 +78,12 @@ impl text::Renderer for LayoutRenderer {
 
     fn fill_paragraph(
         &mut self,
-        _paragraph: &Self::Paragraph,
-        _position: Point,
+        paragraph: &Self::Paragraph,
+        position: Point,
         _color: Color,
         _clip_bounds: Rectangle,
     ) {
+        self.paragraphs.push(Rectangle::new(position, paragraph.min_bounds()));
     }
 
     fn fill_editor(

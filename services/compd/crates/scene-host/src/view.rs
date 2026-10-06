@@ -1014,6 +1014,34 @@ mod tests {
     }
 
     #[test]
+    fn panel_pager_digits_are_drawn_at_the_centre_of_their_hit_targets() {
+        let mut renderer = LayoutRenderer::new();
+        let ui = test_ui(include_str!("../tests/fixtures/panel-render.scene.md"));
+        let mut element = ui.build_view::<LayoutRenderer>();
+        let mut state = iced_core::widget::Tree::empty();
+        state.diff(element.as_widget_mut());
+        let viewport = iced_core::Rectangle::with_size(iced_core::Size::new(1536.0, 52.0));
+        let layout = element.as_widget_mut().layout(&mut state, &renderer,
+            &iced_core::layout::Limits::new(iced_core::Size::ZERO, viewport.size()));
+        let mut measure = crate::layout::Measure::default();
+        element.as_widget_mut().operate(&mut state, iced_core::Layout::new(&layout), &renderer, &mut measure);
+        element.as_widget().draw(&state, &mut renderer, &ui.theme,
+            &iced_core::renderer::Style::default(), iced_core::Layout::new(&layout),
+            iced_core::mouse::Cursor::Unavailable, &viewport);
+        // The fixture draws its four pager labels before the task and clock.
+        // Check shaped text positions, not merely the already-square buttons.
+        assert!(renderer.paragraphs.len() >= 4);
+        for (id, digit) in ["1", "2", "3", "4"].into_iter().zip(&renderer.paragraphs) {
+            let cell = measure.found[&row_id("pager", id)];
+            let offset = digit.center().x - cell.center().x;
+            assert!(offset.abs() < 0.1, "pager {id} text offset {offset}: digit={digit:?}, cell={cell:?}");
+            assert!((digit.center().y - cell.center().y).abs() < 0.1);
+            assert!(digit.x >= cell.x && digit.x + digit.width <= cell.x + cell.width);
+            assert_eq!((cell.width, cell.height), (30.0, 30.0));
+        }
+    }
+
+    #[test]
     fn autofocus_after_final_layout_targets_the_field_and_typing_emits_filter() {
         let renderer = LayoutRenderer::new();
         let ui = test_ui("---\nscene: 1\nname: launcher\ncitizen: test\nwindow: {\"kind\":\"edge\",\"edge\":\"left\",\"autofocus\":\"search\"}\n---\n```mix\nroot: {widget: \"column\", children: [\"search\"]}\nsearch: {widget: \"field\", value: \"\", on_change: \"filter\"}\n```\n");
