@@ -1995,3 +1995,4 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
             mouse::Interaction::default()
         }
     }
+}
