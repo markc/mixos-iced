@@ -212,7 +212,7 @@ pub fn file_icon(path: &std::path::Path, is_dir: bool, expanded: bool) -> Icon {
 pub const RASTER_PX: u32 = 16 * 2;
 
 /// `Color` → `#rrggbb`, the form an SVG `currentColor` replacement needs.
-pub fn hex(color: iced::Color) -> String {
+pub fn hex(color: application::iced::Color) -> String {
     let channel = |c: f32| format!("{:02x}", (c.clamp(0.0, 1.0) * 255.0).round() as u8);
     format!(
         "#{}{}{}",
@@ -227,7 +227,7 @@ type Key = (Icon, String, u32);
 
 #[derive(Default)]
 struct State {
-    cache: HashMap<Key, iced::widget::image::Handle>,
+    cache: HashMap<Key, application::iced::widget::image::Handle>,
     /// The `(palette, size)` a rasterisation is running (or has run) for.
     ensured: Option<(Vec<String>, u32)>,
 }
@@ -237,7 +237,7 @@ struct State {
 #[derive(Clone)]
 pub struct Icons {
     state: Arc<Mutex<State>>,
-    material: Option<Arc<HashMap<Icon, (char, iced::Font)>>>,
+    material: Option<Arc<HashMap<Icon, (char, application::iced::Font)>>>,
     asset_set: Option<String>,
 }
 
@@ -287,13 +287,13 @@ impl Default for Icons {
 
 /// Check actual selected-font coverage once at startup. A catalogue entry
 /// alone does not prove a user-supplied font contains its mapped glyph.
-fn validate_material_glyphs(glyphs: &HashMap<Icon, (char, iced::Font)>) -> Result<(), String> {
-    use iced::advanced::graphics::text::{
+fn validate_material_glyphs(glyphs: &HashMap<Icon, (char, application::iced::Font)>) -> Result<(), String> {
+    use application::iced::advanced::graphics::text::{
         cosmic_text::fontdb::{Family, Query, Weight},
         font_system,
     };
     let (_, font) = glyphs.values().next().ok_or("empty Material catalogue")?;
-    let iced::font::Family::Name(family) = font.family else {
+    let application::iced::font::Family::Name(family) = font.family else {
         return Err("Material face must use a named family".into());
     };
     let mut system = font_system()
@@ -342,7 +342,7 @@ impl Icons {
         self.asset_set.as_deref()
     }
 
-    pub fn glyph(&self, icon: Icon) -> Option<(char, iced::Font)> {
+    pub fn glyph(&self, icon: Icon) -> Option<(char, application::iced::Font)> {
         self.material.as_ref()?.get(&icon).copied()
     }
 
@@ -351,28 +351,28 @@ impl Icons {
     /// existing SVG raster cache.
     pub fn draw(
         &self,
-        renderer: &mut iced_tiny_skia::Renderer,
+        renderer: &mut application::cpu::Renderer,
         icon: Icon,
         tint: &str,
-        bounds: iced::Rectangle,
-        clip: iced::Rectangle,
+        bounds: application::iced::Rectangle,
+        clip: application::iced::Rectangle,
     ) {
-        use iced::advanced::{image::Renderer as _, text::Renderer as _};
+        use application::iced::advanced::{image::Renderer as _, text::Renderer as _};
         if let Some((glyph, font)) = self.glyph(icon) {
             renderer.fill_text(
-                iced::advanced::text::Text {
+                application::iced::advanced::text::Text {
                     content: glyph.to_string(),
                     bounds: bounds.size(),
-                    size: iced::Pixels(bounds.height),
-                    line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(
+                    size: application::iced::Pixels(bounds.height),
+                    line_height: application::iced::advanced::text::LineHeight::Absolute(application::iced::Pixels(
                         bounds.height,
                     )),
                     font,
-                    align_x: iced::advanced::text::Alignment::Center,
-                    align_y: iced::alignment::Vertical::Center,
-                    shaping: iced::advanced::text::Shaping::Advanced,
-                    wrapping: iced::advanced::text::Wrapping::None,
-                    ellipsis: iced::advanced::text::Ellipsis::None,
+                    align_x: application::iced::advanced::text::Alignment::Center,
+                    align_y: application::iced::alignment::Vertical::Center,
+                    shaping: application::iced::advanced::text::Shaping::Advanced,
+                    wrapping: application::iced::advanced::text::Wrapping::None,
+                    ellipsis: application::iced::advanced::text::Ellipsis::None,
                     hint_factor: None,
                 },
                 bounds.center(),
@@ -380,7 +380,7 @@ impl Icons {
                 clip,
             );
         } else if let Some(handle) = self.get(icon, tint, RASTER_PX) {
-            renderer.draw_image(iced::advanced::image::Image::new(handle), bounds, clip);
+            renderer.draw_image(application::iced::advanced::image::Image::new(handle), bounds, clip);
         }
     }
 
@@ -438,7 +438,7 @@ impl Icons {
 
     /// The cached handle for `(icon, tint, px)`, or `None` while the
     /// rasterisation is still in flight (the row draws nothing).
-    pub fn get(&self, icon: Icon, tint: &str, px: u32) -> Option<iced::widget::image::Handle> {
+    pub fn get(&self, icon: Icon, tint: &str, px: u32) -> Option<application::iced::widget::image::Handle> {
         let state = self
             .state
             .lock()
@@ -447,16 +447,16 @@ impl Icons {
     }
 }
 
-pub fn tint_color(tint: &str) -> iced::Color {
+pub fn tint_color(tint: &str) -> application::iced::Color {
     let channel = |range| u8::from_str_radix(tint.get(range).unwrap_or("00"), 16).unwrap_or(0);
-    iced::Color::from_rgb8(channel(1..3), channel(3..5), channel(5..7))
+    application::iced::Color::from_rgb8(channel(1..3), channel(3..5), channel(5..7))
 }
 
 /// Rasterise one SVG at `px` physical pixels, tinted. `Err` names the icon
 /// file so the warning is actionable.
-fn raster(bytes: &[u8], tint: &str, px: u32) -> Result<iced::widget::image::Handle, String> {
+fn raster(bytes: &[u8], tint: &str, px: u32) -> Result<application::iced::widget::image::Handle, String> {
     render(bytes, tint, px)
-        .map(|pixmap| iced::widget::image::Handle::from_rgba(px, px, pixmap.take()))
+        .map(|pixmap| application::iced::widget::image::Handle::from_rgba(px, px, pixmap.take()))
 }
 
 /// The raster itself, split from [`raster`] so tests inspect pixels without
@@ -511,7 +511,7 @@ mod tests {
                 .contains("delete"),
             "incomplete font coverage must refuse Material mode"
         );
-        let bounds = iced::Rectangle {
+        let bounds = application::iced::Rectangle {
             x: 8.0,
             y: 8.0,
             width: 16.0,
@@ -519,20 +519,20 @@ mod tests {
         };
         for scale in [1.0, 2.0] {
             let side = (32.0 * scale) as u32;
-            let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(
-                iced::Size::new(side, side),
-                iced::advanced::renderer::Scale {
+            let viewport = application::cpu::graphics::Viewport::with_physical_size(
+                application::iced::Size::new(side, side),
+                application::iced::advanced::renderer::Scale {
                     window: scale,
                     application: 1.0,
                 },
             );
             for icon in ALL {
                 let (glyph, font) = icons.glyph(icon).unwrap();
-                let iced::font::Family::Name(family) = font.family else {
+                let application::iced::font::Family::Name(family) = font.family else {
                     panic!("Material must use its named family");
                 };
                 {
-                    use iced::advanced::graphics::text::{
+                    use application::iced::advanced::graphics::text::{
                         cosmic_text::fontdb::{Family, Query, Weight},
                         font_system,
                     };
@@ -553,7 +553,7 @@ mod tests {
                     );
                 }
                 let mut renderer =
-                    iced_tiny_skia::Renderer::new(iced::advanced::renderer::Settings::default());
+                    application::cpu::Renderer::new(application::iced::advanced::renderer::Settings::default());
                 icons.draw(&mut renderer, icon, "#ff0000", bounds, bounds);
                 let text_count: usize = renderer
                     .layers()
@@ -568,8 +568,8 @@ mod tests {
                     &mut pixels.as_mut(),
                     &mut mask,
                     &viewport,
-                    &[iced::Rectangle::with_size(iced::Size::new(32.0, 32.0))],
-                    iced::Color::TRANSPARENT,
+                    &[application::iced::Rectangle::with_size(application::iced::Size::new(32.0, 32.0))],
+                    application::iced::Color::TRANSPARENT,
                 );
                 let ink: Vec<_> = pixels
                     .data()
@@ -616,9 +616,9 @@ mod tests {
 
     #[test]
     fn hex_renders_eight_bit_channels() {
-        assert_eq!(hex(iced::Color::from_rgb8(0x12, 0xfe, 0x03)), "#12fe03");
-        assert_eq!(hex(iced::Color::BLACK), "#000000");
-        assert_eq!(hex(iced::Color::WHITE), "#ffffff");
+        assert_eq!(hex(application::iced::Color::from_rgb8(0x12, 0xfe, 0x03)), "#12fe03");
+        assert_eq!(hex(application::iced::Color::BLACK), "#000000");
+        assert_eq!(hex(application::iced::Color::WHITE), "#ffffff");
     }
 
     #[test]

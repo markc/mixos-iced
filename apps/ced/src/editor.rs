@@ -54,21 +54,21 @@ pub struct LayoutReport {
 /// tokens (D17) — never literal colours in the widget.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Palette {
-    pub background: iced::Color,
-    pub text: iced::Color,
-    pub gutter_background: iced::Color,
-    pub gutter_text: iced::Color,
-    pub current_line: iced::Color,
-    pub selection: iced::Color,
-    pub caret: iced::Color,
+    pub background: application::iced::Color,
+    pub text: application::iced::Color,
+    pub gutter_background: application::iced::Color,
+    pub gutter_text: application::iced::Color,
+    pub current_line: application::iced::Color,
+    pub selection: application::iced::Color,
+    pub caret: application::iced::Color,
     /// Origin colours: other `human:*` origins / `agent:*` origins.
-    pub human_other: iced::Color,
-    pub agent: iced::Color,
-    pub error: iced::Color,
-    pub warning: iced::Color,
-    pub note: iced::Color,
+    pub human_other: application::iced::Color,
+    pub agent: application::iced::Color,
+    pub error: application::iced::Color,
+    pub warning: application::iced::Color,
+    pub note: application::iced::Color,
     /// Indexed by `HlClass as usize`.
-    pub highlight: [iced::Color; HL_CLASSES],
+    pub highlight: [application::iced::Color; HL_CLASSES],
 }
 
 /// How the view is drawn beyond the text and colours: the Mono font at the
@@ -77,7 +77,7 @@ pub struct Palette {
 /// to the frozen `EditorWidget::new`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorView {
-    pub font: iced::Font,
+    pub font: application::iced::Font,
     /// Text size, logical px (the Mono role, config `font_px`, zoom).
     pub px: f32,
     /// Line height as a multiple of `px`.
@@ -96,7 +96,7 @@ pub struct EditorView {
 impl Default for EditorView {
     fn default() -> Self {
         Self {
-            font: iced::Font::MONOSPACE,
+            font: application::iced::Font::MONOSPACE,
             px: 16.0,
             line_height: 1.3,
             measure: edit::view::MeasureCfg {
@@ -116,7 +116,7 @@ impl Default for EditorView {
 pub const HL_CLASSES: usize = 17;
 
 impl Palette {
-    pub fn hl(&self, class: HlClass) -> iced::Color {
+    pub fn hl(&self, class: HlClass) -> application::iced::Color {
         self.highlight[class as usize]
     }
 }

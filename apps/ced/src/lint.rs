@@ -159,7 +159,7 @@ pub fn spawn(
     text: String,
     cwd: Option<std::path::PathBuf>,
 ) -> impl std::future::Future<Output = (ResultTag, Result<String, String>)> + Send + 'static {
-    let (tx, rx) = iced::futures::channel::oneshot::channel();
+    let (tx, rx) = application::iced::futures::channel::oneshot::channel();
     let own = tag.clone();
     let spawned = std::thread::Builder::new()
         .name("ced-lint".into())

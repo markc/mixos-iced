@@ -18,8 +18,8 @@ pub mod status;
 pub mod tabs;
 pub mod timer;
 
-use iced::widget::{button, container, text};
-use iced::{Background, Border, Color, Element, Length, Padding};
+use application::iced::widget::{button, container, text};
+use application::iced::{Background, Border, Color, Element, Length, Padding};
 
 use crate::theme::{Chrome, Theme};
 
@@ -37,9 +37,9 @@ pub const PANEL_H: f32 = 180.0;
 pub struct Look {
     pub tokens: toolkit::Tokens,
     pub chrome: Chrome,
-    pub ui: iced::Font,
+    pub ui: application::iced::Font,
     pub ui_px: f32,
-    pub mono: iced::Font,
+    pub mono: application::iced::Font,
     pub mono_px: f32,
 }
 
@@ -61,17 +61,17 @@ impl Look {
     }
 
     /// Chrome text.
-    pub fn text<'a>(&self, value: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    pub fn text<'a>(&self, value: impl text::IntoFragment<'a>) -> application::iced::widget::Text<'a> {
         text(value).font(self.ui).size(self.ui_px)
     }
 
     /// Small chrome text (status bar).
-    pub fn small<'a>(&self, value: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    pub fn small<'a>(&self, value: impl text::IntoFragment<'a>) -> application::iced::widget::Text<'a> {
         text(value).font(self.ui).size(self.small_px())
     }
 
     /// Monospace text at the chrome size (paths, code in panels).
-    pub fn code<'a>(&self, value: impl text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    pub fn code<'a>(&self, value: impl text::IntoFragment<'a>) -> application::iced::widget::Text<'a> {
         text(value).font(self.mono).size(self.small_px())
     }
 
@@ -80,7 +80,7 @@ impl Look {
         &self,
         background: Color,
         fg: Color,
-    ) -> impl Fn(&iced::Theme) -> container::Style + 'static {
+    ) -> impl Fn(&application::iced::Theme) -> container::Style + 'static {
         move |_| container::Style {
             background: Some(Background::Color(background)),
             text_color: Some(fg),
@@ -89,7 +89,7 @@ impl Look {
     }
 
     /// A flat button: transparent until hovered, `muted_surface` then.
-    pub fn flat(&self) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn flat(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: match status {
@@ -112,7 +112,7 @@ impl Look {
     }
 
     /// The default (primary) action of a dialog or infobar.
-    pub fn primary(&self) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn primary(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
@@ -134,7 +134,7 @@ impl Look {
     }
 
     /// A secondary (outlined) action.
-    pub fn secondary(&self) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn secondary(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
@@ -159,7 +159,7 @@ impl Look {
     }
 
     /// A destructive action (Discard, Don't Save).
-    pub fn danger(&self) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn danger(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
@@ -182,7 +182,7 @@ impl Look {
     /// Text fields.
     pub fn input(
         &self,
-    ) -> impl Fn(&iced::Theme, iced::widget::text_input::Status) -> iced::widget::text_input::Style
+    ) -> impl Fn(&application::iced::Theme, application::iced::widget::text_input::Status) -> application::iced::widget::text_input::Style
     + 'static {
         let t = self.tokens;
         move |_, status| t.text_input(status)
@@ -193,7 +193,7 @@ impl Look {
         &self,
         label: impl text::IntoFragment<'a>,
         on_press: Option<M>,
-    ) -> iced::widget::Button<'a, M> {
+    ) -> application::iced::widget::Button<'a, M> {
         button(self.text(label))
             .padding(Padding::from([4, 12]))
             .on_press_maybe(on_press)
@@ -202,7 +202,7 @@ impl Look {
     /// A 1 px rule in the border colour.
     pub fn rule<'a, M: 'a>(&self) -> Element<'a, M> {
         let border = self.tokens.palette.border;
-        container(iced::widget::Space::new())
+        container(application::iced::widget::Space::new())
             .width(Length::Fill)
             .height(Length::Fixed(1.0))
             .style(move |_| container::Style {

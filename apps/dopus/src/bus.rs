@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ::bus::native_client::{ConnState, IncomingCommand, NodedClient, SupervisedClient};
-use iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
+use application::iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
 
 /// Everything the bus thread delivers to the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +191,7 @@ pub fn spawn(
 async fn run(
     service: String,
     url: String,
-    dtx: iced::futures::channel::mpsc::UnboundedSender<Delivery>,
+    dtx: application::iced::futures::channel::mpsc::UnboundedSender<Delivery>,
     mut erx: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: std::sync::mpsc::Sender<Result<(), StartError>>,
 ) {

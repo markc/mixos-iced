@@ -24,8 +24,8 @@ pub mod status;
 pub mod tips;
 pub mod toolbar;
 
-use iced::widget::{column, container, row};
-use iced::{Element, Length};
+use application::iced::widget::{column, container, row};
+use application::iced::{Element, Length};
 
 use dopus_core::{PaneId, PaneModel, VisibleRow};
 
@@ -43,8 +43,8 @@ pub struct Look {
     pub small_px: f32,
     pub tokens: toolkit::Tokens,
     pub chrome: Chrome,
-    pub ui_font: iced::Font,
-    pub mono_font: iced::Font,
+    pub ui_font: application::iced::Font,
+    pub mono_font: application::iced::Font,
     pub px: f32,
     pub mono_px: f32,
 }
@@ -58,9 +58,9 @@ impl Look {
     /// A full-width strip (headers, status bar) in the given token colours.
     pub fn strip(
         &self,
-        background: iced::Color,
-        text_color: iced::Color,
-    ) -> impl Fn(&iced::Theme) -> container::Style + 'static {
+        background: application::iced::Color,
+        text_color: application::iced::Color,
+    ) -> impl Fn(&application::iced::Theme) -> container::Style + 'static {
         move |_| container::Style {
             background: Some(background.into()),
             text_color: Some(text_color),
@@ -234,7 +234,7 @@ pub fn root<'a>(
         // The modal card is stacked OVER the window; the scrim takes every
         // click not on the card, and the router's modal scope takes every
         // chord plus Enter/Escape.
-        Some(dialog) => iced::widget::stack![content, dialogs::Dialog::view(dialog, look)].into(),
+        Some(dialog) => application::iced::widget::stack![content, dialogs::Dialog::view(dialog, look)].into(),
         None => content.into(),
     }
 }
@@ -244,21 +244,21 @@ pub fn root<'a>(
 /// `'static` (the ced `chrome::Look::flat` shape).
 pub fn button_look(
     look: &Look,
-) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style + 'static {
+) -> impl Fn(&application::iced::Theme, application::iced::widget::button::Status) -> application::iced::widget::button::Style + 'static {
     let (text, hover, radius) = (
         look.chrome.secondary_text,
         look.tokens.palette.muted_surface,
         look.tokens.metrics.radius.md,
     );
-    move |_theme, status| iced::widget::button::Style {
+    move |_theme, status| application::iced::widget::button::Style {
         background: match status {
-            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed => {
+            application::iced::widget::button::Status::Hovered | application::iced::widget::button::Status::Pressed => {
                 Some(hover.into())
             }
             _ => None,
         },
         text_color: text,
-        border: iced::Border {
+        border: application::iced::Border {
             radius: radius.into(),
             ..Default::default()
         },

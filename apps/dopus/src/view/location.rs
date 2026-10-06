@@ -14,8 +14,8 @@
 //! while an editor holds focus and the keystroke reaches the field.
 //! The field owns Enter submission; KeyRouter cancels editing on Escape.
 
-use iced::widget::{button, container};
-use iced::{Border, Element, Length};
+use application::iced::widget::{button, container};
+use application::iced::{Border, Element, Length};
 
 use dopus_core::{PaneId, PaneModel};
 use toolkit::TextField;
@@ -32,7 +32,7 @@ pub(super) fn text_px(look: Look) -> f32 {
     look.mono_px * 0.9
 }
 
-pub(super) fn padding(look: Look) -> iced::Padding {
+pub(super) fn padding(look: Look) -> application::iced::Padding {
     [
         look.chrome.edge * 2.0,
         look.chrome.small + look.chrome.edge * 2.0,
@@ -40,7 +40,7 @@ pub(super) fn padding(look: Look) -> iced::Padding {
     .into()
 }
 
-/// The editor id for a pane (handed to `iced::widget::operation::focus`).
+/// The editor id for a pane (handed to `application::iced::widget::operation::focus`).
 pub fn location_id(pane: PaneId) -> &'static str {
     match pane {
         PaneId::Left => LOCATION_LEFT,
@@ -96,7 +96,7 @@ fn editor(look: Look, pane_id: PaneId, text: &str) -> Element<'_, Msg> {
 
 /// The at-rest bar, styled as a button that reads like the editor it opens:
 /// the same quiet `input` edge role ced uses for an unfocused text field.
-fn bar_look(look: &Look) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
+fn bar_look(look: &Look) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
     let edge = look.chrome.edge;
     let (background, border, text_color, radius) = (
         look.tokens.palette.input,
@@ -121,7 +121,7 @@ fn bar_look(look: &Look) -> impl Fn(&iced::Theme, button::Status) -> button::Sty
 /// shape; only focused editing uses the accent ring.
 fn field_look(
     look: &Look,
-) -> impl Fn(&iced::Theme, iced::widget::text_input::Status) -> iced::widget::text_input::Style + 'static
+) -> impl Fn(&application::iced::Theme, application::iced::widget::text_input::Status) -> application::iced::widget::text_input::Style + 'static
 {
     let edge = look.chrome.edge;
     let (background, border, text_color, muted, ring, selection, radius) = (
@@ -133,11 +133,11 @@ fn field_look(
         look.tokens.palette.selection,
         look.tokens.metrics.radius.md,
     );
-    move |_theme, status| iced::widget::text_input::Style {
+    move |_theme, status| application::iced::widget::text_input::Style {
         background: background.into(),
         border: Border {
             color: match status {
-                iced::widget::text_input::Status::Focused { .. } => ring,
+                application::iced::widget::text_input::Status::Focused { .. } => ring,
                 _ => border,
             },
             width: edge,

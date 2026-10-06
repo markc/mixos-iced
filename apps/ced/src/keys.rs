@@ -22,10 +22,10 @@
 
 use std::collections::HashMap;
 
-use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
-use iced::keyboard::{self, Key, key::Named};
-use iced::{Element, Event, Length, Rectangle, Size, Vector};
+use application::iced::advanced::widget::{Operation, Tree, tree};
+use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
+use application::iced::keyboard::{self, Key, key::Named};
+use application::iced::{Element, Event, Length, Rectangle, Size, Vector};
 
 use crate::actions::{ActionId, Menu};
 use crate::keymap::{self, Chord};
@@ -252,7 +252,7 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for KeyRouter<'_, Message, Theme, Renderer>
 where
     Message: Clone,
-    Renderer: iced::advanced::Renderer,
+    Renderer: application::iced::advanced::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         self.content.as_widget().tag()
@@ -316,14 +316,14 @@ where
                     return;
                 }
             }
-            Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) if !self.modal => {
+            Event::Mouse(application::iced::mouse::Event::WheelScrolled { delta }) if !self.modal => {
                 if let Some(zoom) = &self.on_zoom
                     && cursor.is_over(layout.bounds())
                     && ctrl_held()
                 {
                     let lines = match delta {
-                        iced::mouse::ScrollDelta::Lines { y, .. } => *y,
-                        iced::mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
+                        application::iced::mouse::ScrollDelta::Lines { y, .. } => *y,
+                        application::iced::mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
                     };
                     shell.publish(zoom(lines));
                     shell.capture_event();
@@ -408,7 +408,7 @@ pub fn inert<'a, Message, Theme, Renderer>(
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Inert<'_, Message, Theme, Renderer>
 where
-    Renderer: iced::advanced::Renderer,
+    Renderer: application::iced::advanced::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         self.content.as_widget().tag()
@@ -517,7 +517,7 @@ impl<'a, Message, Theme, Renderer> From<Inert<'a, Message, Theme, Renderer>>
 where
     Message: 'a,
     Theme: 'a,
-    Renderer: iced::advanced::Renderer + 'a,
+    Renderer: application::iced::advanced::Renderer + 'a,
 {
     fn from(inert: Inert<'a, Message, Theme, Renderer>) -> Self {
         Element::new(inert)
@@ -546,7 +546,7 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for FocusProbe<'_, Message, Theme, Renderer>
 where
     Message: Clone,
-    Renderer: iced::advanced::Renderer,
+    Renderer: application::iced::advanced::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         self.content.as_widget().tag()
@@ -595,7 +595,7 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if let Event::Mouse(iced::mouse::Event::ButtonPressed(_)) = event
+        if let Event::Mouse(application::iced::mouse::Event::ButtonPressed(_)) = event
             && cursor.is_over(layout.bounds())
         {
             shell.publish(self.message.clone());
@@ -652,7 +652,7 @@ impl<'a, Message, Theme, Renderer> From<FocusProbe<'a, Message, Theme, Renderer>
 where
     Message: Clone + 'a,
     Theme: 'a,
-    Renderer: iced::advanced::Renderer + 'a,
+    Renderer: application::iced::advanced::Renderer + 'a,
 {
     fn from(probe: FocusProbe<'a, Message, Theme, Renderer>) -> Self {
         Element::new(probe)
@@ -674,7 +674,7 @@ impl<'a, Message, Theme, Renderer> From<KeyRouter<'a, Message, Theme, Renderer>>
 where
     Message: Clone + 'a,
     Theme: 'a,
-    Renderer: iced::advanced::Renderer + 'a,
+    Renderer: application::iced::advanced::Renderer + 'a,
 {
     fn from(router: KeyRouter<'a, Message, Theme, Renderer>) -> Self {
         Element::new(router)
@@ -684,7 +684,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::keyboard::key::{NativeCode, Physical};
+    use application::iced::keyboard::key::{NativeCode, Physical};
 
     fn chord(text: &str) -> Chord {
         keymap::parse_chord(text).unwrap()

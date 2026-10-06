@@ -5,10 +5,10 @@
 use super::*;
 #[path = "cpu_rgba_reference.rs"]
 mod rgba_reference;
-use iced::advanced::{Renderer as _, image::Renderer as _};
-use iced::widget::image::{self, Handle};
-use iced::{Color, Font, Pixels, Rectangle, Size};
-use iced_tiny_skia::{
+use application::iced::advanced::{Renderer as _, image::Renderer as _};
+use application::iced::widget::image::{self, Handle};
+use application::iced::{Color, Font, Pixels, Rectangle, Size};
+use application::cpu::{
     Layer, Renderer,
     graphics::{Viewport, damage},
 };
@@ -61,7 +61,7 @@ fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
         let height = baseline.height + 64;
         let viewport = Viewport::with_physical_size(
             Size::new(800, height),
-            iced::advanced::renderer::Scale {
+            application::iced::advanced::renderer::Scale {
                 window: scale,
                 application: 1.0,
             },
@@ -74,8 +74,8 @@ fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
         let last = images.last().unwrap().1;
         assert_eq!(last.y + last.height, baseline.height as f32 / scale);
         for offset in [0.0, 1.0, 3.0, 17.0, 30.0] {
-            let origin = iced::Point::new(offset / scale, offset / scale);
-            let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+            let origin = application::iced::Point::new(offset / scale, offset / scale);
+            let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
                 default_text_size: Pixels(13.0),
                 ..Default::default()
             });
@@ -84,7 +84,7 @@ fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
             widget::draw_images(&mut renderer, &surface.images(scale), origin, scale, clip);
             let mut bands = tiny_skia::Pixmap::new(800, height).unwrap();
             #[cfg(feature = "raster-probe")]
-            let _ = iced_tiny_skia::take_native_copy_count();
+            let _ = application::cpu::take_native_copy_count();
             renderer.draw(
                 &mut bands.as_mut(),
                 &mut mask,
@@ -97,7 +97,7 @@ fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
             // pixel equality alone cannot prove routing.
             #[cfg(feature = "raster-probe")]
             assert_eq!(
-                iced_tiny_skia::take_native_copy_count(),
+                application::cpu::take_native_copy_count(),
                 images.len(),
                 "native copies at scale={scale} cell_height={cell_height} offset={offset}"
             );
@@ -157,13 +157,13 @@ fn tiny_skia_frame_bench() {
             };
             let mut surface = Surface::default();
             let mut baseline = RgbaBand::default();
-            let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+            let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
                 default_text_size: Pixels(13.0),
                 ..Default::default()
             });
             let viewport = Viewport::with_physical_size(
                 Size::new(2250, 1250),
-                iced::advanced::renderer::Scale {
+                application::iced::advanced::renderer::Scale {
                     window: 2.5,
                     application: 1.0,
                 },
@@ -215,14 +215,14 @@ fn tiny_skia_frame_bench() {
                     widget::draw_images(
                         &mut renderer,
                         &surface.images(2.5),
-                        iced::Point::ORIGIN,
+                        application::iced::Point::ORIGIN,
                         2.5,
                         bounds,
                     );
                 } else {
                     let handle = baseline.cached.as_ref().unwrap().1.clone();
                     let _ = renderer.measure_image(&handle);
-                    let mut image = iced::advanced::image::Image::new(handle);
+                    let mut image = application::iced::advanced::image::Image::new(handle);
                     image.filter_method = image::FilterMethod::Nearest;
                     renderer.draw_image(image, bounds, bounds);
                 }
@@ -301,7 +301,7 @@ fn tiny_skia_frame_bench() {
 /// Compare both repaired and displayed pixels to a fresh RGBA+convert draw.
 #[test]
 fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
-    use iced_tiny_skia::window::compositor::{PresentHistory, physical_damage};
+    use application::cpu::window::compositor::{PresentHistory, physical_damage};
     for scale in [1.0, 1.25, 2.5] {
         let mut scale = scale;
         let mut raster = Raster::for_test(scale, 13.0, Cursor::Block).unwrap();
@@ -328,17 +328,17 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
         let mut reference = RgbaBand::default();
         let mut viewport = Viewport::with_physical_size(
             Size::new(480, 480),
-            iced::advanced::renderer::Scale {
+            application::iced::advanced::renderer::Scale {
                 window: scale,
                 application: 1.0,
             },
         );
         let mut full = Rectangle::with_size(viewport.logical_size());
-        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_text_size: Pixels(13.0),
             ..Default::default()
         });
-        let mut oracle = Renderer::new(iced::advanced::renderer::Settings {
+        let mut oracle = Renderer::new(application::iced::advanced::renderer::Settings {
             default_text_size: Pixels(13.0),
             ..Default::default()
         });
@@ -360,7 +360,7 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
                 raster = raster.resized(scale, 13.0).unwrap();
                 viewport = Viewport::with_physical_size(
                     Size::new(480, 480),
-                    iced::advanced::renderer::Scale {
+                    application::iced::advanced::renderer::Scale {
                         window: scale,
                         application: 1.0,
                     },
@@ -414,7 +414,7 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
             }
             reference.paint(&mut raster, &screen, &[]);
             reference.cache_handle(n as u64);
-            let origin = iced::Point::new(if n < 8 { 17.0 } else { 23.0 } / scale, 11.0 / scale);
+            let origin = application::iced::Point::new(if n < 8 { 17.0 } else { 23.0 } / scale, 11.0 / scale);
             let bounds = Rectangle {
                 x: origin.x,
                 y: origin.y,
@@ -433,7 +433,7 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
                     if native {
                         widget::draw_images(r, &surface.images(scale), origin, scale, clip);
                     } else {
-                        let mut image = iced::advanced::image::Image::new(
+                        let mut image = application::iced::advanced::image::Image::new(
                             reference.cached.as_ref().unwrap().1.clone(),
                         );
                         image.filter_method = image::FilterMethod::Nearest;
@@ -443,7 +443,7 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
                     // after the grid must remain above it, including repair.
                     if n % 3 != 0 {
                         r.draw_image(
-                            iced::advanced::image::Image::new(overlay.clone()),
+                            application::iced::advanced::image::Image::new(overlay.clone()),
                             Rectangle {
                                 x: origin.x + 4.0 / scale,
                                 y: origin.y + 4.0 / scale,
@@ -701,7 +701,7 @@ fn tiny_skia_foot_phases_bench() {
         black_box(&rgba);
     });
 
-    // Same loop as iced_tiny_skia::raster::Cache::allocate, with the load,
+    // Same loop as application::cpu::raster::Cache::allocate, with the load,
     // allocation and id lookup excluded. Alpha is opaque, as in production.
     let mut native = tiny_skia::Pixmap::new(2250, 1250).unwrap();
     measure("RGBA to native premultiplied BGRA loop full", || {
@@ -734,13 +734,13 @@ fn tiny_skia_foot_phases_bench() {
         black_box(target.data());
     });
     // Exercise the real image-cache miss, including image::load and allocation.
-    let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+    let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
         default_text_size: Pixels(13.0),
         ..Default::default()
     });
     let viewport = Viewport::with_physical_size(
         Size::new(2250, 1250),
-        iced::advanced::renderer::Scale {
+        application::iced::advanced::renderer::Scale {
             window: 2.5,
             application: 1.0,
         },
@@ -767,7 +767,7 @@ fn tiny_skia_foot_phases_bench() {
     let handle = Handle::from_rgba(2250, 1250, pixels);
     renderer.reset(bounds);
     black_box(renderer.measure_image(&handle));
-    let mut image = iced::advanced::image::Image::new(handle.clone());
+    let mut image = application::iced::advanced::image::Image::new(handle.clone());
     image.filter_method = image::FilterMethod::Nearest;
     renderer.draw_image(image, bounds, bounds);
     measure("iced cached image draw full", || {

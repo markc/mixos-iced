@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use ::bus::native_client::{ConnState, IncomingCommand, NodedClient, SupervisedClient};
 use editor_model::types::{Incoming, ParsedBody};
-use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
 use crate::controller::{BusCommand, Effect};
 

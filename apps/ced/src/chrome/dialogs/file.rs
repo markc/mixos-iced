@@ -13,8 +13,8 @@
 use std::path::{Path, PathBuf};
 
 use editor_model::types::{Intent, TabId};
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text_input};
-use iced::{Alignment, Element, Length, Padding};
+use application::iced::widget::{button, column, container, mouse_area, row, scrollable, text_input};
+use application::iced::{Alignment, Element, Length, Padding};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;
@@ -362,20 +362,20 @@ impl FileDialog {
                 .width(Length::Fill)
                 .padding(Padding::from([2, 8]))
                 .on_press(m(FileMsg::Select(i)))
-                .style(move |_, status| iced::widget::button::Style {
+                .style(move |_, status| application::iced::widget::button::Style {
                     background: if selected {
                         Some(t.palette.selection.into())
-                    } else if matches!(status, iced::widget::button::Status::Hovered) {
+                    } else if matches!(status, application::iced::widget::button::Status::Hovered) {
                         Some(t.palette.muted_surface.into())
                     } else {
                         None
                     },
                     text_color: fg,
-                    border: iced::Border {
+                    border: application::iced::Border {
                         radius: t.metrics.radius.md.into(),
-                        ..iced::Border::default()
+                        ..application::iced::Border::default()
                     },
-                    ..iced::widget::button::Style::default()
+                    ..application::iced::widget::button::Style::default()
                 });
             list = list.push(mouse_area(item).on_double_click(m(FileMsg::Activate(i))));
         }
@@ -389,7 +389,7 @@ impl FileDialog {
             .padding(4)
             .style(move |_| container::Style {
                 background: Some(t.palette.surface.into()),
-                border: iced::Border {
+                border: application::iced::Border {
                     color: t.palette.border,
                     width: 1.0,
                     radius: t.metrics.radius.md.into(),
@@ -406,13 +406,13 @@ impl FileDialog {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.clone());
-                recent = recent.push(iced::widget::tooltip(
+                recent = recent.push(application::iced::widget::tooltip(
                     look.button(name, Some(m(FileMsg::Recent(path.clone()))))
                         .style(look.flat()),
                     container(look.code(path.as_str()))
                         .padding(6)
                         .style(look.strip(t.palette.popover, t.palette.popover_text)),
-                    iced::widget::tooltip::Position::Top,
+                    application::iced::widget::tooltip::Position::Top,
                 ));
             }
             body = body.push(

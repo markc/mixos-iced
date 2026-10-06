@@ -9,7 +9,7 @@
 //! and the nested gate checks.
 
 use editor_model::model::Scroll;
-use iced::{Point, Rectangle, Size};
+use application::iced::{Point, Rectangle, Size};
 
 /// Width of the origin strip in the gutter (plan §4.5).
 pub const STRIP_W: f32 = 4.0;

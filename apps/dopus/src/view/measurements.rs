@@ -2,7 +2,7 @@
 //! App-owned measurement caches; no font shaping for unchanged view inputs.
 use super::{Look, alignment::FirstRow, elide};
 use dopus_core::PaneId;
-use iced::advanced::text::Paragraph as _;
+use application::iced::advanced::text::Paragraph as _;
 
 #[derive(Clone)]
 pub struct Footer {

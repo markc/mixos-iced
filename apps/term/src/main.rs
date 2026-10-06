@@ -37,8 +37,8 @@ mod cpu_grid;
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
 use frame::Painter;
-use iced::widget::{Row, button, column, container, mouse_area, row, space, text};
-use iced::{Background, Border, Element, Length, Size, Subscription, Task};
+use application::iced::widget::{Row, button, column, container, mouse_area, row, space, text};
+use application::iced::{Background, Border, Element, Length, Size, Subscription, Task};
 use input::Action;
 use layout::{Node, Shape};
 use std::collections::HashMap;
@@ -191,7 +191,7 @@ fn run(settings: config::Settings) -> Result<(), String> {
         window: Size::new(900.0, 560.0),
         shape: Shape::default(),
         grids: HashMap::new(),
-        modifiers: iced::keyboard::Modifiers::empty(),
+        modifiers: application::iced::keyboard::Modifiers::empty(),
         right_shift: std::cell::Cell::new(false),
         wheel: 0.0,
         scroll_wheel: 0.0,
@@ -207,39 +207,23 @@ fn run(settings: config::Settings) -> Result<(), String> {
         paint_requested: true,
     };
 
-    // `BootFn` is `Fn`, not `FnOnce`, and the state is not cloneable — the
-    // PTYs, the eventfd and the glyph cache each exist exactly once. iced
-    // calls boot a single time, so handing it over through a take-once cell
-    // is exact rather than defensive; a second call would panic loudly
-    // instead of silently booting a second terminal.
-    let state = std::cell::RefCell::new(Some(state));
     let ui_font = toolkit::fonts::font_for("sans-serif", &[], 400, false, true);
-    let result = iced::application(
-        move || {
-            (
-                state.borrow_mut().take().expect("iced boots once"),
-                Task::none(),
-            )
-        },
+    let result = application::start(
+        (state, Task::none()),
         update,
         view,
+        application::Window::new(
+            format!("dev.mixos.{SERVICE}"),
+            Size::new(900.0, 560.0),
+            ui_font,
+        ),
     )
-    .executor::<SingleThread>()
     .title(DISPLAY_NAME)
     .subscription(subscription)
-    .theme(iced::Theme::Dark)
-    .default_font(ui_font)
-    .style(|state: &State, _theme| iced::theme::Style {
+    .theme(application::iced::Theme::Dark)
+    .style(|state: &State, _theme| application::iced::theme::Style {
         background_color: state.tokens.palette.surface,
         text_color: state.tokens.palette.text,
-    })
-    .window(iced::window::Settings {
-        size: Size::new(900.0, 560.0),
-        platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: format!("dev.mixos.{SERVICE}"),
-            ..Default::default()
-        },
-        ..Default::default()
     })
     .run();
 
@@ -261,39 +245,7 @@ fn run(settings: config::Settings) -> Result<(), String> {
     result.map_err(|error| error.to_string())
 }
 
-/// One background thread for iced's `Task`s, instead of one per core.
-///
-/// iced's default executor is `futures::executor::ThreadPool::new()`, which
-/// sizes itself to `num_cpus` — 18 threads on this workstation, measured, and
-/// the whole of T5's thread-budget miss (30 threads against a gate of 24).
-/// They are all parked: this frontend's only tasks are `window::scale_factor`
-/// at boot and `exit`. A terminal's concurrency is one PTY per pane, and it is
-/// already handled by the `poll(2)` thread and the reaper.
-///
-/// A pool rather than a `LocalPool` because `Executor::spawn` takes `&self`
-/// and must not block the UI thread; pool_size(1) is the smallest thing that
-/// still satisfies that contract.
-struct SingleThread(iced::futures::executor::ThreadPool);
-
-impl iced::Executor for SingleThread {
-    fn new() -> Result<Self, iced::futures::io::Error> {
-        iced::futures::executor::ThreadPool::builder()
-            .pool_size(1)
-            .name_prefix("term-task")
-            .create()
-            .map(Self)
-    }
-
-    fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
-        self.0.spawn_ok(future);
-    }
-
-    fn block_on<T>(&self, future: impl Future<Output = T>) -> T {
-        iced::futures::executor::block_on(future)
-    }
-}
-
-type WakeSender = iced::futures::channel::mpsc::UnboundedSender<Message>;
+type WakeSender = application::iced::futures::channel::mpsc::UnboundedSender<Message>;
 
 struct Waker {
     fd: WakeFd,
@@ -329,7 +281,7 @@ struct State {
     /// missing here has not been sized yet, which forces its first resize.
     grids: HashMap<u64, (u16, u16)>,
     /// Tracked for Ctrl+wheel: a mouse event carries no modifier state.
-    modifiers: iced::keyboard::Modifiers,
+    modifiers: application::iced::keyboard::Modifiers,
     right_shift: std::cell::Cell<bool>,
     /// Fractional Ctrl+wheel travel not yet worth a font step.
     wheel: f32,
@@ -337,11 +289,11 @@ struct State {
     scroll_wheel: f32,
     scroll_pane: Option<u64>,
     /// Window coordinates survive a tab change beneath a stationary pointer.
-    pointer: std::cell::Cell<Option<iced::Point>>,
+    pointer: std::cell::Cell<Option<application::iced::Point>>,
     mouse: clipboard::MouseState,
     paste_notice: Option<String>,
     last_redraw: Option<std::time::Instant>,
-    ime_preedit: Option<iced::advanced::input_method::Preedit>,
+    ime_preedit: Option<application::iced::advanced::input_method::Preedit>,
     ime: ime::Composition,
     keyboard_focus: bool,
     force_paint: bool,
@@ -357,20 +309,20 @@ enum Message {
     /// Keys to put on the PTY, from the widget tree — NOT from an event
     /// subscription, which drops them under load (see `keys.rs`).
     Keys(Vec<term_core::terminal::Key>),
-    Ime(iced::advanced::input_method::Event),
+    Ime(application::iced::advanced::input_method::Event),
     /// A chord the terminal answers itself (tabs, panes, font size).
     Action(Action),
     Tab {
         forward: bool,
         repeat: bool,
     },
-    Modifiers(iced::keyboard::Modifiers),
+    Modifiers(application::iced::keyboard::Modifiers),
     SelectTab(u64),
-    Mouse(iced::mouse::Event, iced::Point, Instant),
+    Mouse(application::iced::mouse::Event, application::iced::Point, Instant),
     Paste(u64, Option<String>),
-    Wheel(u64, iced::mouse::ScrollDelta),
+    Wheel(u64, application::iced::mouse::ScrollDelta),
     Pointer,
-    Window(iced::window::Event),
+    Window(application::iced::window::Event),
     /// The window's device-pixel ratio, answered by the runtime.
     Scale(f32),
 }
@@ -383,8 +335,8 @@ fn subscription(_state: &State) -> Subscription<Message> {
         // events survive it: they are rare, and a lost resize is corrected by
         // the next one. `listen_with` already filters RedrawRequested, so
         // this cannot feed itself.
-        iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Window(event) => Some(Message::Window(event)),
+        application::iced::event::listen_with(|event, _status, _window| match event {
+            application::iced::Event::Window(event) => Some(Message::Window(event)),
             _ => None,
         }),
     ])
@@ -396,8 +348,8 @@ fn subscription(_state: &State) -> Subscription<Message> {
 /// the executor here is a futures thread pool with no reactor, and a terminal
 /// that is idle must cost nothing — this thread is parked in the kernel until
 /// the PTY actually writes.
-fn wakes() -> impl iced::futures::Stream<Item = Message> {
-    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+fn wakes() -> impl application::iced::futures::Stream<Item = Message> {
+    let (sender, receiver) = application::iced::futures::channel::mpsc::unbounded();
     let Some(waker) = WAKER.get().cloned() else {
         // Only reachable if the wiring order in `run` changes. The window
         // would come up and then never repaint, which reads as a hung shell
@@ -522,7 +474,7 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Ime(event) => {
-            use iced::advanced::input_method::{Event, Preedit};
+            use application::iced::advanced::input_method::{Event, Preedit};
             // Closed acknowledges the disable even after window focus loss.
             if matches!(event, Event::Closed) {
                 state.ime.closed();
@@ -600,36 +552,36 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Window(event) => match event {
-            iced::window::Event::Opened { size, .. } => {
+            application::iced::window::Event::Opened { size, .. } => {
                 state.resize(size);
                 // Ask rather than wait: winit does not necessarily emit a
                 // Rescaled for the scale a surface is BORN at, and a terminal
                 // that renders one frame at the wrong scale is a terminal
                 // that starts blurry.
-                return iced::window::latest()
-                    .and_then(iced::window::scale_factor)
+                return application::iced::window::latest()
+                    .and_then(application::iced::window::scale_factor)
                     .map(Message::Scale);
             }
-            iced::window::Event::Resized(size) => state.resize(size),
-            iced::window::Event::Rescaled(scale) => state.rescale(scale),
-            iced::window::Event::Focused => {
+            application::iced::window::Event::Resized(size) => state.resize(size),
+            application::iced::window::Event::Rescaled(scale) => state.rescale(scale),
+            application::iced::window::Event::Focused => {
                 state.tabs.lock().expect("tabs").user_activity();
                 state.keyboard_focus = true;
             }
             // A release that happens while another window has the keyboard
             // is never delivered; a latched Ctrl would turn every later wheel
             // into a zoom.
-            iced::window::Event::Unfocused => {
+            application::iced::window::Event::Unfocused => {
                 state.keyboard_focus = false;
                 state.right_shift.set(false);
                 state.ime.cancel();
                 state.ime_preedit = None;
                 state.cancel_mouse_gesture();
-                state.modifiers = iced::keyboard::Modifiers::empty();
+                state.modifiers = application::iced::keyboard::Modifiers::empty();
                 state.wheel = 0.0;
                 state.scroll_wheel = 0.0;
             }
-            iced::window::Event::CloseRequested => return iced::exit(),
+            application::iced::window::Event::CloseRequested => return application::iced::exit(),
             _ => {}
         },
     }
@@ -640,22 +592,22 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
 /// shell encoder — without that order, Ctrl+Shift+T would reach the PTY as a
 /// Ctrl-T (`input::tests::a_tab_chord_would_otherwise_reach_the_shell_as_a_control_code`).
 #[cfg(test)]
-fn on_key(event: &iced::keyboard::Event) -> Option<Message> {
+fn on_key(event: &application::iced::keyboard::Event) -> Option<Message> {
     on_key_screen(event, false)
 }
 
 #[cfg(test)]
-fn on_key_screen(event: &iced::keyboard::Event, alternate: bool) -> Option<Message> {
+fn on_key_screen(event: &application::iced::keyboard::Event, alternate: bool) -> Option<Message> {
     on_key_context(event, alternate, false)
 }
 
 fn on_key_context(
-    event: &iced::keyboard::Event,
+    event: &application::iced::keyboard::Event,
     alternate: bool,
     right_shift: bool,
 ) -> Option<Message> {
     match event {
-        iced::keyboard::Event::KeyPressed {
+        application::iced::keyboard::Event::KeyPressed {
             key,
             modified_key,
             physical_key,
@@ -666,7 +618,7 @@ fn on_key_context(
         } => {
             if matches!(
                 key,
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab)
+                application::iced::keyboard::Key::Named(application::iced::keyboard::key::Named::Tab)
             ) && !modifiers.control()
                 && !modifiers.alt()
                 && !modifiers.logo()
@@ -688,7 +640,7 @@ fn on_key_context(
             let keys = input::keys_for(key, text.as_deref(), *modifiers);
             (!keys.is_empty()).then_some(Message::Keys(keys))
         }
-        iced::keyboard::Event::ModifiersChanged(modifiers) => Some(Message::Modifiers(*modifiers)),
+        application::iced::keyboard::Event::ModifiersChanged(modifiers) => Some(Message::Modifiers(*modifiers)),
         _ => None,
     }
 }
@@ -720,15 +672,15 @@ fn view(state: &State) -> Element<'_, Message> {
                 .and_then(|frame| frame.lock().expect("frame").cursor())
                 .unwrap_or((0, 0));
             let (cw, ch) = state.painter.logical_cell();
-            iced::Rectangle::new(
-                iced::Point::new(
+            application::iced::Rectangle::new(
+                application::iced::Point::new(
                     pane.x + layout::border(scale) + col as f32 * cw,
                     pane.y + layout::border(scale) + row as f32 * ch,
                 ),
-                iced::Size::new(cw, ch),
+                application::iced::Size::new(cw, ch),
             )
         });
-    let hovered = move |position: iced::Point| {
+    let hovered = move |position: application::iced::Point| {
         let (id, pane) = pane_bounds.iter().find(|(_, pane)| {
             position.x >= pane.x
                 && position.x < pane.x + pane.w
@@ -737,7 +689,7 @@ fn view(state: &State) -> Element<'_, Message> {
         })?;
         let grid = *state.grids.get(id)?;
         let (col, row) = input::pointer_cell(
-            iced::Point::new(position.x - pane.x, position.y - pane.y),
+            application::iced::Point::new(position.x - pane.x, position.y - pane.y),
             layout::border(scale),
             state.painter.logical_cell(),
             grid,
@@ -775,14 +727,14 @@ fn view(state: &State) -> Element<'_, Message> {
     .input_method(
         match ime_cursor {
             Some(cursor) if state.keyboard_focus && state.ime.enabled() => {
-                iced::advanced::input_method::InputMethod::Enabled {
+                application::iced::advanced::input_method::InputMethod::Enabled {
                     // Runtime composition overlay; only Commit goes to the PTY.
                     cursor,
-                    purpose: iced::advanced::input_method::Purpose::Terminal,
+                    purpose: application::iced::advanced::input_method::Purpose::Terminal,
                     preedit: state.ime_preedit.clone(),
                 }
             }
-            _ => iced::advanced::input_method::InputMethod::Disabled,
+            _ => application::iced::advanced::input_method::InputMethod::Disabled,
         },
         |event| Message::Ime(event.clone()),
     );
@@ -804,10 +756,10 @@ fn view(state: &State) -> Element<'_, Message> {
 type HoveredCell = Option<(u64, u16, u16)>;
 
 fn pointer_message(
-    pointer: &std::cell::Cell<Option<iced::Point>>,
+    pointer: &std::cell::Cell<Option<application::iced::Point>>,
     last: &std::cell::Cell<HoveredCell>,
     hovered: HoveredCell,
-    position: iced::Point,
+    position: application::iced::Point,
 ) -> Option<Message> {
     // Keep pixel coordinates even when no application update is needed. A queued
     // Pointer message must never overwrite a newer coalesced position.
@@ -820,7 +772,7 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
     let tokens = state.tokens;
     let tab = |label: String, active: bool| {
         button(text(label).size(13.0)).padding([3.0, 12.0]).style(
-            move |_theme: &iced::Theme, status: button::Status| {
+            move |_theme: &application::iced::Theme, status: button::Status| {
                 let (background, text_color) = if active {
                     (tokens.palette.primary, tokens.palette.primary_text)
                 } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
@@ -930,7 +882,7 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
 /// shows only when there is a choice: a lone pane wears the plain border, as
 /// foot shows nothing at all. The border's WIDTH never changes — that is what
 /// keeps focus changes from resizing a PTY — only its colour.
-fn frame_colour(shape: &Shape, id: u64, tokens: toolkit::Tokens) -> iced::Color {
+fn frame_colour(shape: &Shape, id: u64, tokens: toolkit::Tokens) -> application::iced::Color {
     if id == shape.active_pane && shape.visible().len() > 1 {
         tokens.palette.ring
     } else {
@@ -943,8 +895,8 @@ fn renderer(
     _state: &State,
     _id: u64,
     frame: Arc<Mutex<frame::Frame>>,
-) -> iced::widget::Shader<Message, wgpu_grid::GridProgram> {
-    iced::widget::shader(wgpu_grid::GridProgram::new(frame))
+) -> application::iced::widget::Shader<Message, wgpu_grid::GridProgram> {
+    application::iced::widget::shader(wgpu_grid::GridProgram::new(frame))
 }
 
 #[cfg(all(feature = "tiny-skia", not(feature = "wgpu")))]
@@ -1012,7 +964,7 @@ fn apply(tabs: &mut TabSet, action: Action) -> Vec<Removed> {
 }
 
 impl State {
-    fn scroll(&mut self, id: u64, delta: iced::mouse::ScrollDelta) {
+    fn scroll(&mut self, id: u64, delta: application::iced::mouse::ScrollDelta) {
         if self.scroll_pane != Some(id) {
             self.scroll_wheel = 0.0;
             self.scroll_pane = Some(id);
@@ -1040,7 +992,7 @@ impl State {
             return;
         }
         let (col, row) = input::pointer_cell(
-            iced::Point::new(position.x - pane.x, position.y - pane.y),
+            application::iced::Point::new(position.x - pane.x, position.y - pane.y),
             layout::border(scale),
             self.painter.logical_cell(),
             grid,
@@ -1083,7 +1035,7 @@ impl State {
                 if tabs.is_starting() {
                     return Task::none();
                 }
-                return iced::exit();
+                return application::iced::exit();
             }
             Shape::of(&tabs)
         };
@@ -1156,7 +1108,7 @@ impl State {
                     self.paint_requested = true;
                 }
                 if action == Action::Quit {
-                    return iced::exit();
+                    return application::iced::exit();
                 }
                 // Every other mutation notifies the wake, and the next
                 // `sync` picks up the new shape.
@@ -1326,32 +1278,32 @@ mod tests {
     }
 
     fn press(
-        key: iced::keyboard::Key,
-        modified: iced::keyboard::Key,
-        modifiers: iced::keyboard::Modifiers,
+        key: application::iced::keyboard::Key,
+        modified: application::iced::keyboard::Key,
+        modifiers: application::iced::keyboard::Modifiers,
         text: Option<&str>,
         repeat: bool,
-    ) -> iced::keyboard::Event {
-        iced::keyboard::Event::KeyPressed {
+    ) -> application::iced::keyboard::Event {
+        application::iced::keyboard::Event::KeyPressed {
             key,
             modified_key: modified,
-            physical_key: iced::keyboard::key::Physical::Unidentified(
-                iced::keyboard::key::NativeCode::Unidentified,
+            physical_key: application::iced::keyboard::key::Physical::Unidentified(
+                application::iced::keyboard::key::NativeCode::Unidentified,
             ),
-            location: iced::keyboard::Location::Standard,
+            location: application::iced::keyboard::Location::Standard,
             modifiers,
             text: text.map(Into::into),
             repeat,
         }
     }
 
-    fn character(c: &str) -> iced::keyboard::Key {
-        iced::keyboard::Key::Character(c.into())
+    fn character(c: &str) -> application::iced::keyboard::Key {
+        application::iced::keyboard::Key::Character(c.into())
     }
 
     #[test]
     fn tab_is_deferred_and_right_shift_arrows_win_before_pty_encoding() {
-        use iced::keyboard::{Key, Modifiers, key::Named};
+        use application::iced::keyboard::{Key, Modifiers, key::Named};
         for alternate in [false, true] {
             for (key, modifiers, right_shift, action) in [
                 (
@@ -1404,7 +1356,7 @@ mod tests {
 
     #[test]
     fn right_shift_tracks_physical_press_release_and_modifier_reset() {
-        use iced::keyboard::{
+        use application::iced::keyboard::{
             Event, Key, Location, Modifiers,
             key::{Code, Named, Physical},
         };
@@ -1464,7 +1416,7 @@ mod tests {
 
     #[test]
     fn clipboard_chords_win_before_pty_encoding_and_swallow_repeats() {
-        use iced::keyboard::{Key, Modifiers, key::Named};
+        use application::iced::keyboard::{Key, Modifiers, key::Named};
         for (key, mods, expected) in [
             (
                 character("c"),
@@ -1502,7 +1454,7 @@ mod tests {
 
     #[test]
     fn scroll_chords_and_repeats_never_reach_the_shell() {
-        use iced::keyboard::{Key, Modifiers, key::Named};
+        use application::iced::keyboard::{Key, Modifiers, key::Named};
         use term_core::terminal::ScrollRequest;
         for (named, request) in [
             (Named::PageUp, ScrollRequest::PageUp),
@@ -1547,7 +1499,7 @@ mod tests {
         let pointer = std::cell::Cell::new(None);
         let last = std::cell::Cell::new(None);
         assert!(
-            pointer_message(&pointer, &last, Some((1, 0, 0)), iced::Point::new(2.0, 2.0)).is_some()
+            pointer_message(&pointer, &last, Some((1, 0, 0)), application::iced::Point::new(2.0, 2.0)).is_some()
         );
         for pixel in 3..8 {
             assert!(
@@ -1555,38 +1507,38 @@ mod tests {
                     &pointer,
                     &last,
                     Some((1, 0, 0)),
-                    iced::Point::new(pixel as f32, 2.0)
+                    application::iced::Point::new(pixel as f32, 2.0)
                 )
                 .is_none()
             );
         }
-        assert_eq!(pointer.get(), Some(iced::Point::new(7.0, 2.0)));
+        assert_eq!(pointer.get(), Some(application::iced::Point::new(7.0, 2.0)));
         // A narrower cell after zoom/layout uses the newest pixel, not x=2.
         assert_eq!(
             input::pointer_cell(pointer.get().unwrap(), 0.0, (4.0, 4.0), (80, 24)),
             (1, 0)
         );
         assert!(
-            pointer_message(&pointer, &last, Some((1, 1, 0)), iced::Point::new(9.0, 2.0)).is_some()
+            pointer_message(&pointer, &last, Some((1, 1, 0)), application::iced::Point::new(9.0, 2.0)).is_some()
         );
         assert!(
             pointer_message(
                 &pointer,
                 &last,
                 Some((2, 1, 0)),
-                iced::Point::new(90.0, 2.0)
+                application::iced::Point::new(90.0, 2.0)
             )
             .is_some()
         );
-        assert!(pointer_message(&pointer, &last, None, iced::Point::ORIGIN).is_some());
-        assert!(pointer_message(&pointer, &last, None, iced::Point::ORIGIN).is_none());
+        assert!(pointer_message(&pointer, &last, None, application::iced::Point::ORIGIN).is_some());
+        assert!(pointer_message(&pointer, &last, None, application::iced::Point::ORIGIN).is_none());
     }
 
     /// `on_key` is the dispatcher that decides chord versus shell and
     /// filters repeats; review finding: nothing exercised it.
     #[test]
     fn the_dispatcher_puts_chords_before_the_shell_and_filters_repeats() {
-        use iced::keyboard::Modifiers;
+        use application::iced::keyboard::Modifiers;
         let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
         let tab = |repeat| {
             on_key(&press(
@@ -1645,7 +1597,7 @@ mod tests {
         ));
         // Modifier state is tracked for Ctrl+wheel.
         assert!(matches!(
-            on_key(&iced::keyboard::Event::ModifiersChanged(Modifiers::CTRL)),
+            on_key(&application::iced::keyboard::Event::ModifiersChanged(Modifiers::CTRL)),
             Some(Message::Modifiers(modifiers)) if modifiers.control()
         ));
     }
@@ -1699,7 +1651,7 @@ mod tests {
             window: Size::new(900.0, 560.0),
             shape: Shape::default(),
             grids: HashMap::new(),
-            modifiers: iced::keyboard::Modifiers::empty(),
+            modifiers: application::iced::keyboard::Modifiers::empty(),
             right_shift: std::cell::Cell::new(false),
             wheel: 0.0,
             scroll_wheel: 0.0,
@@ -1719,7 +1671,7 @@ mod tests {
 
     #[test]
     fn ime_preedit_is_local_and_commit_sends_one_complete_sequence() {
-        use iced::advanced::input_method::Event;
+        use application::iced::advanced::input_method::Event;
         let (mut state, reaper) = test_state();
         let _ = state.sync();
         let terminal = state.tabs.lock().unwrap().active_terminal();
@@ -1741,7 +1693,7 @@ mod tests {
         assert_eq!(read(), None);
         assert!(state.ime_preedit.is_none());
         state.right_shift.set(true);
-        let _ = update(&mut state, Message::Window(iced::window::Event::Unfocused));
+        let _ = update(&mut state, Message::Window(application::iced::window::Event::Unfocused));
         assert!(!state.right_shift.get());
         let _ = update(&mut state, Message::Ime(Event::Commit(text.into())));
         assert_eq!(read(), None);
@@ -1830,7 +1782,7 @@ mod tests {
 
     #[test]
     fn ime_focus_switch_and_owner_close_drop_queued_commit_before_wake() {
-        use iced::advanced::input_method::Event;
+        use application::iced::advanced::input_method::Event;
         use term_core::terminal::Terminal;
         for change in ["pane", "tab", "close"] {
             let (mut state, reaper) = test_state();
@@ -1904,7 +1856,7 @@ mod tests {
 
     #[test]
     fn mouse_drag_uses_event_positions_and_release_outside_the_pane() {
-        use iced::{
+        use application::iced::{
             Point,
             mouse::{Button, Event},
         };
@@ -1979,7 +1931,7 @@ mod tests {
 
     #[test]
     fn cancelled_reported_gestures_release_the_original_pane_once() {
-        use iced::{
+        use application::iced::{
             Point,
             mouse::{Button, Event},
         };
@@ -2006,8 +1958,8 @@ mod tests {
             assert_eq!(input().unwrap(), b"\x1b[<32;4;2M");
         };
         begin(&mut state);
-        state.modifiers = iced::keyboard::Modifiers::SHIFT;
-        let _ = update(&mut state, Message::Window(iced::window::Event::Unfocused));
+        state.modifiers = application::iced::keyboard::Modifiers::SHIFT;
+        let _ = update(&mut state, Message::Window(application::iced::window::Event::Unfocused));
         assert_eq!(
             input().unwrap(),
             b"\x1b[<0;4;2m",
@@ -2080,7 +2032,7 @@ mod tests {
 
     #[test]
     fn cancelled_local_drag_clears_and_a_new_pane_selection_is_exclusive() {
-        use iced::{
+        use application::iced::{
             Point,
             mouse::{Button, Event},
         };
@@ -2131,7 +2083,7 @@ mod tests {
             terminals[1].lock().unwrap().selection_text().as_deref(),
             Some("abcd")
         );
-        let _ = update(&mut state, Message::Window(iced::window::Event::Unfocused));
+        let _ = update(&mut state, Message::Window(application::iced::window::Event::Unfocused));
         assert_eq!(terminals[1].lock().unwrap().selection_text(), None);
         assert_eq!(
             state
@@ -2173,7 +2125,7 @@ mod tests {
 
     #[test]
     fn mouse_reporting_owns_buttons_unless_shift_started_the_gesture() {
-        use iced::{
+        use application::iced::{
             Point,
             keyboard::Modifiers,
             mouse::{Button, Event},
@@ -2361,8 +2313,8 @@ mod tests {
     /// Ctrl, so the next Ctrl+wheel gesture zoomed early.
     #[test]
     fn releasing_ctrl_forgets_partial_wheel_travel() {
-        use iced::keyboard::Modifiers;
-        use iced::mouse::ScrollDelta;
+        use application::iced::keyboard::Modifiers;
+        use application::iced::mouse::ScrollDelta;
         let (mut state, reaper) = test_state();
         let _ = state.sync();
         let start = state.painter.font().current();
@@ -2406,8 +2358,8 @@ mod tests {
 
     #[test]
     fn wheel_targets_the_hovered_pane_without_focus_or_zoom_travel_leaking() {
-        use iced::keyboard::Modifiers;
-        use iced::mouse::ScrollDelta;
+        use application::iced::keyboard::Modifiers;
+        use application::iced::mouse::ScrollDelta;
         let (mut state, reaper) = test_state();
         let _ = state.sync();
         let left = state.shape.active_pane;
@@ -2417,7 +2369,7 @@ mod tests {
         assert_ne!(left, right);
         let terminal = state.tabs.lock().unwrap().pane_by_id(left).unwrap();
         fill_history(&terminal);
-        state.pointer.set(Some(iced::Point::new(10.0, 40.0)));
+        state.pointer.set(Some(application::iced::Point::new(10.0, 40.0)));
         let half = ScrollDelta::Pixels {
             x: 0.0,
             y: state.painter.logical_cell().1 / 2.0,
@@ -2513,7 +2465,7 @@ mod tests {
         let neighbour_generation = generation(&state, neighbour);
         state
             .pointer
-            .set(Some(iced::Point::new(state.window.width - 10.0, 40.0)));
+            .set(Some(application::iced::Point::new(state.window.width - 10.0, 40.0)));
         for request in [
             ScrollRequest::PageUp,
             ScrollRequest::Top,
@@ -2526,7 +2478,7 @@ mod tests {
                 ScrollRequest::PageUp => {
                     let _ = update(
                         &mut state,
-                        Message::Wheel(id, iced::mouse::ScrollDelta::Lines { x: 0.0, y: 3.0 }),
+                        Message::Wheel(id, application::iced::mouse::ScrollDelta::Lines { x: 0.0, y: 3.0 }),
                     );
                     assert!(state.needs_paint(), "wheel must arm redraw");
                 }

@@ -2,7 +2,7 @@
 //! The keyboard path, and the reason it is a widget rather than a
 //! subscription.
 //!
-//! `iced::event::listen_with` looks like the obvious way to read key presses,
+//! `application::iced::event::listen_with` looks like the obvious way to read key presses,
 //! and it **drops them under load**. Every subscription gets a
 //! `futures::channel::mpsc::channel(100)` and the runtime broadcasts into it
 //! with `try_send`, logging a warning and discarding the event when it is full
@@ -23,15 +23,15 @@
 //! events, where a dropped resize is corrected by the next one and a burst of
 //! a hundred is not a thing that happens.
 
-use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
-use iced::{Element, Event, Length, Rectangle, Size, Vector};
+use application::iced::advanced::widget::{Operation, Tree, tree};
+use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
+use application::iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-type KeyHandler<'a, Message> = Box<dyn Fn(&iced::keyboard::Event) -> Option<Message> + 'a>;
-type ImeHandler<'a, Message> = Box<dyn Fn(&iced::advanced::input_method::Event) -> Message + 'a>;
-type PointerHandler<'a, Message> = Box<dyn Fn(iced::Point) -> Option<Message> + 'a>;
+type KeyHandler<'a, Message> = Box<dyn Fn(&application::iced::keyboard::Event) -> Option<Message> + 'a>;
+type ImeHandler<'a, Message> = Box<dyn Fn(&application::iced::advanced::input_method::Event) -> Message + 'a>;
+type PointerHandler<'a, Message> = Box<dyn Fn(application::iced::Point) -> Option<Message> + 'a>;
 type MouseHandler<'a, Message> =
-    Box<dyn Fn(&mouse::Event, Option<iced::Point>) -> Option<Message> + 'a>;
+    Box<dyn Fn(&mouse::Event, Option<application::iced::Point>) -> Option<Message> + 'a>;
 type Redraw<Message> = (
     Option<std::time::Instant>,
     fn(std::time::Instant) -> Message,
@@ -42,7 +42,7 @@ pub struct Keys<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     on_press: KeyHandler<'a, Message>,
     on_ime: Option<ImeHandler<'a, Message>>,
-    ime: iced::advanced::input_method::InputMethod,
+    ime: application::iced::advanced::input_method::InputMethod,
     on_pointer: Option<PointerHandler<'a, Message>>,
     on_mouse: Option<MouseHandler<'a, Message>>,
     redraw: Option<Redraw<Message>>,
@@ -51,13 +51,13 @@ pub struct Keys<'a, Message, Theme, Renderer> {
 /// Wrap `content` so `on_press` sees every keyboard event.
 pub fn keys<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
-    on_press: impl Fn(&iced::keyboard::Event) -> Option<Message> + 'a,
+    on_press: impl Fn(&application::iced::keyboard::Event) -> Option<Message> + 'a,
 ) -> Keys<'a, Message, Theme, Renderer> {
     Keys {
         content: content.into(),
         on_press: Box::new(on_press),
         on_ime: None,
-        ime: iced::advanced::input_method::InputMethod::Disabled,
+        ime: application::iced::advanced::input_method::InputMethod::Disabled,
         on_pointer: None,
         on_mouse: None,
         redraw: None,
@@ -67,8 +67,8 @@ pub fn keys<'a, Message, Theme, Renderer>(
 impl<'a, Message, Theme, Renderer> Keys<'a, Message, Theme, Renderer> {
     pub fn input_method(
         mut self,
-        ime: iced::advanced::input_method::InputMethod,
-        callback: impl Fn(&iced::advanced::input_method::Event) -> Message + 'a,
+        ime: application::iced::advanced::input_method::InputMethod,
+        callback: impl Fn(&application::iced::advanced::input_method::Event) -> Message + 'a,
     ) -> Self {
         self.ime = ime;
         self.on_ime = Some(Box::new(callback));
@@ -79,13 +79,13 @@ impl<'a, Message, Theme, Renderer> Keys<'a, Message, Theme, Renderer> {
     /// callback claims only terminal events, leaving tab-strip widgets alone.
     pub fn on_mouse(
         mut self,
-        callback: impl Fn(&mouse::Event, Option<iced::Point>) -> Option<Message> + 'a,
+        callback: impl Fn(&mouse::Event, Option<application::iced::Point>) -> Option<Message> + 'a,
     ) -> Self {
         self.on_mouse = Some(Box::new(callback));
         self
     }
 
-    pub fn on_pointer(mut self, callback: impl Fn(iced::Point) -> Option<Message> + 'a) -> Self {
+    pub fn on_pointer(mut self, callback: impl Fn(application::iced::Point) -> Option<Message> + 'a) -> Self {
         self.on_pointer = Some(Box::new(callback));
         self
     }
@@ -105,7 +105,7 @@ impl<'a, Message, Theme, Renderer> Keys<'a, Message, Theme, Renderer> {
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Keys<'_, Message, Theme, Renderer>
 where
-    Renderer: iced::advanced::Renderer,
+    Renderer: application::iced::advanced::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         self.content.as_widget().tag()
@@ -154,13 +154,13 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if let Event::Mouse(iced::mouse::Event::CursorMoved { position }) = event
+        if let Event::Mouse(application::iced::mouse::Event::CursorMoved { position }) = event
             && let Some(callback) = &self.on_pointer
             && let Some(message) = callback(*position)
         {
             shell.publish(message);
         }
-        if let Event::Window(iced::window::Event::RedrawRequested(at)) = event
+        if let Event::Window(application::iced::window::Event::RedrawRequested(at)) = event
             && let Some((last, message)) = self.redraw
             && last != Some(*at)
         {
@@ -180,7 +180,7 @@ where
         // Merge after children: a focused text field's IME request wins.
         if matches!(
             event,
-            Event::Window(iced::window::Event::RedrawRequested(_))
+            Event::Window(application::iced::window::Event::RedrawRequested(_))
         ) {
             shell.request_input_method(&self.ime);
         }
@@ -192,7 +192,7 @@ where
         }
         if let Event::InputMethod(event) = event
             && (self.ime.is_enabled()
-                || matches!(event, iced::advanced::input_method::Event::Closed))
+                || matches!(event, application::iced::advanced::input_method::Event::Closed))
             && let Some(callback) = &self.on_ime
         {
             shell.publish(callback(event));
@@ -254,7 +254,7 @@ impl<'a, Message, Theme, Renderer> From<Keys<'a, Message, Theme, Renderer>>
 where
     Message: 'a,
     Theme: 'a,
-    Renderer: iced::advanced::Renderer + 'a,
+    Renderer: application::iced::advanced::Renderer + 'a,
 {
     fn from(keys: Keys<'a, Message, Theme, Renderer>) -> Self {
         Element::new(keys)

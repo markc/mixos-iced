@@ -14,13 +14,13 @@
 
 use std::time::{Duration, Instant};
 
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse, renderer};
-use iced::widget::{column, container};
-use iced::{Element, Event, Length, Rectangle, Size};
+use application::iced::advanced::widget::{Tree, tree};
+use application::iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse, renderer};
+use application::iced::widget::{column, container};
+use application::iced::{Element, Event, Length, Rectangle, Size};
 
 use dopus_core::{PaneId, PaneModel, VisibleRow};
-use iced_tiny_skia::Renderer;
+use application::cpu::Renderer;
 
 use crate::app::Msg;
 use crate::icons::Icons;
@@ -100,7 +100,7 @@ pub(super) fn pane_header<'a>(
 ) -> Element<'a, Msg> {
     container(location::bar(look, pane, pane_id, editing))
         .width(Length::Fill)
-        .padding(iced::Padding {
+        .padding(application::iced::Padding {
             top: first_row.pane_top,
             right: look.chrome.pad,
             bottom: look.chrome.small,
@@ -185,8 +185,8 @@ pub struct Divider {
     sides: [u16; 2],
     /// The grip colours (tokens; a hover/drag lights the handle with the
     /// active pane's accent).
-    border: iced::Color,
-    accent: iced::Color,
+    border: application::iced::Color,
+    accent: application::iced::Color,
 }
 
 impl Divider {
@@ -231,7 +231,7 @@ impl Divider {
     }
 }
 
-impl Widget<Msg, iced::Theme, Renderer> for Divider {
+impl Widget<Msg, application::iced::Theme, Renderer> for Divider {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<DividerState>()
     }
@@ -306,7 +306,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Divider {
             // CursorMoved carries no button state, so a held drag cannot be
             // detected as orphaned per-event: losing focus or a resize ends
             // the drag instead (the split keeps its last published ratio).
-            Event::Window(iced::window::Event::Unfocused | iced::window::Event::Resized(_)) => {
+            Event::Window(application::iced::window::Event::Unfocused | application::iced::window::Event::Resized(_)) => {
                 st.dragging = false;
             }
             _ => {}
@@ -317,7 +317,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Divider {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &iced::Theme,
+        _theme: &application::iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -369,7 +369,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Divider {
     }
 }
 
-impl<'a> From<Divider> for Element<'a, Msg, iced::Theme, Renderer> {
+impl<'a> From<Divider> for Element<'a, Msg, application::iced::Theme, Renderer> {
     fn from(divider: Divider) -> Self {
         Element::new(divider)
     }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
-use iced::{Length, Rectangle, Size};
+use application::iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
+use application::iced::{Length, Rectangle, Size};
 
 pub struct Grid {
     images: Vec<(Handle, Rectangle)>,
@@ -34,9 +34,9 @@ impl Grid {
 /// by output scale, never by available layout space. Snap only the origin;
 /// deriving every band's origin from integer pixels prevents fractional seams.
 pub(super) fn draw_images(
-    renderer: &mut iced_tiny_skia::Renderer,
+    renderer: &mut application::cpu::Renderer,
     images: &[(Handle, Rectangle)],
-    origin: iced::Point,
+    origin: application::iced::Point,
     scale: f32,
     clip: Rectangle,
 ) {
@@ -57,14 +57,14 @@ pub(super) fn draw_images(
     }
 }
 
-impl<Message, Theme> Widget<Message, Theme, iced_tiny_skia::Renderer> for Grid {
+impl<Message, Theme> Widget<Message, Theme, application::cpu::Renderer> for Grid {
     fn size(&self) -> Size<Length> {
         Size::new(self.width, self.height)
     }
     fn layout(
         &mut self,
         _: &mut Tree,
-        _: &iced_tiny_skia::Renderer,
+        _: &application::cpu::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         layout::Node::new(limits.resolve(self.width, self.height, Size::ZERO))
@@ -72,7 +72,7 @@ impl<Message, Theme> Widget<Message, Theme, iced_tiny_skia::Renderer> for Grid {
     fn draw(
         &self,
         _: &Tree,
-        renderer: &mut iced_tiny_skia::Renderer,
+        renderer: &mut application::cpu::Renderer,
         _: &Theme,
         _: &renderer::Style,
         layout: Layout<'_>,
@@ -86,7 +86,7 @@ impl<Message, Theme> Widget<Message, Theme, iced_tiny_skia::Renderer> for Grid {
 }
 
 impl<'a, Message: 'a, Theme: 'a> From<Grid>
-    for iced::Element<'a, Message, Theme, iced_tiny_skia::Renderer>
+    for application::iced::Element<'a, Message, Theme, application::cpu::Renderer>
 {
     fn from(grid: Grid) -> Self {
         Self::new(grid)

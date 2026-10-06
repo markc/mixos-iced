@@ -3,8 +3,8 @@
 //! (Tab/Shift+Tab, F10, Alt+letter) and the macros' chords — read from the
 //! same tables the key router uses, so the list cannot drift.
 
-use iced::widget::{column, row, scrollable};
-use iced::{Element, Length};
+use application::iced::widget::{column, row, scrollable};
+use application::iced::{Element, Length};
 
 use super::{DialogMsg, frame};
 use crate::actions::{ActionId, Menu};

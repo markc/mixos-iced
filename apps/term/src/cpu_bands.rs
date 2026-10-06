@@ -110,7 +110,7 @@ impl Surface {
         }
     }
 
-    pub(super) fn images(&self, scale: f32) -> Vec<(Handle, iced::Rectangle)> {
+    pub(super) fn images(&self, scale: f32) -> Vec<(Handle, application::iced::Rectangle)> {
         let mut y = 0;
         self.tiles
             .iter()
@@ -118,7 +118,7 @@ impl Surface {
                 let top = y as f32 / scale;
                 y += tile.height;
                 let bottom = y as f32 / scale;
-                let bounds = iced::Rectangle {
+                let bounds = application::iced::Rectangle {
                     x: 0.0,
                     y: top,
                     width: tile.width as f32 / scale,

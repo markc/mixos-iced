@@ -1,0 +1,26 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Native app components use the shared host, without direct iced-family edges.
+$root=dirname(dirname(realpath($0)))
+if len(args())!=0 then raise("USAGE","application_gate.mix takes no arguments") end
+$metadata=json_decode(run_argv_must(["cargo","metadata","--locked","--format-version","1","--no-deps"],{cwd:$root,timeout:120}))
+$apps=["ced","dopus","term"]
+$principals=[]
+for each $package in $metadata.packages
+  $component=$package.metadata.mixos.component
+  if contains($apps,$component) then
+    for each $dependency in $package.dependencies
+      $name=$dependency.name
+      if $name=="iced" or starts_with($name,"iced_") or starts_with($name,"iced-") then
+        raise("DIRECT_ICED","Direct iced dependency in "+$package.name+": "+$name)
+      end
+    end
+    if $package.name==$component then
+      $hosts=filter($package.dependencies,fn($dependency)=$dependency.name=="application" and $dependency.kind==nil)
+      if len($hosts)!=1 then raise("MISSING_HOST",$component+" must depend on the shared application host") end
+      push($principals,$component)
+    end
+  end
+end
+if not deep_eq(sort($principals),sort($apps)) then raise("MISSING_APP","Expected all three application principals") end
+print("application host gate: Ced, DOpus and Term have no direct iced-family dependencies")

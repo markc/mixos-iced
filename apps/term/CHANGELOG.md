@@ -1,5 +1,11 @@
 # Term Bus contract
 
+## 0.3.5
+
+Share the native application bootstrap and task worker. CPU/GPU selection and
+raster diagnostics use host features; PTY ownership and ordered teardown stay
+in the terminal. The existing native session contract remains unchanged.
+
 ## 0.3.4
 
 Transplant the terminal frontend and native session verbs from the frozen

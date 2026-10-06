@@ -2,8 +2,8 @@
 //! About MixOS Editor: version and build, the edit service it is attached
 //! to, the theme and fonts in use, and where the config lives.
 
-use iced::widget::{column, row};
-use iced::{Element, Length};
+use application::iced::widget::{column, row};
+use application::iced::{Element, Length};
 
 use super::{DialogCtx, DialogMsg, frame};
 use crate::app::Msg;

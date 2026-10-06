@@ -3,10 +3,10 @@
 use super::Look;
 use crate::verbs::ActionRow;
 use actions::ActionId;
-use iced::advanced::{layout, widget::Tree};
-use iced::widget::{Space, text, tooltip};
-use iced::{Element, Rectangle, Size};
-use iced_tiny_skia::Renderer;
+use application::iced::advanced::{layout, widget::Tree};
+use application::iced::widget::{Space, text, tooltip};
+use application::iced::{Element, Rectangle, Size};
+use application::cpu::Renderer;
 
 pub fn action_label(actions: &[ActionRow], action: ActionId, label: &str) -> String {
     match actions.iter().find(|row| row.id == action.as_str()) {
@@ -31,8 +31,8 @@ pub fn tip<'a, M: 'a>(
         text(label)
             .font(look.ui_font)
             .size(look.small_px)
-            .shaping(iced::advanced::text::Shaping::Advanced)
-            .wrapping(iced::advanced::text::Wrapping::WordOrGlyph),
+            .shaping(application::iced::advanced::text::Shaping::Advanced)
+            .wrapping(application::iced::advanced::text::Wrapping::WordOrGlyph),
         tooltip::Position::Bottom,
     )
     .padding(look.chrome.pad)

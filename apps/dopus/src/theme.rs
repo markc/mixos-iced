@@ -21,7 +21,7 @@ use design::{
     DesignCompileResult, DesignContext, Mode, ResolvedDictionary, ResolvedTypeRecord, Scheme,
     SourceIdentity, TypographyRole,
 };
-use iced::Color;
+use application::iced::Color;
 use toolkit::Tokens;
 
 /// The app identity the design compiler selects a per-app overlay by.
@@ -41,8 +41,8 @@ pub struct Theme {
     /// Ui role: family name and size in px.
     pub ui: (String, f32),
     /// The fonts to hand iced, resolved to installed families.
-    pub mono_font: iced::Font,
-    pub ui_font: iced::Font,
+    pub mono_font: application::iced::Font,
+    pub ui_font: application::iced::Font,
     /// The resolved selection (for `dopus.state` and theme actions).
     pub scheme: Scheme,
     pub mode: Mode,
@@ -323,7 +323,7 @@ pub fn build_chrome(d: &ResolvedDictionary) -> Result<Chrome, String> {
 /// The first installed family of the role (named family, then its
 /// fallbacks), else the generic family. The name is interned once per
 /// process: iced fonts name families with `&'static str`.
-fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> iced::Font {
+fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> application::iced::Font {
     let default = design::default_typography(if monospace {
         TypographyRole::Mono
     } else {
@@ -339,10 +339,10 @@ fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> iced
         prefer_assets,
     )
 }
-fn family_name(font: &iced::Font) -> String {
+fn family_name(font: &application::iced::Font) -> String {
     match font.family {
-        iced::font::Family::Name(name) => name.to_owned(),
-        iced::font::Family::Monospace => "monospace".to_owned(),
+        application::iced::font::Family::Name(name) => name.to_owned(),
+        application::iced::font::Family::Monospace => "monospace".to_owned(),
         _ => "sans-serif".to_owned(),
     }
 }
@@ -350,10 +350,10 @@ fn family_name(font: &iced::Font) -> String {
 impl Theme {
     /// An iced theme for the stock widgets (buttons, scrollables, containers),
     /// built from the same tokens.
-    pub fn iced_theme(&self) -> iced::Theme {
-        iced::Theme::custom(
+    pub fn iced_theme(&self) -> application::iced::Theme {
+        application::iced::Theme::custom(
             "mixos-dopus",
-            iced::theme::palette::Seed {
+            application::iced::theme::palette::Seed {
                 background: self.tokens.palette.surface,
                 text: self.tokens.palette.text,
                 primary: self.tokens.palette.primary,
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     #[ignore = "requires a bootstrapped static asset set"]
     fn authored_builtin_family_remains_authoritative() {
-        use iced::advanced::graphics::text::{
+        use application::iced::advanced::graphics::text::{
             cosmic_text::fontdb::{Database, Language},
             font_system,
         };

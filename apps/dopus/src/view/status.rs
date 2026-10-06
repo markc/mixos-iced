@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared status and panel toggles. Directory summaries belong to each pane.
 
-use iced::widget::{button, container, row, text};
-use iced::{Element, Length};
+use application::iced::widget::{button, container, row, text};
+use application::iced::{Element, Length};
 
 use crate::app::Msg;
 use crate::view::Look;
@@ -49,7 +49,7 @@ pub fn bar<'a>(
     ])
     .width(Length::Fill)
     .padding([0.0, look.chrome.pad])
-    .align_y(iced::Alignment::Center)
+    .align_y(application::iced::Alignment::Center)
     .style(look.strip(look.chrome.secondary, look.chrome.secondary_text))
     .into()
 }

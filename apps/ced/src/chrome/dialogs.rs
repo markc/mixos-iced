@@ -12,8 +12,8 @@ pub mod goto;
 pub mod keys;
 pub mod recovered;
 
-use iced::widget::{column, container, row};
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
+use application::iced::widget::{column, container, row};
+use application::iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 
 use super::Look;
 use crate::app::Msg;
@@ -169,7 +169,7 @@ pub fn frame<'a>(
     width: f32,
 ) -> Element<'a, Msg> {
     let t = look.tokens;
-    let mut actions = row![iced::widget::space().width(Length::Fill)]
+    let mut actions = row![application::iced::widget::space().width(Length::Fill)]
         .spacing(8)
         .align_y(Alignment::Center);
     for b in buttons {
@@ -209,9 +209,9 @@ pub fn frame<'a>(
         a: 0.55,
         ..darker(t.palette.surface, t.palette.text)
     };
-    iced::widget::opaque(
-        iced::widget::mouse_area(
-            container(iced::widget::opaque(card))
+    application::iced::widget::opaque(
+        application::iced::widget::mouse_area(
+            container(application::iced::widget::opaque(card))
                 .center(Length::Fill)
                 .style(move |_| container::Style {
                     background: Some(Background::Color(scrim)),

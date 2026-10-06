@@ -7,8 +7,8 @@
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};
 use editor_model::types::TabId;
-use iced::widget::{button, container, mouse_area, row, scrollable};
-use iced::{Alignment, Background, Border, Element, Length, Padding};
+use application::iced::widget::{button, container, mouse_area, row, scrollable};
+use application::iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use super::{Look, TABS_H};
 use crate::app::Msg;
@@ -148,7 +148,7 @@ pub fn view<'a>(
                     // The active tab carries an accent rule along its top edge.
                     color: if is_active { accent } else { strip },
                     width: if is_active { 1.0 } else { 0.0 },
-                    radius: iced::border::Radius {
+                    radius: application::iced::border::Radius {
                         top_left: t.metrics.radius.md,
                         top_right: t.metrics.radius.md,
                         ..Default::default()

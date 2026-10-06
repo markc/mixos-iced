@@ -3,8 +3,8 @@
 //! text of yours that was not applied, with Copy and Re-insert.
 
 use editor_model::types::{Conflict, TabId};
-use iced::widget::{column, container, scrollable};
-use iced::{Element, Length};
+use application::iced::widget::{column, container, scrollable};
+use application::iced::{Element, Length};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;
@@ -28,7 +28,7 @@ impl ConflictView {
                     .width(Length::Fill)
                     .style(move |_| container::Style {
                         background: Some(t.palette.surface.into()),
-                        border: iced::Border {
+                        border: application::iced::Border {
                             color: t.palette.border,
                             width: 1.0,
                             radius: t.metrics.radius.md.into(),

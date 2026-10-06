@@ -9,7 +9,7 @@
 //! window clipboard); notices go to stderr; the session is written when the
 //! Controller asks (debounced there) and on `app.quit`.
 
-use iced::futures::StreamExt;
+use application::iced::futures::StreamExt;
 
 use crate::bus::{self, Delivery};
 use crate::config::Config;

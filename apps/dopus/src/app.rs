@@ -39,9 +39,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use iced::futures::channel::mpsc::UnboundedReceiver;
-use iced::{Element, Size, Subscription, Task};
-use iced_tiny_skia::Renderer;
+use application::iced::futures::channel::mpsc::UnboundedReceiver;
+use application::iced::{Element, Size, Subscription, Task};
+use application::cpu::Renderer;
 
 use actions::{ActionId, Keymap};
 use design::{Mode, Scheme};
@@ -94,7 +94,7 @@ pub enum Msg {
     /// A raw core event, back from the pumper (law 2's feed).
     Core(CoreEvent),
     /// Window edges (focus reloads the keymap; close quits).
-    Window(iced::window::Event),
+    Window(application::iced::window::Event),
     /// A pending maintenance deadline expired.
     Tick(Instant),
     /// The open dialog's buttons (Yes/No, OK/Cancel, field input).
@@ -262,7 +262,7 @@ pub fn run(
     // Bus exists (a no-broker windowed run still hears the core — law 2).
     // With no Bus, deliveries drain an always-empty channel.
     let streams = Streams {
-        deliveries: deliveries.unwrap_or_else(|| iced::futures::channel::mpsc::unbounded().1),
+        deliveries: deliveries.unwrap_or_else(|| application::iced::futures::channel::mpsc::unbounded().1),
         core_events: pump(core_events),
         deadlines,
     };
@@ -270,30 +270,20 @@ pub fn run(
         anyhow::bail!("app::run called twice in one process");
     }
 
-    let state = std::cell::RefCell::new(Some(app));
-    iced::application(
-        move || state.borrow_mut().take().expect("iced boots once"),
+    application::start(
+        (app, Task::none()),
         Dopus::update,
         Dopus::view,
+        application::Window::new(APP_ID, Size::new(980.0, 640.0), ui_font)
+            .minimum(Size::new(420.0, 240.0))
+            .defer_close(),
     )
-    .executor::<SingleThread>()
     .title(Dopus::title)
     .subscription(Dopus::subscription)
     .theme(|app: &Dopus| app.theme.iced_theme())
-    .style(|app: &Dopus, _| iced::theme::Style {
+    .style(|app: &Dopus, _| application::iced::theme::Style {
         background_color: app.theme.tokens.palette.surface,
         text_color: app.theme.tokens.palette.text,
-    })
-    .default_font(ui_font)
-    .window(iced::window::Settings {
-        size: Size::new(980.0, 640.0),
-        min_size: Some(Size::new(420.0, 240.0)),
-        exit_on_close_request: false,
-        platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: APP_ID.to_owned(),
-            ..Default::default()
-        },
-        ..Default::default()
     })
     .run()
     .map_err(|e| anyhow::anyhow!("window: {e}"))
@@ -308,7 +298,7 @@ fn app_theme_override(dirs: Option<&AppDirs>) -> Option<PathBuf> {
 /// the UI thread does the feeding). The receiver is drained forever: a dead
 /// UI (channel closed) ends the pump.
 fn pump(receiver: std::sync::mpsc::Receiver<CoreEvent>) -> UnboundedReceiver<CoreEvent> {
-    let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+    let (tx, rx) = application::iced::futures::channel::mpsc::unbounded();
     std::thread::Builder::new()
         .name("dopus-core-events".to_owned())
         .spawn(move || {
@@ -325,7 +315,7 @@ fn pump(receiver: std::sync::mpsc::Receiver<CoreEvent>) -> UnboundedReceiver<Cor
 /// One cancellable deadline wait. With no pending work the thread blocks
 /// indefinitely; new state replaces its wait rather than starting a timer.
 fn maintenance() -> (std::sync::mpsc::Sender<Option<Instant>>, UnboundedReceiver<Instant>) {
-    let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+    let (tx, rx) = application::iced::futures::channel::mpsc::unbounded();
     let (arm, waits) = std::sync::mpsc::channel::<Option<Instant>>();
     std::thread::Builder::new()
         .name("dopus-deadline".to_owned())
@@ -353,10 +343,10 @@ fn maintenance() -> (std::sync::mpsc::Sender<Option<Instant>>, UnboundedReceiver
 
 #[test]
 fn maintenance_wait_cancels_rearms_and_stays_quiet_after_expiry() {
-    use iced::futures::StreamExt;
+    use application::iced::futures::StreamExt;
     use std::time::Duration;
     let (arm, mut wakes) = maintenance();
-    iced::futures::executor::block_on(wakes.next()).expect("startup wake");
+    application::iced::futures::executor::block_on(wakes.next()).expect("startup wake");
     arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
     arm.send(None).unwrap();
     std::thread::sleep(Duration::from_millis(60));
@@ -366,27 +356,6 @@ fn maintenance_wait_cancels_rearms_and_stays_quiet_after_expiry() {
     assert!(wakes.try_recv().is_ok(), "rearmed wait must fire");
     std::thread::sleep(Duration::from_millis(60));
     assert!(wakes.try_recv().is_err(), "expired wait must not become a heartbeat");
-}
-
-/// One background thread for iced's tasks (the `apps/term` executor).
-struct SingleThread(iced::futures::executor::ThreadPool);
-
-impl iced::Executor for SingleThread {
-    fn new() -> Result<Self, iced::futures::io::Error> {
-        iced::futures::executor::ThreadPool::builder()
-            .pool_size(1)
-            .name_prefix("dopus-task")
-            .create()
-            .map(Self)
-    }
-
-    fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
-        self.0.spawn_ok(future);
-    }
-
-    fn block_on<T>(&self, future: impl Future<Output = T>) -> T {
-        iced::futures::executor::block_on(future)
-    }
 }
 
 /// The receivers the subscription drains, handed over once.
@@ -400,12 +369,12 @@ static STREAMS: OnceLock<Mutex<Option<Streams>>> = OnceLock::new();
 
 /// Bus deliveries, core events and deadline wakes, merged. Built once: iced
 /// keeps a `Subscription::run` alive for as long as it is returned.
-fn streams() -> impl iced::futures::Stream<Item = Msg> {
-    use iced::futures::StreamExt;
+fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
+    use application::iced::futures::StreamExt;
     let taken = STREAMS.get().and_then(|m| m.lock().ok()?.take());
     match taken {
-        Some(s) => iced::futures::stream::select(
-            iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.core_events.map(Msg::Core)),
+        Some(s) => application::iced::futures::stream::select(
+            application::iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.core_events.map(Msg::Core)),
             s.deadlines.map(Msg::Tick),
         )
         .boxed(),
@@ -413,7 +382,7 @@ fn streams() -> impl iced::futures::Stream<Item = Msg> {
             tracing::error!(
                 "dopus: the delivery streams were already taken; the window will not hear the core"
             );
-            iced::futures::stream::empty().boxed()
+            application::iced::futures::stream::empty().boxed()
         }
     }
 }
@@ -632,8 +601,8 @@ impl Dopus {
         self.editing = Some((pane, path));
         keys::set_focus_editable(&self.router, true);
         Task::batch([
-            iced::widget::operation::focus(view::location::location_id(pane)),
-            iced::widget::operation::select_all(view::location::location_id(pane)),
+            application::iced::widget::operation::focus(view::location::location_id(pane)),
+            application::iced::widget::operation::select_all(view::location::location_id(pane)),
         ])
     }
 
@@ -1109,9 +1078,9 @@ impl Dopus {
         );
     }
 
-    fn on_window(&mut self, event: iced::window::Event) -> Task<Msg> {
+    fn on_window(&mut self, event: application::iced::window::Event) -> Task<Msg> {
         match event {
-            iced::window::Event::Focused => {
+            application::iced::window::Event::Focused => {
                 // filemgr's `reload_keymap_on_focus` rule: pick up keymap
                 // edits, cancel a pending chord either way.
                 let keymap_path = self.dirs.as_ref().map(|d| d.keymap_file());
@@ -1124,12 +1093,12 @@ impl Dopus {
                     self.action_table = action_table(&router.keymap);
                 }
             }
-            iced::window::Event::CloseRequested => return self.quit(),
-            iced::window::Event::Unfocused => {
+            application::iced::window::Event::CloseRequested => return self.quit(),
+            application::iced::window::Event::Unfocused => {
                 keys::cancel(&self.router);
                 view::drag::lock(&self.drag).cancel()
             }
-            iced::window::Event::Resized(_) => {
+            application::iced::window::Event::Resized(_) => {
                 view::drag::lock(&self.drag).cancel()
             }
             _ => {}
@@ -1152,18 +1121,18 @@ impl Dopus {
             // puts it on the wire before iced exits the process.
             bus.wait_done(std::time::Duration::from_secs(3));
         }
-        iced::exit()
+        application::iced::exit()
     }
 
     fn subscription(&self) -> Subscription<Msg> {
         Subscription::batch([
             Subscription::run(streams),
-            iced::event::listen_with(|event, _status, _window| match event {
-                iced::Event::Window(
-                    e @ (iced::window::Event::Resized(_)
-                    | iced::window::Event::Focused
-                    | iced::window::Event::Unfocused
-                    | iced::window::Event::CloseRequested),
+            application::iced::event::listen_with(|event, _status, _window| match event {
+                application::iced::Event::Window(
+                    e @ (application::iced::window::Event::Resized(_)
+                    | application::iced::window::Event::Focused
+                    | application::iced::window::Event::Unfocused
+                    | application::iced::window::Event::CloseRequested),
                 ) => Some(Msg::Window(e)),
                 _ => None,
             }),
@@ -1225,7 +1194,7 @@ impl Dopus {
         ]
     }
 
-    fn view(&self) -> Element<'_, Msg, iced::Theme, Renderer> {
+    fn view(&self) -> Element<'_, Msg, application::iced::Theme, Renderer> {
         let info = self.status.as_deref().unwrap_or(self.core.info());
         let editing = self
             .editing
@@ -1270,7 +1239,7 @@ impl Dopus {
         } else if let Some((pane, _)) = self.editing.as_ref() {
             routed = routed.on_edit_cancel(view::location::location_id(*pane), Msg::LocationCancel);
         }
-        let content: Element<'_, Msg, iced::Theme, Renderer> = if self.dialog.is_none() {
+        let content: Element<'_, Msg, application::iced::Theme, Renderer> = if self.dialog.is_none() {
             toolkit::menu::Menu::context(routed, self.context_items())
                 .style(self.look().tokens.menu_style())
                 .into()
@@ -1299,8 +1268,8 @@ fn pane_path_text(core: &DopusCore, pane: PaneId) -> String {
 /// typing replaces it).
 fn focus_prompt() -> Task<Msg> {
     Task::batch([
-        iced::widget::operation::focus(dialogs::PROMPT_INPUT),
-        iced::widget::operation::select_all(dialogs::PROMPT_INPUT),
+        application::iced::widget::operation::focus(dialogs::PROMPT_INPUT),
+        application::iced::widget::operation::select_all(dialogs::PROMPT_INPUT),
     ])
 }
 
@@ -1420,7 +1389,7 @@ mod tests {
             }]),
         });
         app.refresh_panes();
-        let bounds = iced::Rectangle {
+        let bounds = application::iced::Rectangle {
             x: 300.0,
             y: 0.0,
             width: 300.0,
@@ -1432,7 +1401,7 @@ mod tests {
             source_root: root,
             source,
             is_dir: false,
-            pointer: iced::Point::new(400.0, 80.0),
+            pointer: application::iced::Point::new(400.0, 80.0),
             target: Some(view::drag::Target {
                 path: target.clone(),
                 root: target,
@@ -1469,7 +1438,7 @@ mod tests {
             pane,
             rows::RowsMsg::SelectModified(paths[1].clone(), true, false),
         );
-        let right_click = |path| rows::RowsMsg::ContextMenu(path, iced::Point::ORIGIN);
+        let right_click = |path| rows::RowsMsg::ContextMenu(path, application::iced::Point::ORIGIN);
         let _ = app.on_rows(pane, right_click(Some(paths[0].clone())));
         assert_eq!(app.core.active(), pane);
         assert_eq!(app.core.selected_paths(pane), paths[..2]);
@@ -1512,7 +1481,7 @@ mod tests {
 
     #[test]
     fn context_popup_survives_pane_retarget_and_owns_navigation_keys() {
-        use iced::{Event, keyboard, mouse};
+        use application::iced::{Event, keyboard, mouse};
         let (dir, mut app) = fixture();
         for sidebar in [
             dopus_core::config::Sidebar::Places,
@@ -1545,17 +1514,17 @@ mod tests {
             .select_modified(PaneId::Right, paths[1].clone(), true, false);
         app.core.set_active_pane(PaneId::Left);
         app.refresh_panes();
-        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: app.look().ui_font,
-            default_text_size: iced::Pixels(app.look().px),
+            default_text_size: application::iced::Pixels(app.look().px),
             ..Default::default()
         });
-        let cursor = mouse::Cursor::Available(iced::Point::new(450.0, 110.0));
-        let size = iced::Size::new(600.0, 300.0);
-        let mut ui = iced_runtime::UserInterface::build(
+        let cursor = mouse::Cursor::Available(application::iced::Point::new(450.0, 110.0));
+        let size = application::iced::Size::new(600.0, 300.0);
+        let mut ui = application::runtime::UserInterface::build(
             app.view(),
             size,
-            iced_runtime::user_interface::Cache::new(),
+            application::runtime::user_interface::Cache::new(),
             &mut renderer,
         );
         let mut messages = Vec::new();
@@ -1579,7 +1548,7 @@ mod tests {
         assert_eq!(app.core.active(), PaneId::Right);
         assert_eq!(app.core.selected_paths(PaneId::Right), paths);
         let focused = app.core.pane(PaneId::Right).selected.clone();
-        let mut ui = iced_runtime::UserInterface::build(app.view(), size, cache, &mut renderer);
+        let mut ui = application::runtime::UserInterface::build(app.view(), size, cache, &mut renderer);
         let key = |named| {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named),
@@ -1606,7 +1575,7 @@ mod tests {
         assert!(
             statuses
                 .iter()
-                .all(|status| *status == iced::event::Status::Captured)
+                .all(|status| *status == application::iced::event::Status::Captured)
         );
         assert!(matches!(messages.as_slice(), [Msg::Actions(actions)]
             if actions == &[actions::filemgr::FILE_OPEN]));

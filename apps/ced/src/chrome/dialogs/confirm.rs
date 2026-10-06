@@ -4,7 +4,7 @@
 //! overwrite a file that changed on disk.
 
 use editor_model::types::{Intent, TabId};
-use iced::Element;
+use application::iced::Element;
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;
@@ -69,7 +69,7 @@ impl Confirm {
             Confirm::Overwrite { path, .. } => frame(
                 look,
                 "Replace file?",
-                iced::widget::column![
+                application::iced::widget::column![
                     look.text("This file already exists:"),
                     look.code(path.as_str()).color(t.palette.muted_text),
                     look.text("Replace it with this buffer?"),

@@ -55,6 +55,7 @@ iced_graphics = { path = "vendor/iced/graphics", version = "0.15.0-dev", feature
 iced_renderer = { path = "vendor/iced/renderer", version = "0.15.0-dev", default-features = false }
 iced_tiny_skia = { path = "vendor/iced/tiny_skia", version = "0.15.0-dev", default-features = false }
 iced_runtime = { path = "vendor/iced/runtime", version = "0.15.0-dev" }
+iced_program = { path = "vendor/iced/program", version = "0.15.0-dev" }
 # Headless rendering for toolkit's gallery snapshots (dev-dependency only).
 iced_test = { path = "vendor/iced/test", version = "0.15.0-dev" }
 iced_wgpu = { path = "vendor/iced/wgpu", version = "0.15.0-dev", default-features = false, features = ["web-colors"] }
@@ -93,6 +94,7 @@ zbus = { version = "=5.19.0", default-features = false, features = ["blocking-ap
 # Quoin's conf.mix (Mix data) and its one path rule (scene-host).
 
 # Shared libraries (libs/).
+application = { path = "libs/application", default-features = false }
 appearance = { path = "libs/appearance" }
 assets = { path = "libs/assets" }
 buildinfo = { path = "libs/buildinfo" }

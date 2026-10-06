@@ -24,11 +24,11 @@
 //! None)` — nothing runs). Zero colour literals: every colour is a token or
 //! a mix of two.
 
-use iced::widget::{button, column, container, row, text};
-use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
+use application::iced::widget::{button, column, container, row, text};
+use application::iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 
 use dopus_core::{PromptKind, validate_filename};
-use iced_tiny_skia::Renderer;
+use application::cpu::Renderer;
 use toolkit::TextField;
 
 use crate::app::{DialogMsg, Msg};
@@ -166,7 +166,7 @@ impl Dialog {
     }
 
     /// The dialog card over the scrim; a scrim press dismisses.
-    pub fn view<'a>(&'a self, look: Look) -> Element<'a, Msg, iced::Theme, Renderer> {
+    pub fn view<'a>(&'a self, look: Look) -> Element<'a, Msg, application::iced::Theme, Renderer> {
         match self {
             Dialog::Confirm { message, .. } => frame(
                 look,
@@ -207,7 +207,7 @@ impl Dialog {
                         .id(PROMPT_INPUT)
                         .on_input(|text| Msg::Dialog(DialogMsg::Input(text)))
                         .width(Length::Fill)
-                        .padding(iced::Padding::from([look.chrome.small, look.chrome.pad]))
+                        .padding(application::iced::Padding::from([look.chrome.small, look.chrome.pad]))
                         .size(look.px)
                         .style(field_look(look, error.is_some())),
                 ]
@@ -324,7 +324,7 @@ fn dialog_button<'a>(
 fn field_look(
     look: Look,
     invalid: bool,
-) -> impl Fn(&iced::Theme, iced::widget::text_input::Status) -> iced::widget::text_input::Style + 'static
+) -> impl Fn(&application::iced::Theme, application::iced::widget::text_input::Status) -> application::iced::widget::text_input::Style + 'static
 {
     let (background, border, text_color, muted, ring, warning, selection, radius) = (
         look.tokens.palette.input,
@@ -336,12 +336,12 @@ fn field_look(
         look.tokens.palette.selection,
         look.tokens.metrics.radius.md,
     );
-    move |_theme, status| iced::widget::text_input::Style {
+    move |_theme, status| application::iced::widget::text_input::Style {
         background: background.into(),
         border: Border {
             color: match status {
-                iced::widget::text_input::Status::Focused { .. } if invalid => warning,
-                iced::widget::text_input::Status::Focused { .. } => ring,
+                application::iced::widget::text_input::Status::Focused { .. } if invalid => warning,
+                application::iced::widget::text_input::Status::Focused { .. } => ring,
                 _ if invalid => warning,
                 _ => border,
             },
@@ -360,11 +360,11 @@ fn field_look(
 pub fn frame<'a>(
     look: Look,
     title: &'static str,
-    body: Element<'a, Msg, iced::Theme, Renderer>,
-    buttons: Vec<Element<'a, Msg, iced::Theme, Renderer>>,
-) -> Element<'a, Msg, iced::Theme, Renderer> {
+    body: Element<'a, Msg, application::iced::Theme, Renderer>,
+    buttons: Vec<Element<'a, Msg, application::iced::Theme, Renderer>>,
+) -> Element<'a, Msg, application::iced::Theme, Renderer> {
     let t = look.tokens;
-    let mut actions = row![iced::widget::space().width(Length::Fill)]
+    let mut actions = row![application::iced::widget::space().width(Length::Fill)]
         .spacing(look.chrome.pad)
         .align_y(Alignment::Center);
     for b in buttons {
@@ -407,9 +407,9 @@ pub fn frame<'a>(
         a: 0.55,
         ..darker(t.palette.surface, t.palette.text)
     };
-    iced::widget::opaque(
-        iced::widget::mouse_area(
-            container(iced::widget::opaque(card))
+    application::iced::widget::opaque(
+        application::iced::widget::mouse_area(
+            container(application::iced::widget::opaque(card))
                 .center(Length::Fill)
                 .style(move |_| container::Style {
                     background: Some(Background::Color(scrim)),

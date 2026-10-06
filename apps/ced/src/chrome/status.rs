@@ -7,8 +7,8 @@
 
 use edit::wire::{DiskState, Eol};
 use editor_model::mirror::{Mirror, Phase};
-use iced::widget::{button, container, row};
-use iced::{Alignment, Element, Length, Padding};
+use application::iced::widget::{button, container, row};
+use application::iced::{Alignment, Element, Length, Padding};
 
 use super::{Look, STATUS_H};
 use crate::app::Msg;
@@ -212,7 +212,7 @@ pub fn view<'a>(
     for f in right {
         r = r.push(draw(f));
     }
-    container(row![l, iced::widget::space().width(Length::Fill), r].align_y(Alignment::Center))
+    container(row![l, application::iced::widget::space().width(Length::Fill), r].align_y(Alignment::Center))
         .padding(Padding::from([0, 12]))
         .width(Length::Fill)
         .height(Length::Fixed(STATUS_H))

@@ -16,7 +16,7 @@
 
 use crate::frame::Frame;
 use bytes::{Bytes, BytesMut};
-use iced_tiny_skia::grid::{Damage, Grid as Handle};
+use application::cpu::grid::{Damage, Grid as Handle};
 use std::sync::{Arc, Mutex};
 use term_core::raster::{DamageBand, PaintState, PixelFormat, Raster};
 use term_core::terminal::Screen;
@@ -135,7 +135,7 @@ impl PixelBand {
         self.damage
             .as_mut()
             .expect("nonempty band")
-            .mark(self.bands.iter().map(|b| iced::Rectangle {
+            .mark(self.bands.iter().map(|b| application::iced::Rectangle {
                 x: b.x,
                 y: b.y,
                 width: b.width,

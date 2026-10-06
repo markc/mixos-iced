@@ -1,0 +1,31 @@
+[package]
+name = "application"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Shared native application bootstrap and renderer support"
+
+[package.metadata.mixos]
+component = "application"
+kind = "lib"
+layer = "desktop"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[features]
+default = []
+tiny-skia = ["iced/tiny-skia", "dep:iced_tiny_skia"]
+image = ["iced/image", "iced_tiny_skia?/image"]
+wgpu = ["iced/wgpu"]
+raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
+
+[dependencies]
+iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }
+iced_runtime.workspace = true
+iced_program.workspace = true
+iced_tiny_skia = { workspace = true, optional = true, features = ["wayland"] }

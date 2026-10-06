@@ -1,5 +1,10 @@
 # DOpus Bus contract
 
+## 0.4.3
+
+Use shared application hosting and renderer interfaces, including window
+defaults, close deferral and the single task worker. Existing Bus bytes remain.
+
 ## Unreleased
 
 Replace redraw-driven maintenance and the idle heartbeat with one cancellable

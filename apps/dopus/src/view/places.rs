@@ -5,8 +5,8 @@
 //! browser.rs:1267-1284). A click navigates the active pane; the active
 //! pane's current directory highlights.
 
-use iced::widget::{Scrollable, Space, button, column, container, image, row};
-use iced::{Border, Element, Length, Padding};
+use application::iced::widget::{Scrollable, Space, button, column, container, image, row};
+use application::iced::{Border, Element, Length, Padding};
 
 use dopus_core::{PaneId, PaneModel};
 
@@ -69,7 +69,7 @@ pub fn sidebar<'a>(
         let entry = button(
             row![image_widget(look, icons, tint, place_icon(name)), label]
                 .spacing(look.chrome.pad)
-                .align_y(iced::Alignment::Center),
+                .align_y(application::iced::Alignment::Center),
         )
         .padding([look.chrome.small, look.chrome.pad])
         .width(Length::Fill)
@@ -98,7 +98,7 @@ pub fn sidebar<'a>(
 fn place_look(
     look: &Look,
     selected: bool,
-) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
+) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
     let (accent_bg, hover, text, muted, radius) = (
         look.tokens.palette.selection,
         look.tokens.palette.muted_surface,
@@ -124,16 +124,16 @@ fn place_look(
 /// A Material text glyph, or the cached Lucide fallback, at the same icon size.
 pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Element<'static, Msg> {
     if let Some((glyph, font)) = icons.glyph(icon) {
-        return iced::widget::text(glyph.to_string())
+        return application::iced::widget::text(glyph.to_string())
             .font(font)
             .size(look.chrome.icon)
-            .line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(
+            .line_height(application::iced::advanced::text::LineHeight::Absolute(application::iced::Pixels(
                 look.chrome.icon,
             )))
-            .shaping(iced::advanced::text::Shaping::Advanced)
+            .shaping(application::iced::advanced::text::Shaping::Advanced)
             .color(icons::tint_color(tint))
-            .align_x(iced::alignment::Horizontal::Center)
-            .align_y(iced::alignment::Vertical::Center)
+            .align_x(application::iced::alignment::Horizontal::Center)
+            .align_y(application::iced::alignment::Vertical::Center)
             .width(Length::Fixed(look.chrome.icon))
             .height(Length::Fixed(look.chrome.icon))
             .into();

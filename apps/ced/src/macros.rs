@@ -193,7 +193,7 @@ pub enum MacroEvent {
 pub fn spawn(
     def: &MacroDef,
     env: &MacroEnv,
-) -> impl iced::futures::Stream<Item = MacroEvent> + Send + 'static {
+) -> impl application::iced::futures::Stream<Item = MacroEvent> + Send + 'static {
     spawn_with(Path::new(MIX), def, env)
 }
 
@@ -202,8 +202,8 @@ pub fn spawn_with(
     mix: &Path,
     def: &MacroDef,
     env: &MacroEnv,
-) -> impl iced::futures::Stream<Item = MacroEvent> + Send + 'static {
-    let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+) -> impl application::iced::futures::Stream<Item = MacroEvent> + Send + 'static {
+    let (tx, rx) = application::iced::futures::channel::mpsc::unbounded();
     let stem = def.stem.clone();
     if !mix.exists() {
         let _ = tx.unbounded_send(MacroEvent::Failed {
@@ -239,7 +239,7 @@ pub fn spawn_with(
     };
     let pipe = |reader: Box<dyn std::io::Read + Send>,
                 stderr: bool,
-                tx: iced::futures::channel::mpsc::UnboundedSender<MacroEvent>,
+                tx: application::iced::futures::channel::mpsc::UnboundedSender<MacroEvent>,
                 stem: String| {
         std::thread::spawn(move || {
             for text in std::io::BufReader::new(reader)
@@ -287,7 +287,7 @@ pub fn spawn_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::futures::StreamExt;
+    use application::iced::futures::StreamExt;
 
     fn write(dir: &Path, name: &str, body: &str) {
         std::fs::write(dir.join(name), body).unwrap();
@@ -365,7 +365,7 @@ mod tests {
             sel_end: 9,
         };
         let events: Vec<_> =
-            iced::futures::executor::block_on(spawn_with(fake, &def, &env).collect());
+            application::iced::futures::executor::block_on(spawn_with(fake, &def, &env).collect());
         assert!(events.contains(&MacroEvent::Line {
             stem: "m".into(),
             text: "b2_x 7 agent:macro.m 3-9".into(),
@@ -383,7 +383,7 @@ mod tests {
                 code: Some(3)
             })
         );
-        let missing: Vec<_> = iced::futures::executor::block_on(
+        let missing: Vec<_> = application::iced::futures::executor::block_on(
             spawn_with(Path::new("/nonexistent/mix"), &def, &env).collect(),
         );
         assert!(

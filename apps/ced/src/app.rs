@@ -24,10 +24,10 @@ use std::time::Instant;
 use editor_model::diag::Diagnostics;
 use editor_model::model::{EditCommand, Motion};
 use editor_model::types::{Intent, Level, Notice, TabId};
-use iced::futures::channel::mpsc::UnboundedReceiver;
-use iced::keyboard::{Key, key::Named};
-use iced::widget::{column, container, stack};
-use iced::{Element, Length, Size, Subscription, Task};
+use application::iced::futures::channel::mpsc::UnboundedReceiver;
+use application::iced::keyboard::{Key, key::Named};
+use application::iced::widget::{column, container, stack};
+use application::iced::{Element, Length, Size, Subscription, Task};
 
 use crate::actions::ActionId;
 use crate::bus::{self, BusHandle, Delivery};
@@ -97,7 +97,7 @@ pub enum Msg {
     FileTab,
     DialogKey(Named),
     Zoom(f32),
-    Window(iced::window::Event),
+    Window(application::iced::window::Event),
     Frame(Instant),
     Noop,
 }
@@ -269,73 +269,40 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         effects.extend(app.controller.open_paths(&paths, Intent::ui(0)));
     }
     let boot = app.perform(effects);
-    let state = std::cell::RefCell::new(Some((app, boot)));
-    iced::application(
-        move || state.borrow_mut().take().expect("iced boots once"),
+    application::start(
+        (app, boot),
         App::update,
         App::view,
+        application::Window::new(APP_ID, Size::new(1100.0, 760.0), ui_font)
+            .minimum(Size::new(420.0, 240.0))
+            .defer_close(),
     )
-    .executor::<SingleThread>()
     .title(App::title)
     .subscription(App::subscription)
     .theme(|app: &App| app.theme.iced_theme())
-    .style(|app: &App, _| iced::theme::Style {
+    .style(|app: &App, _| application::iced::theme::Style {
         background_color: app.theme.tokens.palette.surface,
         text_color: app.theme.tokens.palette.text,
-    })
-    .default_font(ui_font)
-    .window(iced::window::Settings {
-        size: Size::new(1100.0, 760.0),
-        min_size: Some(Size::new(420.0, 240.0)),
-        exit_on_close_request: false,
-        platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: APP_ID.to_owned(),
-            ..Default::default()
-        },
-        ..Default::default()
     })
     .run()
     .map_err(|e| anyhow::anyhow!("window: {e}"))
 }
 
-/// One background thread for iced's tasks (the `apps/term` executor): ced's
-/// tasks are clipboard reads, widget operations and the lint/macro futures,
-/// which already run on their own threads.
-struct SingleThread(iced::futures::executor::ThreadPool);
-
-impl iced::Executor for SingleThread {
-    fn new() -> Result<Self, iced::futures::io::Error> {
-        iced::futures::executor::ThreadPool::builder()
-            .pool_size(1)
-            .name_prefix("ced-task")
-            .create()
-            .map(Self)
-    }
-
-    fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
-        self.0.spawn_ok(future);
-    }
-
-    fn block_on<T>(&self, future: impl Future<Output = T>) -> T {
-        iced::futures::executor::block_on(future)
-    }
-}
-
 /// Bus deliveries and timer firings, merged. Built once: iced keeps a
 /// `Subscription::run` alive for as long as it is returned.
-fn streams() -> impl iced::futures::Stream<Item = Msg> {
-    use iced::futures::StreamExt;
+fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
+    use application::iced::futures::StreamExt;
     let taken = STREAMS.get().and_then(|m| m.lock().ok()?.take());
     match taken {
         Some(s) => {
-            iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.timers.map(Msg::Timer))
+            application::iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.timers.map(Msg::Timer))
                 .boxed()
         }
         None => {
             tracing::error!(
                 "ced: the delivery streams were already taken; the window will not hear the Bus"
             );
-            iced::futures::stream::empty().boxed()
+            application::iced::futures::stream::empty().boxed()
         }
     }
 }
@@ -407,7 +374,7 @@ impl App {
             Msg::RunMacro(stem) => self.run_macro(stem),
             Msg::Macro(event) => self.on_macro(event),
             Msg::OpenMenu(index) => {
-                iced::advanced::widget::operate(toolkit::menu::open_operation(BAR_ID, index))
+                application::iced::advanced::widget::operate(toolkit::menu::open_operation(BAR_ID, index))
                     .discard()
                     .chain(Task::done(Msg::Noop))
             }
@@ -461,7 +428,7 @@ impl App {
             Msg::FileTab => {
                 if let Some(Modal::File(d)) = &mut self.modal {
                     d.update(crate::chrome::dialogs::file::FileMsg::Complete);
-                    return iced::widget::operation::move_cursor_to_end(
+                    return application::iced::widget::operation::move_cursor_to_end(
                         crate::chrome::dialogs::file::PATH_INPUT,
                     );
                 }
@@ -511,15 +478,15 @@ impl App {
                 }
                 Effect::Notice { tab, notice } => self.on_notice(tab, notice),
                 Effect::ClipboardWrite { text, primary } => tasks.push(if primary {
-                    iced::clipboard::write_primary(text)
+                    application::iced::clipboard::write_primary(text)
                 } else {
-                    iced::clipboard::write(text).discard()
+                    application::iced::clipboard::write(text).discard()
                 }),
                 Effect::ClipboardRead { primary, intent } => {
                     let read = if primary {
-                        iced::clipboard::read_primary()
+                        application::iced::clipboard::read_primary()
                     } else {
-                        iced::clipboard::read_text()
+                        application::iced::clipboard::read_text()
                             .map(|result| result.ok().map(|text| (*text).clone()))
                     };
                     tasks.push(read.map(move |text| Msg::Paste(intent.clone(), text)));
@@ -632,8 +599,8 @@ impl App {
                     self.find.pattern = seed;
                 }
                 return Task::batch([
-                    iced::widget::operation::focus(FIND_INPUT),
-                    iced::widget::operation::select_all(FIND_INPUT),
+                    application::iced::widget::operation::focus(FIND_INPUT),
+                    application::iced::widget::operation::select_all(FIND_INPUT),
                 ]);
             }
             ActionId::SearchFindNext | ActionId::SearchFindPrev => {
@@ -660,7 +627,7 @@ impl App {
             ActionId::SearchGotoLine => {
                 if let Some(m) = self.active_tab().and_then(|t| t.mirror.as_ref()) {
                     self.modal = Some(Modal::Goto(Goto::new(m.text().line_count())));
-                    return iced::widget::operation::focus(crate::chrome::dialogs::goto::INPUT);
+                    return application::iced::widget::operation::focus(crate::chrome::dialogs::goto::INPUT);
                 }
                 return Task::none();
             }
@@ -945,8 +912,8 @@ impl App {
         }
         self.modal = Some(Modal::File(dialog));
         Task::batch([
-            iced::widget::operation::focus(crate::chrome::dialogs::file::PATH_INPUT),
-            iced::widget::operation::move_cursor_to_end(crate::chrome::dialogs::file::PATH_INPUT),
+            application::iced::widget::operation::focus(crate::chrome::dialogs::file::PATH_INPUT),
+            application::iced::widget::operation::move_cursor_to_end(crate::chrome::dialogs::file::PATH_INPUT),
         ])
     }
 
@@ -1124,7 +1091,7 @@ impl App {
             }
             InfoAction::CopyConflict(tab, rev) => {
                 return self.conflict(tab, rev).map_or_else(Task::none, |c| {
-                    iced::clipboard::write(c.texts.concat()).discard()
+                    application::iced::clipboard::write(c.texts.concat()).discard()
                 });
             }
             InfoAction::ReinsertConflict(tab, rev) => {
@@ -1219,25 +1186,25 @@ impl App {
         }
     }
 
-    fn on_window(&mut self, event: iced::window::Event) -> Task<Msg> {
+    fn on_window(&mut self, event: application::iced::window::Event) -> Task<Msg> {
         match event {
-            iced::window::Event::Resized(size) => self.window = size,
-            iced::window::Event::Focused => {
+            application::iced::window::Event::Resized(size) => self.window = size,
+            application::iced::window::Event::Focused => {
                 self.window_focused = true;
                 if let Some(tab) = self.controller.active() {
                     self.timers
                         .arm(TimerKey::ClearMarkers(tab), MARKER_CLEAR_MS);
                 }
             }
-            iced::window::Event::Unfocused => self.window_focused = false,
-            iced::window::Event::FileDropped(path) => {
+            application::iced::window::Event::Unfocused => self.window_focused = false,
+            application::iced::window::Event::FileDropped(path) => {
                 let intent = Intent::ui(self.controller.active().unwrap_or(0));
                 let effects = self
                     .controller
                     .open_paths(&[path.to_string_lossy().into_owned()], intent);
                 return self.perform(effects);
             }
-            iced::window::Event::CloseRequested => return self.quit(),
+            application::iced::window::Event::CloseRequested => return self.quit(),
             _ => {}
         }
         Task::none()
@@ -1251,7 +1218,7 @@ impl App {
         self.quitting = true;
         self.save_session();
         self.session_writer.flush();
-        iced::exit()
+        application::iced::exit()
     }
 
     /// Work that follows any state change: agent-edit badges, marker timers,
@@ -1419,7 +1386,7 @@ impl App {
                 self.post(None, Level::Error, format!("Macro {stem}: {error}"));
             }
         }
-        iced::widget::operation::snap_to_end(crate::chrome::output::SCROLL_ID)
+        application::iced::widget::operation::snap_to_end(crate::chrome::output::SCROLL_ID)
     }
 
     // ── settings, theme, session ────────────────────────────────────────────
@@ -1537,13 +1504,13 @@ impl App {
     fn subscription(&self) -> Subscription<Msg> {
         let mut subs = vec![
             Subscription::run(streams),
-            iced::event::listen_with(|event, _status, _window| match event {
-                iced::Event::Window(
-                    e @ (iced::window::Event::Resized(_)
-                    | iced::window::Event::Focused
-                    | iced::window::Event::Unfocused
-                    | iced::window::Event::FileDropped(_)
-                    | iced::window::Event::CloseRequested),
+            application::iced::event::listen_with(|event, _status, _window| match event {
+                application::iced::Event::Window(
+                    e @ (application::iced::window::Event::Resized(_)
+                    | application::iced::window::Event::Focused
+                    | application::iced::window::Event::Unfocused
+                    | application::iced::window::Event::FileDropped(_)
+                    | application::iced::window::Event::CloseRequested),
                 ) => Some(Msg::Window(e)),
                 _ => None,
             }),
@@ -1552,7 +1519,7 @@ impl App {
         // measurement, or a highlighter catching up on a cold seek.
         let behind = self.active_tab().is_some_and(|t| t.highlight.behind());
         if self.key_at.is_some() || behind {
-            subs.push(iced::window::frames().map(Msg::Frame));
+            subs.push(application::iced::window::frames().map(Msg::Frame));
         }
         Subscription::batch(subs)
     }
@@ -1632,7 +1599,7 @@ impl App {
         };
         let overlay: Element<'_, Msg> = match &self.modal {
             Some(modal) => modal.view(look, &self.dialog_ctx()),
-            None => iced::widget::space().into(),
+            None => application::iced::widget::space().into(),
         };
         let routed = keys::router(stack![base, overlay], &self.bindings, route_msg)
             .modal(modal_open)
@@ -1656,7 +1623,7 @@ impl App {
                         .color(look.tokens.palette.muted_text),
                 ]
                 .spacing(8)
-                .align_x(iced::Alignment::Center),
+                .align_x(application::iced::Alignment::Center),
             )
             .center(Length::Fill)
             .style(look.strip(self.theme.palette.background, self.theme.palette.text))
@@ -1802,7 +1769,7 @@ fn relex(
     ),
 > + Send
 + 'static {
-    let (tx, rx) = iced::futures::channel::oneshot::channel();
+    let (tx, rx) = application::iced::futures::channel::oneshot::channel();
     let language = tag.language.clone();
     let spawned = std::thread::Builder::new()
         .name("ced-relex".into())
@@ -1874,7 +1841,7 @@ fn route_msg(routed: Routed) -> Msg {
 
 /// Keys no widget took: Escape closes things; in a dialog Tab completes the
 /// path and the arrows move through the file list.
-fn unclaimed(key: &Key, mods: iced::keyboard::Modifiers, modal: bool) -> Option<Msg> {
+fn unclaimed(key: &Key, mods: application::iced::keyboard::Modifiers, modal: bool) -> Option<Msg> {
     match key {
         Key::Named(Named::Escape) => Some(Msg::Escape),
         Key::Named(Named::Tab) if modal && !mods.shift() && !mods.control() => Some(Msg::FileTab),
@@ -1918,7 +1885,7 @@ mod tests {
 
     #[test]
     fn unclaimed_keys() {
-        let none = iced::keyboard::Modifiers::empty();
+        let none = application::iced::keyboard::Modifiers::empty();
         assert_eq!(
             unclaimed(&Key::Named(Named::Escape), none, false),
             Some(Msg::Escape)

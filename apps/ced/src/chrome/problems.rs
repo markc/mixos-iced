@@ -5,8 +5,8 @@
 //! moves the caret to it.
 
 use editor_model::diag::{Diagnostic, Severity};
-use iced::widget::{button, column, container, row, scrollable};
-use iced::{Alignment, Element, Length, Padding};
+use application::iced::widget::{button, column, container, row, scrollable};
+use application::iced::{Alignment, Element, Length, Padding};
 
 use super::{Look, PANEL_H};
 use crate::app::Msg;
@@ -86,7 +86,7 @@ pub fn panel<'a>(look: Look, title: &'a str, body: Element<'a, Msg>) -> Element<
     let t = look.tokens;
     let header = row![
         look.small(title).color(look.chrome.secondary_text),
-        iced::widget::space().width(Length::Fill),
+        application::iced::widget::space().width(Length::Fill),
         button(look.text("×").color(t.palette.muted_text))
             .padding(Padding::from([0, 6]))
             .style(look.flat())

@@ -168,7 +168,7 @@ fn native_lane_round_trip() {
         });
         assert!(WAKER.set(structural.clone()).is_ok());
         tabs.lock().unwrap().set_structure_wake_for_test(structural.fd.waker());
-        use iced::futures::StreamExt;
+        use application::iced::futures::StreamExt;
         let mut events = wakes();
         assert!(matches!(tokio::time::timeout(Duration::from_secs(3), events.next()).await.unwrap(), Some(Message::Wake)));
         structural.pending.store(false, Ordering::Release);

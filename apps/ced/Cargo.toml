@@ -1,6 +1,6 @@
 [package]
 name = "ced"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,8 +18,7 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia"] }
-iced_tiny_skia.workspace = true
+application = { workspace = true, features = ["tiny-skia"] }
 toolkit = { workspace = true, features = ["tiny-skia"] }
 design.workspace = true
 appearance.workspace = true

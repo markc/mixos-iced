@@ -39,10 +39,10 @@ impl Timers {
     /// Start the thread; fired keys arrive on the returned stream.
     pub fn start() -> (
         Timers,
-        iced::futures::channel::mpsc::UnboundedReceiver<TimerKey>,
+        application::iced::futures::channel::mpsc::UnboundedReceiver<TimerKey>,
     ) {
         let (tx, rx) = mpsc::channel();
-        let (fire_tx, fire_rx) = iced::futures::channel::mpsc::unbounded();
+        let (fire_tx, fire_rx) = application::iced::futures::channel::mpsc::unbounded();
         let _ = std::thread::Builder::new()
             .name("ced-timers".into())
             .spawn(move || run(rx, fire_tx));
@@ -62,7 +62,7 @@ impl Timers {
     }
 }
 
-fn run(rx: mpsc::Receiver<Command>, fire: iced::futures::channel::mpsc::UnboundedSender<TimerKey>) {
+fn run(rx: mpsc::Receiver<Command>, fire: application::iced::futures::channel::mpsc::UnboundedSender<TimerKey>) {
     let mut pending: HashMap<TimerKey, Instant> = HashMap::new();
     loop {
         let next = pending.values().min().copied();
@@ -105,7 +105,7 @@ fn run(rx: mpsc::Receiver<Command>, fire: iced::futures::channel::mpsc::Unbounde
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::futures::StreamExt;
+    use application::iced::futures::StreamExt;
 
     #[test]
     fn rearming_debounces_and_cancel_removes() {
@@ -115,15 +115,15 @@ mod tests {
         timers.arm(TimerKey::Lint(7), 10);
         timers.arm(TimerKey::FindHighlight, 20);
         timers.cancel(TimerKey::FindHighlight);
-        let first = iced::futures::executor::block_on(fired.next());
-        let second = iced::futures::executor::block_on(fired.next());
+        let first = application::iced::futures::executor::block_on(fired.next());
+        let second = application::iced::futures::executor::block_on(fired.next());
         assert_eq!(
             (first, second),
             (Some(TimerKey::Lint(7)), Some(TimerKey::SessionSave))
         );
         timers.arm(TimerKey::StatusExpiry, 5);
         assert_eq!(
-            iced::futures::executor::block_on(fired.next()),
+            application::iced::futures::executor::block_on(fired.next()),
             Some(TimerKey::StatusExpiry),
             "the cancelled key never fired"
         );

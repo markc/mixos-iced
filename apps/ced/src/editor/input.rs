@@ -4,8 +4,8 @@
 //! reaches the widget is navigation, editing keys and text.
 
 use editor_model::model::{EditCommand, Motion};
-use iced::keyboard::key::Named;
-use iced::keyboard::{Key, Modifiers};
+use application::iced::keyboard::key::Named;
+use application::iced::keyboard::{Key, Modifiers};
 
 /// The command for a key press, if the editor handles it. `page` is the
 /// number of full rows (Page Up/Down distance).

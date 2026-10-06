@@ -25,7 +25,7 @@ use design::{
     ResolvedTypeRecord, Scheme, SourceIdentity, TypographyRole,
 };
 use editor_model::highlight::HlClass;
-use iced::Color;
+use application::iced::Color;
 use toolkit::Tokens;
 
 use crate::editor::{HL_CLASSES, Palette};
@@ -48,8 +48,8 @@ pub struct Theme {
     pub scheme: Scheme,
     pub mode: Mode,
     /// The fonts to hand iced, resolved to installed families.
-    pub mono_font: iced::Font,
-    pub ui_font: iced::Font,
+    pub mono_font: application::iced::Font,
+    pub ui_font: application::iced::Font,
     /// Chrome colours the `Tokens` set does not carry.
     pub chrome: Chrome,
     /// Something went wrong resolving (shown once in the status bar).
@@ -427,7 +427,7 @@ fn mix(a: LinearRgba, b: LinearRgba, t: f64) -> LinearRgba {
 /// The first installed family of the role (named family, then its
 /// fallbacks), else the generic family. The name is interned once per
 /// process: iced fonts name families with `&'static str`.
-fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> iced::Font {
+fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> application::iced::Font {
     let default = design::default_typography(if monospace {
         TypographyRole::Mono
     } else {
@@ -443,10 +443,10 @@ fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> iced
         prefer_assets,
     )
 }
-fn family_name(font: &iced::Font) -> String {
+fn family_name(font: &application::iced::Font) -> String {
     match font.family {
-        iced::font::Family::Name(name) => name.to_owned(),
-        iced::font::Family::Monospace => "monospace".to_owned(),
+        application::iced::font::Family::Name(name) => name.to_owned(),
+        application::iced::font::Family::Monospace => "monospace".to_owned(),
         _ => "sans-serif".to_owned(),
     }
 }
@@ -454,10 +454,10 @@ fn family_name(font: &iced::Font) -> String {
 impl Theme {
     /// An iced theme for the stock widgets (text inputs, scrollables,
     /// buttons), built from the same tokens.
-    pub fn iced_theme(&self) -> iced::Theme {
-        iced::Theme::custom(
+    pub fn iced_theme(&self) -> application::iced::Theme {
+        application::iced::Theme::custom(
             "mixos-ced",
-            iced::theme::palette::Seed {
+            application::iced::theme::palette::Seed {
                 background: self.tokens.palette.surface,
                 text: self.tokens.palette.text,
                 primary: self.tokens.palette.primary,
@@ -469,7 +469,7 @@ impl Theme {
     }
 
     /// The Mono role at `px` (zoom), as `(font, size)`.
-    pub fn mono_at(&self, px: Option<u16>) -> (iced::Font, f32) {
+    pub fn mono_at(&self, px: Option<u16>) -> (application::iced::Font, f32) {
         (self.mono_font, px.map_or(self.mono.1, f32::from))
     }
 }
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     #[ignore = "requires a bootstrapped static asset set"]
     fn authored_builtin_family_remains_authoritative() {
-        use iced::advanced::graphics::text::{
+        use application::iced::advanced::graphics::text::{
             cosmic_text::fontdb::{Database, Language},
             font_system,
         };

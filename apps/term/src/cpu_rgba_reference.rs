@@ -2,7 +2,7 @@
 //! Test-only pre-rank-3 transport, retained as the pixel/performance oracle.
 //! Keep allocation/reclaim and partial painting equivalent to the old PixelBand.
 use super::*;
-use iced::widget::image::Handle;
+use application::iced::widget::image::Handle;
 
 #[derive(Default)]
 pub(super) struct RgbaBand {

@@ -24,11 +24,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use iced::advanced::text::{self as atext, Paragraph as _};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse, renderer};
-use iced::{Element, Event, Length, Point, Rectangle, Size, alignment, keyboard};
-use iced_tiny_skia::Renderer;
+use application::iced::advanced::text::{self as atext, Paragraph as _};
+use application::iced::advanced::widget::{Tree, tree};
+use application::iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse, renderer};
+use application::iced::{Element, Event, Length, Point, Rectangle, Size, alignment, keyboard};
+use application::cpu::Renderer;
 
 use dopus_core::{FileEntry, VisibleRow};
 
@@ -179,7 +179,7 @@ fn listing_size_width<S: AsRef<str>>(
         + 2.0 * padding
 }
 
-type ColumnMetrics = (iced::Font, u32, iced::Font, u32, crate::theme::Chrome);
+type ColumnMetrics = (application::iced::Font, u32, application::iced::Font, u32, crate::theme::Chrome);
 
 /// Shared header/row measurements. Unchanged signatures do no formatting or
 /// shaping. Changed listings shape the four longest Size candidates and all
@@ -266,7 +266,7 @@ struct RowState {
     /// Pixels scrolled past the top of the list.
     offset: f32,
     row_h: f32,
-    metrics_key: Option<(iced::Font, u32, iced::Font, u32)>,
+    metrics_key: Option<(application::iced::Font, u32, application::iced::Font, u32)>,
     /// The tint the cache was built for (a re-tint clears it).
     tint: String,
     last_selected: Option<PathBuf>,
@@ -411,14 +411,14 @@ impl<'a> FileList<'a> {
         let sample = Para::with_text(atext::Text {
             content: "Ag",
             bounds: Size::INFINITE,
-            size: iced::Pixels(self.look.px),
-            line_height: atext::LineHeight::Absolute(iced::Pixels(line_h)),
+            size: application::iced::Pixels(self.look.px),
+            line_height: atext::LineHeight::Absolute(application::iced::Pixels(line_h)),
             font: self.look.ui_font,
             align_x: atext::Alignment::Left,
             align_y: alignment::Vertical::Top,
             shaping: atext::Shaping::Advanced,
             wrapping: atext::Wrapping::None,
-            ellipsis: iced::advanced::text::Ellipsis::None,
+            ellipsis: application::iced::advanced::text::Ellipsis::None,
             hint_factor: None,
         });
         st.row_h = sample
@@ -430,18 +430,18 @@ impl<'a> FileList<'a> {
         st.metrics_key = Some(key);
     }
 
-    fn shape(content: &str, font: iced::Font, px: f32) -> Para {
+    fn shape(content: &str, font: application::iced::Font, px: f32) -> Para {
         Para::with_text(atext::Text {
             content,
             bounds: Size::INFINITE,
-            size: iced::Pixels(px),
-            line_height: atext::LineHeight::Absolute(iced::Pixels(px * 1.4)),
+            size: application::iced::Pixels(px),
+            line_height: atext::LineHeight::Absolute(application::iced::Pixels(px * 1.4)),
             font,
             align_x: atext::Alignment::Left,
             align_y: alignment::Vertical::Top,
             shaping: atext::Shaping::Advanced,
             wrapping: atext::Wrapping::None,
-            ellipsis: iced::advanced::text::Ellipsis::None,
+            ellipsis: application::iced::advanced::text::Ellipsis::None,
             hint_factor: None,
         })
     }
@@ -550,7 +550,7 @@ impl<'a> FileList<'a> {
     }
 }
 
-impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
+impl Widget<RowsMsg, application::iced::Theme, Renderer> for FileList<'_> {
     fn diff(&mut self, _tree: &mut Tree) {
         // Preserve hover state until layout reconciles visible icon regions.
     }
@@ -670,7 +670,7 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 st.modifiers = *modifiers;
             }
-            Event::Window(iced::window::Event::Unfocused) => {
+            Event::Window(application::iced::window::Event::Unfocused) => {
                 st.modifiers = keyboard::Modifiers::empty();
             }
             _ => {}
@@ -845,12 +845,12 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                 }
                 shell.capture_event();
             }
-            Event::Window(iced::window::Event::Unfocused) => {
+            Event::Window(application::iced::window::Event::Unfocused) => {
                 st.press = None;
                 st.last_click = None;
                 st.modifiers = keyboard::Modifiers::empty();
             }
-            Event::Window(iced::window::Event::Resized(_))
+            Event::Window(application::iced::window::Event::Resized(_))
             | Event::Mouse(mouse::Event::CursorLeft) => {
                 st.press = None;
                 st.last_click = None;
@@ -863,13 +863,13 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _theme: &iced::Theme,
+        _theme: &application::iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        use iced::advanced::text::Renderer as _;
+        use application::iced::advanced::text::Renderer as _;
         let bounds = layout.bounds();
         let Some(clip) = bounds.intersection(viewport) else {
             return;
@@ -930,14 +930,14 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                 renderer.fill_quad(
                     renderer::Quad {
                         bounds: highlight,
-                        border: iced::Border {
+                        border: application::iced::Border {
                             color: t.palette.ring,
                             width: self.look.chrome.edge * 2.0,
                             ..Default::default()
                         },
                         ..Default::default()
                     },
-                    iced::Color::TRANSPARENT,
+                    application::iced::Color::TRANSPARENT,
                 );
             }
 
@@ -1067,9 +1067,9 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
         layout: Layout<'b>,
         renderer: &Renderer,
         viewport: &Rectangle,
-        translation: iced::Vector,
-    ) -> Option<iced::advanced::overlay::Element<'b, RowsMsg, iced::Theme, Renderer>> {
-        iced::advanced::overlay::from_children(
+        translation: application::iced::Vector,
+    ) -> Option<application::iced::advanced::overlay::Element<'b, RowsMsg, application::iced::Theme, Renderer>> {
+        application::iced::advanced::overlay::from_children(
             &mut self.tips,
             tree,
             layout,
@@ -1080,7 +1080,7 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
     }
 }
 
-impl<'a> From<FileList<'a>> for Element<'a, RowsMsg, iced::Theme, Renderer> {
+impl<'a> From<FileList<'a>> for Element<'a, RowsMsg, application::iced::Theme, Renderer> {
     fn from(list: FileList<'a>) -> Self {
         Element::new(list)
     }
@@ -1107,7 +1107,7 @@ mod column_tests {
         let calls = Cell::new(0);
         let measure = |s: &str| {
             calls.set(calls.get() + 1);
-            FileList::shape(s, iced::Font::MONOSPACE, 11.0)
+            FileList::shape(s, application::iced::Font::MONOSPACE, 11.0)
                 .min_bounds()
                 .width
         };
@@ -1177,7 +1177,7 @@ mod column_tests {
     #[test]
     fn small_file_listings_leave_most_width_for_names() {
         let measure = |s: &str| {
-            FileList::shape(s, iced::Font::MONOSPACE, 11.0)
+            FileList::shape(s, application::iced::Font::MONOSPACE, 11.0)
                 .min_bounds()
                 .width
         };
@@ -1205,7 +1205,7 @@ mod column_tests {
     fn a_shaped_name_that_fits_the_actual_name_cell_is_not_elided() {
         let name = "ardour-session-Walthius_2009_Theme";
         let measure = |s: &str| {
-            FileList::shape(s, iced::Font::DEFAULT, 14.0)
+            FileList::shape(s, application::iced::Font::DEFAULT, 14.0)
                 .min_bounds()
                 .width
         };

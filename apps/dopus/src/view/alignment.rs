@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! First content baseline across Places, pane locations and Properties.
 use super::{Look, elide, location};
-use iced::advanced::text::Paragraph as _;
+use application::iced::advanced::text::Paragraph as _;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FirstRow {
@@ -10,7 +10,7 @@ pub struct FirstRow {
     pub properties_top: f32,
 }
 
-fn baseline(paragraph: &iced::advanced::graphics::text::Paragraph) -> f32 {
+fn baseline(paragraph: &application::iced::advanced::graphics::text::Paragraph) -> f32 {
     paragraph
         .buffer()
         .layout_runs()
@@ -47,9 +47,9 @@ mod tests {
     use crate::{app::Msg, icons::Icons, theme};
     use design::{Mode, Scheme};
     use dopus_core::{DOpusConfig, DopusCore, PaneId, properties::Properties};
-    use iced::advanced::{Layout, graphics::text::Paragraph, layout, widget::Tree};
-    use iced::{Element, Size};
-    use iced_tiny_skia::Renderer;
+    use application::iced::advanced::{Layout, graphics::text::Paragraph, layout, widget::Tree};
+    use application::iced::{Element, Size};
+    use application::cpu::Renderer;
 
     fn look() -> Look {
         let theme = theme::resolve_selection(
@@ -74,7 +74,7 @@ mod tests {
     }
 
     fn layout(mut element: Element<'_, Msg>, look: Look, width: f32) -> (Tree, layout::Node) {
-        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
             default_text_size: look.px.into(),
             ..Default::default()
@@ -90,14 +90,14 @@ mod tests {
     }
 
     fn first_label(tree: &Tree) -> Option<&Paragraph> {
-        if tree.tag == iced::advanced::widget::tree::Tag::of::<Paragraph>() {
+        if tree.tag == application::iced::advanced::widget::tree::Tag::of::<Paragraph>() {
             Some(tree.state.downcast_ref::<Paragraph>())
         } else {
             tree.children.iter().find_map(first_label)
         }
     }
 
-    fn label_bounds(node: &layout::Node, path: &[usize]) -> iced::Rectangle {
+    fn label_bounds(node: &layout::Node, path: &[usize]) -> application::iced::Rectangle {
         let mut layout = Layout::new(node);
         for index in path {
             layout = layout.child(*index);

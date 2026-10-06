@@ -12,8 +12,8 @@
 //! controller runs the requests (`ced.action search.*` carries the same
 //! arguments, so a Bus caller gets identical behaviour).
 
-use iced::widget::{button, container, row, text_input};
-use iced::{Alignment, Element, Length, Padding};
+use application::iced::widget::{button, container, row, text_input};
+use application::iced::{Alignment, Element, Length, Padding};
 
 use super::Look;
 use crate::app::Msg;
@@ -179,12 +179,12 @@ pub fn view<'a>(look: Look, bar: &'a FindBar) -> Element<'a, Msg> {
             } else {
                 b.style(look.secondary())
             };
-            iced::widget::tooltip(
+            application::iced::widget::tooltip(
                 b,
                 container(look.small(tip))
                     .padding(6)
                     .style(look.strip(t.palette.popover, t.palette.popover_text)),
-                iced::widget::tooltip::Position::Top,
+                application::iced::widget::tooltip::Position::Top,
             )
             .into()
         };

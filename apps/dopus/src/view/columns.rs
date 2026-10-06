@@ -3,13 +3,13 @@
 use super::{Look, elide::shape, rows::Columns};
 use crate::app::{Msg, PaneOp};
 use dopus_core::{PaneId, SortColumn};
-use iced::advanced::text::{self, Paragraph as _, Renderer as _};
-use iced::advanced::{
+use application::iced::advanced::text::{self, Paragraph as _, Renderer as _};
+use application::iced::advanced::{
     Layout, Renderer as _, Shell, Widget, layout, mouse, renderer,
     widget::{Tree, tree},
 };
-use iced::{Element, Event, Length, Point, Rectangle, Size};
-use iced_tiny_skia::Renderer;
+use application::iced::{Element, Event, Length, Point, Rectangle, Size};
+use application::cpu::Renderer;
 
 type Para = <Renderer as text::Renderer>::Paragraph;
 pub struct Header {
@@ -62,7 +62,7 @@ impl Header {
         })
     }
 }
-impl Widget<Msg, iced::Theme, Renderer> for Header {
+impl Widget<Msg, application::iced::Theme, Renderer> for Header {
     fn diff(&mut self, _tree: &mut Tree) {
         // Region children are reconciled in layout, once widths are known.
     }
@@ -159,7 +159,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Header {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        _: &iced::Theme,
+        _: &application::iced::Theme,
         _: &renderer::Style,
         layout: Layout<'_>,
         _: mouse::Cursor,
@@ -215,9 +215,9 @@ impl Widget<Msg, iced::Theme, Renderer> for Header {
         layout: Layout<'b>,
         renderer: &Renderer,
         viewport: &Rectangle,
-        translation: iced::Vector,
-    ) -> Option<iced::advanced::overlay::Element<'b, Msg, iced::Theme, Renderer>> {
-        iced::advanced::overlay::from_children(
+        translation: application::iced::Vector,
+    ) -> Option<application::iced::advanced::overlay::Element<'b, Msg, application::iced::Theme, Renderer>> {
+        application::iced::advanced::overlay::from_children(
             &mut self.tips,
             tree,
             layout,

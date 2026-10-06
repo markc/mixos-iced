@@ -1,6 +1,6 @@
 [package]
 name = "dopus"
-version = "0.4.2"
+version = "0.4.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,8 +18,7 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia", "image"] }
-iced_tiny_skia = { workspace = true, features = ["image", "wayland"] }
+application = { workspace = true, features = ["tiny-skia", "image"] }
 toolkit = { workspace = true, features = ["tiny-skia"] }
 design.workspace = true
 appearance.workspace = true
@@ -39,7 +38,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-iced_runtime.workspace = true
 tempfile.workspace = true
 iced-tiny-skia-pixels = { package = "tiny-skia", version = "=0.11.4", default-features = false, features = ["std"] }
 

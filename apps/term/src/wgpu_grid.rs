@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The grid on the GPU: one persistent texture, damage-band uploads.
 //!
-//! This is the whole reason the frontend is on `iced::widget::shader` rather
-//! than `iced::widget::image`. An iced image handle is immutable and cached by
+//! This is the whole reason the frontend is on `application::iced::widget::shader` rather
+//! than `application::iced::widget::image`. An iced image handle is immutable and cached by
 //! id, so putting a terminal grid through one means a new handle — and a new
 //! texture — per damaged frame, which is precisely the Bevy terminal's
 //! `Image::new`-per-frame cost that the 2026-09-20 memory anatomy found as
@@ -14,8 +14,8 @@
 //! transfer at all.
 
 use crate::frame::Frame;
-use iced::wgpu;
-use iced::widget::shader;
+use application::iced::wgpu;
+use application::iced::widget::shader;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use term_core::raster::DamageBand;
@@ -77,8 +77,8 @@ impl<Message> shader::Program<Message> for GridProgram {
     fn draw(
         &self,
         _state: &Self::State,
-        _cursor: iced::mouse::Cursor,
-        _bounds: iced::Rectangle,
+        _cursor: application::iced::mouse::Cursor,
+        _bounds: application::iced::Rectangle,
     ) -> Self::Primitive {
         GridPrimitive {
             frame: self.frame.clone(),
@@ -106,7 +106,7 @@ impl shader::Primitive for GridPrimitive {
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _bounds: &iced::Rectangle,
+        _bounds: &application::iced::Rectangle,
         _viewport: &shader::Viewport,
     ) {
         let id = grid_id(&self.frame);

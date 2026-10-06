@@ -2,8 +2,8 @@
 //! One window-wide navigation strip, dispatched through the existing actions.
 use actions::{ActionId, filemgr};
 use dopus_core::PaneModel;
-use iced::widget::{button, container, row};
-use iced::{Element, Length};
+use application::iced::widget::{button, container, row};
+use application::iced::{Element, Length};
 
 use super::Look;
 use crate::app::Msg;
@@ -63,7 +63,7 @@ pub fn navigation<'a>(
         ),
     ]
     .spacing(look.chrome.small)
-    .align_y(iced::Alignment::Center);
+    .align_y(application::iced::Alignment::Center);
     let panel = |icon, action, name: &str, open| {
         let tint = crate::icons::hex(if open {
             look.tokens.palette.selection_text
@@ -105,7 +105,7 @@ pub fn navigation<'a>(
                 panels_open[1]
             ),
         ]
-        .align_y(iced::Alignment::Center),
+        .align_y(application::iced::Alignment::Center),
     )
     .width(Length::Fill)
     .padding([look.chrome.small, look.chrome.pad])

@@ -3,8 +3,8 @@
 use super::{Look, elide::Label};
 use crate::app::Msg;
 use dopus_core::{format_modified_at, format_size, properties::Properties};
-use iced::widget::{column, container, scrollable, text};
-use iced::{Element, Length};
+use application::iced::widget::{column, container, scrollable, text};
+use application::iced::{Element, Length};
 
 pub fn sidebar<'a>(
     look: Look,
@@ -13,7 +13,7 @@ pub fn sidebar<'a>(
 ) -> Element<'a, Msg> {
     let mut content = column![]
         .spacing(look.chrome.gap)
-        .padding(iced::Padding {
+        .padding(application::iced::Padding {
             top: first_row.properties_top,
             right: look.chrome.pad,
             bottom: look.chrome.small,
@@ -86,8 +86,8 @@ pub fn sidebar<'a>(
                     .size(look.sidebar_px())
                     .color(look.tokens.palette.muted_text),
                 text(value)
-                    .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
-                    .shaping(iced::advanced::text::Shaping::Advanced)
+                    .wrapping(application::iced::advanced::text::Wrapping::WordOrGlyph)
+                    .shaping(application::iced::advanced::text::Shaping::Advanced)
                     .font(look.ui_font)
                     .size(look.sidebar_px())
                     .color(look.tokens.palette.text)

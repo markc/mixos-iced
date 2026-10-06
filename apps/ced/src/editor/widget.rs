@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The editor widget (plan §4.2): a custom `iced::advanced::Widget` that
+//! The editor widget (plan §4.2): a custom `application::iced::advanced::Widget` that
 //! draws only the visible lines of a [`Text`] on a monospace cell grid —
 //! grapheme clusters placed by `view::clusters`, ASCII runs in one text call,
 //! every other cluster at its own cell — with selection, change tints,
@@ -23,11 +23,11 @@ use edit::text::Text;
 use editor_model::diag::Diagnostics;
 use editor_model::highlight::Highlight;
 use editor_model::model::{EditCommand, EditorModel, Motion, Scroll, clamp_offset, line_of};
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::text::{self as atext, Paragraph};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer};
-use iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window};
+use application::iced::advanced::layout::{self, Layout};
+use application::iced::advanced::text::{self as atext, Paragraph};
+use application::iced::advanced::widget::{Tree, tree};
+use application::iced::advanced::{InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer};
+use application::iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window};
 
 use super::layout::{self as geo, Geometry, Metrics};
 use super::lines::{self, Checkpoints};
@@ -168,10 +168,10 @@ impl<'a> Editor<'a> {
             line_height: atext::LineHeight::Absolute(Pixels(self.line_h())),
             font: self.view.font,
             align_x: atext::Alignment::Left,
-            align_y: iced::alignment::Vertical::Top,
+            align_y: application::iced::alignment::Vertical::Top,
             shaping: atext::Shaping::Basic,
             wrapping: atext::Wrapping::None,
-            ellipsis: iced::advanced::text::Ellipsis::None,
+            ellipsis: application::iced::advanced::text::Ellipsis::None,
             hint_factor: None,
         });
         let width = p.min_bounds().width;

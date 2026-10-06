@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use dopus_core::{DropAction, PaneId, sanitise_display_path};
-use iced::advanced::text::Renderer as _;
-use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
-use iced::{Element, Event, Length, Point, Rectangle, Size, Vector, keyboard};
-use iced_tiny_skia::Renderer;
+use application::iced::advanced::text::Renderer as _;
+use application::iced::advanced::widget::{Operation, Tree, tree};
+use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
+use application::iced::{Element, Event, Length, Point, Rectangle, Size, Vector, keyboard};
+use application::cpu::Renderer;
 
 use super::Look;
 use crate::app::Msg;
@@ -119,7 +119,7 @@ fn choice_at(point: Point, bounds: Rectangle) -> Option<Option<DropAction>> {
     }
 }
 
-impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
+impl Widget<Msg, application::iced::Theme, Renderer> for Layer<'_> {
     fn tag(&self) -> tree::Tag {
         self.content.as_widget().tag()
     }
@@ -168,7 +168,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
             if engaged
                 && matches!(
                     event,
-                    Event::Window(iced::window::Event::Unfocused | iced::window::Event::Resized(_))
+                    Event::Window(application::iced::window::Event::Unfocused | application::iced::window::Event::Resized(_))
                         | Event::Mouse(mouse::Event::CursorLeft)
                         | Event::Keyboard(keyboard::Event::KeyPressed {
                             key: keyboard::Key::Named(keyboard::key::Named::Escape),
@@ -179,7 +179,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
                 state.cancel();
                 shell.request_redraw();
                 shell.capture_event();
-                if matches!(event, Event::Window(iced::window::Event::Unfocused)) {
+                if matches!(event, Event::Window(application::iced::window::Event::Unfocused)) {
                     // Lists must clear held modifiers even when cancelling a drag.
                     drop(state);
                     self.content
@@ -270,7 +270,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
         &self,
         tree: &Tree,
         renderer: &mut Renderer,
-        theme: &iced::Theme,
+        theme: &application::iced::Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -279,7 +279,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
         self.content
             .as_widget()
             .draw(tree, renderer, theme, style, layout, cursor, viewport);
-        use iced::advanced::Renderer as _;
+        use application::iced::advanced::Renderer as _;
         let state = lock(&self.shared);
         let t = self.look.tokens;
         if let Some(active) = &state.active {
@@ -300,7 +300,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
                 renderer.fill_quad(
                     renderer::Quad {
                         bounds,
-                        border: iced::Border {
+                        border: application::iced::Border {
                             color: t.palette.border,
                             width: self.look.chrome.edge,
                             radius: t.metrics.radius.md.into(),
@@ -344,7 +344,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
                 renderer.fill_quad(
                     renderer::Quad {
                         bounds,
-                        border: iced::Border {
+                        border: application::iced::Border {
                             color: t.palette.border,
                             width: self.look.chrome.edge,
                             radius: t.metrics.radius.md.into(),
@@ -430,7 +430,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Msg, iced::Theme, Renderer>> {
+    ) -> Option<overlay::Element<'b, Msg, application::iced::Theme, Renderer>> {
         let engaged = {
             let state = lock(&self.shared);
             state.active.is_some() || state.pending.is_some()
@@ -446,7 +446,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
 }
 
 fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rectangle, look: Look) {
-    use iced::advanced::{Renderer as _, text::Paragraph as _};
+    use application::iced::advanced::{Renderer as _, text::Paragraph as _};
     // Cached raw text drops its wrapping mode in tiny-skia. Measure and elide
     // with the listing's single-line paragraphs before handing off owned text.
     let width = (clip.x + clip.width - position.x - look.chrome.pad).max(0.0);
@@ -457,19 +457,19 @@ fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rect
     });
     renderer.with_layer(clip, |renderer| {
         renderer.fill_text(
-            iced::advanced::text::Text {
+            application::iced::advanced::text::Text {
                 content: label,
                 bounds: Size::new(width, clip.height),
-                size: iced::Pixels(look.px),
-                line_height: iced::advanced::text::LineHeight::Absolute(iced::Pixels(
+                size: application::iced::Pixels(look.px),
+                line_height: application::iced::advanced::text::LineHeight::Absolute(application::iced::Pixels(
                     look.px * 1.4,
                 )),
                 font: look.ui_font,
-                align_x: iced::advanced::text::Alignment::Left,
-                align_y: iced::alignment::Vertical::Top,
-                shaping: iced::advanced::text::Shaping::Advanced,
-                wrapping: iced::advanced::text::Wrapping::None,
-                ellipsis: iced::advanced::text::Ellipsis::None,
+                align_x: application::iced::advanced::text::Alignment::Left,
+                align_y: application::iced::alignment::Vertical::Top,
+                shaping: application::iced::advanced::text::Shaping::Advanced,
+                wrapping: application::iced::advanced::text::Wrapping::None,
+                ellipsis: application::iced::advanced::text::Ellipsis::None,
                 hint_factor: None,
             },
             position,
@@ -484,7 +484,7 @@ mod tests {
     use super::*;
     #[test]
     fn long_drag_labels_keep_owned_text_within_one_row() {
-        use iced::advanced::text::Paragraph as _;
+        use application::iced::advanced::text::Paragraph as _;
         let look = look();
         let clip = Rectangle {
             x: 20.0,
@@ -493,9 +493,9 @@ mod tests {
             height: 40.0,
         };
         let label = "target-long-name-".repeat(20);
-        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         draw_text(&mut renderer, &label, Point::new(32.0, 36.0), clip, look);
@@ -506,7 +506,7 @@ mod tests {
             .flat_map(|group| group.as_slice())
             .collect();
         assert_eq!(text.len(), 1);
-        let iced_tiny_skia::graphics::text::Text::Cached {
+        let application::cpu::graphics::text::Text::Cached {
             content, bounds, ..
         } = text[0]
         else {
@@ -554,7 +554,7 @@ mod tests {
             renderer,
             &layout::Limits::new(Size::ZERO, bounds.size()),
         );
-        let mut messages = iced::advanced::shell::Bus::new();
+        let mut messages = application::iced::advanced::shell::Bus::new();
         layer.update(
             tree,
             &event,
@@ -562,8 +562,8 @@ mod tests {
             mouse::Cursor::Available(point),
             renderer,
             &mut Shell::new(
-                &iced::window::Headless,
-                iced::advanced::shell::Waker::new(|| {}),
+                &application::iced::window::Headless,
+                application::iced::advanced::shell::Waker::new(|| {}),
                 &mut messages,
             ),
             &bounds,
@@ -624,13 +624,13 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         let mut layer = single_list(&rows, dir.path(), &icons, &expanded, shared.clone(), look);
-        let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
         layer.diff(&mut tree);
         // The chevron normally toggles a directory; modifiers must select it.
         let point = Point::new(5.0, 10.0);
@@ -672,7 +672,7 @@ mod tests {
             &mut layer,
             &mut tree,
             &renderer,
-            Event::Window(iced::window::Event::Unfocused),
+            Event::Window(application::iced::window::Event::Unfocused),
             point,
         );
         // Focus loss clears stale held modifiers; the next plain click selects.
@@ -718,7 +718,7 @@ mod tests {
                 &mut tree,
                 &renderer,
                 if lose_focus {
-                    Event::Window(iced::window::Event::Unfocused)
+                    Event::Window(application::iced::window::Event::Unfocused)
                 } else {
                     Event::Keyboard(keyboard::Event::ModifiersChanged(
                         keyboard::Modifiers::empty(),
@@ -785,9 +785,9 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         let mut list = FileList::new(
@@ -811,7 +811,7 @@ mod tests {
             false,
         )
         .selected_paths(&selected);
-        let mut tree = Tree::new(&list as &dyn Widget<RowsMsg, iced::Theme, Renderer>);
+        let mut tree = Tree::new(&list as &dyn Widget<RowsMsg, application::iced::Theme, Renderer>);
         list.diff(&mut tree);
         let viewport = Rectangle::with_size(Size::new(600.0, 300.0));
         let node = list.layout(
@@ -819,16 +819,16 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, viewport.size()),
         );
-        let mut messages = iced::advanced::shell::Bus::new();
+        let mut messages = application::iced::advanced::shell::Bus::new();
         list.update(
             &mut tree,
-            &Event::Window(iced::window::Event::Focused),
+            &Event::Window(application::iced::window::Event::Focused),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
             &renderer,
             &mut Shell::new(
-                &iced::window::Headless,
-                iced::advanced::shell::Waker::new(|| {}),
+                &application::iced::window::Headless,
+                application::iced::advanced::shell::Waker::new(|| {}),
                 &mut messages,
             ),
             &viewport,
@@ -836,7 +836,7 @@ mod tests {
         list.draw(
             &tree,
             &mut renderer,
-            &iced::Theme::Light,
+            &application::iced::Theme::Light,
             &renderer::Style::default(),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
@@ -847,7 +847,7 @@ mod tests {
             .iter()
             .flat_map(|layer| layer.quads.iter())
             .filter(|(_, background)| {
-                *background == iced::Background::Color(look.tokens.palette.selection)
+                *background == application::iced::Background::Color(look.tokens.palette.selection)
             })
             .map(|(quad, _)| quad.bounds)
             .collect();
@@ -876,9 +876,9 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         let mut layer = single_list(
@@ -889,7 +889,7 @@ mod tests {
             shared.clone(),
             look,
         );
-        let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
         layer.diff(&mut tree);
         send(
             &mut layer,
@@ -953,13 +953,13 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         let mut layer = single_list(&rows, dir.path(), &icons, &expanded, shared.clone(), look);
-        let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
         layer.diff(&mut tree);
         for cancel_at_root in [false, true] {
             send(
@@ -1049,16 +1049,16 @@ mod tests {
                 ))
                 .map(move |msg| Msg::PaneRows(pane, msg))
             };
-            let content = iced::widget::row![list(PaneId::Left), list(PaneId::Right)]
+            let content = application::iced::widget::row![list(PaneId::Left), list(PaneId::Right)]
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
             let mut layer = Layer::new(content, shared.clone(), look, &icons, "");
-            let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+            let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
         layer.diff(&mut tree);
-            let renderer = Renderer::new(iced::advanced::renderer::Settings {
+            let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
                 default_font: look.ui_font,
-                default_text_size: iced::Pixels(look.px),
+                default_text_size: application::iced::Pixels(look.px),
                 ..Default::default()
             });
             let start = Point::new(
@@ -1207,11 +1207,11 @@ mod tests {
             false,
         );
         let mut tree =
-            Tree::new(&list as &dyn Widget<crate::view::rows::RowsMsg, iced::Theme, Renderer>);
+            Tree::new(&list as &dyn Widget<crate::view::rows::RowsMsg, application::iced::Theme, Renderer>);
         list.diff(&mut tree);
-        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         let viewport = Rectangle::with_size(Size::new(600.0, 300.0));
@@ -1220,16 +1220,16 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, viewport.size()),
         );
-        let mut messages = iced::advanced::shell::Bus::new();
+        let mut messages = application::iced::advanced::shell::Bus::new();
         list.update(
             &mut tree,
-            &Event::Window(iced::window::Event::Focused),
+            &Event::Window(application::iced::window::Event::Focused),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
             &renderer,
             &mut Shell::new(
-                &iced::window::Headless,
-                iced::advanced::shell::Waker::new(|| {}),
+                &application::iced::window::Headless,
+                application::iced::advanced::shell::Waker::new(|| {}),
                 &mut messages,
             ),
             &viewport,
@@ -1253,7 +1253,7 @@ mod tests {
         list.draw(
             &tree,
             &mut renderer,
-            &iced::Theme::Light,
+            &application::iced::Theme::Light,
             &renderer::Style::default(),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
@@ -1267,7 +1267,7 @@ mod tests {
         let selection = quads
             .iter()
             .position(|(_, background)| {
-                *background == iced::Background::Color(look.tokens.palette.selection)
+                *background == application::iced::Background::Color(look.tokens.palette.selection)
             })
             .expect("selected row background");
         let outline = quads
@@ -1282,7 +1282,7 @@ mod tests {
         );
         assert_eq!(
             quads[outline].1,
-            iced::Background::Color(iced::Color::TRANSPARENT)
+            application::iced::Background::Color(application::iced::Color::TRANSPARENT)
         );
     }
     #[test]
@@ -1345,9 +1345,9 @@ mod tests {
     fn pending_widget_cancels_on_focus_loss_escape_and_outside_press() {
         let look = look();
         let icons = Icons::new();
-        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+        let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
-            default_text_size: iced::Pixels(look.px),
+            default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
         let target = Rectangle {
@@ -1357,7 +1357,7 @@ mod tests {
             height: 300.0,
         };
         let events = [
-            Event::Window(iced::window::Event::Unfocused),
+            Event::Window(application::iced::window::Event::Unfocused),
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
@@ -1387,7 +1387,7 @@ mod tests {
                 }),
             });
             let mut layer = Layer::new(
-                iced::widget::Space::new()
+                application::iced::widget::Space::new()
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into(),
@@ -1396,7 +1396,7 @@ mod tests {
                 &icons,
                 "",
             );
-            let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+            let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
         layer.diff(&mut tree);
             assert!(
                 send(

@@ -16,9 +16,9 @@ use edit::origin::{Origin, OriginKind};
 use editor_model::diag::Severity;
 use editor_model::highlight::{HlClass, SliceBudget};
 use editor_model::model::line_of;
-use iced::advanced::text::{self as atext};
-use iced::advanced::{mouse, renderer};
-use iced::{Border, Color, Font, Pixels, Point, Rectangle, Size};
+use application::iced::advanced::text::{self as atext};
+use application::iced::advanced::{mouse, renderer};
+use application::iced::{Border, Color, Font, Pixels, Point, Rectangle, Size};
 
 use super::layout::{self as geo, Geometry, STRIP_W};
 use super::lines::{self, LineCells};
@@ -334,10 +334,10 @@ impl Ctx<'_, '_> {
                 line_height: atext::LineHeight::Absolute(Pixels(self.g.metrics.line_h)),
                 font: v.font,
                 align_x: atext::Alignment::Left,
-                align_y: iced::alignment::Vertical::Top,
+                align_y: application::iced::alignment::Vertical::Top,
                 shaping,
                 wrapping: atext::Wrapping::None,
-                ellipsis: iced::advanced::text::Ellipsis::None,
+                ellipsis: application::iced::advanced::text::Ellipsis::None,
                 hint_factor: None,
             },
             at,
@@ -817,7 +817,7 @@ struct Run {
     text: String,
 }
 
-fn quad<R: iced::advanced::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
+fn quad<R: application::iced::advanced::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
     if colour.a <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
@@ -871,7 +871,7 @@ fn text_clip(at: Point, width: f32, m: geo::Metrics, layer: Rectangle) -> Rectan
     }
 }
 
-fn rounded<R: iced::advanced::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
+fn rounded<R: application::iced::advanced::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
     let radius = (bounds.width.min(bounds.height) / 2.0).into();
     r.fill_quad(
         renderer::Quad {
@@ -932,7 +932,7 @@ mod tests {
     use editor_model::diag::Diagnostics;
     use editor_model::highlight::Highlight;
     use editor_model::model::EditorModel;
-    use iced::{Background, Transformation};
+    use application::iced::{Background, Transformation};
 
     use super::super::layout::Metrics;
     use super::super::{EditorView, Palette};
@@ -970,7 +970,7 @@ mod tests {
         texts: Vec<Drawn>,
     }
 
-    impl iced::advanced::Renderer for Rec {
+    impl application::iced::advanced::Renderer for Rec {
         fn hint(&mut self, _: renderer::Scale) {}
         fn scale(&self) -> Option<renderer::Scale> {
             None
@@ -995,8 +995,8 @@ mod tests {
         fn reset(&mut self, _: Rectangle) {}
         fn allocate_image(
             &mut self,
-            _: &iced::advanced::image::Handle,
-            _: impl FnOnce(Result<iced::advanced::image::Allocation, iced::advanced::image::Error>)
+            _: &application::iced::advanced::image::Handle,
+            _: impl FnOnce(Result<application::iced::advanced::image::Allocation, application::iced::advanced::image::Error>)
             + Send
             + 'static,
         ) {

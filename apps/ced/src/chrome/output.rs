@@ -5,8 +5,8 @@
 
 use std::collections::VecDeque;
 
-use iced::widget::{column, container, scrollable};
-use iced::{Element, Length, Padding};
+use application::iced::widget::{column, container, scrollable};
+use application::iced::{Element, Length, Padding};
 
 use super::Look;
 use super::problems::panel;

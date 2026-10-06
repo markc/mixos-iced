@@ -6,9 +6,9 @@
 //! deliberately: the two frontends must put the same bytes on the PTY, and the
 //! only way to know that is to compare them against the same encoder.
 
-use iced::keyboard::key::{Code, Named, Physical};
-use iced::keyboard::{Key, Modifiers};
-use iced::mouse::ScrollDelta;
+use application::iced::keyboard::key::{Code, Named, Physical};
+use application::iced::keyboard::{Key, Modifiers};
+use application::iced::mouse::ScrollDelta;
 use term_core::panes::{Direction, SplitDir};
 use term_core::terminal::{Key as TerminalKey, ScrollRequest};
 
@@ -163,8 +163,8 @@ pub fn navigation_action(key: &Key, modifiers: Modifiers, right_shift: bool) -> 
 
 /// iced's modifier mask merges both Shift keys. Track the physical right
 /// key on the lossless widget path, and clear it when Shift is released.
-pub fn right_shift_after(event: &iced::keyboard::Event, held: bool) -> bool {
-    use iced::keyboard::{Event, Location};
+pub fn right_shift_after(event: &application::iced::keyboard::Event, held: bool) -> bool {
+    use application::iced::keyboard::{Event, Location};
     match event {
         Event::KeyPressed {
             key,
@@ -201,7 +201,7 @@ pub fn cycle_pane(ids: &[u64], active: u64, forward: bool) -> Option<u64> {
 /// Mouse-area positions are relative to the pane's outer border, in logical
 /// pixels. Clamp the border and spare right/bottom pixels to the nearest cell.
 pub fn pointer_cell(
-    position: iced::Point,
+    position: application::iced::Point,
     border: f32,
     cell: (f32, f32),
     grid: (u16, u16),
@@ -536,7 +536,7 @@ mod tests {
         action_for(
             key,
             modified,
-            Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            Physical::Unidentified(application::iced::keyboard::key::NativeCode::Unidentified),
             modifiers,
         )
     }
@@ -694,19 +694,19 @@ mod tests {
     fn pointer_coordinates_exclude_the_border_and_clamp_spare_pixels() {
         let cell = (8.0, 16.0);
         assert_eq!(
-            pointer_cell(iced::Point::new(1.2, 1.2), 1.2, cell, (80, 24)),
+            pointer_cell(application::iced::Point::new(1.2, 1.2), 1.2, cell, (80, 24)),
             (0, 0)
         );
         assert_eq!(
-            pointer_cell(iced::Point::new(25.3, 33.3), 1.2, cell, (80, 24)),
+            pointer_cell(application::iced::Point::new(25.3, 33.3), 1.2, cell, (80, 24)),
             (3, 2)
         );
         assert_eq!(
-            pointer_cell(iced::Point::ORIGIN, 1.2, cell, (80, 24)),
+            pointer_cell(application::iced::Point::ORIGIN, 1.2, cell, (80, 24)),
             (0, 0)
         );
         assert_eq!(
-            pointer_cell(iced::Point::new(900.0, 500.0), 1.2, cell, (80, 24)),
+            pointer_cell(application::iced::Point::new(900.0, 500.0), 1.2, cell, (80, 24)),
             (79, 23)
         );
     }

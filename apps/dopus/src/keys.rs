@@ -32,10 +32,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
-use iced::keyboard::{self, Key, key::Named};
-use iced::{Element, Event, Length, Rectangle, Size, Vector};
+use application::iced::advanced::widget::{Operation, Tree, tree};
+use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
+use application::iced::keyboard::{self, Key, key::Named};
+use application::iced::{Element, Event, Length, Rectangle, Size, Vector};
 
 use actions::{
     ActionId, FocusContext, Key as AKey, Keymap, Modifiers as AModifiers, RawInput, RawInputState,
@@ -154,8 +154,8 @@ fn focus_context(router: &Router) -> FocusContext {
 /// the precedent): a non-empty preedit opens the composition, an empty one
 /// clears the preedit, and `Commit`/`Closed` end it outright. `Opened` only
 /// enables the input method — no composition is in flight yet.
-fn note_ime(shared: &SharedRouter, event: &iced::advanced::input_method::Event) {
-    use iced::advanced::input_method;
+fn note_ime(shared: &SharedRouter, event: &application::iced::advanced::input_method::Event) {
+    use application::iced::advanced::input_method;
     let next = match event {
         input_method::Event::Preedit(text, _) => !text.is_empty(),
         input_method::Event::Commit(_)
@@ -346,7 +346,7 @@ type ModalKeyFn<'a, Message> = Box<dyn Fn(ModalKey) -> Message + 'a>;
 
 /// Query the actual editor bounds, without duplicating the pane layout.
 struct EditorHit {
-    id: iced::advanced::widget::Id,
+    id: application::iced::advanced::widget::Id,
     cursor: mouse::Cursor,
     inside: bool,
 }
@@ -358,9 +358,9 @@ impl Operation for EditorHit {
 
     fn focusable(
         &mut self,
-        id: Option<&iced::advanced::widget::Id>,
+        id: Option<&application::iced::advanced::widget::Id>,
         bounds: Rectangle,
-        _state: &mut dyn iced::advanced::widget::operation::Focusable,
+        _state: &mut dyn application::iced::advanced::widget::operation::Focusable,
     ) {
         if id == Some(&self.id) {
             self.inside = self.cursor.is_over(bounds);
@@ -378,7 +378,7 @@ pub struct KeyRouter<'a, Message, Theme, Renderer> {
     /// [`ModalKey`] messages before the children see them.
     modal: bool,
     on_modal_key: Option<ModalKeyFn<'a, Message>>,
-    on_edit_cancel: Option<(iced::advanced::widget::Id, Message)>,
+    on_edit_cancel: Option<(application::iced::advanced::widget::Id, Message)>,
     on_pending: Option<Message>,
 }
 
@@ -407,7 +407,7 @@ impl<'a, Message, Theme, Renderer> KeyRouter<'a, Message, Theme, Renderer> {
     /// Escape and presses outside this editor cancel it; Enter stays with TextField.
     pub fn on_edit_cancel(
         mut self,
-        id: impl Into<iced::advanced::widget::Id>,
+        id: impl Into<application::iced::advanced::widget::Id>,
         message: Message,
     ) -> Self {
         self.on_edit_cancel = Some((id.into(), message));
@@ -441,7 +441,7 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for KeyRouter<'_, Message, Theme, Renderer>
 where
     Message: Clone,
-    Renderer: iced::advanced::Renderer,
+    Renderer: application::iced::advanced::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         self.content.as_widget().tag()
@@ -599,7 +599,7 @@ where
             && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                    | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                    | Event::Touch(application::iced::touch::Event::FingerPressed { .. })
             )
         {
             let mut hit = EditorHit {
@@ -666,7 +666,7 @@ impl<'a, Message, Theme, Renderer> From<KeyRouter<'a, Message, Theme, Renderer>>
 where
     Message: Clone + 'a,
     Theme: 'a,
-    Renderer: iced::advanced::Renderer + 'a,
+    Renderer: application::iced::advanced::Renderer + 'a,
 {
     fn from(router: KeyRouter<'a, Message, Theme, Renderer>) -> Self {
         Element::new(router)
@@ -677,7 +677,7 @@ where
 mod tests {
     use super::*;
     use actions::filemgr;
-    use iced::keyboard::key::{NativeCode, Physical};
+    use application::iced::keyboard::key::{NativeCode, Physical};
 
     fn press(text: &str) -> Option<RawInput> {
         // Modifier prefixes, longest-first and stackable (Ctrl+Shift+N).
@@ -925,8 +925,8 @@ mod tests {
 #[cfg(all(test, debug_assertions))]
 mod widget_tests {
     use super::*;
-    use iced::advanced::widget::operation::focusable;
-    use iced::keyboard::key::{NativeCode, Physical};
+    use application::iced::advanced::widget::operation::focusable;
+    use application::iced::keyboard::key::{NativeCode, Physical};
     use toolkit::TextField;
 
     #[derive(Debug, Clone, PartialEq)]
@@ -938,7 +938,7 @@ mod widget_tests {
         OtherEdit,
     }
 
-    type TestRouter = KeyRouter<'static, Message, iced::Theme, ()>;
+    type TestRouter = KeyRouter<'static, Message, application::iced::Theme, ()>;
 
     fn fixture(custom: &str) -> (TestRouter, Tree) {
         let shared = initial(None).unwrap();
@@ -947,18 +947,18 @@ mod widget_tests {
             state.focus_editable = true;
             state.keymap.custom = parse_keymap(custom).unwrap().custom;
         }
-        let field = TextField::<Message, iced::Theme, ()>::new("path", "/tmp")
+        let field = TextField::<Message, application::iced::Theme, ()>::new("path", "/tmp")
             .id("location")
             .on_input(Message::Input)
             .on_submit(Message::Submit);
-        let content = iced::widget::column![
+        let content = application::iced::widget::column![
             field,
-            iced::widget::mouse_area(iced::widget::Space::new().width(300).height(40))
+            application::iced::widget::mouse_area(application::iced::widget::Space::new().width(300).height(40))
                 .on_press(Message::OtherEdit),
         ];
         let mut router =
             router(content, shared, Message::Actions).on_edit_cancel("location", Message::Cancel);
-        let mut tree = Tree::new(&router as &dyn Widget<Message, iced::Theme, ()>);
+        let mut tree = Tree::new(&router as &dyn Widget<Message, application::iced::Theme, ()>);
         router.diff(&mut tree);
         let limits = layout::Limits::new(Size::ZERO, Size::new(300.0, 100.0));
         let node = router.layout(&mut tree, &(), &limits);
@@ -979,10 +979,10 @@ mod widget_tests {
     ) -> (Vec<Message>, bool) {
         let bounds = Rectangle::with_size(Size::new(300.0, 100.0));
         let node = router.layout(tree, &(), &layout::Limits::new(Size::ZERO, bounds.size()));
-        let mut messages = iced::advanced::shell::Bus::new();
+        let mut messages = application::iced::advanced::shell::Bus::new();
         let mut shell = Shell::new(
-            &iced::window::Headless,
-            iced::advanced::shell::Waker::new(|| {}),
+            &application::iced::window::Headless,
+            application::iced::advanced::shell::Waker::new(|| {}),
             &mut messages,
         );
         router.update(
@@ -1149,7 +1149,7 @@ mod widget_tests {
                 &mut router,
                 &mut tree,
                 press,
-                mouse::Cursor::Available(iced::Point::new(290.0, 99.0))
+                mouse::Cursor::Available(application::iced::Point::new(290.0, 99.0))
             )
             .0,
             [Message::Cancel]
