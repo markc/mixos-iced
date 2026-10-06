@@ -4,8 +4,8 @@
 //! focused, `⟳` while (re)attaching. Click selects, middle-click or the `×`
 //! closes, the strip scrolls sideways on overflow.
 
-use application::iced::widget::{button, container, mouse_area, row, scrollable};
-use application::iced::{Alignment, Background, Border, Element, Length, Padding};
+use application::iced::widget::{container, row};
+use application::iced::{Alignment, Element, Length};
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};
 use editor_model::types::TabId;
@@ -106,81 +106,32 @@ pub fn view<'a>(
     active: Option<TabId>,
     agent_edits: impl Fn(TabId) -> bool,
 ) -> Element<'a, Msg> {
-    let t = look.tokens;
-    let accent = look.chrome.accent;
-    let strip = look.chrome.secondary;
-    let mut items = row![].spacing(1).align_y(Alignment::End);
-    for tab in tabs {
-        let b = badge(tab, agent_edits(tab.id));
-        let is_active = active == Some(tab.id);
-        let fg = if b.detached {
-            t.palette.muted_text
-        } else if is_active {
-            t.palette.text
-        } else {
-            look.chrome.secondary_text
-        };
-        let label = look.text(b.label()).color(fg);
-        let close = button(look.small("×").color(t.palette.muted_text))
-            .padding(Padding::from([0, 4]))
-            .style(look.flat())
-            .on_press(Msg::CloseTab(tab.id));
-        let body = row![label, close].spacing(8).align_y(Alignment::Center);
-        let id = tab.id;
-        let tab_button = button(body)
-            .padding(Padding {
-                top: 5.0,
-                bottom: 5.0,
-                left: 12.0,
-                right: 6.0,
-            })
-            .on_press(Msg::SelectTab(id))
-            .style(move |_, status| button::Style {
-                background: Some(Background::Color(if is_active {
-                    t.palette.surface
-                } else if matches!(status, button::Status::Hovered) {
-                    t.palette.muted_surface
-                } else {
-                    strip
-                })),
-                text_color: fg,
-                border: Border {
-                    // The active tab carries an accent rule along its top edge.
-                    color: if is_active { accent } else { strip },
-                    width: if is_active { 1.0 } else { 0.0 },
-                    radius: application::iced::border::Radius {
-                        top_left: t.metrics.radius.md,
-                        top_right: t.metrics.radius.md,
-                        ..Default::default()
-                    },
-                },
-                ..button::Style::default()
-            });
-        items = items.push(mouse_area(tab_button).on_middle_press(Msg::CloseTab(id)));
-    }
-    let new_tab = button(look.text("+").color(look.chrome.secondary_text))
-        .padding(Padding::from([4, 10]))
-        .style(look.flat())
+    let tokens = look.tokens;
+    let badges: Vec<_> = tabs.iter().map(|tab| (tab.id, badge(tab, agent_edits(tab.id)))).collect();
+    let detached: Vec<_> = badges.iter().filter(|(_, badge)| badge.detached).map(|(id, _)| *id).collect();
+    let mut strip = toolkit::TabBar::with_tab_labels(
+        badges.into_iter().map(|(id, badge)| (id, toolkit::TabLabel::Text(badge.label()))).collect(), Msg::SelectTab)
+        .on_close(Msg::CloseTab).text_font(look.ui).text_size(look.ui_px)
+        .close_size(look.ui_px).tab_width(Length::Shrink).width(Length::Shrink)
+        .height(Length::Fixed(TABS_H)).padding([5.0, 12.0]).spacing(1.0)
+        .text_colour(move |id| detached.contains(id).then_some(tokens.palette.muted_text))
+        .style(move |_, status| {
+            let mut style = toolkit::theme::tab_bar::default(&toolkit::Theme::new(tokens), status);
+            if status == toolkit::tab_bar::Status::Active {
+                style.tab_label_border_color = look.chrome.accent;
+            } else if status == toolkit::tab_bar::Status::Disabled {
+                style.tab_label_background = look.chrome.secondary.into();
+                style.text_color = look.chrome.secondary_text;
+            }
+            style
+        });
+    if let Some(active) = active { strip = strip.set_active_tab(&active); }
+    let new_tab = toolkit::CenteredButton::new(look.text("+").color(look.chrome.secondary_text))
+        .padding([4.0, 10.0]).style(look.flat())
         .on_press(Msg::Action(crate::actions::ActionId::FileNew));
-    let strip_row = row![
-        scrollable(items)
-            .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(3).scroller_width(3)
-            ))
-            .width(Length::Shrink),
-        new_tab
-    ]
-    .align_y(Alignment::End)
-    .padding(Padding {
-        left: 4.0,
-        ..Padding::ZERO
-    });
-    container(strip_row)
-        .width(Length::Fill)
-        .height(Length::Fixed(TABS_H))
-        .align_y(Alignment::End)
-        .style(look.strip(strip, look.chrome.secondary_text))
-        .into()
+    container(row![strip.scrollable().width(Length::Fill), new_tab].align_y(Alignment::End))
+        .width(Length::Fill).height(Length::Fixed(TABS_H))
+        .style(look.strip(look.chrome.secondary, look.chrome.secondary_text)).into()
 }
 
 #[cfg(test)]

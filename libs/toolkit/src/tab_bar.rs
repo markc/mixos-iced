@@ -139,6 +139,7 @@ where
     on_select: Box<dyn Fn(TabId) -> Message>,
     /// The message produced when a tab's close glyph is pressed.
     on_close: Option<Box<dyn Fn(TabId) -> Message>>,
+    text_colour: Option<Box<dyn Fn(&TabId) -> Option<Color> + 'a>>,
     width: Length,
     tab_width: Length,
     height: Length,
@@ -205,6 +206,7 @@ where
             tab_labels: tab_labels.into_iter().map(|(_, label)| label).collect(),
             on_select: Box::new(on_select),
             on_close: None,
+            text_colour: None,
             width: Length::Fill,
             tab_width: Length::Fill,
             height: Length::Shrink,
@@ -226,6 +228,12 @@ where
     pub fn close_size(mut self, close_size: f32) -> Self {
         self.close_size = close_size;
         self
+    }
+
+    /// Override a label's foreground by stable tab identity, for example a
+    /// disconnected document. Selection and close behaviour stay enabled.
+    pub fn text_colour(mut self, colour: impl Fn(&TabId) -> Option<Color> + 'a) -> Self {
+        self.text_colour = Some(Box::new(colour)); self
     }
 
     /// The id of the active tab, if any.
@@ -729,6 +737,7 @@ where
                 (self.font.unwrap_or_default(), self.icon_size),
                 (self.text_font.unwrap_or_default(), self.text_size),
                 self.close_size,
+                self.text_colour.as_ref().and_then(|colour| colour(&self.tab_indices[i])),
                 viewport,
             );
         }
@@ -831,6 +840,7 @@ fn draw_tab<Theme, Renderer>(
     icon_data: (Font, f32),
     text_data: (Font, f32),
     close_size: f32,
+    text_colour: Option<Color>,
     viewport: &Rectangle,
 ) where
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
@@ -848,7 +858,8 @@ fn draw_tab<Theme, Renderer>(
 
     let bounds = layout.bounds();
 
-    let style = <Theme as Catalog>::style(theme, class, tab_status.0.unwrap_or(Status::Disabled));
+    let mut style = <Theme as Catalog>::style(theme, class, tab_status.0.unwrap_or(Status::Disabled));
+    if let Some(colour) = text_colour { style.text_color = colour; }
 
     let mut children = layout.children();
     let label_layout = children

@@ -278,6 +278,9 @@ impl Requester {
         &self.input
     }
 
+    /// The latest navigation or submission error.
+    pub fn error(&self) -> Option<&str> { self.error.as_deref() }
+
     /// The dialog title for the mode.
     #[must_use]
     pub fn title(&self) -> &'static str {
@@ -411,10 +414,11 @@ impl Requester {
     where
         Message: From<Event> + Clone + 'a,
     {
-        self.view_inner::<Message, iced_widget::Renderer>(tokens, strings)
+        self.view_for::<Message, Theme, iced_widget::Renderer>(tokens, strings)
     }
 
-    fn view_inner<'a, Message, Renderer>(
+    /// Render using the caller's theme and renderer catalogs.
+    pub fn view_for<'a, Message, Theme, Renderer>(
         &'a self,
         tokens: Tokens,
         strings: &'a Strings,
@@ -432,13 +436,14 @@ impl Requester {
             From<iced_widget::button::StyleFn<'a, Theme>>,
         <Theme as iced_widget::container::Catalog>::Class<'a>:
             From<iced_widget::container::StyleFn<'a, Theme>>,
+        <Theme as text_input::Catalog>::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
     {
         let t = tokens.palette;
         let m = tokens.metrics;
         let gap = m.spacing.sm;
         let pad = Padding::from([6.0, 10.0]);
 
-        let field = text_input(strings.placeholder.as_str(), &self.input)
+        let field = crate::TextField::new(strings.placeholder.as_str(), &self.input)
             .id(iced_core::widget::Id::new(PATH_INPUT))
             .on_input(|s| Message::from(Event::Input(s)))
             .on_submit(Message::from(Event::Submit))
@@ -448,7 +453,7 @@ impl Requester {
         let location = row![
             button(text("↑").size(m.text.md))
                 .on_press(Message::from(Event::Parent))
-                .style(theme::button::secondary),
+                .style(move |_, status| theme::button::secondary(&crate::Theme::new(tokens), status)),
             text(self.dir.to_string_lossy().to_string())
                 .size(m.text.sm)
                 .width(Length::Fill),
@@ -458,7 +463,7 @@ impl Requester {
                 strings.show_hidden.clone()
             }))
             .on_press(Message::from(Event::ToggleHidden))
-            .style(theme::button::text),
+            .style(move |_, status| theme::button::text(&crate::Theme::new(tokens), status)),
         ]
         .spacing(gap)
         .align_y(iced_core::alignment::Vertical::Center);
@@ -497,7 +502,7 @@ impl Requester {
                     },
                     ..iced_widget::button::Style::default()
                 });
-            list = list.push(item);
+            list = list.push(iced_widget::mouse_area(item).on_double_click(Message::from(Event::Activate(i))));
         }
         if self.truncated {
             list = list.push(
@@ -538,7 +543,7 @@ impl Requester {
                 recent = recent.push(
                     button(text(name).size(m.text.sm))
                         .on_press(msg)
-                        .style(theme::button::text),
+                        .style(move |_, status| theme::button::text(&crate::Theme::new(tokens), status)),
                 );
             }
             body = body.push(

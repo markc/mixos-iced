@@ -561,7 +561,7 @@ mod tests {
                 let mut pulled = Vec::new();
                 for class in ALL_CLASSES {
                     let ratio = design::contrast_ratio(
-                        linear(palette.hl(class)),
+                        linear(palette.highlight[class as usize]),
                         linear(palette.background),
                     );
                     assert!(
@@ -590,7 +590,7 @@ mod tests {
         for scheme in Scheme::ALL {
             for mode in Mode::ALL {
                 let (palette, _) = build_palette(&compiled(scheme, mode)).unwrap();
-                assert_ne!(palette.hl(HlClass::Keyword), palette.hl(HlClass::Comment));
+                assert_ne!(palette.highlight[HlClass::Keyword as usize], palette.highlight[HlClass::Comment as usize]);
                 assert_ne!(palette.background, palette.text);
                 assert_ne!(
                     palette.selection,

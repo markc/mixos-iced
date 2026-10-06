@@ -35,8 +35,8 @@ mod cpu_grid;
 #[cfg(not(any(feature = "wgpu", feature = "tiny-skia")))]
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
-use application::iced::widget::{Row, button, column, container, row, space, text};
-use application::iced::{Background, Border, Element, Length, Size, Subscription, Task};
+use application::iced::widget::{Row, column, container, row, space, text};
+use application::iced::{Element, Length, Size, Subscription, Task};
 use frame::Painter;
 use input::Action;
 use layout::{Node, Shape};
@@ -784,46 +784,34 @@ fn pointer_message(
 /// One button per tab and a `+`, as bterm. Every colour is a design token.
 fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
     let tokens = state.tokens;
-    let tab = |label: String, active: bool| {
-        button(text(label).size(13.0)).padding([3.0, 12.0]).style(
-            move |_theme: &application::iced::Theme, status: button::Status| {
-                let (background, text_color) = if active {
-                    (tokens.palette.primary, tokens.palette.primary_text)
-                } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                    (tokens.palette.muted_surface, tokens.palette.text)
-                } else {
-                    (tokens.palette.card, tokens.palette.muted_text)
-                };
-                button::Style {
-                    background: Some(Background::Color(background)),
-                    text_color,
-                    border: Border {
-                        radius: tokens.metrics.radius.md.into(),
-                        ..Border::default()
-                    },
-                    ..button::Style::default()
-                }
-            },
-        )
-    };
-    let mut strip: Row<'_, Message> = Row::new().spacing(4.0).padding([3.0, 6.0]);
-    // Put failures first so a long tab list cannot push the notice offscreen.
+    let mut tabs = toolkit::TabBar::with_tab_labels(
+        state.shape.tabs.iter().map(|tab| (tab.id, toolkit::TabLabel::Text(tab.title.clone()))).collect(), Message::SelectTab)
+        .text_size(13.0).tab_width(Length::Shrink).padding([3.0, 12.0]).spacing(4.0)
+        .style(move |_, status| {
+            let mut style = toolkit::theme::tab_bar::default(&toolkit::Theme::new(tokens), status);
+            if status == toolkit::tab_bar::Status::Active {
+                style.tab_label_background = tokens.palette.primary.into();
+                style.text_color = tokens.palette.primary_text;
+            } else if status == toolkit::tab_bar::Status::Disabled {
+                style.tab_label_background = tokens.palette.card.into();
+            }
+            style
+        });
+    if let Some(active) = state.shape.tabs.iter().find(|tab| tab.active) { tabs = tabs.set_active_tab(&active.id); }
+    let new_tab = toolkit::CenteredButton::new(text("+").size(13.0))
+        .padding([3.0, 12.0]).on_press(Message::Action(Action::NewTab))
+        .style(move |_, status| {
+            let mut style = toolkit::theme::button::text(&toolkit::Theme::new(tokens), status);
+            style.text_color = tokens.palette.muted_text;
+            style
+        });
+    let mut strip = Row::new().spacing(4.0).padding([3.0, 6.0]);
     if let Some(notice) = &state.paste_notice {
         strip = strip.push(text(notice).size(13.0).color(tokens.palette.text));
     }
-    for label in &state.shape.tabs {
-        strip = strip
-            .push(tab(label.title.clone(), label.active).on_press(Message::SelectTab(label.id)));
-    }
-    strip = strip.push(tab("+".into(), false).on_press(Message::Action(Action::NewTab)));
-    container(strip)
-        .width(Length::Fill)
-        .height(Length::Fixed(layout::strip_height(scale)))
-        .style(move |_theme| container::Style {
-            background: Some(tokens.palette.card.into()),
-            ..container::Style::default()
-        })
-        .into()
+    strip = strip.push(tabs.scrollable().width(Length::Fill)).push(new_tab);
+    container(strip).width(Length::Fill).height(Length::Fixed(layout::strip_height(scale)))
+        .style(move |_| container::Style { background: Some(tokens.palette.card.into()), ..Default::default() }).into()
 }
 
 /// The active tab's panes as nested rows and columns, split with the same
