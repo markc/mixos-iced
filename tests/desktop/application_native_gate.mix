@@ -13,8 +13,10 @@ end
 for each $support in ["bwrap", "sudo", "setpriv"]
   if which($support) == nil then raise("TEST_SUPPORT", $support .. " is required for the owned PTY mount namespace") end
 end
-$check_support = run_argv(["sudo", "-n", "true"], {timeout:10})
-if not $check_support.ok then raise("TEST_SUPPORT", "non-interactive sudo is required to preserve native broker UID verification in the mount namespace") end
+for each $probe in [["sudo", "-n", "bwrap", "--version"], ["sudo", "-n", "kill", "-0", "--", to_string(pid())]]
+  $check_support = run_argv($probe, {timeout:10})
+  if not $check_support.ok then raise("TEST_SUPPORT", "non-interactive sudo must permit bwrap and owned-launcher cleanup") end
+end
 export MIXOS_TEST_MIX=$bins .. "/mix"
 fn check($condition, $message)
   if not $condition then raise("APPLICATION_NATIVE", $message) end
@@ -24,13 +26,33 @@ fn rpc($service, $verb, $args)
   check($r.rc == 0, $service .. " " .. $verb .. ": " .. json_encode($r))
   return $r.result
 end
-fn wait_service($service, $verb)
+fn wait_service($service, $verb, $child, $log)
   for each $i in range(1, 60)
+    check(process_alive($child), "application launcher exited before registration: " .. $service .. "; " .. read_file($log))
     $r = $n.call($service, $verb, {})
     if $r.rc == 0 then return $r.result end
     sleep(0.25)
   end
   raise("APPLICATION_NATIVE", "service did not register: " .. $service)
+end
+fn stop_child($child)
+  for each $signal in ["TERM", "KILL"]
+    if not process_alive($child.pid) then return true end
+    if $child.privileged_launcher then
+      $result = run_argv(["sudo", "-n", "kill", "-" .. $signal, "--", to_string($child.pid)], {timeout:10})
+      if not $result.ok and process_alive($child.pid) then
+        print("owned launcher signal failed: " .. to_string($child.pid) .. "; " .. trim($result.stderr))
+      end
+    else
+      $sent = kill($child.pid, $signal == "TERM" ? 15 : 9)
+    end
+    for each $i in range(1, 20)
+      if not process_alive($child.pid) then return true end
+      sleep(0.1)
+    end
+  end
+  print("FAIL owned application process survived teardown: " .. to_string($child.pid))
+  return false
 end
 fn window($session, $app)
   for each $i in range(1, 60)
@@ -71,6 +93,7 @@ for each $scale in [1, 2.5]
   $session = nil
   $bus = nil
   $children = []
+  $launchers = {}
   $ok = false
   try
     $bus = $n.private_bus({dir: $run.path, name: "application-native", noded: $bins .. "/noded"})
@@ -91,7 +114,7 @@ for each $scale in [1, 2.5]
         -- the test child's mount namespace. Unprivileged bwrap remaps host
         -- root to nobody, correctly failing native ingress ownership checks.
         -- Create only a mount namespace, then drop all privilege before Term.
-        $argv = ["sudo", "-n", "bwrap", "--bind", "/", "/", "--dev", "/dev", "--ro-bind", $bins .. "/mix", "/opt/mixos/bin/mix", "--clearenv"]
+        $argv = ["sudo", "-n", "bwrap", "--die-with-parent", "--bind", "/", "/", "--dev", "/dev", "--ro-bind", $bins .. "/mix", "/opt/mixos/bin/mix", "--clearenv"]
         $launch = merge($client, {PATH:env("PATH"), USER:env("USER"),
           MIXOS_BROKER_ACCOUNT:env("MIXOS_BROKER_ACCOUNT"), MIXOS_NODE_CONFIG:$bus.conf,
           COSMIX_NODE_CONFIG:$bus.conf, MIXOS_NODED_URL:$bus.url, COSMIX_NODED_URL:$bus.url,
@@ -105,14 +128,18 @@ for each $scale in [1, 2.5]
       end
       $p = spawn($argv, {env: $client, stdout: {file: $run.path .. "/" .. $app .. ".log"}, stderr: "stdout", detach: true})
       push($children, {pid:$p, privileged_launcher:$app == "term"})
+      $launchers[$app] = $p
     end
-    wait_service("edit", "edit.ping")
-    wait_service("ced", "ced.ping")
-    wait_service("dopus", "dopus.ping")
-    wait_service("term", "term.tabs")
+    wait_service("edit", "edit.ping", $launchers.editd, $run.path .. "/editd.log")
+    wait_service("ced", "ced.ping", $launchers.ced, $run.path .. "/ced.log")
+    wait_service("dopus", "dopus.ping", $launchers.dopus, $run.path .. "/dopus.log")
+    wait_service("term", "term.tabs", $launchers.term, $run.path .. "/term.log")
     $ced = window($session, "ced")
     $dopus = window($session, "dopus")
     $term = window($session, "term")
+    -- Track the mapped user process independently of sudo's supervisor so
+    -- reparenting cannot hide a surviving Term from cleanup verification.
+    push($children, {pid:$term.pid, privileged_launcher:false})
 
     -- Real EditorPane layout and primary-seat keyboard input.
     $file = $run.path .. "/document.txt"
@@ -199,9 +226,7 @@ for each $scale in [1, 2.5]
     for each $child in $children
       check(process_alive($child.pid), "application exited during native acceptance")
     end
-    write_file($run.path .. "/acceptance.json", json_encode({scale: $scale, editor: $layout, terminal: $panes, native_bindings: $bindings, dbus: false}))
     $ok = true
-    print("PASS consuming native applications at scale " .. to_string($scale) .. ": " .. $run.path)
   catch $error
     print("FAIL consuming native applications: " .. to_string($error))
     for each $log in glob($run.path .. "/*.log")
@@ -209,19 +234,13 @@ for each $scale in [1, 2.5]
     end
   finally
     for each $child in $children
-      if process_alive($child.pid) then
-        if $child.privileged_launcher then
-          -- The mount setup's sudo supervisor remains root-owned; stop only
-          -- the launcher recorded by this run, which forwards TERM to Term.
-          $k = run_argv(["sudo", "-n", "kill", "-TERM", "--", to_string($child.pid)], {timeout:10})
-        else
-          $k = kill($child.pid, 15)
-        end
-      end
+      if not stop_child($child) then $ok = false end
     end
     if $session != nil then $n.stop($session) end
     if $bus != nil then $n.stop_bus($bus) end
     print("native application evidence retained: " .. $run.path)
   end
   if not $ok then exit(1) end
+  write_file($run.path .. "/acceptance.json", json_encode({scale: $scale, editor: $layout, terminal: $panes, native_bindings: $bindings, dbus: false, teardown:true}))
+  print("PASS consuming native applications at scale " .. to_string($scale) .. ": " .. $run.path)
 end
