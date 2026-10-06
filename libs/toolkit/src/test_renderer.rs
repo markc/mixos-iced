@@ -9,6 +9,8 @@ use iced_core::text::Paragraph as _;
 
 pub(crate) struct LayoutRenderer {
     pub(crate) paragraphs: Vec<Rectangle>,
+    pub(crate) paragraph_colours: Vec<Color>,
+    pub(crate) quads: Vec<(Rectangle, Background)>,
 }
 
 impl LayoutRenderer {
@@ -23,7 +25,7 @@ impl LayoutRenderer {
             let mut system = iced_graphics::text::font_system().write().unwrap();
             system.raw().db_mut().set_monospace_family("Fira Sans");
         });
-        Self { paragraphs: Vec::new() }
+        Self { paragraphs: Vec::new(), paragraph_colours: Vec::new(), quads: Vec::new() }
     }
 }
 
@@ -32,7 +34,9 @@ impl iced_core::Renderer for LayoutRenderer {
     fn end_layer(&mut self) {}
     fn start_transformation(&mut self, _transformation: Transformation) {}
     fn end_transformation(&mut self) {}
-    fn fill_quad(&mut self, _quad: renderer::Quad, _background: impl Into<Background>) {}
+    fn fill_quad(&mut self, quad: renderer::Quad, background: impl Into<Background>) {
+        self.quads.push((quad.bounds, background.into()));
+    }
 
     fn allocate_image(
         &mut self,
@@ -77,10 +81,11 @@ impl text::Renderer for LayoutRenderer {
         &mut self,
         paragraph: &Self::Paragraph,
         position: Point,
-        _color: Color,
+        color: Color,
         _clip_bounds: Rectangle,
     ) {
         self.paragraphs.push(Rectangle::new(position, paragraph.min_bounds()));
+        self.paragraph_colours.push(color);
     }
 
     fn fill_editor(

@@ -60,7 +60,9 @@ let button: Element<'_, u8, Theme, toolkit::widget::Renderer> =
 ```
 
 `centered(content)` provides the same placement as an ordinary iced container,
-with the standard width/height/padding/style builders. It centres both axes;
+with width/height/padding builders. This layout-only wrapper paints nothing,
+inherits the parent's text colour and requires no container theme catalog.
+Style an outer container when a background is needed. It centres both axes;
 `align_x` or `align_y` can override one axis. Padding defines the inner area,
 so asymmetric padding intentionally shifts the content relative to the full
 target. Minimum constraints are applied before centring; no Fill spacers are

@@ -75,7 +75,7 @@ mod test_renderer;
 pub use audio_style::AudioStyle;
 pub use badge::Badge;
 pub use card::Card;
-pub use centered::{CenteredButton, centered};
+pub use centered::{Centered, CenteredButton, centered};
 pub use color_picker::{ColorPicker, Hsv, Spectrum};
 pub use command_palette::Command;
 pub use dialog::{Dialog, ModalQueue};
