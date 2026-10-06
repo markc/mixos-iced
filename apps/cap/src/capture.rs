@@ -204,6 +204,9 @@ pub async fn take(
                 return Err("compositor did not confirm Cap minimisation".into());
             }
         }
+        if *cancel.borrow() {
+            return Err("cancelled".into());
+        }
         let path = directory.join(format!("cap-{}.png", uuid::Uuid::now_v7()));
         let mut args = json!({"path":path,"cursor":request.cursor});
         if let Some(target) = &request.window {
@@ -356,6 +359,42 @@ mod tests {
             Some(Target {
                 id: 4,
                 generation: 9,
+            }),
+            PathBuf::from("/tmp"),
+            rx,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "cancelled");
+        driver.await.unwrap();
+    }
+    #[tokio::test]
+    async fn cancellation_during_minimise_never_starts_region_selection() {
+        let (bus, mut effects) = BusHandle::response_sink();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let driver = tokio::spawn(async move {
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("minimise")
+            };
+            assert_eq!(verb, "comp.window.minimize");
+            tx.send(true).unwrap();
+            reply.send(Ok(json!({"minimized":true}))).unwrap();
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("restore")
+            };
+            assert_eq!(verb, "comp.window.restore");
+            reply.send(Ok(json!({"minimized":false}))).unwrap();
+            assert!(effects.recv().await.is_none());
+        });
+        let result = take(
+            bus,
+            "comp.test".into(),
+            Request {
+                mode: Mode::Region,
+                ..Default::default()
+            },
+            Some(Target {
+                id: 1,
+                generation: 2,
             }),
             PathBuf::from("/tmp"),
             rx,

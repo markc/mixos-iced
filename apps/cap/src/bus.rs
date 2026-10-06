@@ -409,30 +409,55 @@ pub fn probe_running(url: &str, service: &str) -> bool {
 /// instance opens one image, or raises its existing window when no path was
 /// supplied. Dirty work is never discarded by a launcher invocation.
 pub fn forward_open(url: &str, service: &str, paths: &[String]) -> Result<(), String> {
-    match anonymous_call(
-        url,
-        service,
-        if paths.is_empty() {
-            "cap.show"
-        } else {
-            "cap.open"
-        },
-        &if paths.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::json!({ "path": paths[0] })
-        },
-        Duration::from_secs(5),
-    ) {
-        Some((0, _)) => Ok(()),
-        Some((rc, body)) => Err(format!("cap.open refused (rc {rc}): {body}")),
-        None => Err(format!("no answer from {service}")),
+    forward_with(paths, |verb, args| {
+        anonymous_call(url, service, verb, args, Duration::from_secs(5))
+    })
+}
+fn forward_with(
+    paths: &[String],
+    mut call: impl FnMut(&str, &serde_json::Value) -> Option<(u8, String)>,
+) -> Result<(), String> {
+    let mut requests = Vec::new();
+    if let Some(path) = paths.first() {
+        requests.push(("cap.open", serde_json::json!({"path":path})));
     }
+    requests.push(("cap.show", serde_json::json!({})));
+    for (verb, args) in requests {
+        match call(verb, &args) {
+            Some((0, _)) => {}
+            Some((rc, body)) => return Err(format!("{verb} refused (rc {rc}): {body}")),
+            None => return Err(format!("no answer to {verb}")),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launcher_open_activates_only_after_success() {
+        let mut calls = Vec::new();
+        forward_with(&["/tmp/image.png".into()], |verb, args| {
+            calls.push((verb.to_string(), args.clone()));
+            Some((0, String::new()))
+        })
+        .unwrap();
+        assert_eq!(
+            calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+            ["cap.open", "cap.show"]
+        );
+        assert_eq!(calls[0].1["path"], "/tmp/image.png");
+        let mut calls = Vec::new();
+        assert!(
+            forward_with(&["/tmp/image.png".into()], |verb, _| {
+                calls.push(verb.to_string());
+                Some((10, "dirty".into()))
+            })
+            .is_err()
+        );
+        assert_eq!(calls, ["cap.open"]);
+    }
 
     fn cmd(from: &str, headers: &[(&str, &str)]) -> IncomingCommand {
         IncomingCommand {
