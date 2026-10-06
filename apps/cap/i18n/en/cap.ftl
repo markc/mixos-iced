@@ -1,4 +1,8 @@
 title = Cap
+text-tool = Text
+number-tool = Number
+text-placeholder = Type annotation text, then drag a box
+text-size = Text size
 screen = Full screen
 window = Window
 region = Region

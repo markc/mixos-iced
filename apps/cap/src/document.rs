@@ -43,9 +43,11 @@ pub enum Kind {
     Pen,
     Highlighter,
     Redact,
+    Text,
+    Number,
 }
 impl Kind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Arrow,
         Self::Line,
         Self::Rectangle,
@@ -53,6 +55,8 @@ impl Kind {
         Self::Pen,
         Self::Highlighter,
         Self::Redact,
+        Self::Text,
+        Self::Number,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -63,6 +67,8 @@ impl Kind {
             Self::Pen => "pen",
             Self::Highlighter => "highlighter",
             Self::Redact => "redact",
+            Self::Text => "text-tool",
+            Self::Number => "number-tool",
         }
     }
 }
@@ -73,6 +79,12 @@ pub struct Shape {
     pub points: Vec<Point>,
     pub colour: [u8; 4],
     pub width: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
 }
 impl Shape {
     pub fn validate(&self) -> Result<(), String> {
@@ -86,6 +98,36 @@ impl Shape {
             || (!matches!(self.kind, Kind::Pen | Kind::Highlighter) && count != 2)
         {
             return Err("invalid annotation points".into());
+        }
+        if matches!(self.kind, Kind::Text | Kind::Number) {
+            let (l, t, r, b) = self.bounds();
+            if r - l < 1.0 || b - t < 1.0 {
+                return Err("text needs a non-empty box".into());
+            }
+            if self
+                .size
+                .is_none_or(|s| !s.is_finite() || !(8.0..=256.0).contains(&s))
+            {
+                return Err("text size must be 8..256 pixels".into());
+            }
+            match self.kind {
+                Kind::Text
+                    if self.text.as_ref().is_none_or(|t| {
+                        t.trim().is_empty() || t.len() > 4096 || t.lines().count() > 16
+                    }) || self.number.is_some() =>
+                {
+                    return Err("text must contain 1..4096 bytes and at most 16 lines".into());
+                }
+                Kind::Number
+                    if self.number.is_none_or(|n| !(1..=9999).contains(&n))
+                        || self.text.is_some() =>
+                {
+                    return Err("marker number must be 1..9999".into());
+                }
+                _ => {}
+            }
+        } else if self.text.is_some() || self.size.is_some() || self.number.is_some() {
+            return Err("text fields only apply to text and number tools".into());
         }
         Ok(())
     }
@@ -358,6 +400,9 @@ fn check_size(w: u32, h: u32) -> Result<(), String> {
 }
 fn paint(pixmap: &mut Pixmap, shape: &Shape) -> Result<(), String> {
     shape.validate()?;
+    if matches!(shape.kind, Kind::Text | Kind::Number) {
+        return paint_text(pixmap, shape);
+    }
     let mut path = PathBuilder::new();
     let a = shape.points[0];
     let b = shape.points[1];
@@ -433,6 +478,68 @@ fn paint(pixmap: &mut Pixmap, shape: &Shape) -> Result<(), String> {
     Ok(())
 }
 
+/// Shape and rasterise through iced's pinned cosmic-text version. The bundled
+/// OFL Inter font makes headless export independent of host fonts or a bus.
+fn paint_text(pixmap: &mut Pixmap, shape: &Shape) -> Result<(), String> {
+    use iced::advanced::graphics::text::cosmic_text::{
+        self, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache,
+    };
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(
+        include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").to_vec(),
+    );
+    let mut fonts = FontSystem::new_with_locale_and_db("en-US".into(), db);
+    let mut cache = SwashCache::new();
+    let size = shape.size.ok_or("missing text size")?;
+    let (left, top, right, bottom) = shape.bounds();
+    let content = if shape.kind == Kind::Number {
+        shape.number.ok_or("missing marker number")?.to_string()
+    } else {
+        shape.text.clone().ok_or("missing text")?
+    };
+    let mut buffer = Buffer::new(&mut fonts, Metrics::new(size, size * 1.25));
+    buffer.set_size(Some(right - left), Some(bottom - top));
+    buffer.set_text(
+        &content,
+        &Attrs::new().family(Family::Name("Inter")),
+        Shaping::Advanced,
+        None,
+    );
+    let [r, g, b, a] = shape.colour;
+    buffer.draw(
+        &mut fonts,
+        &mut cache,
+        cosmic_text::Color::rgba(r, g, b, a),
+        |x, y, w, h, colour| {
+            let x = left.floor() as i32 + x;
+            let y = top.floor() as i32 + y;
+            // Clip to the object's box as well as the image. This keeps text hit
+            // bounds, selection and export geometry identical.
+            let clip_l = (left.floor() as i32).max(0);
+            let clip_t = (top.floor() as i32).max(0);
+            let clip_r = (right.ceil() as i32).min(pixmap.width() as i32);
+            let clip_b = (bottom.ceil() as i32).min(pixmap.height() as i32);
+            let [r, g, b, a] = colour.as_rgba();
+            let width = pixmap.width() as usize;
+            for yy in y.max(clip_t)..(y + h as i32).min(clip_b) {
+                for xx in x.max(clip_l)..(x + w as i32).min(clip_r) {
+                    let at = (yy as usize * width + xx as usize) * 4;
+                    let px = &mut pixmap.data_mut()[at..at + 4];
+                    for (to, from) in px.iter_mut().take(3).zip([r, g, b]) {
+                        *to = ((u16::from(from) * u16::from(a)
+                            + u16::from(*to) * (255 - u16::from(a))
+                            + 127)
+                            / 255) as u8;
+                    }
+                    px[3] = (u16::from(a) + (u16::from(px[3]) * (255 - u16::from(a)) + 127) / 255)
+                        as u8;
+                }
+            }
+        },
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +553,17 @@ mod tests {
             points: vec![Point { x: 4.0, y: 4.0 }, Point { x: 20.0, y: 16.0 }],
             colour: [255, 0, 0, 255],
             width: 3.0,
+            text: if kind == Kind::Text {
+                Some("A".into())
+            } else {
+                None
+            },
+            size: if matches!(kind, Kind::Text | Kind::Number) {
+                Some(8.0)
+            } else {
+                None
+            },
+            number: if kind == Kind::Number { Some(1) } else { None },
         }
     }
     #[test]

@@ -1,0 +1,80 @@
+# Cap
+
+Cap takes screenshots through compd and edits a separate annotation document.
+Its iced window uses the shared toolkit and Fluent catalogue. Both its GUI and
+agent commands use the native ABP Bus. A D-Bus session is unnecessary.
+
+Choose **Screen**, **Window** or **Region**, select an output or window, set a
+delay of 0–10 seconds and choose whether to include the pointer. **Take
+screenshot** keeps Cap visible during the delay so you can cancel. Cap then
+asks compd to minimise its own fenced window, captures a fresh frame and
+restores itself. Region mode uses compd's selection overlay; Escape cancels it.
+Screen mode captures one output. Window mode captures the window's client
+image and does not include compositor decorations.
+
+The preview supports fit, zoom and middle-button panning. Draw arrows, lines,
+rectangles, ellipses, freehand strokes, highlights and opaque redactions. Select
+an object to move it or delete it. Crop changes the export rectangle without
+discarding source pixels. Undo and redo operate on complete gestures. Source
+pixels remain immutable; preview, PNG export and image clipboard use the same
+painter.
+
+**Save As** writes a new PNG atomically and refuses an existing destination,
+including a symlink. Choose a fresh filename rather than overwriting another
+image. Closing the app, opening an image or taking another screenshot prompts
+when annotations have not been saved. PNG export flattens the annotations;
+editable objects are held in memory for this initial version.
+
+`cap [IMAGE]` opens the window. A second invocation activates the existing
+instance. `cap --headless` starts a Bus-only service. `--service NAME`,
+`--comp NAME` and `--noded-url URL` select the native endpoints. `--version`
+prints the exact build provenance before configuration or display access.
+
+Capture originals live in `$MIXOS_APP_HOME/captures`, otherwise
+`$MIXOS_APPS_HOME/cap/captures`, then `$XDG_STATE_HOME/mixos/apps/cap/captures`
+or `$HOME/.local/state/mixos/apps/cap/captures`.
+
+## Agent commands (cap.v1)
+
+Requests are strict JSON objects. Unknown fields, malformed geometry and
+commands that would discard dirty annotations are refused. Status and capture
+completion are event driven; callers can read `cap.info` during a job.
+
+| Verb | Request | Result |
+|---|---|---|
+| `cap.ping`, `cap.info` | `{}` | version, busy state, document and capture metadata |
+| `cap.capture` | `{mode:"screen", output:"DP-1", cursor:true, delay:0}` | completed capture and document |
+| `cap.capture` | `{mode:"window", window:{id:7,generation:3}}` | fenced window capture |
+| `cap.capture` | `{mode:"region", output:"DP-1"}` | selection, then completed capture |
+| `cap.cancel` | `{}` | cancellation requested; region selection also accepts Escape |
+| `cap.open` | `{path:"/home/user/Pictures/image.png"}` | decoded document |
+| `cap.annotate` | `{kind:"arrow",points:[{x:10,y:10},{x:80,y:60}],colour:[255,0,0,255],width:4}` | stable object ID |
+| `cap.move` | `{id:1,dx:10,dy:5}` | updated document |
+| `cap.delete` | `{id:1}` | updated document |
+| `cap.crop` | `{crop:{x:0,y:0,width:640,height:480}}` or `{crop:null}` | updated document |
+| `cap.undo`, `cap.redo` | `{}` | updated document |
+| `cap.export` | `{path:"/home/user/Pictures/new-image.png"}` | saved PNG and document |
+| `cap.show` | `{}` | activates GUI; refused by a headless instance |
+| `cap.quit` | `{}` | quits if idle and annotations are saved |
+
+Coordinates refer to original image pixels, even after cropping or zooming.
+Images are limited to 32 million pixels, documents to 256 objects and undo to
+128 snapshots. A freehand stroke has at most 16,384 points. Capture requests
+complete once; compd applies a three-second capture deadline. Region selection
+has its own bounded deadline. A remote cancel during selection is observed
+after that native selection finishes; Escape cancels immediately.
+
+Text, numbered markers, editable document persistence, recording, OCR and
+sharing are subsequent work. The current release does not combine outputs into
+one desktop image.
+
+## Compositor capture additions
+
+`comp.capture.frame` retains its existing output/window, path and format
+behaviour. It additionally accepts `cursor` (default true), `region` in
+output-local logical coordinates and an optional `output_generation` fence
+for a named output. Region rounding expands to physical pixel boundaries at
+fractional scale. Window and region selectors are mutually exclusive.
+The generation returned by `comp.region.select` is checked at admission and
+again before the image is written. Cursorless capture uses the existing
+cursorless render path, including when the native VT is inactive.

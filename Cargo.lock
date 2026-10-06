@@ -758,6 +758,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "appearance",
+ "buildinfo",
+ "bus",
+ "config",
+ "fluent-bundle",
+ "iced",
+ "iced_runtime",
+ "iced_test",
+ "iced_winit",
+ "image",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tiny-skia 0.12.0",
+ "tokio",
+ "toolkit",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "buildinfo",
  "comp-model",

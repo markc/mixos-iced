@@ -262,6 +262,78 @@ pub fn absolute(path: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn lost_minimise_reply_still_restores_the_fenced_window() {
+        let (bus, mut effects) = BusHandle::response_sink();
+        let target = Target {
+            id: 4,
+            generation: 9,
+        };
+        let expected = target.clone();
+        let driver = tokio::spawn(async move {
+            let Some(crate::bus::Effect::Call {
+                verb, args, reply, ..
+            }) = effects.recv().await
+            else {
+                panic!("expected minimise")
+            };
+            assert_eq!(verb, "comp.window.minimize");
+            assert_eq!(args, json!(expected));
+            reply.send(Err("acknowledgement lost".into())).unwrap();
+            let Some(crate::bus::Effect::Call {
+                verb, args, reply, ..
+            }) = effects.recv().await
+            else {
+                panic!("expected restore")
+            };
+            assert_eq!(verb, "comp.window.restore");
+            assert_eq!(args, json!(expected));
+            reply.send(Ok(json!({"minimized":false}))).unwrap();
+        });
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let result = take(
+            bus,
+            "comp.test".into(),
+            Request::default(),
+            Some(target),
+            PathBuf::from("/tmp"),
+            rx,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "acknowledgement lost");
+        driver.await.unwrap();
+    }
+    #[tokio::test]
+    async fn cancellation_during_delay_never_hides_cap() {
+        let (bus, mut effects) = BusHandle::response_sink();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let driver = tokio::spawn(async move {
+            let Some(crate::bus::Effect::Delay { duration, reply }) = effects.recv().await else {
+                panic!("expected delay first")
+            };
+            assert_eq!(duration, Duration::from_secs(10));
+            tx.send(true).unwrap();
+            let _hold = reply;
+            assert!(effects.recv().await.is_none());
+        });
+        let result = take(
+            bus,
+            "comp.test".into(),
+            Request {
+                delay: 10,
+                ..Default::default()
+            },
+            Some(Target {
+                id: 4,
+                generation: 9,
+            }),
+            PathBuf::from("/tmp"),
+            rx,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "cancelled");
+        driver.await.unwrap();
+    }
     #[test]
     fn invalid_requests_are_refused() {
         assert!(

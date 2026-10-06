@@ -7,6 +7,7 @@ checked separately by the layering gate.
 
 | Package | Owner | Kind | Layer | Contract | Version |
 |---|---|---|---|---|---|
+| [cap](https://github.com/markc/mixos/blob/main/apps/cap/Cargo.toml) | cap | app | desktop | public | 0.1.0 |
 | [ced](https://github.com/markc/mixos/blob/main/apps/ced/Cargo.toml) | ced | app | desktop | public | 0.1.5 |
 | [editor-model](https://github.com/markc/mixos/blob/main/apps/ced/crates/editor-model/Cargo.toml) | ced | app | core | none | 0.1.1 |
 | [syntax](https://github.com/markc/mixos/blob/main/apps/ced/crates/syntax/Cargo.toml) | ced | app | core | none | 0.1.1 |
@@ -32,7 +33,7 @@ checked separately by the layering gate.
 | [scene](https://github.com/markc/mixos/blob/main/libs/scene/Cargo.toml) | scene | lib | core | none | 0.1.1 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
 | [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.0 |
-| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
+| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | none | 0.1.2 |
 | [comp-model](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-model/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [comp-service](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-service/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [decor](https://github.com/markc/mixos/blob/main/services/compd/crates/decor/Cargo.toml) | compd | service | desktop | none | 0.1.1 |

@@ -124,7 +124,7 @@ pub fn fail_output(output: &Output, reason: &str) {
     }
 }
 
-pub(crate) fn fail_output_capture(output: &Output, reason: &str) {
+pub fn fail_output_capture(output: &Output, reason: &str) {
     for request in take(|request| request.output == output.name() && request.spec.window.is_none())
     {
         (request.answer)(Err(capture_failed(reason)));

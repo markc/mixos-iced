@@ -88,6 +88,8 @@ pub enum Message {
     Gesture(Gesture),
     Colour(toolkit::color_picker::Hsv),
     Width(f32),
+    Text(String),
+    TextSize(String),
     Zoom(f32),
     Fit,
     Undo,
@@ -147,6 +149,8 @@ pub struct App {
     selected: Option<u64>,
     colour: iced::Color,
     width: f32,
+    annotation_text: String,
+    text_size: String,
     zoom: f32,
     pan: Point,
     status: String,
@@ -187,6 +191,8 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         selected: None,
         colour,
         width: 4.0,
+        annotation_text: String::new(),
+        text_size: "24".into(),
         zoom: 1.0,
         pan: Point { x: 0.0, y: 0.0 },
         status: label("ready"),
@@ -569,6 +575,16 @@ impl App {
                 self.width = width;
                 Task::none()
             }
+            Message::Text(value) => {
+                if value.len() <= 4096 {
+                    self.annotation_text = value;
+                }
+                Task::none()
+            }
+            Message::TextSize(value) => {
+                self.text_size = value;
+                Task::none()
+            }
             Message::Zoom(zoom) => {
                 self.zoom = zoom.clamp(0.1, 8.0);
                 Task::none()
@@ -596,9 +612,27 @@ impl App {
                 }
                 if let Some(doc) = &mut self.document {
                     let result = match gesture {
-                        Gesture::Add(shape) => doc.add(shape).map(|id| {
-                            self.selected = Some(id);
-                        }),
+                        Gesture::Add(mut shape) => {
+                            if shape.kind == Kind::Text {
+                                shape.text = Some(self.annotation_text.clone());
+                            }
+                            if matches!(shape.kind, Kind::Text | Kind::Number) {
+                                shape.size = self.text_size.parse().ok();
+                            }
+                            if shape.kind == Kind::Number {
+                                shape.number = Some(
+                                    doc.objects()
+                                        .iter()
+                                        .filter_map(|o| o.shape.number)
+                                        .max()
+                                        .unwrap_or(0)
+                                        .saturating_add(1),
+                                );
+                            }
+                            doc.add(shape).map(|id| {
+                                self.selected = Some(id);
+                            })
+                        }
                         Gesture::Crop(crop) => doc.set_crop(Some(crop)),
                         Gesture::Move(id, dx, dy) => doc.move_object(id, dx, dy),
                         _ => Ok(()),
@@ -943,16 +977,18 @@ impl App {
         let controls = row![
             modes,
             pick_list(
-                self.outputs.clone(),
                 self.request.output.clone(),
-                Message::Output
+                self.outputs.clone(),
+                String::clone
             )
+            .on_select(Message::Output)
             .placeholder(label("output")),
             pick_list(
-                self.windows.clone(),
                 self.selected_window.clone(),
-                Message::Choose
+                self.windows.clone(),
+                Window::to_string
             )
+            .on_select(Message::Choose)
             .placeholder(label("choose-window"))
             .width(180),
             text(label("delay")),
@@ -1025,6 +1061,20 @@ impl App {
         ]
         .spacing(gap)
         .align_y(iced::Center);
+        let settings = column![
+            settings,
+            row![
+                text_input(&label("text-placeholder"), &self.annotation_text)
+                    .on_input(Message::Text)
+                    .width(iced::Fill),
+                text(label("text-size")),
+                text_input("8–256", &self.text_size)
+                    .on_input(Message::TextSize)
+                    .width(70)
+            ]
+            .spacing(gap)
+        ]
+        .spacing(gap);
         let content: Element<'_, Message, Theme> =
             if let (Some(doc), Some(image)) = (&self.document, &self.preview) {
                 canvas::Canvas::new(Picture {
@@ -1237,6 +1287,9 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
                             },
                             colour: self.colour,
                             width: self.width,
+                            text: None,
+                            size: None,
+                            number: None,
                         }),
                         Tool::Crop => {
                             let (w, h) = self.document.dimensions();
