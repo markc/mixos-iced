@@ -783,7 +783,10 @@ impl App {
                 Err(error) => {
                     self.busy = false;
                     self.error(error);
-                    Task::none()
+                    self.pending
+                        .take()
+                        .map(|action| self.request_pending(action))
+                        .unwrap_or_else(Task::none)
                 }
             },
             Message::Copied(result) => {
@@ -1312,7 +1315,7 @@ mod tests {
         let pixels = image::open(path).unwrap().to_rgba8();
         assert_eq!(pixels.get_pixel(10, 10).0, [255, 255, 255, 255]);
         assert_ne!(
-            pixels.get_pixel(500, 400).0,
+            pixels.get_pixel(250, 200).0,
             [255, 255, 255, 255],
             "drag guide must render above the opaque image"
         );

@@ -41,9 +41,6 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Plane<'_, Message> {
     fn state(&self) -> tree::State {
         self.content.as_widget().state()
     }
-    fn children(&self) -> Vec<Tree> {
-        self.content.as_widget().children()
-    }
     fn diff(&mut self, tree: &mut Tree) {
         self.content.as_widget_mut().diff(tree)
     }

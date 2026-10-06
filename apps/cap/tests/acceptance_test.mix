@@ -10,7 +10,11 @@ for each $command in [
   ["cargo","clippy","--locked","-p","cap","--all-targets","--","-D","warnings"]
 ]
   print(join($command," "))
-  $output = run_argv_must($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stderr:"stdout",max_output:2000000})
-  print($output)
+  $result = run_argv($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stderr:"stdout",max_output:2000000})
+  print($result.stdout)
+  if not $result.ok or $result.stdout_truncated then
+    print(json_encode($result))
+    exit(1)
+  end
 end
 print("Cap format, document/compositor tests, native Bus acceptance and Clippy passed")
