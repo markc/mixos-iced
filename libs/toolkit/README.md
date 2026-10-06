@@ -414,6 +414,10 @@ paths/names and format secondary values only for visible rows. Decorations and
 native transfer ownership are injected; asynchronous relists invalidate a pressed
 path before either selection or drag begins.
 
+`editor_pane::Message::PrimarySelection` supplies bounded selected text to the
+caller. A host with native primary-selection support writes it there; other
+hosts can ignore it. The portable widget uses no platform-specific clipboard API.
+
 ```sh
 cargo run -p toolkit --example gallery --features gallery-wgpu        # default fonts
 cargo run -p toolkit --example gallery_fonts --features gallery-wgpu -- \

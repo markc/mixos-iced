@@ -91,7 +91,9 @@ pub enum Message {
     Scrolled(Scroll),
     Copy,
     Cut,
-    Paste { primary: bool },
+    Paste {
+        primary: bool,
+    },
     /// Publish the bounded selected text; the host owns primary-selection support.
     PrimarySelection(String),
     Preedit(String),

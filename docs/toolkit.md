@@ -21,6 +21,19 @@ Virtual lists build only visible rows, including with caller-owned variable
 row heights. Resizable columns report preview, commit and cancellation so
 the application can keep header and body widths together.
 
+`EditorPane`, `FilePane` and `TerminalPane` share larger controls through neutral
+providers. The editor supplies selection, Unicode cell layout, annotations,
+IME and bounded document seeks; its host applies editing intents and primary
+selection messages. File rows and their header share responsive columns and
+cached visible text, with stable paths checked after relists. The terminal
+frames an injected drawing surface and supplies focus, scroll and cell geometry.
+Applications supply document engines, filesystem work and PTYs.
+
+The standalone `compounds` example shows all three with a string document,
+a synthetic large listing and an injected terminal surface. The
+[application host](application.md) supplies native startup and renderer
+adapters for Ced, DOpus and Term.
+
 ## Services
 
 Keyboard routing supports ordinary shortcuts and two-stroke sequences.

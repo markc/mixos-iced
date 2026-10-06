@@ -259,6 +259,17 @@ sizes come through <code>Tokens</code>; a <code>Theme</code> can be replaced whi
 <p>Virtual lists build only visible rows, including with caller-owned variable
 row heights. Resizable columns report preview, commit and cancellation so
 the application can keep header and body widths together.</p>
+<p><code>EditorPane</code>, <code>FilePane</code> and <code>TerminalPane</code> share larger controls through neutral
+providers. The editor supplies selection, Unicode cell layout, annotations,
+IME and bounded document seeks; its host applies editing intents and primary
+selection messages. File rows and their header share responsive columns and
+cached visible text, with stable paths checked after relists. The terminal
+frames an injected drawing surface and supplies focus, scroll and cell geometry.
+Applications supply document engines, filesystem work and PTYs.</p>
+<p>The standalone <code>compounds</code> example shows all three with a string document,
+a synthetic large listing and an injected terminal surface. The
+<a href="/application/">application host</a> supplies native startup and renderer
+adapters for Ced, DOpus and Term.</p>
 <h2 id="services">Services</h2>
 <p>Keyboard routing supports ordinary shortcuts and two-stroke sequences.
 Persistent modal hosts preserve the underlying widget tree, trap focus and

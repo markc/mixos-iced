@@ -14,6 +14,7 @@
 - `EditorPane` exposes a neutral borrowed document source, typed editing
   intents and viewport geometry. Shared drawing and input retain Unicode
   clusters, bounded long-line checkpoints, annotations, IME and scroll echoes.
+  Primary-selection messages leave platform clipboard support to the host.
 - `TerminalPane` composes clipped renderer surfaces, focus borders and pane
   wheel actions without terminal-engine or renderer dependencies.
 - `GridGeometry` shares fractional-scale cell hit-testing and IME cursor
