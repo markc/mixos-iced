@@ -1,0 +1,49 @@
+[package]
+name = "term-test-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+test = false
+doctest = false
+
+[package.metadata.mixos]
+component = "term-test-broker"
+kind = "core"
+owner = "term"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+bus = { workspace = true, features = ["native"] }
+config.workspace = true
+mesh.workspace = true
+mesh-trust.workspace = true
+props = { workspace = true, features = ["bus"] }
+buildinfo.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+axum.workspace = true
+base64.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+ed25519-dalek.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+notify.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+socket2 = "0.6"
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zeroize = "1"

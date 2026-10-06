@@ -18,7 +18,6 @@ pub const DEFAULT_NODED_URL: &str = "ws://127.0.0.1:4200/ws";
 
 const URL_VAR: &str = "MIXOS_NODED_URL";
 const CONFIG_VAR: &str = "MIXOS_NODE_CONFIG";
-const ETC_VAR: &str = "MIXOS_ETC";
 const CONFIG_FILE: &str = "node.conf.mix";
 const SYSTEM_ETC: &str = "/etc/mixos";
 const DEFAULT_PORT: u16 = 4200;
@@ -77,8 +76,15 @@ pub fn node_config_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(CONFIG_VAR).filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));
     }
+    let environment = config::Environment::current();
+    let etc = environment
+        .etc
+        .or_else(|| environment.root.map(|root| root.join("etc")));
+    if let Some(etc) = etc {
+        return Some(etc.join(CONFIG_FILE));
+    }
     candidate_paths(
-        std::env::var_os(ETC_VAR).map(PathBuf::from),
+        None,
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
         std::env::var_os("HOME").map(PathBuf::from),
     )
@@ -120,7 +126,10 @@ pub fn url_from_node_config(source: &str) -> Option<String> {
 /// [`url_from_node_config`] on an already parsed document.
 fn url_from_node_value(config: &Value) -> Option<String> {
     let wg_ip = config.get("wg_ip").and_then(Value::as_str);
-    let port = config.get("noded").and_then(|noded| noded.get("port")).and_then(port_of);
+    let port = config
+        .get("noded")
+        .and_then(|noded| noded.get("port"))
+        .and_then(port_of);
     if wg_ip.is_none() && port.is_none() {
         return None;
     }
@@ -246,10 +255,15 @@ observe: {
     fn a_document_that_is_not_strict_data_reads_as_nothing() {
         // Executable constructs and broken syntax are refused, not scanned.
         assert_eq!(url_from_node_config("wg_ip: $addr\n"), None);
-        assert_eq!(url_from_node_config("wg_ip: \"10.0.0.4\"\nnoded: {\n"), None);
+        assert_eq!(
+            url_from_node_config("wg_ip: \"10.0.0.4\"\nnoded: {\n"),
+            None
+        );
         // Entries inside braces need commas; a newline alone is a refusal.
         assert_eq!(
-            url_from_node_config("wg_ip: \"10.0.0.5\"\nnoded: {\n  port: 4200\n  admission: \"off\"\n}\n"),
+            url_from_node_config(
+                "wg_ip: \"10.0.0.5\"\nnoded: {\n  port: 4200\n  admission: \"off\"\n}\n"
+            ),
             None
         );
     }
@@ -269,10 +283,16 @@ observe: {
             Some(PathBuf::from("/home/user/cfg")),
             Some(PathBuf::from("/home/user")),
         );
-        assert_eq!(paths[0], PathBuf::from("/home/user/cfg/mixos/node.conf.mix"));
+        assert_eq!(
+            paths[0],
+            PathBuf::from("/home/user/cfg/mixos/node.conf.mix")
+        );
         // MIXOS_ETC suppresses the system fallback.
         let paths = candidate_paths(Some(PathBuf::from("/sandbox/etc/mixos")), None, None);
-        assert_eq!(paths, vec![PathBuf::from("/sandbox/etc/mixos/node.conf.mix")]);
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/sandbox/etc/mixos/node.conf.mix")]
+        );
         // No home at all still finds the system file.
         assert_eq!(
             candidate_paths(None, None, None),

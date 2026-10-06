@@ -475,7 +475,7 @@ async fn stdio_setup_failure_does_not_truncate_an_earlier_route() {
 
 #[test]
 fn errors_manual_does_not_claim_stdio_truncation_is_transactional() {
-    let manual = include_str!("../../../../docs/mix/errors.md");
+    let manual = include_str!("../../../cli/mix-shell/share/man/errors.md");
     assert!(
         manual.contains("truncation itself is not transactional"),
         "errors.md must qualify the route-open-before-truncate guarantee"

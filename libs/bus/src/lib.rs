@@ -24,6 +24,8 @@ pub use service_info::{NodeInfo, RegisterProvenance, SCHEMA_VERSION, ServiceInfo
 
 #[cfg(feature = "client")]
 pub mod native_client;
+#[cfg(feature = "client")]
+pub mod client_helpers;
 
 pub use wire::{
     BusMessage, EMPTY_MESSAGE, MAX_HEADERS, MAX_MESSAGE_BYTES, ParseError, ParseReport,

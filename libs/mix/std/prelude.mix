@@ -1,0 +1,36 @@
+-- Mix standard prelude
+-- Auto-loaded before scripts and .mixrc
+
+-- lines() and chars() are native builtins since 0.63.0 (a builtin shadows
+-- any same-named function, so the old prelude shims here were dead the
+-- moment the builtins landed — removed like the max/min/abs/clamp shims
+-- below). Native lines() differs deliberately from the old shim: one
+-- trailing \r stripped per line (CRLF-safe) and the final newline no
+-- longer yields a trailing "" element. read_lines() has been NATIVE since
+-- v0.2.3 (it never called the shim), so its behaviour is unchanged; its
+-- dead prelude shim is likewise removed (0.63.0).
+
+function sum($list)
+    $total = 0
+    for each $item in $list
+        $total = $total + $item
+end
+    return $total
+end
+
+-- max, min, abs and clamp are now native math builtins (v0.19.0; see
+-- builtins.rs). A builtin shadows any same-named function, so these prelude
+-- shims were dead code — removed to keep the prelude the single source. The
+-- builtins preserve the value/ordering the shims selected (min/max are now
+-- also variadic, take a list, and still order strings lexicographically like
+-- the old `<`/`>`-based shims), with two deliberate refinements: a numeric
+-- result is normalized to a number (a numeric-string/bool arg no longer comes
+-- back with its original type), and clamp() errors on an inverted lo > hi
+-- range instead of silently returning a bound.
+
+function avg($list)
+    if is_empty($list) then
+        return 0
+    end
+    return sum($list) / len($list)
+end

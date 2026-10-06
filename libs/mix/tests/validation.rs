@@ -107,7 +107,7 @@ const JOB_SPEC: &str = "{node: {type: \"string\", nonblank: true}, host: {type: 
 #[tokio::test]
 async fn validate_passes_and_returns_original() {
     let src = format!(
-        "$raw = {{node: \"ct120\", host: \"pve3\", vmid: 120, plan: \"gold\", extra: \"kept\"}}\n$job = validate($raw, {JOB_SPEC})\nprint($job.node .. \" \" .. $job.extra)\n"
+        "$raw = {{node: \"ct120\", host: \"hypervisor.example.net\", vmid: 120, plan: \"gold\", extra: \"kept\"}}\n$job = validate($raw, {JOB_SPEC})\nprint($job.node .. \" \" .. $job.extra)\n"
     );
     let out = run_ok(&src).await;
     assert_eq!(out, "ct120 kept\n");
@@ -118,7 +118,7 @@ async fn validate_blank_node_is_rejected_with_path() {
     // THE historical provisioning failure: a blank node flowed into a
     // constructed hostname as "nil". Now it dies at the boundary.
     let src = format!(
-        "try\n  validate({{node: \"\", host: \"pve3\", vmid: 120, plan: \"gold\"}}, {JOB_SPEC})\ncatch $m, $e\n  print($e.code .. \" \" .. $e.details.path)\nend\n"
+        "try\n  validate({{node: \"\", host: \"hypervisor.example.net\", vmid: 120, plan: \"gold\"}}, {JOB_SPEC})\ncatch $m, $e\n  print($e.code .. \" \" .. $e.details.path)\nend\n"
     );
     let out = run_ok(&src).await;
     assert_eq!(out, "VALIDATION_NONBLANK node\n");
@@ -127,7 +127,7 @@ async fn validate_blank_node_is_rejected_with_path() {
 #[tokio::test]
 async fn validate_missing_required_absent_vs_optional() {
     let src = format!(
-        "try\n  validate({{host: \"pve3\", vmid: 120, plan: \"gold\"}}, {JOB_SPEC})\ncatch $m, $e\n  print($e.code .. \" \" .. $e.details.path)\nend\n"
+        "try\n  validate({{host: \"hypervisor.example.net\", vmid: 120, plan: \"gold\"}}, {JOB_SPEC})\ncatch $m, $e\n  print($e.code .. \" \" .. $e.details.path)\nend\n"
     );
     assert_eq!(run_ok(&src).await, "VALIDATION_REQUIRED node\n");
     // Optional fields absent → fine.

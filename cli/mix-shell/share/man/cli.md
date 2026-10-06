@@ -1,0 +1,1118 @@
+# cli — the `mix` meta-command
+
+Inside the Mix REPL (and from the OS shell as `mix <subcommand>`) the bareword
+**`mix`** is its own dispatcher: a built-in suite for introspecting the live
+session, reading the language reference, building/testing the interpreter,
+probing the Bus mesh, and driving AI-assisted workflows. It is *not* a Mix
+builtin function — it is a command the shell intercepts before evaluation, so
+you write `mix vars`, never `mix("vars")`.
+
+Two execution contexts, one command surface:
+
+- **From the OS shell** — `mix status`, `mix builtins math`, `mix what round`. The binary keeps an explicit allowlist of meta names and checks it *before* treating the argument as a script filename — so a script named `build` in the CWD is shadowed (run it as `mix ./build`). The session it reports on is the one that binary just started (so `mix vars` from a cold shell shows only the prelude functions), which makes the build/reference/mesh families useful while the *introspection* family is most meaningful inside a running REPL. `mix stats` also works here as a one-shot: every report names its window, and `mix stats coverage DIR` uses the real parser for static authorship coverage. See [usage statistics](stats.md).
+- **Inside the REPL** — the same plus the **stateful** subcommands that need live REPL state: `time`, `trace`, `history`, `reload`, `diagnose` (and `stats` against the live in-session counters). Those live in the REPL loop, not `meta::dispatch`, because they need readline history, the trace flag, or the usage-stats handle. From the OS shell these names are *not* on the allowlist — `mix trace on` there is read as a script filename (`Error reading 'trace': No such file or directory`). After checking all meta names, the REPL also treats an existing first token as a script path: `mix FILE [args…]` runs it in a clean child process and returns to the same prompt. This is deliberately different from `source FILE`, which executes in and can modify the current session scope.
+
+Bare `mix` prints the status overview **inside the REPL**; from the OS shell
+it starts the REPL instead (use `mix status` there). Meta names win over CWD
+files in both contexts, so `mix status` remains the status command even when a
+file named `status` exists; use `mix ./status` to run that file. An unknown
+non-file token inside the REPL prints
+`mix: unknown meta-command '<token>' (and no such file)` on stderr and then the
+subcommand overview (the `mix meta-commands:` listing); from the OS shell an
+unknown name is tried as a script filename.
+
+```mix
+mix status
+```
+
+```text
+mix 0.21.2
+  pid:       50960
+  uptime:    ?
+  memory:    5776 kB
+  variables: 0
+  aliases:   0
+  functions: 5
+  scope:     1 frame(s)
+  trace:     off
+```
+
+## Introspection — what is in the session
+
+These read the live [scope](variables.md): variables, [aliases](shell-mode.md),
+user [functions](functions.md), and the runtime config.
+
+```
+mix status      version + pid, uptime, RSS, var/alias/func counts, scope depth, trace
+mix vars        every variable as `$name = value` (values over 60 chars truncated)
+mix aliases     every alias as `name = expansion`
+mix functions   every user function as `name(param, param)`
+mix all         vars + aliases + functions under --- section headers ---
+mix type NAME   classify NAME: builtin / keyword / alias / function / variable / PATH command
+mix config      version, $HOME, prelude path, ~/.mixrc path, OS id, arch, pid
+```
+
+`mix type` resolves in the same order the evaluator does — builtin → keyword →
+alias → user function → variable → `$PATH` command → not found:
+
+```mix
+mix type round
+mix type ls
+mix type bogusname
+```
+
+```text
+round is a builtin function
+ls is a builtin function
+bogusname: not found
+```
+
+`mix functions` and `mix all` from a cold shell show the [prelude](builtins.md)
+shims that ship in every session:
+
+```mix
+mix functions
+```
+
+```text
+avg(list)
+chars(s)
+lines(s)
+read_lines(path)
+sum(list)
+```
+
+`mix config` is the quickest way to confirm which interpreter and rc file are in
+play:
+
+```mix
+mix config
+```
+
+```text
+version:  mix 0.21.2
+home:     /home/user
+prelude:  /home/user/.mixos/crates/mixos-lib-mix/std/prelude.mix
+rc file:  /home/user/.mixrc
+os:       linux
+arch:     x86_64
+pid:      50955
+```
+
+> `mix status` shows `uptime: ?` when run from the OS shell — the process has no
+> recorded start instant for a one-shot invocation; inside a long-lived REPL it
+> reports real uptime.
+
+## Reference — learn the language
+
+The reference family is self-documenting and verified against the binary, so it
+never drifts from training data. Start broad with `mix help`, narrow with
+`mix builtins CATEGORY`, pinpoint with `mix what NAME`, then read the full
+prose with `mix man TOPIC`.
+
+```
+mix help              full categorized builtin reference + keyword list + subcommand map
+mix keywords          every reserved word, one per line
+mix builtins [CAT]    list builtins (derived signature + description); with a category, only that one
+mix builtins --json   machine-readable contract table (metadata_schema 1 — see builtins.md)
+mix builtins --data   same table as strict-data Mix source
+mix builtins --names  bare name-per-line list
+mix what NAME         one-line description of a builtin OR a keyword
+mix man [TOPIC]       read a markdown manual page (no arg = the index)
+mix syntax            shortcut for `mix man variables`
+mix operators         shortcut for `mix man operators`
+mix diff bash         bash → Mix translation cheatsheet
+mix tutorial          guided walkthrough of the basics
+mix examples          copy-paste-runnable snippets by category
+```
+
+`mix builtins` takes one of ten categories — `string type math list map io
+system format json hof` — and prints each derived signature with its registered
+description (signatures are generated from the structured contracts, 0.29.0):
+
+```mix
+mix builtins math
+```
+
+```text
+math builtins:
+  round(x[, n]) -> number          Round to nearest integer, half away from zero; round(x, n) to n decimal places (n<0 rounds to tens/hundreds) (v0.19.0)
+  floor(x[, n]) -> number          Round down toward -inf; floor(x, n) to n decimal places (v0.19.0)
+  ceil(x[, n]) -> number           Round up toward +inf; ceil(x, n) to n decimal places (v0.19.0)
+  ...
+  pi() -> number                   The constant π (v0.19.0)
+  e() -> number                    Euler's number e (v0.19.0)
+```
+
+A bad category lists the valid set instead of failing silently:
+
+```text
+mix builtins: unknown category 'maths'
+Categories: string, type, math, list, map, io, system, format, json, hof
+```
+
+All CLI/meta output is BrokenPipe-tolerant. If a downstream reader closes early,
+Mix treats writes to that closed stream as normal and exits normally; it never
+prints a Rust `Broken pipe` panic or exits `101`. For example, this is safe even though
+`head` consumes only the start of the JSON report:
+
+```text
+mix builtins --json | head
+```
+
+The pipeline status remains the last command's status under ordinary shell
+rules, so a successful `head` makes the pipeline successful.
+
+`mix what` answers "what does this single name do?" for both builtins and
+keywords from the same lookup:
+
+```mix
+mix what round
+mix what send
+mix what map
+```
+
+```text
+round: Round to nearest integer, half away from zero; round(x, n) to n decimal places (n<0 rounds to tens/hundreds) (v0.19.0)
+send: Send message to Bus port: send PORT "msg"
+map: Return new list of transform(item) results (v0.2.0)
+```
+
+`mix apropos TERM` is the search when you *don't* know the name yet — one
+case-folding substring pass across builtin names AND descriptions, keyword
+names AND descriptions, and the manual's section headings, each hit saying
+where to read more. It is the answer to "I need to pad a string but I don't
+know it's called `lpad`":
+
+```mix
+mix apropos pad
+```
+
+```text
+BUILTINS
+  lpad  (string)  — Left-pad string to width (codepoint count; …) (v0.54.0)
+  rpad  (string)  — Right-pad string to width (codepoint count; …) (v0.54.0)
+  …
+MANUAL SECTIONS
+  mix man strings  § Padding with something other than a space
+```
+
+`mix what NAME` also falls through to this search when `NAME` is not an exact
+builtin or keyword, so a near-miss surfaces the candidates instead of printing
+`unknown` (v0.80.0).
+
+`mix keywords` is the canonical reserved-word list — the names you cannot use
+as function or variable *names* (`function step(...)` is an error). Since 0.21
+a keyword IS accepted anywhere it is unambiguously a name — bare map keys
+(`{label: 1, to: "x"}`), field access (`$m.to`), `send` kwargs — with the one
+exception of `fn`, which lexes identically to `function` and still needs
+quoting as a key. See [keywords](keywords.md).
+
+```mix
+mix keywords
+```
+
+```text
+Mix reserved words:
+
+  if
+  else
+  end
+  for
+  in
+  while
+  loop
+  function
+  fn
+  return
+  select
+  ...
+```
+
+### `mix man` resolves online-first, with a local fallback
+
+`mix man TOPIC` prints the markdown page `TOPIC.md`. The **canonical source is the
+online documentation service** at [`mixos.dev/mix`](https://mixos.dev/mix) — the
+same pages this site renders — because no tool can assume *where* (or whether) a
+local checkout lives. Resolution order in the default `auto` mode:
+
+1. **Fresh disk cache** — a copy fetched within the last 24 h short-circuits
+   everything (no network, no latency on the common path).
+2. **Online fetch** from `mixos.dev/mix` (2 s wall-clock budget, HTTPS-only, no
+   downgrade redirects); a good page is cached under your XDG cache dir.
+3. **Local checkout**, tried in this order — an *explicit* signal beats the
+   default: `$MIXOS_SRC/mix` (when `MIXOS_SRC` is set) → `$MIXOS/docs/mix`
+   (editing the repo's own pages) → `$MIXOS/mix` (a default checkout).
+4. **Stale cache**, if the network is down and no checkout is present.
+5. Otherwise a *not-found* message naming the paths searched and how to force
+   local mode.
+
+No argument reads the index (`README.md`); an unknown topic lists the available
+ones (the list excludes `README` itself):
+
+```mix
+mix man math        -- prints the math page (online, cached, or local)
+mix man             -- prints the index
+mix man nope        -- "no manual page for 'nope'" + available topics
+```
+
+**Environment controls:**
+
+- `MIXOS_MAN_SOURCE=local` — skip the network entirely; resolve only from a
+  local checkout (then stale cache). Use it when editing pages and wanting your
+  edits to win immediately, or when deliberately offline. Default is `auto`.
+- `MIXOS_MAN_URL=<base>` — override the online base URL (default
+  `https://mixos.dev/mix`). Points the fetch + cache at an alternate host.
+- `MIXOS_SRC=<dir>` — adds `<dir>/mix` as the highest-priority local checkout.
+
+`mix syntax` and `mix operators` are thin aliases — `mix man variables` and
+`mix man operators` respectively. To add a topic, drop `TOPIC.md` into
+`docs/mix/`; it publishes to `mixos.dev/mix` on the next Pages build and is
+reachable as `mix man TOPIC` with no code change.
+
+### `mix diff bash`
+
+A side-by-side translation table for anyone arriving from bash — it captures the
+sharp edges directly (`$` sigils everywhere, `..` for concat, `end`/`done`/`next`
+for block close, `$rc` instead of `$?`). `mix diff sh` is accepted as an alias;
+any other language names the available set (`available: bash`):
+
+```mix
+mix diff bash
+```
+
+```text
+Bash to Mix Translation Cheatsheet
+
+Bash                               Mix
+──────────────────────────────     ──────────────────────────────
+VAR="value"                        $var = "value"
+echo "$VAR"                        print $var
+if [ -f file ]; then               if is_file("file") then
+[[ -z $a ]]                        if $a == "" then
+for i in 1 2 3; do                 for each $i in [1, 2, 3]
+...
+```
+
+## Build — rebuild the interpreter from itself
+
+The build family wraps `cargo` against the Mix source tree (`$MIXOS_SRC`,
+default `$MIXOS`) so the REPL can rebuild and re-exec into a fresh binary —
+the self-reconstruction surface. Point `$MIXOS_SRC` at the directory holding
+the workspace `Cargo.toml` (in a clone of the public repo that is `mix/src`).
+
+```
+mix build       cargo build --release, then install target/release/mix → $MIXOS_BIN/mix
+mix clean       cargo clean (removes the target/ tree)
+mix update      git pull, then build + install
+mix test        cargo test, streaming output
+mix self check  syntax-check ~/.mixrc and std/prelude.mix without executing them
+mix check FILE  syntax-check one .mix file (lex + parse, no execution)
+```
+
+`mix build` removes the destination first (a running ELF can't be written in
+place — `ETXTBSY`), copies the new binary in, and — when run from the REPL —
+saves history then `exec()`s into it, so the new interpreter replaces the old
+process live. As a one-shot from the OS shell it installs and simply exits
+(there is no REPL to restart). `mix update` is `git pull` then the same build.
+
+`mix check` is a fast parse-only gate — perfect for a pre-commit hook or
+validating a script before shipping it:
+
+```mix
+mix check /tmp/ok.mix      -- a well-formed file
+mix check /tmp/bad.mix     -- an unterminated function header
+```
+
+```text
+OK: /tmp/ok.mix
+/tmp/bad.mix: Parse error at line 2:1: expected variable, got Eof
+```
+
+`mix self check` validates your two startup files. `~/.mixrc` is treated as a
+hybrid Mix-plus-shell file (it tolerates bareword shell lines), while
+`std/prelude.mix` must be strict, whole-file-valid Mix:
+
+```mix
+mix self check
+```
+
+```text
+~/.mixrc: OK
+std/prelude.mix: OK
+```
+
+(A `.mixrc` that mixes bareword shell lines with Mix reports
+`OK (mixed shell+Mix)` — the per-line classifier validated every line.)
+
+### `mix watch` — the edit-test loop
+
+`mix watch PATTERN COMMAND` is a polling file-watcher: every 250 ms it scans
+the current directory for files matching PATTERN and runs COMMAND (via
+`sh -c`) when one changes, with a 500 ms debounce. Globs are simple — `*.ext`,
+or `**/*.ext` to recurse (hidden directories and `target/` are always
+skipped). Ctrl-C stops it.
+
+```mix
+mix watch '*.mix' 'cargo test'
+```
+
+## Diagnostics — measure and trace
+
+### `mix doctor` — is this install healthy, and what am I talking to?
+
+One command answering both questions, from the OS shell or the REPL. Each line
+is `✓` (fine), `⚠` (a caveat, with the fix), or `✗` (broken, with the fix):
+
+```
+mix doctor
+```
+
+```text
+mix doctor — mix 0.81.0
+
+  ✓ version    0.81.0 · git 1a2b3c4d5e6f · built 2026-09-05T…Z
+  ✓ features   json regex markdown toml serde datetime url crypto http sqlite dkim datastar xml yaml ws
+  ✓ prelude    loaded (2 functions in scope)
+  ✓ manual     33 page(s) readable
+  ✓ stats      writable at /home/you/.local/state/mix
+  ✓ bus        reachable at ws://…/ws
+
+healthy — no ✗ checks
+```
+
+It **exits non-zero if any `✗` check fails**, so it gates: `mix doctor && deploy`.
+The `features` line is the honest set THIS binary was compiled with (a slimmed
+build reports fewer, never claims a capability it lacks); the `bus` line is a
+bounded reachability probe — the whole connect runs on a worker thread capped at
+~600 ms, so even a hostname endpoint with a dead resolver cannot hang it. Set
+`MIX_DOCTOR_SKIP_BUS` to skip the probe entirely (the line then reads `—`), for
+a hermetic run that touches no broker. The checks are deliberately local —
+version/provenance, compiled features, prelude, manual (checkout **or** `mix man`
+cache), stats-dir writability, and Bus — with no fleet awareness; that belongs
+to the hub's tools. Only the `stats` check can fail hard (`✗`); an unreachable
+Bus is a `⚠`, never a `✗`, so `mix doctor` still passes on a standalone box.
+
+These need live REPL state (readline history, the trace flag, the stats
+handle), so they are handled in the REPL loop rather than `meta::dispatch`.
+Apart from `mix stats` — which also runs one-shot from the OS shell against
+the on-disk data — they are **not** available as `mix …` from the OS shell.
+
+```
+mix trace [on|off]    per-statement tracing to stderr (no arg = report state) — see below
+mix history [PAT]     show readline history, optionally filtered to lines containing PAT
+mix reload            re-execute ~/.mixrc in the current session
+mix diagnose [on|off] auto-send REPL errors to Claude for diagnosis (needs the claude CLI)
+mix stats [SUB]       usage tracking — see below
+```
+
+### `time` — the timing modifier
+
+`time` is a shell-dispatch **modifier**, not a meta-command: it wraps whatever
+follows — an external command, a pipeline, a bareword function, or Mix code —
+and reports elapsed time on stderr. Unlike the rest of this section it is NOT
+REPL-only; it works under `-c` and over ssh too. Full semantics:
+[shell-mode](shell-mode.md).
+
+```mix
+time sum([1, 2, 3, 4, 5])
+```
+
+```text
+15
+Elapsed: 0.012ms
+```
+
+`mix time EXPR` is the same modifier under its older spelling. Before 0.32.0 it
+was a REPL-only meta-command that could time Mix code but not a command, and a
+bare `time cmd` died with `time: No such file or directory` — bash's `time` is a
+keyword, so there is no `time` binary for the classifier to find.
+
+### `mix trace` — the statement tracer
+
+`mix trace on` prints one line **to stderr** for every statement executed, in
+the form `trace <file>:<line> <kind>` — in the REPL the file shows as
+`<repl>`:
+
+```mix
+mix trace on
+$x = 41
+print($x + 1)
+```
+
+```text
+Trace: on
+trace <repl>:1 Assignment
+trace <repl>:1 Print
+42
+```
+
+Shell-dispatch lines are traced too, as `trace <repl> shell: <cmd>` —
+external binaries, pipelines, `cd`, and whole `&&`/`||`/`;` chains (a chain
+traces as one line, after alias expansion). The `mix …` meta-commands
+themselves are excluded as REPL machinery, as is the prompt's own render.
+
+The tracer is self-contained: no `RUST_LOG` needed, and `RUST_LOG` does
+**not** enable it (a `tracing` subscriber exists only under `--serve`) — the
+stderr line is the real channel. It is REPL-only: it cannot be armed under
+`--serve` or from a non-interactive `ssh host '<mix>'`. Current state shows in
+`mix status` (`trace: on|off`) and `mix context` (`"trace": true|false`);
+`mix trace` with no argument reports it.
+
+### `mix stats` — usage tracking
+
+`mix stats` aggregates which builtins, functions, aliases, commands, keywords,
+meta-commands, and error kinds you actually use — including a `never` report
+of builtins/keywords you have never invoked. Data lives under
+`$XDG_STATE_HOME/mix/` (default `~/.local/state/mix/`) as weekly JSON files,
+mirrored into a `mix.db` SQLite database when the `sqlite3` CLI is on `$PATH`
+(that database backs `trend`/`since`/`query`). `MIX_STATS=0` disables the
+subsystem. Run `mix stats` for the top-20 overview, or a subcommand:
+
+```
+mix stats              top 20 most-used across all categories
+mix stats builtins     per-builtin usage counts          mix stats never      never-used builtins/keywords
+mix stats functions    user-function counts              mix stats sessions   session history
+mix stats aliases      alias expansion counts            mix stats raw        current stats as JSON
+mix stats commands     external-command counts           mix stats reset      reset current counters
+mix stats keywords     keyword counts                    mix stats clear NAME remove NAME from every category
+mix stats meta         meta-command counts               mix stats all        aggregate every weekly file
+mix stats errors       error-kind counts                 mix stats week W     one week (e.g. 2026-W27)
+mix stats trend NAME / since DATE / query SQL            SQLite history
+```
+
+## Files — `mix edit`, the one-line edit that refuses to guess
+
+```
+mix edit [--all] [-n|--dry-run] FILE OLD NEW
+```
+
+Replace **OLD** with **NEW** in **FILE**. OLD is matched *exactly* —
+byte-for-byte, no pattern syntax, no delimiter to choose, nothing to escape.
+
+This exists to remove the `sed -i` reflex, which was never about the language:
+a one-line edit *from a prompt* had no Mix shape shorter than writing a `.mix`
+file. So the contract is the opposite of `sed`'s on the two axes that actually
+bite:
+
+| | `sed -i 's/OLD/NEW/'` | `mix edit` |
+|---|---|---|
+| OLD is not present | exit **0**, file unchanged, says nothing | exit **1**, file unchanged, says so |
+| OLD occurs twice | edits the first match **on every line** (all of them with `g`), silently | exit **2**, **writes nothing**, names every matching line |
+| OLD contains `.` `*` `/` `[` | matches other text, or is a syntax error | a literal dot, star, slash, bracket |
+| what changed | nothing printed | the changed line, as `-`/`+` |
+
+```
+$ mix edit src/main.rs "0.89.2" "0.89.3"
+src/main.rs:3
+- version = "0.89.2"
++ version = "0.89.3"
+```
+
+An ambiguous needle is a refusal, not a choice:
+
+```
+$ mix edit conf.mix "port = 8080" "port = 9090"
+mix edit: conf.mix: OLD occurs 2 times; file unchanged
+  conf.mix:4: port = 8080
+  conf.mix:19: port = 8080
+Pass --all to edit every occurrence, or give a longer OLD.
+```
+
+**Exit codes** — the reason this is a subcommand and not a meta-command
+(meta-commands all exit 0):
+
+| rc | meaning | file |
+|---|---|---|
+| 0 | edited | written |
+| 1 | OLD not found | untouched |
+| 2 | OLD occurs more than once and `--all` was not given | untouched |
+| 3 | usage error, unreadable file, unwritable **directory**, non-UTF-8 input, or a file that changed since it was read | untouched |
+
+(rc 3 is about the *directory*, not the file's own write bit: the edit is a
+temp-file rename, so a read-only file in a writable directory is edited and
+keeps its read-only mode.)
+
+`--all` is the explicit opt-in to edit every occurrence. `-n` / `--dry-run`
+reports the matches and writes nothing.
+
+**Flags come first, then `FILE OLD NEW` verbatim.** Option parsing stops at the
+first non-flag argument, so OLD and NEW can be any text at all —
+`mix edit f.rs "=>" "->"` and `mix edit f.rs 1 -1` are ordinary edits, not
+unknown options. `--` forces the switch early, for a FILE that starts with a
+dash. A flag *after* FILE is a usage error that says so.
+
+Other properties worth knowing:
+
+- **OLD may span lines.** Pass a `"one\ntwo"` and the two-line block is one
+  needle. The printed diff shows every line the edit touches, on both sides.
+- **Overlapping candidates are not an ambiguity.** `aa` in `aaa` is one
+  occurrence, because that is what the edit will actually replace — counting
+  overlaps would refuse an edit that was never ambiguous.
+- **The write is atomic.** A sibling temp file is created `O_EXCL` at 0600,
+  written, fsynced, given the original's permission bits and renamed over it.
+  An interrupted run leaves the old file intact, an edited script keeps its
+  executable bit, and a pre-placed file or symlink at the temp path is refused
+  rather than followed.
+- **A symlinked FILE is followed.** The edit lands on the target and the link
+  survives as a link — renaming over the link itself would silently replace it
+  with a regular file and leave the real target stale.
+- **A file that changed since it was read is refused** (rc 3, nothing written),
+  so a concurrent edit or an editor save is a refusal rather than a silent
+  overwrite. This narrows the race to the gap between the re-check and the
+  rename; it is not a lock, and a writer landing inside that gap still wins.
+- **`OLD == NEW` is a usage error** (rc 3), not a no-op, because it is
+  invariably a mistake.
+
+`mix edit` works at the interactive Mix prompt as well as from the OS shell;
+there the exit code lands in `$status`.
+
+In a script the nearest equivalent is [`replace()`](strings.md) — but it is
+**silent** when the needle is absent, returning the input unchanged, so a
+script doing this has to check the result itself.
+
+## Ecosystem — probe the Bus mesh
+
+These query the local [noded](bus.md) broker for its registered Bus service
+roster (the mesh is TCP noded — `ws://<wg-ip>:4200/ws` — resolved the same way
+the [`send`](bus.md) keyword resolves a target). All three fail fast with a 5 s
+timeout so a stale broker address can't hang a diagnostic.
+
+```
+mix mesh          mesh status + the full list of services the local noded knows
+mix ports         the registered Bus ports/services with a count
+mix ping SERVICE  is SERVICE reachable? (`noded` itself is always the local broker)
+```
+
+```mix
+mix mesh
+```
+
+```text
+Bus mesh active via local noded (ws://192.0.2.10:4200/ws)
+  dnsd
+  indexd
+  log
+  webd
+4 service(s) registered
+```
+
+```mix
+mix ping webd
+mix ping noded
+mix ping nope
+```
+
+```text
+webd: reachable (registered with noded)
+noded: reachable (local broker)
+nope: not found
+```
+
+When no broker is running the same commands degrade to a clean one-line message
+(`No mesh — local noded not reachable (...)`) rather than an error.
+
+There is also a small **orchestration** group: `mix deploy SVC`
+(`systemctl --user restart mixos-SVC`), `mix health [SVC]` (probe Bus unix
+sockets in `/run/bus`, falling back to `/tmp/bus`), and `mix logs SVC [-f]`
+(`journalctl --user -u mixos-SVC`, last 50 lines; `-f`/`--follow` to stream).
+These assume a systemd-user-managed MixOS install.
+
+## AI-powered — agent-driven workflows
+
+The AI family shells out to the Claude Code CLI (`claude -p "<prompt>"`); each
+constructs a task prompt pointed at the Mix source tree. If `claude` is not on
+`$PATH` they print an install hint and stop — they never alter anything on their
+own.
+
+```
+mix fix DESC      read source, write a fix + test, run cargo test
+mix extend DESC   implement a feature (tests first), run cargo test
+mix review        git log / git diff HEAD~1, then a code review
+mix explain NAME  explain how a builtin works from builtins.rs + evaluator.rs
+mix evolve        pick the highest-value item from MIX_TODO.md and implement it
+mix dogfood       write practical scripts, report awkward syntax / gaps
+mix fuzz          generate random Mix to fuzz the parser/evaluator, report crashes
+mix teach         build a tutorial .mix from the newest features
+```
+
+A related triad — `mix ask QUESTION` (one-shot Claude query with session context
+injected), `mix chat` (interactive Claude with a Mix-aware system prompt), and
+`mix context` / `mix snapshot` (export vars + functions + aliases + runtime info
+as JSON) — feeds the live session into an agent. `mix context` is the
+machine-readable companion to `mix all`:
+
+```mix
+mix context
+```
+
+```text
+{
+  "aliases": { ... },
+  "current_line": 42,
+  "cwd": "/home/user",
+  "extensions": [ ... ],
+  "functions": [ ... ],
+  "pid": 50955,
+  "scope_depth": 1,
+  "trace": false,
+  "variables": { ... }
+}
+```
+
+Finally, `mix claude-start` / `mix claude-stop` / `mix claude-status` manage
+the `mixos-claude` Bus port daemon (socket
+`/run/user/<uid>/mixos/ports/claude.sock`): `start` spawns the binary
+(searched in `$MIXOS_SRC/target/{release,debug}/`, then `$PATH`), `stop`
+removes the socket, `status` probes it and flags a stale socket.
+
+## Notes
+
+### Native pane-shell status (stage A)
+
+An S3-enrolled interactive shell answers `shell.status` on its existing,
+broker-allocated pane-shell name and connection. It creates no extra service,
+transport, builtin or legacy `--serve` handler. The resident remains responsive
+while readline, Mix evaluation or a managed foreground child occupies the shell.
+Non-attached shells allocate no status state, timers or worker threads.
+
+The bounded JSON request (at most 2048 bytes) has `version: 1`, `target` and
+no replay cursor. `target` contains `broker_epoch`,
+`record` (`record_id`, `incarnation`, `binding_generation`), `instance_id`,
+`pane_id` and `pane_generation`, exactly as supplied by current S3 discovery.
+Unknown request fields, invalid versions and malformed values are refused.
+
+Replies contain a versioned `status.snapshot`, capabilities and freshness
+metadata. Snapshot phases follow these boundaries:
+
+| Phase | Meaning |
+|---|---|
+| `starting` | Before ShellReady, including startup hooks |
+| `idle` | After ShellReady, evaluation finish, or a line that ran nothing |
+| `prompt-preparing` | Building the primary prompt, including custom `prompt()` |
+| `prompt-ready` | Editor activated; `continuation` distinguishes secondary prompts |
+| `evaluating` | An accepted line is being classified, expanded or evaluated, with a command ID |
+| `foreground-child` | A foreground producer holds a bracket |
+| `exiting` | Shell exit or replacement |
+
+ Prompt generation increases for every new
+primary or continuation prompt; `continuation` distinguishes them. Custom prompt
+evaluation is `prompt-preparing` without a command ID; continuation prompts do
+not enter that phase. An accepted line allocates its monotonic command ID at
+acceptance, not at evaluation, so the window in which it is classified and
+alias-expanded reports `evaluating` with that ID rather than `idle`. The ID is
+retained through foreground waits, and cleared when the evaluation finishes or
+when the line turns out to run nothing — an empty line, an incomplete
+continuation or a parse error — which returns the phase to `idle`.
+The foreground phase follows the job kernel's terminal lease for foreground
+pipelines and `fg`, and brackets the existing synchronous `run_stream` spawn/wait.
+This observation does not change `run_stream` job or signal semantics and does
+not enumerate jobs.
+
+The reducer supplies the owned editor's next prompt generation. Only its actual
+Editing acknowledgement commits that value and prompt-ready; a deferred,
+suspended or failed begin publishes nothing. Deferred foreground activation
+commits exactly once, and later suspend/resume of the same prompt does not bump
+it. `prompt_binding_generation` and `prompt_source` retain the identity supplied
+at Begin, while `source` names the current attachment. Zero/null means the prompt
+began before attachment. The full source plus prompt generation is required for
+future admission; the editor's numeric binding component alone is not identity.
+Legacy readline reports its entry boundary because it has no activation
+acknowledgement. `cwd` is the last observed directory, captured at shell startup
+and successful shell `cd` (including `cd -`, pushd/popd and sourced shell lines)
+or Mix `chdir()` transitions. Failed changes preserve it. Paths are bounded to
+4096 UTF-8 bytes with explicit truncation; unavailable observations are null.
+
+The version-1 reply's `status` has exactly `snapshot`, `sampled_ms`,
+`transition_age_ms` and `cwd_age_ms`. These times use the shared CLOCK_BOOTTIME
+clock, in milliseconds since status-state creation, including time suspended;
+they are not wall time. Admission lease-age comparisons use that same clock.
+`sampled_ms`, `transition_age_ms` and `cwd_age_ms` state freshness at sampling;
+delivery delay adds to those ages. A snapshot is information, never an execution
+permit. No background polling of cwd, editor or evaluator occurs. Producers
+commit owned transitions under a short state lock; transport, serialisation,
+filesystem calls, evaluator calls and child waits occur outside that lock.
+The 64-transition replay ring is internal in stage A. Replay cursors, gap
+reporting and event delivery are deferred to stage B and absent from this v1
+request/reply contract. Binding changes advance the same sequence. Historical
+transitions retain their original source, while replies name the current source.
+
+Admission uses BROKER-023 `read_state`: owning Term and explicitly scoped current
+principals, plus independent same-UID verified owners under `default-open`.
+Restricted policy denies ambient callers; cross-UID, TCP, unverified and sibling
+principals receive the same bounded `REFUSED` response without status or target
+details. Id-less notices never enter status admission or receive replies. Bound callers cannot fall back to ambient rights.
+Correlated lease checks revalidate both caller and target at admission, and
+detached residents do not dispatch requests. Admitting a session-bound caller
+costs one lease check plus one re-read of the resident's own attachment: the
+connection's broker epoch and connection id are fixed for its lifetime and are
+taken once, not per check. Every session RPC serialises on that one connection,
+so a renewal that loses its deadline to admission load is retried once with a
+fresh deadline before the attachment is given up. Stale targets return
+`STALE_GENERATION`. Recovery uses S3; it never resets shell sequence or prompt
+generation. Jobs, signals, foreground/resume,
+isolated tasks, input and event publication report `UNSUPPORTED`, never `BUSY`.
+Evaluation submit and inspect report what this build can actually do — see
+stage D below — and report `UNSUPPORTED` wherever it cannot.
+The resident runs at most four admission tasks alongside its receive/renew/restart
+loop, one of which is reserved for the pane's own Term: other same-UID callers
+share three, so a flood by them cannot starve the owner into uniform refusals.
+That reservation is a scheduling class only — the reserved slot re-runs the whole
+admission policy like any other. Excess requests receive `REFUSED`; refusal writes
+are polled alongside control rather than blocking it, including when the transport
+has already dropped, so an admitted request is never answered with silence.
+Restart cancels outstanding admission tasks.
+The verified lane retains at most 64 commands of at most 64 KiB envelope/body.
+Its reader task neither writes nor waits: an overflowed request is handed to the
+receive owner, which writes that connection's `REFUSED`, and a dropped id-less
+lifecycle notice raises a delivery gap the resident treats exactly as it treats
+the broker's own lifecycle gap. Other clients retain their existing receive
+configuration.
+
+### Native pane-shell execution (stage D)
+
+The same enrolled attachment answers `shell.execute`, `shell.execute.result`
+and `shell.execute.cancel`. These are BROKER-023 `execute`, not `read_state`:
+holding the capability that answers questions about the shell does not reach
+them, and a caller without `execute` is refused before learning that the family
+exists.
+
+**Admission is empty-primary-prompt only.** A submission is admitted when the
+shell is at `prompt-ready`, not a continuation, with an empty draft, no history
+search, no paste in progress and no partially-decoded key — and when the
+`prompt_generation` it names is the one actually at the prompt. Anything else
+is refused, and the refusal discards nothing: a half-typed line is still there,
+character for character, and finishing it runs the human's line.
+
+| Situation | Answer |
+|---|---|
+| Empty primary prompt, generation matches | admitted |
+| Half-typed draft, history search, paste in progress | `BUSY` |
+| Continuation prompt | `BUSY` |
+| Evaluating, foreground child, starting, exiting | `BUSY` |
+| Custom `prompt()` still rendering | `BUSY` |
+| Wrong prompt generation, or a target that is not this shell | `STALE_GENERATION` |
+| No owned editor (the rustyline path) | `UNSUPPORTED` |
+| Retention table full | `RESOURCE_LIMIT` |
+| Same request id, different body | `CONFLICT` |
+| Unauthorised, or the attachment lost mid-admission | `REFUSED` |
+
+Nothing queues behind a busy shell. There is no state in which a submission is
+accepted now and executed at some later prompt, because a caller cannot know
+what the shell will be doing then — and a snapshot is information, never an
+execution permit.
+
+The admitted line is **visibly echoed before it runs**, through the editor's own
+terminal, naming the principal and the command id:
+
+```
+mix: execute #7 admitted for Term ff86c6c7: print("hello")
+```
+
+The source in that line is escaped by a printable **allowlist**, not a blocklist:
+anything outside ordinary printable text is rendered rather than emitted. That
+covers the characters `is_control` does not report — bidi overrides and
+isolates, zero-width joiners, the BOM, a soft hyphen, `U+2028`/`U+2029` — each
+of which can reorder or hide what a reader sees without being a control code. A
+submission is attacker-chosen bytes drawn into a terminal a human is reading,
+and the allowlist means a new trick is escaped by default rather than passed
+through by omission.
+
+A source too long for one line is truncated with its tail NAMED:
+
+```
+mix: execute #7 admitted for PaneShell 9c1f via Term ff86c6c7: <head> …[+812 bytes, sha256:3ab19f04]
+```
+
+Nothing executes with an unannounced tail, and two submissions sharing a head
+are still distinguishable. When a forwarder relays somebody else's submission
+the announcement reads `<originator> via <forwarder>`: the shell authenticated
+the forwarder, not the name it relayed, and the wording says so rather than
+implying the shell verified it.
+
+If the whole line cannot be put on the glass, the pane says
+`announcement abandoned; nothing executed` instead — an announcement is
+zero-or-whole, because a partial one reads exactly like a real admission.
+
+**A reservation takes nothing away.** Between the moment the shell agrees to run
+a submission and the moment it commits, the prompt is still live: still in raw
+mode, still being read a byte at a time, still the human's. Any input at all
+during that window — a single character, even one that edits nothing — ends the
+reservation, and the submission is refused having announced nothing. The
+terminal only changes hands at the commit itself, which is one atomic step:
+reads stopped, cooked mode restored, announcement written, line executed. That
+ordering is why a keystroke can never be painted into the announcement by kernel
+echo, and can never arrive as the admitted execution's standard input.
+
+Execution then follows the same path a typed line takes — the same classifier,
+aliases, job integration and history policy — adopting the command id that was
+minted, echoed and recorded before it started. Admission never opens a
+continuation: a submission that turns out to be an incomplete line is refused
+and the prompt is returned, because a remote execution may not leave a human
+holding half of someone else's line.
+
+`shell.execute` answers immediately with `{"state":"running","operation_id":…}`;
+`shell.execute.result` returns that operation's state and, once it has one, its
+result. Both it and `shell.execute.cancel` are scoped to the actor that
+submitted — holding `execute` authorises driving the shell, not reading back
+what somebody else drove it to do — and an operation belonging to another actor
+is refused exactly like one that does not exist.
+
+Retries are BROKER-018 idempotent: an identical submission under the same
+request id replays the recorded answer rather than executing a second time.
+**Request ids must be monotonic per caller.** A spent id stays spent even after
+its record is gone (see the cap below), so reusing a lower id answers
+`UNKNOWN_OUTCOME` rather than executing; callers going through Term get this
+for free, because Term mints its own sequence, but a direct caller has to keep
+its own counter.
+**Fifteen minutes is the ceiling, not a promise.** The store holds 256
+operations, and a busy shell reaches that long before it reaches the clock; the
+oldest COMPLETED record is then evicted (a running one never is). What survives
+eviction is a per-actor high-water mark, so a retry whose record is gone answers
+`UNKNOWN_OUTCOME` rather than executing a second time — the id stays spent even
+when its result no longer exists.
+
+Three refusals are worth telling apart, because they are different facts:
+
+* `BUSY` — nothing was announced and nothing ran. The request id is untouched
+  and the same submission may simply be retried. This is the commonest refusal
+  by design: a reservation is given up the instant the human touches the
+  keyboard, so a busy pane produces it routinely.
+* `UNKNOWN_OUTCOME` with `reason: admission_abandoned_before_execution` — proven
+  that nothing ran, but the id is spent and its outcome recorded. Retrying it
+  replays that; use a new id to try again.
+* `UNKNOWN_OUTCOME` with `reason: admission_claimed_without_report` — the shell
+  cannot say whether the line ran. The named `operation_id` stays resolvable, so
+  `shell.execute.result` on it is how the caller finds out.
+
+The result is serialised on the evaluator owner, so no interpreter value ever
+crosses to the Bus thread:
+
+```json
+{"state":"finished","result":{
+  "outcome":"completed",  "status":0,
+  "value":{"type":"string","version":1,"bytes":"11","truncated":false,"text":"hello world"},
+  "duration_ms":"3",
+  "cancellation":{"requested":false,"delivered":"none"}}}
+```
+
+`outcome` is the execution's verdict and `value.truncated` is a property of how
+much of the answer fitted. They are independent: a command that succeeded and
+returned more than 16 KiB still succeeded.
+
+### Isolated supervised tasks (P4)
+
+`shell.task.submit` / `shell.task.result` / `shell.task.cancel` are the SECOND
+execution mode, and almost everything above does not apply to them. An
+evaluation runs inside the shell; a task is a separate process. It therefore
+has no prompt to be admitted at — **BUSY is never a task refusal**, and a task
+submitted while the human is mid-line runs anyway. That independence is the
+point of the mode.
+
+A submission carries exactly one of `source` (Mix text) or `argv` (program and
+arguments, never a shell string); both or neither is `INVALID_ARGUMENT`. `cwd`
+is required and must exist. `timeout_ms` is required, non-zero and capped at ten
+minutes. There is no stdin in v1: the task gets `/dev/null`, and a
+stdin-feeding task is a named future field rather than a silent absence.
+
+**The environment is enumerated, not inherited.** A task starts from exactly:
+
+    HOME  USER  PATH  LANG  TERM=dumb
+    MIXOS  MIXOS_SRC  MIXOS_BIN  MIXOS_ETC
+    MIXOS_NODE_CONFIG  MIXOS_BROKER_ACCOUNT
+
+plus the caller's `env` overlay, which WINS on a name collision. Those values
+are snapshotted when the shell STARTS, so a task sees the shell's startup PATH
+and not whatever the shell has since set. Nothing else crosses: a variable the
+shell sets at runtime does not reach a task, and the fixtures assert that as
+whole-set equality rather than by spot-checking names.
+
+**Termination is hard here, and it is the only hard guarantee in the surface.**
+Cancel or timeout sends SIGTERM to the task's process GROUP, waits two seconds,
+then sends SIGKILL. The reported outcome is read from `wait()`, never from the
+fact that a signal was sent — a cancel request is still not proof a process
+stopped, but the wait status is. The outcome names the POLICY that ended the
+task (`timeout`, `cancelled`) with the signal beside it as `escalated_to`, so a
+deliberate deadline is never presented as an indistinguishable external kill.
+
+If the bounded termination ladder cannot obtain a final wait status, the
+report says `unknown`; it never claims a successful exit from sending SIGKILL.
+Since Mix 0.109.0, that report is published before waiting for eventual kernel
+cleanup. The original supervisor keeps the child registered and retains its
+native concurrency slot until reaping completes. Four pending supervisors
+still exhaust the four-slot limit and further submissions receive
+`RESOURCE_LIMIT`, even if their reports have already settled. Reaping retries
+interrupted waits, and registry removal is synchronised with shutdown sweeping.
+
+Between a cancel being accepted and `wait()` settling, `shell.task.result`
+reports `state: "cancelling"` — a real state, so a caller that asked for
+cancellation and reads `running` is not left wondering whether its request
+arrived.
+
+Streams are captured separately and exactly; this is the mode the manual points
+to when interactive attribution is only best-effort. Each is capped at 64 KiB of
+ENCODED text — what the reply actually costs, not what was read, because a NUL
+costs one byte to capture and six to encode — with the REAL byte count and a
+`truncated` flag reported, and truncation never turns a successful task into a
+failed one.
+
+A task's descendants can outlive it holding the inherited pipes open. Once the
+supervisor has its outcome the drains get the same two-second grace and then
+stop, and the stream reports `writer_survived: true`: the report says it stopped
+listening rather than presenting a bounded read as the whole of the output.
+Nothing waits on a process nobody is supervising, so a task that backgrounds a
+ten-minute sleeper still settles at once and gives back its concurrency slot.
+
+In `source` mode the value travels a dedicated descriptor rather than stdout —
+see `--result-fd` below — so a task that prints and a task that returns are not
+competing for one stream. `argv` mode has no interpreter value and says
+`not_applicable` rather than presenting an absent one as a failure.
+
+**Declared limits.** A task's lifetime is bounded by the shell's, through two
+mechanisms because neither covers the other's case. `PR_SET_PDEATHSIG` binds the
+task LEADER to the supervisor thread that forked it, which is what survives a
+SIGKILL of the shell — no teardown hook runs then. But pdeathsig reaches the
+leader alone, so a normal exit would leave the leader's own children running;
+the shell therefore SIGKILLs every live task GROUP on its way out.
+
+The declared residual is narrower than "any grandchild": a process that leaves
+the task's group by calling `setsid` or `setpgid` for itself is outside both
+mechanisms and survives. That is the orphan case, stated rather than dressed up
+as a containment the implementation does not have.
+
+`umask` and rlimits are inherited and are the operator's bound; the shell's own
+bounds are the concurrency cap (four), the timeout, and 4 KiB each for `argv`
+and the `env` overlay — sized to what the 8 KiB dispatch request can actually
+carry, so each is a limit a caller can really provoke rather than decoration.
+The two answer differently on purpose: an over-budget `env` overlay is
+`RESOURCE_LIMIT`, because the overlay is a quantity of state the shell declines
+to carry, while an over-budget `argv` is `INVALID_ARGUMENT`, because the command
+line itself is malformed for this surface.
+
+A spawn that fails is never `INVALID_ARGUMENT` — the request was well-formed,
+and the failure happened after validation accepted it. Which code it does get is
+decided by errno, because the two halves call for different responses. A program
+that is not there, or a `cwd` that stopped being a directory between validation
+and the fork, is `NOT_FOUND`: the caller named it and can correct it, and it is
+deliberately the same code validation gives for a missing `cwd`, so one mistake
+does not change its name depending on how fast the filesystem moved. Everything
+else — out of descriptors, out of memory, out of processes — is `RESOURCE_LIMIT`
+with `reason: "spawn_failed"`, which is the transient class: back off and retry.
+Either way the request id stays unspent, and the error set stays closed, so a
+caller can still switch on it exhaustively.
+
+**Advertised deferrals**, refused explicitly rather than left to look like
+typos: `shell.task.watch` and `shell.task.list` answer `UNSUPPORTED` with
+`reason: "deferred"` — a bare code would be word-for-word what an unknown verb
+gets back, which is not an advertisement of anything (v1 is poll-only, through
+`shell.task.result`); there is no stdin feeding; there is no
+reply chunking (the 64 KiB caps stand in for it); and a task has no Bus identity
+of its own — it is supervised state inspectable through the owning shell, not a
+mesh citizen.
+
+#### `mix --result-fd N`
+
+`mix --result-fd N -c <source>` writes the final expression value, encoded by
+the interpreter's own strict-data serializer, to descriptor `N` as a
+big-endian u32 length followed by exactly that many bytes. `N` must be above
+stderr and must already be open; both are checked at startup and refused
+loudly, because a task promised a structured result that silently produced none
+is the failure with no symptom.
+
+The flag must precede `-c`, which consumes the rest of the line as script
+arguments, and it is refused outright without one: `-c` is the only mode that
+produces a value to frame, so accepting the flag anywhere else would promise a
+result that never arrives. Text streams are untouched: `-c` has never echoed its
+final value to stdout, so stdout stays the program's own output and the value
+travels the descriptor.
+
+The whole frame is capped at 64 KiB, not just the value inside it. The value is
+encoded once and then escaped again as it goes into the frame, so capping only
+the inner encoding let a quote-heavy value produce a frame too large to read —
+which the reader then saw as a writer killed mid-write. An oversized value comes
+back as a truncated reference instead: the caller learns a value existed, and
+how big it was.
+
+An evaluation stopped by a signal writes an ERROR frame naming the signal and
+exits non-zero. It has to: the interpreter catches SIGTERM for its own graceful
+shutdown, and a supervisor ends a task with exactly that signal — so without
+this, a cancelled task and one that genuinely returned nil produced identical
+successful frames. (A plain `mix -c` with no result descriptor still exits 0 on
+Ctrl-C; scripts depend on it, and that is not the case this rule is about.)
+
+The length prefix is what makes four situations distinguishable that an unframed
+stream collapses into one: nothing written at all (`result_missing`), a declared
+length the payload does not satisfy because the writer was killed mid-frame
+(`result_torn`), a partial frame the supervisor stopped waiting for because a
+survivor still held the pipe (`result_abandoned`), and a complete frame whose
+value reports that it was larger than the cap.
+
+#### Cancellation, and what it is actually worth
+
+`shell.execute.cancel` resolves one immutable evaluation identity. A request for
+an evaluation that has already finished says so and signals nothing, so a
+cancellation can never reach a successor evaluation — the failure mode the
+single process-wide interrupt flag made inevitable. `SIGINT` is mapped the same
+way: the signal records which evaluation was running when it arrived, so a
+Ctrl-C at an idle prompt cannot trip the next line. A cancelled evaluation's
+intent is sticky, so a Mix `try`/`catch` around cancelled work cannot swallow it
+and run on.
+
+Delivery is cooperative, and the table says only what is true:
+
+| Path | Guarantee |
+|---|---|
+| Ordinary statements | cooperative, at the evaluator's existing checkpoints |
+| Optimised native loops | cooperative, at the existing periodic check |
+| Captured runners (`run_argv`, `run_pipeline`) | existing polling; the runner abandons its child |
+| Managed interactive foreground job | **SIGINT to the process group**, via the job controller — the one path that does not depend on the target polling anything |
+| `run_stream` | not interruptible while blocked in the child wait |
+| `serve()` | **not covered**: its interrupt is a process-wide shutdown request, consumed by the pump's own exit rather than reported as a delivered cancellation |
+| Blocking HTTP, filesystem and device calls; uncooperative extensions | **no pre-emption** |
+
+The group signal is SIGINT and stops there. Escalating to `SIGTERM` and then
+`SIGKILL` would need a grace period this shell does not run a clock for, and a
+shell that escalated on its own would destroy work a human could still have
+recovered with `fg`. The `cancel` reply reports `signalled_pgid` when a real
+group signal went out, so a caller can tell the two strengths apart rather than
+having to assume.
+
+What cannot be promised is not promised: arbitrary builtin pre-emption,
+rolling back side effects, killing threads, or terminating descendants after
+they detach. Bounded termination of uncooperative work needs a separately
+supervised process, which by construction cannot inherit or mutate this shell's
+scope. `cancel` reports `requested`, `already_finished` or `unknown`, and a
+finished evaluation's report distinguishes `cancelled` from `completed_anyway`.
+
+Noninteractive shells, `--serve`, `mix -c` and any shell without an attachment
+carry none of this: no surface is registered, no admission state is allocated,
+no result store exists, and `serve`'s process-wide shutdown semantics are
+untouched. One thing is NOT unchanged, and it applies to every Mix process: the
+SIGINT handler now also records which evaluation a signal was aimed at, so
+`interrupt::init` registers one additional chained handler. Two relaxed atomic
+stores, no allocation, no behaviour change to what the signal does — but it is a
+difference, and "byte-identical" would have been a claim this page could not
+back.
+
+- `mix` is intercepted by the shell, so it never sees `$`-sigil arguments — write `mix what round`, not `mix what $name`.
+- The introspection family (`vars`/`aliases`/`functions`/`all`/`context`) is most useful **inside a REPL**, where the session has accumulated state; from a one-shot OS-shell invocation it reports only the freshly-loaded prelude.
+- The diagnostics family (`time`/`trace`/`history`/`reload`/`diagnose`) is REPL-only — those names are not on the OS-shell allowlist, so `mix trace on` there is read as a script filename. The one exception is `mix stats`, which has a dedicated one-shot OS-shell path against the same on-disk data.
+- Paths follow the MixOS layout: source at `$MIXOS_SRC` (default `$MIXOS`), installed binaries at `$MIXOS_BIN` (default `~/.local/bin`, or `/usr/local/bin` when running as root).
+
+## See also
+
+- [the manual index](README.md) — every page `mix man TOPIC` can read
+- [variables](variables.md) — the `$`-sigil scope `mix vars` reports on
+- [functions](functions.md) — what `mix functions` lists
+- [shell-mode](shell-mode.md) — the alias/classifier layer behind `mix aliases` and `mix reload`
+- [invocation](invocation.md) — the `mix -c` / `mix -` / `--serve` entry points around this command
+- [keywords](keywords.md) · [operators](operators.md) · [math](math.md) — topics readable via `mix man TOPIC`
+- [Bus messaging](bus.md) — the `send`/`emit`/`address` mesh `mix mesh`/`ports`/`ping` probe
+- [builtins index](builtins.md) — the full builtin catalogue behind `mix builtins`
+- The public repo: [github.com/markc/mixos](https://github.com/markc/mixos)
+
+```
+mix help          full categorized reference + the complete subcommand map
+mix what NAME     one-line description of any builtin or keyword
+mix man TOPIC     read a full manual page (mix man with no arg = the index)
+```

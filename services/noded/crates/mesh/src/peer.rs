@@ -1008,6 +1008,21 @@ async fn connect_and_publish(
                 .get("id")
                 .filter(|_| bus_msg.get("type") == Some("response"))
             {
+                // Reconciliation holds the write fence through its pending
+                // sweep. A response must acquire that same fence before it
+                // can consume a call, so a retired route cannot win the race.
+                let transport = state_read.read().await;
+                let current = transport
+                    .connections
+                    .get(&peer_name)
+                    .is_some_and(|connection| {
+                        connection.generation == generation
+                            && connection.connected.load(Ordering::Acquire)
+                            && transport.desired.get(&peer_name) == Some(&connection.target)
+                    });
+                if !current {
+                    continue;
+                }
                 let mut calls = pending.lock().expect("pending calls lock poisoned");
                 if calls
                     .get(id)

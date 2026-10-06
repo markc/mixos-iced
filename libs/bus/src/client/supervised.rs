@@ -217,6 +217,7 @@ pub struct SupervisedClient {
     /// consumer cannot sample away a fast bounce.
     connection_generation: Arc<AtomicU64>,
     registry: SubscriptionRegistry,
+    subscription_transaction: Arc<TokioMutex<()>>,
     /// The outward incoming stream, taken once by the consumer.
     incoming_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<IncomingCommand>>>,
     bounded_incoming_rx: std::sync::Mutex<Option<BoundedIncomingReceiver>>,
@@ -345,6 +346,7 @@ impl SupervisedClient {
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let registry = SubscriptionRegistry::new();
+        let subscription_transaction = Arc::new(TokioMutex::new(()));
 
         let supervisor = tokio::spawn(supervisor_loop(SupervisorCtx {
             inner: inner.clone(),
@@ -352,6 +354,7 @@ impl SupervisedClient {
             state_publish: state_publish.clone(),
             connection_generation: connection_generation.clone(),
             registry: registry.clone(),
+            subscription_transaction: subscription_transaction.clone(),
             out_tx,
             shutdown_rx,
             service_name: service_name.clone(),
@@ -367,6 +370,7 @@ impl SupervisedClient {
             state_publish,
             connection_generation,
             registry,
+            subscription_transaction,
             incoming_rx: std::sync::Mutex::new(out_rx),
             bounded_incoming_rx: std::sync::Mutex::new(bounded_out_rx),
             shutdown_tx,
@@ -584,6 +588,8 @@ impl SupervisedClient {
     /// reconnect regardless.
     pub async fn subscribe_topic(&self, topic: &str) -> Result<(), SupervisedError> {
         self.gate()?;
+        let _transaction = self.subscription_transaction.lock().await;
+        self.gate()?;
         self.connection()
             .await
             .call_with_headers("noded", "topic.subscribe", &topic_headers(topic), "")
@@ -599,6 +605,8 @@ impl SupervisedClient {
     /// which is the safe direction (over-deliver rather than go silently
     /// deaf).
     pub async fn unsubscribe_topic(&self, topic: &str) -> Result<(), SupervisedError> {
+        self.gate()?;
+        let _transaction = self.subscription_transaction.lock().await;
         self.gate()?;
         self.connection()
             .await
@@ -703,6 +711,7 @@ struct SupervisorCtx {
     state_publish: Arc<std::sync::Mutex<()>>,
     connection_generation: Arc<AtomicU64>,
     registry: SubscriptionRegistry,
+    subscription_transaction: Arc<TokioMutex<()>>,
     out_tx: SupervisorOutgoing,
     shutdown_rx: watch::Receiver<bool>,
     service_name: String,
@@ -822,6 +831,16 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                     // Replay the whole registry in recorded order before
                     // declaring Connected. Any failure fails the whole
                     // attempt: close, stay Disconnected, back off, retry.
+                    // A successful old-socket acknowledgement commits its
+                    // registry update before this snapshot, or a waiting
+                    // operation uses the fully published new connection.
+                    let _transaction = tokio::select! {
+                        _ = ctx.shutdown_rx.changed() => {
+                            connection.close().await;
+                            return;
+                        }
+                        guard = ctx.subscription_transaction.lock() => guard,
+                    };
                     let topics = ctx.registry.snapshot();
                     let mut replay_ok = true;
                     for topic in &topics {
@@ -860,9 +879,35 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                         connection.close().await;
                         return;
                     }
-                    *ctx.inner.write().await = Arc::new(connection);
-                    ctx.connection_generation.fetch_add(1, Ordering::SeqCst);
-                    publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::Connected);
+                    let connection = Arc::new(connection);
+                    let mut live = ctx.inner.write().await;
+                    let published = {
+                        // Close publishes its terminal state under this same
+                        // fence before selecting a socket. It therefore sees
+                        // this new socket, or prevents this swap entirely.
+                        let _fence = ctx
+                            .state_publish
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        let current = *ctx.state_tx.borrow();
+                        if matches!(
+                            current,
+                            ConnState::ShuttingDown | ConnState::Fatal
+                        ) || stop_requested(&ctx.shutdown_rx)
+                        {
+                            false
+                        } else {
+                            *live = connection.clone();
+                            ctx.connection_generation.fetch_add(1, Ordering::SeqCst);
+                            ctx.state_tx.send_replace(ConnState::Connected);
+                            true
+                        }
+                    };
+                    drop(live);
+                    if !published {
+                        connection.close().await;
+                        return;
+                    }
                     tracing::info!(
                         event = "supervised_reconnect",
                         service = %ctx.service_name,

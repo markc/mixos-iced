@@ -26,12 +26,14 @@ pub enum BoundedIncomingEvent {
 struct OverflowState {
     total: AtomicU64,
     pending: AtomicU64,
+    wake: tokio::sync::Notify,
 }
 
 impl OverflowState {
     fn record(&self, count: u64) {
         saturating_add(&self.total, count);
         saturating_add(&self.pending, count);
+        self.wake.notify_one();
     }
 
     fn take_pending(&self) -> u64 {
@@ -59,14 +61,20 @@ pub struct BoundedIncomingReceiver {
 impl BoundedIncomingReceiver {
     /// Receive the next retained command or overflow marker.
     pub async fn recv(&mut self) -> Option<BoundedIncomingEvent> {
-        let dropped = self.overflow.take_pending();
-        if dropped != 0 {
-            return Some(BoundedIncomingEvent::Overflow { dropped });
+        loop {
+            let notified = self.overflow.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let dropped = self.overflow.take_pending();
+            if dropped != 0 {
+                return Some(BoundedIncomingEvent::Overflow { dropped });
+            }
+            tokio::select! {
+                biased;
+                _ = &mut notified => continue,
+                command = self.receiver.recv() => return command.map(BoundedIncomingEvent::Command),
+            }
         }
-        self.receiver
-            .recv()
-            .await
-            .map(BoundedIncomingEvent::Command)
     }
 
     /// Total number of commands dropped by this lane.
@@ -128,6 +136,22 @@ mod tests {
             body: sequence.to_string(),
             headers: BTreeMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn delayed_overflow_record_wakes_an_already_waiting_empty_receiver() {
+        let (sender, mut receiver) = bounded_incoming_channel(1);
+        let mut waiting = Box::pin(receiver.recv());
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        // Models a producer pre-empted after observing Full while the consumer
+        // drains the queue before the producer records that drop.
+        sender.record_overflow(1);
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await
+                .unwrap(),
+            Some(BoundedIncomingEvent::Overflow { dropped: 1 })
+        ));
     }
 
     #[tokio::test]

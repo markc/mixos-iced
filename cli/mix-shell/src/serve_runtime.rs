@@ -1,0 +1,1091 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! SPEC 18 WS4 — runtime-provided Ch07 L0+ conformance for
+//! `mix --serve` citizens.
+//!
+//! A Mix citizen author writes only its domain `on` handlers. The
+//! runtime injects, *pre-dispatch* and unconditionally, the verbs the
+//! author does **not** write and **cannot** override (SPEC 18 DECIDED
+//! §7-Q4 — *runtime wins*; an author `on HELP do` /
+//! `on <svc>.props.get do` would let §9(d)/(e) conformance be silently
+//! broken):
+//!
+//! - **L0** (Ch02 §3): `HELP`, `INFO`, `QUIT`.
+//! - **L1** (Ch07 §2): `<svc>.props.{get,list,describe}` over a
+//!   runtime-owned lifecycle property tree.
+//!
+//! The lifecycle tree (`lifecycle.started_at` / `uptime_s` / `mode` /
+//! `health` / `props_level`) reuses the exact `props` model and
+//! `props::bus::dispatch_props` encoder the indexd reference L1
+//! daemon uses, so a Mix citizen's props surface is byte-consistent
+//! with every other mixos daemon. Finding #3 in the WS plan ("no
+//! reusable Ch07-L0 helper") holds only for L0: `props` is the
+//! L1 helper; `HELP`/`INFO`/`QUIT` have no shared helper and are
+//! provided here.
+//!
+//! Authors *extend* the data surfaced through `INFO`/props via their
+//! own domain commands and (future) lifecycle contributions; they do
+//! not replace these verbs. The struct is built once per process by
+//! `run_serve` and installed via `Evaluator::set_serve_runtime`.
+
+use std::time::Instant;
+
+use mix::evaluator::{ReservedOutcome, ServeRuntime};
+use props::{PropDescribe, PropPath, PropTree, PropType, PropValue, tree::build_snapshot};
+use serde_json::{Value as Json, json};
+
+/// Identity that persists across hot-reloads — the citizen's *process*, not
+/// its current generation's evaluator. Shared by `Rc` between the serve
+/// driver and every generation's [`MixServeRuntime`], so that after a
+/// `RELOAD` swap:
+///
+/// - `lifecycle.uptime_s` / `started_at` still report the PROCESS start (a
+///   reloaded citizen is NOT indistinguishable from crash+restart — the very
+///   observable a monitor reads to answer "did it crash?");
+/// - `lifecycle.generation` (0 at boot, +1 per committed swap) and
+///   `lifecycle.script_loaded_at` let a caller CONFIRM a reload actually took
+///   — `INFO`/`HELP` cannot, since the version is the mix version and a
+///   body-only handler edit changes neither.
+pub struct ReloadIdentity {
+    started_at: Instant,
+    started_wall: String,
+    generation: std::cell::Cell<u64>,
+    script_loaded_at: std::cell::RefCell<String>,
+}
+
+impl ReloadIdentity {
+    /// A fresh process identity at generation 0.
+    pub fn new() -> Self {
+        let now = chrono::Utc::now().to_rfc3339();
+        Self {
+            started_at: Instant::now(),
+            started_wall: now.clone(),
+            generation: std::cell::Cell::new(0),
+            script_loaded_at: std::cell::RefCell::new(now),
+        }
+    }
+
+    /// Called by the serve driver AFTER a swap has committed (never on a
+    /// refused or reverted reload): bump the generation and stamp the new
+    /// load time. This is the only mutation point, so a caller polling
+    /// `lifecycle.generation` sees it advance exactly once per live swap.
+    pub fn committed_reload(&self) {
+        self.generation.set(self.generation.get() + 1);
+        *self.script_loaded_at.borrow_mut() = chrono::Utc::now().to_rfc3339();
+    }
+
+    /// The current committed generation — what the serve driver stamps
+    /// into the post-swap `lifecycle.commit` event's `generation` arg.
+    pub fn generation(&self) -> u64 {
+        self.generation.get()
+    }
+}
+
+impl Default for ReloadIdentity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The Mix serve-mode runtime surface (SPEC 18 WS4). Implements both
+/// [`ServeRuntime`] (the pre-dispatch reserved-verb chokepoint the
+/// evaluator consults) and [`PropTree`] (the lifecycle property model
+/// `dispatch_props` reads), so one value answers all of L0+L1.
+pub struct MixServeRuntime {
+    /// Bus service name — the `<svc>` prefix for `<svc>.props.*` and
+    /// the `INFO.name`.
+    service_name: String,
+    /// Process identity, shared across every generation (see
+    /// [`ReloadIdentity`]) so uptime/started_at survive a reload and the
+    /// generation counter confirms a swap.
+    identity: std::rc::Rc<ReloadIdentity>,
+    /// Precomputed `<svc>.props.` prefix (avoids per-request format!).
+    props_prefix: String,
+    /// Isolated handler faults recorded via
+    /// [`ServeRuntime::record_handler_fault`] (0.63.0). Interior
+    /// mutability because the runtime is shared as `Rc<dyn ServeRuntime>`;
+    /// single-threaded by construction (the evaluator is `!Send`).
+    handler_faults: std::cell::Cell<u64>,
+    /// Summary of the most recent fault, for `lifecycle.last_fault`.
+    last_fault: std::cell::RefCell<Option<String>>,
+    /// The serve script's path, for the `RELOAD` pre-validation (re-read
+    /// and parse before the pump is asked to break). `None` — test
+    /// runtimes, embedders without a script file — makes `RELOAD` answer
+    /// rc:10.
+    script_path: Option<std::path::PathBuf>,
+}
+
+/// Operating-mode value for `lifecycle.mode`. A Phase-1 serve citizen
+/// is always actively serving; the leaf exists so meta-subscribers can
+/// branch on it once Phase 2 adds drain/paused modes.
+const MODE_SERVING: &str = "serving";
+/// Health classification for `lifecycle.health`. Phase 1 has no health
+/// degradation path (handler faults are isolated by WS6, not surfaced
+/// as daemon-wide health yet), so this is a constant `ok`.
+const HEALTH_OK: &str = "ok";
+/// `lifecycle.health` once at least one handler fault has been isolated
+/// (0.63.0 — the described "ok | degraded | failing" domain gains its
+/// first live degradation path).
+const HEALTH_DEGRADED: &str = "degraded";
+/// SPEC 07 §9 declared conformance level. WS4 ships L0 + L1
+/// (props.{get,list,describe}); L2 (`props.watch` + `props.changed`)
+/// and L3 (`world.<svc>`) are explicit Phase-1 non-goals.
+const PROPS_LEVEL: &str = "L1";
+
+impl MixServeRuntime {
+    /// Build the runtime surface for a citizen registered as
+    /// `service_name`. Captures the start instants now.
+    pub fn new(service_name: impl Into<String>) -> Self {
+        let service_name = service_name.into();
+        let props_prefix = format!("{service_name}.props.");
+        Self {
+            service_name,
+            identity: std::rc::Rc::new(ReloadIdentity::new()),
+            props_prefix,
+            handler_faults: std::cell::Cell::new(0),
+            last_fault: std::cell::RefCell::new(None),
+            script_path: None,
+        }
+    }
+
+    /// Same, with the serve script's path (so `RELOAD` can pre-validate the
+    /// new source) and the shared process identity (so uptime/generation
+    /// persist across reloads). The serve entrypoint uses this and passes
+    /// the SAME `identity` into every generation; `new` remains for
+    /// embedders/tests with no script file (their `RELOAD` answers rc:10).
+    pub fn with_script_path(
+        service_name: impl Into<String>,
+        script_path: impl Into<std::path::PathBuf>,
+        identity: std::rc::Rc<ReloadIdentity>,
+    ) -> Self {
+        let mut rt = Self::new(service_name);
+        rt.identity = identity;
+        rt.script_path = Some(script_path.into());
+        rt
+    }
+
+    /// Service a `RELOAD`: re-read and PARSE the script. A parse failure
+    /// answers rc:10 and leaves the running citizen untouched; success
+    /// answers rc:0 and asks the pump to break with `reload` so the serve
+    /// driver runs the load-beside-swap (execution of the new top-level —
+    /// and the revert-on-failure — happen there, where the old evaluator
+    /// is still alive).
+    fn reload_outcome(&self) -> ReservedOutcome {
+        let Some(path) = self.script_path.as_deref() else {
+            return ReservedOutcome {
+                rc: 10,
+                body: json!({"error": "this runtime has no script to reload"}).to_string(),
+                quit: false,
+                reload: false,
+            };
+        };
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                return ReservedOutcome {
+                    rc: 10,
+                    body: json!({"error": format!("cannot read {}: {e}", path.display())})
+                        .to_string(),
+                    quit: false,
+                    reload: false,
+                };
+            }
+        };
+        let parse = mix::lexer::Lexer::new(&source)
+            .tokenize()
+            .and_then(|tokens| mix::parser::Parser::new(tokens, &source).parse_program());
+        match parse {
+            Ok(_) => ReservedOutcome {
+                rc: 0,
+                body: json!({"ok": true, "reloading": true, "script": path.display().to_string()})
+                    .to_string(),
+                quit: false,
+                reload: true,
+            },
+            Err(e) => ReservedOutcome {
+                rc: 10,
+                body: json!({
+                    "error": format!("reload refused, new source does not parse: {e}"),
+                    "script": path.display().to_string(),
+                })
+                .to_string(),
+                quit: false,
+                reload: false,
+            },
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot_generation_for_test(&self) -> u64 {
+        self.identity.generation.get()
+    }
+
+    #[cfg(test)]
+    fn snapshot_started_at_for_test(&self) -> String {
+        self.identity.started_wall.clone()
+    }
+
+    /// The lifecycle leaf paths, in stable declaration order.
+    fn leaf_paths() -> [&'static str; 9] {
+        [
+            "lifecycle.started_at",
+            "lifecycle.uptime_s",
+            "lifecycle.mode",
+            "lifecycle.health",
+            "lifecycle.props_level",
+            "lifecycle.handler_faults",
+            "lifecycle.last_fault",
+            "lifecycle.generation",
+            "lifecycle.script_loaded_at",
+        ]
+    }
+
+    /// Build the HELP body: the runtime-reserved verbs (fixed canonical
+    /// order) followed by the citizen's author commands (sorted, so the
+    /// payload is byte-deterministic for a given handler set). SPEC 02
+    /// §3 shape: `[{name, description, args}]`.
+    fn help_body(&self, handler_commands: &[(&str, Option<&str>)]) -> String {
+        let svc = &self.service_name;
+        let mut cmds = vec![
+            json!({
+                "name": "HELP",
+                "description": "List all commands this service accepts",
+                "args": [],
+            }),
+            json!({
+                "name": "INFO",
+                "description": "Service identity and capabilities",
+                "args": [],
+            }),
+            json!({
+                "name": "QUIT",
+                "description": "Graceful shutdown: deregister, then exit 0 (SPEC 18 §3.5)",
+                "args": [],
+            }),
+            json!({
+                "name": "RELOAD",
+                "description": "Hot-reload the serve script (load-beside-swap): parse the re-read source, swap on success, keep running on failure — the citizen never leaves the Bus",
+                "args": [],
+            }),
+            json!({
+                "name": format!("{svc}.props.get"),
+                "description": "Property snapshot at an optional path (root if absent)",
+                "args": ["path?"],
+            }),
+            json!({
+                "name": format!("{svc}.props.list"),
+                "description": "All defined property paths",
+                "args": [],
+            }),
+            json!({
+                "name": format!("{svc}.props.describe"),
+                "description": "Schema entry (type, mutability, sensitivity) for a path",
+                "args": ["path"],
+            }),
+        ];
+        // Drop any authored command that collides with a reserved verb:
+        // it is intercepted pre-dispatch and unreachable, so advertising
+        // it would publish a duplicate name with a misleading
+        // "author-defined" description for a handler that never fires.
+        let mut authored: Vec<(&str, Option<&str>)> = handler_commands
+            .iter()
+            .copied()
+            .filter(|(c, _)| !self.is_reserved(c))
+            .collect();
+        // Sort by command, documented entries first (doc included in the key
+        // so even two differently-documented duplicates order
+        // deterministically under the unstable sort), then dedup: a
+        // documented entry wins over an undocumented duplicate. (The
+        // evaluator already passes one entry per command; belt-and-braces.)
+        authored.sort_unstable_by_key(|(c, doc)| (*c, doc.is_none(), *doc));
+        authored.dedup_by_key(|(c, _)| *c);
+        for (c, doc) in authored {
+            cmds.push(json!({
+                "name": c,
+                // The handler's own doc-string (`on <cmd> desc "…"`) when
+                // the author wrote one — a citizen self-describes at the
+                // handler site; GUIs and agents read the same text.
+                "description": doc.unwrap_or("Author-defined handler"),
+                "args": [],
+            }));
+        }
+        Json::Array(cmds).to_string()
+    }
+
+    /// Build the INFO body: exactly the SPEC 02 §3 `{name, version,
+    /// description}` triple. `version` is the `mix` runtime version
+    /// (the citizen has no version of its own — its identity is the
+    /// runtime plus its script).
+    fn info_body(&self) -> String {
+        json!({
+            "name": self.service_name,
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Mix supervised Bus citizen (SPEC 18 Phase 1 runtime)",
+        })
+        .to_string()
+    }
+
+    /// Reconstruct the `props.*` args JSON the way the indexd reference
+    /// does (`mixos-indexd::props::parse_args(header).or_else(body)`):
+    /// ANY successfully-parsed `args` header JSON wins — not only
+    /// objects — and the request body is consulted only when the header
+    /// is absent or unparseable. Gating the header on `is_object()`
+    /// would feed a different value into `dispatch_props` than indexd
+    /// does for a non-object header, breaking L1 byte-consistency.
+    fn props_args(args_header: Option<&str>, req_body: &str) -> Option<Json> {
+        if let Some(v) = args_header.and_then(|raw| serde_json::from_str::<Json>(raw).ok()) {
+            return Some(v);
+        }
+        if req_body.trim().is_empty() {
+            return None;
+        }
+        serde_json::from_str::<Json>(req_body).ok()
+    }
+
+    /// Is `command` a runtime-reserved verb — intercepted pre-dispatch
+    /// and never delivered to an author handler? Single source of truth
+    /// for the [`ServeRuntime::handle_reserved`] dispatch arms and the
+    /// [`Self::help_body`] author-list filter, so the two cannot drift.
+    ///
+    /// `props.watch` (L2) and `props.set`/`delete` (SPEC 12 L4+) are
+    /// deliberately NOT reserved: an author may implement them, so they
+    /// must remain advertisable in HELP and must fall through here.
+    fn is_reserved(&self, command: &str) -> bool {
+        matches!(command, "HELP" | "INFO" | "QUIT" | "RELOAD" | "lifecycle.commit")
+            || command
+                .strip_prefix(&self.props_prefix)
+                .is_some_and(|s| matches!(s, "get" | "list" | "describe"))
+    }
+}
+
+impl PropTree for MixServeRuntime {
+    fn snapshot(&self) -> PropValue {
+        // uptime_s is live: recomputed from the monotonic clock on
+        // every snapshot (props.get), never a stale cached field.
+        let uptime_s = self.identity.started_at.elapsed().as_secs();
+        // 0.63.0 — isolated handler faults degrade health instead of
+        // hiding: a citizen that swallowed a raise used to look exactly
+        // like a healthy one (the blind-but-healthy failure shape).
+        let faults = self.handler_faults.get();
+        let health = if faults > 0 {
+            HEALTH_DEGRADED
+        } else {
+            HEALTH_OK
+        };
+        let last_fault = self.last_fault.borrow().clone().unwrap_or_default();
+        let generation = self.identity.generation.get();
+        let script_loaded_at = self.identity.script_loaded_at.borrow().clone();
+        build_snapshot([
+            (
+                PropPath::new("lifecycle.started_at").unwrap(),
+                PropValue::from(self.identity.started_wall.clone()),
+            ),
+            (
+                PropPath::new("lifecycle.uptime_s").unwrap(),
+                PropValue::from(uptime_s),
+            ),
+            (
+                PropPath::new("lifecycle.mode").unwrap(),
+                PropValue::from(MODE_SERVING),
+            ),
+            (
+                PropPath::new("lifecycle.health").unwrap(),
+                PropValue::from(health),
+            ),
+            (
+                PropPath::new("lifecycle.props_level").unwrap(),
+                PropValue::from(PROPS_LEVEL),
+            ),
+            (
+                PropPath::new("lifecycle.handler_faults").unwrap(),
+                PropValue::from(faults),
+            ),
+            (
+                PropPath::new("lifecycle.last_fault").unwrap(),
+                PropValue::from(last_fault),
+            ),
+            (
+                PropPath::new("lifecycle.generation").unwrap(),
+                PropValue::from(generation),
+            ),
+            (
+                PropPath::new("lifecycle.script_loaded_at").unwrap(),
+                PropValue::from(script_loaded_at),
+            ),
+        ])
+    }
+
+    fn list(&self) -> Vec<PropPath> {
+        Self::leaf_paths()
+            .into_iter()
+            .map(|s| PropPath::new(s).unwrap())
+            .collect()
+    }
+
+    fn describe(&self, path: &PropPath) -> Option<PropDescribe> {
+        use PropType::*;
+        match path.as_str() {
+            "lifecycle.started_at" => Some(
+                PropDescribe::leaf(path.clone(), String, "RFC 3339 timestamp of process start.")
+                    .with_format("rfc3339"),
+            ),
+            "lifecycle.uptime_s" => Some(
+                PropDescribe::leaf(path.clone(), Number, "Seconds since process start.")
+                    .with_transient(true),
+            ),
+            "lifecycle.mode" => Some(PropDescribe::leaf(
+                path.clone(),
+                String,
+                "Operating mode (serving). Phase 2 adds drain | paused.",
+            )),
+            "lifecycle.health" => Some(PropDescribe::leaf(
+                path.clone(),
+                String,
+                "Coarse health classification (ok | degraded | failing).",
+            )),
+            "lifecycle.props_level" => Some(PropDescribe::leaf(
+                path.clone(),
+                String,
+                "SPEC 07 conformance level (L0 | L1 | L2 | L3).",
+            )),
+            "lifecycle.handler_faults" => Some(
+                PropDescribe::leaf(
+                    path.clone(),
+                    Number,
+                    "Isolated handler faults (errors + panics) since start; \
+                     > 0 flips health to degraded.",
+                )
+                .with_transient(true),
+            ),
+            "lifecycle.last_fault" => Some(
+                PropDescribe::leaf(
+                    path.clone(),
+                    String,
+                    "Summary of the most recent isolated handler fault \
+                     (empty when none). Reset per generation on a hot-reload.",
+                )
+                .with_transient(true),
+            ),
+            "lifecycle.generation" => Some(
+                PropDescribe::leaf(
+                    path.clone(),
+                    Number,
+                    "Hot-reload generation: 0 at boot, +1 per committed \
+                     RELOAD swap. Poll this to confirm a reload took \
+                     (INFO/HELP cannot — the version is the mix version).",
+                )
+                .with_transient(true),
+            ),
+            "lifecycle.script_loaded_at" => Some(
+                PropDescribe::leaf(
+                    path.clone(),
+                    String,
+                    "RFC 3339 timestamp the CURRENT generation's script was \
+                     loaded (process start for generation 0).",
+                )
+                .with_format("rfc3339"),
+            ),
+            _ => None,
+        }
+    }
+}
+
+impl ServeRuntime for MixServeRuntime {
+    fn record_handler_fault(&self, summary: &str) {
+        self.handler_faults.set(self.handler_faults.get() + 1);
+        // Bound the stored summary: the fault detail can carry request
+        // data; the props surface is a health signal, not a log.
+        let mut s = summary.to_string();
+        if s.chars().count() > 200 {
+            s = s.chars().take(200).collect::<String>() + "…";
+        }
+        *self.last_fault.borrow_mut() = Some(s);
+    }
+
+    fn service_name(&self) -> Option<&str> {
+        Some(&self.service_name)
+    }
+
+    fn handle_reserved(
+        &self,
+        command: &str,
+        args_header: Option<&str>,
+        req_body: &str,
+        handler_commands: &[(&str, Option<&str>)],
+        correlated: bool,
+    ) -> Option<ReservedOutcome> {
+        // L0 — bare Ch02 universals (routed by `to:`, never prefixed).
+        // The "HELP" literal MUST stay in lock-step with the pump's
+        // `ev.command == "HELP"` gate in mix evaluator.rs
+        // (run_event_pump), which populates `handler_commands` for exactly
+        // this arm and passes an empty slice otherwise. Adding an alias or
+        // case-fold here without matching that gate makes HELP replies
+        // silently lose every author command.
+        match command {
+            "HELP" => {
+                return Some(ReservedOutcome {
+                    rc: 0,
+                    body: self.help_body(handler_commands),
+                    quit: false,
+                    reload: false,
+                });
+            }
+            "INFO" => {
+                return Some(ReservedOutcome {
+                    rc: 0,
+                    body: self.info_body(),
+                    quit: false,
+                    reload: false,
+                });
+            }
+            "QUIT" => {
+                // §3.5: not a no-op. Reply rc:0, then the pump breaks
+                // and the serve entrypoint runs the shutdown path
+                // (WS5 wires deregister-before-exit onto that break).
+                return Some(ReservedOutcome {
+                    rc: 0,
+                    body: "{}".to_string(),
+                    quit: true,
+                    reload: false,
+                });
+            }
+            "RELOAD" => {
+                // Hot-reload (load-beside-swap): pre-validate the re-read
+                // source here; the swap itself happens in the serve driver
+                // after the pump breaks. A parse failure answers rc:10 and
+                // the running citizen is untouched. An UNCORRELATED delivery
+                // (a stray `emit RELOAD`) is consumed-and-dropped by the pump
+                // regardless, so skip the read+parse entirely rather than
+                // spend it on the pump thread for a reply that can't be sent.
+                return Some(if correlated {
+                    self.reload_outcome()
+                } else {
+                    ReservedOutcome {
+                        rc: 0,
+                        body: "{}".to_string(),
+                        quit: false,
+                        reload: false,
+                    }
+                });
+            }
+            "lifecycle.commit" => {
+                // Native-only post-swap hook. The ONE real delivery is the
+                // serve driver's local queue injection after the swap commits
+                // (it bypasses this chokepoint); a wire-arrived copy is
+                // refused here — an external ABP caller must not be able to
+                // run a loader's commit behaviour before or after the real
+                // commit. Reserved-and-refused: a correlated request gets a
+                // refusal reply, an uncorrelated delivery is consumed.
+                return Some(ReservedOutcome {
+                    rc: 10,
+                    body: json!({
+                        "error": "lifecycle.commit is a native runtime hook, not a callable verb"
+                    })
+                    .to_string(),
+                    quit: false,
+                    reload: false,
+                });
+            }
+            _ => {}
+        }
+
+        // L1 — `<svc>.props.{get,list,describe}` via the shared
+        // props encoder (byte-consistent with indexd). Only
+        // these three suffixes are reserved; `props.watch` (L2),
+        // `props.set`/`delete` (SPEC 12 L4+) are out of Phase-1 scope
+        // and fall through to author handlers (return None). The
+        // membership predicate here MUST stay in lock-step with
+        // [`Self::is_reserved`] (the HELP author-list filter).
+        let suffix = command.strip_prefix(&self.props_prefix)?;
+        if !matches!(suffix, "get" | "list" | "describe") {
+            return None;
+        }
+        let args = Self::props_args(args_header, req_body);
+        let resp = props::bus::dispatch_props(
+            self,
+            suffix,
+            args.as_ref(),
+            /* redact_sensitive = */ true,
+        );
+        Some(ReservedOutcome {
+            rc: resp.rc.clamp(0, 255) as u8,
+            body: resp.body,
+            quit: false,
+            reload: false,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rt() -> MixServeRuntime {
+        MixServeRuntime::new("statecache")
+    }
+
+    #[test]
+    fn help_lists_reserved_verbs_then_sorted_author_commands() {
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "HELP",
+                None,
+                "",
+                &[
+                    ("statecache.get", Some("Fetch a cached value")),
+                    ("alpha.cmd", None),
+                ],
+                true,
+            )
+            .expect("HELP is reserved");
+        assert_eq!(out.rc, 0);
+        assert!(!out.quit);
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        let arr = v.as_array().unwrap();
+        let names: Vec<&str> = arr.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        // Reserved verbs first, fixed order.
+        assert_eq!(
+            &names[..7],
+            &[
+                "HELP",
+                "INFO",
+                "QUIT",
+                "RELOAD",
+                "statecache.props.get",
+                "statecache.props.list",
+                "statecache.props.describe",
+            ]
+        );
+        // Author commands appended, sorted+deduped.
+        assert_eq!(&names[7..], &["alpha.cmd", "statecache.get"]);
+        // A doc-string surfaces as the verb's description; an undocumented
+        // handler keeps the generic placeholder.
+        let desc_of = |name: &str| {
+            arr.iter()
+                .find(|e| e["name"] == name)
+                .and_then(|e| e["description"].as_str())
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(desc_of("statecache.get"), "Fetch a cached value");
+        assert_eq!(desc_of("alpha.cmd"), "Author-defined handler");
+    }
+
+    #[test]
+    fn reload_without_script_path_answers_rc10() {
+        let r = rt(); // MixServeRuntime::new — no script path
+        let out = r.handle_reserved("RELOAD", None, "", &[], true).expect("reserved");
+        assert_eq!(out.rc, 10);
+        assert!(!out.reload, "no path → the pump must NOT break");
+        assert!(!out.quit);
+    }
+
+    #[test]
+    fn uncorrelated_reload_skips_the_parse() {
+        // A stray `emit RELOAD` (correlated=false) is consumed-and-dropped
+        // by the pump, so the runtime must NOT pay a script read+parse for
+        // it — the expensive work stays behind the correlation gate (codex
+        // + opus MINOR-3). Point the path at a file that does NOT exist: a
+        // correlated call would rc:10 (it tried to read); an uncorrelated
+        // call returns rc:0 reload:false WITHOUT touching the path.
+        let missing = std::env::temp_dir().join("mix-reload-nonexistent-xyz.mix");
+        let _ = std::fs::remove_file(&missing);
+        let r = MixServeRuntime::with_script_path(
+            "demo",
+            &missing,
+            std::rc::Rc::new(ReloadIdentity::new()),
+        );
+        let out = r
+            .handle_reserved("RELOAD", None, "", &[], false)
+            .expect("reserved");
+        assert_eq!(out.rc, 0, "uncorrelated RELOAD is consumed, not errored");
+        assert!(!out.reload, "and it never asks the pump to swap");
+        // Correlated, same missing path → it DID try to read → rc:10.
+        let out = r
+            .handle_reserved("RELOAD", None, "", &[], true)
+            .expect("reserved");
+        assert_eq!(out.rc, 10, "correlated RELOAD reads the path and reports the miss");
+    }
+
+    #[test]
+    fn reload_prevalidates_parse_and_sets_the_flag_only_on_success() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("mix-reload-test-{}.mix", std::process::id()));
+
+        // Valid source → rc:0 + reload flag (the pump breaks, driver swaps).
+        std::fs::write(&path, "on demo.ping\n  reply(\"pong\")\nend\n").unwrap();
+        let r = MixServeRuntime::with_script_path(
+            "demo",
+            &path,
+            std::rc::Rc::new(ReloadIdentity::new()),
+        );
+        let out = r.handle_reserved("RELOAD", None, "", &[], true).expect("reserved");
+        assert_eq!(out.rc, 0, "valid source must be accepted: {}", out.body);
+        assert!(out.reload, "valid source must ask the pump to break");
+        assert!(!out.quit);
+
+        // Broken source → rc:10, NO reload flag: the running citizen is
+        // untouched — the whole point of pre-validation.
+        std::fs::write(&path, "on demo.ping\n  reply(\n").unwrap();
+        let out = r.handle_reserved("RELOAD", None, "", &[], true).expect("reserved");
+        assert_eq!(out.rc, 10);
+        assert!(!out.reload, "a parse failure must NOT break the pump");
+        assert!(
+            out.body.contains("does not parse"),
+            "the refusal names the reason: {}",
+            out.body
+        );
+
+        // Missing file → rc:10, no flag.
+        std::fs::remove_file(&path).unwrap();
+        let out = r.handle_reserved("RELOAD", None, "", &[], true).expect("reserved");
+        assert_eq!(out.rc, 10);
+        assert!(!out.reload);
+    }
+
+    #[test]
+    fn info_is_exactly_the_spec02_triple() {
+        let r = rt();
+        let out = r.handle_reserved("INFO", None, "", &[], true).unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        let obj = v.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["description", "name", "version"]);
+        assert_eq!(obj["name"], "statecache");
+        assert_eq!(obj["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn quit_replies_rc0_and_signals_shutdown() {
+        let r = rt();
+        let out = r.handle_reserved("QUIT", None, "", &[], true).unwrap();
+        assert_eq!(out.rc, 0);
+        assert!(out.quit, "QUIT must signal the graceful shutdown path");
+    }
+
+    #[test]
+    fn props_get_root_is_the_lifecycle_tree() {
+        let r = rt();
+        let out = r
+            .handle_reserved("statecache.props.get", None, "", &[], true)
+            .unwrap();
+        assert_eq!(out.rc, 0);
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        let lc = &v["lifecycle"];
+        assert_eq!(lc["mode"], MODE_SERVING);
+        assert_eq!(lc["health"], HEALTH_OK);
+        assert_eq!(lc["props_level"], PROPS_LEVEL);
+        assert!(lc["started_at"].is_string());
+        assert!(lc["uptime_s"].is_number());
+        // 0.63.0 fault surface, quiescent state.
+        assert_eq!(lc["handler_faults"], 0);
+        assert_eq!(lc["last_fault"], "");
+    }
+
+    #[test]
+    fn recorded_fault_degrades_health_and_surfaces_summary() {
+        // The observable half of SPEC 18 fault isolation (0.63.0): a
+        // citizen that swallowed a raise must stop LOOKING healthy.
+        let r = rt();
+        r.record_handler_fault("handler fault: play.note[0]: boom");
+        r.record_handler_fault("handler fault: play.note[0]: boom again");
+        let out = r
+            .handle_reserved("statecache.props.get", None, "", &[], true)
+            .unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        let lc = &v["lifecycle"];
+        assert_eq!(lc["health"], HEALTH_DEGRADED);
+        assert_eq!(lc["handler_faults"], 2);
+        assert_eq!(lc["last_fault"], "handler fault: play.note[0]: boom again");
+    }
+
+    #[test]
+    fn fault_summary_is_bounded() {
+        // The props surface is a health signal, not a log — a fault
+        // detail carrying request data is truncated.
+        let r = rt();
+        r.record_handler_fault(&"x".repeat(500));
+        let stored = r.last_fault.borrow().clone().unwrap();
+        assert!(stored.chars().count() <= 201, "200 + ellipsis");
+        assert!(stored.ends_with('…'));
+    }
+
+    #[test]
+    fn props_get_leaf_path_via_args_header() {
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "statecache.props.get",
+                Some(r#"{"path":"lifecycle.props_level"}"#),
+                "",
+                &[],
+                true,
+            )
+            .unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        assert_eq!(v, json!("L1"));
+    }
+
+    #[test]
+    fn props_get_leaf_path_falls_back_to_body() {
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "statecache.props.get",
+                None,
+                r#"{"path":"lifecycle.mode"}"#,
+                &[],
+                true,
+            )
+            .unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        assert_eq!(v, json!("serving"));
+    }
+
+    #[test]
+    fn args_header_wins_even_when_not_an_object() {
+        // indexd's parse_args accepts ANY parsed header JSON; a
+        // non-object header must still win over the body (it then
+        // carries no `path`, so dispatch_props returns the root tree)
+        // — proving the body was NOT consulted as a fallback.
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "statecache.props.get",
+                Some("42"),
+                r#"{"path":"lifecycle.mode"}"#,
+                &[],
+                true,
+            )
+            .unwrap();
+        assert_eq!(out.rc, 0);
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        // Root snapshot (header wins, no path) — NOT the body's
+        // `"serving"` leaf.
+        assert!(v["lifecycle"].is_object());
+        assert_ne!(v, json!("serving"));
+    }
+
+    #[test]
+    fn help_filters_authored_commands_that_collide_with_reserved_verbs() {
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "HELP",
+                None,
+                "",
+                &[
+                    ("HELP", None),
+                    ("QUIT", None),
+                    ("RELOAD", None),
+                    ("statecache.props.get", None),
+                    ("statecache.props.watch", None),
+                    ("alpha.cmd", None),
+                ],
+                true,
+            )
+            .unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        let names: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        // Reserved prefix unchanged.
+        assert_eq!(
+            &names[..7],
+            &[
+                "HELP",
+                "INFO",
+                "QUIT",
+                "RELOAD",
+                "statecache.props.get",
+                "statecache.props.list",
+                "statecache.props.describe",
+            ]
+        );
+        // Authored HELP/QUIT/props.get are reserved → filtered out.
+        // props.watch (L2, NOT reserved) and alpha.cmd survive.
+        assert_eq!(&names[7..], &["alpha.cmd", "statecache.props.watch"]);
+        // HELP/QUIT/props.get appear exactly once (the reserved entry),
+        // never duplicated by an authored shadow.
+        assert_eq!(names.iter().filter(|n| **n == "HELP").count(), 1);
+        assert_eq!(names.iter().filter(|n| **n == "QUIT").count(), 1);
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| **n == "statecache.props.get")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn props_list_enumerates_the_lifecycle_leaves() {
+        let r = rt();
+        let out = r
+            .handle_reserved("statecache.props.list", None, "", &[], true)
+            .unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        let mut paths: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "lifecycle.generation",
+                "lifecycle.handler_faults",
+                "lifecycle.health",
+                "lifecycle.last_fault",
+                "lifecycle.mode",
+                "lifecycle.props_level",
+                "lifecycle.script_loaded_at",
+                "lifecycle.started_at",
+                "lifecycle.uptime_s",
+            ]
+        );
+    }
+
+    #[test]
+    fn generation_and_process_start_persist_across_a_committed_reload() {
+        // The MAJOR the opus arm caught: a reloaded citizen must NOT look
+        // like crash+restart, and a caller must be able to confirm a swap.
+        // The identity is shared across generations; committed_reload() is
+        // the driver's post-swap bump.
+        let identity = std::rc::Rc::new(ReloadIdentity::new());
+        let gen0 = MixServeRuntime::with_script_path("demo", "/x.mix", identity.clone());
+        let started = gen0.snapshot_started_at_for_test();
+
+        // Generation 0: counter 0.
+        assert_eq!(gen0.snapshot_generation_for_test(), 0);
+
+        // A committed swap builds a NEW runtime sharing the identity, then
+        // the driver bumps.
+        let gen1 = MixServeRuntime::with_script_path("demo", "/x.mix", identity.clone());
+        identity.committed_reload();
+        assert_eq!(gen1.snapshot_generation_for_test(), 1, "generation advances on commit");
+        assert_eq!(
+            gen1.snapshot_started_at_for_test(),
+            started,
+            "process start is stable across the reload (not crash+restart)"
+        );
+        // The pre-swap runtime, still sharing the identity, also sees the
+        // bumped generation — there is one process-wide counter.
+        assert_eq!(gen0.snapshot_generation_for_test(), 1);
+
+        // And through the actual props SNAPSHOT (not just the test
+        // accessors): a regression that reset the start inside snapshot()
+        // while leaving the identity field intact must still be caught
+        // (opus arm-B round-2 test-seam residual). generation and
+        // started_at both come off the live PropTree output.
+        let snap = serde_json::to_string(&gen1.snapshot()).unwrap();
+        let v: Json = serde_json::from_str(&snap).unwrap();
+        let lc = &v["lifecycle"];
+        assert_eq!(lc["generation"], 1, "props snapshot reports the bumped generation");
+        assert_eq!(
+            lc["started_at"].as_str().unwrap(),
+            started,
+            "props snapshot reports the stable process start"
+        );
+    }
+
+    #[test]
+    fn props_describe_uptime_is_transient_number() {
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "statecache.props.describe",
+                Some(r#"{"path":"lifecycle.uptime_s"}"#),
+                "",
+                &[],
+                true,
+            )
+            .unwrap();
+        let v: Json = serde_json::from_str(&out.body).unwrap();
+        assert_eq!(v["type"], "number");
+        assert_eq!(v["transient"], true);
+    }
+
+    #[test]
+    fn non_reserved_command_falls_through_to_author() {
+        let r = rt();
+        // A domain command is the author's — not reserved.
+        assert!(r.handle_reserved("statecache.get", None, "", &[], true).is_none());
+        // props.watch (L2) / props.set (SPEC 12) are out of WS4 scope:
+        // not reserved, so the author may (not) implement them.
+        assert!(
+            r.handle_reserved("statecache.props.watch", None, "", &[], true)
+                .is_none()
+        );
+        assert!(
+            r.handle_reserved("statecache.props.set", None, "", &[], true)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn lifecycle_commit_is_refused_for_wire_callers() {
+        // The native-only post-swap hook: only the serve driver's local
+        // queue injection may deliver it (it bypasses this chokepoint). A
+        // wire-arrived copy — the spoof an external ABP caller would use
+        // to run behaviour ahead of or behind the real commit — is
+        // refused for requests and consumed for uncorrelated deliveries.
+        let r = rt();
+        let out = r
+            .handle_reserved(
+                "lifecycle.commit",
+                Some(r#"{"generation":0}"#),
+                "",
+                &[],
+                true,
+            )
+            .expect("reserved and refused, never author-dispatched");
+        assert_eq!(out.rc, 10);
+        assert!(!out.quit && !out.reload, "a refusal must not quit or reload");
+        assert!(
+            r.handle_reserved("lifecycle.commit", None, "", &[], false)
+                .is_some(),
+            "an uncorrelated delivery is consumed, not dispatched"
+        );
+        // And HELP never advertises a verb no caller can use.
+        let help = r
+            .handle_reserved(
+                "HELP",
+                None,
+                "",
+                &[("lifecycle.commit", None), ("statecache.get", None)],
+                true,
+            )
+            .unwrap();
+        let v: Json = serde_json::from_str(&help.body).unwrap();
+        let names: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert!(names.contains(&"statecache.get"));
+        assert!(
+            !names.contains(&"lifecycle.commit"),
+            "the native-only hook must not be advertised as callable: {names:?}"
+        );
+    }
+
+    #[test]
+    fn props_prefix_is_service_scoped() {
+        let r = MixServeRuntime::new("statecache");
+        // A different service's props verb is NOT this citizen's
+        // reserved surface (it would never be routed here anyway, but
+        // the matcher must not claim it).
+        assert!(
+            r.handle_reserved("other.props.get", None, "", &[], true)
+                .is_none()
+        );
+    }
+}

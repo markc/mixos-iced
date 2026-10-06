@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Roots are configured by `MIXOS_AUDIT_ROOTS` (colon-separated);
-//! defaults to `$HOME/.mixos/src:$HOME/.rc:$HOME/.gh:$HOME/.ns`.
+//! defaults to the current MixOS checkout; private and historical trees are not scanned.
 //!
 //! ## Source-text scan, not token walk
 //!
@@ -101,11 +101,10 @@ fn audit_tilde_corpus() {
 
 fn audit_roots() -> Vec<PathBuf> {
     let raw = std::env::var("MIXOS_AUDIT_ROOTS").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!(
-            "{home}/.mixos/src:{home}/.rc:{home}/.gh:{home}/.ns",
-            home = home
-        )
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .display()
+            .to_string()
     });
     raw.split(':')
         .filter(|s| !s.is_empty())
