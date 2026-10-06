@@ -353,13 +353,7 @@ where
             modified: Self::shape(&modified_text, self.look.mono_font, self.look.small_px),
             modified_of: modified_text,
         };
-        if st.cache.len() >= 512 {
-            st.cache.clear();
-        }
         st.cache.insert(row.path.to_path_buf(), shaped);
-        // The cache only ever holds what viewports asked for; drop anything
-        // the current listing no longer shows once it grows past a screenful
-        // of headroom.
     }
 
     /// A new listing (the pane navigated) resets the scroll state: the deep
@@ -399,6 +393,13 @@ where
     /// owns the `&mut Tree` the cache lives in).
     fn sync_cache(&self, st: &mut RowState<Renderer::Paragraph>, height: f32, width: f32) {
         let first = (st.offset / st.row_h).floor().max(0.0) as usize;
+        // Reserve a complete viewport before shaping it. Evicting in
+        // cache_row would discard earlier visible paragraphs mid-pass.
+        // An unusually tall viewport may legitimately need more than 512.
+        let visible = (height / st.row_h).ceil().max(0.0) as usize + 2;
+        if st.cache.len().saturating_add(visible) > 512.max(visible) {
+            st.cache.clear();
+        }
         for index in first..self.source.len() {
             let Some(row) = self.source.row(index) else {
                 break;
@@ -1124,5 +1125,33 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn scrolling_past_cache_capacity_keeps_every_visible_paragraph() {
+        let entries: Vec<_> = (0..100_000)
+            .map(|i| (PathBuf::from(format!("/listing/{i}")), format!("file-{i}.txt")))
+            .collect();
+        let reads = Cell::new(0);
+        let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
+            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+        );
+        let renderer = LayoutRenderer::new();
+        let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
+        deliver(&mut list, &mut tree, &renderer, Event::Window(iced_core::window::Event::Focused));
+        for step in 0..1000 {
+            let state = tree.state.downcast_mut::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+            state.offset = (step * 7) as f32 * state.row_h;
+            deliver(&mut list, &mut tree, &renderer, Event::Window(iced_core::window::Event::Focused));
+            let state = tree.state.downcast_ref::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+            let first = (state.offset / state.row_h).floor() as usize;
+            for index in first..first + 20 {
+                if state.is_visible(index, 280.0) {
+                    assert!(state.cache.contains_key(&entries[index].0), "missing visible paragraph at scroll step {step}, row {index}");
+                }
+            }
+            assert!(state.cache.len() <= 512, "unbounded offscreen cache");
+        }
+        assert!(reads.get() < 30_000, "offscreen traversal: {} reads", reads.get());
     }
 }
