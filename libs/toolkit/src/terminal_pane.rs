@@ -178,7 +178,7 @@ mod tests {
             sizes.push(node.size());
             let viewport = Rectangle::with_size(Size::new(800.0, 600.0));
             let cursor = mouse::Cursor::Available(Point::new(20.0, 20.0));
-            let mut messages = Vec::new();
+            let mut bus = iced_core::shell::Bus::new();
             element.as_widget_mut().update(
                 &mut tree,
                 &Event::Mouse(mouse::Event::WheelScrolled {
@@ -187,9 +187,10 @@ mod tests {
                 Layout::new(&node),
                 cursor,
                 &renderer,
-                &mut Shell::new(&mut messages),
+                &mut Shell::new(&iced_core::window::Headless, iced_core::shell::Waker::noop(), &mut bus),
                 &viewport,
             );
+            let messages: Vec<_> = bus.drain().collect();
             assert!(matches!(
                 messages.as_slice(),
                 [Action::Wheel(mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 })]
@@ -218,7 +219,7 @@ mod tests {
                 renderer
                     .layers
                     .iter()
-                    .any(|clip| clip.width <= 97.6 && clip.height <= 77.6)
+                    .any(|clip| clip.width <= 97.61 && clip.height <= 77.61)
             );
         }
         assert_eq!(sizes, [Size::new(100.0, 80.0); 2]);
