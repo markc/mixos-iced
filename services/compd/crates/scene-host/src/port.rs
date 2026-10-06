@@ -448,7 +448,7 @@ async fn worker(
 /// Answer a request the engine never sees.
 async fn refuse(client: &SupervisedClient, command: &IncomingCommand, rc: u8, body: Value) {
     let text = body.to_string();
-    let reply = client.respond_parts(&command.from, &command.command, command.id.as_deref(), rc, &text);
+    let reply = client.respond(command, rc, &text);
     match tokio::time::timeout(SEND_TIMEOUT, reply).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::debug!(%error, "scene host refusal not delivered"),
@@ -466,7 +466,7 @@ async fn admit(service: &str, client: &SupervisedClient, delivery: &Delivery, co
                 id: command.id.clone(),
                 body: command.body.clone(),
                 headers: command.headers.clone(),
-                generation: client.connection_generation(),
+                generation: command.generation,
             };
             if !delivery.send(Inbound::Request(request)) {
                 let body = json!({"error_code":"QUEUE_FULL","message":"scene host queue full"});
@@ -501,8 +501,8 @@ async fn send(client: &SupervisedClient, (scene_topic, panel_topic): &(String, S
             tracing::debug!(command = %command, "scene host reply dropped: admitted on an earlier connection");
             Ok(())
         }
-        Outbound::Reply { to, command, id, rc, body, .. } => {
-            tokio::time::timeout(SEND_TIMEOUT, client.respond_parts(to, command, id.as_deref(), *rc, body))
+        Outbound::Reply { generation, to, command, id, rc, body, .. } => {
+            tokio::time::timeout(SEND_TIMEOUT, client.respond_parts(*generation, to, command, id.as_deref(), *rc, body))
                 .await
                 .map_err(|_| "timed out".to_string())
                 .and_then(|result| result.map_err(|error| error.to_string()))
@@ -599,6 +599,7 @@ mod tests {
 
     fn incoming(from: &str, command: &str, id: Option<&str>, headers: &[(&str, &str)], body: &str) -> IncomingCommand {
         IncomingCommand {
+            generation: 0,
             from: from.into(),
             command: command.into(),
             id: id.map(str::to_owned),

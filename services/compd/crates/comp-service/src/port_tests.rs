@@ -152,6 +152,7 @@ fn test_observation_args() -> (Arc<AtomicU64>, ObservationOutbox, Arc<AtomicU64>
 
 fn command(command: &str, id: usize) -> bus::IncomingCommand {
     bus::IncomingCommand {
+        generation: 0,
         from: "test-caller".into(),
         command: command.into(),
         id: Some(id.to_string()),

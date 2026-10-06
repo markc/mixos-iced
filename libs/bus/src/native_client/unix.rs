@@ -222,6 +222,7 @@ impl VerifiedCommand {
     pub(crate) fn gap() -> Self {
         Self {
             command: IncomingCommand {
+                generation: 0,
                 from: String::new(),
                 command: String::new(),
                 id: None,

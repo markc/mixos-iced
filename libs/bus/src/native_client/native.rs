@@ -1250,6 +1250,7 @@ impl NodedClient {
             // envelope need not contain a command (or type: event).
             if msg.get("command").is_some() || msg.get("topic").is_some() {
                 let cmd = IncomingCommand {
+                    generation: 0,
                     from: msg.get("from").unwrap_or("").to_string(),
                     command: msg.get("command").unwrap_or("").to_string(),
                     id: msg_id,
@@ -1397,6 +1398,7 @@ mod verified_bound_tests {
             gap: gap.clone(),
         };
         let command = |id| IncomingCommand {
+            generation: 0,
             from: "caller".into(),
             command: "shell.status".into(),
             id,

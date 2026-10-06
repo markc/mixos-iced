@@ -155,7 +155,10 @@ impl EtcEnvironment {
         }
     }
 
-    pub(crate) fn resolve(self) -> (PathBuf, bool) {
+    pub(crate) fn resolve(mut self) -> (PathBuf, bool) {
+        self.root = self.root.filter(|path| !path.as_os_str().is_empty());
+        self.etc = self.etc.filter(|path| !path.as_os_str().is_empty());
+        self.xdg_config = self.xdg_config.filter(|path| !path.as_os_str().is_empty());
         let isolated = self.etc.is_some() || self.root.is_some();
         let environment = config::Environment {
             root: self.root,
@@ -228,6 +231,25 @@ mod tests {
         assert_eq!(
             captured(None).resolve(),
             (PathBuf::from("/srv/mixos/etc"), true)
+        );
+    }
+
+    #[test]
+    fn empty_captured_overrides_match_the_shared_directory_rule() {
+        let captured = EtcEnvironment {
+            root: Some(PathBuf::new()),
+            etc: Some(PathBuf::new()),
+            home: Some(PathBuf::from("/home/user")),
+            xdg_config: Some(PathBuf::new()),
+        };
+        let expected = config::Dirs::resolve(&config::Environment {
+            home: Some(PathBuf::from("/home/user")),
+            uid: current_uid(),
+            ..Default::default()
+        });
+        assert_eq!(
+            captured.resolve(),
+            (expected.get(config::Dir::Etc).to_owned(), false)
         );
     }
 

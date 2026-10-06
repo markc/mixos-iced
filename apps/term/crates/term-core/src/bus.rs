@@ -2199,6 +2199,7 @@ mod tests {
 
     fn command(verb: &str, body: &str) -> BoundedIncomingEvent {
         BoundedIncomingEvent::Command(IncomingCommand {
+            generation: 0,
             from: "test".into(),
             command: verb.into(),
             id: None,

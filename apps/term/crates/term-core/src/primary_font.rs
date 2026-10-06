@@ -34,8 +34,7 @@ pub(super) struct Primary {
 // newer set during this process cannot combine fonts from two asset releases.
 fn installed_assets() -> Result<Option<&'static assets::AssetSet>, &'static str> {
     static INSTALLED: OnceLock<Result<Option<assets::AssetSet>, String>> = OnceLock::new();
-    match INSTALLED.get_or_init(|| assets::AssetSet::discover().map_err(|error| error.to_string()))
-    {
+    match INSTALLED.get_or_init(|| assets::mixos::discover().map_err(|error| error.to_string())) {
         Ok(set) => Ok(set.as_ref()),
         Err(error) => {
             static REPORTED: OnceLock<()> = OnceLock::new();
@@ -302,9 +301,7 @@ mod tests {
     #[test]
     #[ignore = "requires a bootstrapped static asset set"]
     fn installed_mono_is_primary_and_emoji_is_coverage() {
-        let set = assets::AssetSet::discover()
-            .unwrap()
-            .expect("installed set");
+        let set = assets::mixos::discover().unwrap().expect("installed set");
         assert_eq!(discover(None).unwrap().path, set.font_path("mono").unwrap());
         assert_eq!(
             installed_role("emoji").unwrap().unwrap().path,

@@ -487,6 +487,7 @@ impl SupervisedClient {
         body: &str,
     ) -> Result<(), SupervisedError> {
         self.respond_parts(
+            incoming.generation,
             &incoming.from,
             &incoming.command,
             incoming.id.as_deref(),
@@ -500,14 +501,15 @@ impl SupervisedClient {
     /// Ordinary handler replies still fail once the client is shutting down.
     pub async fn respond_parts_shutdown_synth(
         &self,
+        generation: u64,
         to: &str,
         command: &str,
         id: Option<&str>,
         rc: u8,
         body: &str,
     ) -> Result<(), SupervisedError> {
-        self.connection()
-            .await
+        self.reply_connection(generation)
+            .await?
             .respond_parts(to, command, id, rc, body)
             .await
             .map_err(SupervisedError::Transport)
@@ -564,6 +566,7 @@ impl SupervisedClient {
     /// call: a reply attempted while disconnected fails fast.
     pub async fn respond_parts(
         &self,
+        generation: u64,
         to: &str,
         command: &str,
         id: Option<&str>,
@@ -571,11 +574,22 @@ impl SupervisedClient {
         body: &str,
     ) -> Result<(), SupervisedError> {
         self.gate()?;
-        self.connection()
-            .await
+        self.reply_connection(generation)
+            .await?
             .respond_parts(to, command, id, rc, body)
             .await
             .map_err(SupervisedError::Transport)
+    }
+
+    async fn reply_connection(&self, generation: u64) -> Result<Arc<Connection>, SupervisedError> {
+        // Reconnect publishes its connection and generation while holding
+        // this write lock. Retain the selected connection for the whole send:
+        // a later reconnect cannot redirect a reply onto its replacement.
+        let connection = self.inner.read().await;
+        if generation == 0 || generation != self.connection_generation() {
+            return Err(SupervisedError::Disconnected);
+        }
+        Ok(Arc::clone(&connection))
     }
 
     /// Subscribe to a topic and record it for replay on reconnect.
@@ -748,7 +762,15 @@ fn publish_state(
 }
 
 async fn supervisor_loop(mut ctx: SupervisorCtx) {
-    let mut current_rx = ctx.first_rx;
+    let (_, empty) = mpsc::unbounded_channel();
+    let current_rx = std::mem::replace(&mut ctx.first_rx, NativeIncomingReceiver::Unbounded(empty));
+    supervisor_run(&mut ctx, current_rx).await;
+    publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::ShuttingDown);
+    let connection = Arc::clone(&ctx.inner.read().await);
+    connection.close().await;
+}
+
+async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingReceiver) {
     loop {
         // Forward phase: pump the live connection's frames outward until it
         // drops or a stop is requested.
@@ -767,7 +789,10 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                 }
                 maybe = current_rx.recv() => {
                     match maybe {
-                        Some(command) => {
+                        Some(mut command) => {
+                            if let BoundedIncomingEvent::Command(incoming) = &mut command {
+                                incoming.generation = ctx.connection_generation.load(Ordering::SeqCst);
+                            }
                             if !ctx.out_tx.forward(command) {
                                 tracing::info!(
                                     event = "supervised_stop",
@@ -890,10 +915,8 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                             .lock()
                             .unwrap_or_else(|error| error.into_inner());
                         let current = *ctx.state_tx.borrow();
-                        if matches!(
-                            current,
-                            ConnState::ShuttingDown | ConnState::Fatal
-                        ) || stop_requested(&ctx.shutdown_rx)
+                        if matches!(current, ConnState::ShuttingDown | ConnState::Fatal)
+                            || stop_requested(&ctx.shutdown_rx)
                         {
                             false
                         } else {

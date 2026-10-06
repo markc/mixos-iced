@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 /// that don't map to named fields. Named fields are convenience shortcuts.
 #[derive(Debug)]
 pub struct IncomingCommand {
+    /// Local supervisor generation; never encoded on the ABP wire. Zero for
+    /// an unsupervised connection. Replies must retain the delivered value.
+    pub generation: u64,
     pub from: String,
     /// The `command` header. EMPTY for a topic delivery whose inner envelope
     /// carried no `command` (a hand-built publish body, e.g. `topic` +

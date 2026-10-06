@@ -722,7 +722,14 @@ async fn close_frees_the_name_and_respond_parts_frames_a_response() {
     let (url, _acceptor) = start(&stub).await;
     let client = SupervisedClient::connect("responder", &url).await.unwrap();
     client
-        .respond_parts("caller", "responder.ping", Some("7"), 0, "{\"pong\":true}")
+        .respond_parts(
+            client.connection_generation(),
+            "caller",
+            "responder.ping",
+            Some("7"),
+            0,
+            "{\"pong\":true}",
+        )
         .await
         .expect("a response is a plain send");
     client.close().await;
@@ -743,6 +750,56 @@ async fn close_frees_the_name_and_respond_parts_frames_a_response() {
         .await
         .unwrap_err();
     assert!(matches!(err, SupervisedError::ShuttingDown), "got {err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replies_retain_the_generation_that_delivered_the_request() {
+    let stub = Stub::flooding(1);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect("responder", &url).await.unwrap();
+    let mut incoming = client.incoming().unwrap();
+    let old = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.generation, 1);
+    stub.drop_conn1.notify_one();
+    let fresh = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fresh.generation > old.generation);
+    assert!(matches!(
+        client.respond(&old, 0, "stale").await,
+        Err(SupervisedError::Disconnected)
+    ));
+    client.respond(&fresh, 0, "fresh").await.unwrap();
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropped_incoming_consumer_publishes_terminal_and_frees_registration() {
+    let stub = Stub::flooding(1);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect("responder", &url).await.unwrap();
+    drop(client.incoming().unwrap());
+    // If the initial frame was already forwarded, the replacement sends one.
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(5, || client.state() == ConnState::ShuttingDown).await);
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| s.open_connections == 0 && s.active_registrations.is_empty())
+            .unwrap_or(false))
+        .await
+    );
+    assert!(matches!(
+        client
+            .call("noded", "noded.list", serde_json::Value::Null)
+            .await,
+        Err(SupervisedError::ShuttingDown)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

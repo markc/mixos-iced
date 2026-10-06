@@ -797,6 +797,7 @@ impl WorkerClient for SupervisedClient {
     ) -> WorkerFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.respond_parts(
+                reply.generation,
                 &reply.from,
                 &reply.command,
                 reply.id.as_deref(),
@@ -848,6 +849,7 @@ impl WorkerClient for SupervisedClient {
 }
 
 struct PendingReply {
+    generation: u64,
     from: String,
     command: String,
     id: Option<String>,
@@ -859,6 +861,7 @@ impl PendingReply {
     fn new(command: bus::IncomingCommand, (rc, body): (u8, Arc<str>)) -> Self {
         let (rc, body) = with_error_code(rc, body);
         Self {
+            generation: command.generation,
             from: command.from,
             command: command.command,
             id: command.id,

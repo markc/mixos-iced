@@ -25,19 +25,29 @@ pub enum BoundedIncomingEvent {
 #[derive(Default)]
 struct OverflowState {
     total: AtomicU64,
-    pending: AtomicU64,
+    pending: std::sync::Mutex<u64>,
     wake: tokio::sync::Notify,
 }
 
 impl OverflowState {
     fn record(&self, count: u64) {
         saturating_add(&self.total, count);
-        saturating_add(&self.pending, count);
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *pending = pending.saturating_add(count);
+        drop(pending);
         self.wake.notify_one();
     }
 
     fn take_pending(&self) -> u64 {
-        self.pending.swap(0, Ordering::AcqRel)
+        std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
     }
 }
 
@@ -56,6 +66,7 @@ fn saturating_add(value: &AtomicU64, increment: u64) {
 pub struct BoundedIncomingReceiver {
     receiver: mpsc::Receiver<IncomingCommand>,
     overflow: Arc<OverflowState>,
+    deferred: Option<IncomingCommand>,
 }
 
 impl BoundedIncomingReceiver {
@@ -69,11 +80,31 @@ impl BoundedIncomingReceiver {
             if dropped != 0 {
                 return Some(BoundedIncomingEvent::Overflow { dropped });
             }
+            if let Some(command) = self.deferred.take() {
+                return self.deliver(Some(command));
+            }
             tokio::select! {
                 biased;
                 _ = &mut notified => continue,
-                command = self.receiver.recv() => return command.map(BoundedIncomingEvent::Command),
+                command = self.receiver.recv() => return self.deliver(command),
             }
+        }
+    }
+
+    fn deliver(&mut self, command: Option<IncomingCommand>) -> Option<BoundedIncomingEvent> {
+        // Linearise delivery against recording loss, independently of the
+        // notification. Keep an already-dequeued command until invalidation.
+        let mut pending = self
+            .overflow
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let dropped = std::mem::take(&mut *pending);
+        if dropped != 0 {
+            self.deferred = command;
+            Some(BoundedIncomingEvent::Overflow { dropped })
+        } else {
+            command.map(BoundedIncomingEvent::Command)
         }
     }
 
@@ -117,7 +148,11 @@ pub(crate) fn bounded_incoming_channel(
             sender,
             overflow: Arc::clone(&overflow),
         },
-        BoundedIncomingReceiver { receiver, overflow },
+        BoundedIncomingReceiver {
+            receiver,
+            overflow,
+            deferred: None,
+        },
     )
 }
 
@@ -129,6 +164,7 @@ mod tests {
 
     fn command(sequence: u64) -> IncomingCommand {
         IncomingCommand {
+            generation: 0,
             from: "publisher".to_owned(),
             command: "topic.event".to_owned(),
             id: None,
@@ -136,6 +172,22 @@ mod tests {
             body: sequence.to_string(),
             headers: BTreeMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn loss_recorded_before_notification_precedes_a_dequeued_command() {
+        let (sender, mut receiver) = bounded_incoming_channel(1);
+        assert!(sender.try_send(command(1)));
+        let retained = receiver.receiver.recv().await.unwrap();
+        // Producer is paused between updating the counter and notifying.
+        *sender.overflow.pending.lock().unwrap() = 1;
+        assert!(matches!(
+            receiver.deliver(Some(retained)),
+            Some(BoundedIncomingEvent::Overflow { dropped: 1 })
+        ));
+        assert!(
+            matches!(receiver.recv().await, Some(BoundedIncomingEvent::Command(command)) if command.body == "1")
+        );
     }
 
     #[tokio::test]
