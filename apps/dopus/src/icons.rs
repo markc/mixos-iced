@@ -521,7 +521,10 @@ mod tests {
             let side = (32.0 * scale) as u32;
             let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(
                 iced::Size::new(side, side),
-                scale,
+                iced::advanced::renderer::Scale {
+                    window: scale,
+                    application: 1.0,
+                },
             );
             for icon in ALL {
                 let (glyph, font) = icons.glyph(icon).unwrap();
