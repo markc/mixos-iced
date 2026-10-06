@@ -20,7 +20,7 @@ mod_module_files = "deny"
 [dependencies]
 config.workspace = true
 files = { path = "../files" }
-chrono = { workspace = true, default-features = false, features = ["clock"] }
+chrono = { workspace = true, features = ["clock"] }
 serde.workspace = true
 
 [target.'cfg(unix)'.dependencies]
