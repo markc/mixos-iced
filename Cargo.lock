@@ -515,6 +515,7 @@ name = "bus"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "config",
  "ed25519-dalek",
  "futures-util",
  "libc",
@@ -1210,6 +1211,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1553,6 +1575,17 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "fd-lock"
+version = "4.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
+dependencies = [
+ "cfg-if",
+ "rustix 1.1.4",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "fdeflate"
@@ -2241,6 +2274,15 @@ name = "hifijson"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "242402749acf71e6f32f5857598b7002c4058a4e3c3b22b4c7d51cab9aea754e"
+
+[[package]]
+name = "home"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "http"
@@ -3696,6 +3738,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "mix-shell"
+version = "0.109.4"
+dependencies = [
+ "blake3",
+ "buildinfo",
+ "bus",
+ "chrono",
+ "config",
+ "dirs",
+ "ed25519-dalek",
+ "glob",
+ "indexmap",
+ "libc",
+ "logging",
+ "mix",
+ "props",
+ "proptest",
+ "rusqlite",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "signal-hook",
+ "tempfile",
+ "term-test-broker",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-segmentation",
+ "unicode-width",
+ "ureq",
+ "zeroize",
+]
+
+[[package]]
 name = "model"
 version = "0.1.1"
 dependencies = [
@@ -3880,6 +3957,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
 dependencies = [
  "smallvec",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -4409,6 +4498,12 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orbclient"
@@ -5142,6 +5237,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
+dependencies = [
+ "libredox",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5407,6 +5512,28 @@ dependencies = [
  "quick-error 1.2.3",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "rustyline"
+version = "15.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee1e066dc922e513bda599c6ccb5f3bb2b0ea5870a579448f2622993f0a9a2f"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "clipboard-win",
+ "fd-lock",
+ "home",
+ "libc",
+ "log",
+ "memchr",
+ "nix",
+ "radix_trie",
+ "unicode-segmentation",
+ "unicode-width",
+ "utf8parse",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6199,6 +6326,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "term-test-broker"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "axum",
+ "base64",
+ "blake3",
+ "buildinfo",
+ "bus",
+ "chrono",
+ "config",
+ "ed25519-dalek",
+ "futures-util",
+ "libc",
+ "mesh",
+ "mesh-trust",
+ "notify",
+ "props",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "testkit"
 version = "0.1.1"
 dependencies = [
@@ -6370,6 +6528,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
