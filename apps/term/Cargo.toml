@@ -21,7 +21,7 @@ mod_module_files = "deny"
 default = ["tiny-skia"]
 raster-probe = ["tiny-skia", "application/raster-probe"]
 wgpu = ["application/wgpu"]
-tiny-skia = ["application/tiny-skia", "application/image", "dep:bytes", "dep:tiny-skia"]
+tiny-skia = ["application/native-grid", "dep:bytes", "dep:tiny-skia"]
 
 [build-dependencies]
 buildinfo.workspace = true

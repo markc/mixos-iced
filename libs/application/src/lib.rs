@@ -13,7 +13,7 @@ pub use iced_runtime as runtime;
 #[cfg(feature = "tiny-skia")]
 pub use iced_tiny_skia as cpu;
 
-#[cfg(feature = "tiny-skia")]
+#[cfg(feature = "native-grid")]
 pub mod native_grid;
 
 #[cfg(feature = "wgpu")]

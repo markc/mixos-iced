@@ -20,6 +20,7 @@ mod_module_files = "deny"
 [features]
 default = []
 tiny-skia = ["iced/tiny-skia", "dep:iced_tiny_skia"]
+native-grid = ["tiny-skia", "image"]
 image = ["iced/image", "iced_tiny_skia?/image"]
 wgpu = ["iced/wgpu"]
 raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
