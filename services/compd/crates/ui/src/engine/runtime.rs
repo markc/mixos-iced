@@ -173,6 +173,7 @@ impl<U: IcedUi> IcedRuntime<U> {
     /// Cursor positions are tracked internally for `Cursor::Available` /
     /// `Cursor::Unavailable` state, so callers don't need to track separately.
     pub fn queue_event(&mut self, event: IcedEvent) {
+        self.dirty |= super::frame::visual_input(&event, self.cursor);
         if let IcedEvent::Mouse(mouse::Event::CursorMoved { position }) = &event {
             self.cursor = mouse::Cursor::Available(*position);
         }
@@ -308,9 +309,10 @@ impl<U: IcedUi> IcedRuntime<U> {
         };
         self.cache = new_cache;
 
-        // Event delivery alone is not damage. Static widgets receive pointer
-        // and focus events too; only a reducer message, widget redraw request
-        // or due animation invalidates their pixels.
+        // Pointer/touch damage was recorded by queue_event: transient widget
+        // status is rebuilt here and cannot compare with its last drawn status.
+        // Other event delivery alone is not damage; reducers, widget requests
+        // and due animations decide whether their pixels changed.
         let changed = !messages.is_empty() || animation_due || match &state {
             State::Outdated => true,
             State::Updated { redraw_request, .. } => !matches!(redraw_request, RedrawRequest::Wait),
@@ -414,18 +416,21 @@ impl<U: IcedUi> IcedRuntime<U> {
         // by `update`, NOT carried in the `Cache` (which holds only the widget
         // tree). We build a FRESH `UserInterface` here, separate from the one
         // `tick()` updated, so without this call `self.overlay` is `None` and
-        // `draw` early-returns: an *open* dropdown would never appear, even
-        // within the texture bounds. Empty events → overlay is laid out but no
-        // events are processed (tick already drained the queue); harmless when
-        // there is no overlay.
-        let _ = ui.update(
-            &iced_core::window::Headless,
-            self.wake.waker(),
-            &[],
-            self.cursor,
-            &mut renderer_guard,
-            &mut iced_core::shell::Bus::new(),
+        // `draw` early-returns: an *open* dropdown would never appear. The
+        // fresh view also needs RedrawRequested to establish hover/pressed
+        // styles; these live in the widget, not in Cache. Preserve messages
+        // and future redraw requests from the frame event.
+        let now = Instant::now();
+        let mut messages = iced_core::shell::Bus::new();
+        let state = super::frame::prepare(
+            &mut ui, self.cursor, &mut *renderer_guard, self.wake.waker(),
+            &mut messages, now,
         );
+        self.redraw_request = super::frame::after_draw(self.redraw_request, state, now);
+        self.queued_messages.extend(messages.drain());
+        if !self.queued_messages.is_empty() {
+            super::wake::notify();
+        }
 
         ui.draw(
             &mut renderer_guard,

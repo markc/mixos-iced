@@ -33,6 +33,7 @@ thiserror = { workspace = true }
 wgpu = { workspace = true }
 
 [dev-dependencies]
+iced_widget = { workspace = true }
 # tests/fonts.rs publishes a fake asset set: the manifest is JSON (strict
 # data) with a SHA-256 and a BLAKE3 per file, in a temporary directory.
 blake3 = { version = "=1.8.6" }

@@ -46,6 +46,7 @@
 pub mod error;
 pub mod notifier;
 pub mod runtime;
+mod frame;
 pub mod shared;
 pub mod ui;
 pub mod wake;

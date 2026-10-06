@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "buildinfo",
  "comp-model",
@@ -7945,6 +7945,7 @@ dependencies = [
  "iced_graphics",
  "iced_runtime",
  "iced_wgpu",
+ "iced_widget",
  "ledger",
  "model",
  "serde_json",
