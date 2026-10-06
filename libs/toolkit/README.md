@@ -10,6 +10,10 @@ gate (`tests/generic.rs`) keeps it that way.
 | Widget | What |
 |---|---|
 | `CenteredButton`, `centered(content)` | centred intrinsic labels or groups within caller-sized targets, including minimum-sized Shrink boxes |
+| `EditorPane`, `editor_pane::Source` | cell-grid editor with gutter, selections, syntax, remote annotations, IME and bounded long-line seeks over a borrowed document |
+| `FilePane`, `file_pane::{Source, Header, Transfer}` | cached visible file rows, responsive columns, stable click identity and a bridge to caller-owned transfers |
+| `TerminalPane`, `GridGeometry` | clipped injected terminal surface, invariant focus border, wheel actions, pointer cells and IME cursor geometry |
+| `Grip` | shared drag, hover and double-click mechanics with caller-owned ratio or position policy |
 | `TextField` | single-line input with bounded, selection-aware undo/redo, secure mode, submit |
 | `Menu`, `Item`, `Panel`, `Navigator` | menu bar and context menus with keyboard navigation; in-surface overlays by default, or app-owned popups via `MenuState` |
 | `Fader`, `Knob`, `LevelMeter`, `Toggle` | pro-audio strip controls (dB taper in `scale`, peak hold, mute/solo toggles) |
@@ -394,6 +398,21 @@ The widgets draw only what the application gives them. The gallery's own
 labels come from `i18n/en/toolkit.ftl` (Fluent), used by the examples only.
 
 ## Examples
+
+`cargo run -p toolkit --example compounds --features gallery-tiny-skia` shows
+all three compound panes with a small string document, a synthetic 100,000-file
+listing and an injected terminal surface. Use `gallery-wgpu` for the GPU renderer.
+The example model supports basic text insertion, selection and grapheme movement;
+full editor commands, filesystem work and terminal execution remain engine intents.
+The library's default features still select no renderer or window host.
+
+Editor offsets are UTF-8 bytes, lines start at one and cells at zero. A provider's
+identity stays stable for one document, while its revision changes on edits and
+undo. Long lines supply grapheme-boundary checkpoints; the widget seeks from the
+nearest checkpoint and measures the visible window. File providers expose borrowed
+paths/names and format secondary values only for visible rows. Decorations and
+native transfer ownership are injected; asynchronous relists invalidate a pressed
+path before either selection or drag begins.
 
 ```sh
 cargo run -p toolkit --example gallery --features gallery-wgpu        # default fonts

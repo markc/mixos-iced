@@ -134,7 +134,7 @@ struct RowState<P> {
     drag_epoch: u64,
     /// The last completed click: `(when, row)` — a second on the same row
     /// inside [`DOUBLE_CLICK`] is a double-click.
-    last_click: Option<(Instant, usize)>,
+    last_click: Option<(Instant, usize, PathBuf)>,
     modifiers: keyboard::Modifiers,
     cache: HashMap<PathBuf, Cached<P>>,
 }
@@ -723,8 +723,9 @@ where
                 } else {
                     let double = st
                         .last_click
-                        .is_some_and(|(when, at)| when.elapsed() < DOUBLE_CLICK && at == index);
-                    st.last_click = Some((Instant::now(), index));
+                        .as_ref()
+                        .is_some_and(|(when, at, path)| when.elapsed() < DOUBLE_CLICK && *at == index && path.as_path() == row.path);
+                    st.last_click = Some((Instant::now(), index, row.path.to_path_buf()));
                     if double && row.is_dir {
                         shell.publish(Message::Toggle(row.path.to_path_buf()));
                     } else if !double {
