@@ -61,17 +61,26 @@ impl Look {
     }
 
     /// Chrome text.
-    pub fn text<'a>(&self, value: impl text::IntoFragment<'a>) -> application::iced::widget::Text<'a> {
+    pub fn text<'a>(
+        &self,
+        value: impl text::IntoFragment<'a>,
+    ) -> application::iced::widget::Text<'a> {
         text(value).font(self.ui).size(self.ui_px)
     }
 
     /// Small chrome text (status bar).
-    pub fn small<'a>(&self, value: impl text::IntoFragment<'a>) -> application::iced::widget::Text<'a> {
+    pub fn small<'a>(
+        &self,
+        value: impl text::IntoFragment<'a>,
+    ) -> application::iced::widget::Text<'a> {
         text(value).font(self.ui).size(self.small_px())
     }
 
     /// Monospace text at the chrome size (paths, code in panels).
-    pub fn code<'a>(&self, value: impl text::IntoFragment<'a>) -> application::iced::widget::Text<'a> {
+    pub fn code<'a>(
+        &self,
+        value: impl text::IntoFragment<'a>,
+    ) -> application::iced::widget::Text<'a> {
         text(value).font(self.mono).size(self.small_px())
     }
 
@@ -89,7 +98,9 @@ impl Look {
     }
 
     /// A flat button: transparent until hovered, `muted_surface` then.
-    pub fn flat(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn flat(
+        &self,
+    ) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: match status {
@@ -112,7 +123,9 @@ impl Look {
     }
 
     /// The default (primary) action of a dialog or infobar.
-    pub fn primary(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn primary(
+        &self,
+    ) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
@@ -134,7 +147,9 @@ impl Look {
     }
 
     /// A secondary (outlined) action.
-    pub fn secondary(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn secondary(
+        &self,
+    ) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
@@ -159,7 +174,9 @@ impl Look {
     }
 
     /// A destructive action (Discard, Don't Save).
-    pub fn danger(&self) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
+    pub fn danger(
+        &self,
+    ) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
@@ -182,7 +199,10 @@ impl Look {
     /// Text fields.
     pub fn input(
         &self,
-    ) -> impl Fn(&application::iced::Theme, application::iced::widget::text_input::Status) -> application::iced::widget::text_input::Style
+    ) -> impl Fn(
+        &application::iced::Theme,
+        application::iced::widget::text_input::Status,
+    ) -> application::iced::widget::text_input::Style
     + 'static {
         let t = self.tokens;
         move |_, status| t.text_input(status)

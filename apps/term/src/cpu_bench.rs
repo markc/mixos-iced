@@ -5,13 +5,13 @@
 use super::*;
 #[path = "cpu_rgba_reference.rs"]
 mod rgba_reference;
-use application::iced::advanced::{Renderer as _, image::Renderer as _};
-use application::iced::widget::image::{self, Handle};
-use application::iced::{Color, Font, Pixels, Rectangle, Size};
 use application::cpu::{
     Layer, Renderer,
     graphics::{Viewport, damage},
 };
+use application::iced::advanced::{Renderer as _, image::Renderer as _};
+use application::iced::widget::image::{self, Handle};
+use application::iced::{Color, Font, Pixels, Rectangle, Size};
 use rgba_reference::RgbaBand;
 use std::time::Instant;
 use term_core::{config::Cursor, terminal::Cell};
@@ -414,7 +414,10 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
             }
             reference.paint(&mut raster, &screen, &[]);
             reference.cache_handle(n as u64);
-            let origin = application::iced::Point::new(if n < 8 { 17.0 } else { 23.0 } / scale, 11.0 / scale);
+            let origin = application::iced::Point::new(
+                if n < 8 { 17.0 } else { 23.0 } / scale,
+                11.0 / scale,
+            );
             let bounds = Rectangle {
                 x: origin.x,
                 y: origin.y,

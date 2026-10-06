@@ -17,11 +17,11 @@
 use std::path::{Path, PathBuf};
 
 use appearance::conversion::colour;
+use application::iced::Color;
 use design::{
     DesignCompileResult, DesignContext, Mode, ResolvedDictionary, ResolvedTypeRecord, Scheme,
     SourceIdentity, TypographyRole,
 };
-use application::iced::Color;
 use toolkit::Tokens;
 
 /// The app identity the design compiler selects a per-app overlay by.
@@ -323,7 +323,11 @@ pub fn build_chrome(d: &ResolvedDictionary) -> Result<Chrome, String> {
 /// The first installed family of the role (named family, then its
 /// fallbacks), else the generic family. The name is interned once per
 /// process: iced fonts name families with `&'static str`.
-fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> application::iced::Font {
+fn font_for(
+    record: &ResolvedTypeRecord,
+    monospace: bool,
+    builtin: bool,
+) -> application::iced::Font {
     let default = design::default_typography(if monospace {
         TypographyRole::Mono
     } else {

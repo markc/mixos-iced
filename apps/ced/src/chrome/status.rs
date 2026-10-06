@@ -5,10 +5,10 @@
 //! INS/OVR, the pending count when above 0, and a red `UNPROTECTED` while the
 //! edit service is volatile or its recovery is degraded.
 
-use edit::wire::{DiskState, Eol};
-use editor_model::mirror::{Mirror, Phase};
 use application::iced::widget::{button, container, row};
 use application::iced::{Alignment, Element, Length, Padding};
+use edit::wire::{DiskState, Eol};
+use editor_model::mirror::{Mirror, Phase};
 
 use super::{Look, STATUS_H};
 use crate::app::Msg;
@@ -212,13 +212,16 @@ pub fn view<'a>(
     for f in right {
         r = r.push(draw(f));
     }
-    container(row![l, application::iced::widget::space().width(Length::Fill), r].align_y(Alignment::Center))
-        .padding(Padding::from([0, 12]))
-        .width(Length::Fill)
-        .height(Length::Fixed(STATUS_H))
-        .align_y(Alignment::Center)
-        .style(look.strip(look.chrome.secondary, look.chrome.secondary_text))
-        .into()
+    container(
+        row![l, application::iced::widget::space().width(Length::Fill), r]
+            .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([0, 12]))
+    .width(Length::Fill)
+    .height(Length::Fixed(STATUS_H))
+    .align_y(Alignment::Center)
+    .style(look.strip(look.chrome.secondary, look.chrome.secondary_text))
+    .into()
 }
 
 #[cfg(test)]

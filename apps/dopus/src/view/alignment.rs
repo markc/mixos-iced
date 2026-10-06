@@ -45,11 +45,11 @@ impl FirstRow {
 mod tests {
     use super::*;
     use crate::{app::Msg, icons::Icons, theme};
-    use design::{Mode, Scheme};
-    use dopus_core::{DOpusConfig, DopusCore, PaneId, properties::Properties};
+    use application::cpu::Renderer;
     use application::iced::advanced::{Layout, graphics::text::Paragraph, layout, widget::Tree};
     use application::iced::{Element, Size};
-    use application::cpu::Renderer;
+    use design::{Mode, Scheme};
+    use dopus_core::{DOpusConfig, DopusCore, PaneId, properties::Properties};
 
     fn look() -> Look {
         let theme = theme::resolve_selection(

@@ -22,8 +22,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ::bus::native_client::{ConnState, IncomingCommand, NodedClient, SupervisedClient};
-use editor_model::types::{Incoming, ParsedBody};
 use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use editor_model::types::{Incoming, ParsedBody};
 
 use crate::controller::{BusCommand, Effect};
 

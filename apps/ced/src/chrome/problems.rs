@@ -4,9 +4,9 @@
 //! each: severity, `line:col`, `source: code`, message, hint. Clicking a row
 //! moves the caret to it.
 
-use editor_model::diag::{Diagnostic, Severity};
 use application::iced::widget::{button, column, container, row, scrollable};
 use application::iced::{Alignment, Element, Length, Padding};
+use editor_model::diag::{Diagnostic, Severity};
 
 use super::{Look, PANEL_H};
 use crate::app::Msg;

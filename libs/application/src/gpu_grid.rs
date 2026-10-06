@@ -16,8 +16,8 @@
 use iced::wgpu;
 use iced::widget::shader;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 /// The `Shader` program: it owns nothing but the handle to the shared frame.
 #[derive(Clone)]
@@ -33,14 +33,20 @@ pub struct GridProgram {
 pub struct GridId(Arc<()>);
 
 impl Default for GridId {
-    fn default() -> Self { Self(Arc::new(())) }
+    fn default() -> Self {
+        Self(Arc::new(()))
+    }
 }
 impl PartialEq for GridId {
-    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 impl Eq for GridId {}
 impl Hash for GridId {
-    fn hash<H: Hasher>(&self, state: &mut H) { Arc::as_ptr(&self.0).hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
 }
 
 /// A physical pixel rectangle in the source buffer.
@@ -76,7 +82,8 @@ pub fn upload_region(
             z: 0,
         },
         wgpu::TexelCopyBufferLayout {
-            offset: u64::from(band.y).checked_mul(stride as u64)
+            offset: u64::from(band.y)
+                .checked_mul(stride as u64)
                 .and_then(|offset| offset.checked_add(u64::from(band.x) * 4))
                 .expect("validated source offset"),
             bytes_per_row: Some(u32::try_from(stride).expect("validated source stride")),
@@ -91,10 +98,17 @@ pub fn upload_region(
 }
 
 fn valid_surface(width: u32, height: u32, stride: usize, bytes: usize) -> bool {
-    if width == 0 || height == 0 || u32::try_from(stride).is_err() { return false; }
-    let Some(row_bytes) = (width as usize).checked_mul(4) else { return false; };
-    stride >= row_bytes && stride.checked_mul(height as usize - 1)
-        .and_then(|offset| offset.checked_add(row_bytes)).is_some_and(|required| required <= bytes)
+    if width == 0 || height == 0 || u32::try_from(stride).is_err() {
+        return false;
+    }
+    let Some(row_bytes) = (width as usize).checked_mul(4) else {
+        return false;
+    };
+    stride >= row_bytes
+        && stride
+            .checked_mul(height as usize - 1)
+            .and_then(|offset| offset.checked_add(row_bytes))
+            .is_some_and(|required| required <= bytes)
 }
 
 impl GridProgram {

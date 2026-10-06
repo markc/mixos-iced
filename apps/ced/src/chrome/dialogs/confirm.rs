@@ -3,8 +3,8 @@
 //! buffer (D13 — never on exit), replace an existing file on Save As, and
 //! overwrite a file that changed on disk.
 
-use editor_model::types::{Intent, TabId};
 use application::iced::Element;
+use editor_model::types::{Intent, TabId};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;

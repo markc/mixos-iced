@@ -6,11 +6,11 @@
 //! state every frame (state is truth); the app only remembers which ones the
 //! user dismissed.
 
+use application::iced::widget::{button, column, container, row};
+use application::iced::{Alignment, Background, Border, Element, Length, Padding};
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};
 use editor_model::types::{Conflict, Level, TabId};
-use application::iced::widget::{button, column, container, row};
-use application::iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use super::Look;
 use crate::app::Msg;

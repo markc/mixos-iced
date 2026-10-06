@@ -21,13 +21,13 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use editor_model::diag::Diagnostics;
-use editor_model::model::{EditCommand, Motion};
-use editor_model::types::{Intent, Level, Notice, TabId};
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::keyboard::{Key, key::Named};
 use application::iced::widget::{column, container, stack};
 use application::iced::{Element, Length, Size, Subscription, Task};
+use editor_model::diag::Diagnostics;
+use editor_model::model::{EditCommand, Motion};
+use editor_model::types::{Intent, Level, Notice, TabId};
 
 use crate::actions::ActionId;
 use crate::bus::{self, BusHandle, Delivery};
@@ -294,10 +294,11 @@ fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
     use application::iced::futures::StreamExt;
     let taken = STREAMS.get().and_then(|m| m.lock().ok()?.take());
     match taken {
-        Some(s) => {
-            application::iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.timers.map(Msg::Timer))
-                .boxed()
-        }
+        Some(s) => application::iced::futures::stream::select(
+            s.deliveries.map(Msg::Bus),
+            s.timers.map(Msg::Timer),
+        )
+        .boxed(),
         None => {
             tracing::error!(
                 "ced: the delivery streams were already taken; the window will not hear the Bus"
@@ -373,11 +374,11 @@ impl App {
             Msg::Action(action) => self.on_ui_action(action),
             Msg::RunMacro(stem) => self.run_macro(stem),
             Msg::Macro(event) => self.on_macro(event),
-            Msg::OpenMenu(index) => {
-                application::iced::advanced::widget::operate(toolkit::menu::open_operation(BAR_ID, index))
-                    .discard()
-                    .chain(Task::done(Msg::Noop))
-            }
+            Msg::OpenMenu(index) => application::iced::advanced::widget::operate(
+                toolkit::menu::open_operation(BAR_ID, index),
+            )
+            .discard()
+            .chain(Task::done(Msg::Noop)),
             Msg::Editor(tab, msg) => self.on_editor(tab, msg),
             Msg::SelectTab(tab) => {
                 let effects = self.controller.select_tab(tab);
@@ -627,7 +628,9 @@ impl App {
             ActionId::SearchGotoLine => {
                 if let Some(m) = self.active_tab().and_then(|t| t.mirror.as_ref()) {
                     self.modal = Some(Modal::Goto(Goto::new(m.text().line_count())));
-                    return application::iced::widget::operation::focus(crate::chrome::dialogs::goto::INPUT);
+                    return application::iced::widget::operation::focus(
+                        crate::chrome::dialogs::goto::INPUT,
+                    );
                 }
                 return Task::none();
             }
@@ -913,7 +916,9 @@ impl App {
         self.modal = Some(Modal::File(dialog));
         Task::batch([
             application::iced::widget::operation::focus(crate::chrome::dialogs::file::PATH_INPUT),
-            application::iced::widget::operation::move_cursor_to_end(crate::chrome::dialogs::file::PATH_INPUT),
+            application::iced::widget::operation::move_cursor_to_end(
+                crate::chrome::dialogs::file::PATH_INPUT,
+            ),
         ])
     }
 

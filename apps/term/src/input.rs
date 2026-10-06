@@ -211,7 +211,9 @@ pub fn pointer_cell(
         columns: grid.0,
         rows: grid.1,
         border,
-    }.cell_at(position).unwrap_or((0, 0))
+    }
+    .cell_at(position)
+    .unwrap_or((0, 0))
 }
 
 /// The lowercase Latin letter a chord key stands for: the layout's own
@@ -697,7 +699,12 @@ mod tests {
             (0, 0)
         );
         assert_eq!(
-            pointer_cell(application::iced::Point::new(25.3, 33.3), 1.2, cell, (80, 24)),
+            pointer_cell(
+                application::iced::Point::new(25.3, 33.3),
+                1.2,
+                cell,
+                (80, 24)
+            ),
             (3, 2)
         );
         assert_eq!(
@@ -705,7 +712,12 @@ mod tests {
             (0, 0)
         );
         assert_eq!(
-            pointer_cell(application::iced::Point::new(900.0, 500.0), 1.2, cell, (80, 24)),
+            pointer_cell(
+                application::iced::Point::new(900.0, 500.0),
+                1.2,
+                cell,
+                (80, 24)
+            ),
             (79, 23)
         );
     }

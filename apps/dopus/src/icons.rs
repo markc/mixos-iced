@@ -287,7 +287,9 @@ impl Default for Icons {
 
 /// Check actual selected-font coverage once at startup. A catalogue entry
 /// alone does not prove a user-supplied font contains its mapped glyph.
-fn validate_material_glyphs(glyphs: &HashMap<Icon, (char, application::iced::Font)>) -> Result<(), String> {
+fn validate_material_glyphs(
+    glyphs: &HashMap<Icon, (char, application::iced::Font)>,
+) -> Result<(), String> {
     use application::iced::advanced::graphics::text::{
         cosmic_text::fontdb::{Family, Query, Weight},
         font_system,
@@ -364,9 +366,9 @@ impl Icons {
                     content: glyph.to_string(),
                     bounds: bounds.size(),
                     size: application::iced::Pixels(bounds.height),
-                    line_height: application::iced::advanced::text::LineHeight::Absolute(application::iced::Pixels(
-                        bounds.height,
-                    )),
+                    line_height: application::iced::advanced::text::LineHeight::Absolute(
+                        application::iced::Pixels(bounds.height),
+                    ),
                     font,
                     align_x: application::iced::advanced::text::Alignment::Center,
                     align_y: application::iced::alignment::Vertical::Center,
@@ -380,7 +382,11 @@ impl Icons {
                 clip,
             );
         } else if let Some(handle) = self.get(icon, tint, RASTER_PX) {
-            renderer.draw_image(application::iced::advanced::image::Image::new(handle), bounds, clip);
+            renderer.draw_image(
+                application::iced::advanced::image::Image::new(handle),
+                bounds,
+                clip,
+            );
         }
     }
 
@@ -438,7 +444,12 @@ impl Icons {
 
     /// The cached handle for `(icon, tint, px)`, or `None` while the
     /// rasterisation is still in flight (the row draws nothing).
-    pub fn get(&self, icon: Icon, tint: &str, px: u32) -> Option<application::iced::widget::image::Handle> {
+    pub fn get(
+        &self,
+        icon: Icon,
+        tint: &str,
+        px: u32,
+    ) -> Option<application::iced::widget::image::Handle> {
         let state = self
             .state
             .lock()
@@ -454,7 +465,11 @@ pub fn tint_color(tint: &str) -> application::iced::Color {
 
 /// Rasterise one SVG at `px` physical pixels, tinted. `Err` names the icon
 /// file so the warning is actionable.
-fn raster(bytes: &[u8], tint: &str, px: u32) -> Result<application::iced::widget::image::Handle, String> {
+fn raster(
+    bytes: &[u8],
+    tint: &str,
+    px: u32,
+) -> Result<application::iced::widget::image::Handle, String> {
     render(bytes, tint, px)
         .map(|pixmap| application::iced::widget::image::Handle::from_rgba(px, px, pixmap.take()))
 }
@@ -552,8 +567,9 @@ mod tests {
                         "{icon:?}: glyph missing from selected Material face"
                     );
                 }
-                let mut renderer =
-                    application::cpu::Renderer::new(application::iced::advanced::renderer::Settings::default());
+                let mut renderer = application::cpu::Renderer::new(
+                    application::iced::advanced::renderer::Settings::default(),
+                );
                 icons.draw(&mut renderer, icon, "#ff0000", bounds, bounds);
                 let text_count: usize = renderer
                     .layers()
@@ -568,7 +584,9 @@ mod tests {
                     &mut pixels.as_mut(),
                     &mut mask,
                     &viewport,
-                    &[application::iced::Rectangle::with_size(application::iced::Size::new(32.0, 32.0))],
+                    &[application::iced::Rectangle::with_size(
+                        application::iced::Size::new(32.0, 32.0),
+                    )],
                     application::iced::Color::TRANSPARENT,
                 );
                 let ink: Vec<_> = pixels
@@ -616,7 +634,10 @@ mod tests {
 
     #[test]
     fn hex_renders_eight_bit_channels() {
-        assert_eq!(hex(application::iced::Color::from_rgb8(0x12, 0xfe, 0x03)), "#12fe03");
+        assert_eq!(
+            hex(application::iced::Color::from_rgb8(0x12, 0xfe, 0x03)),
+            "#12fe03"
+        );
         assert_eq!(hex(application::iced::Color::BLACK), "#000000");
         assert_eq!(hex(application::iced::Color::WHITE), "#ffffff");
     }

@@ -20,12 +20,12 @@
 use std::path::{Path, PathBuf};
 
 use appearance::conversion::colour;
+use application::iced::Color;
 use design::{
     DesignCompileResult, DesignContext, DiagnosticSeverity, LinearRgba, Mode, ResolvedDictionary,
     ResolvedTypeRecord, Scheme, SourceIdentity, TypographyRole,
 };
 use editor_model::highlight::HlClass;
-use application::iced::Color;
 use toolkit::Tokens;
 
 use crate::editor::{HL_CLASSES, Palette};
@@ -427,7 +427,11 @@ fn mix(a: LinearRgba, b: LinearRgba, t: f64) -> LinearRgba {
 /// The first installed family of the role (named family, then its
 /// fallbacks), else the generic family. The name is interned once per
 /// process: iced fonts name families with `&'static str`.
-fn font_for(record: &ResolvedTypeRecord, monospace: bool, builtin: bool) -> application::iced::Font {
+fn font_for(
+    record: &ResolvedTypeRecord,
+    monospace: bool,
+    builtin: bool,
+) -> application::iced::Font {
     let default = design::default_typography(if monospace {
         TypographyRole::Mono
     } else {

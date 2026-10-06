@@ -15,8 +15,8 @@
 //! damage without changing the four-row storage/copy granularity.
 
 use crate::frame::Frame;
-use bytes::{Bytes, BytesMut};
 use application::cpu::grid::{Damage, Grid as Handle};
+use bytes::{Bytes, BytesMut};
 use std::sync::{Arc, Mutex};
 use term_core::raster::{DamageBand, PaintState, PixelFormat, Raster};
 use term_core::terminal::Screen;
@@ -27,12 +27,15 @@ mod bench;
 
 #[path = "cpu_bands.rs"]
 mod bands;
-pub use bands::Surface;
 use application::native_grid as widget;
+pub use bands::Surface;
 pub use widget::Grid;
 
 pub fn view(frame: &Arc<Mutex<Frame>>, scale: f32) -> Grid {
-    Grid::new(frame.lock().expect("frame lock").surface().images(scale), scale)
+    Grid::new(
+        frame.lock().expect("frame lock").surface().images(scale),
+        scale,
+    )
 }
 
 /// CPU-only counterpart of the core's Vec-backed Surface. Keeping the handle

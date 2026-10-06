@@ -12,13 +12,13 @@
 use std::ops::Range;
 use std::time::Instant;
 
+use application::iced::advanced::text::{self as atext};
+use application::iced::advanced::{mouse, renderer};
+use application::iced::{Border, Color, Font, Pixels, Point, Rectangle, Size};
 use edit::origin::{Origin, OriginKind};
 use editor_model::diag::Severity;
 use editor_model::highlight::{HlClass, SliceBudget};
 use editor_model::model::line_of;
-use application::iced::advanced::text::{self as atext};
-use application::iced::advanced::{mouse, renderer};
-use application::iced::{Border, Color, Font, Pixels, Point, Rectangle, Size};
 
 use super::layout::{self as geo, Geometry, STRIP_W};
 use super::lines::{self, LineCells};
@@ -928,11 +928,11 @@ fn ago(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use application::iced::{Background, Transformation};
     use edit::text::Text;
     use editor_model::diag::Diagnostics;
     use editor_model::highlight::Highlight;
     use editor_model::model::EditorModel;
-    use application::iced::{Background, Transformation};
 
     use super::super::layout::Metrics;
     use super::super::{EditorView, Palette};
@@ -996,8 +996,12 @@ mod tests {
         fn allocate_image(
             &mut self,
             _: &application::iced::advanced::image::Handle,
-            _: impl FnOnce(Result<application::iced::advanced::image::Allocation, application::iced::advanced::image::Error>)
-            + Send
+            _: impl FnOnce(
+                Result<
+                    application::iced::advanced::image::Allocation,
+                    application::iced::advanced::image::Error,
+                >,
+            ) + Send
             + 'static,
         ) {
         }

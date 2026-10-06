@@ -62,7 +62,10 @@ impl Timers {
     }
 }
 
-fn run(rx: mpsc::Receiver<Command>, fire: application::iced::futures::channel::mpsc::UnboundedSender<TimerKey>) {
+fn run(
+    rx: mpsc::Receiver<Command>,
+    fire: application::iced::futures::channel::mpsc::UnboundedSender<TimerKey>,
+) {
     let mut pending: HashMap<TimerKey, Instant> = HashMap::new();
     loop {
         let next = pending.values().min().copied();

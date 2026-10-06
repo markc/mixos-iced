@@ -239,8 +239,7 @@ mod tests {
     }
 
     fn shipped_scenes() -> Vec<(std::path::PathBuf, String)> {
-        let root =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../share/scenes");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../share/scenes");
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&root).unwrap_or_else(|e| panic!("{}: {e}", root.display()))
         {

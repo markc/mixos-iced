@@ -25,10 +25,12 @@
 //! a mix of two.
 
 use application::iced::widget::{button, column, container, row, text};
-use application::iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
+use application::iced::{
+    Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector,
+};
 
-use dopus_core::{PromptKind, validate_filename};
 use application::cpu::Renderer;
+use dopus_core::{PromptKind, validate_filename};
 use toolkit::TextField;
 
 use crate::app::{DialogMsg, Msg};
@@ -207,7 +209,10 @@ impl Dialog {
                         .id(PROMPT_INPUT)
                         .on_input(|text| Msg::Dialog(DialogMsg::Input(text)))
                         .width(Length::Fill)
-                        .padding(application::iced::Padding::from([look.chrome.small, look.chrome.pad]))
+                        .padding(application::iced::Padding::from([
+                            look.chrome.small,
+                            look.chrome.pad
+                        ]))
                         .size(look.px)
                         .style(field_look(look, error.is_some())),
                 ]
@@ -324,8 +329,11 @@ fn dialog_button<'a>(
 fn field_look(
     look: Look,
     invalid: bool,
-) -> impl Fn(&application::iced::Theme, application::iced::widget::text_input::Status) -> application::iced::widget::text_input::Style + 'static
-{
+) -> impl Fn(
+    &application::iced::Theme,
+    application::iced::widget::text_input::Status,
+) -> application::iced::widget::text_input::Style
++ 'static {
     let (background, border, text_color, muted, ring, warning, selection, radius) = (
         look.tokens.palette.input,
         look.tokens.palette.border,

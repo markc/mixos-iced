@@ -234,7 +234,9 @@ pub fn root<'a>(
         // The modal card is stacked OVER the window; the scrim takes every
         // click not on the card, and the router's modal scope takes every
         // chord plus Enter/Escape.
-        Some(dialog) => application::iced::widget::stack![content, dialogs::Dialog::view(dialog, look)].into(),
+        Some(dialog) => {
+            application::iced::widget::stack![content, dialogs::Dialog::view(dialog, look)].into()
+        }
         None => content.into(),
     }
 }
@@ -244,7 +246,11 @@ pub fn root<'a>(
 /// `'static` (the ced `chrome::Look::flat` shape).
 pub fn button_look(
     look: &Look,
-) -> impl Fn(&application::iced::Theme, application::iced::widget::button::Status) -> application::iced::widget::button::Style + 'static {
+) -> impl Fn(
+    &application::iced::Theme,
+    application::iced::widget::button::Status,
+) -> application::iced::widget::button::Style
++ 'static {
     let (text, hover, radius) = (
         look.chrome.secondary_text,
         look.tokens.palette.muted_surface,
@@ -252,9 +258,8 @@ pub fn button_look(
     );
     move |_theme, status| application::iced::widget::button::Style {
         background: match status {
-            application::iced::widget::button::Status::Hovered | application::iced::widget::button::Status::Pressed => {
-                Some(hover.into())
-            }
+            application::iced::widget::button::Status::Hovered
+            | application::iced::widget::button::Status::Pressed => Some(hover.into()),
             _ => None,
         },
         text_color: text,

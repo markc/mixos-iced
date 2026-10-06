@@ -165,7 +165,8 @@ fn read(pane: u64, primary: bool) -> Task<Message> {
     let task = if primary {
         application::iced::clipboard::read_primary()
     } else {
-        application::iced::clipboard::read_text().map(|result| result.ok().map(|text| (*text).clone()))
+        application::iced::clipboard::read_text()
+            .map(|result| result.ok().map(|text| (*text).clone()))
     };
     task.map(move |text| Message::Paste(pane, text))
 }
@@ -240,7 +241,9 @@ impl State {
             .lock()
             .expect("terminal")
             .selection_text();
-        text.map_or_else(Task::none, |text| application::iced::clipboard::write(text).discard())
+        text.map_or_else(Task::none, |text| {
+            application::iced::clipboard::write(text).discard()
+        })
     }
 
     pub(super) fn paste(&mut self, pane: u64, text: Option<String>) {
@@ -361,9 +364,10 @@ impl State {
                             self.mouse.clicks = None;
                         }
                         if released {
-                            return terminal
-                                .selection_finish()
-                                .map_or_else(Task::none, application::iced::clipboard::write_primary);
+                            return terminal.selection_finish().map_or_else(
+                                Task::none,
+                                application::iced::clipboard::write_primary,
+                            );
                         }
                     } else if !press.local {
                         if released {

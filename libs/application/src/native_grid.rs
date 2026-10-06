@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native CPU grid bands, retained without conversion to ordinary image handles.
-use crate::cpu::grid::Handle;
+use crate::cpu::grid::Grid as Handle;
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
 use iced::{Length, Rectangle, Size};
 
@@ -14,7 +14,12 @@ pub struct Grid {
 impl Grid {
     pub fn new(images: Vec<(Handle, Rectangle)>, scale: f32) -> Self {
         assert!(scale.is_finite() && scale > 0.0);
-        Self { images, scale, width: Length::Shrink, height: Length::Shrink }
+        Self {
+            images,
+            scale,
+            width: Length::Shrink,
+            height: Length::Shrink,
+        }
     }
 
     pub fn width(mut self, width: Length) -> Self {

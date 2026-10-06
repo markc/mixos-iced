@@ -1,17 +1,35 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Adapter from the terminal raster to the shared native GPU painter.
 use crate::frame::Frame;
-use application::gpu_grid::{FrameSource, GridId, DamageBand};
 pub use application::gpu_grid::GridProgram;
+use application::gpu_grid::{DamageBand, FrameSource, GridId};
 
 impl FrameSource for Frame {
-    fn identity(&self) -> GridId { self.gpu_id.clone() }
-    fn dimensions(&self) -> (u32, u32) { (self.surface().width(), self.surface().height()) }
-    fn stride(&self) -> usize { self.surface().stride() }
-    fn pixels(&self) -> &[u8] { self.surface().rgba() }
-    fn clear_damage(&mut self) { Frame::clear_damage(self); }
+    fn identity(&self) -> GridId {
+        self.gpu_id.clone()
+    }
+    fn dimensions(&self) -> (u32, u32) {
+        (self.surface().width(), self.surface().height())
+    }
+    fn stride(&self) -> usize {
+        self.surface().stride()
+    }
+    fn pixels(&self) -> &[u8] {
+        self.surface().rgba()
+    }
+    fn clear_damage(&mut self) {
+        Frame::clear_damage(self);
+    }
     fn take_damage(&mut self) -> Vec<DamageBand> {
-        Frame::take_damage(self).into_iter().map(|band| DamageBand { x:band.x, y:band.y, width:band.width, height:band.height }).collect()
+        Frame::take_damage(self)
+            .into_iter()
+            .map(|band| DamageBand {
+                x: band.x,
+                y: band.y,
+                width: band.width,
+                height: band.height,
+            })
+            .collect()
     }
 }
 
@@ -20,8 +38,19 @@ mod tests {
     use application::gpu_grid::upload_region;
     use application::iced::wgpu;
     use term_core::raster::DamageBand;
-    fn upload_region_for_core(stride:usize,band:DamageBand)->(wgpu::Origin3d,wgpu::TexelCopyBufferLayout,wgpu::Extent3d) {
-        upload_region(stride,application::gpu_grid::DamageBand{x:band.x,y:band.y,width:band.width,height:band.height})
+    fn upload_region_for_core(
+        stride: usize,
+        band: DamageBand,
+    ) -> (wgpu::Origin3d, wgpu::TexelCopyBufferLayout, wgpu::Extent3d) {
+        upload_region(
+            stride,
+            application::gpu_grid::DamageBand {
+                x: band.x,
+                y: band.y,
+                width: band.width,
+                height: band.height,
+            },
+        )
     }
 
     use crate::frame::Frame;

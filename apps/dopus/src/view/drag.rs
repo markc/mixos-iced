@@ -4,12 +4,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use dopus_core::{DropAction, PaneId, sanitise_display_path};
+use application::cpu::Renderer;
 use application::iced::advanced::text::Renderer as _;
 use application::iced::advanced::widget::{Operation, Tree, tree};
 use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
 use application::iced::{Element, Event, Length, Point, Rectangle, Size, Vector, keyboard};
-use application::cpu::Renderer;
+use dopus_core::{DropAction, PaneId, sanitise_display_path};
 
 use super::Look;
 use crate::app::Msg;
@@ -168,8 +168,10 @@ impl Widget<Msg, application::iced::Theme, Renderer> for Layer<'_> {
             if engaged
                 && matches!(
                     event,
-                    Event::Window(application::iced::window::Event::Unfocused | application::iced::window::Event::Resized(_))
-                        | Event::Mouse(mouse::Event::CursorLeft)
+                    Event::Window(
+                        application::iced::window::Event::Unfocused
+                            | application::iced::window::Event::Resized(_)
+                    ) | Event::Mouse(mouse::Event::CursorLeft)
                         | Event::Keyboard(keyboard::Event::KeyPressed {
                             key: keyboard::Key::Named(keyboard::key::Named::Escape),
                             ..
@@ -179,7 +181,10 @@ impl Widget<Msg, application::iced::Theme, Renderer> for Layer<'_> {
                 state.cancel();
                 shell.request_redraw();
                 shell.capture_event();
-                if matches!(event, Event::Window(application::iced::window::Event::Unfocused)) {
+                if matches!(
+                    event,
+                    Event::Window(application::iced::window::Event::Unfocused)
+                ) {
                     // Lists must clear held modifiers even when cancelling a drag.
                     drop(state);
                     self.content
@@ -461,9 +466,9 @@ fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rect
                 content: label,
                 bounds: Size::new(width, clip.height),
                 size: application::iced::Pixels(look.px),
-                line_height: application::iced::advanced::text::LineHeight::Absolute(application::iced::Pixels(
-                    look.px * 1.4,
-                )),
+                line_height: application::iced::advanced::text::LineHeight::Absolute(
+                    application::iced::Pixels(look.px * 1.4),
+                ),
                 font: look.ui_font,
                 align_x: application::iced::advanced::text::Alignment::Left,
                 align_y: application::iced::alignment::Vertical::Top,
@@ -1054,8 +1059,9 @@ mod tests {
                 .height(Length::Fill)
                 .into();
             let mut layer = Layer::new(content, shared.clone(), look, &icons, "");
-            let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
-        layer.diff(&mut tree);
+            let mut tree =
+                Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
+            layer.diff(&mut tree);
             let renderer = Renderer::new(application::iced::advanced::renderer::Settings {
                 default_font: look.ui_font,
                 default_text_size: application::iced::Pixels(look.px),
@@ -1206,8 +1212,9 @@ mod tests {
             shared.clone(),
             false,
         );
-        let mut tree =
-            Tree::new(&list as &dyn Widget<crate::view::rows::RowsMsg, application::iced::Theme, Renderer>);
+        let mut tree = Tree::new(
+            &list as &dyn Widget<crate::view::rows::RowsMsg, application::iced::Theme, Renderer>,
+        );
         list.diff(&mut tree);
         let mut renderer = Renderer::new(application::iced::advanced::renderer::Settings {
             default_font: look.ui_font,
@@ -1396,8 +1403,9 @@ mod tests {
                 &icons,
                 "",
             );
-            let mut tree = Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
-        layer.diff(&mut tree);
+            let mut tree =
+                Tree::new(&layer as &dyn Widget<Msg, application::iced::Theme, Renderer>);
+            layer.diff(&mut tree);
             assert!(
                 send(
                     &mut layer,

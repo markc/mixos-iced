@@ -4,11 +4,11 @@
 //! focused, `⟳` while (re)attaching. Click selects, middle-click or the `×`
 //! closes, the strip scrolls sideways on overflow.
 
+use application::iced::widget::{button, container, mouse_area, row, scrollable};
+use application::iced::{Alignment, Background, Border, Element, Length, Padding};
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};
 use editor_model::types::TabId;
-use application::iced::widget::{button, container, mouse_area, row, scrollable};
-use application::iced::{Alignment, Background, Border, Element, Length, Padding};
 
 use super::{Look, TABS_H};
 use crate::app::Msg;

@@ -127,9 +127,9 @@ pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Elemen
         return application::iced::widget::text(glyph.to_string())
             .font(font)
             .size(look.chrome.icon)
-            .line_height(application::iced::advanced::text::LineHeight::Absolute(application::iced::Pixels(
-                look.chrome.icon,
-            )))
+            .line_height(application::iced::advanced::text::LineHeight::Absolute(
+                application::iced::Pixels(look.chrome.icon),
+            ))
             .shaping(application::iced::advanced::text::Shaping::Advanced)
             .color(icons::tint_color(tint))
             .align_x(application::iced::alignment::Horizontal::Center)

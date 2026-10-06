@@ -2,14 +2,14 @@
 //! Sort header using exactly the same measured column geometry as FileList.
 use super::{Look, elide::shape, rows::Columns};
 use crate::app::{Msg, PaneOp};
-use dopus_core::{PaneId, SortColumn};
+use application::cpu::Renderer;
 use application::iced::advanced::text::{self, Paragraph as _, Renderer as _};
 use application::iced::advanced::{
     Layout, Renderer as _, Shell, Widget, layout, mouse, renderer,
     widget::{Tree, tree},
 };
 use application::iced::{Element, Event, Length, Point, Rectangle, Size};
-use application::cpu::Renderer;
+use dopus_core::{PaneId, SortColumn};
 
 type Para = <Renderer as text::Renderer>::Paragraph;
 pub struct Header {
@@ -216,7 +216,9 @@ impl Widget<Msg, application::iced::Theme, Renderer> for Header {
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: application::iced::Vector,
-    ) -> Option<application::iced::advanced::overlay::Element<'b, Msg, application::iced::Theme, Renderer>> {
+    ) -> Option<
+        application::iced::advanced::overlay::Element<'b, Msg, application::iced::Theme, Renderer>,
+    > {
         application::iced::advanced::overlay::from_children(
             &mut self.tips,
             tree,

@@ -24,11 +24,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use application::cpu::Renderer;
 use application::iced::advanced::text::{self as atext, Paragraph as _};
 use application::iced::advanced::widget::{Tree, tree};
 use application::iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse, renderer};
 use application::iced::{Element, Event, Length, Point, Rectangle, Size, alignment, keyboard};
-use application::cpu::Renderer;
 
 use dopus_core::{FileEntry, VisibleRow};
 
@@ -179,7 +179,13 @@ fn listing_size_width<S: AsRef<str>>(
         + 2.0 * padding
 }
 
-type ColumnMetrics = (application::iced::Font, u32, application::iced::Font, u32, crate::theme::Chrome);
+type ColumnMetrics = (
+    application::iced::Font,
+    u32,
+    application::iced::Font,
+    u32,
+    crate::theme::Chrome,
+);
 
 /// Shared header/row measurements. Unchanged signatures do no formatting or
 /// shaping. Changed listings shape the four longest Size candidates and all
@@ -1068,7 +1074,14 @@ impl Widget<RowsMsg, application::iced::Theme, Renderer> for FileList<'_> {
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: application::iced::Vector,
-    ) -> Option<application::iced::advanced::overlay::Element<'b, RowsMsg, application::iced::Theme, Renderer>> {
+    ) -> Option<
+        application::iced::advanced::overlay::Element<
+            'b,
+            RowsMsg,
+            application::iced::Theme,
+            Renderer,
+        >,
+    > {
         application::iced::advanced::overlay::from_children(
             &mut self.tips,
             tree,

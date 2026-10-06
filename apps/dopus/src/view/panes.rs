@@ -19,8 +19,8 @@ use application::iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, 
 use application::iced::widget::{column, container};
 use application::iced::{Element, Event, Length, Rectangle, Size};
 
-use dopus_core::{PaneId, PaneModel, VisibleRow};
 use application::cpu::Renderer;
+use dopus_core::{PaneId, PaneModel, VisibleRow};
 
 use crate::app::Msg;
 use crate::icons::Icons;
@@ -306,7 +306,10 @@ impl Widget<Msg, application::iced::Theme, Renderer> for Divider {
             // CursorMoved carries no button state, so a held drag cannot be
             // detected as orphaned per-event: losing focus or a resize ends
             // the drag instead (the split keeps its last published ratio).
-            Event::Window(application::iced::window::Event::Unfocused | application::iced::window::Event::Resized(_)) => {
+            Event::Window(
+                application::iced::window::Event::Unfocused
+                | application::iced::window::Event::Resized(_),
+            ) => {
                 st.dragging = false;
             }
             _ => {}

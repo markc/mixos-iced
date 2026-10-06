@@ -35,9 +35,9 @@ mod cpu_grid;
 #[cfg(not(any(feature = "wgpu", feature = "tiny-skia")))]
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
-use frame::Painter;
 use application::iced::widget::{Row, button, column, container, row, space, text};
 use application::iced::{Background, Border, Element, Length, Size, Subscription, Task};
+use frame::Painter;
 use input::Action;
 use layout::{Node, Shape};
 use std::collections::HashMap;
@@ -317,7 +317,11 @@ enum Message {
     },
     Modifiers(application::iced::keyboard::Modifiers),
     SelectTab(u64),
-    Mouse(application::iced::mouse::Event, application::iced::Point, Instant),
+    Mouse(
+        application::iced::mouse::Event,
+        application::iced::Point,
+        Instant,
+    ),
     Paste(u64, Option<String>),
     Wheel(u64, application::iced::mouse::ScrollDelta),
     Pointer,
@@ -617,7 +621,9 @@ fn on_key_context(
         } => {
             if matches!(
                 key,
-                application::iced::keyboard::Key::Named(application::iced::keyboard::key::Named::Tab)
+                application::iced::keyboard::Key::Named(
+                    application::iced::keyboard::key::Named::Tab
+                )
             ) && !modifiers.control()
                 && !modifiers.alt()
                 && !modifiers.logo()
@@ -639,7 +645,9 @@ fn on_key_context(
             let keys = input::keys_for(key, text.as_deref(), *modifiers);
             (!keys.is_empty()).then_some(Message::Keys(keys))
         }
-        application::iced::keyboard::Event::ModifiersChanged(modifiers) => Some(Message::Modifiers(*modifiers)),
+        application::iced::keyboard::Event::ModifiersChanged(modifiers) => {
+            Some(Message::Modifiers(*modifiers))
+        }
         _ => None,
     }
 }
@@ -673,10 +681,17 @@ fn view(state: &State) -> Element<'_, Message> {
             let (cw, ch) = state.painter.logical_cell();
             let &(columns, rows) = state.grids.get(id)?;
             toolkit::GridGeometry {
-                cell: Size::new(cw, ch), columns, rows, border: layout::border(scale),
-            }.cursor_rect(
+                cell: Size::new(cw, ch),
+                columns,
+                rows,
+                border: layout::border(scale),
+            }
+            .cursor_rect(
                 application::iced::Point::new(pane.x, pane.y),
-                (u16::try_from(col).unwrap_or(u16::MAX), u16::try_from(row).unwrap_or(u16::MAX)),
+                (
+                    u16::try_from(col).unwrap_or(u16::MAX),
+                    u16::try_from(row).unwrap_or(u16::MAX),
+                ),
             )
         });
     let hovered = move |position: application::iced::Point| {
@@ -853,10 +868,15 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
         // Not sized or painted yet: sync sizes it, then the next redraw paints.
         _ => space().into(),
     };
-    toolkit::TerminalPane::new(grid, Size::new(bounds.w, bounds.h), layout::border(scale), tokens)
-        .focus_ring(show_focus_ring(&state.shape, id))
-        .on_scroll(move |delta| Message::Wheel(id, delta))
-        .into()
+    toolkit::TerminalPane::new(
+        grid,
+        Size::new(bounds.w, bounds.h),
+        layout::border(scale),
+        tokens,
+    )
+    .focus_ring(show_focus_ring(&state.shape, id))
+    .on_scroll(move |delta| Message::Wheel(id, delta))
+    .into()
 }
 
 /// A pane's border colour. The focus ring marks which pane keys go to, so it
@@ -1476,7 +1496,13 @@ mod tests {
         let pointer = std::cell::Cell::new(None);
         let last = std::cell::Cell::new(None);
         assert!(
-            pointer_message(&pointer, &last, Some((1, 0, 0)), application::iced::Point::new(2.0, 2.0)).is_some()
+            pointer_message(
+                &pointer,
+                &last,
+                Some((1, 0, 0)),
+                application::iced::Point::new(2.0, 2.0)
+            )
+            .is_some()
         );
         for pixel in 3..8 {
             assert!(
@@ -1496,7 +1522,13 @@ mod tests {
             (1, 0)
         );
         assert!(
-            pointer_message(&pointer, &last, Some((1, 1, 0)), application::iced::Point::new(9.0, 2.0)).is_some()
+            pointer_message(
+                &pointer,
+                &last,
+                Some((1, 1, 0)),
+                application::iced::Point::new(9.0, 2.0)
+            )
+            .is_some()
         );
         assert!(
             pointer_message(
@@ -1665,7 +1697,10 @@ mod tests {
         assert_eq!(read(), None);
         assert!(state.ime_preedit.is_none());
         state.right_shift.set(true);
-        let _ = update(&mut state, Message::Window(application::iced::window::Event::Unfocused));
+        let _ = update(
+            &mut state,
+            Message::Window(application::iced::window::Event::Unfocused),
+        );
         assert!(!state.right_shift.get());
         let _ = update(&mut state, Message::Ime(Event::Commit(text.into())));
         assert_eq!(read(), None);
@@ -1931,7 +1966,10 @@ mod tests {
         };
         begin(&mut state);
         state.modifiers = application::iced::keyboard::Modifiers::SHIFT;
-        let _ = update(&mut state, Message::Window(application::iced::window::Event::Unfocused));
+        let _ = update(
+            &mut state,
+            Message::Window(application::iced::window::Event::Unfocused),
+        );
         assert_eq!(
             input().unwrap(),
             b"\x1b[<0;4;2m",
@@ -2055,7 +2093,10 @@ mod tests {
             terminals[1].lock().unwrap().selection_text().as_deref(),
             Some("abcd")
         );
-        let _ = update(&mut state, Message::Window(application::iced::window::Event::Unfocused));
+        let _ = update(
+            &mut state,
+            Message::Window(application::iced::window::Event::Unfocused),
+        );
         assert_eq!(terminals[1].lock().unwrap().selection_text(), None);
         assert_eq!(
             state
@@ -2341,7 +2382,9 @@ mod tests {
         assert_ne!(left, right);
         let terminal = state.tabs.lock().unwrap().pane_by_id(left).unwrap();
         fill_history(&terminal);
-        state.pointer.set(Some(application::iced::Point::new(10.0, 40.0)));
+        state
+            .pointer
+            .set(Some(application::iced::Point::new(10.0, 40.0)));
         let half = ScrollDelta::Pixels {
             x: 0.0,
             y: state.painter.logical_cell().1 / 2.0,
@@ -2435,9 +2478,10 @@ mod tests {
                 .generation()
         };
         let neighbour_generation = generation(&state, neighbour);
-        state
-            .pointer
-            .set(Some(application::iced::Point::new(state.window.width - 10.0, 40.0)));
+        state.pointer.set(Some(application::iced::Point::new(
+            state.window.width - 10.0,
+            40.0,
+        )));
         for request in [
             ScrollRequest::PageUp,
             ScrollRequest::Top,
@@ -2450,7 +2494,10 @@ mod tests {
                 ScrollRequest::PageUp => {
                     let _ = update(
                         &mut state,
-                        Message::Wheel(id, application::iced::mouse::ScrollDelta::Lines { x: 0.0, y: 3.0 }),
+                        Message::Wheel(
+                            id,
+                            application::iced::mouse::ScrollDelta::Lines { x: 0.0, y: 3.0 },
+                        ),
                     );
                     assert!(state.needs_paint(), "wheel must arm redraw");
                 }

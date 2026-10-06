@@ -96,7 +96,9 @@ fn editor(look: Look, pane_id: PaneId, text: &str) -> Element<'_, Msg> {
 
 /// The at-rest bar, styled as a button that reads like the editor it opens:
 /// the same quiet `input` edge role ced uses for an unfocused text field.
-fn bar_look(look: &Look) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
+fn bar_look(
+    look: &Look,
+) -> impl Fn(&application::iced::Theme, button::Status) -> button::Style + 'static {
     let edge = look.chrome.edge;
     let (background, border, text_color, radius) = (
         look.tokens.palette.input,
@@ -121,8 +123,11 @@ fn bar_look(look: &Look) -> impl Fn(&application::iced::Theme, button::Status) -
 /// shape; only focused editing uses the accent ring.
 fn field_look(
     look: &Look,
-) -> impl Fn(&application::iced::Theme, application::iced::widget::text_input::Status) -> application::iced::widget::text_input::Style + 'static
-{
+) -> impl Fn(
+    &application::iced::Theme,
+    application::iced::widget::text_input::Status,
+) -> application::iced::widget::text_input::Style
++ 'static {
     let edge = look.chrome.edge;
     let (background, border, text_color, muted, ring, selection, radius) = (
         look.tokens.palette.input,

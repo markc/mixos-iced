@@ -13,7 +13,9 @@ pub mod keys;
 pub mod recovered;
 
 use application::iced::widget::{column, container, row};
-use application::iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector};
+use application::iced::{
+    Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector,
+};
 
 use super::Look;
 use crate::app::Msg;

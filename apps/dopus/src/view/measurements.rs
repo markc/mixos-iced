@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! App-owned measurement caches; no font shaping for unchanged view inputs.
 use super::{Look, alignment::FirstRow, elide};
-use dopus_core::PaneId;
 use application::iced::advanced::text::Paragraph as _;
+use dopus_core::PaneId;
 
 #[derive(Clone)]
 pub struct Footer {

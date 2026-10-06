@@ -12,9 +12,11 @@
 
 use std::path::{Path, PathBuf};
 
-use editor_model::types::{Intent, TabId};
-use application::iced::widget::{button, column, container, mouse_area, row, scrollable, text_input};
+use application::iced::widget::{
+    button, column, container, mouse_area, row, scrollable, text_input,
+};
 use application::iced::{Alignment, Element, Length, Padding};
+use editor_model::types::{Intent, TabId};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;

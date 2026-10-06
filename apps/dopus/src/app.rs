@@ -39,9 +39,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use application::cpu::Renderer;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::{Element, Size, Subscription, Task};
-use application::cpu::Renderer;
 
 use actions::{ActionId, Keymap};
 use design::{Mode, Scheme};
@@ -262,7 +262,8 @@ pub fn run(
     // Bus exists (a no-broker windowed run still hears the core — law 2).
     // With no Bus, deliveries drain an always-empty channel.
     let streams = Streams {
-        deliveries: deliveries.unwrap_or_else(|| application::iced::futures::channel::mpsc::unbounded().1),
+        deliveries: deliveries
+            .unwrap_or_else(|| application::iced::futures::channel::mpsc::unbounded().1),
         core_events: pump(core_events),
         deadlines,
     };
@@ -314,7 +315,10 @@ fn pump(receiver: std::sync::mpsc::Receiver<CoreEvent>) -> UnboundedReceiver<Cor
 
 /// One cancellable deadline wait. With no pending work the thread blocks
 /// indefinitely; new state replaces its wait rather than starting a timer.
-fn maintenance() -> (std::sync::mpsc::Sender<Option<Instant>>, UnboundedReceiver<Instant>) {
+fn maintenance() -> (
+    std::sync::mpsc::Sender<Option<Instant>>,
+    UnboundedReceiver<Instant>,
+) {
     let (tx, rx) = application::iced::futures::channel::mpsc::unbounded();
     let (arm, waits) = std::sync::mpsc::channel::<Option<Instant>>();
     std::thread::Builder::new()
@@ -325,14 +329,18 @@ fn maintenance() -> (std::sync::mpsc::Sender<Option<Instant>>, UnboundedReceiver
                 let request = if let Some(at) = deadline {
                     waits.recv_timeout(at.saturating_duration_since(Instant::now()))
                 } else {
-                    waits.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    waits
+                        .recv()
+                        .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
                 };
                 match request {
                     Ok(next) => deadline = next,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         deadline = None;
-                        if tx.unbounded_send(Instant::now()).is_err() { return; }
+                        if tx.unbounded_send(Instant::now()).is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -347,15 +355,20 @@ fn maintenance_wait_cancels_rearms_and_stays_quiet_after_expiry() {
     use std::time::Duration;
     let (arm, mut wakes) = maintenance();
     application::iced::futures::executor::block_on(wakes.next()).expect("startup wake");
-    arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
+    arm.send(Some(Instant::now() + Duration::from_millis(20)))
+        .unwrap();
     arm.send(None).unwrap();
     std::thread::sleep(Duration::from_millis(60));
     assert!(wakes.try_recv().is_err(), "cancelled wait must stay quiet");
-    arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
+    arm.send(Some(Instant::now() + Duration::from_millis(20)))
+        .unwrap();
     std::thread::sleep(Duration::from_millis(60));
     assert!(wakes.try_recv().is_ok(), "rearmed wait must fire");
     std::thread::sleep(Duration::from_millis(60));
-    assert!(wakes.try_recv().is_err(), "expired wait must not become a heartbeat");
+    assert!(
+        wakes.try_recv().is_err(),
+        "expired wait must not become a heartbeat"
+    );
 }
 
 /// The receivers the subscription drains, handed over once.
@@ -374,7 +387,10 @@ fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
     let taken = STREAMS.get().and_then(|m| m.lock().ok()?.take());
     match taken {
         Some(s) => application::iced::futures::stream::select(
-            application::iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.core_events.map(Msg::Core)),
+            application::iced::futures::stream::select(
+                s.deliveries.map(Msg::Bus),
+                s.core_events.map(Msg::Core),
+            ),
             s.deadlines.map(Msg::Tick),
         )
         .boxed(),
@@ -404,10 +420,17 @@ impl Dopus {
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         let layout = self.drag_layout();
         let task = self.dispatch(msg);
-        if self.quitting { return task; }
+        if self.quitting {
+            return task;
+        }
         let derived = self.core.tick(Instant::now());
         let maintenance = self.on_derived(derived);
-        let next = self.core.next_deadline().into_iter().chain(keys::next_deadline(&self.router)).min();
+        let next = self
+            .core
+            .next_deadline()
+            .into_iter()
+            .chain(keys::next_deadline(&self.router))
+            .min();
         if next != self.maintenance_deadline {
             self.maintenance_deadline = next;
             let _ = self.maintenance.send(next);
@@ -1098,9 +1121,7 @@ impl Dopus {
                 keys::cancel(&self.router);
                 view::drag::lock(&self.drag).cancel()
             }
-            application::iced::window::Event::Resized(_) => {
-                view::drag::lock(&self.drag).cancel()
-            }
+            application::iced::window::Event::Resized(_) => view::drag::lock(&self.drag).cancel(),
             _ => {}
         }
         Task::none()
@@ -1231,15 +1252,16 @@ impl Dopus {
         // keys under load — the ced/term rule). While a dialog is up it
         // resolves nothing (the modal scope) and hands Enter/Escape to the
         // dialog instead.
-        let mut routed =
-            keys::router(content, self.router.clone(), Msg::Actions)
-                .modal(self.dialog.is_some()).on_pending(Msg::Noop);
+        let mut routed = keys::router(content, self.router.clone(), Msg::Actions)
+            .modal(self.dialog.is_some())
+            .on_pending(Msg::Noop);
         if self.dialog.is_some() {
             routed = routed.on_modal_key(Msg::DialogKey);
         } else if let Some((pane, _)) = self.editing.as_ref() {
             routed = routed.on_edit_cancel(view::location::location_id(*pane), Msg::LocationCancel);
         }
-        let content: Element<'_, Msg, application::iced::Theme, Renderer> = if self.dialog.is_none() {
+        let content: Element<'_, Msg, application::iced::Theme, Renderer> = if self.dialog.is_none()
+        {
             toolkit::menu::Menu::context(routed, self.context_items())
                 .style(self.look().tokens.menu_style())
                 .into()
@@ -1548,7 +1570,8 @@ mod tests {
         assert_eq!(app.core.active(), PaneId::Right);
         assert_eq!(app.core.selected_paths(PaneId::Right), paths);
         let focused = app.core.pane(PaneId::Right).selected.clone();
-        let mut ui = application::runtime::UserInterface::build(app.view(), size, cache, &mut renderer);
+        let mut ui =
+            application::runtime::UserInterface::build(app.view(), size, cache, &mut renderer);
         let key = |named| {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named),

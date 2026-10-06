@@ -316,7 +316,9 @@ where
                     return;
                 }
             }
-            Event::Mouse(application::iced::mouse::Event::WheelScrolled { delta }) if !self.modal => {
+            Event::Mouse(application::iced::mouse::Event::WheelScrolled { delta })
+                if !self.modal =>
+            {
                 if let Some(zoom) = &self.on_zoom
                     && cursor.is_over(layout.bounds())
                     && ctrl_held()

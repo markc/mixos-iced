@@ -108,13 +108,18 @@ impl iced::Executor for SingleThread {
 mod tests {
     use super::*;
     use iced::Executor;
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[test]
     fn bootstrap_moves_nonclone_state_and_never_duplicates_it() {
         struct State(Arc<AtomicUsize>);
         impl Drop for State {
-            fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
         }
         let drops = Arc::new(AtomicUsize::new(0));
         let boot = boot_once((State(Arc::clone(&drops)), iced::Task::<()>::none()));
@@ -127,12 +132,22 @@ mod tests {
 
     #[test]
     fn close_deferral_is_explicit_and_window_identity_is_preserved() {
-        let window = Window::new("example.editor", iced::Size::new(800.0, 600.0), iced::Font::DEFAULT);
+        let window = Window::new(
+            "example.editor",
+            iced::Size::new(800.0, 600.0),
+            iced::Font::DEFAULT,
+        );
         assert!(window.settings.exit_on_close_request);
         let window = window.minimum(iced::Size::new(300.0, 200.0)).defer_close();
         assert!(!window.settings.exit_on_close_request);
-        assert_eq!(window.settings.platform_specific.application_id, "example.editor");
-        assert_eq!(window.settings.min_size, Some(iced::Size::new(300.0, 200.0)));
+        assert_eq!(
+            window.settings.platform_specific.application_id,
+            "example.editor"
+        );
+        assert_eq!(
+            window.settings.min_size,
+            Some(iced::Size::new(300.0, 200.0))
+        );
     }
 
     #[test]
@@ -140,8 +155,15 @@ mod tests {
         let executor = SingleThread::new().unwrap();
         let caller = std::thread::current().id();
         let (send, receive) = std::sync::mpsc::channel();
-        executor.spawn(async move { send.send(std::thread::current().id()).unwrap(); });
-        assert_ne!(caller, receive.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
+        executor.spawn(async move {
+            send.send(std::thread::current().id()).unwrap();
+        });
+        assert_ne!(
+            caller,
+            receive
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+        );
         assert_eq!(executor.block_on(async { 42 }), 42);
     }
 }

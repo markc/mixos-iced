@@ -18,16 +18,20 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use application::iced::advanced::layout::{self, Layout};
+use application::iced::advanced::text::{self as atext, Paragraph};
+use application::iced::advanced::widget::{Tree, tree};
+use application::iced::advanced::{
+    InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer,
+};
+use application::iced::{
+    Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window,
+};
 use edit::anchor::Selection;
 use edit::text::Text;
 use editor_model::diag::Diagnostics;
 use editor_model::highlight::Highlight;
 use editor_model::model::{EditCommand, EditorModel, Motion, Scroll, clamp_offset, line_of};
-use application::iced::advanced::layout::{self, Layout};
-use application::iced::advanced::text::{self as atext, Paragraph};
-use application::iced::advanced::widget::{Tree, tree};
-use application::iced::advanced::{InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer};
-use application::iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window};
 
 use super::layout::{self as geo, Geometry, Metrics};
 use super::lines::{self, Checkpoints};

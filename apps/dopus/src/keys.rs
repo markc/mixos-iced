@@ -207,7 +207,11 @@ pub fn reload(shared: &SharedRouter, custom_path: Option<&Path>) {
 }
 
 pub fn cancel(shared: &SharedRouter) {
-    shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).state.cancel();
+    shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .state
+        .cancel();
 }
 
 /// Resolve an expired chord after the app's deadline wake.
@@ -226,7 +230,9 @@ pub fn poll_timeout(shared: &SharedRouter) -> Vec<ActionId> {
 }
 
 pub fn next_deadline(shared: &SharedRouter) -> Option<Instant> {
-    let router = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let router = shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let deadline = router.state.deadline()?;
     let remaining = deadline.0.saturating_sub(tick().0);
     Some(Instant::now() + std::time::Duration::from_millis(remaining))
@@ -953,8 +959,12 @@ mod widget_tests {
             .on_submit(Message::Submit);
         let content = application::iced::widget::column![
             field,
-            application::iced::widget::mouse_area(application::iced::widget::Space::new().width(300).height(40))
-                .on_press(Message::OtherEdit),
+            application::iced::widget::mouse_area(
+                application::iced::widget::Space::new()
+                    .width(300)
+                    .height(40)
+            )
+            .on_press(Message::OtherEdit),
         ];
         let mut router =
             router(content, shared, Message::Actions).on_edit_cancel("location", Message::Cancel);
@@ -1091,9 +1101,16 @@ mod widget_tests {
         std::fs::write(&overlay, source).unwrap();
         for invalid in [false, true] {
             let (mut router, mut tree) = fixture(source);
-            send(&mut router, &mut tree, enter(keyboard::Modifiers::CTRL), mouse::Cursor::Unavailable);
+            send(
+                &mut router,
+                &mut tree,
+                enter(keyboard::Modifiers::CTRL),
+                mouse::Cursor::Unavailable,
+            );
             assert!(router.shared.lock().unwrap().state.deadline().is_some());
-            if invalid { std::fs::write(&overlay, "{broken").unwrap(); }
+            if invalid {
+                std::fs::write(&overlay, "{broken").unwrap();
+            }
             reload(&router.shared, Some(&overlay));
             assert!(router.shared.lock().unwrap().state.deadline().is_none());
         }
