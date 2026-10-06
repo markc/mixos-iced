@@ -496,7 +496,7 @@ checked separately by the layering gate.
 | [ced](https://github.com/markc/mixos/blob/main/apps/ced/Cargo.toml) | ced | app | desktop | public | 0.1.6 |
 | [editor-model](https://github.com/markc/mixos/blob/main/apps/ced/crates/editor-model/Cargo.toml) | ced | app | core | none | 0.1.1 |
 | [syntax](https://github.com/markc/mixos/blob/main/apps/ced/crates/syntax/Cargo.toml) | ced | app | core | none | 0.1.1 |
-| [dopus](https://github.com/markc/mixos/blob/main/apps/dopus/Cargo.toml) | dopus | app | desktop | public | 0.4.3 |
+| [dopus](https://github.com/markc/mixos/blob/main/apps/dopus/Cargo.toml) | dopus | app | desktop | public | 0.4.4 |
 | [actions](https://github.com/markc/mixos/blob/main/apps/dopus/crates/actions/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [dopus-core](https://github.com/markc/mixos/blob/main/apps/dopus/crates/dopus-core/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [files](https://github.com/markc/mixos/blob/main/apps/dopus/crates/files/Cargo.toml) | dopus | app | core | none | 0.1.1 |
@@ -518,7 +518,7 @@ checked separately by the layering gate.
 | [props](https://github.com/markc/mixos/blob/main/libs/props/Cargo.toml) | props | lib | core | none | 0.1.1 |
 | [scene](https://github.com/markc/mixos/blob/main/libs/scene/Cargo.toml) | scene | lib | core | none | 0.1.1 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
-| [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.2 |
+| [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.3 |
 | [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.5 |
 | [comp-model](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-model/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [comp-service](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-service/Cargo.toml) | compd | service | desktop | none | 0.1.1 |

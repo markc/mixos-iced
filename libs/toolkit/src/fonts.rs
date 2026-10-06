@@ -470,11 +470,14 @@ pub fn font_for(
             .iter()
             .find(|name| has_family(raw.db(), name))
             .map(|name| (*name).to_owned());
-        let generic = raw.db().family_name(&if monospace {
-            fontdb::Family::Monospace
-        } else {
-            fontdb::Family::SansSerif
-        }).to_owned();
+        let generic = raw
+            .db()
+            .family_name(&if monospace {
+                fontdb::Family::Monospace
+            } else {
+                fontdb::Family::SansSerif
+            })
+            .to_owned();
         let light = family_has_light(raw, found.as_deref().unwrap_or(&generic));
         (found, light)
     };
