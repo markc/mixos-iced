@@ -681,6 +681,9 @@ impl App {
             }
             Message::Open => self.request_pending(Pending::Open),
             Message::Request(event) => {
+                if self.busy {
+                    return Task::none();
+                }
                 let outcome = self.picker.as_mut().and_then(|p| p.update(event));
                 match outcome {
                     Some(requester::Outcome::Open(paths)) => {
@@ -1241,6 +1244,39 @@ mod tests {
         assert_eq!(id, 1);
         assert_ne!(rc, 0);
         assert!(body.contains("exclusive_layer"));
+    }
+    #[test]
+    fn file_picker_cannot_start_export_during_activation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.directory = directory.path().into();
+        app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());
+        app.file_picker(requester::Mode::Save);
+        let _ = app.update(Message::Request(requester::Event::Input(
+            "fresh.png".into(),
+        )));
+        let (bus, _) = BusHandle::response_sink();
+        app.bus = Some(bus);
+        let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
+            id: 1,
+            verb: "cap.show".into(),
+            body: "{}".into(),
+            caller_key: "local:test".into(),
+        })));
+        assert!(app.busy);
+        let _ = app.update(Message::Request(requester::Event::Submit));
+        assert!(
+            app.picker.is_some(),
+            "activation must retain the pending save dialog"
+        );
+        assert!(app.busy);
+        let _ = app.update(Message::Shown(1, Ok(json!({"focused":true}))));
+        let _ = app.update(Message::Request(requester::Event::Submit));
+        assert!(app.picker.is_none());
+        assert!(
+            app.busy,
+            "export owns the job slot after activation completes"
+        );
     }
     #[test]
     fn document_replacement_clears_preview_and_rejects_old_raster_results() {
