@@ -1,9 +1,12 @@
 # Shared application host
 
-Ced, DOpus and Term share `libs/application` for native window startup and
+Ced, DOpus, Term and Scene Editor share `libs/application` for native window startup and
 renderer support. The host takes the initial state and boot task once, uses one
 asynchronous task worker and supplies consistent window settings. Applications
 add their own title, theme and subscriptions before running the event loop.
+
+The optional `test-support` feature exposes the pinned UI simulator through
+the host, so app tests need no direct iced-family manifest dependency.
 
 Portable controls live in `libs/toolkit`. `EditorPane` takes a bounded document
 provider and emits editing intents; Ced adapts its editor engine to that

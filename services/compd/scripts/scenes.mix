@@ -1,4 +1,4 @@
--- version: 0.2.4
+-- version: 0.2.5
 -- Stage B: owns the panel/launcher/calendar/notes pages once seeded and
 -- enabled; while the legacy quoin-panel citizen (SCENES_LEGACY_SERVICE) is
 -- registered those scenes stay unmounted, and its departure mounts them.
@@ -19,6 +19,8 @@ mkdir($ROOT)
 if not stat($ROOT, {follow_symlinks:false}).is_dir then raise("SCENES_FILES", "scene root must be a real directory", {}) end
 if not flock($ROOT .. "/.loader.lock") then raise("SCENES_LOCKED", "another loader owns this scenes directory", {}) end
 $state = $loader.initial($ROOT, $TEMPLATES, $HOST, $ME, $io)
+$state.editor_app = env("SCENES_EDITOR_APP", "1") != "0"
+$state.editor_frontend = require("lib/editor_app.mix")
 $state.legacy = env("SCENES_LEGACY_SERVICE", "quoin-panel")
 $ROOT = $state.root
 
@@ -287,14 +289,25 @@ on scenes.templates desc "Shipped templates with gallery metadata and installed_
   reply($state.rc, json_encode($state.response))
 end
 
-on scenes.editor.open desc "Open the Scene Editor {safe?,view?,scene?,first_run?}; safe uses the shipped copy and toggles it"
+on scenes.editor.open desc "Open Scene Editor {safe?,view?,scene?,first_run?}; SCENES_EDITOR_APP=0 selects the legacy scene frontend"
   $state = $loader.request($state, "editor.open", $event.args ?? {})
   reply($state.rc, json_encode($state.response))
   $state = $loader.changed($state)
 end
 
-on scenes.editor.close desc "Hide the Scene Editor {unload?}; unload stops its behaviour"
+on scenes.editor.close desc "Close Scene Editor {unload?}; the legacy frontend hides or unloads its scene"
   $state = $loader.request($state, "editor.close", $event.args ?? {})
+  reply($state.rc, json_encode($state.response))
+  $state = $loader.changed($state)
+end
+
+on scenes.editor.snapshot desc "Native Scene Editor snapshot {selection?}; schema scene-editor.snapshot.v1"
+  $state = $state.editor_frontend.request($state, "snapshot", $event.args ?? {}, $loader)
+  reply($state.rc, json_encode($state.response))
+end
+
+on scenes.editor.action desc "Native Scene Editor action {action,state_token,selection?,confirmed?,edge?,mode?,direction?}"
+  $state = $state.editor_frontend.request($state, "action", $event.args ?? {}, $loader)
   reply($state.rc, json_encode($state.response))
   $state = $loader.changed($state)
 end

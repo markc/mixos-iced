@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+
+- Scene loader adds versioned native editor snapshots and guarded actions,
+  reusing its existing planner and reducer. Normal editor activation routes
+  the independent Scene Editor app; `SCENES_EDITOR_APP=0` retains the legacy
+  scene frontend. No scene files or editor user copies are removed.
+
 ## 0.1.5
 
 - Restore hover and pressed feedback on compositor-owned iced controls by

@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -24,9 +24,11 @@ native-grid = ["tiny-skia", "image"]
 image = ["iced/image", "iced_tiny_skia?/image"]
 wgpu = ["iced/wgpu"]
 raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
+test-support = ["dep:iced_test"]
 
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }
 iced_runtime.workspace = true
 iced_program.workspace = true
 iced_tiny_skia = { workspace = true, optional = true, features = ["wayland"] }
+iced_test = { workspace = true, optional = true }

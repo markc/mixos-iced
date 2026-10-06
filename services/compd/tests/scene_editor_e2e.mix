@@ -240,7 +240,7 @@ try
   $pids.shell = start_citizen("fakeshell", $shell_script, {FAKE_SHELL_LOG:$shell_log, FAKE_SHELL_OWNER:"scenes"}, "shell.log")
   mkdir($tmp .. "/scenes")
   $loader_env = {SCENES_DIR:$tmp .. "/scenes", SCENES_TEMPLATES:$repo .. "/share/scenes", SCENE_HOST:"fakeshell",
-    SCENES_LEGACY_SERVICE:"se-e2e-none"}
+    SCENES_LEGACY_SERVICE:"se-e2e-none", SCENES_EDITOR_APP:"0"}
   $pids.scenes = start_citizen("scenes", $scripts .. "/scenes.mix", $loader_env, "scenes.log")
 
   -- First run: empty scenes, the shell live -> the editor opens on the gallery.

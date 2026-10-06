@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Desktop Entry]
+Type=Application
+Name=Scene Editor
+Comment=Manage scenes and arrange desktop panels
+Exec=/opt/mixos/bin/scene-editor %U
+Icon=dev.mixos.scene-editor-symbolic
+Terminal=false
+Categories=Settings;DesktopSettings;
+StartupWMClass=dev.mixos.scene-editor

@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Ced, DOpus, Term and Scene Editor share libs/application for native window startup and renderer support. The host takes the initial state and boot task once,…">
+    <meta name="description" content="Status: accepted by the request to make Scene Editor a normal app with Ced/Cap-style menus, 2026-10-07.">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Shared application host — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/application/">
-    <link rel="alternate" type="text/markdown" href="/application.md" title="Markdown source">
+    <title>Scene Editor becomes a native application — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/decisions/2026-10-07-scene-editor-application/">
+    <link rel="alternate" type="text/markdown" href="/decisions/2026-10-07-scene-editor-application.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -239,42 +239,25 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="shared-application-host">Shared application host</h1>
-<p>Ced, DOpus, Term and Scene Editor share <code>libs/application</code> for native window startup and
-renderer support. The host takes the initial state and boot task once, uses one
-asynchronous task worker and supplies consistent window settings. Applications
-add their own title, theme and subscriptions before running the event loop.</p>
-<p>The optional <code>test-support</code> feature exposes the pinned UI simulator through
-the host, so app tests need no direct iced-family manifest dependency.</p>
-<p>Portable controls live in <code>libs/toolkit</code>. <code>EditorPane</code> takes a bounded document
-provider and emits editing intents; Ced adapts its editor engine to that
-interface. <code>FilePane</code> takes a borrowed listing and a transfer bridge; DOpus
-supplies filesystem state and operation policy. <code>TerminalPane</code> frames an
-injected surface and emits scroll input; Term owns its PTYs, terminal state
-and rasterisation. The standalone <code>compounds</code> example demonstrates all three
-without importing an application engine.</p>
-<p>The application host supplies software grid drawing and GPU grid painting.
-GPU frame sources carry lifetime identities, retain their textures and upload
-only damaged regions after the initial frame. Closing a pane retires its
-texture. The portable toolkit selects neither renderer by default and also
-builds against pristine upstream iced.</p>
-<p>Applications keep their Bus connections, document buffers, filesystem jobs,
-PTYs and shutdown order. The host adds no D-Bus dependency. Native sessions
-use their own compositor and ABP broker.</p>
-<p>On a build worker, run <code>tools/application_gate.mix</code> to check that all three
-components use the shared host and have no direct iced-family dependency,
-including renamed, development and build dependencies. Unit and renderer
-tests exercise the extracted controls. The desktop acceptance gate
-<code>tests/desktop/application_native_gate.mix --bin-dir &lt;candidate-binaries&gt;</code>
-uses an owned broker and nested compositor, exercises native keyboard input,
-file copy, deletion cancellation, real PTY output and native enrolment of both
-Mix shells, and captures the apps at scales 1 and 2.5. It requires <code>bwrap</code>,
-<code>setpriv</code> and non-interactive <code>sudo</code> to bind the candidate shell at its canonical
-path inside the test terminal's mount namespace. Term runs as the invoking user
-after privileges are dropped. Existing desktop sessions and the host
-installation stay intact.</p>
+<h1 id="scene-editor-becomes-a-native-application">Scene Editor becomes a native application</h1>
+<p>Status: accepted by the request to make Scene Editor a normal app with
+Ced/Cap-style menus, 2026-10-07.</p>
+<p><code>apps/scene-editor</code> is a native Wayland app using the shared <code>application</code>
+host and generic <code>toolkit</code> controls. It has its own decorated window, menus
+and single-instance native Bus activation.</p>
+<p>The scene loader retains installation, persistent enablement, validation,
+rendering and recovery. Additive snapshot/action verbs reuse the shipped
+editor's pure model/planner. Loader steps run through its reducer without
+recursive self-RPC; other service steps use native Bus. Selection and
+confirmation belong to the app. State tokens guard mutations against stale
+snapshots, including external changes while a confirmation is open.</p>
+<p>Normal <code>scenes.editor.open/close</code> activation addresses the app. An explicit
+<code>SCENES_EDITOR_APP=0</code> process setting retains the legacy frontend for recovery
+and contract tests. No user data, template or frozen wire constant is removed.
+No alternate transport, D-Bus requirement or MixOS dependency in generic
+toolkit is introduced.</p>
         </article>
-        <p class="doc-source"><a href="/application.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/decisions/2026-10-07-scene-editor-application.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>

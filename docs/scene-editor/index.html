@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Ced, DOpus, Term and Scene Editor share libs/application for native window startup and renderer support. The host takes the initial state and boot task once,…">
+    <meta name="description" content="Scene Editor is a normal native Wayland app, using the same application host and widgets as Ced. It has File, Edit, Scene, Arrange, View and Help menus. The…">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Shared application host — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/application/">
-    <link rel="alternate" type="text/markdown" href="/application.md" title="Markdown source">
+    <title>Scene Editor — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/scene-editor/">
+    <link rel="alternate" type="text/markdown" href="/scene-editor.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -214,7 +214,10 @@
                 <div class="panel-title">On this page</div>
                 <div class="panel-content">
                     <nav id="toc-nav">
-                        <div class="toc-empty">No sections on this page</div>
+                        <a href="#views-and-menus">Views and menus</a>
+                        <a href="#keyboard">Keyboard</a>
+                        <a href="#native-operation">Native operation</a>
+                        <a href="#bus-contracts">Bus contracts</a>
                     </nav>
                 </div>
             </div>
@@ -239,42 +242,82 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="shared-application-host">Shared application host</h1>
-<p>Ced, DOpus, Term and Scene Editor share <code>libs/application</code> for native window startup and
-renderer support. The host takes the initial state and boot task once, uses one
-asynchronous task worker and supplies consistent window settings. Applications
-add their own title, theme and subscriptions before running the event loop.</p>
-<p>The optional <code>test-support</code> feature exposes the pinned UI simulator through
-the host, so app tests need no direct iced-family manifest dependency.</p>
-<p>Portable controls live in <code>libs/toolkit</code>. <code>EditorPane</code> takes a bounded document
-provider and emits editing intents; Ced adapts its editor engine to that
-interface. <code>FilePane</code> takes a borrowed listing and a transfer bridge; DOpus
-supplies filesystem state and operation policy. <code>TerminalPane</code> frames an
-injected surface and emits scroll input; Term owns its PTYs, terminal state
-and rasterisation. The standalone <code>compounds</code> example demonstrates all three
-without importing an application engine.</p>
-<p>The application host supplies software grid drawing and GPU grid painting.
-GPU frame sources carry lifetime identities, retain their textures and upload
-only damaged regions after the initial frame. Closing a pane retires its
-texture. The portable toolkit selects neither renderer by default and also
-builds against pristine upstream iced.</p>
-<p>Applications keep their Bus connections, document buffers, filesystem jobs,
-PTYs and shutdown order. The host adds no D-Bus dependency. Native sessions
-use their own compositor and ABP broker.</p>
-<p>On a build worker, run <code>tools/application_gate.mix</code> to check that all three
-components use the shared host and have no direct iced-family dependency,
-including renamed, development and build dependencies. Unit and renderer
-tests exercise the extracted controls. The desktop acceptance gate
-<code>tests/desktop/application_native_gate.mix --bin-dir &lt;candidate-binaries&gt;</code>
-uses an owned broker and nested compositor, exercises native keyboard input,
-file copy, deletion cancellation, real PTY output and native enrolment of both
-Mix shells, and captures the apps at scales 1 and 2.5. It requires <code>bwrap</code>,
-<code>setpriv</code> and non-interactive <code>sudo</code> to bind the candidate shell at its canonical
-path inside the test terminal's mount namespace. Term runs as the invoking user
-after privileges are dropped. Existing desktop sessions and the host
-installation stay intact.</p>
+<h1 id="scene-editor">Scene Editor</h1>
+<p>Scene Editor is a normal native Wayland app, using the same application host
+and widgets as Ced. It has <strong>File, Edit, Scene, Arrange, View and Help</strong> menus.
+The content area shows templates, installed scenes or panel arrangement,
+with details beside the selection and a status strip below.</p>
+<h2 id="views-and-menus">Views and menus</h2>
+<ul>
+<li><strong>Gallery</strong> lists shipped templates and requirements. Select one and use
+File → Install Template or Install and Enable. File also offers the
+recommended set. Installing a template alone leaves it disabled.</li>
+<li><strong>Installed Scenes</strong> shows state, source files and problems. Scene offers
+enable/disable, reload, sandbox, promote, move, reset and remove. Reset,
+promote and remove require confirmation and retain recovery copies.</li>
+<li><strong>Panel Arrangement</strong> lists edges and pages. Select an edge or page and
+use Arrange to change mode, thickness or page order.</li>
+<li><strong>Edit</strong> opens source in Ced through the native Bus. The scene editor stays
+open. The loader's diagnostics follow the file to Ced; validation and
+recovery remain owned by the scene service.</li>
+</ul>
+<p>View selects Gallery, Installed Scenes or Panel Arrangement. Help contains
+shortcuts and About. Invalid or busy actions are disabled.</p>
+<h2 id="keyboard">Keyboard</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Ctrl+R</td><td>Refresh</td></tr>
+<tr><td>Ctrl+O / Ctrl+Shift+O</td><td>Edit scene / behaviour in Ced</td></tr>
+<tr><td>Ctrl+1 / Ctrl+2 / Ctrl+3</td><td>Gallery / Installed / Arrange</td></tr>
+<tr><td>Ctrl+Q</td><td>Quit</td></tr>
+<tr><td>F1</td><td>Keyboard shortcuts</td></tr>
+<tr><td>F10</td><td>Activate menus</td></tr>
+<tr><td>Alt+F / E / S / A / V / H</td><td>Open a menu</td></tr>
+<tr><td>Arrows, Enter</td><td>Navigate menus</td></tr>
+<tr><td>Escape</td><td>Close a menu or dialogue</td></tr>
+</tbody></table>
+<h2 id="native-operation">Native operation</h2>
+<p>Launch <code>scene-editor</code>, its desktop entry, or <code>scenes.editor.open</code>. A second
+launch activates the existing window and forwards any selection. No portal,
+session D-Bus, shell relay or polling timer is used.</p>
+<p>The loader now uses the app by default. <code>SCENES_EDITOR_APP=0</code> selects the
+retained legacy scene frontend for recovery and its contract regression
+suite. Editor templates and user copies remain on disk. <code>safe:true</code> is
+accepted for normal activation; the compiled frontend does not execute an
+editable editor behaviour.</p>
+<p><code>--service</code>, <code>--scenes</code> and <code>--comp</code> select service names; <code>--noded-url</code>
+selects the native endpoint. <code>SCENE_HOST</code> selects the panel service/topic
+namespace. Defaults are <code>scene-editor</code>, <code>scenes</code>, <code>comp</code> and <code>shell</code>.
+<code>--version</code> reports source/build identity before configuration or Bus access.</p>
+<h2 id="bus-contracts">Bus contracts</h2>
+<p>The app serves <code>scene-editor.ping/info/show/action/quit</code>, <code>app.describe</code> and
+<code>app.quit</code>. <code>info</code> reports selection, state token, complete snapshot,
+busy/connection state and active dialogue. <code>show {view?,scene?}</code> restores and
+raises the native window. Navigation and mutation are refused during a
+confirmation or action; read-only queries remain available.</p>
+<p>The loader serves:</p>
+<ul>
+<li><code>scenes.editor.snapshot {selection?}</code> returns schema
+<code>scene-editor.snapshot.v1</code>, a <code>state_token</code>, selection, complete model,
+inventory, templates, panels and any host problem.</li>
+<li><code>scenes.editor.action {action,state_token,selection?,confirmed?,edge?,mode?,direction?}</code>
+executes the existing scene planner. Selection contains <code>view</code>, <code>template</code>,
+<code>scene</code> and optional <code>page:{edge,page}</code>. Actions are <code>install</code>,
+<code>install-enable</code>, <code>recommended</code>, <code>toggle</code>, <code>reload</code>, <code>reset</code>, <code>remove</code>,
+<code>fork</code>, <code>promote</code>, <code>edit-scene</code>, <code>edit-behaviour</code>, <code>move</code>, <code>mode</code>, <code>size</code> and
+<code>order</code>. Size uses <code>minus/plus</code>; order uses <code>up/down</code>. Reset, remove and
+promote require <code>confirmed:true</code>.</li>
+</ul>
+<p>The token covers authoritative inventory, templates and panels. Missing or
+changed tokens refuse with <code>SCENES_STALE</code> and a fresh snapshot before mutation.
+Confirmations keep their original identity and token; external changes require
+reviewing new state before trying again.</p>
+<p>Loader steps run directly through its reducer; panel/Ced/app steps use native
+Bus. A later failure retains the planner's partial-progress reporting and
+recovery semantics; this is not a distributed transaction. Completion replies
+include a complete snapshot when available. Events request refetches; the app
+does not guess deltas or automatically retry an uncertain mutating request.</p>
         </article>
-        <p class="doc-source"><a href="/application.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/scene-editor.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>

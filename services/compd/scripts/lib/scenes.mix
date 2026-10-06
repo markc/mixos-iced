@@ -1702,6 +1702,7 @@ fn editor_open($s, $args)
   if $args.first_run != nil and type($args.first_run) != "bool" then fail("SCENES_ARGUMENT", "first_run must be a bool", {first_run:$args.first_run}) end
   if $args.view != nil and not contains($VIEWS, $args.view) then fail("SCENES_ARGUMENT", "view must be gallery, installed or arrange", {view:$args.view}) end
   if $args.scene != nil and not valid_name($args.scene) then fail("SCENES_ARGUMENT", "scene must be a scene name", {scene:$args.scene}) end
+  if $s.editor_app == true then return $s.editor_frontend.open($s, $args) end
   $safe = $args.safe == true
   $e = $s.scenes.editor
   if $safe and $e.summoned and $e.copy == "shipped" and editor_visible($s) then
@@ -1773,6 +1774,7 @@ end
 
 fn editor_close($s, $args)
   if $args.unload != nil and type($args.unload) != "bool" then fail("SCENES_ARGUMENT", "unload must be a bool", {unload:$args.unload}) end
+  if $s.editor_app == true then return $s.editor_frontend.close($s, $args) end
   $s = editor_hide($s)
   if $s.rc != 0 then return $s end
   if $args.unload == true then

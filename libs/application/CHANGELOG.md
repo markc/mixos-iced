@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Opt-in `test-support` exposes the pinned UI simulator to app tests through
+  the shared host, keeping app manifests free of iced-family dependencies.
+
 ## 0.1.0
 
 - Share native bootstrap, take-once state ownership, single task worker, window
