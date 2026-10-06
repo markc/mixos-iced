@@ -156,19 +156,13 @@ pub struct App {
     pending: Option<Pending>,
     confirm: bool,
 }
-pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Result<(), String> {
-    let (handle, rx) = bus::spawn(service, url).map_err(|e| e.to_string())?;
-    let look = appearance::install(&appearance::Theme::load()).map_err(|e| e.to_string())?;
-    let font = look.ui_font();
+fn initial(look: appearance::Appearance, directory: PathBuf) -> App {
     let colour = look.tokens.palette.destructive;
-    DELIVERIES
-        .set(Mutex::new(Some(rx)))
-        .map_err(|_| "Cap already started in this process")?;
-    let mut app = App {
-        bus: Some(handle),
-        comp: comp.into(),
+    App {
+        bus: None,
+        comp: "comp".into(),
         look,
-        directory: capture::media_directory()?,
+        directory,
         request: Request::default(),
         delay: "0".into(),
         outputs: vec![],
@@ -205,7 +199,18 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         },
         pending: None,
         confirm: false,
-    };
+    }
+}
+pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Result<(), String> {
+    let (handle, rx) = bus::spawn(service, url).map_err(|e| e.to_string())?;
+    let look = appearance::install(&appearance::Theme::load()).map_err(|e| e.to_string())?;
+    let font = look.ui_font();
+    DELIVERIES
+        .set(Mutex::new(Some(rx)))
+        .map_err(|_| "Cap already started in this process")?;
+    let mut app = initial(look, capture::media_directory()?);
+    app.bus = Some(handle);
+    app.comp = comp.into();
     let mut startup = vec![app.refresh()];
     if let Some(path) = path {
         startup.push(app.open_path(path));
@@ -531,7 +536,7 @@ impl App {
                 }
                 let task = self.preview();
                 if let Some(action) = self.pending.take() {
-                    return Task::batch([task, self.perform_pending(action)]);
+                    return Task::batch([task, self.request_pending(action)]);
                 }
                 Task::batch([task, self.refresh()])
             }
@@ -1197,6 +1202,78 @@ struct Picture<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_app() -> App {
+        let theme = appearance::Theme::from_source("cap-test", "mode: \"dark\"\n").unwrap();
+        let look = appearance::install_with(
+            &theme,
+            appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
+        )
+        .unwrap();
+        initial(look, PathBuf::from("/tmp"))
+    }
+    #[test]
+    fn document_replacement_clears_preview_and_rejects_old_raster_results() {
+        let mut app = test_app();
+        app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());
+        app.preview = Some(iced::advanced::image::Handle::from_rgba(
+            10,
+            10,
+            vec![255; 400],
+        ));
+        app.metadata = json!({"output":"old"});
+        app.rendering = true;
+        let old_revision = app.revision;
+        let _ = app.update(Message::Opened(Ok((
+            PathBuf::from("/tmp/new.png"),
+            Document::new(image::RgbaImage::new(20, 30)).unwrap(),
+        ))));
+        assert!(app.preview.is_none());
+        assert!(app.metadata.is_null());
+        assert_eq!(app.document.as_ref().unwrap().dimensions(), (20, 30));
+        let _ = app.update(Message::Preview(
+            old_revision,
+            Ok(image::RgbaImage::new(10, 10)),
+        ));
+        assert!(app.preview.is_none());
+        app.preview = Some(iced::advanced::image::Handle::from_rgba(
+            10,
+            10,
+            vec![255; 400],
+        ));
+        let _ = app.update(Message::Captured(Ok(capture::Captured {
+            document: Document::new(image::RgbaImage::new(40, 50)).unwrap(),
+            path: PathBuf::from("/tmp/captured.png"),
+            metadata: json!({"output":"new"}),
+        })));
+        assert!(app.preview.is_none());
+        assert_eq!(app.document.as_ref().unwrap().dimensions(), (40, 50));
+    }
+    #[test]
+    fn quitting_during_a_cancelled_capture_preserves_dirty_work() {
+        let mut app = test_app();
+        let mut doc = Document::new(image::RgbaImage::new(40, 40)).unwrap();
+        doc.add(Shape {
+            kind: Kind::Rectangle,
+            points: vec![Point { x: 2.0, y: 2.0 }, Point { x: 20.0, y: 20.0 }],
+            colour: app.colour.into_rgba8(),
+            width: 2.0,
+            text: None,
+            size: None,
+            number: None,
+        })
+        .unwrap();
+        app.document = Some(doc);
+        app.busy = true;
+        let (cancel, rx) = tokio::sync::watch::channel(false);
+        app.cancel = Some(cancel);
+        let _ = app.update(Message::Quit);
+        assert!(*rx.borrow());
+        let _ = app.update(Message::Captured(Err("cancelled".into())));
+        assert!(app.confirm);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        assert!(app.document.as_ref().unwrap().dirty());
+        assert_eq!(app.document.as_ref().unwrap().objects().len(), 1);
+    }
     #[test]
     fn full_freehand_stroke_keeps_its_accumulated_geometry() {
         use canvas::Program;
