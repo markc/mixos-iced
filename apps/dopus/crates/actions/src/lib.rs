@@ -53,13 +53,13 @@ pub use resolve::{
 };
 
 /// Studio's checked-in built-in keymap, suitable for [`parse_keymap`].
-pub const STUDIO_DEFAULT_KEYMAP_MIX: &str = include_str!("../assets/studio-default-keymap.mix");
+pub const STUDIO_DEFAULT_KEYMAP_MIX: &str = include_str!("../assets/studio_default_keymap.mix");
 
 /// FileMgr's checked-in built-in keymap, suitable for [`parse_keymap`].
-pub const FILEMGR_DEFAULT_KEYMAP_MIX: &str = include_str!("../assets/filemgr-default-keymap.mix");
+pub const FILEMGR_DEFAULT_KEYMAP_MIX: &str = include_str!("../assets/filemgr_default_keymap.mix");
 
 /// Dopus defaults: FileMgr's bindings plus Ctrl+L for location focus.
-pub const DOPUS_DEFAULT_KEYMAP_MIX: &str = include_str!("../assets/dopus-default-keymap.mix");
+pub const DOPUS_DEFAULT_KEYMAP_MIX: &str = include_str!("../assets/dopus_default_keymap.mix");
 
 #[cfg(test)]
 mod tests;

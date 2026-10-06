@@ -61,7 +61,7 @@ pub fn read_primary() -> Task<Option<String>> {
 }
 
 /// Write the native primary selection without producing an application message.
-pub fn write_primary<T>(text: String) -> Task<T> {
+pub fn write_primary<T: crate::futures::MaybeSend + 'static>(text: String) -> Task<T> {
     write(Content::PrimaryText(text)).discard()
 }
 

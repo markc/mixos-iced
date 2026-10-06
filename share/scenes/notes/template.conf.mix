@@ -1,0 +1,8 @@
+schema: 1
+name: "notes"
+title: "Notifications"
+behaviour: "behaviour.mix"
+description: "Live notifications with Clear all"
+recommended: true
+order: 40
+requires: ["notify"]
