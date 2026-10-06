@@ -28,9 +28,12 @@ mod bench;
 #[path = "cpu_bands.rs"]
 mod bands;
 pub use bands::Surface;
-#[path = "cpu_widget.rs"]
-mod widget;
-pub use widget::{Grid, view};
+use application::native_grid as widget;
+pub use widget::Grid;
+
+pub fn view(frame: &Arc<Mutex<Frame>>, scale: f32) -> Grid {
+    Grid::new(frame.lock().expect("frame lock").surface().images(scale), scale)
+}
 
 /// CPU-only counterpart of the core's Vec-backed Surface. Keeping the handle
 /// here lets painting release ALL app-owned references before reclaiming.

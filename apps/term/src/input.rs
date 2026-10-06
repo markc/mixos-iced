@@ -206,13 +206,12 @@ pub fn pointer_cell(
     cell: (f32, f32),
     grid: (u16, u16),
 ) -> (u16, u16) {
-    let index = |value: f32, size: f32, count: u16| {
-        (((value - border).max(0.0) / size) as u16).min(count.saturating_sub(1))
-    };
-    (
-        index(position.x, cell.0, grid.0),
-        index(position.y, cell.1, grid.1),
-    )
+    toolkit::GridGeometry {
+        cell: application::iced::Size::new(cell.0, cell.1),
+        columns: grid.0,
+        rows: grid.1,
+        border,
+    }.cell_at(position).unwrap_or((0, 0))
 }
 
 /// The lowercase Latin letter a chord key stands for: the layout's own

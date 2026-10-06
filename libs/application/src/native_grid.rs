@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use super::*;
-use application::iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
-use application::iced::{Length, Rectangle, Size};
+//! Native CPU grid bands, retained without conversion to ordinary image handles.
+use crate::cpu::grid::Handle;
+use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
+use iced::{Length, Rectangle, Size};
 
 pub struct Grid {
     images: Vec<(Handle, Rectangle)>,
@@ -10,16 +11,12 @@ pub struct Grid {
     height: Length,
 }
 
-pub fn view(frame: &Arc<Mutex<Frame>>, scale: f32) -> Grid {
-    Grid {
-        images: frame.lock().expect("frame lock").surface().images(scale),
-        scale,
-        width: Length::Shrink,
-        height: Length::Shrink,
-    }
-}
-
 impl Grid {
+    pub fn new(images: Vec<(Handle, Rectangle)>, scale: f32) -> Self {
+        assert!(scale.is_finite() && scale > 0.0);
+        Self { images, scale, width: Length::Shrink, height: Length::Shrink }
+    }
+
     pub fn width(mut self, width: Length) -> Self {
         self.width = width;
         self
@@ -33,10 +30,10 @@ impl Grid {
 /// Shared by the widget and benchmark. Bounds are physical extents divided
 /// by output scale, never by available layout space. Snap only the origin;
 /// deriving every band's origin from integer pixels prevents fractional seams.
-pub(super) fn draw_images(
-    renderer: &mut application::cpu::Renderer,
+pub fn draw_images(
+    renderer: &mut crate::cpu::Renderer,
     images: &[(Handle, Rectangle)],
-    origin: application::iced::Point,
+    origin: iced::Point,
     scale: f32,
     clip: Rectangle,
 ) {
@@ -57,14 +54,14 @@ pub(super) fn draw_images(
     }
 }
 
-impl<Message, Theme> Widget<Message, Theme, application::cpu::Renderer> for Grid {
+impl<Message, Theme> Widget<Message, Theme, crate::cpu::Renderer> for Grid {
     fn size(&self) -> Size<Length> {
         Size::new(self.width, self.height)
     }
     fn layout(
         &mut self,
         _: &mut Tree,
-        _: &application::cpu::Renderer,
+        _: &crate::cpu::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         layout::Node::new(limits.resolve(self.width, self.height, Size::ZERO))
@@ -72,7 +69,7 @@ impl<Message, Theme> Widget<Message, Theme, application::cpu::Renderer> for Grid
     fn draw(
         &self,
         _: &Tree,
-        renderer: &mut application::cpu::Renderer,
+        renderer: &mut crate::cpu::Renderer,
         _: &Theme,
         _: &renderer::Style,
         layout: Layout<'_>,
@@ -86,7 +83,7 @@ impl<Message, Theme> Widget<Message, Theme, application::cpu::Renderer> for Grid
 }
 
 impl<'a, Message: 'a, Theme: 'a> From<Grid>
-    for application::iced::Element<'a, Message, Theme, application::cpu::Renderer>
+    for iced::Element<'a, Message, Theme, crate::cpu::Renderer>
 {
     fn from(grid: Grid) -> Self {
         Self::new(grid)

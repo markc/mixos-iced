@@ -24,6 +24,8 @@ use term_core::terminal::Screen;
 /// The grid image plus the regions of it nobody has presented yet.
 #[derive(Default)]
 pub struct Frame {
+    #[cfg(feature = "wgpu")]
+    pub(crate) gpu_id: application::gpu_grid::GridId,
     /// Last captured VT caret, for IME placement without locking the terminal.
     cursor: Option<(usize, usize)>,
     surface: Surface,

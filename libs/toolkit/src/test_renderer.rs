@@ -11,6 +11,7 @@ pub(crate) struct LayoutRenderer {
     pub(crate) paragraphs: Vec<Rectangle>,
     pub(crate) paragraph_colours: Vec<Color>,
     pub(crate) quads: Vec<(Rectangle, Background)>,
+    pub(crate) layers: Vec<Rectangle>,
 }
 
 impl LayoutRenderer {
@@ -25,12 +26,12 @@ impl LayoutRenderer {
             let mut system = iced_graphics::text::font_system().write().unwrap();
             system.raw().db_mut().set_monospace_family("Fira Sans");
         });
-        Self { paragraphs: Vec::new(), paragraph_colours: Vec::new(), quads: Vec::new() }
+        Self { paragraphs: Vec::new(), paragraph_colours: Vec::new(), quads: Vec::new(), layers: Vec::new() }
     }
 }
 
 impl iced_core::Renderer for LayoutRenderer {
-    fn start_layer(&mut self, _bounds: Rectangle) {}
+    fn start_layer(&mut self, bounds: Rectangle) { self.layers.push(bounds); }
     fn end_layer(&mut self) {}
     fn start_transformation(&mut self, _transformation: Transformation) {}
     fn end_transformation(&mut self) {}

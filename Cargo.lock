@@ -176,6 +176,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "application"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_program",
+ "iced_runtime",
+ "iced_tiny_skia",
+]
+
+[[package]]
 name = "appearance"
 version = "0.1.1"
 dependencies = [
@@ -798,8 +808,9 @@ dependencies = [
 
 [[package]]
 name = "ced"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
+ "application",
  "anyhow",
  "appearance",
  "blake3",
@@ -809,8 +820,6 @@ dependencies = [
  "design",
  "edit",
  "editor-model",
- "iced",
- "iced_tiny_skia",
  "proptest",
  "rand 0.8.8",
  "scene",
@@ -1510,8 +1519,9 @@ dependencies = [
 
 [[package]]
 name = "dopus"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
+ "application",
  "actions",
  "anyhow",
  "appearance",
@@ -1521,9 +1531,6 @@ dependencies = [
  "config",
  "design",
  "dopus-core",
- "iced",
- "iced_runtime",
- "iced_tiny_skia",
  "resvg 0.47.0",
  "serde",
  "serde_json",
@@ -7235,16 +7242,15 @@ dependencies = [
 
 [[package]]
 name = "term"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
+ "application",
  "appearance",
  "buildinfo",
  "bus",
  "bytes",
  "config",
  "design",
- "iced",
- "iced_tiny_skia",
  "libc",
  "serde_json",
  "term-core",
@@ -7671,7 +7677,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toolkit"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "fluent-bundle",
  "iced",

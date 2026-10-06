@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+- `TerminalPane` composes clipped renderer surfaces, focus borders and pane
+  wheel actions without terminal-engine or renderer dependencies.
+- `GridGeometry` shares fractional-scale cell hit-testing and IME cursor
+  placement, including empty and malformed geometry handling.
+
 ## 0.2.1
 
 - `CenteredButton` and `centered`: intrinsic labels and groups centre inside

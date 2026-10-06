@@ -13,6 +13,12 @@ pub use iced_runtime as runtime;
 #[cfg(feature = "tiny-skia")]
 pub use iced_tiny_skia as cpu;
 
+#[cfg(feature = "tiny-skia")]
+pub mod native_grid;
+
+#[cfg(feature = "wgpu")]
+pub mod gpu_grid;
+
 /// Native window configuration. Close deferral lets applications finish saving
 /// before their reducer explicitly exits; it does not install a shutdown hook.
 pub struct Window {

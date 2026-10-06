@@ -3,7 +3,7 @@
 -- Native app components use the shared host, without direct iced-family edges.
 $root=dirname(dirname(realpath($0)))
 if len(args())!=0 then raise("USAGE","application_gate.mix takes no arguments") end
-$metadata=json_decode(run_argv_must(["cargo","metadata","--locked","--format-version","1","--no-deps"],{cwd:$root,timeout:120}))
+$metadata=json_parse(run_argv_must(["cargo","metadata","--locked","--format-version","1","--no-deps"],{cwd:$root,timeout:120}))
 $apps=["ced","dopus","term"]
 $principals=[]
 for each $package in $metadata.packages

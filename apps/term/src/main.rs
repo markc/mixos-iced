@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! MixOS Term — the lightweight frontend: iced 0.14 on its own winit/Wayland
+//! MixOS Term — the lightweight frontend: the shared native application host
 //! backend (D2/D3), drawing `term-core`'s grid through native tiny-skia
 //! bands by default, or one persistent wgpu texture per visible pane (D7).
 //!
@@ -21,7 +21,6 @@ mod clipboard;
 mod frame;
 mod ime;
 mod input;
-mod keys;
 mod layout;
 #[cfg(test)]
 mod native_tests;
@@ -37,7 +36,7 @@ mod cpu_grid;
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
 use frame::Painter;
-use application::iced::widget::{Row, button, column, container, mouse_area, row, space, text};
+use application::iced::widget::{Row, button, column, container, row, space, text};
 use application::iced::{Background, Border, Element, Length, Size, Subscription, Task};
 use input::Action;
 use layout::{Node, Shape};
@@ -665,19 +664,19 @@ fn view(state: &State) -> Element<'_, Message> {
     let ime_cursor = pane_bounds
         .iter()
         .find(|(id, _)| *id == state.shape.active_pane)
-        .map(|(id, pane)| {
+        .and_then(|(id, pane)| {
             let (col, row) = state
                 .painter
                 .existing(*id)
                 .and_then(|frame| frame.lock().expect("frame").cursor())
                 .unwrap_or((0, 0));
             let (cw, ch) = state.painter.logical_cell();
-            application::iced::Rectangle::new(
-                application::iced::Point::new(
-                    pane.x + layout::border(scale) + col as f32 * cw,
-                    pane.y + layout::border(scale) + row as f32 * ch,
-                ),
-                application::iced::Size::new(cw, ch),
+            let &(columns, rows) = state.grids.get(id)?;
+            toolkit::GridGeometry {
+                cell: Size::new(cw, ch), columns, rows, border: layout::border(scale),
+            }.cursor_rect(
+                application::iced::Point::new(pane.x, pane.y),
+                (u16::try_from(col).unwrap_or(u16::MAX), u16::try_from(row).unwrap_or(u16::MAX)),
             )
         });
     let hovered = move |position: application::iced::Point| {
@@ -698,7 +697,7 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     let last = std::cell::Cell::new(state.pointer.get().and_then(&hovered));
     let mouse = clipboard::MouseEvents::new(state);
-    let mut content = keys::keys(column![tab_strip(state, scale), panes], move |event| {
+    let mut content = toolkit::keys::keys(column![tab_strip(state, scale), panes], move |event| {
         state
             .right_shift
             .set(input::right_shift_after(event, state.right_shift.get()));
@@ -854,26 +853,8 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
         // Not sized or painted yet: sync sizes it, then the next redraw paints.
         _ => space().into(),
     };
-    let frame_colour = frame_colour(&state.shape, id, tokens);
-    let inner = container(grid)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        // A pane smaller than two columns still gets a two-column PTY; its
-        // texture must not paint over the neighbour.
-        .clip(true)
-        .style(move |_theme| container::Style {
-            background: Some(tokens.palette.surface.into()),
-            ..container::Style::default()
-        });
-    let outer = container(inner)
-        .padding(layout::border(scale))
-        .width(Length::Fixed(bounds.w))
-        .height(Length::Fixed(bounds.h))
-        .style(move |_theme| container::Style {
-            background: Some(frame_colour.into()),
-            ..container::Style::default()
-        });
-    mouse_area(outer)
+    toolkit::TerminalPane::new(grid, Size::new(bounds.w, bounds.h), layout::border(scale), tokens)
+        .focus_ring(show_focus_ring(&state.shape, id))
         .on_scroll(move |delta| Message::Wheel(id, delta))
         .into()
 }
@@ -882,12 +863,8 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
 /// shows only when there is a choice: a lone pane wears the plain border, as
 /// foot shows nothing at all. The border's WIDTH never changes — that is what
 /// keeps focus changes from resizing a PTY — only its colour.
-fn frame_colour(shape: &Shape, id: u64, tokens: toolkit::Tokens) -> application::iced::Color {
-    if id == shape.active_pane && shape.visible().len() > 1 {
-        tokens.palette.ring
-    } else {
-        tokens.palette.border
-    }
+fn show_focus_ring(shape: &Shape, id: u64) -> bool {
+    id == shape.active_pane && shape.visible().len() > 1
 }
 
 #[cfg(feature = "wgpu")]
@@ -1604,17 +1581,12 @@ mod tests {
 
     #[test]
     fn the_focus_ring_shows_only_when_there_is_more_than_one_pane() {
-        let tokens = theme::tokens();
-        assert_ne!(
-            tokens.palette.ring, tokens.palette.border,
-            "the test needs two distinct tokens"
-        );
         let lone = Shape {
             tabs: Vec::new(),
             tree: Some(Node::Leaf(7)),
             active_pane: 7,
         };
-        assert_eq!(frame_colour(&lone, 7, tokens), tokens.palette.border);
+        assert!(!show_focus_ring(&lone, 7));
 
         let split = Shape {
             tree: Some(Node::Split {
@@ -1625,8 +1597,8 @@ mod tests {
             }),
             ..lone
         };
-        assert_eq!(frame_colour(&split, 7, tokens), tokens.palette.ring);
-        assert_eq!(frame_colour(&split, 8, tokens), tokens.palette.border);
+        assert!(show_focus_ring(&split, 7));
+        assert!(!show_focus_ring(&split, 8));
     }
 
     /// A real `State` with a PTY-backed tab set, no window and no Bus.
