@@ -677,10 +677,21 @@ impl SupervisedClient {
     /// already down the broker dropped the name on socket close, and this
     /// reports [`SupervisedError::Disconnected`]: already gone, carry on.
     pub async fn deregister(&self) -> Result<(), SupervisedError> {
+        let result = self.deregister_for_drain().await;
+        self.close().await;
+        result
+    }
+
+    /// Remove the broker registration while retaining the delivered-generation
+    /// transport for a bounded shutdown reply drain. Ordinary outbound work and
+    /// reconnect publication are fenced immediately. The caller must finish
+    /// with [`Self::close`], including after an RPC error. Cancelling this future
+    /// stops the supervisor and closes the retained transport.
+    pub async fn deregister_for_drain(&self) -> Result<(), SupervisedError> {
         publish_state(&self.state_tx, &self.state_publish, ConnState::ShuttingDown);
         // Cancellation must still wake terminal cleanup; signalling before
         // the RPC would let that cleanup close its transport prematurely.
-        let stop = StopOnDrop(&self.shutdown_tx);
+        let mut stop = StopOnDrop(Some(&self.shutdown_tx));
         let connection = self.connection().await;
         let result = if connection.is_connected() {
             connection
@@ -690,10 +701,7 @@ impl SupervisedClient {
         } else {
             Err(SupervisedError::Disconnected)
         };
-        drop(stop);
-        if let Some(handle) = self.supervisor.lock().await.take() {
-            let _ = handle.await;
-        }
+        stop.0 = None;
         result
     }
 }
@@ -711,11 +719,13 @@ fn topic_headers(topic: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("name".to_string(), topic.to_string())])
 }
 
-struct StopOnDrop<'a>(&'a watch::Sender<bool>);
+struct StopOnDrop<'a>(Option<&'a watch::Sender<bool>>);
 
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
-        let _ = self.0.send(true);
+        if let Some(sender) = self.0 {
+            let _ = sender.send(true);
+        }
     }
 }
 
@@ -849,7 +859,9 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
             }
         }
 
-        if stop_requested(&ctx.shutdown_rx) {
+        if stop_requested(&ctx.shutdown_rx)
+            || matches!(*ctx.state_tx.borrow(), ConnState::ShuttingDown | ConnState::Fatal)
+        {
             return;
         }
 
@@ -874,7 +886,9 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                 }
                 _ = tokio::time::sleep(delay) => {}
             }
-            if stop_requested(&ctx.shutdown_rx) {
+            if stop_requested(&ctx.shutdown_rx)
+                || matches!(*ctx.state_tx.borrow(), ConnState::ShuttingDown | ConnState::Fatal)
+            {
                 return;
             }
 

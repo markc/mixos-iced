@@ -30,6 +30,7 @@ struct StubState {
     /// Every `topic.subscribe` seen, rejected ones included.
     subscribe_attempts: usize,
     deregistered: bool,
+    responses: Vec<BusMessage>,
     /// Connections accepted so far.
     connections: usize,
     /// Connections currently open. A reconnect socket the client leaked
@@ -143,6 +144,10 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                     Ok(m) => m,
                     Err(_) => continue,
                 };
+                if req.get("rc").is_some() {
+                    stub.state.lock().await.responses.push(req);
+                    continue;
+                }
                 let command = req.get("command").unwrap_or("").to_string();
                 match command.as_str() {
                     "noded.register" => {
@@ -714,6 +719,40 @@ async fn reconnect_registration_rejection_is_terminal_when_opted_in() {
     let s = stub.state.lock().await;
     assert_eq!(s.connections, 2, "opt-in rejection must not be retried");
     assert!(s.open_connections <= 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deregistered_service_drains_terminal_reply_then_closes_transport() {
+    let stub = Stub::flooding(1);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect("draining", &url).await.unwrap();
+    let mut incoming = client.incoming().unwrap();
+    let command = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await.unwrap().unwrap();
+    client.deregister_for_drain().await.unwrap();
+    assert_eq!(client.state(), ConnState::ShuttingDown);
+    assert!(stub.state.lock().await.deregistered);
+    assert_eq!(stub.state.lock().await.open_connections, 1);
+    assert!(matches!(client.respond(&command, 0, "ordinary").await,
+        Err(SupervisedError::ShuttingDown)));
+    client.respond_parts_shutdown_synth(command.generation, &command.from,
+        &command.command, command.id.as_deref(), 16, "cancelled").await.unwrap();
+    assert!(wait_until(5, || stub.state.try_lock()
+        .map(|s| s.responses.len() == 1).unwrap_or(false)).await);
+    {
+        let state = stub.state.lock().await;
+        let reply = &state.responses[0];
+        assert_eq!(reply.get("id"), command.id.as_deref());
+        assert_eq!(reply.get("to"), Some(command.from.as_str()));
+        assert_eq!(reply.get("rc"), Some("16"));
+        assert_eq!(reply.body, "cancelled");
+    }
+    client.close().await;
+    assert!(wait_until(5, || stub.state.try_lock()
+        .map(|s| s.open_connections == 0).unwrap_or(false)).await);
+    assert!(client.respond_parts_shutdown_synth(command.generation, &command.from,
+        &command.command, command.id.as_deref(), 16, "late").await.is_err());
+    assert_eq!(stub.state.lock().await.connections, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

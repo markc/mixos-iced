@@ -158,13 +158,13 @@ async fn two_production_brokers_route_verified_native_clients() {
             assert_eq!(peers["source"], "signed-inventory", "{peers}");
             assert!(peers["peers"].as_array().unwrap().iter().any(|peer| peer["name"] == "beta" || peer["name"] == "alpha"));
         }
-        let mut incoming = service.client().incoming().unwrap();
         let responder = async {
             for _ in 0..2 {
-                let command = incoming.recv().await.unwrap();
+                let delivery = service.recv_shared().await.unwrap();
+                let command = delivery.command();
                 assert_eq!(command.command, "echo.tag");
                 let value: Value = serde_json::from_str(&command.body).unwrap();
-                service.client().respond(&command, 0, &value.to_string()).await.unwrap();
+                service.client().respond(command, 0, &value.to_string()).await.unwrap();
             }
         };
         // Both fresh connections use the same call counter. The mesh must

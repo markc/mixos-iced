@@ -1068,11 +1068,18 @@ mod widget_tests {
         }"#,
         );
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let node = router.layout(
+            &mut tree,
+            &(),
+            &layout::Limits::new(Size::ZERO, Size::new(300.0, 100.0)),
+        );
+        let editor = Layout::new(&node).children().next().unwrap().bounds();
+        assert!(editor.width > 0.0 && editor.height > 0.0);
         let inside = send(
             &mut router,
             &mut tree,
             press.clone(),
-            mouse::Cursor::Available(iced::Point::new(10.0, 10.0)),
+            mouse::Cursor::Available(editor.center()),
         )
         .0;
         assert!(!inside.contains(&Message::Cancel));

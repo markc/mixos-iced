@@ -1831,7 +1831,7 @@ fn run_serve(script_path: &str, service_name: &str, no_prelude: bool) -> i32 {
         //     drop = immediate cancel" per task #60 / C.7f semantics).
         let (deregistered, allow_synth_replies, drain_grace) = match tokio::time::timeout(
             DEREGISTER_GRACE,
-            supervised.deregister(),
+            supervised.deregister_for_drain(),
         )
         .await
         {
@@ -1929,6 +1929,7 @@ fn run_serve(script_path: &str, service_name: &str, no_prelude: bool) -> i32 {
         let drain_outcome = eval
             .drain_class_c_for_shutdown(drain_grace, allow_synth_replies)
             .await;
+        supervised.close().await;
         eval.close_native_events();
         let drain_unclean = drain_outcome.aborted > 0 || drain_outcome.synth_failed > 0;
         if drain_unclean {
