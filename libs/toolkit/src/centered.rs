@@ -351,7 +351,7 @@ mod tests {
     struct ButtonTheme;
     impl button::Catalog for ButtonTheme {
         type Class<'a> = ();
-        fn default<'a>() {}
+        fn default<'a>() -> Self::Class<'a> {}
         fn style(&self, _: &(), status: button::Status) -> button::Style {
             let palette = crate::Tokens::dark().palette;
             button::Style {
@@ -363,7 +363,7 @@ mod tests {
     }
     impl iced_core::widget::text::Catalog for ButtonTheme {
         type Class<'a> = ();
-        fn default<'a>() {}
+        fn default<'a>() -> Self::Class<'a> {}
         fn style(&self, _: &()) -> iced_core::widget::text::Style {
             iced_core::widget::text::Style::default()
         }
