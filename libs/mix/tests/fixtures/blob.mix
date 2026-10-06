@@ -1,0 +1,622 @@
+-- Retained runtime-library fixture from cosmix e029724.
+-- HTTP data-lane headers are frozen and retain their bytes.
+-- version: 0.2.0
+-- mix/blob.mix — the Mix surface over cosmix-blobd's blob.* verbs (the
+-- design's §4.4: a require() library, not builtins). Bus verbs wrap send;
+-- caller-local file transfers use the discovered HTTP lane. Both answer
+-- a uniform map
+-- {ok, rc, result} — never a raise on a Bus failure: blobd absent comes
+-- back rc=10 with "Service 'blobd' not found" in result, a broker-less
+-- host rc=-3, a lost broker rc=-1 (send's own non-fatal bands).
+--
+-- Load beside the daemon:
+--   $b = require("…/cosmix-blobd/mix/blob.mix")
+--   $r = $b.blob_put("/var/lib/cosmix/capture/shot.png", {owner: "capture"})
+--   if not $r.ok then die $r.result end
+--
+-- Paths the daemon can see: blob.put reads the path as the cosmix-blobd
+-- user inside its unit's sandbox. PrivateTmp=yes gives it its own /tmp
+-- and /var/tmp (a caller's /tmp file is not there), ProtectHome=yes
+-- hides /home, /root and /run/user, and the file must be readable by
+-- cosmix-blobd — in practice group cosmix-blob. Stage under a state
+-- directory such as /var/lib/<service>/ or /srv/.
+--
+-- A named instance (`cosmix-blobd --name two`, service `blobd-two`) is
+-- reached by passing {service: "blobd-two"} — every wrapper takes it.
+--
+-- ── blob_fetch_wait and the event channel ─────────────────────────────
+-- blob.fetched is retain:false, so it only reaches a subscriber that was
+-- subscribed BEFORE the fetch was sent; blob_fetch_wait subscribes first,
+-- sends second, and then waits on the delivery (a `sleep` tick is only the
+-- yield that lets the event pump dispatch — no blob.stat traffic, the
+-- no-poll law). The channel is a top-level global the CALLER owns, and it
+-- cannot be this module's: an `on` handler body runs against the calling
+-- script's scope with no module environment (so it can neither see nor
+-- write a module var), and module vars reach module functions by value
+-- per call (so the wait could never see a push). The one global this
+-- library reads is therefore:
+--
+--   $blobd_fetched = []          -- top level, before the first wait
+--   $w = $b.blob_fetch_wait($r.result, 60)
+--
+-- Lint contract: `mix lint --allow-global blobd_fetched mix/blob.mix` —
+-- the flag declares the one caller-provided global. Mix lint has no
+-- in-file pragma for a caller-provided global yet. The 50 ms wait tick
+-- goes once Mix has wait_event(topic, timeout) — a blocking receive
+-- needs neither the handler nor the channel.
+--
+-- And because the wait registers an `on blob.fetched` handler, a ONE-SHOT
+-- script ends with quit() (the ephemeral-citizen retirement) or the event
+-- pump keeps the process alive; a serve citizen ignores this.
+
+-- Reference-semantic once-guard for the shared handler: module vars are
+-- injected by value per call, but a buffer aliases its storage, so the
+-- first caller arms and later callers see it armed.
+$_armed = buffer()
+
+-- ── arg helpers ────────────────────────────────────────────────────────
+
+-- The blob id of a reference: the map's `blob` member, a "b3:<hex>"
+-- string as-is, a bare hash normalised to "b3:<hex>".
+fn _id($ref)
+  if $ref == nil then return nil end
+  if type($ref) == "map" then return $ref.blob end
+  $s = to_string($ref)
+  if slice($s, 0, 3) == "b3:" then return $s end
+  return "b3:" .. $s
+end
+
+-- An opts member, nil-safe for a missing opts map.
+fn _opt($opts, $key)
+  if $opts == nil then return nil end
+  return $opts[$key]
+end
+
+-- The service to address: blobd, or blobd-<name> via {service: …}.
+fn _svc($opts)
+  return _opt($opts, "service") ?? "blobd"
+end
+
+-- The uniform reply of every send wrapper, taking the send's outcome as
+-- ARGUMENTS: `$rc`/`$result` set by a send inside a function bind that
+-- function's frame (a helper's free-name read cannot see them — function
+-- reads fall through to globals only), so each wrapper reads them in its
+-- own frame, immediately after its send, and hands them over.
+fn _done($rc, $reply)
+  return {ok: $rc >= 0 and $rc < 10, rc: $rc, result: $reply}
+end
+
+-- ── pure reference helpers ─────────────────────────────────────────────
+
+-- Build a reference map from a hash (and optional size/mime). `origin`
+-- is filled in by whichever node serves it; a fetch fills it from the
+-- reference it was given.
+fn blob_ref($hash, $size, $mime)
+  return {blob: _id($hash), size: $size ?? 0, mime: $mime ?? "application/octet-stream"}
+end
+
+-- The blob id ("b3:<64 hex>") of a reference map or id string.
+fn blob_hash($ref)
+  return _id($ref)
+end
+
+-- ── verb wrappers ──────────────────────────────────────────────────────
+
+-- blob.put: daemon-local ingest of a readable path. $opts: mime, name,
+-- owner, mode (copy|reflink|hardlink), immutable, service.
+fn blob_put($path, $opts)
+  $r = send _svc($opts) blob.put path=$path mime=_opt($opts, "mime") name=_opt($opts, "name") owner=_opt($opts, "owner") mode=_opt($opts, "mode") immutable=_opt($opts, "immutable")
+  return _done($rc, $r)
+end
+
+-- blob.stat: {present, size, mime, name, pins, origin, first_put}.
+fn blob_stat($ref, $opts)
+  $r = send _svc($opts) blob.stat blob=_id($ref)
+  return _done($rc, $r)
+end
+
+-- blob.path: the absolute CAS path for zero-copy same-node reads.
+fn blob_path($ref, $opts)
+  $r = send _svc($opts) blob.path blob=_id($ref)
+  return _done($rc, $r)
+end
+
+-- blob.url: the lane URL (needs the bytes present and a lane configured).
+fn blob_url($ref, $opts)
+  $r = send _svc($opts) blob.url blob=_id($ref)
+  return _done($rc, $r)
+end
+
+-- blob.has: bulk presence check. $list is a list of blob ids (or
+-- reference maps); the reply carries present/missing id arrays. (A plain
+-- loop, not map()+lambda: an expression lambda does not resolve module
+-- functions by free name.)
+fn blob_has($list, $opts)
+  $ids = []
+  for each $one in ($list ?? [])
+    push($ids, _id($one))
+  end
+  $r = send _svc($opts) blob.has blobs=$ids
+  return _done($rc, $r)
+end
+
+-- blob.pin / blob.unpin: owner-tagged pins; both idempotent.
+fn blob_pin($ref, $owner, $opts)
+  $r = send _svc($opts) blob.pin blob=_id($ref) owner=$owner
+  return _done($rc, $r)
+end
+
+fn blob_unpin($ref, $owner, $opts)
+  $r = send _svc($opts) blob.unpin blob=_id($ref) owner=$owner
+  return _done($rc, $r)
+end
+
+-- blob.list: inventory. $opts: owner, limit, cursor, service.
+fn blob_list($opts)
+  $r = send _svc($opts) blob.list owner=_opt($opts, "owner") limit=_opt($opts, "limit") cursor=_opt($opts, "cursor")
+  return _done($rc, $r)
+end
+
+-- blob.quota: used/limit per owner and total.
+fn blob_quota($owner, $opts)
+  $r = send _svc($opts) blob.quota owner=$owner
+  return _done($rc, $r)
+end
+
+-- blob.gc: refcount sweep; pass true for the dry run.
+fn blob_gc($dry_run, $opts)
+  $r = send _svc($opts) blob.gc dry_run=$dry_run
+  return _done($rc, $r)
+end
+
+-- ── caller-local streaming file transfers (Mix >= 0.97.0) ───────────────
+-- Unlike blob_put, these paths belong to the caller. Keep the source and
+-- resume record exclusive to one caller. Transfer errors retain the usual
+-- {ok, rc, result} envelope; the durable record is never removed implicitly.
+
+fn _file_error($message)
+  return {ok: false, rc: 10, result: $message}
+end
+
+fn _file_uint($n, $label)
+  if type($n) != "number" then raise("BLOB_FILE_INVALID", $label .. " must be a number") end
+  if not ($n >= 0 and $n <= 9007199254740991 and floor($n) == $n) then
+    raise("BLOB_FILE_INVALID", $label .. " must be an exact nonnegative integer")
+  end
+  return $n
+end
+
+fn _file_header($response, $key)
+  $values = $response.headers[$key]
+  if type($values) != "list" or length($values) != 1 then return nil end
+  return $values[0]
+end
+
+fn _file_header_uint($response, $key)
+  $s = _file_header($response, $key)
+  if type($s) != "string" or not re_match($s, "^[0-9]+$") then
+    raise("BLOB_FILE_PROTOCOL", "missing or invalid " .. $key)
+  end
+  return _file_uint(to_number($s), $key)
+end
+
+fn _file_hash($ref)
+  $id = _id($ref)
+  if type($id) != "string" or not re_match($id, "^b3:[0-9a-f]{64}$") then
+    raise("BLOB_FILE_INVALID", "a BLAKE3 reference is required")
+  end
+  return slice($id, 3, 67)
+end
+
+fn _file_options($opts, $control)
+  $out = {}
+  for each $key in ["ssl_verify", "ca_file", "ca_pem"]
+    if _opt($opts, $key) != nil then $out[$key] = $opts[$key] end
+  end
+  if $control then
+    -- Buffered, body-free control calls keep their existing timeout contract.
+    $out.timeout = _opt($opts, "control_timeout") ?? 30
+  else
+    for each $key in ["idle_timeout", "deadline"]
+      if _opt($opts, $key) != nil then $out[$key] = $opts[$key] end
+    end
+  end
+  return $out
+end
+
+fn _file_lane($opts)
+  $lane = send _svc($opts) blob.props.get path="lane.bind"
+  if $rc < 0 or $rc >= 10 then return _done($rc, $lane) end
+  -- lane.bind is an authority (IPv6 already bracketed), not a URL.
+  if type($lane) != "string" or $lane == "" then return _file_error("target has no blob lane") end
+  if contains($lane, "/") or contains($lane, "@") or contains($lane, "?") or contains($lane, "#") then
+    return _file_error("invalid lane.bind authority")
+  end
+  $url = "http://" .. $lane
+  $parts = url_parse($url)
+  -- url_parse normalises an explicit :80 to its default port (nil).
+  if $parts.host == nil or ($parts.port == nil and not re_match($lane, ":80$")) then return _file_error("invalid lane.bind address") end
+  return {ok: true, rc: 0, result: $url}
+end
+
+fn _file_same_record($saved, $identity)
+  if type($saved) != "map" then return false end
+  for each $key in ["service", "owner", "size", "blake3", "mime", "name"]
+    if $saved[$key] != $identity[$key] then return false end
+  end
+  if type($saved.key) != "string" or not re_match($saved.key, "^[0-9a-f-]{36}$") then return false end
+  if $saved.upload != nil and (type($saved.upload) != "string" or not re_match($saved.upload, "^[0-9a-f-]{36}$")) then return false end
+  return true
+end
+
+fn _file_save($path, $record)
+  write_atomic($path, json_encode($record), {durability: "full", mode: 0o600})
+end
+
+fn _file_status($url, $record, $opts)
+  $h = http_request("HEAD", $url, nil, {}, _file_options($opts, true))
+  return _file_status_response($h, $record)
+end
+
+fn _file_status_response($h, $record)
+  if $h.status != 200 then return _file_error($h) end
+  $name = _file_header($h, "x-cosmix-name")
+  if $name != nil then $name = url_decode(replace($name, "+", "%2B")) end
+  if _file_header($h, "x-cosmix-owner") != $record.owner or _file_header_uint($h, "x-cosmix-size") != $record.size or _file_header($h, "x-cosmix-expect") != "b3:" .. $record.blake3 or _file_header($h, "x-cosmix-upload-key") != $record.key or _file_header($h, "x-cosmix-mime") != $record.mime or $name != $record.name then
+    return _file_error("session identity differs from resume record")
+  end
+  $offset = _file_header_uint($h, "x-cosmix-offset")
+  if $offset > $record.size then return _file_error("session offset exceeds declared size") end
+  $state = _file_header($h, "x-cosmix-state")
+  if not contains(["active", "committing", "complete"], $state) then return _file_error("session is " .. to_string($state)) end
+  return {ok: true, rc: 0, result: {offset: $offset, state: $state}}
+end
+
+fn _file_cleanup_completed($resume, $identity, $opts)
+  -- Completion is already proven by the owner pin. Cleanup is best-effort;
+  -- retain the record on any refusal so another invocation can retry it.
+  try
+    if not exists($resume, {follow_symlinks: false}) then return nil end
+    $saved = json_parse(read_file($resume))
+    if type($saved) != "map" then return nil end
+    for each $key in ["service", "owner", "size", "blake3"]
+      if $saved[$key] != $identity[$key] then return nil end
+    end
+    if type($saved.upload) != "string" or not re_match($saved.upload, "^[0-9a-f-]{36}$") then return nil end
+    $lane = _file_lane($opts)
+    if not $lane.ok then return nil end
+    $deleted = http_request("DELETE", $lane.result .. "/blob/uploads/" .. $saved.upload, nil, {}, _file_options($opts, true))
+    if $deleted.status == 204 or $deleted.status == 404 then
+      $saved.upload = nil
+      _file_save($resume, $saved)
+    end
+  catch $msg
+    return nil
+  end
+  return nil
+end
+
+fn _blob_upload_file($path, $opts)
+  $owner = _opt($opts, "owner")
+  $resume = _opt($opts, "resume_file")
+  if type($owner) != "string" or $owner == "" then return _file_error("opts.owner is required") end
+  if type($resume) != "string" or $resume == "" then return _file_error("opts.resume_file is required") end
+  $md = stat($path)
+  if not $md.is_file then return _file_error("source must be a regular file") end
+  if exists($resume, {follow_symlinks: false}) then
+    $saved_md = stat($resume, {follow_symlinks: false})
+    if not $saved_md.is_file then return _file_error("resume record must be a regular file, not a symlink") end
+    if $saved_md.ino == $md.ino and $saved_md.dev == $md.dev then return _file_error("resume record must not be the source file") end
+  end
+  $size = _file_uint($md.size, "source size")
+  $chunk = _file_uint(_opt($opts, "chunk") ?? 8388608, "chunk")
+  if $chunk == 0 then return _file_error("chunk must be positive") end
+  $hash = hash_file($path, "blake3")
+  $after = stat($path)
+  if $after.size != $size or $after.ino != $md.ino or $after.dev != $md.dev or $after.mtime != $md.mtime or $after.mtime_nsec != $md.mtime_nsec then
+    return _file_error("source changed while hashing")
+  end
+  $identity = {service: _svc($opts), owner: $owner, size: $size, blake3: $hash, mime: _opt($opts, "mime") ?? "application/octet-stream", name: _opt($opts, "name")}
+  -- A completed owner pin avoids another upload; a recorded stale session
+  -- is best-effort aborted so its reservation/key can be reclaimed.
+  $present = blob_stat("b3:" .. $hash, $opts)
+  if not $present.ok then return $present end
+  if $present.result.present == true and contains($present.result.pins, $owner) then
+    if $present.result.size != $size then return _file_error("stored size differs from source") end
+    _file_cleanup_completed($resume, $identity, $opts)
+    return {ok: true, rc: 0, result: {blob: "b3:" .. $hash, size: $present.result.size, mime: $present.result.mime, name: $present.result.name, origin: $present.result.origin}}
+  end
+  $record = $identity
+  if exists($resume, {follow_symlinks: false}) then
+    $record = json_parse(read_file($resume))
+    if not _file_same_record($record, $identity) then return _file_error("resume record does not match source/service/owner/metadata") end
+  else
+    $record.key = uuid()
+    $record.upload = nil
+    _file_save($resume, $record)
+  end
+  $lane = _file_lane($opts)
+  if not $lane.ok then return $lane end
+  -- Replaying create is safe, including a lost create reply, an old upload ID,
+  -- or a swept expiry. Same owner/key returns the durable matching session.
+  $headers = {"X-Cosmix-Owner": $owner, "X-Cosmix-Size": to_string($size), "X-Cosmix-Expect": "b3:" .. $hash, "X-Cosmix-Upload-Key": $record.key, "X-Cosmix-Mime": $record.mime}
+  if $record.name != nil then $headers["X-Cosmix-Name"] = url_encode($record.name) end
+  $created = http_request("POST", $lane.result .. "/blob/uploads", nil, $headers, _file_options($opts, true))
+  if $created.status != 200 and $created.status != 201 then return _file_error($created) end
+  $session = json_parse($created.body)
+  if type($session.upload) != "string" or not re_match($session.upload, "^[0-9a-f-]{36}$") then return _file_error("invalid upload id") end
+  $record.upload = $session.upload
+  _file_save($resume, $record)
+  $url = $lane.result .. "/blob/uploads/" .. $record.upload
+  $status = _file_status($url, $record, $opts)
+  if not $status.ok then return $status end
+  $offset = $status.result.offset
+  $stalls = 0
+  while $offset < $size and $status.result.state == "active"
+    $end = $offset + min($chunk, $size - $offset) - 1
+    $transfer = _file_options($opts, false)
+    $transfer.method = "PATCH"
+    $transfer.range = {start: $offset, end: $end}
+    $transfer.headers = {"Content-Type": "application/octet-stream", "Content-Range": "bytes " .. to_string($offset) .. "-" .. to_string($end) .. "/" .. to_string($size)}
+    $patched = http_put_file($url, $path, $transfer)
+    if $patched.status != 200 and $patched.status != 409 and $patched.status != 0 then return _file_error($patched) end
+    -- Never infer a durable offset from bytes_written or a conflict reply.
+    -- HEAD also resolves a lost PATCH response, while a writer is rolling back.
+    $status = _file_status($url, $record, $opts)
+    if not $status.ok then return $status end
+    $next = $status.result.offset
+    if $next < $offset then return _file_error("durable offset moved backwards") end
+    if $next == $offset then
+      $stalls = $stalls + 1
+      if $stalls >= 3 then return _file_error({error: "session made no progress; retry with the same resume record", response: $patched}) end
+      sleep(0.05)
+    else
+      $stalls = 0
+    end
+    $offset = $next
+  end
+  if $offset != $size then return _file_error("non-active session is incomplete") end
+  -- Empty objects arrive here without a PATCH. A lost completion reply is
+  -- replayed against the receipt; a later invocation also reuses this record.
+  $commit_timeout = _file_uint(_opt($opts, "commit_timeout") ?? 900, "commit_timeout")
+  if $commit_timeout == 0 then return _file_error("commit_timeout must be positive") end
+  $until = monotonic() + $commit_timeout
+  $poll = false
+  $backoff = 1
+  $last_commit = monotonic()
+  while monotonic() < $until
+    if $poll then
+      sleep(min($backoff, max(0, $until - monotonic())))
+      $backoff = min($backoff * 2, 30)
+    end
+    $remaining = $until - monotonic()
+    if $remaining < 1 then break end
+    $control = _file_options($opts, true)
+    $control.timeout = min(_file_uint($control.timeout, "control_timeout"), floor($remaining))
+    if $control.timeout == 0 then return _file_error("control_timeout must be positive") end
+    if $poll then
+      -- Do not compete with a slow hashing/publication worker. HEAD remains
+      -- available while its nonblocking mutation guard is held.
+      $head = http_request("HEAD", $url, nil, {}, $control)
+      if $head.status == 0 or $head.status == 503 then continue end
+      $status = _file_status_response($head, $record)
+      if not $status.ok then return $status end
+      -- A transient server failure can leave intent without a live worker.
+      -- Replay at most every 30 seconds; the guard returns 409 if still busy.
+      if $status.result.state == "committing" and monotonic() - $last_commit < 30 then continue end
+      $remaining = $until - monotonic()
+      if $remaining < 1 then break end
+      $control.timeout = min($control.timeout, floor($remaining))
+    end
+    $last_commit = monotonic()
+    $committed = http_request("POST", $url .. "/commit", nil, {}, $control)
+    if $committed.status == 200 or $committed.status == 201 then
+      $ref = json_parse($committed.body)
+      if _file_hash($ref) != $hash or $ref.size != $size then return _file_error("commit reference differs from source") end
+      return {ok: true, rc: 0, result: $ref}
+    end
+    if $committed.status != 0 and $committed.status != 409 and $committed.status != 503 then return _file_error($committed) end
+    $poll = true
+  end
+  return _file_error("commit_timeout expired; retry with the same resume record")
+end
+
+fn blob_upload_file($path, $opts)
+  try
+    return _blob_upload_file($path, $opts)
+  catch $msg
+    return _file_error($msg)
+  end
+end
+
+fn blob_download_file($ref, $path, $opts)
+  try
+    $hash = _file_hash($ref)
+    $lane = _file_lane($opts)
+    if not $lane.ok then return $lane end
+    $transfer = _file_options($opts, false)
+    for each $key in ["append", "overwrite", "max_bytes"]
+      if _opt($opts, $key) != nil then $transfer[$key] = $opts[$key] end
+    end
+    $transfer.expect_blake3 = $hash
+    $r = http_get_file($lane.result .. "/blob/" .. $hash, $path, $transfer)
+    if $r.status >= 200 and $r.status < 300 and $r.published == true then
+      return {ok: true, rc: 0, result: $r}
+    end
+    return _file_error($r)
+  catch $msg
+    return _file_error($msg)
+  end
+end
+
+-- ── fetch ──────────────────────────────────────────────────────────────
+
+-- blob.fetch: the immediate reply {accepted, blob, origin, in_flight,
+-- queued, present} — completion is the blob.fetched event (see blob_fetch_wait).
+-- $opts: from (node name), instance (remote blobd-<name>), owner, service.
+fn blob_fetch($ref, $opts)
+  $r = send _svc($opts) blob.fetch blob=$ref from=_opt($opts, "from") instance=_opt($opts, "instance") owner=_opt($opts, "owner")
+  return _done($rc, $r)
+end
+
+-- blob.fetch + wait for the matching blob.fetched (or the timeout).
+-- Subscribe BEFORE sending, wait on the delivery, return the local path
+-- on ok. Requires the caller's top-level `$blobd_fetched = []` channel
+-- (see the header); rc=-2 is the timeout, rc=10 a failed outcome
+-- (verify_failed, quota, …) or a refused fetch.
+fn blob_fetch_wait($ref, $timeout_s, $opts)
+  $id = _id($ref)
+  if $id == nil then
+    return {ok: false, rc: 10, result: "blob_fetch_wait: no blob id in ref"}
+  end
+
+  -- The channel must exist before the handler can fire: an `on` body
+  -- writes the calling script's globals only when they exist.
+  $chan = false
+  try
+    if type($blobd_fetched) == "list" then $chan = true end
+  catch $msg
+  end
+  if not $chan then
+    return {ok: false, rc: 10, result: 'blob_fetch_wait needs `$blobd_fetched = []` at the top level of the calling script (the blob.fetched channel)'}
+  end
+
+  -- Subscribe first: blob.fetched is retain:false, so a subscriber that
+  -- arrives after the fetch never sees the event.
+  try
+    subscribe("blob.fetched")
+  catch $msg
+    return {ok: false, rc: -1, result: "subscribe failed: " .. $msg}
+  end
+
+  -- Arm the recorder once per process; the buffer is the shared cell.
+  if length(freeze($_armed)) == 0 then
+    buffer_push($_armed, 1)
+    on blob.fetched
+      push($blobd_fetched, $event.args)
+    end
+  end
+
+  -- Only events that land after this point count (a stale entry from an
+  -- earlier wait must not complete this one).
+  $base = length($blobd_fetched)
+  $r = send _svc($opts) blob.fetch blob=$ref from=_opt($opts, "from") instance=_opt($opts, "instance") owner=_opt($opts, "owner")
+  if $rc >= 10 or $rc < 0 then
+    try
+      unsubscribe("blob.fetched")
+    catch $msg
+    end
+    return _done($rc, $r)
+  end
+
+  -- Already present: the reply is the completion, no event follows.
+  if $r.present == true then
+    try
+      unsubscribe("blob.fetched")
+    catch $msg
+    end
+    return _fetch_wait_path($id, $opts, nil)
+  end
+
+  $deadline = monotonic() + $timeout_s
+  $event = nil
+  while $event == nil
+    $n = length($blobd_fetched)
+    $i = $base
+    while $i < $n
+      if $blobd_fetched[$i].blob == $id then
+        $event = $blobd_fetched[$i]
+      end
+      $i = $i + 1
+    end
+    if $event != nil then break end
+    if monotonic() >= $deadline then break end
+    sleep(0.05)
+  end
+
+  try
+    unsubscribe("blob.fetched")
+  catch $msg
+  end
+
+  if $event == nil then
+    return {ok: false, rc: -2, result: "timeout: no blob.fetched for " .. $id .. " within " .. to_string($timeout_s) .. "s"}
+  end
+  return _fetch_wait_path($id, $opts, $event)
+end
+
+-- The common tail of a completed wait: classify the outcome, then answer
+-- the local path on ok.
+fn _fetch_wait_path($id, $opts, $event)
+  if $event != nil and $event.outcome != "ok" then
+    $why = $event.outcome
+    if $event.error != nil then $why = $why .. ": " .. $event.error end
+    return {ok: false, rc: 10, result: $why, event: $event}
+  end
+  -- An ok fetch can still refuse THIS caller's pin (its cap): blobd pins
+  -- to opts.owner, else the sending service — serve_name() for a
+  -- citizen. A plain script with no owner has no name to match; it
+  -- reads event.refused itself.
+  $me = _opt($opts, "owner") ?? serve_name()
+  if $event != nil and $event.refused != nil and $me != nil and contains($event.refused, $me) then
+    return {ok: false, rc: 10, result: "quota: " .. $me .. " refused", event: $event}
+  end
+  $r = send _svc($opts) blob.path blob=$id
+  if $rc >= 10 or $rc < 0 then
+    return _done($rc, $r)
+  end
+  return {ok: true, rc: 0, result: $r.path, event: $event}
+end
+
+-- ── self-test (BLOBD_MIX_SELFTEST=1 mix mix/blob.mix) ─────────────────
+-- Pure helpers only — the Bus wrappers need a live blobd and are covered
+-- by the hub's blobd gate instead. env() answers "" for a missing name,
+-- so the guard compares against the empty string, not nil.
+
+if env("BLOBD_MIX_SELFTEST") != "" then
+  fn _t($cond, $what)
+    if not $cond then die "self-test failed: " .. $what end
+  end
+  $h = "b3:" .. slice(replace(replace(to_string(monotonic()), ".", ""), "-", "") .. "0000000000000000000000000000000000000000000000000000000000000000", 0, 64)
+  _t(_id($h) == $h, "id of a b3 id")
+  _t(_id(slice($h, 3, 67)) == $h, "bare hash normalised")
+  $ref = blob_ref($h, 1234, "image/png")
+  _t($ref.blob == $h, "ref blob")
+  _t($ref.size == 1234, "ref size")
+  _t($ref.mime == "image/png", "ref mime")
+  _t(blob_hash($ref) == $h, "hash of ref")
+  _t(blob_hash($h) == $h, "hash of id")
+  $bare = blob_ref($h, nil, nil)
+  _t($bare.size == 0 and $bare.mime == "application/octet-stream", "ref defaults")
+  _t(_opt(nil, "service") == nil, "opt of nil opts")
+  _t(_opt({service: "blobd-two"}, "service") == "blobd-two", "opt reads member")
+  _t(_svc({service: "blobd-two"}) == "blobd-two", "svc override")
+  _t(_svc(nil) == "blobd", "svc default")
+  _t(_file_uint(9007199254740991, "size") == 9007199254740991, "exact maximum integer")
+  _t(_file_hash("b3:" .. repeat("a", 64)) == repeat("a", 64), "file hash normalisation")
+  $identity = {service: "blobd", owner: "test", size: 4, blake3: repeat("a", 64), mime: "text/plain", name: nil}
+  $saved = $identity
+  $saved.key = "00000000-0000-0000-0000-000000000001"
+  $saved.upload = nil
+  _t(_file_same_record($saved, $identity), "matching persisted identity")
+  $saved.owner = "different"
+  _t(not _file_same_record($saved, $identity), "owner mismatch refuses resume")
+  $header = {headers: {"x-cosmix-offset": ["4"]}}
+  _t(_file_header_uint($header, "x-cosmix-offset") == 4, "durable header integer")
+  $header.headers["x-cosmix-offset"] = ["4", "5"]
+  _t(_file_header($header, "x-cosmix-offset") == nil, "duplicate offset refused")
+  $w = blob_upload_file("unused", {})
+  _t(not $w.ok and $w.rc == 10, "file upload validates before Bus traffic")
+  $w = blob_download_file("bad", "unused", {})
+  _t(not $w.ok and $w.rc == 10, "file download validates before Bus traffic")
+  -- Both refusals answer before any Bus traffic: a missing id, then a
+  -- missing caller-owned channel (this script declares none).
+  $w = blob_fetch_wait(nil, 1, nil)
+  _t($w.rc == 10 and not $w.ok, "fetch_wait refuses a missing id")
+  $refusal = {blob: $h, outcome: "ok", refused: ["capture"]}
+  $w = _fetch_wait_path($h, {owner: "capture"}, $refusal)
+  _t($w.rc == 10 and $w.result == "quota: capture refused", "refused owner is not ok")
+  $w = blob_fetch_wait($h, 1, nil)
+  _t($w.rc == 10 and contains($w.result, 'blobd_fetched = []'), "fetch_wait refuses a missing channel")
+  print("blob.mix self-test: ok")
+end

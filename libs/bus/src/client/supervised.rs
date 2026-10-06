@@ -766,7 +766,7 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
     let current_rx = std::mem::replace(&mut ctx.first_rx, NativeIncomingReceiver::Unbounded(empty));
     supervisor_run(&mut ctx, current_rx).await;
     publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::ShuttingDown);
-    let connection = Arc::clone(&ctx.inner.read().await);
+    let connection = Arc::clone(&*ctx.inner.read().await);
     connection.close().await;
 }
 

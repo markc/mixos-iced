@@ -72,8 +72,9 @@ pub struct BoundedIncomingReceiver {
 impl BoundedIncomingReceiver {
     /// Receive the next retained command or overflow marker.
     pub async fn recv(&mut self) -> Option<BoundedIncomingEvent> {
+        let overflow = Arc::clone(&self.overflow);
         loop {
-            let notified = self.overflow.wake.notified();
+            let notified = overflow.wake.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             let dropped = self.overflow.take_pending();

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const LIBRARY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../mixos-blobd/mix/blob.mix");
+const LIBRARY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/blob.mix");
 const ID: &str = "00000000-0000-0000-0000-000000000001";
 
 struct Temp(PathBuf);
@@ -484,7 +484,7 @@ async fn blob_upload_empty_unicode_name_commits_without_patch() {
                     assert!(head.starts_with("POST /blob/uploads "));
                     assert!(
                         head.to_ascii_lowercase()
-                            .contains("x-mixos-name: caf%c3%a9%2b%20%25.txt")
+                            .contains("x-cosmix-name: caf%c3%a9%2b%20%25.txt")
                     );
                     reply(&mut socket, 201, "", &format!("{{\"upload\":\"{ID}\"}}"));
                 }
