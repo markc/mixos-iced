@@ -337,7 +337,8 @@ fn font_for(
         builtin && record.family == default.family && record.fallbacks == default.fallbacks;
     // The shared UI face is independent of sans-serif's existing Inter
     // fallback. An authored design keeps its explicit family authoritative.
-    if prefer_assets && !monospace
+    if prefer_assets
+        && !monospace
         && let Ok(Some(set)) = appearance::fonts::register_installed()
         && let Some(family) = set.family("ui")
     {
@@ -428,9 +429,14 @@ mod tests {
     #[ignore = "requires a bootstrapped static asset set with a UI face"]
     fn shared_ui_face_uses_true_light_weight() {
         let set = appearance::fonts::register_installed().unwrap().unwrap();
-        let theme = resolve_selection(&Selection {
-            scheme: Scheme::default(), mode: Mode::default(), design_source: None,
-        }, Vec::new());
+        let theme = resolve_selection(
+            &Selection {
+                scheme: Scheme::default(),
+                mode: Mode::default(),
+                design_source: None,
+            },
+            Vec::new(),
+        );
         assert_eq!(set.family("ui"), Some("Noto Sans"));
         assert_eq!(theme.ui.0, "Noto Sans");
         assert_eq!(theme.ui_font.weight, application::iced::font::Weight::Light);

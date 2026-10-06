@@ -256,7 +256,13 @@ impl Default for Icons {
         for icon in ALL {
             match appearance::fonts::material_icon(icon.material_name()) {
                 Ok(Some((glyph, font))) => {
-                    glyphs.insert(icon, (glyph, font.weight(application::iced::font::Weight::ExtraLight)));
+                    glyphs.insert(
+                        icon,
+                        (
+                            glyph,
+                            font.weight(application::iced::font::Weight::ExtraLight),
+                        ),
+                    );
                 }
                 Ok(None) => {
                     tracing::warn!(
@@ -313,10 +319,14 @@ fn validate_material_glyphs(
     let selected = raw
         .get_font(id, Weight::EXTRA_LIGHT)
         .ok_or_else(|| format!("Material family {family:?} cannot be read"))?;
-    let has_200 = raw.db().face(id).is_some_and(|face| face.weight == Weight::EXTRA_LIGHT)
+    let has_200 = raw
+        .db()
+        .face(id)
+        .is_some_and(|face| face.weight == Weight::EXTRA_LIGHT)
         || selected.as_swash().variations().any(|axis| {
             axis.tag() == u32::from_be_bytes(*b"wght")
-                && axis.min_value() <= 200.0 && axis.max_value() >= 200.0
+                && axis.min_value() <= 200.0
+                && axis.max_value() >= 200.0
         });
     if !has_200 {
         return Err(format!("Material family {family:?} has no 200-weight face"));
@@ -663,22 +673,45 @@ mod tests {
                     let side = (64.0 * scale) as u32;
                     let viewport = application::cpu::graphics::Viewport::with_physical_size(
                         application::iced::Size::new(side, side),
-                        application::iced::advanced::renderer::Scale { window: scale, application: 1.0 },
+                        application::iced::advanced::renderer::Scale {
+                            window: scale,
+                            application: 1.0,
+                        },
                     );
                     let mut renderer = application::cpu::Renderer::new(
                         application::iced::advanced::renderer::Settings::default(),
                     );
-                    let clip = application::iced::Rectangle::with_size(application::iced::Size::new(64.0, 64.0));
-                    let bounds = application::iced::Rectangle { x: 8.0, y: 8.0, width: 32.0, height: 32.0 };
+                    let clip = application::iced::Rectangle::with_size(
+                        application::iced::Size::new(64.0, 64.0),
+                    );
+                    let bounds = application::iced::Rectangle {
+                        x: 8.0,
+                        y: 8.0,
+                        width: 32.0,
+                        height: 32.0,
+                    };
                     icons.draw(&mut renderer, icon, "#ff0000", bounds, clip);
                     let mut pixels = iced_tiny_skia_pixels::Pixmap::new(side, side).unwrap();
                     let mut mask = iced_tiny_skia_pixels::Mask::new(side, side).unwrap();
-                    renderer.draw(&mut pixels.as_mut(), &mut mask, &viewport, &[clip], application::iced::Color::TRANSPARENT);
-                    pixels.data().chunks_exact(4).map(|pixel| u64::from(pixel[3])).sum::<u64>()
+                    renderer.draw(
+                        &mut pixels.as_mut(),
+                        &mut mask,
+                        &viewport,
+                        &[clip],
+                        application::iced::Color::TRANSPARENT,
+                    );
+                    pixels
+                        .data()
+                        .chunks_exact(4)
+                        .map(|pixel| u64::from(pixel[3]))
+                        .sum::<u64>()
                 };
                 let thin = render(&icons);
                 let normal = render(&regular);
-                assert!(thin > 0 && thin < normal, "{icon:?}, scale {scale}: 200={thin}, 400={normal}");
+                assert!(
+                    thin > 0 && thin < normal,
+                    "{icon:?}, scale {scale}: 200={thin}, 400={normal}"
+                );
             }
         }
     }

@@ -20,7 +20,10 @@ use std::{
 };
 
 use iced_core::{Font, font};
-use iced_graphics::text::{cosmic_text::{self, fontdb}, font_system};
+use iced_graphics::text::{
+    cosmic_text::{self, fontdb},
+    font_system,
+};
 
 /// Font bytes, or a file to read them from at [`install`] time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,9 +466,13 @@ pub fn font_for(
     let (found, has_light) = {
         let mut system = font_system().write().expect("font system");
         let raw = system.raw();
-        let found = names.iter().find(|name| has_family(raw.db(), name))
+        let found = names
+            .iter()
+            .find(|name| has_family(raw.db(), name))
             .map(|name| (*name).to_owned());
-        let light = found.as_deref().is_some_and(|name| family_has_light(raw, name));
+        let light = found
+            .as_deref()
+            .is_some_and(|name| family_has_light(raw, name));
         (found, light)
     };
     let family = match found {
@@ -483,15 +490,27 @@ pub fn font_for(
 /// fontdb indexes a variable face at its default weight, usually 400.
 /// Read its actual `wght` range before deciding that Light is unavailable.
 fn family_has_light(system: &mut cosmic_text::FontSystem, family: &str) -> bool {
-    let faces: Vec<_> = system.db().faces().filter(|face| {
-        face.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(family))
-    }).map(|face| (face.id, face.weight)).collect();
+    let faces: Vec<_> = system
+        .db()
+        .faces()
+        .filter(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(family))
+        })
+        .map(|face| (face.id, face.weight))
+        .collect();
     faces.into_iter().any(|(id, weight)| {
-        weight == fontdb::Weight::LIGHT || system.get_font(id, fontdb::Weight::LIGHT)
-            .is_some_and(|font| font.as_swash().variations().any(|axis| {
-                axis.tag() == u32::from_be_bytes(*b"wght")
-                    && axis.min_value() <= 300.0 && axis.max_value() >= 300.0
-            }))
+        weight == fontdb::Weight::LIGHT
+            || system
+                .get_font(id, fontdb::Weight::LIGHT)
+                .is_some_and(|font| {
+                    font.as_swash().variations().any(|axis| {
+                        axis.tag() == u32::from_be_bytes(*b"wght")
+                            && axis.min_value() <= 300.0
+                            && axis.max_value() >= 300.0
+                    })
+                })
     })
 }
 
@@ -606,11 +625,18 @@ mod tests {
     #[test]
     fn variable_light_is_available_even_when_the_index_says_regular() {
         let mut db = fontdb::Database::new();
-        db.load_font_data(include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").to_vec());
+        db.load_font_data(
+            include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").to_vec(),
+        );
         db.load_font_data(FIRA_SANS_REGULAR.to_vec());
         let mut system = cosmic_text::FontSystem::new_with_locale_and_db("en-US".into(), db);
-        assert!(system.db().faces().any(|face| face.weight == fontdb::Weight::NORMAL
-            && face.families.iter().any(|(name, _)| name == "Inter")));
+        assert!(
+            system
+                .db()
+                .faces()
+                .any(|face| face.weight == fontdb::Weight::NORMAL
+                    && face.families.iter().any(|(name, _)| name == "Inter"))
+        );
         assert!(family_has_light(&mut system, "Inter"));
         assert!(!family_has_light(&mut system, "Fira Sans"));
         assert!(!family_has_light(&mut system, "Missing family"));
