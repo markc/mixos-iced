@@ -266,16 +266,24 @@ fn dialog_button<'a>(
 ) -> Element<'a, Msg> {
     let t = look.tokens;
     let (background, text_color, border) = match kind {
-        Kind::Primary => (Some(t.primary), t.primary_text, t.primary),
-        Kind::Danger => (Some(t.destructive), t.destructive_text, t.destructive),
-        Kind::Quiet => (None, t.popover_text, t.border),
+        Kind::Primary => (
+            Some(t.palette.primary),
+            t.palette.primary_text,
+            t.palette.primary,
+        ),
+        Kind::Danger => (
+            Some(t.palette.destructive),
+            t.palette.destructive_text,
+            t.palette.destructive,
+        ),
+        Kind::Quiet => (None, t.palette.popover_text, t.palette.border),
     };
     // A hovered/pressed accent darkens towards its own text token — a mix of
     // two tokens, never a literal.
     let hover = match kind {
-        Kind::Primary => darker(t.primary, t.primary_text),
-        Kind::Danger => darker(t.destructive, t.destructive_text),
-        Kind::Quiet => t.muted_surface,
+        Kind::Primary => darker(t.palette.primary, t.palette.primary_text),
+        Kind::Danger => darker(t.palette.destructive, t.palette.destructive_text),
+        Kind::Quiet => t.palette.muted_surface,
     };
     let quiet = kind == Kind::Quiet;
     let disabled = !enabled;
@@ -283,7 +291,11 @@ fn dialog_button<'a>(
         text(label)
             .font(look.ui_font)
             .size(look.px * 0.9)
-            .color(if disabled { t.muted_text } else { text_color }),
+            .color(if disabled {
+                t.palette.muted_text
+            } else {
+                text_color
+            }),
     )
     .padding([look.chrome.small, look.chrome.gap])
     .on_press_maybe(enabled.then_some(msg))
@@ -292,7 +304,11 @@ fn dialog_button<'a>(
             button::Status::Hovered | button::Status::Pressed if !disabled => Some(hover.into()),
             _ => background.map(Background::Color),
         },
-        text_color: if disabled { t.muted_text } else { text_color },
+        text_color: if disabled {
+            t.palette.muted_text
+        } else {
+            text_color
+        },
         border: Border {
             color: border,
             width: if quiet { look.chrome.edge } else { 0.0 },
@@ -332,7 +348,6 @@ fn field_look(
             width: look.chrome.edge,
             radius: radius.into(),
         },
-        icon: muted,
         placeholder: muted,
         value: text_color,
         selection,
@@ -360,7 +375,7 @@ pub fn frame<'a>(
             text(title)
                 .font(look.ui_font)
                 .size(look.px * 1.15)
-                .color(t.popover_text),
+                .color(t.palette.popover_text),
             body,
             actions,
         ]
@@ -369,20 +384,19 @@ pub fn frame<'a>(
     .padding(Padding::from(look.chrome.pad))
     // A readable 32-em text measure, plus the token-defined card padding.
     // Fill up to this limit so a narrow window can still shrink the card.
-    .width(Length::Fill)
-    .max_width(look.px * 32.0 + 2.0 * look.chrome.pad)
+    .width(Length::Fill.max(look.px * 32.0 + 2.0 * look.chrome.pad))
     .style(move |_| container::Style {
-        background: Some(Background::Color(t.popover)),
-        text_color: Some(t.popover_text),
+        background: Some(Background::Color(t.palette.popover)),
+        text_color: Some(t.palette.popover_text),
         border: Border {
-            color: t.border,
+            color: t.palette.border,
             width: look.chrome.edge,
-            radius: (t.radius * 1.5).into(),
+            radius: (t.metrics.radius.md * 1.5).into(),
         },
         shadow: Shadow {
             color: Color {
                 a: 0.35,
-                ..darker(t.surface, t.text)
+                ..darker(t.palette.surface, t.palette.text)
             },
             offset: Vector::new(0.0, look.chrome.small + 2.0 * look.chrome.edge),
             blur_radius: look.chrome.gap * 2.0,
@@ -391,7 +405,7 @@ pub fn frame<'a>(
     });
     let scrim = Color {
         a: 0.55,
-        ..darker(t.surface, t.text)
+        ..darker(t.palette.surface, t.palette.text)
     };
     iced::widget::opaque(
         iced::widget::mouse_area(

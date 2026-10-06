@@ -38,33 +38,33 @@ pub fn view<'a>(
         list = list.push(
             container(
                 look.small(note.unwrap_or("No problems."))
-                    .color(t.muted_text),
+                    .color(t.palette.muted_text),
             )
             .padding(Padding::from([6, 12])),
         );
     }
     for d in items {
         let colour = match d.severity {
-            Severity::Error => t.destructive,
+            Severity::Error => t.palette.destructive,
             Severity::Warning => look.chrome.warning,
-            Severity::Note => t.muted_text,
+            Severity::Note => t.palette.muted_text,
         };
         let mut line = row![
             look.small(severity_label(d.severity))
                 .color(colour)
                 .width(Length::Fixed(64.0)),
             look.code(format!("{}:{}", d.line, col_of(d.range.start)))
-                .color(t.muted_text)
+                .color(t.palette.muted_text)
                 .width(Length::Fixed(72.0)),
             look.code(row_code(d))
-                .color(t.muted_text)
+                .color(t.palette.muted_text)
                 .width(Length::Fixed(200.0)),
             look.small(d.message.as_str()),
         ]
         .spacing(10)
         .align_y(Alignment::Center);
         if let Some(hint) = &d.hint {
-            line = line.push(look.small(format!("— {hint}")).color(t.muted_text));
+            line = line.push(look.small(format!("— {hint}")).color(t.palette.muted_text));
         }
         list = list.push(
             button(line)
@@ -87,7 +87,7 @@ pub fn panel<'a>(look: Look, title: &'a str, body: Element<'a, Msg>) -> Element<
     let header = row![
         look.small(title).color(look.chrome.secondary_text),
         iced::widget::space().width(Length::Fill),
-        button(look.text("×").color(t.muted_text))
+        button(look.text("×").color(t.palette.muted_text))
             .padding(Padding::from([0, 6]))
             .style(look.flat())
             .on_press(Msg::ClosePanel),
@@ -102,7 +102,7 @@ pub fn panel<'a>(look: Look, title: &'a str, body: Element<'a, Msg>) -> Element<
         container(body)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(look.strip(t.surface, t.text)),
+            .style(look.strip(t.palette.surface, t.palette.text)),
     ]
     .height(Length::Fixed(PANEL_H))
     .into()

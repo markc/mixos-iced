@@ -40,3 +40,6 @@ pub mod keys;
 pub mod theme;
 pub mod verbs;
 pub mod view;
+
+#[cfg(test)]
+mod test_support;

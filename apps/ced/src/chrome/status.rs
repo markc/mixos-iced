@@ -189,10 +189,10 @@ pub fn view<'a>(
     let draw = |f: Field| -> Element<'a, Msg> {
         match f.kind {
             FieldKind::Plain => look.small(f.text).into(),
-            FieldKind::Quiet => look.small(f.text).color(t.muted_text).into(),
-            FieldKind::Alarm => container(look.small(f.text).color(t.destructive_text))
+            FieldKind::Quiet => look.small(f.text).color(t.palette.muted_text).into(),
+            FieldKind::Alarm => container(look.small(f.text).color(t.palette.destructive_text))
                 .padding(Padding::from([1, 6]))
-                .style(look.strip(t.destructive, t.destructive_text))
+                .style(look.strip(t.palette.destructive, t.palette.destructive_text))
                 .into(),
             FieldKind::LastRemote => button(look.small(f.text).color(look.chrome.accent))
                 .padding(Padding::ZERO)
@@ -206,7 +206,7 @@ pub fn view<'a>(
         l = l.push(draw(f));
     }
     if let Some(message) = message {
-        l = l.push(look.small(message).color(t.muted_text));
+        l = l.push(look.small(message).color(t.palette.muted_text));
     }
     let mut r = row![].spacing(18).align_y(Alignment::Center);
     for f in right {

@@ -2,9 +2,8 @@
 
 ## Unreleased
 
-- Optional `design` adapter: compiled rendered colour pairs and `radius.md`
-  map into the existing palette and metrics, with strict missing-token and
-  unit checks. Ced, DOpus and Term share this conversion.
+- Font sets accept additional faces alongside the named roles, for italic,
+  bold and fallback faces chosen by the caller.
 
 - Caller-owned `date_picker` and `time_picker`: validated Gregorian dates,
   leap years and ranges; localised calendars and 12/24-hour time editing,

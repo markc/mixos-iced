@@ -418,6 +418,10 @@ impl<'a> FileList<'a> {
             align_y: alignment::Vertical::Top,
             shaping: atext::Shaping::Advanced,
             wrapping: atext::Wrapping::None,
+            ellipsis: iced::advanced::text::Ellipsis::None,
+            hint_factor: None,
+            ellipsis: iced::advanced::text::Ellipsis::None,
+            hint_factor: None,
         });
         st.row_h = sample
             .min_bounds()
@@ -439,6 +443,10 @@ impl<'a> FileList<'a> {
             align_y: alignment::Vertical::Top,
             shaping: atext::Shaping::Advanced,
             wrapping: atext::Wrapping::None,
+            ellipsis: iced::advanced::text::Ellipsis::None,
+            hint_factor: None,
+            ellipsis: iced::advanced::text::Ellipsis::None,
+            hint_factor: None,
         })
     }
 
@@ -889,7 +897,7 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                         bounds: highlight,
                         ..Default::default()
                     },
-                    t.muted_surface,
+                    t.palette.muted_surface,
                 );
             }
             // Every selected row's full-width background, under everything.
@@ -909,7 +917,7 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                             bounds: clipped,
                             ..renderer::Quad::default()
                         },
-                        t.selection,
+                        t.palette.selection,
                     );
                 }
             }
@@ -927,7 +935,7 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                     renderer::Quad {
                         bounds: highlight,
                         border: iced::Border {
-                            color: t.ring,
+                            color: t.palette.ring,
                             width: self.look.chrome.edge * 2.0,
                             ..Default::default()
                         },
@@ -988,9 +996,9 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                     // Name; secondary columns right-aligned, in the mono role.
                     if let Some(cached) = st.cache.get(&row.entry.path) {
                         let color = if self.is_selected(&row.entry.path) {
-                            t.selection_text
+                            t.palette.selection_text
                         } else {
-                            t.text
+                            t.palette.text
                         };
                         renderer.fill_paragraph(
                             &cached.name,
@@ -1029,9 +1037,9 @@ impl Widget<RowsMsg, iced::Theme, Renderer> for FileList<'_> {
                         height: clip.height,
                     };
                     let color = if self.is_selected(&row.entry.path) {
-                        t.selection_text
+                        t.palette.selection_text
                     } else {
-                        t.muted_text
+                        t.palette.muted_text
                     };
                     renderer.with_layer(cell, |renderer| {
                         renderer.fill_paragraph(

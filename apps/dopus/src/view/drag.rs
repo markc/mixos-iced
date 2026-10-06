@@ -301,13 +301,13 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
                     renderer::Quad {
                         bounds,
                         border: iced::Border {
-                            color: t.border,
+                            color: t.palette.border,
                             width: self.look.chrome.edge,
-                            radius: t.radius.into(),
+                            radius: t.metrics.radius.md.into(),
                         },
                         ..Default::default()
                     },
-                    t.popover,
+                    t.palette.popover,
                 );
                 self.icons.draw(
                     renderer,
@@ -345,13 +345,13 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
                     renderer::Quad {
                         bounds,
                         border: iced::Border {
-                            color: t.border,
+                            color: t.palette.border,
                             width: self.look.chrome.edge,
-                            radius: t.radius.into(),
+                            radius: t.metrics.radius.md.into(),
                         },
                         ..Default::default()
                     },
-                    t.popover,
+                    t.palette.popover,
                 );
                 let title = pending
                     .target
@@ -380,7 +380,7 @@ impl Widget<Msg, iced::Theme, Renderer> for Layer<'_> {
                                 bounds: row,
                                 ..Default::default()
                             },
-                            t.muted_surface,
+                            t.palette.muted_surface,
                         );
                     }
                     draw_text(
@@ -469,6 +469,8 @@ fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rect
                 align_y: iced::alignment::Vertical::Top,
                 shaping: iced::advanced::text::Shaping::Advanced,
                 wrapping: iced::advanced::text::Wrapping::None,
+                ellipsis: iced::advanced::text::Ellipsis::None,
+                hint_factor: None,
             },
             position,
             look.tokens.palette.popover_text,
@@ -491,7 +493,11 @@ mod tests {
             height: 40.0,
         };
         let label = "target-long-name-".repeat(20);
-        let mut renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         draw_text(&mut renderer, &label, Point::new(32.0, 36.0), clip, look);
         let text: Vec<_> = renderer
             .layers()
@@ -548,18 +554,21 @@ mod tests {
             renderer,
             &layout::Limits::new(Size::ZERO, bounds.size()),
         );
-        let mut messages = Vec::new();
+        let mut messages = iced::advanced::shell::Bus::new();
         layer.update(
             tree,
             &event,
             Layout::new(&node),
             mouse::Cursor::Available(point),
             renderer,
-            &mut iced::advanced::clipboard::Null,
-            &mut Shell::new(&mut messages),
+            &mut Shell::new(
+                &iced::window::Headless,
+                iced::advanced::shell::Waker::new(|| {}),
+                &mut messages,
+            ),
             &bounds,
         );
-        messages
+        messages.drain().collect()
     }
 
     fn single_list<'a>(
@@ -615,7 +624,11 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         let mut layer = single_list(&rows, dir.path(), &icons, &expanded, shared.clone(), look);
         let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
         // The chevron normally toggles a directory; modifiers must select it.
@@ -771,7 +784,11 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let mut renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         let mut list = FileList::new(
             &rows,
             Some(&rows[2].entry.path),
@@ -800,15 +817,18 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, viewport.size()),
         );
-        let mut messages = Vec::new();
+        let mut messages = iced::advanced::shell::Bus::new();
         list.update(
             &mut tree,
             &Event::Window(iced::window::Event::Focused),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
             &renderer,
-            &mut iced::advanced::clipboard::Null,
-            &mut Shell::new(&mut messages),
+            &mut Shell::new(
+                &iced::window::Headless,
+                iced::advanced::shell::Waker::new(|| {}),
+                &mut messages,
+            ),
             &viewport,
         );
         list.draw(
@@ -854,7 +874,11 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         let mut layer = single_list(
             &original,
             dir.path(),
@@ -926,7 +950,11 @@ mod tests {
         let icons = Icons::new();
         let expanded = Default::default();
         let shared: Shared = Default::default();
-        let renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         let mut layer = single_list(&rows, dir.path(), &icons, &expanded, shared.clone(), look);
         let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
         for cancel_at_root in [false, true] {
@@ -1023,7 +1051,11 @@ mod tests {
                 .into();
             let mut layer = Layer::new(content, shared.clone(), look, &icons, "");
             let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
-            let renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+            let renderer = Renderer::new(iced::advanced::renderer::Settings {
+                default_font: look.ui_font,
+                default_text_size: iced::Pixels(look.px),
+                ..Default::default()
+            });
             let start = Point::new(
                 if source_pane == PaneId::Left {
                     100.0
@@ -1171,22 +1203,29 @@ mod tests {
         );
         let mut tree =
             Tree::new(&list as &dyn Widget<crate::view::rows::RowsMsg, iced::Theme, Renderer>);
-        let mut renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         let viewport = Rectangle::with_size(Size::new(600.0, 300.0));
         let node = list.layout(
             &mut tree,
             &renderer,
             &layout::Limits::new(Size::ZERO, viewport.size()),
         );
-        let mut messages = Vec::new();
+        let mut messages = iced::advanced::shell::Bus::new();
         list.update(
             &mut tree,
             &Event::Window(iced::window::Event::Focused),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
             &renderer,
-            &mut iced::advanced::clipboard::Null,
-            &mut Shell::new(&mut messages),
+            &mut Shell::new(
+                &iced::window::Headless,
+                iced::advanced::shell::Waker::new(|| {}),
+                &mut messages,
+            ),
             &viewport,
         );
         lock(&shared).active = Some(Gesture {
@@ -1300,7 +1339,11 @@ mod tests {
     fn pending_widget_cancels_on_focus_loss_escape_and_outside_press() {
         let look = look();
         let icons = Icons::new();
-        let renderer = Renderer::new(look.ui_font, iced::Pixels(look.px));
+        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: iced::Pixels(look.px),
+            ..Default::default()
+        });
         let target = Rectangle {
             x: 300.0,
             y: 0.0,

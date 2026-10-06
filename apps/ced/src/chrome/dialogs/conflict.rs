@@ -27,11 +27,11 @@ impl ConflictView {
                     .padding(8)
                     .width(Length::Fill)
                     .style(move |_| container::Style {
-                        background: Some(t.surface.into()),
+                        background: Some(t.palette.surface.into()),
                         border: iced::Border {
-                            color: t.border,
+                            color: t.palette.border,
                             width: 1.0,
-                            radius: t.radius.into(),
+                            radius: t.metrics.radius.md.into(),
                         },
                         ..container::Style::default()
                     }),
@@ -40,9 +40,9 @@ impl ConflictView {
         let body = column![
             look.text(conflict_text(&self.conflict)),
             look.small(format!("Remote edit: rev {}", self.conflict.rev))
-                .color(t.muted_text),
+                .color(t.palette.muted_text),
             look.small("Your text that was not applied:")
-                .color(t.muted_text),
+                .color(t.palette.muted_text),
             scrollable(texts).height(Length::Shrink),
         ]
         .spacing(8);

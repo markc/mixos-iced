@@ -71,7 +71,7 @@ impl Confirm {
                 "Replace file?",
                 iced::widget::column![
                     look.text("This file already exists:"),
-                    look.code(path.as_str()).color(t.muted_text),
+                    look.code(path.as_str()).color(t.palette.muted_text),
                     look.text("Replace it with this buffer?"),
                 ]
                 .spacing(6)

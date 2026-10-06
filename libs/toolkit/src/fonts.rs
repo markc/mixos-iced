@@ -103,6 +103,8 @@ impl Role {
 /// fields directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FontSet {
+    /// Extra faces registered without changing any generic role binding.
+    pub additional: Vec<FontSource>,
     pub sans: Option<FontSource>,
     pub mono: Option<FontSource>,
     pub serif: Option<FontSource>,
@@ -111,6 +113,10 @@ pub struct FontSet {
 }
 
 impl FontSet {
+    pub fn additional(mut self, source: impl Into<FontSource>) -> Self {
+        self.additional.push(source.into());
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -161,7 +167,7 @@ impl FontSet {
     }
 
     pub fn is_empty(&self) -> bool {
-        Role::ALL.iter().all(|role| self.get(*role).is_none())
+        self.additional.is_empty() && Role::ALL.iter().all(|role| self.get(*role).is_none())
     }
 }
 
@@ -253,10 +259,7 @@ pub enum FontError {
     /// The bytes hold no font face.
     NoFace { role: &'static str },
     /// The face did not register with iced's font system.
-    NotRegistered {
-        role: &'static str,
-        family: String,
-    },
+    NotRegistered { role: &'static str, family: String },
     /// Fonts are installed once per process.
     AlreadyInstalled,
     /// iced's font system lock is poisoned.
@@ -307,10 +310,7 @@ impl Fonts {
 
     /// The glyph and font of a named icon, ready for a text widget.
     pub fn icon(&self, name: &str) -> Option<(char, Font)> {
-        self.icons
-            .get(name)
-            .copied()
-            .zip(self.icon_font())
+        self.icons.get(name).copied().zip(self.icon_font())
     }
 
     /// Every icon name, in order.
@@ -348,6 +348,11 @@ pub fn install(mut set: FontSet, icon: Option<IconFont>) -> Result<&'static Font
             Ok::<_, FontError>((family, icon.codepoints))
         })
         .transpose()?;
+    for source in set.additional {
+        let bytes = source.load("additional")?;
+        let family = first_family(&bytes).ok_or(FontError::NoFace { role: "additional" })?;
+        faces.push(("additional", bytes, family));
+    }
     let families: HashSet<String> = faces
         .iter()
         .map(|(_, _, family)| family.to_ascii_lowercase())
@@ -446,9 +451,8 @@ pub fn font_for(
 ) -> Font {
     let preferred = prefer_installed
         .then(|| {
-            installed().and_then(|fonts| {
-                fonts.family(if monospace { Role::Mono } else { Role::Sans })
-            })
+            installed()
+                .and_then(|fonts| fonts.family(if monospace { Role::Mono } else { Role::Sans }))
         })
         .flatten();
     let names: Vec<_> = preferred
@@ -598,14 +602,20 @@ mod tests {
             .emoji(vec![1, 2, 3]);
         assert!(!set.is_empty());
         assert!(FontSet::new().is_empty());
-        assert_eq!(set.get(Role::Sans), Some(&FontSource::from(FIRA_SANS_REGULAR)));
+        assert_eq!(
+            set.get(Role::Sans),
+            Some(&FontSource::from(FIRA_SANS_REGULAR))
+        );
         assert_eq!(
             set.get(Role::Mono),
             Some(&FontSource::Path(PathBuf::from("mono.ttf")))
         );
         assert_eq!(set.get(Role::Serif), None);
         assert_eq!(Role::Display.name(), "display");
-        assert_eq!(first_family(FIRA_SANS_REGULAR).as_deref(), Some("Fira Sans"));
+        assert_eq!(
+            first_family(FIRA_SANS_REGULAR).as_deref(),
+            Some("Fira Sans")
+        );
         assert_eq!(first_family(b"not a font"), None);
     }
 
@@ -616,7 +626,10 @@ mod tests {
             None,
         );
         assert!(matches!(missing, Err(FontError::Read { role: "sans", .. })));
-        let bad = install(FontSet::new(), Some(IconFont::new(vec![0u8; 4], BTreeMap::new())));
+        let bad = install(
+            FontSet::new(),
+            Some(IconFont::new(vec![0u8; 4], BTreeMap::new())),
+        );
         assert!(matches!(bad, Err(FontError::NoFace { role: "icon" })));
     }
 
@@ -660,7 +673,10 @@ mod tests {
         let sans = font_for("Missing family", &[], 300, false, true);
         assert_eq!(sans.family, font::Family::Name("Fira Sans"));
         assert_eq!(sans.weight, font::Weight::Normal, "no light face");
-        assert_eq!(default_ui_font(), font_for("sans-serif", &[], 400, false, true));
+        assert_eq!(
+            default_ui_font(),
+            font_for("sans-serif", &[], 400, false, true)
+        );
         assert_eq!(default_mono_font().family, font::Family::Name("Fira Sans"));
         assert_eq!(
             font_for("Missing family", &[], 400, true, false).family,

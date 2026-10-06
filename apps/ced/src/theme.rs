@@ -19,6 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
+use appearance::tokens::colour;
 use design::{
     DesignCompileResult, DesignContext, DiagnosticSeverity, LinearRgba, Mode, ResolvedDictionary,
     ResolvedTypeRecord, Scheme, SourceIdentity, TypographyRole,
@@ -26,7 +27,6 @@ use design::{
 use editor_model::highlight::HlClass;
 use iced::Color;
 use toolkit::Tokens;
-use toolkit::tokens::colour;
 
 use crate::editor::{HL_CLASSES, Palette};
 
@@ -145,7 +145,7 @@ pub fn resolve(app_override: Option<&std::path::Path>) -> Theme {
 
 /// Compile `selection` into a [`Theme`].
 pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme {
-    if let Err(error) = toolkit::fonts::register_installed() {
+    if let Err(error) = appearance::fonts::register_installed() {
         notes.push(format!("static assets: {error}"));
     }
     let compiled = compile(selection).or_else(|error| {
@@ -165,7 +165,7 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
             typography,
         }) => {
             match (
-                Tokens::from_dictionary(&dictionary),
+                appearance::tokens::from_dictionary(&dictionary),
                 build_palette(&dictionary),
             ) {
                 (Ok(tokens), Ok((palette, chrome))) => (tokens, chrome, palette, Some(typography)),
@@ -457,7 +457,7 @@ impl Theme {
     pub fn iced_theme(&self) -> iced::Theme {
         iced::Theme::custom(
             "mixos-ced",
-            iced::theme::Palette {
+            iced::theme::palette::Seed {
                 background: self.tokens.palette.surface,
                 text: self.tokens.palette.text,
                 primary: self.tokens.palette.primary,
@@ -485,7 +485,7 @@ mod tests {
             cosmic_text::fontdb::{Database, Language},
             font_system,
         };
-        let set = toolkit::fonts::register_installed().unwrap().unwrap();
+        let set = appearance::fonts::register_installed().unwrap().unwrap();
         let requested = design::default_typography(TypographyRole::Ui)
             .family
             .clone();

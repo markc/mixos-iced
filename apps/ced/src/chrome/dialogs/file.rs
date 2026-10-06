@@ -329,7 +329,7 @@ impl FileDialog {
             look.button("↑", Some(m(FileMsg::Parent)))
                 .style(look.secondary()),
             look.code(self.dir.to_string_lossy())
-                .color(t.muted_text)
+                .color(t.palette.muted_text)
                 .width(Length::Fill),
             look.button(
                 if self.hidden {
@@ -352,11 +352,11 @@ impl FileDialog {
                 e.name.clone()
             };
             let fg = if selected {
-                t.selection_text
+                t.palette.selection_text
             } else if e.dir {
                 look.chrome.accent
             } else {
-                t.text
+                t.palette.text
             };
             let item = button(look.code(label).color(fg))
                 .width(Length::Fill)
@@ -364,15 +364,15 @@ impl FileDialog {
                 .on_press(m(FileMsg::Select(i)))
                 .style(move |_, status| iced::widget::button::Style {
                     background: if selected {
-                        Some(t.selection.into())
+                        Some(t.palette.selection.into())
                     } else if matches!(status, iced::widget::button::Status::Hovered) {
-                        Some(t.muted_surface.into())
+                        Some(t.palette.muted_surface.into())
                     } else {
                         None
                     },
                     text_color: fg,
                     border: iced::Border {
-                        radius: t.radius.into(),
+                        radius: t.metrics.radius.md.into(),
                         ..iced::Border::default()
                     },
                     ..iced::widget::button::Style::default()
@@ -382,23 +382,23 @@ impl FileDialog {
         if self.truncated {
             list = list.push(
                 look.small(format!("… more than {MAX_ENTRIES} entries; type to narrow"))
-                    .color(t.muted_text),
+                    .color(t.palette.muted_text),
             );
         }
         let listing = container(scrollable(list).height(Length::Fixed(260.0)))
             .padding(4)
             .style(move |_| container::Style {
-                background: Some(t.surface.into()),
+                background: Some(t.palette.surface.into()),
                 border: iced::Border {
-                    color: t.border,
+                    color: t.palette.border,
                     width: 1.0,
-                    radius: t.radius.into(),
+                    radius: t.metrics.radius.md.into(),
                 },
                 ..container::Style::default()
             });
         let mut body = column![location, listing, field].spacing(10);
         if !self.recent.is_empty() && matches!(self.mode, FileMode::Open) {
-            let mut recent = row![look.small("Recent:").color(t.muted_text)]
+            let mut recent = row![look.small("Recent:").color(t.palette.muted_text)]
                 .spacing(6)
                 .align_y(Alignment::Center);
             for path in self.recent.iter().take(6) {
@@ -411,7 +411,7 @@ impl FileDialog {
                         .style(look.flat()),
                     container(look.code(path.as_str()))
                         .padding(6)
-                        .style(look.strip(t.popover, t.popover_text)),
+                        .style(look.strip(t.palette.popover, t.palette.popover_text)),
                     iced::widget::tooltip::Position::Top,
                 ));
             }
@@ -422,7 +422,7 @@ impl FileDialog {
             );
         }
         if let Some(error) = &self.error {
-            body = body.push(look.small(error.as_str()).color(t.destructive));
+            body = body.push(look.small(error.as_str()).color(t.palette.destructive));
         }
         let action = match self.mode {
             FileMode::Open => "Open",

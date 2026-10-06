@@ -18,6 +18,8 @@ pub fn shape(content: &str, font: iced::Font, px: f32) -> Para {
         align_y: iced::alignment::Vertical::Top,
         shaping: text::Shaping::Advanced,
         wrapping: text::Wrapping::None,
+        ellipsis: iced::advanced::text::Ellipsis::None,
+        hint_factor: None,
     })
 }
 

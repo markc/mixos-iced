@@ -23,6 +23,7 @@
 
 mod dir;
 pub mod node;
+pub mod store;
 
 pub use dir::{Dir, Dirs, Environment, path};
 pub use strict::{Error, ErrorKind, Map, Value, parse, parse_file};

@@ -49,7 +49,7 @@ impl Recovered {
                 row![
                     column![
                         look.text(b.name.as_str()),
-                        look.code(detail).color(t.muted_text)
+                        look.code(detail).color(t.palette.muted_text)
                     ]
                     .width(Length::Fill),
                     look.button("Discard", Some(m(RecoveredMsg::Discard(b.buffer.clone()))))

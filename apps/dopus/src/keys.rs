@@ -928,7 +928,7 @@ mod widget_tests {
             state.focus_editable = true;
             state.keymap.custom = parse_keymap(custom).unwrap().custom;
         }
-        let field = TextField::<Message, ()>::new("path", "/tmp")
+        let field = TextField::<Message, iced::Theme, ()>::new("path", "/tmp")
             .id("location")
             .on_input(Message::Input)
             .on_submit(Message::Submit);
@@ -959,20 +959,23 @@ mod widget_tests {
     ) -> (Vec<Message>, bool) {
         let bounds = Rectangle::with_size(Size::new(300.0, 100.0));
         let node = router.layout(tree, &(), &layout::Limits::new(Size::ZERO, bounds.size()));
-        let mut messages = Vec::new();
-        let mut shell = Shell::new(&mut messages);
+        let mut messages = iced::advanced::shell::Bus::new();
+        let mut shell = Shell::new(
+            &iced::window::Headless,
+            iced::advanced::shell::Waker::new(|| {}),
+            &mut messages,
+        );
         router.update(
             tree,
             &event,
             Layout::new(&node),
             cursor,
             &(),
-            &mut iced::advanced::clipboard::Null,
             &mut shell,
             &bounds,
         );
         let captured = shell.is_event_captured();
-        (messages, captured)
+        (messages.drain().collect(), captured)
     }
 
     fn enter(modifiers: keyboard::Modifiers) -> Event {

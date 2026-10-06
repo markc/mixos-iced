@@ -179,7 +179,7 @@ pub fn frame<'a>(
         column![
             look.text(title)
                 .size(look.ui_px * 1.15)
-                .color(t.popover_text),
+                .color(t.palette.popover_text),
             body,
             actions
         ]
@@ -188,17 +188,17 @@ pub fn frame<'a>(
     .padding(Padding::from([18, 20]))
     .width(Length::Fixed(width))
     .style(move |_| container::Style {
-        background: Some(Background::Color(t.popover)),
-        text_color: Some(t.popover_text),
+        background: Some(Background::Color(t.palette.popover)),
+        text_color: Some(t.palette.popover_text),
         border: Border {
-            color: t.border,
+            color: t.palette.border,
             width: 1.0,
-            radius: (t.radius * 1.5).into(),
+            radius: (t.metrics.radius.md * 1.5).into(),
         },
         shadow: Shadow {
             color: Color {
                 a: 0.35,
-                ..darker(t.surface, t.text)
+                ..darker(t.palette.surface, t.palette.text)
             },
             offset: Vector::new(0.0, 6.0),
             blur_radius: 24.0,
@@ -207,7 +207,7 @@ pub fn frame<'a>(
     });
     let scrim = Color {
         a: 0.55,
-        ..darker(t.surface, t.text)
+        ..darker(t.palette.surface, t.palette.text)
     };
     iced::widget::opaque(
         iced::widget::mouse_area(

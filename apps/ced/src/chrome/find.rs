@@ -183,7 +183,7 @@ pub fn view<'a>(look: Look, bar: &'a FindBar) -> Element<'a, Msg> {
                 b,
                 container(look.small(tip))
                     .padding(6)
-                    .style(look.strip(t.popover, t.popover_text)),
+                    .style(look.strip(t.palette.popover, t.palette.popover_text)),
                 iced::widget::tooltip::Position::Top,
             )
             .into()
@@ -231,10 +231,10 @@ pub fn view<'a>(look: Look, bar: &'a FindBar) -> Element<'a, Msg> {
             );
     }
     if let Some(status) = &bar.status {
-        line = line.push(look.small(status.as_str()).color(t.muted_text));
+        line = line.push(look.small(status.as_str()).color(t.palette.muted_text));
     }
     line = line.push(
-        button(look.text("×").color(t.muted_text))
+        button(look.text("×").color(t.palette.muted_text))
             .padding(Padding::from([0, 6]))
             .style(look.flat())
             .on_press(Msg::Find(FindMsg::Close)),

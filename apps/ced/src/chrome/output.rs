@@ -58,13 +58,13 @@ pub fn view<'a>(look: Look, output: &'a Output) -> Element<'a, Msg> {
     if output.dropped > 0 {
         col = col.push(
             look.code(format!("… {} earlier lines dropped", output.dropped))
-                .color(t.muted_text),
+                .color(t.palette.muted_text),
         );
     }
     for line in output.lines() {
         let text = look.code(line.text.as_str());
         col = col.push(if line.stderr {
-            text.color(t.destructive)
+            text.color(t.palette.destructive)
         } else {
             text
         });

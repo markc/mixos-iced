@@ -20,8 +20,9 @@ mod_module_files = "deny"
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia"] }
 iced_tiny_skia.workspace = true
-toolkit = { workspace = true, features = ["tiny-skia", "design"] }
+toolkit = { workspace = true, features = ["tiny-skia"] }
 design.workspace = true
+appearance.workspace = true
 editor-model = { path = "crates/editor-model" }
 edit.workspace = true
 bus = { workspace = true, features = ["native"] }

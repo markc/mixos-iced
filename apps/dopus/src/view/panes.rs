@@ -132,8 +132,7 @@ pub(super) fn summary_footer(
         px: look.small_px,
         color: look.tokens.palette.muted_text,
     })
-    .width(Length::Fill)
-    .max_width(footer.width)
+    .width(Length::Fill.max(footer.width))
     .padding([look.chrome.small, look.chrome.pad])
     .clip(true)
     .style(look.strip(
@@ -395,8 +394,8 @@ mod tests {
                 edge: 1.0,
                 target: None,
                 sides,
-                border: t.border,
-                accent: t.ring,
+                border: t.palette.border,
+                accent: t.palette.ring,
             };
             let available =
                 viewport.width - sides.iter().filter(|s| **s > 0).count() as f32 * divider.width;

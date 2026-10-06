@@ -114,14 +114,14 @@ pub fn view<'a>(
         let b = badge(tab, agent_edits(tab.id));
         let is_active = active == Some(tab.id);
         let fg = if b.detached {
-            t.muted_text
+            t.palette.muted_text
         } else if is_active {
-            t.text
+            t.palette.text
         } else {
             look.chrome.secondary_text
         };
         let label = look.text(b.label()).color(fg);
-        let close = button(look.small("×").color(t.muted_text))
+        let close = button(look.small("×").color(t.palette.muted_text))
             .padding(Padding::from([0, 4]))
             .style(look.flat())
             .on_press(Msg::CloseTab(tab.id));
@@ -137,9 +137,9 @@ pub fn view<'a>(
             .on_press(Msg::SelectTab(id))
             .style(move |_, status| button::Style {
                 background: Some(Background::Color(if is_active {
-                    t.surface
+                    t.palette.surface
                 } else if matches!(status, button::Status::Hovered) {
-                    t.muted_surface
+                    t.palette.muted_surface
                 } else {
                     strip
                 })),
@@ -149,8 +149,8 @@ pub fn view<'a>(
                     color: if is_active { accent } else { strip },
                     width: if is_active { 1.0 } else { 0.0 },
                     radius: iced::border::Radius {
-                        top_left: t.radius,
-                        top_right: t.radius,
+                        top_left: t.metrics.radius.md,
+                        top_right: t.metrics.radius.md,
                         ..Default::default()
                     },
                 },

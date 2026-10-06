@@ -36,7 +36,7 @@ pub fn view<'a>(look: Look, macros: &'a [MacroDef]) -> Element<'a, Msg> {
     let entry = |label: String, keys: String| -> Element<'a, Msg> {
         row![
             look.small(label).width(Length::Fill),
-            look.code(keys).color(t.muted_text)
+            look.code(keys).color(t.palette.muted_text)
         ]
         .spacing(12)
         .into()

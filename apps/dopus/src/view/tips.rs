@@ -37,7 +37,7 @@ pub fn tip<'a, M: 'a>(
     )
     .padding(look.chrome.pad)
     .gap(look.chrome.small)
-    .style(move |_| look.tokens.tooltip_style(look.chrome.edge))
+    .style(move |_| appearance::tooltip_style(look.tokens, look.chrome.edge))
     .into()
 }
 
@@ -61,7 +61,7 @@ pub fn regions<M: 'static>(
             )
         })
         .collect();
-    tree.diff_children(children.as_slice());
+    tree.diff_children(children.as_mut_slice());
     let nodes = children
         .iter_mut()
         .zip(&mut tree.children)

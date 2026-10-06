@@ -94,17 +94,17 @@ impl Look {
         move |_, status| button::Style {
             background: match status {
                 button::Status::Hovered | button::Status::Pressed => {
-                    Some(Background::Color(t.muted_surface))
+                    Some(Background::Color(t.palette.muted_surface))
                 }
                 _ => None,
             },
             text_color: if matches!(status, button::Status::Disabled) {
-                t.muted_text
+                t.palette.muted_text
             } else {
-                t.text
+                t.palette.text
             },
             border: Border {
-                radius: t.radius.into(),
+                radius: t.metrics.radius.md.into(),
                 ..Border::default()
             },
             ..button::Style::default()
@@ -116,18 +116,18 @@ impl Look {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
-                button::Status::Disabled => t.muted_surface,
-                _ => t.primary,
+                button::Status::Disabled => t.palette.muted_surface,
+                _ => t.palette.primary,
             })),
-            text_color: t.primary_text,
+            text_color: t.palette.primary_text,
             border: Border {
-                radius: t.radius.into(),
+                radius: t.metrics.radius.md.into(),
                 width: if matches!(status, button::Status::Hovered) {
                     1.0
                 } else {
                     0.0
                 },
-                color: t.ring,
+                color: t.palette.ring,
             },
             ..button::Style::default()
         }
@@ -138,21 +138,21 @@ impl Look {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
-                button::Status::Hovered | button::Status::Pressed => t.muted_surface,
-                _ => t.card,
+                button::Status::Hovered | button::Status::Pressed => t.palette.muted_surface,
+                _ => t.palette.card,
             })),
             // The resting surface is `card`, which renders as the base page
             // colour, so an enabled label is primary text; only the disabled
             // label takes the muted hierarchy foreground.
             text_color: if matches!(status, button::Status::Disabled) {
-                t.muted_text
+                t.palette.muted_text
             } else {
-                t.text
+                t.palette.text
             },
             border: Border {
-                radius: t.radius.into(),
+                radius: t.metrics.radius.md.into(),
                 width: 1.0,
-                color: t.border,
+                color: t.palette.border,
             },
             ..button::Style::default()
         }
@@ -163,17 +163,17 @@ impl Look {
         let t = self.tokens;
         move |_, status| button::Style {
             background: Some(Background::Color(match status {
-                button::Status::Hovered | button::Status::Pressed => t.destructive,
-                _ => t.card,
+                button::Status::Hovered | button::Status::Pressed => t.palette.destructive,
+                _ => t.palette.card,
             })),
             text_color: match status {
-                button::Status::Hovered | button::Status::Pressed => t.destructive_text,
-                _ => t.destructive,
+                button::Status::Hovered | button::Status::Pressed => t.palette.destructive_text,
+                _ => t.palette.destructive,
             },
             border: Border {
-                radius: t.radius.into(),
+                radius: t.metrics.radius.md.into(),
                 width: 1.0,
-                color: t.destructive,
+                color: t.palette.destructive,
             },
             ..button::Style::default()
         }

@@ -176,9 +176,9 @@ pub fn view<'a>(look: Look, infos: Vec<Info>) -> Element<'a, Msg> {
     let mut col = column![];
     for info in infos {
         let (edge, fill) = match info.level {
-            Level::Error => (t.destructive, t.card),
-            Level::Warn => (look.chrome.warning, t.card),
-            Level::Info => (t.ring, t.card),
+            Level::Error => (t.palette.destructive, t.palette.card),
+            Level::Warn => (look.chrome.warning, t.palette.card),
+            Level::Info => (t.palette.ring, t.palette.card),
         };
         let mut buttons = row![].spacing(6).align_y(Alignment::Center);
         for (i, (label, action)) in info.actions.into_iter().enumerate() {
@@ -191,7 +191,7 @@ pub fn view<'a>(look: Look, infos: Vec<Info>) -> Element<'a, Msg> {
                 b.style(look.secondary())
             });
         }
-        let close = button(look.text("×").color(t.muted_text))
+        let close = button(look.text("×").color(t.palette.muted_text))
             .padding(Padding::from([0, 6]))
             .style(look.flat())
             .on_press(Msg::Info(InfoAction::Dismiss(info.key.clone())));
@@ -212,7 +212,7 @@ pub fn view<'a>(look: Look, infos: Vec<Info>) -> Element<'a, Msg> {
                     // The infobar fills with `card`, whose rendered surface is
                     // the base page colour, so its message text is primary
                     // text, not the card pair's muted foreground.
-                    text_color: Some(t.text),
+                    text_color: Some(t.palette.text),
                     border: Border {
                         color: edge,
                         width: 1.0,

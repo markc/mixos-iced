@@ -1522,7 +1522,11 @@ mod tests {
             .select_modified(PaneId::Right, paths[1].clone(), true, false);
         app.core.set_active_pane(PaneId::Left);
         app.refresh_panes();
-        let mut renderer = Renderer::new(app.look().ui_font, iced::Pixels(app.look().px));
+        let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: app.look().ui_font,
+            default_text_size: iced::Pixels(app.look().px),
+            ..Default::default()
+        });
         let cursor = mouse::Cursor::Available(iced::Point::new(450.0, 110.0));
         let size = iced::Size::new(600.0, 300.0);
         let mut ui = iced_runtime::UserInterface::build(
@@ -1532,13 +1536,13 @@ mod tests {
             &mut renderer,
         );
         let mut messages = Vec::new();
-        ui.update(
+        crate::test_support::update_ui(
+            &mut ui,
             &[Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Right,
             ))],
             cursor,
             &mut renderer,
-            &mut iced::advanced::clipboard::Null,
             &mut messages,
         );
         let cache = ui.into_cache();
@@ -1566,14 +1570,14 @@ mod tests {
                 repeat: false,
             })
         };
-        let (_, statuses) = ui.update(
+        let (_, statuses) = crate::test_support::update_ui(
+            &mut ui,
             &[
                 key(keyboard::key::Named::ArrowDown),
                 key(keyboard::key::Named::Enter),
             ],
             cursor,
             &mut renderer,
-            &mut iced::advanced::clipboard::Null,
             &mut messages,
         );
         assert!(

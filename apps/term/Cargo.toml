@@ -31,8 +31,9 @@ bytes = { version = "1.12", optional = true }
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }
 term-core = { path = "crates/term-core" }
 design.workspace = true
+appearance.workspace = true
 config.workspace = true
-toolkit = { workspace = true, features = ["design"] }
+toolkit = { workspace = true, features = [] }
 buildinfo.workspace = true
 libc.workspace = true
 serde_json.workspace = true

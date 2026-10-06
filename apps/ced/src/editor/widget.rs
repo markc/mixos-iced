@@ -171,6 +171,8 @@ impl<'a> Editor<'a> {
             align_y: iced::alignment::Vertical::Top,
             shaping: atext::Shaping::Basic,
             wrapping: atext::Wrapping::None,
+            ellipsis: iced::advanced::text::Ellipsis::None,
+            hint_factor: None,
         });
         let width = p.min_bounds().width;
         let cell_w = if width > 0.0 {

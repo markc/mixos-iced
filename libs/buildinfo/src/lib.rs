@@ -426,7 +426,7 @@ fn build_time() -> String {
 ///
 /// Uses Howard Hinnant's `civil_from_days` algorithm (public domain), so no
 /// `chrono`/`time` dependency is pulled into every binary's build.
-fn rfc3339_utc(epoch_secs: i64) -> String {
+pub fn rfc3339_utc(epoch_secs: i64) -> String {
     let days = epoch_secs.div_euclid(86_400);
     let rem = epoch_secs.rem_euclid(86_400);
     let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -444,6 +444,15 @@ fn rfc3339_utc(epoch_secs: i64) -> String {
     let year = if month <= 2 { y + 1 } else { y };
 
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Current UTC time for runtime registration provenance.
+pub fn now_rfc3339() -> String {
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    rfc3339_utc(epoch)
 }
 
 #[cfg(test)]
@@ -487,7 +496,10 @@ mod tests {
 
     #[test]
     fn build_info_line_includes_dirty_marker() {
-        let info = BuildInfo { git_dirty: true, ..demo() };
+        let info = BuildInfo {
+            git_dirty: true,
+            ..demo()
+        };
         assert_eq!(
             info.line(),
             "demo 1.2.3 (abc123def456-dirty, built 2026-06-01T00:00:00Z)"
@@ -570,7 +582,11 @@ mod tests {
         bytes.extend_from_slice(b"not json");
         bytes.extend_from_slice(format!("{p}{json}").as_bytes());
         bytes.extend_from_slice(format!("{p}{json}").as_bytes());
-        let other = BuildInfo { pkg: "other", ..demo() }.json();
+        let other = BuildInfo {
+            pkg: "other",
+            ..demo()
+        }
+        .json();
         bytes.extend_from_slice(format!("{p}{other}").as_bytes());
         bytes.extend_from_slice(p.as_bytes());
         bytes.extend_from_slice(b"{\"unterminated\":");

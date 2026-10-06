@@ -13,11 +13,6 @@ use iced_widget::{container, text_input};
 
 use crate::{AudioStyle, MenuStyle};
 
-#[cfg(feature = "design")]
-mod design;
-#[cfg(feature = "design")]
-pub use design::{TokenError, colour};
-
 /// Track colours for the standalone gallery; retained from the 0.1.7 preview.
 pub const PREVIEW_TRACK_COLOURS: [Color; 4] = [
     Color::from_rgb(0.35, 0.72, 0.55),

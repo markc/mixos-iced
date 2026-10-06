@@ -143,7 +143,6 @@ fn field_look(
             width: edge,
             radius: radius.into(),
         },
-        icon: muted,
         placeholder: muted,
         value: text_color,
         selection,

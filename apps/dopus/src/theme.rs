@@ -16,13 +16,13 @@
 
 use std::path::{Path, PathBuf};
 
+use appearance::tokens::colour;
 use design::{
     DesignCompileResult, DesignContext, Mode, ResolvedDictionary, ResolvedTypeRecord, Scheme,
     SourceIdentity, TypographyRole,
 };
 use iced::Color;
 use toolkit::Tokens;
-use toolkit::tokens::colour;
 
 /// The app identity the design compiler selects a per-app overlay by.
 const APP: &str = "dopus";
@@ -158,7 +158,7 @@ pub fn resolve(app_override: Option<&Path>) -> Theme {
 
 /// Compile `selection` into a [`Theme`].
 pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme {
-    if let Err(error) = toolkit::fonts::register_installed() {
+    if let Err(error) = appearance::fonts::register_installed() {
         notes.push(format!("static assets: {error}"));
     }
     let compiled = compile(selection).or_else(|error| {
@@ -177,7 +177,7 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
             dictionary,
             typography,
         }) => match (
-            Tokens::from_dictionary(&dictionary),
+            appearance::tokens::from_dictionary(&dictionary),
             build_chrome(&dictionary),
         ) {
             (Ok(tokens), Ok(chrome)) => (tokens, chrome, Some(typography)),
@@ -353,7 +353,7 @@ impl Theme {
     pub fn iced_theme(&self) -> iced::Theme {
         iced::Theme::custom(
             "mixos-dopus",
-            iced::theme::Palette {
+            iced::theme::palette::Seed {
                 background: self.tokens.palette.surface,
                 text: self.tokens.palette.text,
                 primary: self.tokens.palette.primary,
@@ -381,7 +381,7 @@ mod tests {
             cosmic_text::fontdb::{Database, Language},
             font_system,
         };
-        let set = toolkit::fonts::register_installed().unwrap().unwrap();
+        let set = appearance::fonts::register_installed().unwrap().unwrap();
         let requested = design::default_typography(TypographyRole::Ui)
             .family
             .clone();
@@ -423,9 +423,11 @@ mod tests {
                 })
                 .unwrap();
                 let dictionary = &compiled.dictionary;
-                let tokens = Tokens::from_dictionary(dictionary).unwrap();
-                let style =
-                    tokens.tooltip_style(dictionary.metrics["button.border_width"].value as f32);
+                let tokens = appearance::tokens::from_dictionary(dictionary).unwrap();
+                let style = appearance::tooltip_style(
+                    tokens,
+                    dictionary.metrics["button.border_width"].value as f32,
+                );
                 assert_eq!(style.background, Some(tokens.palette.elevated.into()));
                 assert_eq!(style.text_color, Some(tokens.palette.elevated_text));
                 assert_eq!(tokens.palette.elevated.a, 1.0);

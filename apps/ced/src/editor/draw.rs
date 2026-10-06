@@ -337,6 +337,8 @@ impl Ctx<'_, '_> {
                 align_y: iced::alignment::Vertical::Top,
                 shaping,
                 wrapping: atext::Wrapping::None,
+                ellipsis: iced::advanced::text::Ellipsis::None,
+                hint_factor: None,
             },
             at,
             colour,
@@ -969,6 +971,13 @@ mod tests {
     }
 
     impl iced::advanced::Renderer for Rec {
+        fn hint(&mut self, _: renderer::Scale) {}
+        fn scale(&self) -> Option<renderer::Scale> {
+            None
+        }
+        fn settings(&self) -> renderer::Settings {
+            renderer::Settings::default()
+        }
         fn start_layer(&mut self, bounds: Rectangle) {
             let parent = *self.layers.last().expect("the window layer");
             self.layers.push(

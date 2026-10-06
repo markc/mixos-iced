@@ -15,7 +15,7 @@ pub fn view<'a>(look: Look, ctx: &DialogCtx<'a>) -> Element<'a, Msg> {
     let line = |k: &'static str, v: String| -> Element<'a, Msg> {
         row![
             look.small(k)
-                .color(t.muted_text)
+                .color(t.palette.muted_text)
                 .width(Length::Fixed(110.0)),
             look.code(v)
         ]
@@ -34,7 +34,7 @@ pub fn view<'a>(look: Look, ctx: &DialogCtx<'a>) -> Element<'a, Msg> {
     };
     let body = column![
         look.text("An editor for the MixOS edit service: agents' edits appear live, each origin has its own undo lane, and unsaved text survives a restart.")
-            .color(t.popover_text),
+            .color(t.palette.popover_text),
         line("Version", format!("{} ({}, built {})", info.version, info.git_sha, info.build_time)),
         line("Service", service),
         line("Recovery", recovery),

@@ -74,7 +74,11 @@ mod tests {
     }
 
     fn layout(mut element: Element<'_, Msg>, look: Look, width: f32) -> (Tree, layout::Node) {
-        let renderer = Renderer::new(look.ui_font, look.px.into());
+        let renderer = Renderer::new(iced::advanced::renderer::Settings {
+            default_font: look.ui_font,
+            default_text_size: look.px.into(),
+            ..Default::default()
+        });
         let mut tree = Tree::new(element.as_widget());
         let node = element.as_widget_mut().layout(
             &mut tree,

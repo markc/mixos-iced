@@ -244,7 +244,7 @@ pub struct Icons {
 impl Default for Icons {
     fn default() -> Self {
         let mut icons = Self::lucide();
-        let set = match toolkit::fonts::register_installed() {
+        let set = match appearance::fonts::register_installed() {
             Ok(Some(set)) => set,
             Ok(None) => return icons,
             Err(error) => {
@@ -254,7 +254,7 @@ impl Default for Icons {
         };
         let mut glyphs = HashMap::new();
         for icon in ALL {
-            match toolkit::fonts::material_icon(icon.material_name()) {
+            match appearance::fonts::material_icon(icon.material_name()) {
                 Ok(Some(glyph)) => {
                     glyphs.insert(icon, glyph);
                 }
@@ -372,6 +372,8 @@ impl Icons {
                     align_y: iced::alignment::Vertical::Center,
                     shaping: iced::advanced::text::Shaping::Advanced,
                     wrapping: iced::advanced::text::Wrapping::None,
+                    ellipsis: iced::advanced::text::Ellipsis::None,
+                    hint_factor: None,
                 },
                 bounds.center(),
                 tint_color(tint),
@@ -548,7 +550,7 @@ mod tests {
                     );
                 }
                 let mut renderer =
-                    iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(16.0));
+                    iced_tiny_skia::Renderer::new(iced::advanced::renderer::Settings::default());
                 icons.draw(&mut renderer, icon, "#ff0000", bounds, bounds);
                 let text_count: usize = renderer
                     .layers()
