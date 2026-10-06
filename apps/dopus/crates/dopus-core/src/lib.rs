@@ -26,8 +26,8 @@
 //! (filemgr got them from Bevy's schedule or ctk, which the core does not
 //! have). An app that breaks one silently changes behaviour:
 //!
-//! 1. **Call `tick(now)` every frame** with a monotonic `Instant`. Count
-//!    dispatch recovery and the entire config debounce advance nowhere else.
+//! 1. **Call `tick(now)` after state events and at `next_deadline()`**, with a
+//!    monotonic `Instant`. Count dispatch and config debounce advance here.
 //!    Metadata timeouts also advance here; absolute timestamps need no refresh.
 //! 2. **Drain the channel and feed every event through `on_event`, exactly
 //!    once, on one thread.** The channel is unbounded; an app that stops

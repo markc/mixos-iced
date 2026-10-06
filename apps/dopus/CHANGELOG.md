@@ -1,5 +1,11 @@
 # DOpus Bus contract
 
+## Unreleased
+
+Replace redraw-driven maintenance and the idle heartbeat with one cancellable
+deadline wait. Config settling, metadata timeouts and chord expiry retain their
+behaviour while a settled window stops redrawing.
+
 ## 0.4.2
 
 Transplant the retained `dopus.*` verbs from cosmix

@@ -11,9 +11,8 @@
 //! - worker replies arrive on the core's `mpsc::Receiver`; a pumper thread
 //!   forwards each into the futures channel the subscription drains, and the
 //!   UI thread feeds every one through `core.on_event` exactly once — law 2.
-//! - law 1's cadence is threefold: `Msg::Frame` ticks per redraw, a 200 ms `Msg::Tick`
-//!   heartbeat ticks when the window is idle (frames only fire on redraws),
-//!   and `quit` ticks once before exit so pending config persists.
+//! - maintenance runs after state events and at pending config, metadata or
+//!   chord deadlines. A settled window has no heartbeat or redraw feedback.
 //! - derived `ConfirmRequested`/`PromptRequested` join the modal queue
 //!   ([`dialogs::ModalQueue`]; the core queues concurrent modals and the
 //!   oldest renders first) and are answered through the dialog surface —
@@ -96,9 +95,7 @@ pub enum Msg {
     Core(CoreEvent),
     /// Window edges (focus reloads the keymap; close quits).
     Window(iced::window::Event),
-    /// One redraw (law 1's tick).
-    Frame(Instant),
-    /// The 200 ms heartbeat (law 1's tick while idle + the chord-deadline poll).
+    /// A pending maintenance deadline expired.
     Tick(Instant),
     /// The open dialog's buttons (Yes/No, OK/Cancel, field input).
     Dialog(DialogMsg),
@@ -135,6 +132,8 @@ pub enum PaneOp {
 
 pub struct Dopus {
     core: DopusCore,
+    maintenance: std::sync::mpsc::Sender<Option<Instant>>,
+    maintenance_deadline: Option<Instant>,
     /// The per-pane listing snapshot `view` draws; refreshed after every
     /// update so no core mutation can be drawn stale.
     rows: [Vec<VisibleRow>; 2],
@@ -229,8 +228,11 @@ pub fn run(
     // Startup `dopus.open` PATHs land in the panes before the first frame.
     verbs::apply_open_paths(&mut core, paths);
     let split_ratio = core.config_snapshot().split_ratio;
+    let (maintenance, deadlines) = maintenance();
     let mut app = Dopus {
         core,
+        maintenance,
+        maintenance_deadline: None,
         rows: [Vec::new(), Vec::new()],
         column_cache: Default::default(),
         measurements: Default::default(),
@@ -262,7 +264,7 @@ pub fn run(
     let streams = Streams {
         deliveries: deliveries.unwrap_or_else(|| iced::futures::channel::mpsc::unbounded().1),
         core_events: pump(core_events),
-        heartbeat: heartbeat(),
+        deadlines,
     };
     if STREAMS.set(Mutex::new(Some(streams))).is_err() {
         anyhow::bail!("app::run called twice in one process");
@@ -320,26 +322,50 @@ fn pump(receiver: std::sync::mpsc::Receiver<CoreEvent>) -> UnboundedReceiver<Cor
     rx
 }
 
-/// Law 1's idle heartbeat: frames only fire on redraws, so a std thread
-/// sends `Instant::now()` every 200 ms into the merged stream — the cadence
-/// the config debounce, count dispatch and chord deadlines advance on while
-/// the window is idle or occluded (ced's shape: everything through the one
-/// `Subscription::run` stream; `iced::time::every` is not in this
-/// feature set).
-fn heartbeat() -> UnboundedReceiver<Instant> {
+/// One cancellable deadline wait. With no pending work the thread blocks
+/// indefinitely; new state replaces its wait rather than starting a timer.
+fn maintenance() -> (std::sync::mpsc::Sender<Option<Instant>>, UnboundedReceiver<Instant>) {
     let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+    let (arm, waits) = std::sync::mpsc::channel::<Option<Instant>>();
     std::thread::Builder::new()
-        .name("dopus-heartbeat".to_owned())
+        .name("dopus-deadline".to_owned())
         .spawn(move || {
+            let mut deadline = Some(Instant::now());
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                if tx.unbounded_send(Instant::now()).is_err() {
-                    return;
+                let request = if let Some(at) = deadline {
+                    waits.recv_timeout(at.saturating_duration_since(Instant::now()))
+                } else {
+                    waits.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                };
+                match request {
+                    Ok(next) => deadline = next,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        deadline = None;
+                        if tx.unbounded_send(Instant::now()).is_err() { return; }
+                    }
                 }
             }
         })
-        .expect("spawning the heartbeat thread");
-    rx
+        .expect("spawning the deadline worker");
+    (arm, rx)
+}
+
+#[test]
+fn maintenance_wait_cancels_rearms_and_stays_quiet_after_expiry() {
+    use iced::futures::StreamExt;
+    use std::time::Duration;
+    let (arm, mut wakes) = maintenance();
+    iced::futures::executor::block_on(wakes.next()).expect("startup wake");
+    arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
+    arm.send(None).unwrap();
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(wakes.try_next().is_err(), "cancelled wait must stay quiet");
+    arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(wakes.try_next().unwrap().is_some(), "rearmed wait must fire");
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(wakes.try_next().is_err(), "expired wait must not become a heartbeat");
 }
 
 /// One background thread for iced's tasks (the `apps/term` executor).
@@ -367,12 +393,12 @@ impl iced::Executor for SingleThread {
 struct Streams {
     deliveries: UnboundedReceiver<Delivery>,
     core_events: UnboundedReceiver<CoreEvent>,
-    heartbeat: UnboundedReceiver<Instant>,
+    deadlines: UnboundedReceiver<Instant>,
 }
 
 static STREAMS: OnceLock<Mutex<Option<Streams>>> = OnceLock::new();
 
-/// Bus deliveries, core events and the heartbeat, merged. Built once: iced
+/// Bus deliveries, core events and deadline wakes, merged. Built once: iced
 /// keeps a `Subscription::run` alive for as long as it is returned.
 fn streams() -> impl iced::futures::Stream<Item = Msg> {
     use iced::futures::StreamExt;
@@ -380,7 +406,7 @@ fn streams() -> impl iced::futures::Stream<Item = Msg> {
     match taken {
         Some(s) => iced::futures::stream::select(
             iced::futures::stream::select(s.deliveries.map(Msg::Bus), s.core_events.map(Msg::Core)),
-            s.heartbeat.map(Msg::Tick),
+            s.deadlines.map(Msg::Tick),
         )
         .boxed(),
         None => {
@@ -409,6 +435,13 @@ impl Dopus {
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         let layout = self.drag_layout();
         let task = self.dispatch(msg);
+        let derived = self.core.tick(Instant::now());
+        let maintenance = self.on_derived(derived);
+        let next = self.core.next_deadline().into_iter().chain(keys::next_deadline(&self.router)).min();
+        if next != self.maintenance_deadline {
+            self.maintenance_deadline = next;
+            let _ = self.maintenance.send(next);
+        }
         // Bus actions can change pane geometry while the pointer is idle.
         // Retire the captured target bounds before drawing the new layout.
         if layout != self.drag_layout() {
@@ -417,7 +450,7 @@ impl Dopus {
         // The view snapshot: refreshed on every message, so no core mutation
         // can be drawn stale.
         self.refresh_panes();
-        task
+        Task::batch([task, maintenance])
     }
 
     fn drag_layout(&self) -> (Look, f32, [dopus_core::config::SidebarConfig; 2]) {
@@ -495,23 +528,9 @@ impl Dopus {
                 self.on_derived(derived)
             }
             Msg::Window(event) => self.on_window(event),
-            Msg::Frame(now) => {
-                // Law 1: advance core maintenance every frame.
-                let derived = self.core.tick(now);
-                self.on_derived(derived)
-            }
-            Msg::Tick(now) => {
-                // Law 1 while idle (frames only fire on redraws), plus the
-                // chord-deadline poll: an expired chord resolves without
-                // waiting for the next keypress.
-                let derived = self.core.tick(now);
-                let derived_task = self.on_derived(derived);
+            Msg::Tick(_now) => {
                 let actions = keys::poll_timeout(&self.router);
-                if actions.is_empty() {
-                    derived_task
-                } else {
-                    Task::batch([derived_task, self.on_actions(&actions)])
-                }
+                self.on_actions(&actions)
             }
             Msg::Dialog(msg) => self.on_dialog(msg),
             Msg::DialogKey(key) => self.on_dialog_key(key),
@@ -1136,8 +1155,6 @@ impl Dopus {
     fn subscription(&self) -> Subscription<Msg> {
         Subscription::batch([
             Subscription::run(streams),
-            iced::window::frames().map(Msg::Frame),
-            // The idle heartbeat rides the merged stream (see `heartbeat`).
             iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Window(
                     e @ (iced::window::Event::Resized(_)
@@ -1243,7 +1260,8 @@ impl Dopus {
         // resolves nothing (the modal scope) and hands Enter/Escape to the
         // dialog instead.
         let mut routed =
-            keys::router(content, self.router.clone(), Msg::Actions).modal(self.dialog.is_some());
+            keys::router(content, self.router.clone(), Msg::Actions)
+                .modal(self.dialog.is_some()).on_pending(Msg::Noop);
         if self.dialog.is_some() {
             routed = routed.on_modal_key(Msg::DialogKey);
         } else if let Some((pane, _)) = self.editing.as_ref() {
@@ -1350,6 +1368,8 @@ mod tests {
         let (core, _events) = DopusCore::new(config, None);
         let app = Dopus {
             core,
+            maintenance: std::sync::mpsc::channel().0,
+            maintenance_deadline: None,
             rows: [Vec::new(), Vec::new()],
             column_cache: Default::default(),
             measurements: Default::default(),

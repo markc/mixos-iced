@@ -1464,9 +1464,26 @@ impl DopusCore {
         }
     }
 
-    // -- frame pump ---------------------------------------------------------
+    /// Next timed maintenance edge. Worker replies and user actions wake the
+    /// caller independently; a settled core needs no periodic tick.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let config = self.config_dirty_since.map(|since| since + CONFIG_SETTLE);
+        let metadata = [PaneId::Left, PaneId::Right].into_iter().filter_map(|pane| {
+            let model = self.pane(pane);
+            let path = model.selected.as_ref()?;
+            let slot = &self.properties[pane.index()];
+            if slot.cached.as_ref().is_some_and(|(g, p, _)| *g == model.generation && p == path) {
+                return None;
+            }
+            slot.in_flight.iter().find(|(g, p, _)| *g == model.generation && p == path)
+                .map(|(_, _, started)| *started + Duration::from_secs(5))
+        }).min();
+        config.into_iter().chain(metadata).min()
+    }
 
-    /// Per-frame work: count dispatch plus the config settle debounce
+    // -- maintenance --------------------------------------------------------
+
+    /// Work after a state event or at `next_deadline`: count dispatch and config settle
     /// (browser.rs `persist_config`, 3564-3622). Returns the derived
     /// view-facing events queued so far.
     pub fn tick(&mut self, now: Instant) -> Vec<CoreEvent> {
@@ -3623,6 +3640,24 @@ mod tests {
     }
 
     // -- config settle debounce (browser.rs:3564-3622) -------------------------
+
+    #[test]
+    fn maintenance_deadline_rearms_for_changes_and_disappears_when_settled() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let start = now_instant();
+        core.tick(start);
+        core.tick(start + CONFIG_SETTLE);
+        assert_eq!(core.next_deadline(), None);
+        core.set_split_ratio(0.7);
+        core.tick(start + Duration::from_secs(1));
+        assert_eq!(core.next_deadline(), Some(start + Duration::from_secs(1) + CONFIG_SETTLE));
+        core.set_split_ratio(0.8);
+        core.tick(start + Duration::from_millis(1100));
+        let due = start + Duration::from_millis(1100) + CONFIG_SETTLE;
+        assert_eq!(core.next_deadline(), Some(due));
+        assert!(core.tick(due).iter().any(|event| matches!(event, CoreEvent::ConfigSettled(config) if config.split_ratio == 0.8)));
+        assert_eq!(core.next_deadline(), None);
+    }
 
     #[test]
     fn config_settles_after_the_debounce_and_only_once_per_change() {

@@ -206,9 +206,7 @@ pub fn reload(shared: &SharedRouter, custom_path: Option<&Path>) {
     router.state.cancel();
 }
 
-/// Resolve a chord whose deadline expired while idle: the app's `Msg::Tick`
-/// calls this every 200 ms, so a pending chord times out without waiting for
-/// the next keypress. Returns any actions the expiry emitted.
+/// Resolve an expired chord after the app's deadline wake.
 pub fn poll_timeout(shared: &SharedRouter) -> Vec<ActionId> {
     let mut router = shared
         .lock()
@@ -221,6 +219,13 @@ pub fn poll_timeout(shared: &SharedRouter) -> Vec<ActionId> {
     } else {
         Vec::new()
     }
+}
+
+pub fn next_deadline(shared: &SharedRouter) -> Option<Instant> {
+    let router = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let deadline = router.state.deadline()?;
+    let remaining = deadline.0.saturating_sub(tick().0);
+    Some(Instant::now() + std::time::Duration::from_millis(remaining))
 }
 
 /// Milliseconds since process start, the monotonic [`Tick`] mixos-actions
@@ -370,6 +375,7 @@ pub struct KeyRouter<'a, Message, Theme, Renderer> {
     modal: bool,
     on_modal_key: Option<ModalKeyFn<'a, Message>>,
     on_edit_cancel: Option<(iced::advanced::widget::Id, Message)>,
+    on_pending: Option<Message>,
 }
 
 pub fn router<'a, Message, Theme, Renderer>(
@@ -384,10 +390,16 @@ pub fn router<'a, Message, Theme, Renderer>(
         modal: false,
         on_modal_key: None,
         on_edit_cancel: None,
+        on_pending: None,
     }
 }
 
 impl<'a, Message, Theme, Renderer> KeyRouter<'a, Message, Theme, Renderer> {
+    /// Wake the app to arm the newly pending chord's deadline.
+    pub fn on_pending(mut self, message: Message) -> Self {
+        self.on_pending = Some(message);
+        self
+    }
     /// Escape and presses outside this editor cancel it; Enter stays with TextField.
     pub fn on_edit_cancel(
         mut self,
@@ -551,6 +563,9 @@ where
                 return;
             }
             if matches!(resolved.outcome, actions::ResolveOutcome::Pending { .. }) {
+                if let Some(message) = &self.on_pending {
+                    shell.publish(message.clone());
+                }
                 // A longer chord may still win: do not let a child treat the
                 // stroke as its own (P1: only matters with custom overlays).
                 shell.capture_event();
