@@ -255,8 +255,8 @@ impl Default for Icons {
         let mut glyphs = HashMap::new();
         for icon in ALL {
             match appearance::fonts::material_icon(icon.material_name()) {
-                Ok(Some(glyph)) => {
-                    glyphs.insert(icon, glyph);
+                Ok(Some((glyph, font))) => {
+                    glyphs.insert(icon, (glyph, font.weight(application::iced::font::Weight::ExtraLight)));
                 }
                 Ok(None) => {
                     tracing::warn!(
@@ -310,7 +310,7 @@ fn validate_material_glyphs(
         })
         .ok_or_else(|| format!("Material family {family:?} is unavailable"))?;
     let selected = raw
-        .get_font(id, Weight::NORMAL)
+        .get_font(id, Weight::EXTRA_LIGHT)
         .ok_or_else(|| format!("Material family {family:?} cannot be read"))?;
     for (icon, (glyph, glyph_font)) in glyphs {
         if glyph_font.family != font.family || selected.as_swash().charmap().map(*glyph) == 0 {
@@ -342,6 +342,10 @@ impl Icons {
 
     pub fn asset_set(&self) -> Option<&str> {
         self.asset_set.as_deref()
+    }
+
+    pub fn weight(&self) -> Option<u16> {
+        self.material.as_ref().map(|_| 200)
     }
 
     pub fn glyph(&self, icon: Icon) -> Option<(char, application::iced::Font)> {
@@ -543,6 +547,7 @@ mod tests {
             );
             for icon in ALL {
                 let (glyph, font) = icons.glyph(icon).unwrap();
+                assert_eq!(font.weight, application::iced::font::Weight::ExtraLight);
                 let application::iced::font::Family::Name(family) = font.family else {
                     panic!("Material must use its named family");
                 };
@@ -630,6 +635,43 @@ mod tests {
             Icon::File,
             "expanded only means folders"
         );
+    }
+
+    #[test]
+    #[ignore = "requires a bootstrapped static asset set"]
+    fn material_200_has_less_ink_than_400_in_the_real_renderer() {
+        let icons = Icons::default();
+        assert_eq!(icons.weight(), Some(200));
+        let mut regular = icons.clone();
+        let mut glyphs = regular.material.as_ref().unwrap().as_ref().clone();
+        for (_, font) in glyphs.values_mut() {
+            font.weight = application::iced::font::Weight::Normal;
+        }
+        regular.material = Some(Arc::new(glyphs));
+        for scale in [1.0, 2.0] {
+            for icon in [Icon::Folder, Icon::Search, Icon::Trash] {
+                let render = |icons: &Icons| {
+                    let side = (64.0 * scale) as u32;
+                    let viewport = application::cpu::graphics::Viewport::with_physical_size(
+                        application::iced::Size::new(side, side),
+                        application::iced::advanced::renderer::Scale { window: scale, application: 1.0 },
+                    );
+                    let mut renderer = application::cpu::Renderer::new(
+                        application::iced::advanced::renderer::Settings::default(),
+                    );
+                    let clip = application::iced::Rectangle::with_size(application::iced::Size::new(64.0, 64.0));
+                    let bounds = application::iced::Rectangle { x: 8.0, y: 8.0, width: 32.0, height: 32.0 };
+                    icons.draw(&mut renderer, icon, "#ff0000", bounds, clip);
+                    let mut pixels = iced_tiny_skia_pixels::Pixmap::new(side, side).unwrap();
+                    let mut mask = iced_tiny_skia_pixels::Mask::new(side, side).unwrap();
+                    renderer.draw(&mut pixels.as_mut(), &mut mask, &viewport, &[clip], application::iced::Color::TRANSPARENT);
+                    pixels.data().chunks_exact(4).map(|pixel| u64::from(pixel[3])).sum::<u64>()
+                };
+                let thin = render(&icons);
+                let normal = render(&regular);
+                assert!(thin > 0 && thin < normal, "{icon:?}, scale {scale}: 200={thin}, 400={normal}");
+            }
+        }
     }
 
     #[test]

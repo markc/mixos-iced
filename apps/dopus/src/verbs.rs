@@ -141,6 +141,10 @@ pub struct AppearanceState {
     pub asset_set: Option<String>,
     pub font_ui: String,
     pub font_mono: String,
+    #[serde(default)]
+    pub font_ui_weight: u16,
+    #[serde(default)]
+    pub icon_weight: Option<u16>,
 }
 
 // ── action / actions.list ───────────────────────────────────────────────────

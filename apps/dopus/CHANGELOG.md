@@ -1,5 +1,12 @@
 # DOpus Bus contract
 
+## 0.4.4
+
+- Use the shared Noto Sans UI face at 300 and Material Rounded icons at 200.
+  Preserve explicit authored text families and the missing-font icon fallback.
+- Report UI and icon weights in the existing appearance state, with defaults
+  when reading replies from older applications.
+
 ## 0.4.3
 
 - Use toolkit's shared FilePane for row layout, cached drawing and stable click

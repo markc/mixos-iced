@@ -243,6 +243,11 @@
 <p>DOpus is the native two-pane Wayland file manager. Navigation, selection,
 sorting, file-operation dialogs and drag and drop use the shared toolkit.
 It requires no D-Bus session.</p>
+<p>With the current shared asset set, its interface uses Noto Sans Light (300)
+and Material Symbols Rounded ExtraLight (200). An authored desktop design
+can select a different text family. <code>dopus.state.appearance</code> reports the
+resolved UI family, <code>font_ui_weight</code> and <code>icon_weight</code>; a missing Material
+font retains the bundled Lucide fallback and reports no icon weight.</p>
 <p>Its Bus service is <code>dopus</code>, with the <code>dopus.v1</code> contract. <code>dopus.state</code> reports
 both panes; <code>dopus.open</code> navigates a selected pane. <code>dopus.actions.list</code>
 discovers navigation and view actions, and <code>dopus.action</code> invokes them.

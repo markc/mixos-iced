@@ -20,7 +20,7 @@ use std::{
 };
 
 use iced_core::{Font, font};
-use iced_graphics::text::{cosmic_text::fontdb, font_system};
+use iced_graphics::text::{cosmic_text::{self, fontdb}, font_system};
 
 /// Font bytes, or a file to read them from at [`install`] time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,7 +441,7 @@ pub fn default_mono_font() -> Font {
 /// installed sans (or mono) role is tried first; an explicit family that is
 /// registered keeps precedence when `prefer_installed` is false. The weight
 /// is bucketed to iced's scale, and a Light request falls back to Normal in
-/// a family with no light face.
+/// a family with neither a light face nor a variable weight axis covering 300.
 pub fn font_for(
     family: &str,
     fallbacks: &[String],
@@ -462,18 +462,11 @@ pub fn font_for(
         .collect();
     let (found, has_light) = {
         let mut system = font_system().write().expect("font system");
-        let db = system.raw().db();
-        let found = names.iter().find(|name| has_family(db, name));
-        let light = found.is_some_and(|name| {
-            db.faces().any(|face| {
-                face.weight.0 == 300
-                    && face
-                        .families
-                        .iter()
-                        .any(|(family, _)| family.eq_ignore_ascii_case(name))
-            })
-        });
-        (found.map(|name| (*name).to_owned()), light)
+        let raw = system.raw();
+        let found = names.iter().find(|name| has_family(raw.db(), name))
+            .map(|name| (*name).to_owned());
+        let light = found.as_deref().is_some_and(|name| family_has_light(raw, name));
+        (found, light)
     };
     let family = match found {
         Some(name) => font::Family::Name(intern(&name)),
@@ -485,6 +478,21 @@ pub fn font_for(
         weight: weight(effective_weight(requested_weight, has_light)),
         ..Font::DEFAULT
     }
+}
+
+/// fontdb indexes a variable face at its default weight, usually 400.
+/// Read its actual `wght` range before deciding that Light is unavailable.
+fn family_has_light(system: &mut cosmic_text::FontSystem, family: &str) -> bool {
+    let faces: Vec<_> = system.db().faces().filter(|face| {
+        face.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(family))
+    }).map(|face| (face.id, face.weight)).collect();
+    faces.into_iter().any(|(id, weight)| {
+        weight == fontdb::Weight::LIGHT || system.get_font(id, fontdb::Weight::LIGHT)
+            .is_some_and(|font| font.as_swash().variations().any(|axis| {
+                axis.tag() == u32::from_be_bytes(*b"wght")
+                    && axis.min_value() <= 300.0 && axis.max_value() >= 300.0
+            }))
+    })
 }
 
 /// A Light (300) request in a family with no light face selects Normal, so
@@ -588,10 +596,24 @@ mod tests {
         assert_eq!(effective_weight(300, true), 300);
         assert_eq!(effective_weight(700, false), 700);
         assert_eq!(weight(100), font::Weight::Thin);
+        assert_eq!(weight(200), font::Weight::ExtraLight);
         assert_eq!(weight(300), font::Weight::Light);
         assert_eq!(weight(400), font::Weight::Normal);
         assert_eq!(weight(600), font::Weight::Semibold);
         assert_eq!(weight(900), font::Weight::Black);
+    }
+
+    #[test]
+    fn variable_light_is_available_even_when_the_index_says_regular() {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").to_vec());
+        db.load_font_data(FIRA_SANS_REGULAR.to_vec());
+        let mut system = cosmic_text::FontSystem::new_with_locale_and_db("en-US".into(), db);
+        assert!(system.db().faces().any(|face| face.weight == fontdb::Weight::NORMAL
+            && face.families.iter().any(|(name, _)| name == "Inter")));
+        assert!(family_has_light(&mut system, "Inter"));
+        assert!(!family_has_light(&mut system, "Fira Sans"));
+        assert!(!family_has_light(&mut system, "Missing family"));
     }
 
     #[test]

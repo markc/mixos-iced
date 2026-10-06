@@ -1,6 +1,6 @@
 {
   "schema": "mixos.static-assets.v1",
-  "set_id": "2026-10-04-core-3",
+  "set_id": "2026-10-06-core-4",
   "fonts": {
     "sans": "fonts/InterVariable.ttf",
     "serif": "fonts/NotoSerif.ttf",
@@ -9,9 +9,41 @@
     "emoji": "emoji/NotoColorEmoji.ttf",
     "serif_italic": "fonts/NotoSerif-Italic.ttf",
     "mono_italic": "fonts/JetBrainsMono-Italic.ttf",
-    "display": "fonts/Quicksand.ttf"
+    "display": "fonts/Quicksand.ttf",
+    "ui": "fonts/NotoSans.ttf",
+    "ui_italic": "fonts/NotoSans-Italic.ttf"
   },
   "files": [
+    {
+      "path": "fonts/NotoSans.ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/notosans/NotoSans%5Bwdth,wght%5D.ttf",
+      "revision": "9710da1eacb3be272583c3224dcb70f9da6eadbb",
+      "upstream": "https://github.com/google/fonts",
+      "licence": "OFL-1.1",
+      "bytes": 2049096,
+      "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
+      "blake3": "23c7a5412e9fc7cceeaf3b4406696d41b902478298c7507e9c2f04b05a111290"
+    },
+    {
+      "path": "fonts/NotoSans-Italic.ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/notosans/NotoSans-Italic%5Bwdth,wght%5D.ttf",
+      "revision": "9710da1eacb3be272583c3224dcb70f9da6eadbb",
+      "upstream": "https://github.com/google/fonts",
+      "licence": "OFL-1.1",
+      "bytes": 2322640,
+      "sha256": "58e6e0ebd1931b29a365aa2d3e2ee9a9e831a3af7cf3ad1462d4e72154f0b291",
+      "blake3": "84319c4a51884960c3225583f574e19f97bbba93acd87210f5a8995a2e84c4ec"
+    },
+    {
+      "path": "licences/NotoSans-OFL.txt",
+      "url": "https://raw.githubusercontent.com/google/fonts/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl/notosans/OFL.txt",
+      "revision": "9710da1eacb3be272583c3224dcb70f9da6eadbb",
+      "upstream": "https://github.com/google/fonts",
+      "licence": "OFL-1.1",
+      "bytes": 4396,
+      "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+      "blake3": "347bf2f0c4992ecf0abebdb585068899983a1f7b8aced2613ea4ce261d1be8d1"
+    },
     {
       "path": "fonts/InterVariable.ttf",
       "url": "https://raw.githubusercontent.com/rsms/inter/353b61b9f4430d5f420d56605a6e7993e0941470/docs/font-files/InterVariable.ttf",
@@ -202,6 +234,8 @@
     "mono_italic": "JetBrains Mono",
     "icons": "Material Symbols Rounded",
     "emoji": "Noto Color Emoji",
-    "display": "Quicksand"
+    "display": "Quicksand",
+    "ui": "Noto Sans",
+    "ui_italic": "Noto Sans"
   }
 }

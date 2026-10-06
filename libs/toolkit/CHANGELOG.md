@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3
+
+- Honour Light (300) in variable fonts whose weight axis covers it, even when
+  fontdb indexes their default face at 400. Retain regular fallback for static
+  families without a light face.
+
 ## 0.2.2
 
 - Add a renderer-independent compound-pane example and offscreen checks for its

@@ -160,6 +160,11 @@ Third-party assets and licences in the compd binary
 One line per asset or licence that the build embeds, compiles in or links.
 Only what the workspace members reach is listed.
 
+- Noto Sans UI font assets (fonts/NotoSans.ttf, fonts/NotoSans-Italic.ttf,
+  licences/NotoSans-OFL.txt in share/assets/core.conf.mix): each pinned to
+  google/fonts revision 9710da1eacb3be272583c3224dcb70f9da6eadbb, Copyright
+  The Noto Project Authors, SIL Open Font License 1.1. Downloaded font bytes
+  and the original licence ship in the immutable asset set, outside Git.
 - Inter 4.001 variable font (vendor/font/Inter-VariableFont_opsz,wght.ttf,
   embedded by ui): Copyright (c) 2016 The Inter Project Authors
   (https://github.com/rsms/inter), SIL Open Font License 1.1, vendor/font/OFL.txt.

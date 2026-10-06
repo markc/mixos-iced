@@ -858,6 +858,18 @@ impl Dopus {
                 asset_set: self.icons.asset_set().map(str::to_owned),
                 font_ui: self.theme.ui.0.clone(),
                 font_mono: self.theme.mono.0.clone(),
+                font_ui_weight: match self.theme.ui_font.weight {
+                    application::iced::font::Weight::Thin => 100,
+                    application::iced::font::Weight::ExtraLight => 200,
+                    application::iced::font::Weight::Light => 300,
+                    application::iced::font::Weight::Normal => 400,
+                    application::iced::font::Weight::Medium => 500,
+                    application::iced::font::Weight::Semibold => 600,
+                    application::iced::font::Weight::Bold => 700,
+                    application::iced::font::Weight::ExtraBold => 800,
+                    application::iced::font::Weight::Black => 900,
+                },
+                icon_weight: self.icons.weight(),
             },
             actions: self.action_table.clone(),
         }
