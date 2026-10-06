@@ -5,6 +5,8 @@
 Replace redraw-driven maintenance and the idle heartbeat with one cancellable
 deadline wait. Config settling, metadata timeouts and chord expiry retain their
 behaviour while a settled window stops redrawing.
+Flush the latest config on shutdown and cancel pending chords on focus changes,
+including unchanged and invalid keymap reloads.
 
 ## 0.4.2
 

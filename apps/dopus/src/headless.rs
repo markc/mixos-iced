@@ -188,6 +188,7 @@ pub fn run(
             }
         }
     });
+    let _ = core.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flush_config();
     bus.quit();
     // Reply-then-exit: the quit reply is flushed by the bus thread's
     // drain-before-break; joining it (bounded) means the reply is on the

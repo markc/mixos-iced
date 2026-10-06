@@ -1498,34 +1498,50 @@ impl DopusCore {
         if let Some(since) = self.config_dirty_since
             && now.duration_since(since) >= CONFIG_SETTLE
         {
-            self.config_dirty_since = None;
-            let mut save_error = None;
-            if let Some(snapshot) = self.pending_config.take() {
-                let mut saved = true;
-                if let Some(file) = &self.config_file {
-                    match file.save(&snapshot) {
-                        Ok(false) => saved = false, // poison-pill refusal
-                        Ok(true) => {}
-                        Err(error) => {
-                            saved = false;
-                            save_error = Some(error);
-                        }
-                    }
-                }
-                // Only a real write (or no file to write) counts as
-                // settled: an app mirroring "persisted" on this event
-                // must not be told the config was saved when the poison
-                // pill refused it or the write failed.
-                if saved {
-                    self.emit(CoreEvent::ConfigSettled(snapshot));
-                }
-            }
-            if let Some(error) = save_error {
-                self.set_status(None, &error);
-            }
+            self.save_pending_config();
         }
         self.take_events()
     }
+
+    /// Persist the latest state on shutdown without advancing unrelated clocks.
+    pub fn flush_config(&mut self) -> Vec<CoreEvent> {
+        let snapshot = self.config_snapshot();
+        if self.last_observed.as_ref() != Some(&snapshot) {
+            self.last_observed = Some(snapshot.clone());
+            self.pending_config = Some(snapshot);
+        }
+        self.save_pending_config();
+        self.take_events()
+    }
+
+    fn save_pending_config(&mut self) {
+        self.config_dirty_since = None;
+        let mut save_error = None;
+        if let Some(snapshot) = self.pending_config.take() {
+            let mut saved = true;
+            if let Some(file) = &self.config_file {
+                match file.save(&snapshot) {
+                    Ok(false) => saved = false, // poison-pill refusal
+                    Ok(true) => {}
+                    Err(error) => {
+                        saved = false;
+                        save_error = Some(error);
+                    }
+                }
+            }
+            // Only a real write (or no file to write) counts as
+            // settled: an app mirroring "persisted" on this event
+            // must not be told the config was saved when the poison
+            // pill refused it or the write failed.
+            if saved {
+                self.emit(CoreEvent::ConfigSettled(snapshot));
+            }
+        }
+        if let Some(error) = save_error {
+            self.set_status(None, &error);
+        }
+    }
+
 
     // -- internals ----------------------------------------------------------
 
@@ -3640,6 +3656,22 @@ mod tests {
     }
 
     // -- config settle debounce (browser.rs:3564-3622) -------------------------
+
+    #[test]
+    fn shutdown_flush_persists_the_latest_change_inside_the_debounce() {
+        let (dir, mut core, _rx) = core_fixture();
+        let (_, file) = ConfigFile::load(dir.path());
+        core.config_file = Some(file);
+        let now = now_instant();
+        core.tick(now);
+        core.set_split_ratio(0.73);
+        core.tick(now);
+        core.set_split_ratio(0.81);
+        assert!(core.flush_config().iter().any(|event| matches!(event,
+            CoreEvent::ConfigSettled(config) if config.split_ratio == 0.81)));
+        assert_eq!(ConfigFile::load(dir.path()).0.split_ratio, 0.81);
+        assert_eq!(core.next_deadline(), None);
+    }
 
     #[test]
     fn maintenance_deadline_rearms_for_changes_and_disappears_when_settled() {

@@ -192,18 +192,22 @@ pub enum ModalKey {
 /// the keymap when the overlay changed, keep it on error, cancel a pending
 /// chord either way.
 pub fn reload(shared: &SharedRouter, custom_path: Option<&Path>) {
-    let Ok(reloaded) = load(custom_path) else {
-        // load() already validated; a broken overlay keeps the current keymap.
-        return;
-    };
+    let reloaded = load(custom_path);
     let mut router = shared
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    router.state.cancel();
+    let Ok(reloaded) = reloaded else {
+        return;
+    };
     if reloaded == router.keymap {
         return;
     }
     router.keymap = reloaded;
-    router.state.cancel();
+}
+
+pub fn cancel(shared: &SharedRouter) {
+    shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).state.cancel();
 }
 
 /// Resolve an expired chord after the app's deadline wake.
@@ -1073,6 +1077,26 @@ mod widget_tests {
         assert!(messages.is_empty());
         assert!(captured);
         assert!(router.shared.lock().unwrap().state.deadline().is_some());
+    }
+
+    #[test]
+    fn focus_reload_cancels_pending_chords_with_unchanged_or_invalid_keymaps() {
+        let source = r#"{
+            version: 1, chord_timeout_ms: 1000, defaults: [],
+            custom: [{action: "theme.mode-toggle", chord: ["Ctrl+Enter", "Ctrl+K"],
+                scope: "global", repeat: "ignore", allow_in_editable: true}]
+        }"#;
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = dir.path().join("keymap.conf.mix");
+        std::fs::write(&overlay, source).unwrap();
+        for invalid in [false, true] {
+            let (mut router, mut tree) = fixture(source);
+            send(&mut router, &mut tree, enter(keyboard::Modifiers::CTRL), mouse::Cursor::Unavailable);
+            assert!(router.shared.lock().unwrap().state.deadline().is_some());
+            if invalid { std::fs::write(&overlay, "{broken").unwrap(); }
+            reload(&router.shared, Some(&overlay));
+            assert!(router.shared.lock().unwrap().state.deadline().is_none());
+        }
     }
 
     #[test]

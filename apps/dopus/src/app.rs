@@ -360,12 +360,12 @@ fn maintenance_wait_cancels_rearms_and_stays_quiet_after_expiry() {
     arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
     arm.send(None).unwrap();
     std::thread::sleep(Duration::from_millis(60));
-    assert!(wakes.try_next().is_err(), "cancelled wait must stay quiet");
+    assert!(wakes.try_recv().is_err(), "cancelled wait must stay quiet");
     arm.send(Some(Instant::now() + Duration::from_millis(20))).unwrap();
     std::thread::sleep(Duration::from_millis(60));
-    assert!(wakes.try_next().unwrap().is_some(), "rearmed wait must fire");
+    assert!(wakes.try_recv().is_ok(), "rearmed wait must fire");
     std::thread::sleep(Duration::from_millis(60));
-    assert!(wakes.try_next().is_err(), "expired wait must not become a heartbeat");
+    assert!(wakes.try_recv().is_err(), "expired wait must not become a heartbeat");
 }
 
 /// One background thread for iced's tasks (the `apps/term` executor).
@@ -435,6 +435,7 @@ impl Dopus {
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         let layout = self.drag_layout();
         let task = self.dispatch(msg);
+        if self.quitting { return task; }
         let derived = self.core.tick(Instant::now());
         let maintenance = self.on_derived(derived);
         let next = self.core.next_deadline().into_iter().chain(keys::next_deadline(&self.router)).min();
@@ -1124,7 +1125,11 @@ impl Dopus {
                 }
             }
             iced::window::Event::CloseRequested => return self.quit(),
-            iced::window::Event::Unfocused | iced::window::Event::Resized(_) => {
+            iced::window::Event::Unfocused => {
+                keys::cancel(&self.router);
+                view::drag::lock(&self.drag).cancel()
+            }
+            iced::window::Event::Resized(_) => {
                 view::drag::lock(&self.drag).cancel()
             }
             _ => {}
@@ -1137,10 +1142,8 @@ impl Dopus {
             return Task::none();
         }
         self.quitting = true;
-        // Law 1's final tick: persist the pending config before the window
-        // (and its frames) go away. Any task the last events produce (a
-        // prompt focus) is moot in a quitting process.
-        let derived = self.core.tick(Instant::now());
+        // Persist the latest settings even before their settle deadline.
+        let derived = self.core.flush_config();
         let _ = self.on_derived(derived);
         if let Some(bus) = &self.bus {
             bus.quit();
