@@ -127,11 +127,9 @@ async fn test_undefined_get_set_find_point_at_mix_forms() {
         assert!(err.contains(form), "{call}: form hint missing in {err}");
     }
     // A user-defined one still runs and says nothing.
-    let ok = run_mix_capturing(
-        "fn get($m, $k)\n  return $m[$k]\nend\nprint(get({a: 1}, \"a\"))\n",
-    )
-    .await
-    .expect("user get() must run");
+    let ok = run_mix_capturing("fn get($m, $k)\n  return $m[$k]\nend\nprint(get({a: 1}, \"a\"))\n")
+        .await
+        .expect("user get() must run");
     assert_eq!(ok.trim(), "1");
 }
 
@@ -551,8 +549,7 @@ async fn test_send() {
 
         fn next_incoming<'a>(
             &'a self,
-        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>> {
             Box::pin(async move { None })
         }
     }
@@ -732,6 +729,7 @@ fn mk_event(command: &str, body: &str, headers: &[(&str, &str)]) -> IncomingEven
         h.insert(k.to_string(), v.to_string());
     }
     IncomingEvent {
+        generation: 0,
         command: command.to_string(),
         headers: h,
         body: body.to_string(),
@@ -1667,7 +1665,10 @@ end
     assert_eq!(
         got,
         vec![
-            ("doc.verb".to_string(), Some("A documented verb".to_string())),
+            (
+                "doc.verb".to_string(),
+                Some("A documented verb".to_string())
+            ),
             ("plain.verb".to_string(), None),
         ],
         "HELP must receive every command with its doc-string"
@@ -1763,8 +1764,12 @@ async fn event_pump_breaks_with_reload_flag_on_reload_outcome() {
 
     // A correlated RELOAD request breaks the pump even with the channel
     // still open (proving it broke on the reload, not on transport close).
-    tx.send(mk_event("RELOAD", "", &[("type", "request"), ("from", "t"), ("id", "1")]))
-        .unwrap();
+    tx.send(mk_event(
+        "RELOAD",
+        "",
+        &[("type", "request"), ("from", "t"), ("id", "1")],
+    ))
+    .unwrap();
     eval.run_event_pump().await.unwrap();
     assert!(
         eval.take_reload_request(),
@@ -2313,20 +2318,43 @@ async fn unknown_command_request_is_refused_immediately() {
     run_then_dispatch(
         "on q\n    reply(\"v\")\ndone\non b.verb\n    reply(\"w\")\ndone\n",
         Some(Rc::new(ReplyRecorder(log.clone()))),
-        mk_event("nosuch.verb", "", &[("from", "c"), ("id", "5"), ("type", "request")]),
+        mk_event(
+            "nosuch.verb",
+            "",
+            &[("from", "c"), ("id", "5"), ("type", "request")],
+        ),
     )
     .await;
-    assert!(started.elapsed() < std::time::Duration::from_secs(2), "refusal must not wait");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "refusal must not wait"
+    );
     let calls = log.borrow();
-    assert_eq!(calls.len(), 1, "an unknown-verb request must be answered exactly once");
+    assert_eq!(
+        calls.len(),
+        1,
+        "an unknown-verb request must be answered exactly once"
+    );
     let (to, cmd, id, rc, body) = &calls[0];
-    assert_eq!((to.as_str(), cmd.as_str(), id.as_deref(), *rc), ("c", "nosuch.verb", Some("5"), 10));
-    assert!(body.contains("\"error_code\":\"UNKNOWN_COMMAND\""), "body: {body}");
+    assert_eq!(
+        (to.as_str(), cmd.as_str(), id.as_deref(), *rc),
+        ("c", "nosuch.verb", Some("5"), 10)
+    );
+    assert!(
+        body.contains("\"error_code\":\"UNKNOWN_COMMAND\""),
+        "body: {body}"
+    );
     // `error` is what a JSON-body send reduces an rc>=10 reply to for
     // `$result`; without it the caller got the raw JSON text.
-    assert!(body.contains("\"error\":\"unknown command 'nosuch.verb'"), "body: {body}");
+    assert!(
+        body.contains("\"error\":\"unknown command 'nosuch.verb'"),
+        "body: {body}"
+    );
     assert!(body.contains("\"command\":\"nosuch.verb\""), "body: {body}");
-    assert!(body.contains("\"available\":[\"b.verb\",\"q\"]"), "body: {body}");
+    assert!(
+        body.contains("\"available\":[\"b.verb\",\"q\"]"),
+        "body: {body}"
+    );
 }
 
 /// dispatch_event is also reached from the `sleep()` yield loop, which does
@@ -2368,11 +2396,19 @@ async fn reserved_verbs_are_not_refused_as_unknown() {
             .await
             .expect("dispatch is soft");
     }
-    assert!(log.borrow().is_empty(), "reserved verbs must not get UNKNOWN_COMMAND: {:?}", log.borrow());
+    assert!(
+        log.borrow().is_empty(),
+        "reserved verbs must not get UNKNOWN_COMMAND: {:?}",
+        log.borrow()
+    );
     eval.dispatch_event(mk_event("nosuch", "", &[("id", "2"), ("type", "request")]))
         .await
         .expect("dispatch is soft");
-    assert_eq!(log.borrow().len(), 1, "a genuinely unknown verb is still refused");
+    assert_eq!(
+        log.borrow().len(),
+        1,
+        "a genuinely unknown verb is still refused"
+    );
     assert_eq!(log.borrow()[0].3, 10);
 }
 
@@ -2516,14 +2552,24 @@ async fn raising_handler_replies_handler_fault_in_error_band_and_keeps_serving()
         "on q\n    raise(\"E_TEST\", \"secret detail\")\ndone\non ok\n    reply(\"fine\")\ndone\n",
         &[
             mk_event("q", "", &[("from", "c1"), ("id", "1"), ("type", "request")]),
-            mk_event("ok", "", &[("from", "c2"), ("id", "2"), ("type", "request")]),
+            mk_event(
+                "ok",
+                "",
+                &[("from", "c2"), ("id", "2"), ("type", "request")],
+            ),
         ],
     )
     .await;
     assert_eq!(replies.len(), 2, "one reply per request, got {replies:?}");
     let (to, cmd, id, rc, body) = &replies[0];
-    assert_eq!((to.as_str(), cmd.as_str(), id.as_deref()), ("c1", "q", Some("1")));
-    assert!(*rc >= 10, "a fault must be in the application-error band, got rc {rc}");
+    assert_eq!(
+        (to.as_str(), cmd.as_str(), id.as_deref()),
+        ("c1", "q", Some("1"))
+    );
+    assert!(
+        *rc >= 10,
+        "a fault must be in the application-error band, got rc {rc}"
+    );
     assert_eq!(*rc, 15);
     assert_eq!(*rc, HANDLER_FAULT_RC);
     assert_eq!(body, FAULT_BODY);
@@ -2537,7 +2583,13 @@ async fn raising_handler_replies_handler_fault_in_error_band_and_keeps_serving()
     );
     assert_eq!(
         replies[1],
-        ("c2".to_string(), "ok".to_string(), Some("2".to_string()), 0u8, "fine".to_string()),
+        (
+            "c2".to_string(),
+            "ok".to_string(),
+            Some("2".to_string()),
+            0u8,
+            "fine".to_string()
+        ),
         "the citizen must keep serving after a fault"
     );
 }
@@ -3378,12 +3430,13 @@ fn parse_on_async_modifier() {
     // Plain handler: is_async = false (today's behaviour, unchanged).
     let stmt = parse_one("on foo\n  print \"hi\"\ndone\n");
     let Stmt {
-        kind: StmtKind::On {
-            command,
-            is_async,
-            body,
-            ..
-        },
+        kind:
+            StmtKind::On {
+                command,
+                is_async,
+                body,
+                ..
+            },
         ..
     } = stmt
     else {
@@ -3396,12 +3449,13 @@ fn parse_on_async_modifier() {
     // `async` modifier: is_async = true. Body identical to the plain form.
     let stmt = parse_one("on foo async\n  print \"hi\"\ndone\n");
     let Stmt {
-        kind: StmtKind::On {
-            command,
-            is_async,
-            body,
-            ..
-        },
+        kind:
+            StmtKind::On {
+                command,
+                is_async,
+                body,
+                ..
+            },
         ..
     } = stmt
     else {
@@ -3465,12 +3519,13 @@ fn parse_on_async_modifier() {
     // can't drift it.)
     let stmt = parse_one("on foo\n  async\n  print \"hi\"\ndone\n");
     let Stmt {
-        kind: StmtKind::On {
-            command,
-            is_async,
-            body,
-            ..
-        },
+        kind:
+            StmtKind::On {
+                command,
+                is_async,
+                body,
+                ..
+            },
         ..
     } = stmt
     else {
@@ -3508,12 +3563,13 @@ fn parse_on_doc_string() {
     }
     fn on_parts(stmt: Stmt) -> (String, Option<String>, bool, usize) {
         let Stmt {
-            kind: StmtKind::On {
-                command,
-                doc,
-                is_async,
-                body,
-            },
+            kind:
+                StmtKind::On {
+                    command,
+                    doc,
+                    is_async,
+                    body,
+                },
             ..
         } = stmt
         else {
@@ -3538,12 +3594,14 @@ fn parse_on_doc_string() {
     assert_eq!(doc.as_deref(), Some("Switch desktop"));
 
     // desc + async, both orders.
-    let (_, doc, is_async, _) =
-        on_parts(parse_one("on foo desc \"docs\" async\n  print \"hi\"\ndone\n"));
+    let (_, doc, is_async, _) = on_parts(parse_one(
+        "on foo desc \"docs\" async\n  print \"hi\"\ndone\n",
+    ));
     assert_eq!(doc.as_deref(), Some("docs"));
     assert!(is_async);
-    let (_, doc, is_async, _) =
-        on_parts(parse_one("on foo async desc \"docs\"\n  print \"hi\"\ndone\n"));
+    let (_, doc, is_async, _) = on_parts(parse_one(
+        "on foo async desc \"docs\"\n  print \"hi\"\ndone\n",
+    ));
     assert_eq!(doc.as_deref(), Some("docs"));
     assert!(is_async);
 
@@ -3555,10 +3613,16 @@ fn parse_on_doc_string() {
     // A bare trailing string is a BODY statement, never a doc (the exact
     // shape the marker-less design broke): `refresh` stays executable.
     let (_, doc, _, body_len) = on_parts(parse_one("on foo refresh; done\n"));
-    assert_eq!(doc, None, "bare same-line string must stay a body statement");
+    assert_eq!(
+        doc, None,
+        "bare same-line string must stay a body statement"
+    );
     assert_eq!(body_len, 1);
     let (_, doc, _, body_len) = on_parts(parse_one("on foo \"refresh\"; done\n"));
-    assert_eq!(doc, None, "quoted same-line string must stay a body statement");
+    assert_eq!(
+        doc, None,
+        "quoted same-line string must stay a body statement"
+    );
     assert_eq!(body_len, 1);
 
     // Same-line call body: untouched.
@@ -3599,8 +3663,9 @@ fn parse_on_doc_string() {
 
     // Docs are static: bare `$var` in double quotes is literal (only
     // `${…}` interpolates), so it is a legal doc and keeps the `$` raw.
-    let (_, doc, _, _) =
-        on_parts(parse_one("on foo desc \"keeps $var raw\"\n  print \"hi\"\ndone\n"));
+    let (_, doc, _, _) = on_parts(parse_one(
+        "on foo desc \"keeps $var raw\"\n  print \"hi\"\ndone\n",
+    ));
     assert_eq!(doc.as_deref(), Some("keeps $var raw"));
 }
 
@@ -4671,8 +4736,7 @@ async fn send_timeout_kwarg_writes_typed_error_and_does_not_forward() {
         }
         fn next_incoming<'a>(
             &'a self,
-        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>> {
             Box::pin(async move { None })
         }
     }
@@ -4785,8 +4849,7 @@ async fn send_timeout_invalid_values_raise_runtime_error() {
         }
         fn next_incoming<'a>(
             &'a self,
-        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>> {
             Box::pin(async move { None })
         }
     }
@@ -4900,8 +4963,7 @@ async fn send_timeout_drops_hanging_future_on_elapsed() {
         }
         fn next_incoming<'a>(
             &'a self,
-        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Option<mix::evaluator::IncomingEvent>> + 'a>> {
             Box::pin(async move { None })
         }
     }
@@ -5524,7 +5586,10 @@ mod rc_band_contract_tests {
         )
         .await;
         assert_eq!(eval.get_global("rc").unwrap(), Value::Number(10.0));
-        assert_eq!(eval.get_global("r1").unwrap(), Value::String("occluded".into()));
+        assert_eq!(
+            eval.get_global("r1").unwrap(),
+            Value::String("occluded".into())
+        );
         for v in ["u1", "u2", "u3"] {
             assert_eq!(eval.get_global(v).unwrap(), Value::Number(1.0), "{v}");
         }
@@ -5537,7 +5602,11 @@ mod rc_band_contract_tests {
         let h: std::rc::Rc<dyn BusHandler> = std::rc::Rc::new(ReplyHandler);
         let eval = run("send comp x\n", Some(h)).await;
         assert_ne!(eval.get_global("reply").unwrap(), Value::Nil);
-        let eval = run("send svc ping\n", Some(std::rc::Rc::new(RcHandler { send_rc: None }))).await;
+        let eval = run(
+            "send svc ping\n",
+            Some(std::rc::Rc::new(RcHandler { send_rc: None })),
+        )
+        .await;
         assert_eq!(eval.get_global("reply").unwrap(), Value::Nil);
         let eval = run("send svc ping\n", None).await;
         assert_eq!(eval.get_global("reply").unwrap(), Value::Nil);
@@ -5547,7 +5616,11 @@ mod rc_band_contract_tests {
     /// result is the reply, a reduced error STRING is not a body (nil).
     #[tokio::test]
     async fn default_send_with_reply_derives_from_send() {
-        let eval = run("send svc ping\n", Some(std::rc::Rc::new(RcHandler { send_rc: Some(0) }))).await;
+        let eval = run(
+            "send svc ping\n",
+            Some(std::rc::Rc::new(RcHandler { send_rc: Some(0) })),
+        )
+        .await;
         assert_eq!(eval.get_global("reply").unwrap(), Value::Nil);
         assert_eq!(eval.get_global("result").unwrap(), Value::Nil);
 
@@ -5581,10 +5654,18 @@ mod rc_band_contract_tests {
             }
         }
         let text = Value::String("# markdown".into());
-        let eval = run("send svc ping\n", Some(std::rc::Rc::new(Fixed(text.clone())))).await;
+        let eval = run(
+            "send svc ping\n",
+            Some(std::rc::Rc::new(Fixed(text.clone()))),
+        )
+        .await;
         assert_eq!(eval.get_global("result").unwrap(), text);
         assert_eq!(eval.get_global("reply").unwrap(), Value::Nil);
-        let eval = run("send svc ping\n", Some(std::rc::Rc::new(Fixed(Value::Number(2.0))))).await;
+        let eval = run(
+            "send svc ping\n",
+            Some(std::rc::Rc::new(Fixed(Value::Number(2.0)))),
+        )
+        .await;
         assert_eq!(eval.get_global("reply").unwrap(), Value::Number(2.0));
     }
 }
@@ -5601,9 +5682,18 @@ async fn eval_special_builtin_wins_as_binop_operand_too() {
     )
     .await
     .unwrap();
-    assert!(!out.contains("USER"), "the builtin must win in operand position too: {out:?}");
-    assert!(out.starts_with('B'), "printf builtin must have run: {out:?}");
-    assert!(out.contains('W'), "write_stdout builtin must have run: {out:?}");
+    assert!(
+        !out.contains("USER"),
+        "the builtin must win in operand position too: {out:?}"
+    );
+    assert!(
+        out.starts_with('B'),
+        "printf builtin must have run: {out:?}"
+    );
+    assert!(
+        out.contains('W'),
+        "write_stdout builtin must have run: {out:?}"
+    );
 }
 
 /// `serve_name()` (0.91.0) is nil outside `--serve`: a plain evaluator has
@@ -5743,14 +5833,22 @@ async fn script_version_is_bound_to_its_serve_generation() {
 
             // Replacement built + init run while the old task is parked.
             let (mut new, new_out) = provenance_generation(PROVENANCE_CITIZEN, &log, "2.0.0").await;
-            assert_eq!(new_out.to_string_lossy().trim_end(), "init 2.0.0", "(b) init");
+            assert_eq!(
+                new_out.to_string_lossy().trim_end(),
+                "init 2.0.0",
+                "(b) init"
+            );
 
             // (a) The old generation drains AFTER the replacement exists.
             old.drain_class_c_for_shutdown(std::time::Duration::from_secs(5), true)
                 .await;
             assert_eq!(log.borrow().len(), 1);
             assert_eq!(log.borrow()[0].2.as_deref(), Some("old-1"));
-            assert_eq!(log.borrow()[0].4, "1.0.0", "(a) old handler read the new record");
+            assert_eq!(
+                log.borrow()[0].4,
+                "1.0.0",
+                "(a) old handler read the new record"
+            );
 
             // (b) The committed replacement's handlers answer for the new file.
             new.dispatch_event(req("new-1")).await.unwrap();
@@ -5774,6 +5872,8 @@ async fn script_version_is_bound_to_its_serve_generation() {
 /// No record installed (REPL, `-c`, embedders): nil, and the call is legal.
 #[tokio::test]
 async fn script_version_is_nil_without_a_record() {
-    let out = run_mix_capturing("print(type(script_version()))\n").await.unwrap();
+    let out = run_mix_capturing("print(type(script_version()))\n")
+        .await
+        .unwrap();
     assert_eq!(out.trim_end(), "nil");
 }

@@ -471,6 +471,22 @@ impl SupervisedClient {
             .map_err(SupervisedError::Transport)
     }
 
+    /// Send explicit headers and body through the canonical connection.
+    pub async fn send_with_headers(
+        &self,
+        to: &str,
+        command: &str,
+        headers: &BTreeMap<String, String>,
+        body: &str,
+    ) -> Result<(), SupervisedError> {
+        self.gate()?;
+        self.connection()
+            .await
+            .send_with_headers(to, command, headers, body)
+            .await
+            .map_err(SupervisedError::Transport)
+    }
+
     pub async fn list_services(&self) -> Result<Vec<String>, SupervisedError> {
         self.gate()?;
         self.connection()

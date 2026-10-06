@@ -486,7 +486,9 @@ async fn require_follows_symlinked_entry_script() {
     let stderr = SharedBuf::new();
     let mut eval = Evaluator::with_output(Box::new(stdout.clone()), Box::new(stderr.clone()));
     eval.set_file(dir.join("bin/tool").to_string_lossy().to_string());
-    eval.execute(&stmts).await.expect("symlinked entry must resolve its siblings");
+    eval.execute(&stmts)
+        .await
+        .expect("symlinked entry must resolve its siblings");
     assert_eq!(stdout.to_string_lossy(), "via-real-dir\n");
 }
 
@@ -621,6 +623,7 @@ async fn require_inside_handler_and_cache_across_invocations() {
     let mut eval = Evaluator::with_output(Box::new(stdout.clone()), Box::new(stderr.clone()));
     eval.execute(&stmts).await.unwrap();
     let mk = || IncomingEvent {
+        generation: 0,
         command: "bump".to_string(),
         headers: std::collections::BTreeMap::new(),
         body: String::new(),
@@ -671,6 +674,7 @@ async fn module_top_level_reply_is_refused_inside_handlers() {
     let mut eval = Evaluator::with_output(Box::new(stdout.clone()), Box::new(stderr.clone()));
     eval.execute(&stmts).await.unwrap();
     eval.dispatch_event(IncomingEvent {
+        generation: 0,
         command: "poke".to_string(),
         headers: std::collections::BTreeMap::new(),
         body: String::new(),
@@ -780,8 +784,13 @@ async fn script_version_in_a_required_module_is_the_entry_script() {
     // Control: with no record installed the same module sees nil, so the
     // line above came from the installed record and nothing else.
     write_module(&dir, "helper2.mix", "return script_version()\n");
-    let out = run_in_dir_with(&dir, "print(type(require(\"helper2.mix\")))\n", false, |_| {})
-        .await
-        .unwrap();
+    let out = run_in_dir_with(
+        &dir,
+        "print(type(require(\"helper2.mix\")))\n",
+        false,
+        |_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(out.trim_end(), "nil");
 }

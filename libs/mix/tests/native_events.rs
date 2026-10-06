@@ -55,9 +55,7 @@ impl ServeRuntime for Runtime {
 }
 
 struct Bus {
-    rx: tokio::sync::Mutex<
-        tokio::sync::mpsc::UnboundedReceiver<mix::evaluator::IncomingEvent>,
-    >,
+    rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<mix::evaluator::IncomingEvent>>,
 }
 impl mix::evaluator::BusHandler for Bus {
     fn send<'a>(
@@ -76,10 +74,7 @@ impl mix::evaluator::BusHandler for Bus {
     ) -> mix::evaluator::BusFuture<'a, MixResult<()>> {
         Box::pin(async { Ok(()) })
     }
-    fn port_exists<'a>(
-        &'a self,
-        _: &'a str,
-    ) -> mix::evaluator::BusFuture<'a, MixResult<bool>> {
+    fn port_exists<'a>(&'a self, _: &'a str) -> mix::evaluator::BusFuture<'a, MixResult<bool>> {
         Box::pin(async { Ok(true) })
     }
     fn next_incoming<'a>(
@@ -96,6 +91,7 @@ async fn reload_request(
     e.set_global("wanted_path", Value::String("unused".into()));
     e.set_global("wanted_kind", Value::String("any".into()));
     tx.send(mix::evaluator::IncomingEvent {
+        generation: 0,
         command: "RELOAD".into(),
         body: "{}".into(),
         headers: [
@@ -253,9 +249,7 @@ async fn nonserve_wait_and_serve_refusal_use_structured_errors() {
     assert!(matches!(err, mix::MixError::Structured(info) if info.code == "FS_WAIT_SERVE"));
     exec(&mut e, "fs_unwatch($h)").await.unwrap();
     let error = exec(&mut e, "fs_unwatch($h)").await.unwrap_err();
-    assert!(
-        matches!(error, mix::MixError::Structured(info) if info.code == "FS_WATCH_HANDLE")
-    );
+    assert!(matches!(error, mix::MixError::Structured(info) if info.code == "FS_WATCH_HANDLE"));
     let caught = exec(
         &mut e,
         r#"try
@@ -335,9 +329,7 @@ async fn failed_candidate_cleanup_preserves_old_generation_then_success_retires_
         .await;
     replacement.close_native_events();
     let error = exec(&mut replacement, "fs_watch($root)").await.unwrap_err();
-    assert!(
-        matches!(error, mix::MixError::Structured(info) if info.code == "NATIVE_CLOSED")
-    );
+    assert!(matches!(error, mix::MixError::Structured(info) if info.code == "NATIVE_CLOSED"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -688,9 +680,12 @@ async fn managed_signal_delivery_and_shutdown_have_one_reaper() {
     e.set_serve_runtime(Rc::new(Runtime));
     // Declare $exit first: a handler assignment to an unbound name binds a
     // per-invocation local, not a global (as in the sibling tests).
-    exec(&mut e, "$exit = nil\non proc.exited\n$exit = $event.args\nquit()\nend")
-        .await
-        .unwrap();
+    exec(
+        &mut e,
+        "$exit = nil\non proc.exited\n$exit = $event.args\nquit()\nend",
+    )
+    .await
+    .unwrap();
     blocked_child(&mut e).await;
     exec(&mut e, "kill($pid, 15)").await.unwrap();
     tokio::time::timeout(Duration::from_secs(30), e.run_event_pump())
@@ -814,9 +809,7 @@ async fn net_handles_snapshot_and_refusals() {
     }
     e.close_native_events();
     let err = exec(&mut e, "net_watch()").await.unwrap_err();
-    assert!(
-        matches!(err, mix::MixError::Structured(info) if info.code == "NATIVE_CLOSED")
-    );
+    assert!(matches!(err, mix::MixError::Structured(info) if info.code == "NATIVE_CLOSED"));
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -876,7 +869,11 @@ fn desktop_source_contracts_capabilities_and_expression_denial() {
         let info = mix::builtins::builtin_info_of(name).unwrap();
         assert_eq!(info.capability, capability, "{name}");
         for n in 0..3 {
-            assert_eq!(info.contract.accepts_arity(n), arities.contains(&n), "{name}/{n}");
+            assert_eq!(
+                info.contract.accepts_arity(n),
+                arities.contains(&n),
+                "{name}/{n}"
+            );
         }
         assert!(mix::evaluator::EXPR_MODE_DENIED_BUILTINS.contains(&name));
         assert!(mix::expr_mode_check(&format!("{name}()")).is_err());

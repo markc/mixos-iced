@@ -26,6 +26,7 @@ fn mk_event(command: &str, body: &str, headers: &[(&str, &str)]) -> IncomingEven
         h.insert(k.to_string(), v.to_string());
     }
     IncomingEvent {
+        generation: 0,
         command: command.to_string(),
         headers: h,
         body: body.to_string(),
@@ -76,10 +77,7 @@ end
         .await
         .unwrap();
     // The handler read its own value during execution...
-    assert_eq!(
-        s.eval.get_global("observed").unwrap().to_mix_string(),
-        "7"
-    );
+    assert_eq!(s.eval.get_global("observed").unwrap().to_mix_string(), "7");
     // ...and the outer value was restored afterwards, not clobbered.
     assert_eq!(s.eval.get_global("rc").unwrap().to_mix_string(), "42");
 }

@@ -68,7 +68,8 @@ fn value_matches_shape(v: &Value, shape: &crate::builtin_info::TypeShape) -> boo
     }
 }
 
-fn split_interp_coalesce(spec: &str) -> (&str, Option<(InterpCoalesce, &str)>) {    let bytes = spec.as_bytes();
+fn split_interp_coalesce(spec: &str) -> (&str, Option<(InterpCoalesce, &str)>) {
+    let bytes = spec.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {
         if bytes[i] == b'?' {
@@ -892,6 +893,8 @@ fn push_through_path(
 /// lifted one layer up.
 #[derive(Debug, Clone)]
 pub struct IncomingEvent {
+    /// Local transport generation, captured on delivery; never a wire header.
+    pub generation: u64,
     pub command: String,
     pub headers: BTreeMap<String, String>,
     pub body: String,
@@ -947,6 +950,7 @@ pub(crate) type InvocationId = u64;
 /// "Bus not available" error rather than registering nothing and
 /// turning `reply()` into "outside on handler" by accident.
 pub(crate) struct InvocationReplyHandle {
+    generation: u64,
     /// Per-citizen monotonically increasing id. The deregistration key
     /// the RAII [`InvocationRegistration`] guard uses on drop. Held
     /// for the registry's bookkeeping but never read off the handle
@@ -1138,7 +1142,8 @@ impl InvocationReplyHandle {
             })?;
         self.state.set(ReplyState::Answered);
         handler
-            .reply_shutdown_synth(
+            .reply_shutdown_synth_at(
+                self.generation,
                 &self.from,
                 &self.command,
                 self.correlation_id.as_deref(),
@@ -1190,7 +1195,8 @@ impl InvocationReplyHandle {
             })?;
         self.state.set(ReplyState::Replying);
         match handler
-            .reply(
+            .reply_at(
+                self.generation,
                 &self.from,
                 &self.command,
                 self.correlation_id.as_deref(),
@@ -1244,6 +1250,7 @@ impl InvocationReplyRegistry {
     /// by C.7f's shutdown drain (Codex C.7c R1 BLOCKER).
     pub(crate) fn register(
         self: &Rc<Self>,
+        generation: u64,
         from: String,
         command: String,
         correlation_id: Option<String>,
@@ -1253,6 +1260,7 @@ impl InvocationReplyRegistry {
         let id = self.next_id.get();
         self.next_id.set(id.wrapping_add(1));
         let handle = Rc::new(InvocationReplyHandle {
+            generation,
             id,
             from,
             command,
@@ -2048,6 +2056,33 @@ pub trait BusHandler {
         body: &'a str,
     ) -> BusFuture<'a, MixResult<()>> {
         self.reply(to, command, id, rc, body)
+    }
+
+    /// Reply on the generation which delivered this invocation. Transports
+    /// without reconnects keep their original reply implementation.
+    fn reply_at<'a>(
+        &'a self,
+        _generation: u64,
+        to: &'a str,
+        command: &'a str,
+        id: Option<&'a str>,
+        rc: u8,
+        body: &'a str,
+    ) -> BusFuture<'a, MixResult<()>> {
+        self.reply(to, command, id, rc, body)
+    }
+
+    /// The shutdown reply retains the invocation's delivery generation too.
+    fn reply_shutdown_synth_at<'a>(
+        &'a self,
+        _generation: u64,
+        to: &'a str,
+        command: &'a str,
+        id: Option<&'a str>,
+        rc: u8,
+        body: &'a str,
+    ) -> BusFuture<'a, MixResult<()>> {
+        self.reply_shutdown_synth(to, command, id, rc, body)
     }
 
     /// Drop any cached broker connection so the *next* outbound call
@@ -3117,7 +3152,9 @@ impl Drop for ExprDepthGuard {
     fn drop(&mut self) {
         // SAFETY: the pointer was taken from `self.ctx.expr_depth`, which
         // lives as long as the evaluator that owns the boxed future.
-        unsafe { *self.0 -= 1; }
+        unsafe {
+            *self.0 -= 1;
+        }
     }
 }
 
@@ -3143,8 +3180,8 @@ pub const EXPR_MODE_DENIED_BUILTINS: &[&str] = &[
     "audio_watch",
     "audio_unwatch",
     "audio_state",
-    "sleep",     // Pure-classed, pends on the tokio timer
-    "readline",  // Env-classed but blocking on host input
+    "sleep",    // Pure-classed, pends on the tokio timer
+    "readline", // Env-classed but blocking on host input
     "read_stdin",
     "read_stdin_bytes",
     // The whole output family is Pure-classed (load-bearing for webd's
@@ -3379,12 +3416,10 @@ fn expr_mode_check_payload(src: &str, depth: usize) -> MixResult<()> {
         return Err(expr_mode_depth_error());
     }
     let mut lexer = crate::lexer::Lexer::new(src);
-    let tokens = lexer
-        .tokenize()
-        .map_err(|e| MixError::RuntimeError {
-            span: None,
-            msg: format!("eval_expr_string: coalesce default does not parse: {e}"),
-        })?;
+    let tokens = lexer.tokenize().map_err(|e| MixError::RuntimeError {
+        span: None,
+        msg: format!("eval_expr_string: coalesce default does not parse: {e}"),
+    })?;
     let stmts = crate::parser::Parser::new(tokens, src)
         .parse_program()
         .map_err(|e| MixError::RuntimeError {
@@ -3415,11 +3450,9 @@ fn expr_mode_deny_walk(expr: &Expr, depth: usize) -> MixResult<()> {
     if depth > MAX_EXPR_DEPTH {
         return Err(expr_mode_depth_error());
     }
-    let denied = |what: &str| {
-        MixError::RuntimeError {
-            span: None,
-            msg: format!("eval_expr_string: {what} is not allowed in expression mode"),
-        }
+    let denied = |what: &str| MixError::RuntimeError {
+        span: None,
+        msg: format!("eval_expr_string: {what} is not allowed in expression mode"),
     };
     match expr {
         // No Bus / shell authority, no lambdas, no first-class calls.
@@ -3546,11 +3579,9 @@ fn expr_mode_deny_stmt(stmt: &Stmt, depth: usize) -> MixResult<()> {
     if depth > MAX_EXPR_DEPTH {
         return Err(expr_mode_depth_error());
     }
-    let denied = |what: &str| {
-        MixError::RuntimeError {
-            span: None,
-            msg: format!("eval_expr_string: {what} is not allowed in expression mode"),
-        }
+    let denied = |what: &str| MixError::RuntimeError {
+        span: None,
+        msg: format!("eval_expr_string: {what} is not allowed in expression mode"),
     };
     match &stmt.kind {
         StmtKind::FunctionDef { .. } => return Err(denied("function definition")),
@@ -3825,7 +3856,10 @@ mod dirroot {
                     || path.chars().any(char::is_control)
                     || path.bytes().any(|b| b == 0)
                 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid root path"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid root path",
+                    ));
                 }
                 let original = Path::new(path);
                 let mut past_first_component = false;
@@ -3891,7 +3925,10 @@ mod dirroot {
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = (source, destination);
-                return Err(io::Error::new(io::ErrorKind::Unsupported, "dir_rename requires Linux"));
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "dir_rename requires Linux",
+                ));
             }
             #[cfg(target_os = "linux")]
             {
@@ -3973,7 +4010,7 @@ mod dirroot {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         format!("root is no longer resolvable at its original path: {e}"),
-                    ))
+                    ));
                 }
             };
             let current_stat = fstat_directory(&current)?;
@@ -3997,9 +4034,14 @@ mod dirroot {
             || operand.starts_with('/')
             || operand.chars().any(char::is_control)
             || operand.bytes().any(|b| b == 0)
-            || operand.split('/').any(|c| c.is_empty() || c == "." || c == "..")
+            || operand
+                .split('/')
+                .any(|c| c.is_empty() || c == "." || c == "..")
         {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsafe relative path operand"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsafe relative path operand",
+            ));
         }
         Ok(())
     }
@@ -4080,7 +4122,10 @@ mod dirroot {
             return Err(io::Error::last_os_error());
         }
         if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
-            return Err(io::Error::new(io::ErrorKind::NotADirectory, "handle is not a directory"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "handle is not a directory",
+            ));
         }
         Ok(stat)
     }
@@ -4191,9 +4236,7 @@ mod dirroot {
     }
 
     #[cfg(target_os = "linux")]
-    fn landlock_create_ruleset(
-        attr: &LandlockRulesetAttr,
-    ) -> io::Result<OwnedFd> {
+    fn landlock_create_ruleset(attr: &LandlockRulesetAttr) -> io::Result<OwnedFd> {
         #[cfg(test)]
         if FORCE_LANDLOCK_FAIL.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::from_raw_os_error(libc::ENOSYS));
@@ -4254,36 +4297,46 @@ mod dirroot {
     fn setup_worker_policy(root_fd: RawFd) -> io::Result<()> {
         // no_new_privs is per-thread (since Linux 4.10): the evaluator's
         // other threads are unaffected.
-        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong,
-            0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong) } != 0 {
+        if unsafe {
+            libc::prctl(
+                libc::PR_SET_NO_NEW_PRIVS,
+                1 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            )
+        } != 0
+        {
             return Err(io::Error::last_os_error());
         }
         let abi = landlock_query(LL_CREATE_RULESET_VERSION).map_err(unsupported_policy_error)?;
         #[cfg(test)]
         let abi = {
             let forced = FORCE_ABI.load(std::sync::atomic::Ordering::Relaxed);
-            if forced == u32::MAX {
-                abi
-            } else {
-                forced
-            }
+            if forced == u32::MAX { abi } else { forced }
         };
         if abi < LL_MIN_ABI {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                format!(
-                    "Landlock ABI {abi} is below the required {LL_MIN_ABI}; refusing"
-                ),
+                format!("Landlock ABI {abi} is below the required {LL_MIN_ABI}; refusing"),
             ));
         }
         let errata = landlock_query(LL_CREATE_RULESET_ERRATA).map_err(unsupported_policy_error)?;
         #[cfg(test)]
-        let errata = if FORCE_MISSING_ERRATUM.load(std::sync::atomic::Ordering::Relaxed) { 0 } else { errata };
+        let errata = if FORCE_MISSING_ERRATUM.load(std::sync::atomic::Ordering::Relaxed) {
+            0
+        } else {
+            errata
+        };
         if errata & LL_ERRATUM_DISCONNECTED == 0 {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "Landlock disconnected-directory erratum 3 is not confirmed; refusing"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Landlock disconnected-directory erratum 3 is not confirmed; refusing",
+            ));
         }
-        let attr = LandlockRulesetAttr { handled_access_fs: LL_HANDLED };
+        let attr = LandlockRulesetAttr {
+            handled_access_fs: LL_HANDLED,
+        };
         let ruleset = landlock_create_ruleset(&attr).map_err(unsupported_policy_error)?;
         landlock_add_rule(&ruleset, root_fd, LL_GRANTED)?;
         landlock_restrict_self(&ruleset)?;
@@ -4299,18 +4352,28 @@ mod dirroot {
     fn landlock_query(flags: u32) -> io::Result<u32> {
         // SAFETY: version/errata queries require a null attribute pointer
         // and size zero, and return an integer rather than a descriptor.
-        let value = unsafe { libc::syscall(SYS_LANDLOCK_CREATE_RULESET,
-            std::ptr::null::<LandlockRulesetAttr>(), 0usize, flags) };
-        if value < 0 { Err(io::Error::last_os_error()) }
-        else { u32::try_from(value).map_err(io::Error::other) }
+        let value = unsafe {
+            libc::syscall(
+                SYS_LANDLOCK_CREATE_RULESET,
+                std::ptr::null::<LandlockRulesetAttr>(),
+                0usize,
+                flags,
+            )
+        };
+        if value < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            u32::try_from(value).map_err(io::Error::other)
+        }
     }
 
     #[cfg(target_os = "linux")]
     fn unsupported_policy_error(e: io::Error) -> io::Error {
         match e.raw_os_error() {
-            Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => {
-                io::Error::new(io::ErrorKind::Unsupported, "Landlock is unavailable on this kernel")
-            }
+            Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP) => io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Landlock is unavailable on this kernel",
+            ),
             Some(libc::EINVAL) => io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("Landlock policy or required errata query is unsupported: {e}"),
@@ -4347,7 +4410,8 @@ mod dirroot {
     #[cfg(test)]
     static FORCE_ABI: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
     #[cfg(test)]
-    static FORCE_MISSING_ERRATUM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static FORCE_MISSING_ERRATUM: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 
     #[cfg(test)]
     fn pause_before_worker() {
@@ -4507,7 +4571,10 @@ mod dirroot {
                     &Value::String("x".into()),
                 )
                 .unwrap_err();
-            assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_RENAME_FAILED"));
+            assert_eq!(
+                error.info().map(|i| i.code.as_str()),
+                Some("DIR_RENAME_FAILED")
+            );
             std::os::unix::fs::symlink("a", root_path.join("slink")).unwrap();
             let error = handles
                 .rename(
@@ -4516,7 +4583,10 @@ mod dirroot {
                     &Value::String("x".into()),
                 )
                 .unwrap_err();
-            assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_RENAME_FAILED"));
+            assert_eq!(
+                error.info().map(|i| i.code.as_str()),
+                Some("DIR_RENAME_FAILED")
+            );
             let fifo = CString::new(
                 root_path
                     .join("fifo")
@@ -4534,7 +4604,10 @@ mod dirroot {
                     &Value::String("x".into()),
                 )
                 .unwrap_err();
-            assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_RENAME_FAILED"));
+            assert_eq!(
+                error.info().map(|i| i.code.as_str()),
+                Some("DIR_RENAME_FAILED")
+            );
             assert!(root_path.join("a").exists());
             fs::remove_dir_all(tmp).unwrap();
         }
@@ -4567,7 +4640,10 @@ mod dirroot {
                     &Value::String("moved".into()),
                 )
                 .unwrap_err();
-            assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_ROOT_REPLACED"));
+            assert_eq!(
+                error.info().map(|i| i.code.as_str()),
+                Some("DIR_ROOT_REPLACED")
+            );
             // And a root moved away entirely (nothing at the original path).
             let saved = tmp.join("saved");
             let root = DirRoot::open(saved.to_str().unwrap()).unwrap();
@@ -4744,15 +4820,14 @@ mod dirroot {
                     &Value::String("x".into()),
                 )
                 .unwrap_err();
-            assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_INVALID_HANDLE"));
+            assert_eq!(
+                error.info().map(|i| i.code.as_str()),
+                Some("DIR_INVALID_HANDLE")
+            );
             // Strict typing: only finite integral numbers are handles.
             for bad in [Value::Nil, Value::Bool(true), Value::String("1".into())] {
                 let error = a
-                    .rename(
-                        &bad,
-                        &Value::String("a".into()),
-                        &Value::String("x".into()),
-                    )
+                    .rename(&bad, &Value::String("a".into()), &Value::String("x".into()))
                     .unwrap_err();
                 assert_eq!(error.info().map(|i| i.code.as_str()), Some("TYPE_MISMATCH"));
             }
@@ -4764,11 +4839,17 @@ mod dirroot {
                         &Value::String("x".into()),
                     )
                     .unwrap_err();
-                assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_INVALID_HANDLE"));
+                assert_eq!(
+                    error.info().map(|i| i.code.as_str()),
+                    Some("DIR_INVALID_HANDLE")
+                );
             }
             a.close(&Value::Number(handle_a as f64)).unwrap();
             let error = a.close(&Value::Number(handle_a as f64)).unwrap_err();
-            assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_INVALID_HANDLE"));
+            assert_eq!(
+                error.info().map(|i| i.code.as_str()),
+                Some("DIR_INVALID_HANDLE")
+            );
             // The surviving handle still works; dropping both registries
             // closes every retained root with no leak.
             a.rename(
@@ -4815,7 +4896,10 @@ mod dirroot {
         let error = handles
             .open(std::env::temp_dir().to_str().unwrap())
             .unwrap_err();
-        assert_eq!(error.info().map(|i| i.code.as_str()), Some("DIR_UNSUPPORTED"));
+        assert_eq!(
+            error.info().map(|i| i.code.as_str()),
+            Some("DIR_UNSUPPORTED")
+        );
     }
 }
 
@@ -4899,10 +4983,7 @@ fn dir_handle_number(value: &crate::value::Value) -> Result<u32, crate::error::M
     // Handles are finite integral numbers; everything else is refused
     // before any filesystem effect.
     #[allow(clippy::cast_possible_truncation)] // bounded by the range check below
-    if !number.is_finite()
-        || number.fract() != 0.0
-        || !(0.0..=u32::MAX as f64).contains(number)
-    {
+    if !number.is_finite() || number.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(number) {
         return Err(crate::error::MixError::structured(
             "DIR_INVALID_HANDLE",
             "dir handle must be a finite integral number",
@@ -4942,7 +5023,9 @@ fn map_dir_rename_error(e: std::io::Error) -> crate::error::MixError {
         // identifies them. Kernel errors (EACCES, ELOOP, ...) carry codes
         // and are ordinary operation failures.
         None => match e.kind() {
-            K::InvalidInput => crate::error::MixError::structured("DIR_INVALID_PATH", e.to_string()),
+            K::InvalidInput => {
+                crate::error::MixError::structured("DIR_INVALID_PATH", e.to_string())
+            }
             K::PermissionDenied => {
                 crate::error::MixError::structured("DIR_ROOT_REPLACED", e.to_string())
             }
@@ -5983,6 +6066,7 @@ impl Evaluator {
         }
         g.lifecycle_commit_queued = true;
         g.pending_local.push_back(IncomingEvent {
+            generation: 0,
             command: "lifecycle.commit".to_string(),
             headers: std::collections::BTreeMap::new(),
             body: serde_json::json!({ "generation": generation }).to_string(),
@@ -6396,16 +6480,31 @@ impl Evaluator {
         let message = json_quote(&format!(
             "unknown command '{}' (this citizen handles: {}; HELP lists them)",
             event.command,
-            if available.is_empty() { "none".to_string() } else { available.join(", ") }
+            if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            }
         ));
         let body = format!(
             "{{\"error_code\":\"UNKNOWN_COMMAND\",\"error\":{message},\"message\":{message},\"command\":{},\"available\":[{}]}}",
             json_quote(&event.command),
-            available.iter().map(|c| json_quote(c)).collect::<Vec<_>>().join(","),
+            available
+                .iter()
+                .map(|c| json_quote(c))
+                .collect::<Vec<_>>()
+                .join(","),
         );
         let from = event.headers.get("from").cloned().unwrap_or_default();
         if let Err(e) = handler
-            .reply(&from, &event.command, event.headers.get("id").map(String::as_str), 10, &body)
+            .reply_at(
+                event.generation,
+                &from,
+                &event.command,
+                event.headers.get("id").map(String::as_str),
+                10,
+                &body,
+            )
             .await
         {
             tracing::error!(command = %event.command, error = %e, "UNKNOWN_COMMAND reply failed");
@@ -6501,6 +6600,7 @@ impl Evaluator {
             (Rc::clone(&g.reply_registry), g.bus_handler.clone())
         };
         let (handle, registration) = registry.register(
+            event.generation,
             event.headers.get("from").cloned().unwrap_or_default(),
             event.command.clone(),
             event.headers.get("id").cloned(),
@@ -6783,21 +6883,18 @@ impl Evaluator {
                             // must match, or HELP replies silently lose every
                             // author command. Locked by the integration test
                             // event_pump_passes_handler_docs_to_reserved_help_only.
-                            let handler_cmds: Vec<(&str, Option<&str>)> =
-                                if ev.command == "HELP" {
-                                    g.handlers
-                                        .iter()
-                                        .map(|(cmd, entries)| {
-                                            // First documented handler wins.
-                                            let doc = entries
-                                                .iter()
-                                                .find_map(|e| e.doc.as_deref());
-                                            (cmd.as_str(), doc)
-                                        })
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                };
+                            let handler_cmds: Vec<(&str, Option<&str>)> = if ev.command == "HELP" {
+                                g.handlers
+                                    .iter()
+                                    .map(|(cmd, entries)| {
+                                        // First documented handler wins.
+                                        let doc = entries.iter().find_map(|e| e.doc.as_deref());
+                                        (cmd.as_str(), doc)
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
                             rt.handle_reserved(
                                 &ev.command,
                                 ev.headers.get("args").map(|s| s.as_str()),
@@ -6834,7 +6931,8 @@ impl Evaluator {
                             match bus_handler {
                                 Some(h) => {
                                     if let Err(e) = h
-                                        .reply(
+                                        .reply_at(
+                                            ev.generation,
                                             &from,
                                             &ev.command,
                                             id.as_deref(),
@@ -7671,7 +7769,9 @@ impl Evaluator {
         let (source, override_path) = if let Some(home) = dirs_home() {
             let etc = std::env::var_os("MIXOS_ETC")
                 .map(std::path::PathBuf::from)
-                .or_else(|| std::env::var_os("MIXOS").map(|r| std::path::PathBuf::from(r).join("etc")))
+                .or_else(|| {
+                    std::env::var_os("MIXOS").map(|r| std::path::PathBuf::from(r).join("etc"))
+                })
                 .unwrap_or_else(|| home.join(".config/mixos"));
             let user_prelude = etc.join("prelude.mix");
             if user_prelude.exists() {
@@ -7680,7 +7780,10 @@ impl Evaluator {
                     Err(e) => {
                         return Err(MixError::structured(
                             "PRELUDE_FAILED",
-                            format!("prelude override unreadable ({}): {e}", user_prelude.display()),
+                            format!(
+                                "prelude override unreadable ({}): {e}",
+                                user_prelude.display()
+                            ),
                         ));
                     }
                 }
@@ -8031,9 +8134,8 @@ impl Evaluator {
     /// mean" suffix when one is close enough. `name` is sigil-stripped (no
     /// leading `$`), as it arrives from the variable-read sites.
     fn undefined_variable_error(&self, name: &str) -> MixError {
-        let hint =
-            crate::analyzer::undefined_variable_hint(name, &self.scope.variable_names())
-                .unwrap_or_default();
+        let hint = crate::analyzer::undefined_variable_hint(name, &self.scope.variable_names())
+            .unwrap_or_default();
         MixError::structured(
             "NAME_UNDEFINED",
             format!("undefined variable '${}'{}", name, hint),
@@ -8115,7 +8217,7 @@ impl Evaluator {
                                             "undefined function '{base}' in interpolation \
                                              (use ${{{base} ?? default}} for a fallback)"
                                         ),
-                                    })
+                                    });
                                 }
                             },
                         }
@@ -8136,7 +8238,7 @@ impl Evaluator {
                                             "undefined variable '${base}' in interpolation \
                                              (use ${{{base} ?? default}} for a fallback)"
                                         ),
-                                    })
+                                    });
                                 }
                             },
                         }
@@ -8163,10 +8265,9 @@ impl Evaluator {
                                         .map(|i| l[i].clone())
                                         .unwrap_or(Value::Nil)
                                 }
-                                (Some(Value::Map(ref m)), Value::String(ref s)) => m
-                                    .get(s)
-                                    .cloned()
-                                    .unwrap_or(Value::Nil),
+                                (Some(Value::Map(ref m)), Value::String(ref s)) => {
+                                    m.get(s).cloned().unwrap_or(Value::Nil)
+                                }
                                 (Some(Value::Bytes(ref b)), Value::Number(n)) => {
                                     crate::builtins::resolve_signed_index(n as i64, b.len())
                                         .map(|i| Value::Number(b[i] as f64))
@@ -8180,7 +8281,7 @@ impl Evaluator {
                                             other.type_name(),
                                             idx.type_name()
                                         ),
-                                    })
+                                    });
                                 }
                                 (None, _) => Value::Nil,
                             }
@@ -8199,7 +8300,7 @@ impl Evaluator {
                                             "cannot call {} as a function in interpolation",
                                             other.type_name()
                                         ),
-                                    })
+                                    });
                                 }
                                 None => Value::Nil,
                             }
@@ -8290,8 +8391,10 @@ impl Evaluator {
                     _ => {
                         return Err(MixError::RuntimeError {
                             span: None,
-                            msg: format!("interpolation call argument '{src}' is not an expression"),
-                        })
+                            msg: format!(
+                                "interpolation call argument '{src}' is not an expression"
+                            ),
+                        });
                     }
                 }
             }
@@ -9701,7 +9804,10 @@ impl Evaluator {
                             IterSrc::Owned(b.iter().map(|&x| Value::Number(x as f64)).collect())
                         }
                         Value::Buffer(b) => IterSrc::Owned(
-                            b.borrow().iter().map(|&x| Value::Number(x as f64)).collect(),
+                            b.borrow()
+                                .iter()
+                                .map(|&x| Value::Number(x as f64))
+                                .collect(),
                         ),
                         other => {
                             return Err(MixError::RuntimeError {
@@ -10561,9 +10667,7 @@ impl Evaluator {
                             // async-only too (the sync walker reads a plain
                             // dotted name); defer rather than misread it.
                             if coalesce.is_some()
-                                || path
-                                    .bytes()
-                                    .any(|b| matches!(b, b'[' | b']' | b'(' | b')'))
+                                || path.bytes().any(|b| matches!(b, b'[' | b']' | b'(' | b')'))
                             {
                                 return None;
                             }
@@ -11450,9 +11554,7 @@ impl Evaluator {
                     StringPart::Variable(spec) => {
                         let (path, coalesce) = split_interp_coalesce(spec);
                         coalesce.is_none()
-                            && !path
-                                .bytes()
-                                .any(|b| matches!(b, b'[' | b']' | b'(' | b')'))
+                            && !path.bytes().any(|b| matches!(b, b'[' | b']' | b'(' | b')'))
                     }
                     _ => false,
                 })
@@ -12536,7 +12638,8 @@ impl Evaluator {
         let cmp_jump_idx = prog.len();
         prog.push(FibOp::Jump(0)); // placeholder, replaced below
         // Then-branch: evaluate then_expr, return.
-        let then_depth = Self::compile_fib_arith(then_expr, name, arity, &param_names, &mut prog, 0)?;
+        let then_depth =
+            Self::compile_fib_arith(then_expr, name, arity, &param_names, &mut prog, 0)?;
         prog.push(FibOp::Ret);
         // Patch the comparison-jump target to land here (start of else).
         let else_target: u16 = prog.len().try_into().ok()?;
@@ -12550,7 +12653,8 @@ impl Evaluator {
             _ => return None,
         };
         // Else-branch: evaluate else_expr, return.
-        let else_depth = Self::compile_fib_arith(else_expr, name, arity, &param_names, &mut prog, 0)?;
+        let else_depth =
+            Self::compile_fib_arith(else_expr, name, arity, &param_names, &mut prog, 0)?;
         prog.push(FibOp::Ret);
         // `eval_fib_program` runs on a fixed [f64; NUM_STACK_SLOTS]
         // operand stack; refuse any program that would index past it.
@@ -12598,10 +12702,22 @@ impl Evaluator {
                 Some(1)
             }
             Expr::BinaryOp { left, op, right } => {
-                let left_depth =
-                    Self::compile_fib_arith(left, self_name, self_arity, param_names, out, nesting + 1)?;
-                let right_depth =
-                    Self::compile_fib_arith(right, self_name, self_arity, param_names, out, nesting + 1)?;
+                let left_depth = Self::compile_fib_arith(
+                    left,
+                    self_name,
+                    self_arity,
+                    param_names,
+                    out,
+                    nesting + 1,
+                )?;
+                let right_depth = Self::compile_fib_arith(
+                    right,
+                    self_name,
+                    self_arity,
+                    param_names,
+                    out,
+                    nesting + 1,
+                )?;
                 out.push(match op {
                     BinOp::Add => FibOp::Add,
                     BinOp::Sub => FibOp::Sub,
@@ -12620,7 +12736,14 @@ impl Evaluator {
                 // Arg i evaluates with the previous i results live.
                 let mut depth = 1; // the CallSelf result
                 for (i, arg) in args.iter().enumerate() {
-                    let d = Self::compile_fib_arith(arg, self_name, self_arity, param_names, out, nesting + 1)?;
+                    let d = Self::compile_fib_arith(
+                        arg,
+                        self_name,
+                        self_arity,
+                        param_names,
+                        out,
+                        nesting + 1,
+                    )?;
                     depth = depth.max(i + d);
                 }
                 out.push(FibOp::CallSelf(self_arity));
@@ -12779,7 +12902,11 @@ impl Evaluator {
     }
 
     /// Keep socket receive state out of the recursive expression future.
-    fn eval_socket<'a>(&'a mut self, name: &'a str, args: &'a [Value]) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
+    fn eval_socket<'a>(
+        &'a mut self,
+        name: &'a str,
+        args: &'a [Value],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
         Box::pin(async move {
             if let Some(result) = self.eval_socket_source(name, args).await? {
                 return Ok(Some(result));
@@ -12792,286 +12919,331 @@ impl Evaluator {
     }
 
     #[cfg(all(feature = "ws", unix))]
-    fn eval_numeric_socket<'a>(&'a mut self, name: &'a str, eval_args: &'a [Value]) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
+    fn eval_numeric_socket<'a>(
+        &'a mut self,
+        name: &'a str,
+        eval_args: &'a [Value],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
         Box::pin(async move {
-                        if matches!(
+            if matches!(
+                name,
+                "ws_recv" | "tcp_recv" | "tcp_recv_line" | "ws_send" | "tcp_send"
+            ) && (self.ctx.class_c_read_permit.is_some()
+                || matches!(name, "ws_send" | "tcp_send"))
+                && matches!(eval_args.first(), Some(Value::Number(_)))
+                && let Ok(id) =
+                    crate::builtins::socket_sources::client_id_of(eval_args.first(), name)
+            {
+                // (family, id): ws_connect and tcp_connect count
+                // ids independently, so the same number is two
+                // different connections.
+                let key = crate::builtins::socket_sources::ClientKey::of(name, id);
+                let is_send = matches!(name, "ws_send" | "tcp_send");
+                if !is_send
+                    && self.ctx.class_c_read_permit.is_some()
+                    && !crate::builtins::socket_sources::is_subscribed(key)
+                {
+                    self.check_capability(name)?;
+                    self.check_builtin_arity(name, eval_args.len())?;
+                    let (timeout_seconds, max) =
+                        crate::builtins::socket_sources::parse_source_recv_opts(
                             name,
-                            "ws_recv" | "tcp_recv" | "tcp_recv_line" | "ws_send" | "tcp_send"
-                        ) && (self.ctx.class_c_read_permit.is_some()
-                            || matches!(name, "ws_send" | "tcp_send"))
-                            && matches!(eval_args.first(), Some(Value::Number(_)))
-                            && let Ok(id) = crate::builtins::socket_sources::client_id_of(
-                                eval_args.first(),
-                                name,
-                            )
-                        {
-                            // (family, id): ws_connect and tcp_connect count
-                            // ids independently, so the same number is two
-                            // different connections.
-                            let key = crate::builtins::socket_sources::ClientKey::of(name, id);
-                            let is_send = matches!(name, "ws_send" | "tcp_send");
-                            if !is_send && self.ctx.class_c_read_permit.is_some()
-                                && !crate::builtins::socket_sources::is_subscribed(key) {
-                                self.check_capability(name)?;
-                                self.check_builtin_arity(name, eval_args.len())?;
-                                let (timeout_seconds, max) =
-                                    crate::builtins::socket_sources::parse_source_recv_opts(
-                                        name,
-                                        eval_args.get(1),
-                                        65536,
-                                    )?;
-                                let guard =
-                                    crate::builtins::socket_sources::pull_conn(name, id)?;
-                                // Keep the native receive buffer out of the
-                                // recursive evaluator future's inline state.
-                                let fut = Box::pin(crate::builtins::socket_sources::pull_recv(
-                                    name, guard,
-                                    timeout_seconds, max,
-                                ));
-                                return self.await_with_class_c_yield(fut).await?.map(Some);
-                            }
-                            if is_send && crate::builtins::socket_sources::is_subscribed(key) {
-                                self.check_capability(name)?;
-                                self.check_builtin_arity(name, eval_args.len())?;
-                                let payload: Option<Vec<u8>> = match &eval_args[1] {
-                                    Value::String(s) => Some(s.as_bytes().to_vec()),
-                                    Value::Bytes(b) => Some(b.to_vec()),
-                                    Value::Buffer(b) => Some(b.borrow().clone()),
-                                    _ => None,
-                                };
-                                if let Some(payload) = payload {
-                                    let ws = name == "ws_send";
-                                    let rx = if ws {
-                                        crate::builtins::socket_sources::send_ws(
-                                            id,
-                                            matches!(&eval_args[1], Value::String(_)),
-                                            payload,
-                                        )?
-                                    } else {
-                                        crate::builtins::socket_sources::send_tcp(id, payload)?
-                                    };
-                                    let fut = async move {
-                                        match rx.await {
-                                            Ok(Ok(n)) => Ok(if ws {
-                                                Value::Nil
-                                            } else {
-                                                Value::Number(n as f64)
-                                            }),
-                                            Ok(Err((code, message))) => {
-                                                Err(crate::native_events::refusal(&code, message))
-                                            }
-                                            Err(_) => Err(crate::native_events::refusal(
-                                                "SOCKET_SEND_CLOSED",
-                                                "the socket source was closed before the send completed",
-                                            )),
-                                        }
-                                    };
-                                    return self.await_with_class_c_yield(fut).await?.map(Some);
+                            eval_args.get(1),
+                            65536,
+                        )?;
+                    let guard = crate::builtins::socket_sources::pull_conn(name, id)?;
+                    // Keep the native receive buffer out of the
+                    // recursive evaluator future's inline state.
+                    let fut = Box::pin(crate::builtins::socket_sources::pull_recv(
+                        name,
+                        guard,
+                        timeout_seconds,
+                        max,
+                    ));
+                    return self.await_with_class_c_yield(fut).await?.map(Some);
+                }
+                if is_send && crate::builtins::socket_sources::is_subscribed(key) {
+                    self.check_capability(name)?;
+                    self.check_builtin_arity(name, eval_args.len())?;
+                    let payload: Option<Vec<u8>> = match &eval_args[1] {
+                        Value::String(s) => Some(s.as_bytes().to_vec()),
+                        Value::Bytes(b) => Some(b.to_vec()),
+                        Value::Buffer(b) => Some(b.borrow().clone()),
+                        _ => None,
+                    };
+                    if let Some(payload) = payload {
+                        let ws = name == "ws_send";
+                        let rx = if ws {
+                            crate::builtins::socket_sources::send_ws(
+                                id,
+                                matches!(&eval_args[1], Value::String(_)),
+                                payload,
+                            )?
+                        } else {
+                            crate::builtins::socket_sources::send_tcp(id, payload)?
+                        };
+                        let fut = async move {
+                            match rx.await {
+                                Ok(Ok(n)) => Ok(if ws {
+                                    Value::Nil
+                                } else {
+                                    Value::Number(n as f64)
+                                }),
+                                Ok(Err((code, message))) => {
+                                    Err(crate::native_events::refusal(&code, message))
                                 }
+                                Err(_) => Err(crate::native_events::refusal(
+                                    "SOCKET_SEND_CLOSED",
+                                    "the socket source was closed before the send completed",
+                                )),
                             }
-                        }
+                        };
+                        return self.await_with_class_c_yield(fut).await?.map(Some);
+                    }
+                }
+            }
             Ok(None)
         })
     }
 
     /// Own socket source futures separately from recursive evaluation.
-    fn eval_socket_source<'a>(&'a mut self, name: &'a str, eval_args: &'a [Value]) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
+    fn eval_socket_source<'a>(
+        &'a mut self,
+        name: &'a str,
+        eval_args: &'a [Value],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
         Box::pin(async move {
-                    if matches!(name, "ws_on" | "tcp_on" | "ws_unwatch" | "tcp_unwatch") {
-                        self.check_capability(name)?;
-                        self.check_builtin_arity(name, eval_args.len())?;
-                        #[cfg(not(feature = "ws"))]
-                        {
-                            return Err(crate::native_events::refusal(
-                                "WS_FEATURE",
-                                format!("{name}() requires the `ws` feature (tungstenite/rustls)"),
-                            ));
-                        }
-                        #[cfg(feature = "ws")]
-                        {
-                            let mut g = self.globals.borrow_mut();
-                            let ne = &mut g.native_events;
-                            return match name {
-                                "ws_on" | "tcp_on" => {
-                                    let id = crate::builtins::socket_sources::client_id_of(
-                                        eval_args.first(),
-                                        name,
-                                    )?;
-                                    let command = crate::builtins::socket_sources::event_command_of(
-                                        eval_args.get(1),
-                                        name,
-                                    )?;
-                                    let h = if name == "ws_on" {
-                                        ne.ws_on(id, command)?
-                                    } else {
-                                        let mode = crate::builtins::socket_sources::parse_tcp_on_opts(
-                                            eval_args.get(2),
-                                        )?;
-                                        ne.tcp_on(id, command, mode)?
-                                    };
-                                    Ok(Value::String(h))
-                                }
-                                "ws_unwatch" | "tcp_unwatch" => {
-                                    let family = if name == "ws_unwatch" { "ws" } else { "tcp" };
-                                    let Some(Value::String(h)) = eval_args.first() else {
-                                        return Err(crate::native_events::refusal(
-                                            "SOCKET_WATCH_ARGUMENT",
-                                            "handle must be the source id string returned by ws_on/tcp_on",
-                                        ));
-                                    };
-                                    ne.socket_unwatch(family, h)?;
-                                    Ok(Value::Nil)
-                                }
-                                _ => unreachable!(),
-                            }.map(Some);
-                        }
-                    }
-                    if matches!(name, "ws_recv" | "tcp_recv" | "tcp_recv_line")
-                        && matches!(eval_args.first(), Some(Value::String(_)))
-                    {
-                        self.check_capability(name)?;
-                        self.check_builtin_arity(name, eval_args.len())?;
-                        // Without the `ws` feature this arm falls through to
-                        // call_builtin, whose loud refusal covers the name.
-                        #[cfg(feature = "ws")]
-                        {
-                            let h = match eval_args.first() {
-                                Some(Value::String(s)) => s.clone(),
-                                _ => unreachable!("guarded by the string-argument match"),
-                            };
-                            if self.globals.borrow().serve_runtime.is_some()
-                                || self.globals.borrow().native_events.pumping()
-                            {
-                                return Err(crate::native_events::refusal(
-                                    "SOCKET_RECV_SERVE",
-                                    format!(
-                                        "{name}() on a socket source is unavailable in serve mode; use `on <command>`"
-                                    ),
-                                ));
-                            }
-                            let expect = if name == "ws_recv" {
-                                crate::builtins::socket_sources::KIND_WS
-                            } else if name == "tcp_recv" {
-                                crate::builtins::socket_sources::KIND_TCP_BYTES
+            if matches!(name, "ws_on" | "tcp_on" | "ws_unwatch" | "tcp_unwatch") {
+                self.check_capability(name)?;
+                self.check_builtin_arity(name, eval_args.len())?;
+                #[cfg(not(feature = "ws"))]
+                {
+                    return Err(crate::native_events::refusal(
+                        "WS_FEATURE",
+                        format!("{name}() requires the `ws` feature (tungstenite/rustls)"),
+                    ));
+                }
+                #[cfg(feature = "ws")]
+                {
+                    let mut g = self.globals.borrow_mut();
+                    let ne = &mut g.native_events;
+                    return match name {
+                        "ws_on" | "tcp_on" => {
+                            let id = crate::builtins::socket_sources::client_id_of(
+                                eval_args.first(),
+                                name,
+                            )?;
+                            let command = crate::builtins::socket_sources::event_command_of(
+                                eval_args.get(1),
+                                name,
+                            )?;
+                            let h = if name == "ws_on" {
+                                ne.ws_on(id, command)?
                             } else {
-                                crate::builtins::socket_sources::KIND_TCP_LINE
-                            };
-                            let (timeout_seconds, max) =
-                                crate::builtins::socket_sources::parse_source_recv_opts(
-                                    name,
-                                    eval_args.get(1),
-                                    65536,
+                                let mode = crate::builtins::socket_sources::parse_tcp_on_opts(
+                                    eval_args.get(2),
                                 )?;
-                            // Frame boundaries survive: only tcp_recv (a raw
-                            // byte stream) may slice a queued chunk; ws
-                            // messages and tcp lines are delivered whole.
-                            let max = if name == "tcp_recv" { max } else { usize::MAX };
-                            // One parked recv per source; the guard clears the
-                            // slot when this future completes OR is cancelled
-                            // (a Class C task abort drops it).
-                            let (queue, _park) = {
-                                let mut g = self.globals.borrow_mut();
-                                let guard = g.native_events.park_socket(&h)?;
-                                (g.native_events.queue.clone(), guard)
+                                ne.tcp_on(id, command, mode)?
                             };
-                            let h_for_err = h.clone();
-                            let next = async move {
-                                if timeout_seconds == 0.0 {
-                                    queue.next_socket(&h, expect, max).await
-                                } else {
-                                    match tokio::time::timeout(
-                                        std::time::Duration::from_secs_f64(timeout_seconds),
-                                        queue.next_socket(&h, expect, max),
-                                    )
-                                    .await
-                                    {
-                                        Ok(outcome) => outcome,
-                                        // Timeout: nil keeps the source usable.
-                                        Err(_) => Ok(crate::native_events::SocketNext::Idle),
-                                    }
-                                }
+                            Ok(Value::String(h))
+                        }
+                        "ws_unwatch" | "tcp_unwatch" => {
+                            let family = if name == "ws_unwatch" { "ws" } else { "tcp" };
+                            let Some(Value::String(h)) = eval_args.first() else {
+                                return Err(crate::native_events::refusal(
+                                    "SOCKET_WATCH_ARGUMENT",
+                                    "handle must be the source id string returned by ws_on/tcp_on",
+                                ));
                             };
-                            let out = self.await_with_class_c_yield(next).await??;
-                            return match out {
-                                crate::native_events::SocketNext::Idle => Ok(Value::Nil),
-                                crate::native_events::SocketNext::Frame(rec) => match rec.kind {
-                                    "text" | "line" => Ok(Value::String(
-                                        String::from_utf8_lossy(&rec.data).into_owned(),
-                                    )),
-                                    _ => Ok(Value::bytes(rec.data)),
-                                },
-                                crate::native_events::SocketNext::Closed(closed) => {
-                                    Err(crate::native_events::refusal(
-                                        "SOCKET_CLOSED",
-                                        format!("{name}(): source {h_for_err} closed: {closed}"),
-                                    ))
-                                }
-                            }.map(Some);
+                            ne.socket_unwatch(family, h)?;
+                            Ok(Value::Nil)
+                        }
+                        _ => unreachable!(),
+                    }
+                    .map(Some);
+                }
+            }
+            if matches!(name, "ws_recv" | "tcp_recv" | "tcp_recv_line")
+                && matches!(eval_args.first(), Some(Value::String(_)))
+            {
+                self.check_capability(name)?;
+                self.check_builtin_arity(name, eval_args.len())?;
+                // Without the `ws` feature this arm falls through to
+                // call_builtin, whose loud refusal covers the name.
+                #[cfg(feature = "ws")]
+                {
+                    let h = match eval_args.first() {
+                        Some(Value::String(s)) => s.clone(),
+                        _ => unreachable!("guarded by the string-argument match"),
+                    };
+                    if self.globals.borrow().serve_runtime.is_some()
+                        || self.globals.borrow().native_events.pumping()
+                    {
+                        return Err(crate::native_events::refusal(
+                            "SOCKET_RECV_SERVE",
+                            format!(
+                                "{name}() on a socket source is unavailable in serve mode; use `on <command>`"
+                            ),
+                        ));
+                    }
+                    let expect = if name == "ws_recv" {
+                        crate::builtins::socket_sources::KIND_WS
+                    } else if name == "tcp_recv" {
+                        crate::builtins::socket_sources::KIND_TCP_BYTES
+                    } else {
+                        crate::builtins::socket_sources::KIND_TCP_LINE
+                    };
+                    let (timeout_seconds, max) =
+                        crate::builtins::socket_sources::parse_source_recv_opts(
+                            name,
+                            eval_args.get(1),
+                            65536,
+                        )?;
+                    // Frame boundaries survive: only tcp_recv (a raw
+                    // byte stream) may slice a queued chunk; ws
+                    // messages and tcp lines are delivered whole.
+                    let max = if name == "tcp_recv" { max } else { usize::MAX };
+                    // One parked recv per source; the guard clears the
+                    // slot when this future completes OR is cancelled
+                    // (a Class C task abort drops it).
+                    let (queue, _park) = {
+                        let mut g = self.globals.borrow_mut();
+                        let guard = g.native_events.park_socket(&h)?;
+                        (g.native_events.queue.clone(), guard)
+                    };
+                    let h_for_err = h.clone();
+                    let next = async move {
+                        if timeout_seconds == 0.0 {
+                            queue.next_socket(&h, expect, max).await
+                        } else {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs_f64(timeout_seconds),
+                                queue.next_socket(&h, expect, max),
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                // Timeout: nil keeps the source usable.
+                                Err(_) => Ok(crate::native_events::SocketNext::Idle),
+                            }
+                        }
+                    };
+                    let out = self.await_with_class_c_yield(next).await??;
+                    return match out {
+                        crate::native_events::SocketNext::Idle => Ok(Value::Nil),
+                        crate::native_events::SocketNext::Frame(rec) => match rec.kind {
+                            "text" | "line" => Ok(Value::String(
+                                String::from_utf8_lossy(&rec.data).into_owned(),
+                            )),
+                            _ => Ok(Value::bytes(rec.data)),
+                        },
+                        crate::native_events::SocketNext::Closed(closed) => {
+                            Err(crate::native_events::refusal(
+                                "SOCKET_CLOSED",
+                                format!("{name}(): source {h_for_err} closed: {closed}"),
+                            ))
                         }
                     }
+                    .map(Some);
+                }
+            }
             Ok(None)
         })
     }
 
     /// Native source waits share one evaluator suspension site.
-    fn eval_native_source<'a>(&'a mut self, name: &'a str, eval_args: &'a [Value]) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
+    fn eval_native_source<'a>(
+        &'a mut self,
+        name: &'a str,
+        eval_args: &'a [Value],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = MixResult<Option<Value>>> + 'a>> {
         Box::pin(async move {
-                    if matches!(name, "fs_watch" | "fs_unwatch" | "fs_wait") {
-                        self.check_capability(name)?;
-                        self.check_builtin_arity(name, eval_args.len())?;
-                        let Some(Value::String(arg)) = eval_args.first() else {
-                            return Err(crate::native_events::refusal("FS_WATCH_ARGUMENT", "path/handle must be a string"));
+            if matches!(name, "fs_watch" | "fs_unwatch" | "fs_wait") {
+                self.check_capability(name)?;
+                self.check_builtin_arity(name, eval_args.len())?;
+                let Some(Value::String(arg)) = eval_args.first() else {
+                    return Err(crate::native_events::refusal(
+                        "FS_WATCH_ARGUMENT",
+                        "path/handle must be a string",
+                    ));
+                };
+                if name == "fs_watch" {
+                    let opts = crate::fs_watch::Options::parse(eval_args.get(1))?;
+                    let h = self.globals.borrow_mut().native_events.watch(arg, opts)?;
+                    return Ok(Some(Value::String(h)));
+                }
+                if name == "fs_unwatch" {
+                    self.globals.borrow_mut().native_events.unwatch(arg)?;
+                    return Ok(Some(Value::Nil));
+                }
+                if self.globals.borrow().serve_runtime.is_some()
+                    || self.globals.borrow().native_events.pumping()
+                {
+                    return Err(crate::native_events::refusal(
+                        "FS_WAIT_SERVE",
+                        "fs_wait is unavailable in serve mode; use on fs.changed",
+                    ));
+                }
+                let queue = self.globals.borrow().native_events.queue.clone();
+                let ev = self
+                    .await_with_class_c_yield(queue.next(Some(arg)))
+                    .await??;
+                return Ok(Some(parse_event_args(&ev.body)));
+            }
+            if matches!(
+                name,
+                "net_watch"
+                    | "net_unwatch"
+                    | "net_state"
+                    | "audio_watch"
+                    | "audio_unwatch"
+                    | "audio_state"
+            ) {
+                self.check_capability(name)?;
+                self.check_builtin_arity(name, eval_args.len())?;
+                return match name {
+                    "net_watch" => {
+                        let groups = crate::desktop_events::net_groups(eval_args.first())?;
+                        let h = self.globals.borrow_mut().native_events.net_watch(groups)?;
+                        Ok(Value::String(h))
+                    }
+                    "audio_watch" => {
+                        let opts =
+                            crate::desktop_events::AudioOptions::parse(eval_args.first(), true)?;
+                        let h = self.globals.borrow_mut().native_events.audio_watch(opts)?;
+                        Ok(Value::String(h))
+                    }
+                    "net_unwatch" | "audio_unwatch" => {
+                        let family = if name == "net_unwatch" {
+                            "net"
+                        } else {
+                            "audio"
                         };
-                        if name == "fs_watch" {
-                            let opts = crate::fs_watch::Options::parse(eval_args.get(1))?;
-                            let h = self.globals.borrow_mut().native_events.watch(arg, opts)?;
-                            return Ok(Some(Value::String(h)));
-                        }
-                        if name == "fs_unwatch" {
-                            self.globals.borrow_mut().native_events.unwatch(arg)?;
-                            return Ok(Some(Value::Nil));
-                        }
-                        if self.globals.borrow().serve_runtime.is_some()
-                            || self.globals.borrow().native_events.pumping() {
-                            return Err(crate::native_events::refusal("FS_WAIT_SERVE", "fs_wait is unavailable in serve mode; use on fs.changed"));
-                        }
-                        let queue = self.globals.borrow().native_events.queue.clone();
-                        let ev = self.await_with_class_c_yield(queue.next(Some(arg))).await??;
-                        return Ok(Some(parse_event_args(&ev.body)));
+                        let Some(Value::String(h)) = eval_args.first() else {
+                            return Err(crate::native_events::refusal(
+                                &format!("{}_WATCH_ARGUMENT", family.to_uppercase()),
+                                "handle must be a string",
+                            ));
+                        };
+                        self.globals
+                            .borrow_mut()
+                            .native_events
+                            .source_unwatch(family, h)?;
+                        Ok(Value::Nil)
                     }
-                    if matches!(name, "net_watch" | "net_unwatch" | "net_state"
-                        | "audio_watch" | "audio_unwatch" | "audio_state") {
-                        self.check_capability(name)?;
-                        self.check_builtin_arity(name, eval_args.len())?;
-                        return match name {
-                            "net_watch" => {
-                                let groups = crate::desktop_events::net_groups(eval_args.first())?;
-                                let h = self.globals.borrow_mut().native_events.net_watch(groups)?;
-                                Ok(Value::String(h))
-                            }
-                            "audio_watch" => {
-                                let opts = crate::desktop_events::AudioOptions::parse(eval_args.first(), true)?;
-                                let h = self.globals.borrow_mut().native_events.audio_watch(opts)?;
-                                Ok(Value::String(h))
-                            }
-                            "net_unwatch" | "audio_unwatch" => {
-                                let family = if name == "net_unwatch" { "net" } else { "audio" };
-                                let Some(Value::String(h)) = eval_args.first() else {
-                                    return Err(crate::native_events::refusal(
-                                        &format!("{}_WATCH_ARGUMENT", family.to_uppercase()),
-                                        "handle must be a string",
-                                    ));
-                                };
-                                self.globals.borrow_mut().native_events.source_unwatch(family, h)?;
-                                Ok(Value::Nil)
-                            }
-                            "net_state" => Ok(crate::native_events::json_value(crate::desktop_events::net_state()?)),
-                            _ => {
-                                let opts = crate::desktop_events::AudioOptions::parse(eval_args.first(), false)?;
-                                Ok(crate::native_events::json_value(crate::desktop_events::audio_state(&opts)?))
-                            }
-                        }.map(Some);
+                    "net_state" => Ok(crate::native_events::json_value(
+                        crate::desktop_events::net_state()?,
+                    )),
+                    _ => {
+                        let opts =
+                            crate::desktop_events::AudioOptions::parse(eval_args.first(), false)?;
+                        Ok(crate::native_events::json_value(
+                            crate::desktop_events::audio_state(&opts)?,
+                        ))
                     }
+                }
+                .map(Some);
+            }
             self.eval_socket(name, eval_args).await
         })
     }
@@ -13086,8 +13258,7 @@ impl Evaluator {
             // refuses would otherwise recurse `eval_expr` unboundedly and
             // overflow the native stack (a serve citizen on a 2 MiB runtime
             // thread SIGSEGVs). The guard decrements on every exit path.
-            let _depth_guard =
-                unsafe { ExprDepthGuard::enter(&mut self.ctx.expr_depth) };
+            let _depth_guard = unsafe { ExprDepthGuard::enter(&mut self.ctx.expr_depth) };
             if self.ctx.expr_depth > MAX_EXPR_DEPTH {
                 return Err(MixError::structured(
                     "NESTING_LIMIT",
@@ -13316,23 +13487,36 @@ impl Evaluator {
                     if name == "task_start" {
                         self.check_capability(name)?;
                         self.check_builtin_arity(name, eval_args.len())?;
-                        let [Value::String(command), Value::String(body)] = eval_args.as_slice() else {
-                            return Err(crate::native_events::refusal("TASK_ARGUMENT", "task_start expects command and body strings"));
+                        let [Value::String(command), Value::String(body)] = eval_args.as_slice()
+                        else {
+                            return Err(crate::native_events::refusal(
+                                "TASK_ARGUMENT",
+                                "task_start expects command and body strings",
+                            ));
                         };
                         // Only Class C chains can be started from inside a
                         // dispatch: a synchronous chain would reacquire the
                         // writer lock held by its caller. Plain entries in a
                         // mixed chain still run with their own writer permit.
-                        let asynchronous = self.globals.borrow().handlers.get(command)
+                        let asynchronous = self
+                            .globals
+                            .borrow()
+                            .handlers
+                            .get(command)
                             .is_some_and(|entries| entries.iter().any(|entry| entry.is_async));
                         if !asynchronous {
-                            return Err(crate::native_events::refusal("TASK_HANDLER", "task_start requires a registered async handler"));
+                            return Err(crate::native_events::refusal(
+                                "TASK_HANDLER",
+                                "task_start requires a registered async handler",
+                            ));
                         }
                         self.dispatch_event(IncomingEvent {
+                            generation: 0,
                             command: command.clone(),
                             headers: BTreeMap::new(),
                             body: body.clone(),
-                        }).await?;
+                        })
+                        .await?;
                         return Ok(Value::Nil);
                     }
                     if matches!(name.as_str(), "dir_open" | "dir_rename" | "dir_close") {
@@ -13345,7 +13529,11 @@ impl Evaluator {
                                 Ok(Value::Number(f64::from(handle)))
                             }
                             "dir_rename" => {
-                                self.globals.borrow_mut().dir_handles.rename(&eval_args[0], &eval_args[1], &eval_args[2])?;
+                                self.globals.borrow_mut().dir_handles.rename(
+                                    &eval_args[0],
+                                    &eval_args[1],
+                                    &eval_args[2],
+                                )?;
                                 Ok(Value::Nil)
                             }
                             _ => {
@@ -13354,25 +13542,56 @@ impl Evaluator {
                             }
                         };
                     }
-                    if matches!(name.as_str(), "fs_watch" | "fs_unwatch" | "fs_wait" | "net_watch" | "net_unwatch" | "net_state" | "audio_watch" | "audio_unwatch" | "audio_state" | "ws_on" | "tcp_on" | "ws_unwatch" | "tcp_unwatch" | "ws_recv" | "tcp_recv" | "tcp_recv_line" | "ws_send" | "tcp_send")
-                        && let Some(result) = self.eval_native_source(name, &eval_args).await? {
+                    if matches!(
+                        name.as_str(),
+                        "fs_watch"
+                            | "fs_unwatch"
+                            | "fs_wait"
+                            | "net_watch"
+                            | "net_unwatch"
+                            | "net_state"
+                            | "audio_watch"
+                            | "audio_unwatch"
+                            | "audio_state"
+                            | "ws_on"
+                            | "tcp_on"
+                            | "ws_unwatch"
+                            | "tcp_unwatch"
+                            | "ws_recv"
+                            | "tcp_recv"
+                            | "tcp_recv_line"
+                            | "ws_send"
+                            | "tcp_send"
+                    ) && let Some(result) = self.eval_native_source(name, &eval_args).await?
+                    {
                         return Ok(result);
                     }
                     if name == "spawn" && matches!(eval_args.first(), Some(Value::List(_))) {
                         self.check_capability(name)?;
-                        return crate::builtins::spawn_argv_native(eval_args, Some(&mut self.globals.borrow_mut().native_events))
-                            .map(|v| v.unwrap_or(Value::Nil));
+                        return crate::builtins::spawn_argv_native(
+                            eval_args,
+                            Some(&mut self.globals.borrow_mut().native_events),
+                        )
+                        .map(|v| v.unwrap_or(Value::Nil));
                     }
                     if matches!(name.as_str(), "kill" | "process_alive") && !eval_args.is_empty() {
                         self.check_capability(name)?;
                         let pid = crate::builtins::pid_int_arg(name, "pid", &eval_args[0])?;
-                        let signal = if name == "process_alive" { 0 } else {
+                        let signal = if name == "process_alive" {
+                            0
+                        } else {
                             match eval_args.get(1) {
                                 Some(v) => crate::builtins::pid_int_arg(name, "signal", v)?,
                                 None => 15,
                             }
                         };
-                        if pid > 0 && let Some(ok) = self.globals.borrow().native_events.signal_child(pid as u32, signal) {
+                        if pid > 0
+                            && let Some(ok) = self
+                                .globals
+                                .borrow()
+                                .native_events
+                                .signal_child(pid as u32, signal)
+                        {
                             return Ok(Value::Bool(ok));
                         }
                     }
@@ -14414,10 +14633,7 @@ impl Evaluator {
                         // port_exists gate above (0.89.0). Gated BEFORE
                         // the argument validation below so a denied
                         // caller learns nothing about topic state.
-                        self.check_capability_class(
-                            crate::builtins::CapabilityClass::Bus,
-                            name,
-                        )?;
+                        self.check_capability_class(crate::builtins::CapabilityClass::Bus, name)?;
                         // Validate the argument before consulting the handler:
                         // an empty topic is a caller bug regardless of whether
                         // Bus is wired, and validating first keeps the error
@@ -14865,10 +15081,10 @@ impl Evaluator {
                     // script, the AI helpers (ai, ai_diagnose, context)
                     // shadowed module exports; a map member holding a
                     // Function now wins there).
-                    let serve_extensions_first =
-                        self.globals.borrow().serve_runtime.is_some();
+                    let serve_extensions_first = self.globals.borrow().serve_runtime.is_some();
                     if serve_extensions_first
-                        && let Some(ext_fn) = { self.globals.borrow().extensions.get(field).cloned() }
+                        && let Some(ext_fn) =
+                            { self.globals.borrow().extensions.get(field).cloned() }
                     {
                         let fut = ext_fn(ufcs_args);
                         return self.await_with_class_c_yield(fut).await?;
@@ -14897,7 +15113,8 @@ impl Evaluator {
                     // before user functions: the AI helpers stay
                     // reachable, they just no longer shadow exports.
                     if !serve_extensions_first
-                        && let Some(ext_fn) = { self.globals.borrow().extensions.get(field).cloned() }
+                        && let Some(ext_fn) =
+                            { self.globals.borrow().extensions.get(field).cloned() }
                     {
                         let fut = ext_fn(ufcs_args);
                         return self.await_with_class_c_yield(fut).await?;
@@ -14918,11 +15135,9 @@ impl Evaluator {
                     // 5. Enriched undefined error — with a nearest-name
                     // suggestion, same as the plain call sites (a method typo
                     // `$obj.lenght()` is exactly the case this helps).
-                    let hint = crate::analyzer::undefined_function_hint(
-                        field,
-                        &self.function_names(),
-                    )
-                    .unwrap_or_default();
+                    let hint =
+                        crate::analyzer::undefined_function_hint(field, &self.function_names())
+                            .unwrap_or_default();
                     Err(MixError::structured(
                         "FUNCTION_UNDEFINED",
                         format!(
@@ -16673,9 +16888,9 @@ impl Evaluator {
         let topic = match args.first() {
             Some(Value::String(s)) if !s.is_empty() => s.clone(),
             _ => {
-                return Err(self.runtime_err(
-                    "publish: topic (first argument) must be a non-empty string",
-                ));
+                return Err(
+                    self.runtime_err("publish: topic (first argument) must be a non-empty string")
+                );
             }
         };
         if topic.contains('\n') || topic.contains('\r') {
@@ -18094,7 +18309,9 @@ fn add_operand_error(left: &Value, right: &Value) -> MixError {
             "it does not join lists. Use concat(a, b) to join, push(list, value) to append"
         }
         (Value::Map(_), Value::Map(_)) => "it does not merge maps. Use merge(a, b)",
-        _ => "`+` takes numbers or strings. Use `..` to build text, concat(a, b) for lists, merge(a, b) for maps",
+        _ => {
+            "`+` takes numbers or strings. Use `..` to build text, concat(a, b) for lists, merge(a, b) for maps"
+        }
     };
     MixError::structured(
         "TYPE_ERROR",
@@ -18399,6 +18616,7 @@ mod invocation_reply_tests {
     /// tests can assert exactly how many wire replies actually fired
     /// (which is the load-bearing property reply-once guards).
     struct RecordingReplyHandler {
+        generations: RefCell<Vec<(u64, bool)>>,
         /// One entry per `reply()` invocation.
         calls: RefCell<Vec<RecordedReply>>,
         /// When `true`, `reply()` returns an error before recording the
@@ -18411,6 +18629,7 @@ mod invocation_reply_tests {
     impl RecordingReplyHandler {
         fn new() -> Rc<Self> {
             Rc::new(Self {
+                generations: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
                 fail: Cell::new(false),
             })
@@ -18418,6 +18637,32 @@ mod invocation_reply_tests {
     }
 
     impl BusHandler for RecordingReplyHandler {
+        fn reply_at<'a>(
+            &'a self,
+            generation: u64,
+            to: &'a str,
+            command: &'a str,
+            id: Option<&'a str>,
+            rc: u8,
+            body: &'a str,
+        ) -> BusFuture<'a, MixResult<()>> {
+            self.generations.borrow_mut().push((generation, false));
+            self.reply(to, command, id, rc, body)
+        }
+
+        fn reply_shutdown_synth_at<'a>(
+            &'a self,
+            generation: u64,
+            to: &'a str,
+            command: &'a str,
+            id: Option<&'a str>,
+            rc: u8,
+            body: &'a str,
+        ) -> BusFuture<'a, MixResult<()>> {
+            self.generations.borrow_mut().push((generation, true));
+            self.reply(to, command, id, rc, body)
+        }
+
         fn send<'a>(
             &'a self,
             _target: &'a str,
@@ -18487,6 +18732,7 @@ mod invocation_reply_tests {
     fn leaked_registered_handle(handler: Option<Rc<dyn BusHandler>>) -> Rc<InvocationReplyHandle> {
         let registry = Rc::new(InvocationReplyRegistry::new());
         let (handle, registration) = registry.register(
+            0,
             "caller".to_string(),
             "test.cmd".to_string(),
             Some("corr-1".to_string()),
@@ -18527,6 +18773,35 @@ mod invocation_reply_tests {
         assert_eq!(calls[0].body, "ok", "first call's body preserved");
         assert!(handle.is_answered());
         assert!(!handle.is_unanswered_request());
+    }
+
+    #[test]
+    fn invocation_and_shutdown_replies_retain_delivery_generation() {
+        let handler = RecordingReplyHandler::new();
+        let registry = Rc::new(InvocationReplyRegistry::new());
+        let (old, old_registration) = registry.register(
+            7,
+            "caller".into(),
+            "old.request".into(),
+            Some("1".into()),
+            true,
+            Some(handler.clone()),
+        );
+        let (new, new_registration) = registry.register(
+            9,
+            "caller".into(),
+            "new.request".into(),
+            Some("1".into()),
+            true,
+            Some(handler.clone()),
+        );
+        block_on(async {
+            new.reply_once(0, "new").await.unwrap();
+            old.synthesize_unanswered(20, "shutdown").await.unwrap();
+        });
+        assert_eq!(*handler.generations.borrow(), [(9, false), (7, true)]);
+        old_registration.complete();
+        new_registration.complete();
     }
 
     #[test]
@@ -18586,6 +18861,7 @@ mod invocation_reply_tests {
     fn is_unanswered_request_false_for_non_request() {
         let registry = Rc::new(InvocationReplyRegistry::new());
         let (handle, _guard) = registry.register(
+            0,
             String::new(),
             "topic.broadcast".to_string(),
             None,
@@ -18602,8 +18878,10 @@ mod invocation_reply_tests {
     fn registry_assigns_monotonic_ids_and_snapshots_live_handles() {
         let registry = Rc::new(InvocationReplyRegistry::new());
         assert_eq!(registry.len(), 0);
-        let (_h1, g1) = registry.register("a".to_string(), "cmd.one".to_string(), None, true, None);
-        let (_h2, g2) = registry.register("b".to_string(), "cmd.two".to_string(), None, true, None);
+        let (_h1, g1) =
+            registry.register(0, "a".to_string(), "cmd.one".to_string(), None, true, None);
+        let (_h2, g2) =
+            registry.register(0, "b".to_string(), "cmd.two".to_string(), None, true, None);
         assert_eq!(registry.len(), 2);
         let snap = registry.snapshot();
         assert_eq!(snap.len(), 2);
@@ -18632,7 +18910,7 @@ mod invocation_reply_tests {
     fn registry_holds_handle_alive_past_complete() {
         let registry = Rc::new(InvocationReplyRegistry::new());
         let (handle, registration) =
-            registry.register("a".to_string(), "cmd".to_string(), None, true, None);
+            registry.register(0, "a".to_string(), "cmd".to_string(), None, true, None);
         // The Rc<InvocationReplyHandle> the caller stores in
         // `Evaluator::current_reply` must keep working even after
         // the registration is gone — covers the corner where a late
@@ -18653,6 +18931,7 @@ mod invocation_reply_tests {
         // §3.4 reply for the cancelled request.
         let registry = Rc::new(InvocationReplyRegistry::new());
         let (handle, registration) = registry.register(
+            0,
             "stuck-caller".to_string(),
             "stuck.cmd".to_string(),
             Some("corr-x".to_string()),
@@ -18729,6 +19008,7 @@ mod invocation_reply_tests {
         // caller to receive it.
         let registry = Rc::new(InvocationReplyRegistry::new());
         let (handle, registration) = registry.register(
+            0,
             String::new(),
             "topic.delivery".to_string(),
             None,
@@ -18809,6 +19089,7 @@ mod event_args_tests {
     #[test]
     fn incoming_event_exposes_args_alongside_raw_body() {
         let ev = IncomingEvent {
+            generation: 0,
             command: "probe.echo".to_string(),
             headers: BTreeMap::new(),
             body: r#"{"_0":"hi"}"#.to_string(),
@@ -18841,6 +19122,7 @@ mod event_args_tests {
     fn incoming_event_text_body_has_nil_args() {
         // A plain-text body: args is nil, body carries the raw text.
         let ev = IncomingEvent {
+            generation: 0,
             command: "probe.echo".to_string(),
             headers: BTreeMap::new(),
             body: "raw text here".to_string(),
@@ -18864,7 +19146,9 @@ mod local_task_tests {
 
     fn run(test: impl std::future::Future<Output = ()>) {
         let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time().build().unwrap();
+            .enable_time()
+            .build()
+            .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, test);
     }
 
@@ -18873,7 +19157,9 @@ mod local_task_tests {
             while eval.class_c_task_count() != 0 {
                 tokio::task::yield_now().await;
             }
-        }).await.expect("local tasks complete without a broker");
+        })
+        .await
+        .expect("local tasks complete without a broker");
     }
 
     #[test]
@@ -18881,7 +19167,8 @@ mod local_task_tests {
         run(async {
             let mut eval = Evaluator::new();
             // No BusHandler: all scheduling and deadlines must stay local.
-            eval.execute_script_source(r#"
+            eval.execute_script_source(
+                r#"
                 $state = {a:{enabled:true,pid:nil}, b:{enabled:true,pid:nil}}
                 on restart async
                   sleep(0.01)
@@ -18902,27 +19189,41 @@ mod local_task_tests {
                   task_start("restart", "{\"name\":\"a\",\"pid\":101}")
                   task_start("restart", "{\"name\":\"b\",\"pid\":102}")
                 end
-            "#).await.unwrap();
+            "#,
+            )
+            .await
+            .unwrap();
             let event = |command: &str| IncomingEvent {
-                command: command.into(), headers: BTreeMap::new(), body: "{}".into(),
+                generation: 0,
+                command: command.into(),
+                headers: BTreeMap::new(),
+                body: "{}".into(),
             };
             eval.dispatch_event(event("retire")).await.unwrap();
             settle(&eval).await;
-            eval.execute_script_source(r#"
+            eval.execute_script_source(
+                r#"
                 if $state.a.pid != 101 or $state.b.pid != 102 then
                   raise("TEST", "lost a concurrent retirement")
                 end
                 $state.a.pid = nil
                 task_start("restart", "{\"name\":\"a\",\"pid\":103}")
-            "#).await.unwrap();
+            "#,
+            )
+            .await
+            .unwrap();
             tokio::task::yield_now().await;
             eval.dispatch_event(event("disable")).await.unwrap();
             settle(&eval).await;
-            eval.execute_script_source(r#"
+            eval.execute_script_source(
+                r#"
                 if $state.a.enabled or $state.a.pid != nil or $state.b.pid != 102 then
                   raise("TEST", "restart overwrote disable or sibling")
                 end
-            "#).await.unwrap();
+            "#,
+            )
+            .await
+            .unwrap();
         });
     }
 
@@ -18930,13 +19231,25 @@ mod local_task_tests {
     fn local_task_requires_async_handler_and_is_shutdown_visible() {
         run(async {
             let mut eval = Evaluator::new();
-            eval.execute_script_source("on plain\nend\non clock async\n sleep(3600)\nend").await.unwrap();
-            for source in ["task_start(\"plain\", \"{}\")", "task_start(\"absent\", \"{}\")", "task_start(1, \"{}\")"] {
-                assert!(eval.execute_script_source(source).await.is_err(), "{source}");
+            eval.execute_script_source("on plain\nend\non clock async\n sleep(3600)\nend")
+                .await
+                .unwrap();
+            for source in [
+                "task_start(\"plain\", \"{}\")",
+                "task_start(\"absent\", \"{}\")",
+                "task_start(1, \"{}\")",
+            ] {
+                assert!(
+                    eval.execute_script_source(source).await.is_err(),
+                    "{source}"
+                );
             }
-            eval.execute_script_source("task_start(\"clock\", \"{}\")").await.unwrap();
+            eval.execute_script_source("task_start(\"clock\", \"{}\")")
+                .await
+                .unwrap();
             assert_eq!(eval.class_c_task_count(), 1);
-            eval.drain_class_c_for_shutdown(std::time::Duration::ZERO, false).await;
+            eval.drain_class_c_for_shutdown(std::time::Duration::ZERO, false)
+                .await;
             assert_eq!(eval.class_c_task_count(), 0);
         });
     }

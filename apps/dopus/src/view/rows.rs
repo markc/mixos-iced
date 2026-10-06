@@ -420,8 +420,6 @@ impl<'a> FileList<'a> {
             wrapping: atext::Wrapping::None,
             ellipsis: iced::advanced::text::Ellipsis::None,
             hint_factor: None,
-            ellipsis: iced::advanced::text::Ellipsis::None,
-            hint_factor: None,
         });
         st.row_h = sample
             .min_bounds()
@@ -443,8 +441,6 @@ impl<'a> FileList<'a> {
             align_y: alignment::Vertical::Top,
             shaping: atext::Shaping::Advanced,
             wrapping: atext::Wrapping::None,
-            ellipsis: iced::advanced::text::Ellipsis::None,
-            hint_factor: None,
             ellipsis: iced::advanced::text::Ellipsis::None,
             hint_factor: None,
         })

@@ -155,7 +155,11 @@ impl Queue {
     }
     #[cfg(all(test, feature = "ws"))]
     pub(crate) fn socket_idle_for_test(&self, handle: &str) -> bool {
-        self.pending.lock().unwrap().sockets.get(handle)
+        self.pending
+            .lock()
+            .unwrap()
+            .sockets
+            .get(handle)
             .is_some_and(|s| s.frames.is_empty() && s.closed.is_none())
     }
     #[cfg(target_os = "linux")]
@@ -263,7 +267,10 @@ impl Queue {
         {
             return false;
         }
-        let s = p.sockets.get_mut(handle).expect("socket slot checked above");
+        let s = p
+            .sockets
+            .get_mut(handle)
+            .expect("socket slot checked above");
         s.bytes += len;
         s.frames.push_back(record);
         p.socket_bytes += len;
@@ -424,7 +431,8 @@ impl Queue {
         }
         let changes: Vec<_> = std::mem::take(&mut s.changes).into_values().collect();
         let overflow = std::mem::take(&mut s.overflow);
-        let mut body = serde_json::json!({"watch": handle, "changes": changes, "overflow": overflow});
+        let mut body =
+            serde_json::json!({"watch": handle, "changes": changes, "overflow": overflow});
         if let Some(closed) = s.closed.take() {
             body["closed"] = closed;
         }
@@ -564,6 +572,7 @@ impl Queue {
 
 pub(crate) fn event(command: &str, body: serde_json::Value) -> IncomingEvent {
     IncomingEvent {
+        generation: 0,
         command: command.into(),
         headers: BTreeMap::new(),
         body: body.to_string(),
@@ -858,9 +867,14 @@ impl NativeEvents {
     pub fn ws_on(&mut self, client_id: u64, command: String) -> MixResult<String> {
         self.ensure_open()?;
         self.check_socket_limit()?;
-        self.socket_sub("ws", crate::builtins::socket_sources::KIND_WS, command, |queue, id, command| {
-            crate::builtins::socket_sources::subscribe_ws(queue, id, command, client_id)
-        })
+        self.socket_sub(
+            "ws",
+            crate::builtins::socket_sources::KIND_WS,
+            command,
+            |queue, id, command| {
+                crate::builtins::socket_sources::subscribe_ws(queue, id, command, client_id)
+            },
+        )
     }
 
     /// `tcp_on`: move a tcp_connect handle into a subscription reader.
@@ -1033,7 +1047,14 @@ pub(crate) struct ParkGuard {
 #[cfg(feature = "ws")]
 impl Drop for ParkGuard {
     fn drop(&mut self) {
-        if let Some(s) = self.queue.pending.lock().unwrap().sockets.get_mut(&self.handle) {
+        if let Some(s) = self
+            .queue
+            .pending
+            .lock()
+            .unwrap()
+            .sockets
+            .get_mut(&self.handle)
+        {
             s.parked = false;
         }
     }
@@ -1265,7 +1286,11 @@ mod tests {
         with_source(&q, "net:1", "net.changed");
         with_source(&q, "audio:2", "audio.changed");
         q.source("net:1", vec![net(3, true)], false);
-        q.source("audio:2", vec![("sink#1".into(), serde_json::json!({}))], false);
+        q.source(
+            "audio:2",
+            vec![("sink#1".into(), serde_json::json!({}))],
+            false,
+        );
         let audio_only = Families {
             audio: true,
             ..Default::default()
@@ -1312,7 +1337,11 @@ mod tests {
         let waker = Waker::from(wakes.clone());
         let mut cx = Context::from_waker(&waker);
         assert!(wait.as_mut().poll(&mut cx).is_pending());
-        assert_eq!(wakes.0.load(Ordering::Relaxed), 0, "idle source schedules no work");
+        assert_eq!(
+            wakes.0.load(Ordering::Relaxed),
+            0,
+            "idle source schedules no work"
+        );
         // NativeEvents implements Drop, so no struct-update construction.
         let mut registry = NativeEvents::default();
         registry.queue = q.clone();
@@ -1332,9 +1361,7 @@ mod tests {
         let err = r.source_unwatch("audio", "audio:1").unwrap_err();
         assert!(matches!(err, MixError::Structured(info) if info.code == "AUDIO_WATCH_HANDLE"));
         r.close();
-        let err = r
-            .net_watch(crate::desktop_events::RTMGRP_LINK)
-            .unwrap_err();
+        let err = r.net_watch(crate::desktop_events::RTMGRP_LINK).unwrap_err();
         assert!(matches!(err, MixError::Structured(info) if info.code == "NATIVE_CLOSED"));
     }
 
@@ -1354,9 +1381,7 @@ mod tests {
         for _ in 0..crate::desktop_events::MAX_SOURCES {
             handles.push(r.net_watch(crate::desktop_events::RTMGRP_LINK).unwrap());
         }
-        let err = r
-            .net_watch(crate::desktop_events::RTMGRP_LINK)
-            .unwrap_err();
+        let err = r.net_watch(crate::desktop_events::RTMGRP_LINK).unwrap_err();
         assert!(matches!(err, MixError::Structured(info) if info.code == "NET_WATCH_LIMIT"));
         // close() cancels every worker (Drop joins) and retires the slots.
         r.close();

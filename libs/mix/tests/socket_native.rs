@@ -67,6 +67,7 @@ impl BusHandler for Bus {
 
 fn event(command: &str) -> IncomingEvent {
     IncomingEvent {
+        generation: 0,
         command: command.into(),
         body: "{}".into(),
         headers: BTreeMap::new(),

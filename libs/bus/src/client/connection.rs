@@ -167,6 +167,19 @@ impl Connection {
             .map_err(ClientError::from_native)
     }
 
+    pub async fn send_with_headers(
+        &self,
+        to: &str,
+        command: &str,
+        headers: &BTreeMap<String, String>,
+        body: &str,
+    ) -> Result<(), ClientError> {
+        self.inner
+            .send_with_headers(to, command, headers, body)
+            .await
+            .map_err(ClientError::from_native)
+    }
+
     pub async fn respond_parts(
         &self,
         to: &str,

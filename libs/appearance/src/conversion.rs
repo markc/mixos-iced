@@ -177,10 +177,7 @@ mod tests {
             tokens.palette.ring
         );
         assert_eq!(
-            tokens
-                .palette
-                .text_input(text_input::Status::Disabled)
-                .value,
+            tokens.text_input(text_input::Status::Disabled).value,
             tokens.palette.muted_text
         );
         assert_eq!(

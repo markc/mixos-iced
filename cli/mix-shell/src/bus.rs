@@ -775,6 +775,7 @@ impl BusHandler for MixBusHandler {
 
             match result {
                 Some(cmd) => Some(IncomingEvent {
+                    generation: cmd.generation,
                     command: cmd.command,
                     headers: cmd.headers,
                     body: cmd.body,
@@ -1132,6 +1133,7 @@ impl MixServeHandler {
             })
             .await;
         IncomingEvent {
+            generation: 0,
             command: "bus.connected".into(),
             headers: BTreeMap::new(),
             body: serde_json::json!({"generation": generation}).to_string(),
@@ -1365,6 +1367,7 @@ impl BusHandler for MixServeHandler {
 
             match result {
                 Some(cmd) => Some(IncomingEvent {
+                    generation: cmd.generation,
                     command: cmd.command,
                     headers: cmd.headers,
                     body: cmd.body,
@@ -1442,8 +1445,9 @@ impl BusHandler for MixServeHandler {
         })
     }
 
-    fn reply<'a>(
+    fn reply_at<'a>(
         &'a self,
+        generation: u64,
         to: &'a str,
         command: &'a str,
         id: Option<&'a str>,
@@ -1457,7 +1461,7 @@ impl BusHandler for MixServeHandler {
             // fast with the typed error surfaced to the script — no
             // queue (§3.3); the script decides, never a silent drop.
             self.supervised
-                .respond_parts(to, command, id, rc, body)
+                .respond_parts(generation, to, command, id, rc, body)
                 .await
                 .map_err(|e| mix::error::MixError::RuntimeError {
                     msg: format!("reply failed: {e}"),
@@ -1466,8 +1470,9 @@ impl BusHandler for MixServeHandler {
         })
     }
 
-    fn reply_shutdown_synth<'a>(
+    fn reply_shutdown_synth_at<'a>(
         &'a self,
+        generation: u64,
         to: &'a str,
         command: &'a str,
         id: Option<&'a str>,
@@ -1487,7 +1492,7 @@ impl BusHandler for MixServeHandler {
             // and [`SupervisedClient::respond_parts_shutdown_synth`]
             // for the gate-bypass scope rationale.
             self.supervised
-                .respond_parts_shutdown_synth(to, command, id, rc, body)
+                .respond_parts_shutdown_synth(generation, to, command, id, rc, body)
                 .await
                 .map_err(|e| mix::error::MixError::RuntimeError {
                     msg: format!("shutdown-synth reply failed: {e}"),
