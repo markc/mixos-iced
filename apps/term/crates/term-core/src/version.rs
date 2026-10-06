@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The `--version` contract, shared by every terminal frontend.
+//!
+//! **Mark's contract (2026-09-21): `--version` does nothing except report the
+//! version and the build hash, even if the program is already running.**
+//!
+//! Three things follow, and each one is a bug that existed before this:
+//!
+//! - It is answered from `main()`'s first statement, before the inherited-fd
+//!   quarantine, the config read, the Bus connection and the window. Nothing
+//!   it prints can depend on startup succeeding.
+//! - It needs no display. `bterm --version` over ssh used to die with
+//!   `term requires a native Wayland session`, because the Wayland check came
+//!   first.
+//! - It takes no name. A running frontend already owns the Bus name it serves
+//!   under, so anything that registered — or refused to start because it could
+//!   not — would make a second `--version` lie or fail. This path registers
+//!   nothing, so a second copy is always truthful.
+//!
+//! The hash is not decoration: a semver alone cannot tell a stale binary from
+//! a fresh one (the 2026-06-01 stale-binary incident, which is why
+//! `mixos-lib-buildinfo` exists). It lives here rather than in either
+//! frontend so `bterm` and the incoming iced `term` cannot answer differently.
+
+use buildinfo::BuildInfo;
+
+/// Answer a version query, or `None` when `args` is not one.
+///
+/// `args` is the whole argv. `bi` must come from `build_info!()` expanded in
+/// the **binary's** crate — the macro captures the sha of the crate it expands
+/// in, so calling it here would report `term-core`'s provenance for
+/// every frontend.
+///
+/// Unlike `--help` and `--print-config`, which scan the whole argv, a version
+/// query is `argv[1]` only: a terminal forwards the rest of its argv to the
+/// program it runs, and `bterm -e mycmd --version` must run `mycmd`.
+///
+/// The line and JSON shapes are the substrate-wide ones from
+/// `buildinfo::version_request_scoped` (2026-09-25: every mixos
+/// binary answers the same way); only the argv[1] reach is terminal-specific.
+pub fn version_request(args: &[String], bi: BuildInfo) -> Option<String> {
+    buildinfo::version_request_scoped(args, bi, buildinfo::VersionScope::Leading)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info() -> BuildInfo {
+        BuildInfo {
+            pkg: "mixos-bterm",
+            version: "9.9.9",
+            git_sha: "abc1234",
+            git_sha_full: "abc1234000000000000000000000000000000000",
+            git_dirty: false,
+            build_time: "2026-09-21T00:00:00Z",
+        }
+    }
+
+    fn argv(rest: &[&str]) -> Vec<String> {
+        std::iter::once("bterm")
+            .chain(rest.iter().copied())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn reports_version_and_build_hash() {
+        assert_eq!(
+            version_request(&argv(&["--version"]), info()).as_deref(),
+            Some("mixos-bterm 9.9.9 (abc1234, built 2026-09-21T00:00:00Z)")
+        );
+        assert_eq!(
+            version_request(&argv(&["-V"]), info()).as_deref(),
+            Some("mixos-bterm 9.9.9 (abc1234, built 2026-09-21T00:00:00Z)")
+        );
+    }
+
+    #[test]
+    fn a_dirty_build_says_so() {
+        let mut bi = info();
+        bi.git_dirty = true;
+        let line = version_request(&argv(&["--version"]), bi).expect("a request");
+        assert!(line.contains("(abc1234-dirty, built "));
+    }
+
+    #[test]
+    fn json_form_carries_the_full_sha_and_the_component() {
+        let out = version_request(&argv(&["--version", "--json"]), info()).expect("a request");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["component"], "mixos-bterm");
+        assert_eq!(v["git_sha_full"].as_str().unwrap().len(), 40);
+        assert_eq!(v["git_dirty"], false);
+    }
+
+    /// Reach is `argv[1]`, so a version token in the command a terminal is
+    /// asked to RUN is not a version query.
+    #[test]
+    fn a_later_version_token_is_not_a_query() {
+        assert_eq!(version_request(&argv(&[]), info()), None);
+        assert_eq!(
+            version_request(&argv(&["-e", "cmd", "--version"]), info()),
+            None
+        );
+        assert_eq!(version_request(&argv(&["--print-config"]), info()), None);
+    }
+}

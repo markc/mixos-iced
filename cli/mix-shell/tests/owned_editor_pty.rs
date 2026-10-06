@@ -7,7 +7,7 @@
 //! still needs to allow setup plus the real editor fixture durations.
 #![cfg(target_os = "linux")]
 #[allow(dead_code)]
-#[path = "../src/editor/mod.rs"]
+#[path = "../src/editor.rs"]
 mod editor;
 #[allow(dead_code)]
 #[path = "../src/session_state.rs"]

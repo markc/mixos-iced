@@ -141,3 +141,10 @@ winit (iced fork), vendor/winit
 smithay-client-toolkit 0.19.2, VCS c583de8dd5651f8168c6513cd282137c42aae049.
 Copyright the Smithay client toolkit contributors. MIT (vendor/sctk/LICENSE.txt).
 Local dropped-offer ownership change recorded in vendor/sctk/PATCHES.md.
+
+Term imports the frozen terminal source from markc/cosmix at
+e0297242305f3a3c3de09f1ca01e8faa771768da (Mark Constable, MIT).
+The native tiny-skia extension follows the same provenance, within iced (MIT).
+Vendored teletypewriter 0.5.27: Raphael Amorim and Rio contributors, MIT,
+rio revision 932c1a7d9e07b4db5924f7a0dd689e823c3a1442; see its PATCHES.md
+and LICENSE.

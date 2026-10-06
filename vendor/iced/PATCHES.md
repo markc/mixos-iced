@@ -113,3 +113,19 @@ The integration example passes native output scale as f64 to conversion.
 Its two surface configurations use `SurfaceColorSpace::Auto` and presentation
 uses `Queue::present`, matching the wgpu-30 renderer port. Guard: check the
 integration manifest with the pinned native forks and `iced_winit/wayland`.
+
+## Native CPU grid renderer
+
+Ported from the frozen source e0297242305f3a3c3de09f1ca01e8faa771768da.
+The existing tiny-skia crate gains immutable native grid generations and cell
+revision damage, preserving draw order in the image sublayer. Opaque images
+use exact translated pixel copies when scaling and placement permit it;
+translucent, rotated and fractional cases retain the upstream raster path.
+The iced 0.15 text, settings, local clip and shadow handling stay intact.
+No second iced version or raster engine is added.
+
+Guards are the retained grid and raster unit tests, including colour, clip,
+fractional scale, damage lineage, overlay order and forced-fallback equivalence.
+Term adds end-to-end sparse-damage and offscreen pixel comparisons.
+The optional raster-probe counts copies; reference-raster disables the fast
+path for comparative tests. Neither feature is enabled in production.

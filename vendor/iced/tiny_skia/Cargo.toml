@@ -14,6 +14,8 @@ keywords.workspace = true
 workspace = true
 
 [features]
+raster-probe = []
+reference-raster = []
 default = ["x11", "wayland"]
 image = ["iced_graphics/image"]
 svg = ["iced_graphics/svg", "resvg"]

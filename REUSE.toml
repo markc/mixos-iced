@@ -4,6 +4,12 @@
 version = 1
 
 [[annotations]]
+path = "vendor/teletypewriter/**"
+precedence = "override"
+SPDX-FileCopyrightText = "Raphael Amorim and Rio contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = ["**"]
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Mark Constable <mc@mixos.dev>"

@@ -4,7 +4,7 @@
 
 [workspace]
 resolver = "3"
-members = ["libs/*", "services/compd", "services/compd/crates/*", "services/noded", "services/noded/crates/*", "tools/native-gallery", "cli/mix-shell", "apps/term/crates/term-test-broker"]
+members = ["libs/*", "services/compd", "services/compd/crates/*", "services/noded", "services/noded/crates/*", "tools/native-gallery", "cli/mix-shell", "apps/term/crates/*", "apps/term"]
 # The comp policy cores (surfaces, ledger, comp-model, policy, comp-service)
 # keep their own default lints: they do not opt into [workspace.lints].
 exclude = ["vendor"]
@@ -53,6 +53,7 @@ iced_core = { path = "vendor/iced/core", version = "0.15.0-dev" }
 iced_futures = { path = "vendor/iced/futures", version = "0.15.0-dev" }
 iced_graphics = { path = "vendor/iced/graphics", version = "0.15.0-dev", features = ["web-colors"] }
 iced_renderer = { path = "vendor/iced/renderer", version = "0.15.0-dev", default-features = false }
+iced_tiny_skia = { path = "vendor/iced/tiny_skia", version = "0.15.0-dev", default-features = false }
 iced_runtime = { path = "vendor/iced/runtime", version = "0.15.0-dev" }
 # Headless rendering for toolkit's gallery snapshots (dev-dependency only).
 iced_test = { path = "vendor/iced/test", version = "0.15.0-dev" }
@@ -161,3 +162,6 @@ strip = "symbols"
 codegen-units = 16
 inherits = "release"
 lto = false
+
+[patch."https://github.com/raphamorim/rio"]
+teletypewriter = { path = "vendor/teletypewriter" }
