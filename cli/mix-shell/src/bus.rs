@@ -2106,7 +2106,7 @@ mod tests {
         ))))
         .await;
         assert!(
-            std::sync::Arc::ptr_eq(&h.serve_access().await.unwrap(), &lane),
+            std::sync::Arc::ptr_eq(&h.serve_access().await.ok().unwrap(), &lane),
             "anonymous main fallback must still reply and subscribe on the retained lane"
         );
         let sender = NodedClient::connect_anonymous(&broker.url).await.unwrap();
