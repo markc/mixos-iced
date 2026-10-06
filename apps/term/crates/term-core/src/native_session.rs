@@ -2666,12 +2666,12 @@ pub(crate) mod tests {
 
     #[test]
     fn mix_child_bootstrap_proves_end_to_end() {
-        // Separate Cargo workspace: build and run its actual integration target
+        // Build and run Mix's actual integration target in this workspace
         // instead of treating Term's standalone lifecycle tests as Mix evidence.
         // Cargo builds the Mix binary; the fixture also checks its embedded SHA
         // against HEAD. No environment override or installed-binary fallback.
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
+            .join("../../../..")
             .canonicalize()
             .unwrap();
         let mut args: Vec<String> = [
@@ -2680,7 +2680,7 @@ pub(crate) mod tests {
             "--manifest-path",
             "Cargo.toml",
             "-p",
-            "mixos-mix",
+            "mix-shell",
             "--test",
             "native_session_pty",
             "--",

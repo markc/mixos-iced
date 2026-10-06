@@ -176,10 +176,28 @@ async fn two_production_brokers_route_verified_native_clients() {
         );
         assert_eq!(one.unwrap(), json!({"tag":"one"}));
         assert_eq!(two.unwrap(), json!({"tag":"two"}));
+        let drain = async {
+            let delivery = service.recv_shared().await.unwrap();
+            let command = delivery.command();
+            service.client().deregister().await.unwrap();
+            service.client().respond(command, 16,
+                r#"{"error_code":"HANDLER_CANCELLED"}"#).await.unwrap();
+        };
+        let (cancelled, ()) = tokio::join!(
+            first.client().call_typed("echo.beta.bus", "echo.tag", json!({"tag":"shutdown"})),
+            drain,
+        );
+        match cancelled.unwrap() {
+            bus::PortReply::AppError { rc, message } => {
+                assert_eq!(rc, 16);
+                assert!(message.contains("HANDLER_CANCELLED"), "{message}");
+            }
+            reply => panic!("expected shutdown refusal, got {reply:?}"),
+        }
         assert!(first.client().call("echo.unknown.bus", "echo.tag", json!({})).await.is_err());
         assert_eq!(first.client().call("noded", "noded.ping", json!({})).await.unwrap()["pong"], true);
         first.client().deregister().await.unwrap();
         second.client().deregister().await.unwrap();
-        service.client().deregister().await.unwrap();
+        service.client().close().await;
     }).await.expect("native two-process mesh acceptance deadline");
 }

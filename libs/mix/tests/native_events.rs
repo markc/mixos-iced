@@ -159,6 +159,7 @@ async fn serve_atomic_replacement_and_repeated_saves_keep_file_watch_alive() {
     std::fs::write(&file, "initial").unwrap();
     let mut e = watcher(&file, false).await;
     for n in 0..4 {
+        eprintln!("atomic watch replacement {n}");
         let tmp = d.0.join(format!("save-{n}"));
         std::fs::write(&tmp, format!("revision {n}")).unwrap();
         std::fs::rename(&tmp, &file).unwrap();
@@ -174,6 +175,7 @@ async fn serve_atomic_replacement_and_repeated_saves_keep_file_watch_alive() {
         );
     }
     std::fs::write(&file, "close-write").unwrap();
+    eprintln!("atomic watch close-write");
     delivered(&mut e, &file, "modified").await;
     e.close_native_events();
 }

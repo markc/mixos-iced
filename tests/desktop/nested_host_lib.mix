@@ -138,7 +138,8 @@ fn call($service, $verb, $args)
   $body = json_encode($args)
   $script = "$b = " .. json_encode($body) .. "\nsend " .. json_encode($service) ..
     " " .. $verb .. " body=$b timeout=30\nprint($rc)\nprint(json_encode($result))\n"
-  $r = run_argv(["/opt/mixos/bin/mix", "-c", $script], {timeout: 60})
+  $mix = env("MIXOS_TEST_MIX", "/opt/mixos/bin/mix")
+  $r = run_argv([$mix, "-c", $script], {timeout: 60})
   $lines = split(trim($r.stdout), "\n")
   if len($lines) < 2 then
     return {rc: -9, result: trim($r.stdout .. " " .. $r.stderr)}
@@ -200,16 +201,26 @@ fn private_bus($opts)
     exit(2)
   end
   mkdir($dir, {parents: true})
+  -- Native ingress requires traversable socket ancestors. Private data stays
+  -- in separate restricted children; never widen an unrelated directory.
+  print(run_argv_must(["chmod", "0711", $dir]))
+  for each $child in ["etc", "var", "run", "home"]
+    mkdir($dir .. "/" .. $child, {parents:true})
+  end
   $port = random(47000, 47999)
   $conf = $dir .. "/node.conf.mix"
   write_file($conf, json_encode({node: $name, wg_ip: "", mesh: $name .. ".invalid",
-    noded: {port: $port, admission: "off", unix_socket: $dir .. "/bus.sock"}}))
+    noded: {port: $port, admission: "off", unix_socket: $dir .. "/run/noded/bus.sock"}}))
   $log = $dir .. "/noded.log"
   $p = spawn([$noded, "serve", "--listen", "127.0.0.1:" .. to_string($port), "--node", $name, "--no-monitor", "--no-log"],
-    {env: {MIXOS_NODE_CONFIG: $conf, COSMIX_NODE_CONFIG: $conf}, stdout: {file: $log}, stderr: "stdout", detach: true})
+    {clear_env:true, env: {PATH:env("PATH"), USER:env("USER"), HOME:$dir .. "/home",
+      MIXOS_ETC:$dir .. "/etc", MIXOS_VAR:$dir .. "/var", MIXOS_RUN:$dir .. "/run",
+      MIXOS_NODE_CONFIG:$conf}, stdout: {file: $log}, stderr: "stdout", detach: true})
   $url = "ws://127.0.0.1:" .. to_string($port) .. "/ws"
   export MIXOS_NODE_CONFIG=$conf
   export MIXOS_NODED_URL=$url
+  export MIXOS_RUN=$dir .. "/run"
+  export MIXOS_BROKER_ACCOUNT=trim(run_argv_must(["id", "-un"]))
   -- The staged runtime still uses the frozen pre-transplant config names.
   -- Both generations must reach this owned broker, never the host broker.
   export COSMIX_NODE_CONFIG=$conf
@@ -312,8 +323,8 @@ fn start($opts)
       $t = $t + 1
     end
     if not exists($run .. "/session-bus") then
-      print("  WARN: the private session bus never appeared (" .. $run .. "/dbus.log); continuing without one")
-      $dbus_address = ""
+      if _alive($dbus_pid) then kill($dbus_pid, 15) end
+      raise("COMPAT_BUS_START", "Requested private session bus never appeared: " .. $run .. "/dbus.log")
     end
   elif $opts.dbus == true then
     print("  ERROR: compatibility gate requested D-Bus but dbus-daemon is unavailable")
@@ -324,7 +335,7 @@ fn start($opts)
   $hp = spawn([$weston, "--backend=headless", "--renderer=" .. $renderer, "--socket=wl-host",
     "--width=" .. $width, "--height=" .. $height, "--idle-time=0"],
     {env: {XDG_RUNTIME_DIR: $run, DBUS_SESSION_BUS_ADDRESS: nil,
-      DBUS_STARTER_ADDRESS: nil, DBUS_STARTER_BUS_TYPE: nil},
+      DBUS_STARTER_ADDRESS: nil, DBUS_STARTER_BUS_TYPE: nil, DBUS_SYSTEM_BUS_ADDRESS:nil},
       stdout: {file: $host_log}, stderr: "stdout", detach: true})
   $t = 0
   while not exists($run .. "/wl-host") and $t < 50
@@ -367,6 +378,7 @@ fn start($opts)
   $cenv["DBUS_SESSION_BUS_ADDRESS"] = $dbus_address != "" ? $dbus_address : nil
   $cenv["DBUS_STARTER_ADDRESS"] = nil
   $cenv["DBUS_STARTER_BUS_TYPE"] = nil
+  $cenv["DBUS_SYSTEM_BUS_ADDRESS"] = nil
   -- Persistence must stay private even when the caller supplies an env map.
   $cenv["MIXOS_VAR"] = $run .. "/var"
   $argv = [$bin, "--nested", "--socket", $socket, "--bus-service", $service, "--config-file=" .. $opts["config"]]

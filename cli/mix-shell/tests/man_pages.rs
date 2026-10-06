@@ -31,7 +31,7 @@ use std::process::Command;
 
 fn man_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../docs/mix")
+        .join("share/man")
         .canonicalize()
         .expect("docs/mix must exist — it is the manual mix man reads")
 }

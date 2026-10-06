@@ -1531,10 +1531,10 @@ mod tests {
     /// A replaced binary resolves to the REPLACEMENT, not to a derived install.
     #[test]
     fn a_replaced_binary_runs_the_file_that_replaced_it() {
-        let deleted = std::path::PathBuf::from("/opt/mixos/bin/mix (deleted)");
+        let deleted = std::path::PathBuf::from("/opt/example-toolkit/bin/mix (deleted)");
         assert_eq!(
             interpreter_from(Ok(deleted)),
-            std::path::PathBuf::from("/opt/mixos/bin/mix"),
+            std::path::PathBuf::from("/opt/example-toolkit/bin/mix"),
             "the marker must be stripped, naming what the deploy wrote"
         );
         // The specific wrong answer this guards: a derived install path. With
@@ -1544,7 +1544,7 @@ mod tests {
         let derived =
             crate::paths::mixos_path(crate::paths::Dir::Bin).join("mix");
         assert_ne!(
-            interpreter_from(Ok(std::path::PathBuf::from("/opt/mixos/bin/mix (deleted)"))),
+            interpreter_from(Ok(std::path::PathBuf::from("/opt/example-toolkit/bin/mix (deleted)"))),
             derived,
             "a replaced binary must not fall back to a derived install path"
         );

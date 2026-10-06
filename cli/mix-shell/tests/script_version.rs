@@ -392,7 +392,7 @@ fn lint_gates_serve_citizens_and_script_directories() {
     let d = tempfile::tempdir().unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     // The real shipped files carry headers: silent even under --require-version.
-    for rel in ["src/desktop/scripts/desktop-session.mix", "docs/build/gen-doc-pages.mix"] {
+    for rel in ["services/compd/scripts/scenes.mix", "docs/build/gen-site.mix"] {
         let (code, out) = lint(&["--require-version", "--deny-warnings", root.join(rel).to_str().unwrap()]);
         assert_eq!(code, 0, "{rel}: {out}");
         assert!(!out.contains("MIX-D3016"), "{rel}: {out}");
@@ -407,8 +407,8 @@ fn lint_gates_serve_citizens_and_script_directories() {
             .map(|l| format!("{l}\n"))
             .collect::<String>()
     };
-    let session = write(d.path(), "flat/desktop-session.mix", &strip("src/desktop/scripts/desktop-session.mix"));
-    let pages = write(d.path(), "build/gen-doc-pages.mix", &strip("docs/build/gen-doc-pages.mix"));
+    let session = write(d.path(), "flat/desktop-session.mix", &strip("services/compd/scripts/scenes.mix"));
+    let pages = write(d.path(), "build/gen-doc-pages.mix", &strip("docs/build/gen-site.mix"));
     for p in [&session, &pages] {
         let (code, out) = lint(&["--require-version", "--deny-warnings", p.to_str().unwrap()]);
         assert_eq!(code, 1, "{out}");

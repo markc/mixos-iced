@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const LIBRARY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/blob.mix");
+const LIBRARY: &str = include_str!("fixtures/blob.mix");
 const ID: &str = "00000000-0000-0000-0000-000000000001";
 
 struct Temp(PathBuf);
@@ -98,9 +98,14 @@ fn quoted(path: &Path) -> String {
 }
 
 async fn execute(bus: Rc<Bus>, script: &str) -> serde_json::Value {
+    // Keep the exact compiled fixture available when the test executable is
+    // moved to a workstation with the required kernel capabilities.
+    let fixture = Temp::new();
+    let library = fixture.0.join("blob.mix");
+    std::fs::write(&library, LIBRARY).unwrap();
     let source = format!(
         "$b = require({})\n{script}\nprint(json_encode($out))\n",
-        quoted(Path::new(LIBRARY))
+        quoted(&library)
     );
     let tokens = Lexer::new(&source).tokenize().unwrap();
     let stmts = Parser::new(tokens, &source).parse_program().unwrap();
@@ -295,6 +300,7 @@ async fn blob_upload_lost_create_reply_persisted_key_409_head_and_commit_replay(
     let first = upload(Rc::clone(&bus), &dir.0).await;
     assert_eq!(first["ok"], false, "{first}");
     let second = upload(bus, &dir.0).await;
+    eprintln!("upload retry outcome: {second}; first outcome: {first}");
     server.join().unwrap();
     assert_eq!(second["ok"], true, "{second}");
     assert_eq!(second["result"]["size"], 4);
@@ -513,6 +519,7 @@ async fn blob_upload_empty_unicode_name_commits_without_patch() {
         }
     });
     let result = execute(bus, &format!("$out = $b.blob_upload_file({}, {{service:\"blobd-test\", owner:\"tester\", resume_file:{}, name:\"café+ %.txt\"}})", quoted(&dir.0.join("source")), quoted(&dir.0.join("resume.json")))).await;
+    eprintln!("empty upload outcome: {result}");
     server.join().unwrap();
     assert_eq!(result["ok"], true, "{result}");
 }

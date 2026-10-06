@@ -273,6 +273,6 @@ impl Bed {
         assert!(argv.iter().any(|a| a == "BatchMode=yes"), "{argv:?}");
         assert!(argv.iter().any(|a| a.starts_with("ConnectTimeout=")), "{argv:?}");
         let n = argv.len();
-        assert_eq!(&argv[n - 3..], ["--", host, "/opt/mixos/bin/mix -"], "{argv:?}");
+        assert_eq!(&argv[n - 3..], ["--", host, "/opt/cosmix/bin/mix -"], "{argv:?}");
     }
 }

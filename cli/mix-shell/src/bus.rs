@@ -1484,10 +1484,9 @@ impl BusHandler for MixServeHandler {
             // Routes through `respond_parts_shutdown_synth` (NOT
             // `respond_parts`) so the supervised gate's
             // `ShuttingDown` rejection — atomically armed by
-            // `deregister()` before its RPC — does not turn every
+            // `deregister_for_drain()` before its RPC — does not turn every
             // C.7f synth attempt into `synth_failed`. The WS is
-            // still live (deregister is a single RPC, does not close
-            // the socket), so the synth reply DOES reach the
+            // retained until the bounded drain ends, so synthesis can reach the
             // pending caller. See [`BusHandler::reply_shutdown_synth`]
             // and [`SupervisedClient::respond_parts_shutdown_synth`]
             // for the gate-bypass scope rationale.

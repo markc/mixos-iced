@@ -736,7 +736,7 @@ async fn shutdown_cancels_unpublished_subscription_replay() {
     let (url, _acceptor) = start(&stub).await;
     let client = SupervisedClient::connect("replay-cancel", &url).await.unwrap();
     let _incoming = client.incoming().unwrap();
-    client.subscribe("world.slow").await.unwrap();
+    client.subscribe_topic("world.slow").await.unwrap();
     stub.drop_conn1.notify_one();
     assert!(wait_until(5, || stub.state.try_lock()
         .map(|s| s.subscribe_attempts == 2).unwrap_or(false)).await);

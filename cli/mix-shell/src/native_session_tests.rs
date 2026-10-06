@@ -310,7 +310,7 @@ fn resident_uses_configuration_captured_before_thread_start() {
     assert!(!source.contains("use std::env"));
     let paths = include_str!("paths.rs");
     let resolution = paths
-        .split("pub(crate) fn resolve(self)")
+        .split("pub(crate) fn resolve(mut self)")
         .nth(1)
         .unwrap()
         .split("#[cfg(test)]")
