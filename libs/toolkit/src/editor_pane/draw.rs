@@ -12,13 +12,13 @@
 use std::ops::Range;
 use std::time::Instant;
 
-use application::iced::advanced::text::{self as atext};
-use application::iced::advanced::{mouse, renderer};
-use application::iced::{Border, Color, Font, Pixels, Point, Rectangle, Size};
-use edit::origin::{Origin, OriginKind};
-use editor_model::diag::Severity;
-use editor_model::highlight::{HlClass, SliceBudget};
-use editor_model::model::line_of;
+use iced_core::text::{self as atext};
+use iced_core::{mouse, renderer};
+use iced_core::{Border, Color, Font, Pixels, Point, Rectangle, Size};
+use super::{Origin, OriginKind};
+use super::Severity;
+use super::{Class as HlClass, SliceBudget};
+use super::line_of;
 
 use super::layout::{self as geo, Geometry, STRIP_W};
 use super::lines::{self, LineCells};
@@ -57,7 +57,7 @@ pub(super) fn draw<R: atext::Renderer<Font = Font>>(
     };
     let p = ed.palette;
     let scroll = st.scroll;
-    let text = ed.text;
+    let text = ed.text.as_ref();
     quad(r, g.bounds, p.background);
 
     let first = scroll.first_line;
@@ -108,7 +108,7 @@ impl Ctx<'_, '_> {
     }
 
     fn row_of(&self, rows: &[Row], offset: usize) -> Option<usize> {
-        let line = line_of(self.ed.text, offset);
+        let line = line_of(self.ed.text.as_ref(), offset);
         rows.iter().position(|row| row.line == line)
     }
 
@@ -179,8 +179,8 @@ impl Ctx<'_, '_> {
             }
         }
         if ed.view.remote_carets {
-            for (origin, sels) in &ed.model.remote {
-                let colour = with_alpha(origin_colour(ed, origin), 0.18);
+            for (origin, sels) in ed.text.remote() {
+                let colour = with_alpha(origin_colour(ed, &origin), 0.18);
                 for s in sels {
                     let range = sel_range(s.anchor, s.head);
                     if range.is_empty() {
@@ -196,16 +196,16 @@ impl Ctx<'_, '_> {
         }
         // Change tints: spans inserted by other origins, for TINT after first drawn.
         let mut seen = self.st.tint_seen.borrow_mut();
-        let revs: Vec<u64> = ed.model.markers.changed.iter().map(|m| m.2).collect();
+        let revs: Vec<u64> = ed.text.markers().map(|m| m.2).collect();
         seen.retain(|rev, _| revs.contains(rev));
-        for (range, origin, rev) in &ed.model.markers.changed {
-            let first = *seen.entry(*rev).or_insert(self.now);
+        for (range, origin, rev) in ed.text.markers() {
+            let first = *seen.entry(rev).or_insert(self.now);
             if range.is_empty() || self.now.duration_since(first) >= TINT {
                 continue;
             }
-            let colour = with_alpha(origin_colour(ed, origin), 0.22);
+            let colour = with_alpha(origin_colour(ed, &origin), 0.22);
             for row in rows {
-                if let Some((a, b)) = self.span_on(row, range) {
+                if let Some((a, b)) = self.span_on(row, &range) {
                     quad(r, self.row_rect(row, a, b), colour);
                 }
             }
@@ -214,7 +214,7 @@ impl Ctx<'_, '_> {
 
     fn text_runs<R: atext::Renderer<Font = Font>>(&self, r: &mut R, rows: &[Row]) {
         let ed = self.ed;
-        let text = ed.text;
+        let text = ed.text.as_ref();
         let mut budget = SliceBudget::default();
         let mut buf = String::new();
         for row in rows {
@@ -225,10 +225,7 @@ impl Ctx<'_, '_> {
             let base = first.range.start;
             buf.clear();
             text.read(base..last.range.end, &mut buf);
-            let spans = ed
-                .highlight
-                .with_spans(text, row.line, &mut budget, |s| s.map(<[_]>::to_vec))
-                .unwrap_or_default();
+            let spans = text.highlight_spans(row.line, &mut budget);
             let mut si = 0;
             let mut run = Run::default();
             for pc in &row.cells.placed {
@@ -334,10 +331,10 @@ impl Ctx<'_, '_> {
                 line_height: atext::LineHeight::Absolute(Pixels(self.g.metrics.line_h)),
                 font: v.font,
                 align_x: atext::Alignment::Left,
-                align_y: application::iced::alignment::Vertical::Top,
+                align_y: iced_core::alignment::Vertical::Top,
                 shaping,
                 wrapping: atext::Wrapping::None,
-                ellipsis: application::iced::advanced::text::Ellipsis::None,
+                ellipsis: iced_core::text::Ellipsis::None,
                 hint_factor: None,
             },
             at,
@@ -390,7 +387,7 @@ impl Ctx<'_, '_> {
     fn squiggles<R: atext::Renderer<Font = Font>>(&self, r: &mut R, rows: &[Row]) {
         let p = self.ed.palette;
         let cw = self.g.metrics.cell_w;
-        for d in self.ed.diagnostics.items() {
+        for d in self.ed.text.diagnostics() {
             let Some(i) = self.row_of(rows, d.range.start) else {
                 continue;
             };
@@ -455,7 +452,7 @@ impl Ctx<'_, '_> {
         let gr = g.gutter_rect();
         quad(r, gr, p.gutter_background);
         let cw = g.metrics.cell_w;
-        let caret_line = line_of(ed.text, ed.model.sel.head);
+        let caret_line = line_of(ed.text.as_ref(), ed.model.sel.head);
         if g.digits > 0 {
             for row in rows {
                 let n = row.line.to_string();
@@ -488,10 +485,10 @@ impl Ctx<'_, '_> {
         let (Some(top), Some(bottom)) = (rows.first(), rows.last()) else {
             return;
         };
-        let mut hover: Option<(&Origin, u64, f32)> = None;
-        for (range, origin, rev) in &ed.model.markers.changed {
-            let l0 = line_of(ed.text, range.start).max(top.line);
-            let l1 = line_of(ed.text, range.end).min(bottom.line);
+        let mut hover: Option<(Origin<'_>, u64, f32)> = None;
+        for (range, origin, rev) in ed.text.markers() {
+            let l0 = line_of(ed.text.as_ref(), range.start).max(top.line);
+            let l1 = line_of(ed.text.as_ref(), range.end).min(bottom.line);
             if l0 > l1 {
                 continue;
             }
@@ -503,21 +500,21 @@ impl Ctx<'_, '_> {
                 width: STRIP_W,
                 height: y1 - y0,
             };
-            quad(r, bar, origin_colour(ed, origin));
+            quad(r, bar, origin_colour(ed, &origin));
             if let Some(pos) = cursor.position()
                 && pos.y >= y0
                 && pos.y < y1
                 && pos.x >= strip_x - 2.0
                 && pos.x < strip_x + STRIP_W + cw
             {
-                hover = Some((origin, *rev, pos.y));
+                hover = Some((origin, rev, pos.y));
             }
         }
         // Lint column: one dot per line, worst severity wins.
         let lint_x = strip_x + STRIP_W + cw * 0.25;
         let mut worst: Vec<(usize, Severity)> = Vec::new();
-        for d in ed.diagnostics.items() {
-            let line = line_of(ed.text, d.range.start);
+        for d in ed.text.diagnostics() {
+            let line = line_of(ed.text.as_ref(), d.range.start);
             if line < top.line || line > bottom.line {
                 continue;
             }
@@ -564,7 +561,7 @@ impl Ctx<'_, '_> {
                     r,
                     &label,
                     Point::new(strip_x + STRIP_W + 4.0, y + 12.0),
-                    origin_colour(ed, origin),
+                    origin_colour(ed, &origin),
                 )
             });
         }
@@ -671,8 +668,8 @@ impl Ctx<'_, '_> {
             return;
         }
         let t = self.g.text_rect();
-        for (origin, sels) in &ed.model.remote {
-            let colour = origin_colour(ed, origin);
+        for (origin, sels) in ed.text.remote() {
+            let colour = origin_colour(ed, &origin);
             for s in sels {
                 let Some(i) = self.row_of(rows, s.head) else {
                     continue;
@@ -817,7 +814,7 @@ struct Run {
     text: String,
 }
 
-fn quad<R: application::iced::advanced::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
+fn quad<R: iced_core::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
     if colour.a <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
@@ -871,7 +868,7 @@ fn text_clip(at: Point, width: f32, m: geo::Metrics, layer: Rectangle) -> Rectan
     }
 }
 
-fn rounded<R: application::iced::advanced::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
+fn rounded<R: iced_core::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
     let radius = (bounds.width.min(bounds.height) / 2.0).into();
     r.fill_quad(
         renderer::Quad {
@@ -890,7 +887,7 @@ fn with_alpha(c: Color, a: f32) -> Color {
     Color { a: c.a * a, ..c }
 }
 
-fn origin_colour(ed: &Editor<'_>, origin: &Origin) -> Color {
+fn origin_colour(ed: &Editor<'_>, origin: &Origin<'_>) -> Color {
     if origin.kind == OriginKind::Agent {
         ed.palette.agent
     } else {
@@ -928,14 +925,12 @@ fn ago(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use application::iced::{Background, Transformation};
-    use edit::text::Text;
-    use editor_model::diag::Diagnostics;
-    use editor_model::highlight::Highlight;
-    use editor_model::model::EditorModel;
+    use iced_core::{Background, Transformation};
+    use super::super::fixture::Text;
+    use super::super::ViewState as EditorModel;
 
     use super::super::layout::Metrics;
-    use super::super::{EditorView, Palette};
+    use super::super::{View as EditorView, Palette};
     use super::*;
 
     /// The window the widget sits in (the base layer).
@@ -970,7 +965,7 @@ mod tests {
         texts: Vec<Drawn>,
     }
 
-    impl application::iced::advanced::Renderer for Rec {
+    impl iced_core::Renderer for Rec {
         fn hint(&mut self, _: renderer::Scale) {}
         fn scale(&self) -> Option<renderer::Scale> {
             None
@@ -995,11 +990,11 @@ mod tests {
         fn reset(&mut self, _: Rectangle) {}
         fn allocate_image(
             &mut self,
-            _: &application::iced::advanced::image::Handle,
+            _: &iced_core::image::Handle,
             _: impl FnOnce(
                 Result<
-                    application::iced::advanced::image::Allocation,
-                    application::iced::advanced::image::Error,
+                    iced_core::image::Allocation,
+                    iced_core::image::Error,
                 >,
             ) + Send
             + 'static,
@@ -1088,19 +1083,15 @@ mod tests {
         }
         let text = Text::from_text(&body).unwrap();
         let model = EditorModel::default();
-        let highlight = Highlight::for_language("text", None);
         let palette = palette();
-        let diagnostics = Diagnostics::default();
         let view = EditorView {
             whitespace: true,
             ..EditorView::default()
         };
         let ed = Editor {
-            text: &text,
-            model: &model,
-            highlight: &highlight,
+            text: Box::new(text.clone()),
+            model,
             palette: &palette,
-            diagnostics: &diagnostics,
             view,
         };
         let metrics = Metrics {

@@ -1673,7 +1673,8 @@ impl App {
             &self.empty_diag
         };
         EditorWidget::with(
-            m.text(),
+            id,
+            m,
             &tab.editor,
             &tab.highlight,
             &self.theme.palette,

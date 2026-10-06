@@ -5,6 +5,9 @@
 Use the shared application host for native bootstrap, window configuration and
 the single task worker. The retained Bus contract and deferred close behaviour
 remain unchanged.
+Render and handle editor input through toolkit's `EditorPane`, with a borrowed
+adapter to the existing buffer, highlighting and OT engine. Commands and Bus
+state continue through the established controller.
 
 ## 0.1.5
 

@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use edit::text::Text;
-use edit::view::{self, Cluster, MeasureCfg};
-use editor_model::model::{content_end, line_of};
+use super::Source;
+use super::{Cluster, MeasureCfg};
+use super::{content_end, line_of};
 
 /// Lines longer than this seek through checkpoints.
 pub const LONG_LINE: usize = 4096;
@@ -17,14 +17,14 @@ pub const LONG_LINE: usize = 4096;
 /// Checkpoints per line start, valid for one text version and measure.
 #[derive(Default)]
 pub struct Checkpoints {
-    key: Option<(u64, usize, MeasureCfg)>,
+    key: Option<(u64, u64, usize, MeasureCfg)>,
     lines: HashMap<usize, Vec<(usize, usize)>>,
 }
 
 impl Checkpoints {
     /// The text changed identity when its commit count or length did.
-    fn sync(&mut self, text: &Text, cfg: &MeasureCfg) {
-        let key = Some((text.commit_calls(), text.len(), *cfg));
+    fn sync(&mut self, text: &dyn Source, cfg: &MeasureCfg) {
+        let key = Some((text.identity(), text.commit_calls(), text.len(), *cfg));
         if self.key != key {
             self.key = key;
             self.lines.clear();
@@ -35,7 +35,7 @@ impl Checkpoints {
     /// `line` (the line start for short lines).
     fn start(
         &mut self,
-        text: &Text,
+        text: &dyn Source,
         cfg: &MeasureCfg,
         line: usize,
         before: impl Fn(&(usize, usize)) -> bool,
@@ -53,7 +53,7 @@ impl Checkpoints {
         let ck = self
             .lines
             .entry(r.start)
-            .or_insert_with(|| view::line_checkpoints(text, cfg, line));
+            .or_insert_with(|| text.line_checkpoints(cfg, line));
         ck.iter()
             .rev()
             .find(|c| before(c))
@@ -101,7 +101,7 @@ impl LineCells {
 
 /// Walk `line`'s clusters covering cells `[x0, x1)`.
 pub fn walk(
-    text: &Text,
+    text: &dyn Source,
     cfg: &MeasureCfg,
     ck: &mut Checkpoints,
     line: usize,
@@ -129,7 +129,7 @@ pub fn walk(
         cells,
         is_tab,
         ascii,
-    } in view::clusters(text, cfg, from..end, from_cells)
+    } in text.clusters(cfg, from..end, from_cells)
     {
         if cell >= x1 {
             reached_end = false;
@@ -158,7 +158,7 @@ pub fn walk(
 
 /// The absolute cell of `offset` (exact, any line length).
 pub fn cells_of(
-    text: &Text,
+    text: &dyn Source,
     cfg: &MeasureCfg,
     ck: &mut Checkpoints,
     offset: usize,
@@ -168,7 +168,7 @@ pub fn cells_of(
     let offset = offset.min(end);
     let (from, from_cells) = ck.start(text, cfg, line, |&(o, _)| o <= offset);
     let mut cell = from_cells;
-    for c in view::clusters(text, cfg, from..end, from_cells) {
+    for c in text.clusters(cfg, from..end, from_cells) {
         if c.range.end > offset {
             break;
         }
@@ -180,7 +180,7 @@ pub fn cells_of(
 /// The offset nearest to fractional cell `target` on `line` (mouse hits):
 /// the boundary before a cluster when the target is in its first half.
 pub fn offset_at(
-    text: &Text,
+    text: &dyn Source,
     cfg: &MeasureCfg,
     ck: &mut Checkpoints,
     line: usize,
@@ -191,7 +191,7 @@ pub fn offset_at(
     let t = target.max(0.0) as usize;
     let (from, from_cells) = ck.start(text, cfg, line, |&(_, c)| c <= t);
     let mut cell = from_cells as f32;
-    for c in view::clusters(text, cfg, from..end, from_cells) {
+    for c in text.clusters(cfg, from..end, from_cells) {
         if c.range.start >= end {
             break;
         }
@@ -207,6 +207,7 @@ pub fn offset_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::fixture::Text;
 
     fn cfg() -> MeasureCfg {
         MeasureCfg {

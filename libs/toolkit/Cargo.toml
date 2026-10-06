@@ -54,6 +54,7 @@ num-traits = { workspace = true }
 unicode-segmentation = "1.13"
 
 [dev-dependencies]
+unicode-width = "=0.2.2"
 # Tests shape real text; iced's embedded Fira Sans means no host font is read.
 iced_graphics = { workspace = true, features = ["fira-sans"] }
 # `tests/snapshots.rs` renders the gallery offscreen with iced's headless

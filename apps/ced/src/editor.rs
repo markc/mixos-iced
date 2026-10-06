@@ -5,14 +5,10 @@
 //! Stage E1e replaces the widget's body WITHOUT changing the signature (a
 //! change needs the lead's sign-off — E1f composes it).
 
-mod draw;
-mod ime;
-mod input;
-pub mod layout;
-pub mod lines;
+mod source;
 pub mod widget;
+pub use toolkit::editor_pane::{LayoutReport, Palette, HL_CLASSES};
 
-use editor_model::highlight::HlClass;
 use editor_model::model::{EditCommand, Scroll};
 
 /// What the editor widget reports to the app.
@@ -36,39 +32,6 @@ pub enum EditorMsg {
     Focus(bool),
     /// Geometry of the frame just laid out (feeds `ced.layout`).
     Layout(LayoutReport),
-}
-
-/// Engine geometry of the last frame, logical px (plan §4.8 `ced.layout`).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct LayoutReport {
-    pub editor: [f32; 4],
-    pub gutter_w: f32,
-    pub line_height: f32,
-    pub cell_w: f32,
-    pub first_line: usize,
-    pub visible_rows: usize,
-    pub caret: [f32; 4],
-}
-
-/// Colours the widget draws with, built by `theme.rs` from mixos-design
-/// tokens (D17) — never literal colours in the widget.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Palette {
-    pub background: application::iced::Color,
-    pub text: application::iced::Color,
-    pub gutter_background: application::iced::Color,
-    pub gutter_text: application::iced::Color,
-    pub current_line: application::iced::Color,
-    pub selection: application::iced::Color,
-    pub caret: application::iced::Color,
-    /// Origin colours: other `human:*` origins / `agent:*` origins.
-    pub human_other: application::iced::Color,
-    pub agent: application::iced::Color,
-    pub error: application::iced::Color,
-    pub warning: application::iced::Color,
-    pub note: application::iced::Color,
-    /// Indexed by `HlClass as usize`.
-    pub highlight: [application::iced::Color; HL_CLASSES],
 }
 
 /// How the view is drawn beyond the text and colours: the Mono font at the
@@ -112,16 +75,4 @@ impl Default for EditorView {
     }
 }
 
-/// Number of [`HlClass`] variants.
-pub const HL_CLASSES: usize = 17;
-
-impl Palette {
-    pub fn hl(&self, class: HlClass) -> application::iced::Color {
-        self.highlight[class as usize]
-    }
-}
-
-const _: () = assert!(
-    HlClass::Invalid as usize + 1 == HL_CLASSES,
-    "HL_CLASSES must match HlClass"
-);
+const _: () = assert!(editor_model::highlight::HlClass::Invalid as usize + 1 == HL_CLASSES);

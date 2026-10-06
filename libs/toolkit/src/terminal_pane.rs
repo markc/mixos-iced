@@ -170,6 +170,8 @@ mod tests {
                     .on_scroll(Action::Wheel)
                     .into();
             let mut tree = Tree::new(&element);
+            // Runtime reconciliation creates children for composite widgets.
+            tree.diff(&mut element);
             let node = element.as_widget_mut().layout(
                 &mut tree,
                 &renderer,

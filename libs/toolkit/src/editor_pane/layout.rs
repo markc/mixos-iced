@@ -8,8 +8,8 @@
 //! `x + gutter_w + (c - x_cells) · cell_w` — the numbers `ced.layout` reports
 //! and the nested gate checks.
 
-use application::iced::{Point, Rectangle, Size};
-use editor_model::model::Scroll;
+use iced_core::{Point, Rectangle, Size};
+use super::Scroll;
 
 /// Width of the origin strip in the gutter (plan §4.5).
 pub const STRIP_W: f32 = 4.0;

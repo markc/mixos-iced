@@ -3,9 +3,9 @@
 //! has already taken every keymap chord, Alt+letter and Ctrl+wheel; what
 //! reaches the widget is navigation, editing keys and text.
 
-use application::iced::keyboard::key::Named;
-use application::iced::keyboard::{Key, Modifiers};
-use editor_model::model::{EditCommand, Motion};
+use iced_core::keyboard::key::Named;
+use iced_core::keyboard::{Key, Modifiers};
+use super::{Command as EditCommand, Motion};
 
 /// The command for a key press, if the editor handles it. `page` is the
 /// number of full rows (Page Up/Down distance).
