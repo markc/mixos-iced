@@ -845,7 +845,7 @@ impl App {
             .height(iced::Fill)
             .into();
         let Some(dialog) = &self.dialog else {
-            return toolkit::dialog::Modal::host(base).into();
+            return toolkit::dialog::Modal::host(base, None).into();
         };
         let mut contents = column![].spacing(gap);
         let mut controls = row![].spacing(gap);

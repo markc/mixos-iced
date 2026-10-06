@@ -157,6 +157,10 @@ async fn worker(
             command = incoming.recv() => {
                 let Some(command) = command else { break; };
                 if let Some(topic) = command.topic() {
+                    if topic == "noded.props.changed" && command.headers.get("gap").is_none_or(|value|value != "true")
+                        && serde_json::from_str::<Value>(&command.body).ok().is_some_and(|body|body["path"] != "services.registered") {
+                        continue;
+                    }
                     let _ = send.unbounded_send(if topic == "theme.changed" { Delivery::Theme } else { Delivery::Changed });
                     continue;
                 }
