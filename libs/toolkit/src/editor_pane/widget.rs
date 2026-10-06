@@ -53,6 +53,41 @@ pub struct EditorPane<'a> {
     pub(super) view: EditorView,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::fixture::Text;
+
+    #[test]
+    fn document_switch_cancels_composition_and_discards_pending_interactions() {
+        let palette = Palette::from(crate::Tokens::default());
+        let view = EditorView::default();
+        let first = EditorPane::new(Text::from_text("alpha").unwrap(), &palette, &view);
+        let second = EditorPane::new(Text::from_text("bravo").unwrap(), &palette, &view);
+        let mut state = State::default();
+        state.metrics = Some(Metrics { cell_w: 8.0, line_h: 20.0 });
+        first.sync_scroll(&mut state, Size::new(800.0, 600.0));
+        state.ime.preedit("ni");
+        state.ime.anchored = true;
+        state.drag = Some(Drag::Text);
+        state.drag_offset = Some(4);
+        state.primary_pending = true;
+        state.echo.push_back(Scroll { first_line: 20, x_cells: 4 });
+        state.tint_seen.borrow_mut().insert(7, Instant::now());
+        state.max_cells.set(1000);
+        second.sync_scroll(&mut state, Size::new(800.0, 600.0));
+        assert_eq!(state.document, Some(second.text.identity()));
+        assert_eq!(state.scroll, Scroll::default());
+        assert!(state.echo.is_empty() && state.drag.is_none());
+        assert!(state.drag_offset.is_none() && !state.primary_pending);
+        assert!(state.tint_seen.borrow().is_empty());
+        assert_eq!(state.max_cells.get(), 0);
+        assert!(!state.ime.commit(), "queued commit belongs to the old document");
+        state.ime.closed();
+        assert!(state.ime.preedit("new") && state.ime.commit());
+    }
+}
+
 pub(super) type Editor<'a> = EditorPane<'a>;
 
 impl<'a, Theme: 'a, R: atext::Renderer<Font = Font> + 'a> From<EditorPane<'a>>
@@ -201,7 +236,7 @@ impl<'a> Editor<'a> {
             st.last_model_scroll = Some(self.model.scroll);
         }
         let head = clamp_offset(self.text.as_ref(), self.model.sel.head);
-        let version = (self.text.identity(), self.text.commit_calls(), self.text.len());
+        let version = (self.text.identity(), self.text.revision(), self.text.len());
         let moved = st.seen_head != Some(head);
         let edited = st.seen_version != version;
         if moved || edited {

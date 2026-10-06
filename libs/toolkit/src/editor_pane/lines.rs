@@ -22,9 +22,10 @@ pub struct Checkpoints {
 }
 
 impl Checkpoints {
-    /// The text changed identity when its commit count or length did.
+    /// Document identity, content revision and measurement configuration each
+    /// invalidate checkpoints, including equal-length replacements.
     fn sync(&mut self, text: &dyn Source, cfg: &MeasureCfg) {
-        let key = Some((text.identity(), text.commit_calls(), text.len(), *cfg));
+        let key = Some((text.identity(), text.revision(), text.len(), *cfg));
         if self.key != key {
             self.key = key;
             self.lines.clear();

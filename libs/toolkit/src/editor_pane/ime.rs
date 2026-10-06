@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! IME composition state for the editor (plan §4.2, codex #17), after the
-//! ownership guard in `apps/term/src/ime.rs`: one editor view owns a
-//! composition from its first preedit to its commit; a cancel (focus loss, or
-//! a remote delta overlapping `EditorModel::composition`) keeps the input
-//! method Disabled until the runtime acknowledges `Closed`, so a queued
-//! preedit or commit can never land after the cancel.
+//! A cancelled composition blocks queued input until the runtime acknowledges
+//! Closed. This prevents commits reaching another document after a switch.
 
 #[derive(Debug, Default)]
 pub struct Composition {

@@ -20,7 +20,7 @@ impl Text {
 
 impl Source for Text {
     fn identity(&self) -> u64 { self.identity }
-    fn commit_calls(&self) -> u64 { 0 }
+    fn revision(&self) -> u64 { 0 }
     fn len(&self) -> usize { self.body.len() }
     fn line_count(&self) -> usize { self.starts.len() }
     fn line_start(&self, line: usize) -> Option<usize> { self.starts.get(line.checked_sub(1)?).copied() }

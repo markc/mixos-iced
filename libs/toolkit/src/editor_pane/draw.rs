@@ -927,6 +927,7 @@ fn ago(secs: u64) -> String {
 mod tests {
     use iced_core::{Background, Transformation};
     use super::super::fixture::Text;
+    use super::super::Source;
     use super::super::ViewState as EditorModel;
 
     use super::super::layout::Metrics;
@@ -1033,11 +1034,7 @@ mod tests {
     }
 
     fn palette() -> Palette {
-        crate::theme::resolve_selection(
-            &crate::theme::read_selection(None, None, &mut Vec::new()),
-            Vec::new(),
-        )
-        .palette
+        Palette::from(crate::Tokens::default())
     }
 
     /// iced_tiny_skia 0.14.1's per-text decision for a damage rectangle

@@ -189,7 +189,11 @@ mod tests {
                 Layout::new(&node),
                 cursor,
                 &renderer,
-                &mut Shell::new(&iced_core::window::Headless, iced_core::shell::Waker::noop(), &mut bus),
+                &mut Shell::new(
+                    &iced_core::window::Headless,
+                    iced_core::shell::Waker::noop(),
+                    &mut bus,
+                ),
                 &viewport,
             );
             let messages: Vec<_> = bus.drain().collect();

@@ -7,7 +7,7 @@
 
 mod source;
 pub mod widget;
-pub use toolkit::editor_pane::{LayoutReport, Palette, HL_CLASSES};
+pub use toolkit::editor_pane::{HL_CLASSES, LayoutReport, Palette};
 
 use editor_model::model::{EditCommand, Scroll};
 

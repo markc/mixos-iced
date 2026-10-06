@@ -20,8 +20,8 @@ pub mod date_picker;
 pub mod dialog;
 pub mod dnd;
 pub mod drop_down;
-pub mod elide;
 pub mod editor_pane;
+pub mod elide;
 pub mod fader;
 pub mod fit_text;
 pub mod flush_column;
@@ -85,8 +85,8 @@ pub use dnd::{
     Choice, DragArea, DropArea, Gesture, Layer as DragLayer, Shared, State as DragState,
 };
 pub use drop_down::{Alignment, DropDown, Offset};
-pub use elide::{Label, middle};
 pub use editor_pane::EditorPane;
+pub use elide::{Label, middle};
 pub use fader::Fader;
 pub use fit_text::FitText;
 pub use flush_column::FlushColumn;

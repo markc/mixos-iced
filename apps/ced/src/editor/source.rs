@@ -38,7 +38,7 @@ fn origin(value: &edit::origin::Origin) -> pane::Origin<'_> {
 
 impl pane::Source for Source<'_> {
     fn identity(&self) -> u64 { self.identity }
-    fn commit_calls(&self) -> u64 { self.mirror.view_gen() }
+    fn revision(&self) -> u64 { self.mirror.view_gen() }
     fn len(&self) -> usize { self.text().len() }
     fn line_count(&self) -> usize { self.text().line_count() }
     fn line_start(&self, line: usize) -> Option<usize> { self.text().line_start(line) }

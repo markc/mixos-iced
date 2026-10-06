@@ -99,7 +99,8 @@ impl Default for SliceBudget { fn default() -> Self { Self { max_lines: 2000 } }
 /// grapheme boundaries approximately every 4 KiB, with absolute cell positions.
 pub trait Source {
     fn identity(&self) -> u64;
-    fn commit_calls(&self) -> u64;
+    /// Changes whenever visible document content changes, including undo.
+    fn revision(&self) -> u64;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }
     fn line_count(&self) -> usize;
@@ -133,6 +134,20 @@ pub struct Palette {
     pub highlight: [Color; HL_CLASSES],
 }
 impl Palette { pub fn hl(&self, class: Class) -> Color { self.highlight[class as usize] } }
+
+impl From<crate::Tokens> for Palette {
+    fn from(tokens: crate::Tokens) -> Self {
+        let colours = tokens.palette;
+        Self {
+            background: colours.surface, text: colours.text,
+            gutter_background: colours.muted_surface, gutter_text: colours.muted_text,
+            current_line: colours.muted_surface, selection: colours.selection,
+            caret: colours.text, human_other: colours.ring, agent: colours.ring,
+            error: colours.destructive, warning: colours.primary, note: colours.ring,
+            highlight: [colours.text; HL_CLASSES],
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
