@@ -12,9 +12,8 @@ test = false
 doctest = false
 
 [package.metadata.mixos]
-component = "term-test-broker"
-kind = "core"
-owner = "term"
+component = "term"
+kind = "app"
 layer = "core"
 contract = "none"
 

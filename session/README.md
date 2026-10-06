@@ -27,3 +27,10 @@ Stopping the target stops its services and app descendants. Before switching
 VTs, the operator prepares a bounded rollback to the VT that was active,
 checks ABP readiness and keeps the previous session available. Nested tests
 and actual GPU/input/audio acceptance are recorded separately.
+
+The target uses systemd's `Upholds=` relationship (systemd 249 or newer) to
+recover stopped members while the session is active. A broker crash leaves
+compd running so its native client can reconnect; a seatd or compositor crash
+recovers the dependent services. Stopping the target ends this recovery.
+Target activation alone is not a readiness verdict: the operator must check
+the broker, compositor and scene ports through ABP within the startup deadline.

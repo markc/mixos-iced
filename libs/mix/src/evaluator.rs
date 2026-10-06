@@ -1505,6 +1505,10 @@ pub const NO_REPLY_BODY: &str =
 #[cfg(feature = "tokio-sleep")]
 pub const SHUTDOWN_SYNTH_RC: u8 = 16;
 
+/// One total budget for shutdown replies, including a stalled transport.
+#[cfg(feature = "tokio-sleep")]
+pub const SHUTDOWN_REPLY_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// SPEC 18 Phase 2 WS3-C.7f — body for synth'd shutdown replies.
 ///
 /// Stable, non-sensitive, identifies the cause unambiguously
@@ -6418,17 +6422,17 @@ impl Evaluator {
         // Phase 3: walk reply registry for stranded pending requests
         // and synthesize §3.4 shutdown replies (when allowed).
         let snapshot = reply_registry.snapshot();
+        let reply_deadline = tokio::time::Instant::now() + SHUTDOWN_REPLY_GRACE;
         for handle in snapshot.iter().filter(|h| h.is_pending_request()) {
             if !allow_synth_replies {
                 outcome.synth_skipped_no_socket += 1;
                 continue;
             }
-            match handle
-                .synthesize_unanswered(SHUTDOWN_SYNTH_RC, SHUTDOWN_SYNTH_BODY)
-                .await
-            {
-                Ok(()) => outcome.synth_sent += 1,
-                Err(_) => outcome.synth_failed += 1,
+            match tokio::time::timeout_at(reply_deadline,
+                handle.synthesize_unanswered(SHUTDOWN_SYNTH_RC, SHUTDOWN_SYNTH_BODY),
+            ).await {
+                Ok(Ok(())) => outcome.synth_sent += 1,
+                Ok(Err(_)) | Err(_) => outcome.synth_failed += 1,
             }
         }
 
@@ -18624,6 +18628,7 @@ mod invocation_reply_tests {
         /// exercise the same code path the real transport would take
         /// on a broken socket.
         fail: Cell<bool>,
+        stall: Cell<bool>,
     }
 
     impl RecordingReplyHandler {
@@ -18632,6 +18637,7 @@ mod invocation_reply_tests {
                 generations: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
                 fail: Cell::new(false),
+                stall: Cell::new(false),
             })
         }
     }
@@ -18660,6 +18666,9 @@ mod invocation_reply_tests {
             body: &'a str,
         ) -> BusFuture<'a, MixResult<()>> {
             self.generations.borrow_mut().push((generation, true));
+            if self.stall.get() {
+                return Box::pin(std::future::pending());
+            }
             self.reply(to, command, id, rc, body)
         }
 
@@ -18773,6 +18782,30 @@ mod invocation_reply_tests {
         assert_eq!(calls[0].body, "ok", "first call's body preserved");
         assert!(handle.is_answered());
         assert!(!handle.is_unanswered_request());
+    }
+
+    #[test]
+    #[cfg(feature = "tokio-sleep")]
+    fn shutdown_reply_backlog_has_one_total_deadline() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        runtime.block_on(async {
+            let eval = super::Evaluator::new();
+            let handler = RecordingReplyHandler::new();
+            handler.stall.set(true);
+            let registry = Rc::clone(&eval.globals.borrow().reply_registry);
+            for id in 0..10 {
+                let (_, registration) = registry.register(1, "caller".into(),
+                    "stalled".into(), Some(id.to_string()), true, Some(handler.clone()));
+                drop(registration);
+            }
+            let started = tokio::time::Instant::now();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1),
+                eval.drain_class_c_for_shutdown(std::time::Duration::ZERO, true)).await.unwrap();
+            assert!(started.elapsed() >= super::SHUTDOWN_REPLY_GRACE);
+            assert_eq!(result.initial_pending, 10);
+            assert_eq!(result.synth_failed, 10);
+            assert_eq!(result.synth_sent, 0);
+        });
     }
 
     #[test]

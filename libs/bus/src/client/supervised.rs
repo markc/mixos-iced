@@ -892,13 +892,15 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                 return;
             }
 
-            match Connection::connect_with_options(
-                &ctx.service_name,
-                &ctx.noded_url,
-                &ctx.connection_options,
-            )
-            .await
-            {
+            let connected = tokio::select! {
+                biased;
+                _ = ctx.out_tx.closed() => return,
+                _ = ctx.shutdown_rx.changed() => return,
+                result = Connection::connect_with_options(
+                    &ctx.service_name, &ctx.noded_url, &ctx.connection_options,
+                ) => result,
+            };
+            match connected {
                 Ok(connection) => {
                     // A stop requested during the connect must not leave a
                     // registered connection behind: a bare drop would keep
@@ -929,15 +931,22 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                     let topics = ctx.registry.snapshot();
                     let mut replay_ok = true;
                     for topic in &topics {
-                        if let Err(e) = connection
-                            .call_with_headers(
-                                "noded",
-                                "topic.subscribe",
-                                &topic_headers(topic),
-                                "",
-                            )
-                            .await
-                        {
+                        let headers = topic_headers(topic);
+                        let replay = tokio::select! {
+                            biased;
+                            _ = ctx.out_tx.closed() => {
+                                connection.close().await;
+                                return;
+                            }
+                            _ = ctx.shutdown_rx.changed() => {
+                                connection.close().await;
+                                return;
+                            }
+                            result = connection.call_with_headers(
+                                "noded", "topic.subscribe", &headers, "",
+                            ) => result,
+                        };
+                        if let Err(e) = replay {
                             tracing::warn!(
                                 event = "supervised_replay_failed",
                                 service = %ctx.service_name,

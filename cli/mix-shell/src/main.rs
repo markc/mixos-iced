@@ -1791,44 +1791,10 @@ fn run_serve(script_path: &str, service_name: &str, no_prelude: bool) -> i32 {
             }
         };
 
-        // §3.5 single shutdown path: deregister BEFORE exit so the
-        // broker registry never retains a dead name. `deregister()`
-        // (WS1 → WS0 `noded.deregister`) marks ShuttingDown and joins
-        // the reconnect supervisor FIRST (race-free — it cannot swap a
-        // freshly-reconnected live client after the liveness check),
-        // then issues the RPC on the live connection. This supersedes
-        // WS3's defensive bare `shutdown()`. Bounded so a wedged or
-        // unreachable broker cannot hang process exit.
-        //
-        // The match yields THREE values that drive the next two steps:
-        //   * `deregistered` — is the broker registry clean? Drives the
-        //     exit-code branch below. `Disconnected` counts as clean
-        //     because WS-close already evicted the name.
-        //   * `allow_synth_replies` — is the caller transport channel
-        //     live enough to deliver synth shutdown replies? Drives
-        //     C.7f drain's Phase 3. `deregister()` itself only
-        //     returns `Ok(())`, `Err(Disconnected)`, or
-        //     `Err(Transport(_))`; permit synth on `Ok(())` and the
-        //     `Transport(_)` arm (the call reached a live connection
-        //     per the `Transport(_)` doc — the socket may still be
-        //     usable, and any miss surfaces as `synth_failed`).
-        //     Suppress on `Disconnected` (confirmed no socket) and
-        //     on the `_elapsed` timeout (supervisor stopped, transport
-        //     ambiguous). The catch-all `Ok(Err(_))` defensively
-        //     permits synth for any non-Disconnected variant that may
-        //     be added later — a fresh variant is most plausibly a
-        //     wire-level error, not a hard "socket is gone."
-        //     IMPORTANT: the synth path bypasses the supervised
-        //     `ShuttingDown` gate via the dedicated
-        //     `respond_parts_shutdown_synth` primitive (the C.7f
-        //     drain is the ONE legitimate post-deregister outbound
-        //     path; script-side `reply()` continues to be gated).
-        //   * `drain_grace` — how long to wait for in-flight handle
-        //     completion. `CLASSC_DRAIN_GRACE` for live/ambiguous
-        //     transports (handlers may legitimately finish work that
-        //     does not need the wire); `ZERO` for confirmed no-socket
-        //     paths so survivors are aborted immediately ("transport-
-        //     drop = immediate cancel" per task #60 / C.7f semantics).
+        // Fence ordinary outbound work and reconnect publication, then remove
+        // the registration while retaining the delivery-generation transport.
+        // The bounded reply drain below completes before explicit socket close.
+        // Cancellation of deregistration stops and closes the supervisor.
         let (deregistered, allow_synth_replies, drain_grace) = match tokio::time::timeout(
             DEREGISTER_GRACE,
             supervised.deregister_for_drain(),
@@ -1906,26 +1872,8 @@ fn run_serve(script_path: &str, service_name: &str, no_prelude: bool) -> i32 {
             }
         };
 
-        // SPEC 18 Phase 2 WS3-C.7f.2 — drain Class C in-flight chains
-        // AFTER deregister so the broker registry is clean before any
-        // local cancellation. Per the C.7f slicing consult: deregister
-        // first guarantees no new request is routed at us mid-drain,
-        // which would otherwise race the task-registry snapshot.
-        //
-        // Order matters: drain BEFORE `process::exit` (handed off by
-        // run_serve's return) so survivor tasks are aborted with a
-        // bounded join, and pending-request handles get a §3.4
-        // shutdown synth reply when the socket is still live. The
-        // synth path goes through the SAME `BusHandler::reply` wire
-        // primitive author code uses, so a synth reply IS visible to
-        // an in-flight caller — when `allow_synth_replies` is true.
-        //
-        // The drain is a fixed bounded operation (`drain_grace` for
-        // handle wait + 100 ms for abort wind-down). The grace is
-        // either `CLASSC_DRAIN_GRACE` or `ZERO` per the deregister
-        // outcome (see above). It cannot hang process exit; the
-        // unconditional `process::exit()` in the caller is the hard
-        // backstop for any tokio-task that does not observe abort.
+        // No new broker requests can target this name. Drain in-flight chains
+        // with bounded joins and one total reply budget, then close transport.
         let drain_outcome = eval
             .drain_class_c_for_shutdown(drain_grace, allow_synth_replies)
             .await;

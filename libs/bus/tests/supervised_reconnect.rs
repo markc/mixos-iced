@@ -55,6 +55,7 @@ struct Stub {
     /// Refuse this topic name on every connection.
     reject_topic: Option<String>,
     flood_on_register: usize,
+    replay_delay: Duration,
 }
 
 impl Stub {
@@ -66,6 +67,7 @@ impl Stub {
             reject_register_on_reconnect: false,
             reject_topic: None,
             flood_on_register: commands,
+            replay_delay: Duration::ZERO,
         })
     }
     fn new(fail_replay_on_reconnect: bool, reject_register_on_reconnect: bool) -> Arc<Stub> {
@@ -76,6 +78,7 @@ impl Stub {
             reject_register_on_reconnect,
             reject_topic: None,
             flood_on_register: 0,
+            replay_delay: Duration::ZERO,
         })
     }
 
@@ -87,6 +90,7 @@ impl Stub {
             reject_register_on_reconnect: false,
             reject_topic: Some(topic.to_string()),
             flood_on_register: 0,
+            replay_delay: Duration::ZERO,
         })
     }
 }
@@ -211,6 +215,9 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                             }
                         }
                         let rc = if reject { "10" } else { "0" };
+                        if conn_index >= 2 {
+                            tokio::time::sleep(stub.replay_delay).await;
+                        }
                         let _ = sink.send(Message::Text(reply(&req, rc).into())).await;
                     }
                     "topic.unsubscribe" => {
@@ -719,6 +726,26 @@ async fn reconnect_registration_rejection_is_terminal_when_opted_in() {
     let s = stub.state.lock().await;
     assert_eq!(s.connections, 2, "opt-in rejection must not be retried");
     assert!(s.open_connections <= 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_cancels_unpublished_subscription_replay() {
+    let mut delayed = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    delayed.replay_delay = Duration::from_secs(5);
+    let stub = Arc::new(delayed);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect("replay-cancel", &url).await.unwrap();
+    let _incoming = client.incoming().unwrap();
+    client.subscribe("world.slow").await.unwrap();
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(5, || stub.state.try_lock()
+        .map(|s| s.subscribe_attempts == 2).unwrap_or(false)).await);
+    tokio::time::timeout(Duration::from_secs(1), client.close()).await
+        .expect("shutdown must cancel the replay RPC rather than wait for its acknowledgement");
+    assert_eq!(client.state(), ConnState::ShuttingDown);
+    assert_eq!(stub.state.lock().await.connections, 2);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(stub.state.lock().await.connections, 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
