@@ -81,9 +81,14 @@ fn compound_surfaces_render_at_native_and_fractional_scale() {
     for scale in [1.0, 2.5] {
         let mut messages = iced_core::shell::Bus::new();
         ui.update(
-            &iced_core::window::Headless, &iced_core::shell::Waker::noop(),
-            &[iced_core::Event::Window(iced_core::window::Event::RedrawRequested(iced_core::time::Instant::now()))],
-            mouse::Cursor::Unavailable, &mut renderer, &mut messages,
+            &iced_core::window::Headless,
+            &iced_core::shell::Waker::noop(),
+            &[iced_core::Event::Window(
+                iced_core::window::Event::RedrawRequested(iced_core::time::Instant::now()),
+            )],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
         );
         ui.draw(
             &mut renderer,

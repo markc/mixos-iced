@@ -92,6 +92,8 @@ pub enum Message {
     Copy,
     Cut,
     Paste { primary: bool },
+    /// Publish the bounded selected text; the host owns primary-selection support.
+    PrimarySelection(String),
     Preedit(String),
     ImeCommit(String),
     Focus(bool),

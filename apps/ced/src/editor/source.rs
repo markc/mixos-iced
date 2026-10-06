@@ -211,6 +211,7 @@ pub(super) fn event(message: pane::Message) -> super::EditorMsg {
         }),
         M::Copy => super::EditorMsg::Copy,
         M::Cut => super::EditorMsg::Cut,
+        M::PrimarySelection(text) => super::EditorMsg::PrimarySelection(text),
         M::Paste { primary } => super::EditorMsg::Paste { primary },
         M::Preedit(text) => super::EditorMsg::Preedit(text),
         M::ImeCommit(text) => super::EditorMsg::ImeCommit(text),

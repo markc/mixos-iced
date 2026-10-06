@@ -750,6 +750,10 @@ impl Controller {
                 primary,
                 intent: Intent::ui(tab),
             }),
+            EditorMsg::PrimarySelection(text) => fx.push(Effect::ClipboardWrite {
+                text,
+                primary: true,
+            }),
             EditorMsg::Preedit(s) => {
                 if let Some(t) = self.tab_mut(tab) {
                     t.editor.set_preedit(!s.is_empty());
@@ -3027,6 +3031,14 @@ mod tests {
                 _ => None,
             })
             .expect("a response")
+    }
+
+    #[test]
+    fn shared_primary_selection_is_written_by_the_host_without_editing() {
+        let mut c = ctl();
+        let effects = c.on_editor(1, EditorMsg::PrimarySelection("e\u{301}中".into()));
+        assert!(matches!(effects.as_slice(), [Effect::ClipboardWrite { text, primary: true }] if text == "e\u{301}中"));
+        assert_eq!(c.stats.keys, 0);
     }
 
     #[test]

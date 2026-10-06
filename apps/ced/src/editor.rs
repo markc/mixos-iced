@@ -20,6 +20,8 @@ pub enum EditorMsg {
     Scrolled(Scroll),
     Copy,
     Cut,
+    /// Selected text for the host's native primary clipboard.
+    PrimarySelection(String),
     /// Paste from the clipboard (`primary`: the middle-click selection).
     Paste {
         primary: bool,

@@ -399,10 +399,15 @@ where
             if index > first && !st.is_visible(index, height) {
                 break;
             }
-            let Some(row) = self.source.row(index) else { break };
+            let Some(row) = self.source.row(index) else {
+                break;
+            };
             visible.push((index, row));
         }
-        let missing = visible.iter().filter(|(_, row)| !st.cache.contains_key(row.path)).count();
+        let missing = visible
+            .iter()
+            .filter(|(_, row)| !st.cache.contains_key(row.path))
+            .count();
         if st.cache.len().saturating_add(missing) > 512.max(visible.len()) {
             // Evict only offscreen entries, before processing the viewport.
             // Warm visible paragraphs survive both scrolling and idle input.
@@ -1192,20 +1197,39 @@ mod tests {
     #[test]
     fn tall_idle_viewports_keep_their_shaped_paragraphs() {
         let entries: Vec<_> = (0..1000)
-            .map(|i| (PathBuf::from(format!("/listing/{i}")), format!("file-{i}.txt")))
+            .map(|i| {
+                (
+                    PathBuf::from(format!("/listing/{i}")),
+                    format!("file-{i}.txt"),
+                )
+            })
             .collect();
         let reads = Cell::new(0);
         let list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
-            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+            Listing {
+                entries: &entries,
+                reads: &reads,
+            },
+            Presentation::default(),
+            columns(),
         );
         let _renderer = LayoutRenderer::new();
         let mut state = RowState::new(Presentation::default());
         list.ensure_metrics(&mut state);
         list.sync_cache(&mut state, 9000.0, 600.0);
         assert!(state.cache.len() > 256);
-        let before: Vec<_> = state.cache.iter().map(|(path, cached)| (
-            path.clone(), cached.name.clone(), cached.size.clone(), cached.modified.clone(),
-        )).collect();
+        let before: Vec<_> = state
+            .cache
+            .iter()
+            .map(|(path, cached)| {
+                (
+                    path.clone(),
+                    cached.name.clone(),
+                    cached.size.clone(),
+                    cached.modified.clone(),
+                )
+            })
+            .collect();
         for _ in 0..50 {
             list.sync_cache(&mut state, 9000.0, 600.0);
             for (path, name, size, modified) in &before {

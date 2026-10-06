@@ -20,7 +20,7 @@ use iced_core::layout::{self, Layout};
 use iced_core::text::{self as atext, Paragraph};
 use iced_core::widget::{Tree, tree};
 use iced_core::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window};
-use iced_core::{InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer};
+use iced_core::{InputMethod, Shell, Widget, input_method, mouse, renderer};
 
 use super::layout::{self as geo, Geometry, Metrics};
 use super::lines::{self, Checkpoints};
@@ -348,7 +348,7 @@ impl<'a> Editor<'a> {
             if a < b && b - a <= PRIMARY_MAX && b <= self.text.len() {
                 let mut s = String::with_capacity(b - a);
                 self.text.read(a..b, &mut s);
-                shell.write_clipboard(clipboard::Content::PrimaryText(s));
+                shell.publish(EditorMsg::PrimarySelection(s));
             }
         }
 
