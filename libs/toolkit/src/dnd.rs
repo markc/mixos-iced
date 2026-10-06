@@ -561,6 +561,8 @@ where
     }
 }
 
+type NativeGestureProbe<'a> = Box<dyn Fn(&Event) -> Option<native::Gesture> + 'a>;
+
 /// An area that starts a drag: wrap it around draggable content. A
 /// press that moves past the threshold calls `on_drag` with the payload
 /// (the application stores the gesture in the [`Shared`] state, or uses
@@ -576,7 +578,7 @@ where
     shared: Option<Shared<P>>,
     on_drag: Option<Box<dyn Fn(P) -> Message + 'a>>,
     on_native_drag: Option<Box<dyn Fn(P, native::Gesture) -> Message + 'a>>,
-    native_gesture: Option<Box<dyn Fn(&Event) -> Option<native::Gesture> + 'a>>,
+    native_gesture: Option<NativeGestureProbe<'a>>,
 }
 
 impl<'a, Message, Theme, Renderer, P> DragArea<'a, Message, Theme, Renderer, P>
