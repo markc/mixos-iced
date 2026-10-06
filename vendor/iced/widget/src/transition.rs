@@ -231,8 +231,9 @@ where
             // while a host retries the SAME frame instant. Synchronise that
             // state too; an idle retry must not request an unnecessary frame.
             let was_animating = animation.is_animating(*instant);
+            let reset = *should_reset;
 
-            if *should_reset {
+            if reset {
                 *animation = (self.init)();
                 *should_reset = false;
             }
@@ -243,7 +244,7 @@ where
             let is_animating = animation.is_animating(*instant);
             let just_finished = was_animating && !is_animating;
 
-            if is_animating || just_finished {
+            if is_animating || just_finished || reset {
                 let size = *size;
 
                 let mut new = (self.view)(animation, *instant);

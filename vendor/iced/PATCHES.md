@@ -159,6 +159,8 @@ The actual `Keys` + idle `Transition` regression in compd's UI host guards
 this change (`idle_transition_with_redraw_callback_sleeps_or_starts_a_new_target`).
 Completion chaining is guarded at the same timestamp, with exactly one
 completion notification and a wake for the next target.
+Resetting an idle animation rebuilds its child even if no new animation
+starts; the real reset operation and drawn style are regression-tested.
 The Transition/Responsive relayout test also asserts that an active
 transition continues requesting frames. Run `cargo test -p ui --lib`.
 Retire this patch when upstream handles idle same-instant retries.

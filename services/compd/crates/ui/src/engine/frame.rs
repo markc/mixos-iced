@@ -305,6 +305,44 @@ mod tests {
     }
 
     #[test]
+    fn resetting_an_idle_transition_rebuilds_its_drawn_child_then_sleeps() {
+        let view = |target| -> Element<'_, u8, Theme, Paint> {
+            iced_widget::transition::Transition::new(
+                || iced_core::animation::Animation::new(0.0_f32), target,
+                |animation: &iced_core::animation::Animation<f32>, _| {
+                    let primary = animation.value() > 0.5;
+                    button(Space::new().width(20).height(10)).on_press(7)
+                        .style(move |theme, status| if primary { button::primary(theme, status) } else { button::secondary(theme, status) })
+                },
+            ).id("reset").into()
+        };
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let mut messages = shell::Bus::new();
+        let mut ui = UserInterface::build(view(1.0), Size::new(100.0, 50.0), Cache::default(), &mut renderer);
+        let start = Instant::now() + iced_core::time::Duration::from_secs(1);
+        prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, start);
+        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view(1.0), Size::new(100.0, 50.0), cache, &mut renderer);
+        let finish = start + iced_core::time::Duration::from_secs(2);
+        prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, finish);
+        ui.operate(&renderer, &mut iced_widget::transition::reset_raw("reset"));
+        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view(0.0), Size::new(100.0, 50.0), cache, &mut renderer);
+        prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, finish);
+        renderer.0.clear();
+        ui.draw(&mut renderer, &Theme::Dark, &renderer::Style::default(), mouse::Cursor::Unavailable);
+        let active = button::Status::Active;
+        assert_ne!(button::primary(&Theme::Dark, active).background, button::secondary(&Theme::Dark, active).background);
+        assert_eq!(renderer.0, vec![button::secondary(&Theme::Dark, active).background.unwrap()],
+            "reset must replace the old value's primary button immediately");
+        let state = prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, finish);
+        assert_eq!(messages.drain().count(), 0);
+        assert_eq!(after_update(window::RedrawRequest::Wait, state, finish, true), window::RedrawRequest::Wait,
+            "an idle reset must settle after refreshing its child");
+    }
+
+    #[test]
     fn relayout_retries_prepare_recreated_responsive_buttons() {
         struct Resize(bool);
         impl iced_widget::transition::Program for Resize {
