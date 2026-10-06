@@ -1,1 +1,2 @@
-/target
+# Cargo builds and renderer probes can create targets below component roots.
+target/

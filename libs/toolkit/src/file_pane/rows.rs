@@ -394,20 +394,22 @@ where
     /// owns the `&mut Tree` the cache lives in).
     fn sync_cache(&self, st: &mut RowState<Renderer::Paragraph>, height: f32, width: f32) {
         let first = (st.offset / st.row_h).floor().max(0.0) as usize;
-        // Reserve a complete viewport before shaping it. Evicting in
-        // cache_row would discard earlier visible paragraphs mid-pass.
-        // An unusually tall viewport may legitimately need more than 512.
-        let visible = ((height / st.row_h).ceil().max(0.0) as usize).saturating_add(2);
-        if st.cache.len().saturating_add(visible) > 512.max(visible) {
-            st.cache.clear();
-        }
+        let mut visible = Vec::new();
         for index in first..self.source.len() {
-            let Some(row) = self.source.row(index) else {
-                break;
-            };
             if index > first && !st.is_visible(index, height) {
                 break;
             }
+            let Some(row) = self.source.row(index) else { break };
+            visible.push((index, row));
+        }
+        let missing = visible.iter().filter(|(_, row)| !st.cache.contains_key(row.path)).count();
+        if st.cache.len().saturating_add(missing) > 512.max(visible.len()) {
+            // Evict only offscreen entries, before processing the viewport.
+            // Warm visible paragraphs survive both scrolling and idle input.
+            let paths: HashSet<_> = visible.iter().map(|(_, row)| row.path).collect();
+            st.cache.retain(|path, _| paths.contains(path.as_path()));
+        }
+        for (index, row) in visible {
             self.cache_row(st, index, &row, width);
         }
     }
@@ -1185,5 +1187,34 @@ mod tests {
             "offscreen traversal: {} reads",
             reads.get()
         );
+    }
+
+    #[test]
+    fn tall_idle_viewports_keep_their_shaped_paragraphs() {
+        let entries: Vec<_> = (0..1000)
+            .map(|i| (PathBuf::from(format!("/listing/{i}")), format!("file-{i}.txt")))
+            .collect();
+        let reads = Cell::new(0);
+        let list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
+            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+        );
+        let _renderer = LayoutRenderer::new();
+        let mut state = RowState::new(Presentation::default());
+        list.ensure_metrics(&mut state);
+        list.sync_cache(&mut state, 9000.0, 600.0);
+        assert!(state.cache.len() > 256);
+        let before: Vec<_> = state.cache.iter().map(|(path, cached)| (
+            path.clone(), cached.name.clone(), cached.size.clone(), cached.modified.clone(),
+        )).collect();
+        for _ in 0..50 {
+            list.sync_cache(&mut state, 9000.0, 600.0);
+            for (path, name, size, modified) in &before {
+                let cached = &state.cache[path];
+                assert!(std::ptr::eq(name.buffer(), cached.name.buffer()));
+                assert!(std::ptr::eq(size.buffer(), cached.size.buffer()));
+                assert!(std::ptr::eq(modified.buffer(), cached.modified.buffer()));
+            }
+        }
+        assert!(reads.get() < 25_000);
     }
 }
