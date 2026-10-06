@@ -166,8 +166,9 @@ pub struct MixBusHandler {
     /// `Arc` inside `Connected` lets a caller hold the client across
     /// its `.await` without borrowing `self`.
     mesh: tokio::sync::Mutex<MeshState>,
-    /// A plain connection kept for the serve path; see [`serve_access`].
-    /// Only ever populated when the main lane is verified.
+    /// The connection owning service registrations and the incoming receiver.
+    /// A verified main lane needs a dedicated plain lane; an anonymous main
+    /// lane is also stored here so partial reconciliation can retain its stream.
     serve: tokio::sync::Mutex<Option<std::sync::Arc<Lane>>>,
     /// Incoming-message receiver, taken from the `NodedClient` on first
     /// `next_incoming` call and stored here so subsequent calls can re-await.
@@ -536,6 +537,7 @@ impl MixBusHandler {
                 return Ok(existing.clone());
             }
             if serve_lane_for(lane.kind()) == ServeChoice::ReuseMain {
+                *serve = Some(lane.clone());
                 return Ok(lane);
             }
             let url = crate::node_config::resolve_noded_url();
@@ -2176,6 +2178,42 @@ mod tests {
             "NeverPresent",
             "each lane rearms once"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_detach_retains_the_shared_anonymous_receiver() {
+        use ::bus::native_client::NodedClient;
+        let broker = term_test_broker::Broker::start();
+        let service = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+        service.register_as("fixture-shared-repl").await.unwrap();
+        let lane = std::sync::Arc::new(Lane::Anonymous(service));
+        let mut h = MixBusHandler::new();
+        h.test_force_state(MeshState::Connected(lane.clone())).await;
+        let serving = h.serve_access().await.ok().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&serving, &lane));
+        *h.incoming.borrow_mut() = serving.incoming_async().await;
+        let generation = h.incoming_generation.get();
+        h.native_attachment_generation = Some(Cell::new(1));
+        h.native_serve_generation.set(1);
+        h.reconcile_native_generation(2, None).await;
+        assert_eq!(h.test_state_label().await, "Connected");
+        assert_eq!(h.incoming_generation.get(), generation);
+        let sender = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+        sender
+            .send(
+                "fixture-shared-repl",
+                "fixture.current",
+                serde_json::Value::Null,
+            )
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), h.next_incoming())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.command, "fixture.current");
+        assert!(!*h.incoming_closed.borrow());
+        sender.close().await;
     }
 
     #[test]
