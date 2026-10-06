@@ -8,7 +8,9 @@ use editor_model::types::{Intent, TabId};
 #[cfg(test)]
 use requester::list;
 pub use requester::{Event as FileMsg, PATH_INPUT};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 use toolkit::requester::{self, Requester};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

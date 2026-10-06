@@ -53,7 +53,6 @@ mod tests {
         )
     }
 
-    use crate::frame::Frame;
     use crate::frame::Painter;
     use term_core::{
         config::Cursor,

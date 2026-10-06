@@ -913,7 +913,7 @@ impl App {
         if let Some(name) = name {
             dialog = dialog.with_name(&name);
         }
-        self.modal = Some(Modal::File(dialog));
+        self.modal = Some(Modal::File(Box::new(dialog)));
         Task::batch([
             application::iced::widget::operation::focus(crate::chrome::dialogs::file::PATH_INPUT),
             application::iced::widget::operation::move_cursor_to_end(

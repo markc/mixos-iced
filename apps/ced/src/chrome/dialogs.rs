@@ -106,7 +106,7 @@ mod queue_tests {
 /// The open dialog.
 #[derive(Debug, Clone)]
 pub enum Modal {
-    File(file::FileDialog),
+    File(Box<file::FileDialog>),
     Confirm(confirm::Confirm),
     Goto(goto::Goto),
     About,
