@@ -1114,9 +1114,8 @@ impl App {
         .spacing(gap);
         let content: Element<'_, Message, Theme> =
             if let (Some(doc), Some(image)) = (&self.document, &self.preview) {
-                canvas::Canvas::new(Picture {
+                let canvas: Element<'_, Message, Theme> = canvas::Canvas::new(Picture {
                     document: doc,
-                    image,
                     tool: self.tool,
                     colour: self.colour.into_rgba8(),
                     width: self.width,
@@ -1128,7 +1127,8 @@ impl App {
                 })
                 .width(iced::Fill)
                 .height(iced::Fill)
-                .into()
+                .into();
+                crate::preview::plane(canvas, image, doc.output_dimensions(), self.zoom, self.pan)
             } else {
                 container(text(label("empty"))).center(iced::Fill).into()
             };
@@ -1207,7 +1207,6 @@ impl App {
 
 struct Picture<'a> {
     document: &'a Document,
-    image: &'a iced::advanced::image::Handle,
     tool: Tool,
     colour: [u8; 4],
     width: f32,
@@ -1225,10 +1224,8 @@ mod tests {
     fn full_freehand_stroke_keeps_its_accumulated_geometry() {
         use canvas::Program;
         let doc = Document::new(image::RgbaImage::new(120, 100)).unwrap();
-        let handle = iced::advanced::image::Handle::from_rgba(120, 100, vec![0; 120 * 100 * 4]);
         let picture = Picture {
             document: &doc,
-            image: &handle,
             tool: Tool::Draw(Kind::Pen),
             colour: toolkit::Tokens::default().palette.destructive.into_rgba8(),
             width: 4.0,
@@ -1279,7 +1276,6 @@ mod tests {
         let colour = toolkit::Tokens::default().palette.destructive.into_rgba8();
         let picture = Picture {
             document: &doc,
-            image: &handle,
             tool: Tool::Draw(Kind::Arrow),
             colour,
             width: 4.0,
@@ -1293,6 +1289,13 @@ mod tests {
             .width(iced::Fill)
             .height(iced::Fill)
             .into();
+        let element = crate::preview::plane(
+            element,
+            &handle,
+            doc.output_dimensions(),
+            1.5,
+            Point { x: 0.0, y: 0.0 },
+        );
         let mut ui = iced_test::Simulator::with_size(
             iced::Settings::default(),
             iced::Size::new(600.0, 400.0),
@@ -1303,12 +1306,32 @@ mod tests {
             mouse::Button::Left,
         ))]);
         ui.point_at(iced::Point::new(400.0, 300.0));
-        ui.simulate([
-            iced::Event::Mouse(mouse::Event::CursorMoved {
-                position: iced::Point::new(400.0, 300.0),
-            }),
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
-        ]);
+        ui.simulate([iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: iced::Point::new(400.0, 300.0),
+        })]);
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            ui.snapshot(&Theme::default())
+                .unwrap()
+                .matches_image(directory.path().join("guides.png"))
+                .unwrap()
+        );
+        let path = std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let pixels = image::open(path).unwrap().to_rgba8();
+        assert_eq!(pixels.get_pixel(10, 10).0, [255, 255, 255, 255]);
+        assert_ne!(
+            pixels.get_pixel(500, 400).0,
+            [255, 255, 255, 255],
+            "drag guide must render above the opaque image"
+        );
+        ui.simulate([iced::Event::Mouse(mouse::Event::ButtonReleased(
+            mouse::Button::Left,
+        ))]);
         let messages: Vec<_> = ui.into_messages().collect();
         let [Message::Gesture(Gesture::Add(shape))] = messages.as_slice() else {
             panic!("one complete gesture: {messages:?}")
@@ -1481,17 +1504,6 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let viewport = self.viewport(bounds);
-        frame.draw_image(
-            iced::Rectangle {
-                x: viewport.origin.x,
-                y: viewport.origin.y,
-                width: viewport.width,
-                height: viewport.height,
-            },
-            iced::advanced::image::Image::new(self.image),
-        );
-        let background = frame.into_geometry();
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
         let c = self.document.crop();
         let to_view = |p: Point| {
             let p = viewport.view(Point {
@@ -1545,7 +1557,7 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
                     .with_width(1.0),
             );
         }
-        vec![background, frame.into_geometry()]
+        vec![frame.into_geometry()]
     }
     fn mouse_interaction(
         &self,

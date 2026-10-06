@@ -4,6 +4,7 @@ pub mod bus;
 pub mod capture;
 pub mod document;
 pub mod headless;
+pub mod preview;
 pub mod strings;
 pub mod verbs;
 pub mod viewport;

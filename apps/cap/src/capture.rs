@@ -122,19 +122,24 @@ pub struct Captured {
 }
 
 pub fn media_directory() -> Result<PathBuf, String> {
-    let base = std::env::var_os("MIXOS_APP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("MIXOS_APPS_HOME").map(|p| PathBuf::from(p).join("cap")))
-        .or_else(|| {
-            std::env::var_os("XDG_STATE_HOME").map(|p| PathBuf::from(p).join("mixos/apps/cap"))
-        })
-        .or_else(|| {
-            std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/state/mixos/apps/cap"))
-        })
-        .filter(|p| p.is_absolute())
+    use std::os::unix::fs::DirBuilderExt;
+    let env = |name| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let base = env("MIXOS_APP_HOME")
+        .or_else(|| env("MIXOS_APPS_HOME").map(|p| p.join("cap")))
+        .or_else(|| env("MIXOS_VAR").map(|p| p.join("apps/cap")))
+        .or_else(|| env("XDG_STATE_HOME").map(|p| p.join("mixos/apps/cap")))
+        .or_else(|| env("HOME").map(|p| p.join(".local/state/mixos/apps/cap")))
         .ok_or("no absolute application state directory")?;
     let directory = base.join("captures");
-    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&directory)
+        .map_err(|e| e.to_string())?;
     Ok(directory)
 }
 
