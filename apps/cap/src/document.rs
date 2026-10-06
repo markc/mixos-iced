@@ -94,8 +94,7 @@ impl Shape {
             return Err("stroke width must be 0.5..128 pixels".into());
         }
         let count = self.points.len();
-        if count < 2
-            || count > MAX_POINTS
+        if !(2..=MAX_POINTS).contains(&count)
             || self.points.iter().any(|p| !p.valid())
             || (!matches!(self.kind, Kind::Pen | Kind::Highlighter) && count != 2)
         {
