@@ -1,0 +1,414 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! `mix explain MIX-XXXX` — the rustc-style diagnostics explainer.
+//!
+//! One embedded record per lint code: the code, a one-line summary (what it
+//! flags), and the full rationale (why it exists, the shape it catches, the
+//! fix). The prose is the authoritative text from `docs/mix/lint.md`, embedded
+//! here so an agent hitting a code it has never seen gets the whole story in one
+//! `mix explain` call without leaving the terminal.
+//!
+//! Anti-drift, in two halves: this module's own test greps `analyzer.rs` for
+//! every `MIX-####` code it emits and asserts each has a record; the codes
+//! assigned in the binary's lint driver (`E1001`–`E1003`, from
+//! `mix-shell/src/lint.rs`) are covered by that crate's
+//! `tests/lint_explain_coverage.rs`. Between them, neither the analyzer nor the
+//! lint driver can ship a code with no explanation.
+
+/// One explainable lint code.
+pub struct LintDoc {
+    /// The stable code, e.g. `MIX-W2305`.
+    pub code: &'static str,
+    /// One-line "what it flags" — the compact table form.
+    pub summary: &'static str,
+    /// The full rationale: why the rule exists, the shape it catches, the fix.
+    pub detail: &'static str,
+}
+
+/// Look up a code (case-insensitively), tolerating a missing `MIX-` prefix so
+/// `mix explain W2305` works like `mix explain MIX-W2305`.
+pub fn explain(code: &str) -> Option<&'static LintDoc> {
+    let c = code.trim();
+    LINT_DOCS.iter().find(|d| {
+        d.code.eq_ignore_ascii_case(c)
+            || d.code
+                .strip_prefix("MIX-")
+                .is_some_and(|bare| bare.eq_ignore_ascii_case(c))
+    })
+}
+
+/// Does `s` have a lint-code SHAPE — an optional case-insensitive `MIX-` prefix
+/// then a letter and four digits (`MIX-E1101`, `W2305`, `d3013`, even a
+/// malformed `MIX-Z9999`)? Used by the CLI to route `mix explain <arg>` to this
+/// explainer vs. the builtin explainer; a shape-valid but unknown code lands
+/// here so the explainer can say "unknown, here are the codes" rather than
+/// sending it to the AI builtin-explainer.
+pub fn looks_like_code(s: &str) -> bool {
+    let t = s.trim();
+    // Strip a case-insensitive `MIX-` prefix (MIX-/mix-/Mix-), matching
+    // `explain`'s own case-insensitivity so routing and lookup agree.
+    let bare = if t.len() >= 4 && t[..4].eq_ignore_ascii_case("mix-") {
+        &t[4..]
+    } else {
+        t
+    };
+    let mut chars = bare.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {
+            let rest: String = chars.collect();
+            rest.len() == 4 && rest.chars().all(|c| c.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+/// All code prefixes, for `mix explain` with no/invalid arg to hint the shape.
+pub fn all_codes() -> impl Iterator<Item = &'static str> {
+    LINT_DOCS.iter().map(|d| d.code)
+}
+
+pub const LINT_DOCS: &[LintDoc] = &[
+    // ---- Errors (MIX-E1xxx) ----
+    LintDoc {
+        code: "MIX-E1001",
+        summary: "lexical error",
+        detail: "The lexer could not tokenise the source — an unterminated string or heredoc, a stray character, a malformed number. This is a hard error from the layer below the analyzer; `mix --check` reports it too. Fix the token the message points at.",
+    },
+    LintDoc {
+        code: "MIX-E1002",
+        summary: "script parse error",
+        detail: "The tokens did not form a valid Mix program — a missing `end`/`next`/`done`, an assignment where an expression was expected, a chained assignment. Reported by the parser before semantic analysis runs. The assignment-chain case points its column at the offending `&&`/`||`.",
+    },
+    LintDoc {
+        code: "MIX-E1003",
+        summary: "strict-data parse error",
+        detail: "The source was recognisably intended as strict data (the bare-key `k: v` form `load_data()` reads) but failed the literal-data grammar — distinct from a broken executable script (MIX-E1002). A valid data file is recognised by CONTENT under any filename; the strict-data suffix is only a tiebreak when neither grammar succeeds.",
+    },
+    LintDoc {
+        code: "MIX-E1101",
+        summary: "undefined variable",
+        detail: "A `$name` read whose name is bound NOWHERE in its visible universe. Function bodies see their params, their own binders, and everything bound anywhere at file level (Mix has no block scoping and no read-before-assign rule, so lexical order is deliberately ignored). Never flagged: `${name}` interpolation (falls back to the process environment), `$1`-style positionals, the runtime-injected `rc`/`result`/`status`/`event`/`_`, and (conservatively) a name that matches any known callable even if no variable binds it. In an `ssh_mix` body whose opts cannot be read statically, variable checks stand down — dynamic `bindings`/`env` may supply any data name (reported once per call as MIX-D3018) — and a read one edit away from a name the body DOES bind gets MIX-D3017 instead of silence. Fix: assign it, use `env(\"NAME\")` for environment values, or pass `--allow-global NAME`.",
+    },
+    LintDoc {
+        code: "MIX-E1102",
+        summary: "undefined function",
+        detail: "A bareword call that resolves against nothing: not a builtin, HOF, evaluator special form, `function` definition in the file, the embedded prelude, an `--allow-function` name, or an assigned variable (a bareword call can dispatch to a function-valued variable). Calls inside `address … end` blocks are sends and never flagged; `MethodCall`/`ValueCall` are dynamic dispatch and skipped. A deleted legacy name (e.g. `grep`) gets this AND its MIX-D30xx rename pointer. The hint carries the same \"did you mean\" the runtime prints for that name (one shared suggester): deleted-name pointers first, then the foreign get/set/find FORM table (`get` → `$m[key]` / `get_or`/`require_key`; `set` → `$m[key] = value`; `find` → `index_of`/`filter`), then a foreign-name synonym table (`json_decode`/`json_loads` → `json_parse`, `str` → `to_string`, `trim_end`/`rstrip` → `rtrim`, `len_bytes` → `byte_length`, …), then edit distance — so `json_decode` suggests `json_parse`, not its nearest-spelled opposite `json_encode`. In an `ssh_mix` body this check is NEVER suppressed: strict-data bindings cannot create a callable, so a function name the body does not define is undefined no matter what the opts hold.",
+    },
+    LintDoc {
+        code: "MIX-E1203",
+        summary: "literal argument contradicts the builtin's contract type",
+        detail: "`mkdir({a:1})`, `exists([1,2])`, `len(3)` — a literal whose type cannot satisfy the contract's declared shape. The runtime raises TYPE_MISMATCH on the same call (0.103.1), so this makes the lint agree with the runtime instead of letting the script crash mid-run; a wrong-typed path/target literal is a side effect on the wrong target. Variables and expressions are not judged — only a literal proves the type.",
+    },
+    LintDoc {
+        code: "MIX-E1201",
+        summary: "builtin arity mismatch",
+        detail: "A builtin call outside its documented arity, checked against the structured contract metadata (`mix builtins --json`), including non-contiguous exact-arity sets — `random(1)` is an error, `random()`/`random(min, max)` are not. The contract is the documented surface; some older builtins tolerate surplus arguments at runtime, and lint is deliberately stricter (`mix --strict-arity` makes the runtime agree).",
+    },
+    LintDoc {
+        code: "MIX-E1202",
+        summary: "user-function arity mismatch",
+        detail: "A call to a `function` defined in the file with the wrong number of arguments, checked against that definition's parameter count. Checked only when the name has exactly ONE definition (an overloaded name is ambiguous), and skipped when a same-named variable exists (the call may dispatch through it).",
+    },
+    LintDoc {
+        code: "MIX-E1301",
+        summary: "duplicate function parameter",
+        detail: "A `function` (or a `fn(...)` lambda, reported as `<lambda>`) declares the same parameter name twice — the second binding would silently shadow the first. A definition-time error.",
+    },
+    LintDoc {
+        code: "MIX-E1302",
+        summary: "duplicate function definition in one scope",
+        detail: "Two `function` definitions with the same name in one scope — the later wins and the earlier is dead. A definition-time error (distinct from MIX-E1303, which is about a function whose name collides with a BUILTIN).",
+    },
+    LintDoc {
+        code: "MIX-E1303",
+        summary: "function name shadows a builtin",
+        detail: "At the DEFINITION of a function whose name is a builtin: the builtin wins at every call site (a builtin-named dot-call even desugars at parse time), so the definition is unreachable by name — only an extracted function value or an exports-map index still reaches it. The worst shape is a script that keeps running while its own function quietly stops being called, and every release that adds a builtin name arms it again for older scripts. An ERROR since 0.90.0 (it was MIX-W2403 from 0.74.0, a warning on the theory that a compat shim for an older mix is legitimate authoring). The fleet refuted that theory: two sites across 785 scripts and neither was a shim — one a hand-rolled `ends_with` duplicating the builtin, the other an `fn mix_version()` in a pre-commit hook written to report a NAMED interpreter's version and silently answering with the running one's, a live wrong answer that sat behind a warning for sixteen releases. Lint is also the only gate an `ssh_mix` body passes through, and a warning stops nothing by default. The RUNTIME is unchanged — the builtin still wins; the fix is to rename. Since 0.91.0 \"builtin\" includes the evaluator's inline forms outside the builtin table's dispatch gate — `serve_name`, `printf`, the Bus forms `quit`/`reply`/`subscribe`/… — which win over a same-named function just the same and used to slip past this check. Distinct from MIX-E1302, which is two user definitions colliding with each other.",
+    },
+    LintDoc {
+        code: "MIX-E1401",
+        summary: "require() target missing/unreadable",
+        detail: "A `require(\"path\")` with a literal path that does not exist or cannot be read. `require` is the isolated, statically-resolvable module loader, so lint verifies literal-path targets — unlike `source`/`include` (see MIX-W2401).",
+    },
+    LintDoc {
+        code: "MIX-E1402",
+        summary: "require() target invalid Mix",
+        detail: "A `require(\"path\")` whose literal target exists but does not parse as Mix. Lint parses literal-path modules so a broken dependency is caught at authoring time, not at run time.",
+    },
+    LintDoc {
+        code: "MIX-E1501",
+        summary: "dead mutation (write is lost)",
+        detail: "A discarded `push`/`pop`/`shift` whose first argument is NOT a bare variable — `push($m[\"a\"], $v)`, `push($m.a, $v)`, `$m[\"a\"].push($v)`. These mutate through the variable slot, so given any other expression they append to a temporary copy and the write is lost in silence. An ERROR, not a warning: the statement does nothing while reading as though it did. The FIX DIFFERS BY BUILTIN: `push` returns the appended list, so assign it back — `$m[\"a\"] = push($m[\"a\"], $v)`. `pop`/`shift` return the REMOVED ELEMENT, not the list, so assigning that back would replace the list with the element (data corruption) — hoist first instead: `$l = $m[$k]; $x = pop($l); $m[$k] = $l`. A by-value parameter is a bare variable, handled by its own dead-push warning, so it is not double-reported.",
+    },
+    LintDoc {
+        code: "MIX-E1502",
+        summary: "discarded pure transform",
+        detail: "A discarded `delete`/`merge` — both are PURE (they return a new container and change nothing in place), so a bare call is a no-op. Assign it back: `$m = delete($m, \"k\")`.",
+    },
+    LintDoc {
+        code: "MIX-E1503",
+        summary: "function name stored as a value (--agent)",
+        detail: "`$f = bump` stores the STRING \"bump\" — Mix has no first-class function values, so the assignment binds text, not the function. Call it instead: `bump(...)`. Scoped to USER-DEFINED names (file functions, prelude, allow-list) so an ordinary config string that happens to match a builtin (`$mode = \"json\"`) stays silent. Emitted only under `--agent` / `MIX_LINT=agent`.",
+    },
+    LintDoc {
+        code: "MIX-E1504",
+        summary: "assignment from a nil-returning builtin (--agent)",
+        detail: "`$n = write_file(...)`, `$x = push($x, v)` — the builtin's contract returns nil, so the assignment binds nil and the script reads as though it captured a result. Drop the `$var`, or use a value-returning form. Emitted only under `--agent` / `MIX_LINT=agent`.",
+    },
+    LintDoc {
+        code: "MIX-E1505",
+        summary: "constant-truthy condition (--agent)",
+        detail: "A condition that never varies: a string literal (`if \"false\"` — every non-empty string is truthy), a bool/nil/map literal, or a process-result map used bare (a map is always truthy — test `.ok`). `while true` is exempt: it is the canonical event-pump idiom. Emitted only under `--agent` / `MIX_LINT=agent`.",
+    },
+    LintDoc {
+        code: "MIX-E1506",
+        summary: "write to an outer variable inside fn (--agent)",
+        detail: "A `fn` body assigns a name that already exists as an outer $variable (and is not one of its params) — the assignment silently creates a NEW local, and the outer variable is unchanged. Pass it in, return it, or rename the local. Compares against variables, not callables, so a `$sum = 0` local never fires on the prelude's `sum` function. Emitted only under `--agent` / `MIX_LINT=agent`.",
+    },
+    LintDoc {
+        code: "MIX-E1507",
+        summary: "shell command written as a bare string",
+        detail: "A bare-string statement whose head word resolves on PATH — `hostname` or `systemctl --user daemon-reload` inside a `.mix` file parse as a string, run NOTHING, exit 0, and used to lint clean (B2). Mix is whole-file; run it with `run_argv([\"head\", ...])`, or drop the string. A bare string whose head is NOT on PATH stays silent.",
+    },
+    LintDoc {
+        code: "MIX-E1508",
+        summary: "assign-back of an in-place mutator",
+        detail: "`$x = push($x, v)` binds nil — push mutates in place and returns nil, so the assign-back empties the list; `$x = pop($x)` / `$x = shift($x)` bind the REMOVED ELEMENT, not the list. Drop the assignment for push; bind the element separately for pop/shift.",
+    },
+    // ---- Warnings (MIX-W2xxx) ----
+    LintDoc {
+        code: "MIX-W2101",
+        summary: "unreachable statement",
+        detail: "A statement that can never run because control flow leaves the block before reaching it — code after an unconditional `return`/`break`/`continue`, a `die`, or an `exit()`/`panic()` call in the same straight-line block.",
+    },
+    LintDoc {
+        code: "MIX-W2201",
+        summary: "discarded must-use result",
+        detail: "An operation whose failure signal lives in its RETURN VALUE (`effects.must_use`: `run_rc`, `run_argv`, `run_pipeline`, `run_parallel`, `ssh_run`, `ssh_exec`, `ssh_mix`, `http_*`, `kill`, `run_stream`) used as a bare expression statement — the bug class where a failed remote step silently vanishes. The last statement of a block is exempt (it may be the block's value). Fix: bind the result and branch on it (check `.ok`/`.rc`/`.exit_code`); some have a fail-fast twin that raises instead (`run_argv`→`run_argv_must`, `run_pipeline`→`run_pipeline_must`, `ssh_run`→`ssh_must`).",
+    },
+    LintDoc {
+        code: "MIX-W2301",
+        summary: "`+` on a proven list/map raises at runtime",
+        detail: "`+` is arithmetic with a SCALAR string fallback: since 0.90.0 a List, Map, Bytes, Buffer or Function operand raises `TYPE_ERROR` instead of silently stringifying (it used to make `[\"a\"] + [\"b\"]` the string `[a][b]` with rc 0). This note fires for a list/map LITERAL operand, or a variable proven by straight-line analysis to hold a directly assigned one, so the failure is visible at authoring time — which for an `ssh_mix` body, or for a branch the local run never takes, is the only gate there is. Use `concat(a, b)` for lists, `merge(a, b)` for maps, `push(list, value)` to append, `..` to build text. Still a warning, not an error: the proven-value facts are straight-line, so a reassigned variable can make the prediction wrong.",
+    },
+    LintDoc {
+        code: "MIX-W2302",
+        summary: "used implicit-nil function result",
+        detail: "The result of a uniquely-defined named function is consumed, but its block body's final statement is a bare expression and the body has no value-returning `return` — block functions implicitly return `nil`. Add `return`. Silent for: a discarded call, mixed-return bodies, a terminating final expression, and calls whose name can be redirected through a variable.",
+    },
+    LintDoc {
+        code: "MIX-W2303",
+        summary: "assignment operand in hand-built chain AST",
+        detail: "Defence-in-depth for Rust embedders that construct the public AST directly and pass it to `analyze()`: warns if any operand of a hand-built `StmtKind::Chain` is an assignment. Ordinary Mix source cannot reach this — the parser rejects the same shape first as MIX-E1002. Reserved for the public-API path, never repurposed.",
+    },
+    LintDoc {
+        code: "MIX-W2304",
+        summary: "unknown builtin-result key",
+        detail: "A literal field/index key checked against the builtin's documented result-map fields (`mix builtins --json`). Works on a direct builtin call or a variable proven by straight-line assignment to hold that result. The hint names the closest documented key (e.g. `exit_code` rather than `code`). Dynamic keys, generic maps, and result shapes without declared fields stay silent.",
+    },
+    LintDoc {
+        code: "MIX-W2305",
+        summary: "-1-sentinel builtin as a truth value",
+        detail: "`index_of()` / `byte_index_of()` / `bytes_find()` used BARE as a truth value. They return `-1` for not-found and `0` for found-at-first-position, and Mix treats `0` as falsy and every non-zero number — `-1` included — as truthy. So a bare call in a condition is wrong on BOTH branches: `if index_of(\"abc\", \"z\")` reads absent as present (-1 is truthy); `if index_of(\"abc\", \"a\")` reads found-at-0 as absent (0 is falsy). Compare explicitly (`index_of(..) >= 0`), or use `contains()` for the yes/no question — EXCEPT for `bytes_find`, whose bytes/buffer subject `contains()` rejects, so a `bytes_find` finding takes the `>= 0` comparison, not `contains()`. The 1-based twins `pos`/`lastpos`/`byte_pos`/`byte_lastpos` are safe here (not-found sentinel is `0`, falsy) — that asymmetry is exactly the trap. Fires in `if`/`elif`, `while`, `break if`/`continue if`, expression-position `if`, the ternary condition, and through `not`/`and`/`or`. Any explicit comparison stays silent.",
+    },
+    LintDoc {
+        code: "MIX-W2306",
+        summary: "escaped quotes in ssh command source",
+        detail: "A literal command passed to `ssh_run`/`ssh_must` whose source spelling contains `\\\"` — the high-signal mark of nested Mix source the remote shell will parse again. Ship the source verbatim with `ssh_mix` + a heredoc. Simple command strings, computed commands, `ssh_exec`, `ssh_mix`, and single-quoted strings containing ordinary `\"` stay quiet.",
+    },
+    LintDoc {
+        code: "MIX-W2307",
+        summary: "send result never checked",
+        detail: "A `send` whose `$rc` (or `$result`/`$reply`) is never READ before the next send or the end of the block — send failures are non-fatal, so a script whose sends all fail still exits 0 and reads as success (B4). Read the status after the send, or use a checked form. The opt-in `--strict-send` execution gate is the deferred half.",
+    },
+    LintDoc {
+        code: "MIX-W2308",
+        summary: "on handler never replies (--agent)",
+        detail: "A handler with no `reply()` on any path leaves a request caller waiting out its full timeout; the serve runtime now answers rc 17 NO_REPLY, but the author should fix the omission at lint time. Topic-only handlers may legitimately never reply, so this is emitted only under `--agent` / `MIX_LINT=agent` and worded for both cases.",
+    },
+    LintDoc {
+        code: "MIX-W2309",
+        summary: "builtin-named map member is unreachable via dot-call",
+        detail: "`$m.len()` where `$m` is a literal map holding a `len` FUNCTION member — the builtin runs on the map instead (builtin-named members are unreachable via dot-call by design). Call it through the index: `$m[\"len\"]()`.",
+    },
+    LintDoc {
+        code: "MIX-W2310",
+        summary: "proven-missing lookup on a literal collection",
+        detail: "A field absent from its literal map (`{a:1}.b`), or an index past the end of its literal list (`[1][9]`), is nil at runtime with nothing failing — the lint proves it at authoring time and names the known keys.",
+    },
+    LintDoc {
+        code: "MIX-W2311",
+        summary: "fmt/sprintf template consumes fewer operands than provided",
+        detail: "A direct, unshadowed `fmt()`/`sprintf()` call whose template is a string literal that parses cleanly under the runtime grammar, and whose argument list is longer than the template consumes — `fmt(\"%s\", 1, 2)` provides two operands for a one-placeholder template. Both builtins are variadic, so the generic arity gate cannot see the surplus, and the runtime silently ignores the extra arguments. `%%` consumes nothing; a `*` width (and, for sprintf, a `*` precision) consumes one operand each, so `fmt(\"%*s\", 5, \"x\")` and `sprintf(\"%*.*f\", 4, 2, 1.5)` are exact and stay silent — as do deficits, which are the runtime's own \"not enough arguments\" error. Invalid, unknown or dynamically-built templates stay silent (they would raise at runtime, so no definite surplus can be claimed), as do calls whose name a user function, variable, address block or dynamic include can shadow.",
+    },
+    LintDoc {
+        code: "MIX-W2401",
+        summary: "source/include defeats analysis",
+        detail: "One `source`/`include` anywhere disables the undefined-name checks for the whole file (the loaded file can define anything) — reported once so you know analysis is degraded. Prefer `require()`: it is isolated, statically resolvable, and MIX-E1401/E1402 verify literal-path modules parse.",
+    },
+    LintDoc {
+        code: "MIX-W2402",
+        summary: "bare bound variable in heredoc",
+        detail: "A heredoc literal contains bare `$NAME` where `NAME` is bound somewhere in the same visible universe. Heredocs interpolate `${NAME}`, not `$NAME`, so the bare form often means a generated config was silently corrupted. Does not fire for `${NAME}`, `$(` command substitution, escaped `\\$NAME`, all-digit names like `$1`, unknown names, or ordinary double-quoted strings. Lint-only: bare `$NAME` still evaluates to literal `$NAME`, and intentional literal output needs no change. Silent, in a heredoc that ships as an `ssh_mix` body, for the names the REMOTE program owns — the call's `bindings`/`env` keys and the body's own binders — where bare is exactly right and `${NAME}` would splice the local value in; any other bound name still warns.",
+    },
+    LintDoc {
+        code: "MIX-W2403",
+        summary: "RETIRED 0.90.0 — see MIX-E1303",
+        detail: "Retired, never reused. This was the builtin-shadowing definition check from 0.74.0, born a warning on the theory that a compat shim for an older mix is legitimate authoring. The fleet refuted it, so the rule was promoted to an ERROR — and because a code's letter encodes its severity permanently, the promotion had to MOVE it rather than change it in place. The live code is MIX-E1303; `mix explain MIX-E1303` has the reasoning and the fix.",
+    },
+    LintDoc {
+        code: "MIX-W2405",
+        summary: "unknown escape kept literally",
+        detail: "A double-quoted literal contains a backslash escape the lexer does not recognise, so the backslash is KEPT: `\"isn\\x27t\"` printed `isn\\x27t` and nothing said so, which is how a `replace()` wrote that into a committed journal entry (2026-09-17). 0.90.0 added `\\xHH` (exactly two hex digits; the value is the codepoint U+00HH, never a raw byte), `\\0`, and `\\a \\b \\f \\v`, so what remains is genuinely unrecognised — including `\\x` with fewer than two hex digits, and `\\'` (double quotes need no escape for a single quote). A deliberate backslash is written `\\\\`, so the warning has a clean escape. `\\u` without a brace is EXEMPT: that literal is documented design (it protects embedded JSON and `C:\\users`). Single-quoted strings and heredocs keep their own rules and are not scanned. Same source requirement as MIX-W2404.",
+    },
+    // ---- Deprecations / release-transition advisories (MIX-D3xxx, severity note) ----
+    LintDoc {
+        code: "MIX-D3001",
+        summary: "`regex_match` is pattern-first legacy",
+        detail: "One of the five pattern-first legacy regex/grep names — use the subject-first twin `re_match(s, pattern)`. The legacy names were DELETED in release B (0.73.0) after the fleet-wide inventory read zero, so a surviving call also gets MIX-E1102 (undefined function) and fails at runtime; this note stays as the pointer to the replacement. Severity `note` — never gates.",
+    },
+    LintDoc {
+        code: "MIX-D3002",
+        summary: "`regex_find` is pattern-first legacy",
+        detail: "Pattern-first legacy — use `re_find(s, pattern)`. NOTE: `re_find` returns CODEPOINT offsets where `regex_find` returned byte offsets; adjust offset arithmetic when migrating. Deleted in release B (0.73.0); a surviving call also gets MIX-E1102 and fails at runtime.",
+    },
+    LintDoc {
+        code: "MIX-D3003",
+        summary: "`regex_replace` is pattern-first legacy",
+        detail: "Pattern-first legacy — use `re_replace(s, pattern, replacement)`. Deleted in release B (0.73.0); a surviving call also gets MIX-E1102 and fails at runtime.",
+    },
+    LintDoc {
+        code: "MIX-D3004",
+        summary: "`regex_split` is pattern-first legacy",
+        detail: "Pattern-first legacy — use `re_split(s, pattern)`. Deleted in release B (0.73.0); a surviving call also gets MIX-E1102 and fails at runtime.",
+    },
+    LintDoc {
+        code: "MIX-D3005",
+        summary: "`grep` is pattern-first legacy",
+        detail: "Pattern-first legacy — use `grep_lines(text, pattern)`. Deleted in release B (0.73.0); a surviving call also gets MIX-E1102 and fails at runtime.",
+    },
+    LintDoc {
+        code: "MIX-D3008",
+        summary: "`pos` REXX-style needle-first legacy",
+        detail: "One of the REXX-style 1-based needle-first search family (`pos lastpos byte_pos byte_lastpos`), declared legacy — with a sharper message when composed as `substr(.., pos(..))` in one expression (the 1-based/0-based off-by-one). These stay notes until their own fleet count reads zero; they are NOT deleted in release B.",
+    },
+    LintDoc {
+        code: "MIX-D3009",
+        summary: "`lastpos` REXX-style needle-first legacy",
+        detail: "REXX-style 1-based needle-first legacy (see MIX-D3008). Declared legacy, not deleted; stays a note until its fleet count reads zero.",
+    },
+    LintDoc {
+        code: "MIX-D3010",
+        summary: "`byte_pos` REXX-style needle-first legacy",
+        detail: "REXX-style 1-based needle-first legacy (see MIX-D3008). Declared legacy, not deleted; stays a note until its fleet count reads zero.",
+    },
+    LintDoc {
+        code: "MIX-D3011",
+        summary: "`byte_lastpos` REXX-style needle-first legacy",
+        detail: "REXX-style 1-based needle-first legacy (see MIX-D3008). Declared legacy, not deleted; stays a note until its fleet count reads zero.",
+    },
+    LintDoc {
+        code: "MIX-D3012",
+        summary: "ssh_mix body that could not be analysed",
+        detail: "An `ssh_mix` body (its second argument) that lint could not analyse — a non-literal argument (a variable NOT bound exactly once to a string or heredoc literal, a concatenation, an interpolated string or heredoc — named in the message, since `${x}` splices the LOCAL value — a `read_file`), or a literal that does not parse as Mix. Says so explicitly rather than passing silently, because an unreadable body counted as clean is exactly how an inventory reads zero while live sites exist. Ship the remote half as a literal heredoc so lint (and inventories built from it) can see inside.",
+    },
+    LintDoc {
+        code: "MIX-D3015",
+        summary: "bare bound variable in a double-quoted string",
+        detail: "A double-quoted literal contains bare `$NAME` where `NAME` is bound somewhere in the same file. Double quotes interpolate `${NAME}`, not `$NAME`, and the bare form is literal BY DESIGN — which is the opposite of bash, so anyone arriving from bash writes it (four occurrences in one file passed lint and all four failed at runtime, 2026-09-17). The heredoc twin is MIX-W2402. Does not fire for `${NAME}`, an escaped `\\$NAME`, a single-quoted `'…'` string, all-digit positionals like `$1`, a `$` followed by anything that is not an identifier (`\"$5.00\"`), or a name bound nowhere — `\"Total: $USD\"` in prose stays silent. The lexer also drops the whole batch for a MULTI-LINE string and for one whose spelling contains `\\\"`: both are the mark of NESTED source (an `ssh_mix` body, a `mix -c` program, a test fixture), where a bare `$rc` is the inner program's variable and correctly literal. Severity `note`, where the heredoc twin is a warning, and the asymmetry is measured: over 785 fleet scripts MIX-W2402 costs 4 findings and this rule an order of magnitude more even after those exclusions, so shipping it as a warning would fail `--deny-warnings` — a live fleet deploy gate — on scripts that are not wrong. D3xxx is the severity-independent namespace precisely so it can be promoted, code unchanged, once the residue is worked off. Needs the source text, so it runs under `mix lint` (and inside an `ssh_mix` body) but not for an embedder that calls `analyze()` without setting `AnalyzerConfig::source`.",
+    },
+    LintDoc {
+        code: "MIX-D3016",
+        summary: "script declares no `-- version:` header",
+        detail: "A file run as a script has no well-formed `-- version: X.Y.Z` header in its leading comment region (a line-1 shebang, then blank and `--` comment lines, at most 32 lines; a header-shaped line inside a heredoc further down does not count), so `mix SCRIPT --version` and `script_version()` can only report it as `unversioned` — Mark's fleet rule (2026-09-25) is that every binary AND every Mix script answers `--version` with build details. \"Run as a script\" is a deliberately simple heuristic over the path AS GIVEN, in order: a line-1 `#!` shebang is a script; a `lib`, `_lib`, `tests` or `test` directory component is never reported (a library is loaded, not run; a test script must stay header-less, or it becomes the entry script whose record `script_version()` returns); a `bin`, `_bin`, `scripts` or `build` component is a script; otherwise a serve citizen (a column-0 `on <verb>` handler, or `--serve` in the leading comment region) is a script. Known false positive, Wontfix: a library under an absolute `/…/bin/…` path with no `lib` component; the mirror, any `/…/lib/…` or tests ancestor, exempts everything beneath it. A header whose value is not `X.Y.Z` (optionally `-pre` / `+build`) is reported on its own line, because the runtime treats it as absent and a typo would otherwise pass silently. Only one spelling counts: `-- version: X.Y.Z` (whitespace-tolerant, lowercase, colon required). Severity `note` by default; `mix lint --require-version` reports it as a `warning` with the code unchanged, so `--require-version --deny-warnings` makes a missing header fail a gate. Emitted by the lint driver, not the analyzer, because it is a property of the file, not the program.",
+    },
+    LintDoc {
+        code: "MIX-D3017",
+        summary: "unprovable variable read in a body with dynamic bindings",
+        detail: "Inside an `ssh_mix` body whose opts could not be read statically, a variable read that is bound nowhere in the body itself cannot be proved undefined — the call's dynamic `bindings`/`env` may supply it — so it is NOT an error. When the name is within edit distance of a name the body DOES bind (a parameter or local one edit away), the typo is the likelier explanation, and this note records it instead of passing silently. A name with no near neighbour is an ordinary dynamic binding and stays silent. The call site carries its own MIX-D3018; this is the per-read half. Write the opts as a map literal (or bind them exactly once to one) to get exact name checking back.",
+    },
+    LintDoc {
+        code: "MIX-D3018",
+        summary: "ssh_mix opts unreadable — variable checks skipped",
+        detail: "An `ssh_mix`/`ssh_mix_many` call whose opts argument is not a statically readable map (a call, a concatenation, a variable not bound exactly once to a map literal) — so the names its `bindings`/`env` inject are unknown, and undefined-VARIABLE checks stand down for that body: dynamic bindings may supply any free DATA variable, and a linter that cried E1101 about them would be turned off. The boundary is split, not blanket: a function name cannot ride in through strict-data bindings, so undefined-FUNCTION checks (MIX-E1102) and arity checks (MIX-E1202) keep running, and a read one edit from a bound name gets MIX-D3017. A variable bound exactly ONCE to a map literal IS resolved (`$o = {bindings: {…}}`), so the fleet opts-variable shape keeps full checks.",
+    },
+    LintDoc {
+        code: "MIX-D3014",
+        summary: "write_file of an unchecked replace() result",
+        detail: "The edit-a-file idiom — `write_file(path, replace(read_file(path), old, new))`, or the same chain across statements — with nothing anywhere in the file that could have noticed the needle was absent. `replace()` returns the subject UNCHANGED when the needle does not occur, so a missed edit writes the input straight back and reports success: on 2026-09-18 three such edits missed and one shipped a commit that did not compile, with no signal at any step. Use `replace_must()` / `re_replace_must()` (0.90.0), which raise `NEEDLE_ABSENT`, and whose `{count: n}` also asserts how many sites were rewritten. Conservative by design: it fires only on a `write_file` whose written value is a replace call or a variable the same straight-line block assigned from one, and ANY guard spelling anywhere in the file (`contains`, `pos`, `index_of`, `count_of`, `re_match`, a `_must` twin) silences it for the whole file.",
+    },
+    LintDoc {
+        code: "MIX-D3013",
+        summary: "hand-rolled padding loop",
+        detail: "A hand-rolled padding loop — `while len($o) < $n … $o = $o .. \" \"` — pointing at `lpad`/`rpad` (and the display-cell `lpad_w`/`rpad_w`). Four independent sessions wrote this loop while the builtins sat in the binary; the note is the discoverability fix that reaches the author at authoring time. Narrow by design: only a `<`/`<=` comparison of `len`/`length` of the same variable the body self-appends a string literal to.",
+    },
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_tolerates_missing_prefix_and_case() {
+        assert_eq!(explain("MIX-W2305").unwrap().code, "MIX-W2305");
+        assert_eq!(explain("w2305").unwrap().code, "MIX-W2305");
+        assert_eq!(explain("mix-e1101").unwrap().code, "MIX-E1101");
+        assert!(explain("MIX-Z9999").is_none());
+        assert!(explain("length").is_none());
+    }
+
+    #[test]
+    fn looks_like_code_is_precise() {
+        // Shape-valid (routes to the explainer), incl. an unknown-namespace
+        // code like X1234/MIX-Z9999 so the explainer can say "unknown".
+        for yes in ["MIX-E1101", "W2305", "d3013", "mix-w2403", "Mix-W2305", "X1234", "MIX-Z9999"] {
+            assert!(looks_like_code(yes), "{yes} should look like a code");
+        }
+        // Wrong shape → treated as a builtin name.
+        for no in ["length", "E110", "W23055", "MIX-", "run_argv", "12345"] {
+            assert!(!looks_like_code(no), "{no} should NOT look like a code");
+        }
+    }
+
+    #[test]
+    fn no_duplicate_codes() {
+        let mut seen = std::collections::HashSet::new();
+        for d in LINT_DOCS {
+            assert!(seen.insert(d.code), "duplicate LintDoc code {}", d.code);
+        }
+    }
+
+    /// Anti-drift: every `MIX-####` code the analyzer can emit must have a
+    /// record here, so a new diagnostic cannot ship without its explanation.
+    /// Greps the analyzer source at test-build time. (Lexer/parser codes
+    /// E1001–E1003 are covered by explicit records; they are not emitted from
+    /// analyzer.rs, so they are added to the expected set here.)
+    #[test]
+    fn every_analyzer_code_has_a_record() {
+        let src = include_str!("analyzer.rs");
+        let documented: std::collections::HashSet<&str> =
+            LINT_DOCS.iter().map(|d| d.code).collect();
+        // Retired codes are intentionally undocumented (permanently spent).
+        const RETIRED: &[&str] = &["MIX-D3006", "MIX-D3007"];
+        let mut missing = Vec::new();
+        let mut i = 0;
+        while let Some(pos) = src[i..].find("MIX-") {
+            let start = i + pos;
+            // Extract MIX-<L><4 digits> if that's the shape here.
+            let code: String = src[start..].chars().take(9).collect();
+            i = start + 4;
+            if code.len() == 9
+                && code.as_bytes()[4].is_ascii_uppercase()
+                && code.as_bytes()[5..9].iter().all(u8::is_ascii_digit)
+                && !documented.contains(code.as_str())
+                && !RETIRED.contains(&code.as_str())
+            {
+                missing.push(code);
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "analyzer emits codes with no LintDoc record (add them to lint_docs.rs): {missing:?}",
+        );
+    }
+}

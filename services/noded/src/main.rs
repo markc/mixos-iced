@@ -95,12 +95,11 @@ fn main() -> Result<()> {
 }
 
 async fn async_main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .try_init()
-        .map_err(|error| anyhow::anyhow!("logging init failed: {error}"))?;
+    let _log = logging::init(
+        &logging::LogOpts::default(),
+        &logging::StatsOpts::default(),
+        logging::LogDefaults::daemon("noded").with_stats(false),
+    )?;
 
     let cli = Cli::parse();
 

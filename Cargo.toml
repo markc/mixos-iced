@@ -32,6 +32,12 @@ ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
 futures-util = "=0.3.34"
 hex = "0.4"
 mimalloc = { version = "0.1", default-features = false }
+metrics = "0.24"
+metrics-util = "0.18"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+rustc-hash = "2"
+rusqlite = { version = "0.38", features = ["bundled"] }
+tracing-appender = "0.2"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 rand = "0.8"
 tokio-tungstenite = "=0.26.2"
@@ -92,6 +98,8 @@ buildinfo = { path = "libs/buildinfo" }
 bus = { path = "libs/bus", default-features = false }
 config = { path = "libs/config" }
 props = { path = "libs/props" }
+mix = { path = "libs/mix" }
+logging = { path = "libs/logging" }
 mesh = { path = "services/noded/crates/mesh" }
 mesh-trust = { path = "services/noded/crates/mesh-trust" }
 design = { path = "libs/design" }

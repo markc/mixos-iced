@@ -18,6 +18,7 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
+logging.workspace = true
 bus = { workspace = true, features = ["native"] }
 config.workspace = true
 props = { workspace = true, features = ["bus"] }

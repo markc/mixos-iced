@@ -1,0 +1,2237 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+use crate::continuation::{ContinuationSite, continuation_sites};
+use crate::error::{MixError, MixResult, Span};
+use crate::token::{SpannedToken, StringPart, Token};
+
+/// Something a DOUBLE-quoted string literal contained that `mix lint`
+/// wants to report, recorded while lexing.
+///
+/// It has to be collected here because the token stream cannot say it
+/// later: a single-quoted `'$sp/x'` and a double-quoted `"$sp/x"` both
+/// lex to `Token::String("$sp/x")`, and the AST must NOT grow a variant
+/// to tell them apart — `Token::String` is what strict-data parsing
+/// accepts (`Token::InterpString` is a hard StrictDataViolation) and what
+/// the `send target a.b` bareword path keys off, so a shape change there
+/// would refuse data files and command forms that work today.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringNote {
+    /// A bare `$name` inside `"…"`. Literal by design (only `${name}`
+    /// interpolates) — which is the opposite of bash, so anyone arriving
+    /// from bash writes it. `\$name` and `'…'` take the escape arms and
+    /// are never recorded.
+    BareDollar { line: usize, name: String },
+    /// An escape the lexer does not recognise, kept as backslash + char.
+    /// `text` is the source spelling (`\x27`, `\q`, `\'`).
+    UnknownEscape { line: usize, text: String },
+}
+
+/// The physical source lines of one quoted-string or heredoc literal.
+///
+/// Built while the literal DECODES, so a consumer can map a decoded line
+/// back to the physical line it was written on: `lines[i]` is the
+/// physical source line that decoded line `i+1` begins on, with one
+/// entry per decoded line (never empty). A `\n` escape and a physical
+/// newline both add a decoded line, but only the physical one advances
+/// the line counter — this map is the only place that difference
+/// survives, which is what the analyzer's `ssh_mix` body pass needs to
+/// report a remote diagnostic on the ONE line a double-quoted escaped
+/// body physically occupies.
+#[derive(Debug, Clone)]
+pub struct LiteralLineMap {
+    /// Physical line of the opening quote / `<<TAG`.
+    pub opener_line: usize,
+    /// True when the literal is a heredoc (`<<TAG`).
+    pub heredoc: bool,
+    /// `lines[i]` is the physical source line decoded line `i+1` starts on.
+    pub lines: Vec<usize>,
+}
+
+/// One all-literal string or heredoc in a source, with its decoded text
+/// and its decoded-line → physical-line map, in token order.
+#[derive(Debug, Clone)]
+pub struct LiteralSource {
+    /// The decoded literal text.
+    pub text: String,
+    /// Decoded-line → physical-line map (opener line + heredoc flag included).
+    pub map: LiteralLineMap,
+}
+
+pub struct Lexer {
+    source: Vec<char>,
+    pos: usize,
+    line: usize,
+    column: usize,
+    token_start: usize,
+    paren_depth: usize,
+    bracket_depth: usize,
+    brace_depth: usize,
+    continuation_sites: Vec<ContinuationSite>,
+    continuation_error: Option<MixError>,
+    string_notes: Vec<StringNote>,
+    /// One decoded-line → physical-line map per quoted-string/heredoc
+    /// token, in token emission order. Populated by `tokenize` only when
+    /// `record_literal_maps` is set — [`string_literal_sources`] and
+    /// [`lex_with_literal_maps`] are the only callers that need them —
+    /// and read by that same pair of helpers.
+    literal_maps: Vec<LiteralLineMap>,
+    /// Opt-in map recording: off by default, so the ordinary tokenize
+    /// paths (runtime, parser, highlighter, notes) allocate no per-string
+    /// line vectors at all. Set by [`string_literal_sources`] /
+    /// [`lex_with_literal_maps`] before they lex.
+    record_literal_maps: bool,
+    /// Strict-data source (`parse_data`): double-quoted strings also
+    /// decode the JSON-style `\uXXXX` escape, so JSON-encoded text reads
+    /// back unchanged. Program source keeps a bare `\u` literal.
+    data_mode: bool,
+}
+
+
+/// The complete reserved-word set, one name per lexer keyword token.
+///
+/// `mix keywords` and `mix what` read this through the lib, so it must
+/// mirror the `match` arms in [`Lexer::lex_identifier`]
+/// character-for-character. The drift test at the bottom of this module
+/// (`keyword_set_matches_lexer`) fails the build when the two disagree —
+/// a new keyword token added to the match without an entry here (or vice
+/// versa) cannot ship silently. The manual page `docs/mix/keywords.md` is
+/// held to the same set by `mix-shell/tests/man_pages.rs`.
+///
+/// Generated, not hand-maintained: the table below is ONE source for the
+/// `KEYWORDS` list AND the identifier dispatch in [`Lexer::lex_identifier`],
+/// so a keyword cannot exist in one place and not the other. (Review
+/// finding F3 of the 2026-09-29 man-discovery arc: a hand-kept pair of
+/// list and match arms could gain a match arm that no test would catch.)
+macro_rules! keyword_table {
+    ($(($name:literal, $token:ident)),* $(,)?) => {
+        /// Every reserved word, in lexer table order.
+        pub const KEYWORDS: &[&str] = &[$($name),*];
+
+        /// The lexer's keyword dispatch: reserved name → token, else None.
+        fn keyword_token(name: &str) -> Option<Token> {
+            match name {
+                $( $name => Some(Token::$token), )*
+                _ => None,
+            }
+        }
+    };
+}
+
+keyword_table!(
+    ("if", If),
+    ("then", Then),
+    ("else", Else),
+    ("elif", Elif),
+    ("end", End),
+    ("for", For),
+    ("each", Each),
+    ("in", In),
+    ("to", To),
+    ("step", Step),
+    ("next", Next),
+    ("while", While),
+    ("done", Done),
+    ("loop", Loop),
+    ("break", Break),
+    ("continue", Continue),
+    ("function", Function),
+    ("fn", Function),
+    ("return", Return),
+    ("select", Select),
+    ("when", When),
+    ("otherwise", Otherwise),
+    ("and", And),
+    ("or", Or),
+    ("not", Not),
+    ("true", True),
+    ("false", False),
+    ("nil", Nil),
+    ("parse", Parse),
+    ("with", With),
+    ("send", Send),
+    ("address", Address),
+    ("emit", Emit),
+    ("on", On),
+    ("try", Try),
+    ("catch", Catch),
+    ("finally", Finally),
+    ("die", Die),
+    ("export", Export),
+    ("alias", Alias),
+    ("print", Print),
+    ("eprint", Eprint),
+    ("source", Source),
+    ("include", Include),
+    ("label", Label),
+    ("sh", Sh),
+    ("eq", StrEq),
+    ("ne", StrNe),
+);
+
+impl Lexer {
+    pub fn new(source: &str) -> Self {
+        let (continuation_sites, continuation_error) = match continuation_sites(source) {
+            Ok(sites) => (sites, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        Lexer {
+            source: source.chars().collect(),
+            pos: 0,
+            line: 1,
+            column: 1,
+            token_start: 0,
+            paren_depth: 0,
+            bracket_depth: 0,
+            brace_depth: 0,
+            continuation_sites,
+            continuation_error,
+            string_notes: Vec::new(),
+            literal_maps: Vec::new(),
+            record_literal_maps: false,
+            data_mode: false,
+        }
+    }
+
+    /// A lexer for strict-data source — see `data_mode`.
+    pub fn for_data(source: &str) -> Self {
+        Lexer {
+            data_mode: true,
+            ..Lexer::new(source)
+        }
+    }
+
+    /// What the double-quoted string literals in this source contained that
+    /// lint wants to see. Populated by `tokenize`; empty before it runs.
+    pub fn string_notes(&self) -> &[StringNote] {
+        &self.string_notes
+    }
+
+    /// Lex `source` purely to harvest [`StringNote`]s. A lex error yields
+    /// an empty list on purpose: the caller already reports it (MIX-E1001),
+    /// and half a note list from a file that does not tokenise is worse
+    /// than none.
+    pub fn notes_for(source: &str) -> Vec<StringNote> {
+        let mut lexer = Lexer::new(source);
+        match lexer.tokenize() {
+            Ok(_) => lexer.string_notes,
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Zip the tokens of one source with its recorded literal line maps:
+    /// one `(byte offset, decoded text, map)` per string/heredoc/
+    /// interpolated token, in token order. `text` is `None` when the
+    /// token's decoded form is not one literal text (an interpolated
+    /// string, a heredoc with substitutions).
+    fn token_literal_sources(
+        tokens: &[SpannedToken],
+        maps: Vec<LiteralLineMap>,
+        source: &str,
+    ) -> Vec<(usize, Option<String>, LiteralLineMap)> {
+        let byte_at: Vec<usize> = source.char_indices().map(|(b, _)| b).collect();
+        let mut maps = maps.into_iter();
+        let mut out = Vec::new();
+        for t in tokens {
+            // `is_literal` advances the map cursor: every token emitted by
+            // a string/heredoc lexer fn owns exactly one map entry.
+            let (text, is_literal) = match &t.token {
+                Token::HeredocString(parts) => {
+                    let mut text = String::new();
+                    let all_literal = parts.iter().all(|p| match p {
+                        StringPart::Literal(s) => {
+                            text.push_str(s);
+                            true
+                        }
+                        _ => false,
+                    });
+                    (all_literal.then_some(text), true)
+                }
+                Token::InterpString(_) => (None, true),
+                Token::String(s) => {
+                    let first = byte_at
+                        .get(t.offset)
+                        .copied()
+                        .and_then(|b| source.get(b..))
+                        .and_then(|r| r.chars().next());
+                    let quoted = matches!(first, Some('"' | '\''));
+                    (quoted.then_some(s.clone()), quoted)
+                }
+                _ => (None, false),
+            };
+            if !is_literal {
+                continue;
+            }
+            let Some(map) = maps.next() else {
+                // Unreachable with the one-map-per-token invariant; skip
+                // rather than misalign the zipper.
+                continue;
+            };
+            out.push((t.offset, text, map));
+        }
+        out
+    }
+
+    /// Every all-literal quoted-string and heredoc in `source`, in token
+    /// order, with its decoded text and decoded-line → physical-line map.
+    ///
+    /// Bare identifiers also lex to `Token::String`; they are excluded by
+    /// their first source character (a quote), which is exactly the test
+    /// `highlight` uses to tell a literal from a word. Empty when the
+    /// source does not lex — callers fall back to their own estimate.
+    pub fn string_literal_sources(source: &str) -> Vec<LiteralSource> {
+        let mut lexer = Lexer::new(source);
+        // The one lex that pays for the maps; every ordinary path keeps
+        // the default (recording off).
+        lexer.record_literal_maps = true;
+        let Ok(tokens) = lexer.tokenize() else {
+            return Vec::new();
+        };
+        Self::token_literal_sources(&tokens, std::mem::take(&mut lexer.literal_maps), source)
+            .into_iter()
+            .filter_map(|(_, text, map)| text.map(|text| LiteralSource { text, map }))
+            .collect()
+    }
+
+    /// (Analyzer-only.) Lex `source` with line-map recording on and
+    /// return the token stream plus, for every string/heredoc/
+    /// interpolated token, its byte offset joined to its decoded-line →
+    /// physical-line map. `None` when the source does not lex.
+    ///
+    /// The offsets are the join key for the parser's literal-origin
+    /// recording ([`crate::parser::LiteralOrigin`]): parser tokens carry
+    /// the same offsets, so a recorded origin attaches its line map
+    /// without any text guessing.
+    pub(crate) fn lex_with_literal_maps(
+        source: &str,
+    ) -> Option<(Vec<SpannedToken>, std::collections::HashMap<usize, LiteralLineMap>)> {
+        let mut lexer = Lexer::new(source);
+        lexer.record_literal_maps = true;
+        let tokens = lexer.tokenize().ok()?;
+        let by_offset =
+            Self::token_literal_sources(&tokens, std::mem::take(&mut lexer.literal_maps), source)
+                .into_iter()
+                .map(|(offset, _, map)| (offset, map))
+                .collect();
+        Some((tokens, by_offset))
+    }
+
+    pub fn tokenize(&mut self) -> MixResult<Vec<SpannedToken>> {
+        if let Some(error) = self.continuation_error.take() {
+            return Err(error);
+        }
+        let mut tokens = Vec::new();
+        loop {
+            let tok = self.next_token()?;
+            let is_eof = tok.token == Token::Eof;
+            tokens.push(tok);
+            if is_eof {
+                break;
+            }
+        }
+        Ok(tokens)
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.source.get(self.pos).copied()
+    }
+
+    fn peek_ahead(&self, offset: usize) -> Option<char> {
+        self.source.get(self.pos + offset).copied()
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        let ch = self.source.get(self.pos).copied()?;
+        self.pos += 1;
+        if ch == '\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
+        Some(ch)
+    }
+
+    fn spanned(&self, token: Token, line: usize, column: usize) -> SpannedToken {
+        SpannedToken {
+            token,
+            line,
+            column,
+            offset: self.token_start,
+        }
+    }
+
+    fn skip_whitespace_no_newline(&mut self) {
+        while let Some(ch) = self.peek() {
+            if ch == ' ' || ch == '\t' || ch == '\r' {
+                self.advance();
+            } else if let Ok(site_idx) = self
+                .continuation_sites
+                .binary_search_by_key(&self.pos, |site| site.backslash)
+            {
+                let newline_chars = self.continuation_sites[site_idx].newline_chars;
+                self.advance(); // skip continuation backslash
+                for _ in 0..newline_chars {
+                    self.advance(); // skip LF, or CRLF
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn skip_comment(&mut self) {
+        while let Some(ch) = self.peek() {
+            if ch == '\n' {
+                break;
+            }
+            self.advance();
+        }
+    }
+
+    fn next_token(&mut self) -> MixResult<SpannedToken> {
+        // Loop instead of tail self-recursion for the skip cases
+        // (comments, suppressed newlines): a long run of either must
+        // not depend on LLVM TCO to keep the stack flat.
+        loop {
+            self.skip_whitespace_no_newline();
+
+            self.token_start = self.pos;
+            let line = self.line;
+            let col = self.column;
+
+            let ch = match self.peek() {
+                None => return Ok(self.spanned(Token::Eof, line, col)),
+                Some(c) => c,
+            };
+
+            // Comments
+            if ch == '#' {
+                self.skip_comment();
+                continue;
+            }
+            if ch == '-' && self.peek_ahead(1) == Some('-') {
+                self.skip_comment();
+                continue;
+            }
+
+            // Newline
+            if ch == '\n' {
+                self.advance();
+                // Skip consecutive newlines
+                while self.peek() == Some('\n') {
+                    self.advance();
+                }
+                // Suppress newlines inside grouping
+                if self.paren_depth > 0 || self.bracket_depth > 0 || self.brace_depth > 0 {
+                    continue;
+                }
+                return Ok(self.spanned(Token::Newline, line, col));
+            }
+
+            return self.next_token_at(ch, line, col);
+        }
+    }
+
+    /// The non-skip remainder of `next_token`: `ch` is the first
+    /// character of a real token starting at the current position.
+    fn next_token_at(&mut self, ch: char, line: usize, col: usize) -> MixResult<SpannedToken> {
+        // Numbers
+        if ch.is_ascii_digit()
+            || (ch == '.' && self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit()))
+        {
+            return self.lex_number(line, col);
+        }
+
+        // Strings
+        if ch == '"' {
+            return self.lex_double_string(line, col);
+        }
+        if ch == '\'' {
+            return self.lex_single_string(line, col);
+        }
+
+        // Variable $
+        if ch == '$' {
+            return self.lex_variable(line, col);
+        }
+
+        // Identifiers and keywords
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            return self.lex_identifier(line, col);
+        }
+
+        // Operators and delimiters
+        self.advance();
+        match ch {
+            '+' => Ok(self.spanned(Token::Plus, line, col)),
+            '-' => Ok(self.spanned(Token::Minus, line, col)),
+            '*' => {
+                if self.peek() == Some('*') {
+                    self.advance();
+                    Ok(self.spanned(Token::Power, line, col))
+                } else {
+                    Ok(self.spanned(Token::Star, line, col))
+                }
+            }
+            '/' => Ok(self.spanned(Token::Slash, line, col)),
+            '%' => Ok(self.spanned(Token::Percent, line, col)),
+            '=' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(self.spanned(Token::Eq, line, col))
+                } else {
+                    Ok(self.spanned(Token::Assign, line, col))
+                }
+            }
+            '!' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(self.spanned(Token::NotEq, line, col))
+                } else {
+                    Ok(self.spanned(Token::Bang, line, col))
+                }
+            }
+            '>' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(self.spanned(Token::GtEq, line, col))
+                } else {
+                    Ok(self.spanned(Token::Gt, line, col))
+                }
+            }
+            '<' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Ok(self.spanned(Token::LtEq, line, col))
+                } else if self.peek() == Some('<') {
+                    self.advance(); // skip second <
+                    self.lex_heredoc(line, col)
+                } else {
+                    Ok(self.spanned(Token::Lt, line, col))
+                }
+            }
+            '.' => {
+                if self.peek() == Some('.') {
+                    self.advance();
+                    Ok(self.spanned(Token::DotDot, line, col))
+                } else {
+                    Ok(self.spanned(Token::Dot, line, col))
+                }
+            }
+            '?' => {
+                if self.peek() == Some('?') {
+                    self.advance();
+                    Ok(self.spanned(Token::NilCoalesce, line, col))
+                } else {
+                    // Lone `?` is the ternary operator (`cond ? a : b`).
+                    // It was a lex error before ternary existed; making it
+                    // a token is purely additive — no prior valid Mix
+                    // source contained a bare `?`. One intended REPL
+                    // consequence: a non-command line like `foo ? a : b`
+                    // now lexes+parses as a Mix ternary (was a tie-break
+                    // "command not found"); a real command head still
+                    // routes to the shell before the Mix lexer runs.
+                    Ok(self.spanned(Token::Question, line, col))
+                }
+            }
+            '|' => {
+                if self.peek() == Some('|') {
+                    self.advance();
+                    Ok(self.spanned(Token::OrOr, line, col))
+                } else {
+                    Ok(self.spanned(Token::Pipe, line, col))
+                }
+            }
+            '&' => {
+                if self.peek() == Some('&') {
+                    self.advance();
+                    Ok(self.spanned(Token::AndAnd, line, col))
+                } else {
+                    Err(MixError::LexerError {
+                        msg: "unexpected '&', did you mean '&&'?".to_string(),
+                        span: Span {
+                            line,
+                            column: col,
+                            file: None,
+                        },
+                    })
+                }
+            }
+            '(' => {
+                self.paren_depth += 1;
+                Ok(self.spanned(Token::LParen, line, col))
+            }
+            ')' => {
+                self.paren_depth = self.paren_depth.saturating_sub(1);
+                Ok(self.spanned(Token::RParen, line, col))
+            }
+            '[' => {
+                self.bracket_depth += 1;
+                Ok(self.spanned(Token::LBracket, line, col))
+            }
+            ']' => {
+                self.bracket_depth = self.bracket_depth.saturating_sub(1);
+                Ok(self.spanned(Token::RBracket, line, col))
+            }
+            '{' => {
+                self.brace_depth += 1;
+                Ok(self.spanned(Token::LBrace, line, col))
+            }
+            '}' => {
+                self.brace_depth = self.brace_depth.saturating_sub(1);
+                Ok(self.spanned(Token::RBrace, line, col))
+            }
+            ':' => Ok(self.spanned(Token::Colon, line, col)),
+            ',' => Ok(self.spanned(Token::Comma, line, col)),
+            // Executable-Mix statement separator. Unlike a physical newline,
+            // this token is deliberately emitted inside grouping too; the
+            // parser accepts it only where a statement boundary is legal and
+            // rejects it in ordinary expressions / strict-data.
+            ';' => Ok(self.spanned(Token::Semicolon, line, col)),
+            // Bare `~` outside double-quoted strings. Emitted so the parser
+            // can recognise it as the leading char of a bareword `source`
+            // path (e.g. `source ~/.mixrc`). Inside `"..."` the leading-`~`
+            // expansion in `lex_double_string` handles it before we get
+            // here; mid-string `~` stays literal. Bare `~` has no
+            // standalone expression meaning — the parser only consumes it
+            // in bareword-path contexts; reaching it elsewhere falls
+            // through to the usual "unexpected token" error.
+            '~' => Ok(self.spanned(Token::Tilde, line, col)),
+            _ => Err(MixError::LexerError {
+                msg: format!("unexpected character '{}'", ch),
+                span: Span {
+                    line,
+                    column: col,
+                    file: None,
+                },
+            }),
+        }
+    }
+
+    /// Is the number starting at `token_start` a tight `-`-joined segment of
+    /// the bare word right after `send` / `emit` / `address` — the target
+    /// position the parser's `take_hyphenated_service_word` reads whole?
+    /// Mirrors that scan's shape: the word starts with an ASCII letter or
+    /// `_` and runs over alphanumerics, `_`, `-` and `.`, and the keyword
+    /// before it is a whole word. Anything else keeps the number refusal.
+    fn in_bare_send_target(&self) -> bool {
+        let src = &self.source;
+        let mut i = self.token_start;
+        if i == 0 || src[i - 1] != '-' {
+            return false;
+        }
+        while i > 0 && (src[i - 1].is_ascii_alphanumeric() || matches!(src[i - 1], '_' | '-' | '.')) {
+            i -= 1;
+        }
+        if !(src[i].is_ascii_alphabetic() || src[i] == '_') {
+            return false;
+        }
+        let mut j = i;
+        while j > 0 && matches!(src[j - 1], ' ' | '\t') {
+            j -= 1;
+        }
+        if j == i {
+            return false;
+        }
+        let kw_end = j;
+        while j > 0 && (src[j - 1].is_ascii_alphanumeric() || matches!(src[j - 1], '_' | '$' | '.')) {
+            j -= 1;
+        }
+        let keyword: String = src[j..kw_end].iter().collect();
+        matches!(keyword.as_str(), "send" | "emit" | "address")
+    }
+
+    fn lex_number(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        // Radix integer literals: 0x.. (hex), 0o.. (octal), 0b.. (binary).
+        // Mix has a single f64 numeric type, so these are sugar yielding the
+        // f64 value — convenient for file modes / bitmasks (`0o755` == 493).
+        if self.peek() == Some('0') {
+            let radix = match self.peek_ahead(1) {
+                Some('x' | 'X') => Some(16u32),
+                Some('o' | 'O') => Some(8),
+                Some('b' | 'B') => Some(2),
+                _ => None,
+            };
+            if let Some(radix) = radix {
+                return self.lex_radix_number(line, col, radix);
+            }
+        }
+
+        let mut s = String::new();
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_digit() || ch == '.' || ch == '_' {
+                if ch != '_' {
+                    s.push(ch);
+                }
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Reject an ambiguous leading zero on the INTEGER PART (`0755`,
+        // `007`, and also `0755.5` — the same hazard for floats). Rust's
+        // f64 parser silently drops a leading zero (`0755` -> `755.0`,
+        // `0755.5` -> `755.5`) — a footgun for a substrate whose daily work
+        // is file modes. Force an explicit choice: a 0o/0x/0b radix prefix,
+        // or no leading zero for decimal. (Plain `0`, and any genuine
+        // fraction like `0.5` / `0.0`, have a single-char integer part and
+        // are unaffected.)
+        let int_part = s.split('.').next().unwrap_or(s.as_str());
+        let malformed = (int_part.len() > 1 && int_part.starts_with('0'))
+            || s.parse::<f64>().is_err();
+        if malformed && self.in_bare_send_target() {
+            // `send node-007 …` / `send a-1.2.3 …`: a segment of a bare
+            // hyphenated service name, not a number. The parser's hyphen
+            // scan re-reads the whole word from source, so the token's
+            // own value never matters — it only must not be an error.
+            return Ok(self.spanned(Token::String(s), line, col));
+        }
+        if int_part.len() > 1 && int_part.starts_with('0') {
+            return Err(MixError::LexerError {
+                msg: format!(
+                    "ambiguous leading-zero number '{s}' — use a 0o (octal) / 0x (hex) / \
+                     0b (binary) prefix, or drop the leading zero(s) for decimal"
+                ),
+                span: Span {
+                    line,
+                    column: col,
+                    file: None,
+                },
+            });
+        }
+
+        // Optional scientific-notation exponent: `[eE][+-]?[0-9_]+`. Only
+        // consume the `e`/`E` when a valid exponent actually follows, so a
+        // number immediately followed by a bare `e` token (e.g. the `e()`
+        // euler-constant builtin, `2 * e()`) is unaffected — `2e` with no
+        // following digit stays Number(2) + `e`. Done AFTER the leading-zero
+        // check so the check still sees only the mantissa (`0e5` is a valid
+        // 0.0, `07e2` is still a rejected ambiguous leading zero).
+        if matches!(self.peek(), Some('e' | 'E')) {
+            let sign_len = usize::from(matches!(self.peek_ahead(1), Some('+' | '-')));
+            if matches!(self.peek_ahead(1 + sign_len), Some(c) if c.is_ascii_digit()) {
+                s.push(self.advance().expect("peeked e/E")); // e / E
+                if sign_len == 1 {
+                    s.push(self.advance().expect("peeked sign")); // + / -
+                }
+                while let Some(ch) = self.peek() {
+                    if ch.is_ascii_digit() || ch == '_' {
+                        if ch != '_' {
+                            s.push(ch);
+                        }
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let n: f64 = s.parse().map_err(|_| MixError::LexerError {
+            msg: format!("invalid number '{}'", s),
+            span: Span {
+                line,
+                column: col,
+                file: None,
+            },
+        })?;
+        // C5 (TODO-mix 2026-09-24): a literal that does not round-trip
+        // silently loses value — `9007199254740993` became …992 and
+        // `1e999` became `inf`, both rc 0. Refuse both at the lexer so a
+        // fabricated number never flows anywhere: an INTEGER literal past
+        // 2^53 must be a string (the numeric-width Watch rule), and a
+        // non-finite result is a plain refusal.
+        //
+        // STRICT-DATA MODE IS EXEMPT: `write_mix_data` emits large
+        // integral floats (`1000000000000000000000000000000`) and
+        // `data_parse(data_encode(v)) == v` is a guarantee (strict_data
+        // pins the round-trip). That output is machine-generated, not an
+        // authoring mistake, so the refusal is a script-source gate only.
+        if !self.data_mode && !n.is_finite() {
+            return Err(MixError::LexerError {
+                msg: format!("number '{s}' is out of range (infinity)"),
+                span: Span {
+                    line,
+                    column: col,
+                    file: None,
+                },
+            });
+        }
+        if !self.data_mode
+            && !s.contains('.')
+            && !s.contains('e')
+            && !s.contains('E')
+        {
+            // An integral literal must round-trip exactly: parse the SOURCE
+            // digits as u128 and compare against their f64 rendering. The
+            // f64 `n` above is already rounded, so comparing against it
+            // directly would accept the very loss being refused.
+            let exact = match s.parse::<u128>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(MixError::LexerError {
+                        msg: format!(
+                            "integer literal '{s}' exceeds the exact range (2^53) — a number \
+                             would silently round; use a string for ids/digests"
+                        ),
+                        span: Span {
+                            line,
+                            column: col,
+                            file: None,
+                        },
+                    });
+                }
+            };
+            if (exact as f64) as u128 != exact {
+                return Err(MixError::LexerError {
+                    msg: format!(
+                        "integer literal '{s}' exceeds the exact range (2^53) — a number would \
+                         silently round; use a string for ids/digests"
+                    ),
+                    span: Span {
+                        line,
+                        column: col,
+                        file: None,
+                    },
+                });
+            }
+        }
+        Ok(self.spanned(Token::Number(n), line, col))
+    }
+
+    /// Lex a `0x` / `0o` / `0b` radix integer literal into a `Number`. The
+    /// `0` and prefix char have been peeked but not consumed. `_` digit
+    /// separators are allowed. An empty body, a non-64-bit value, or a value
+    /// beyond f64's exact-integer range (2^53) is a lex error rather than a
+    /// silently-rounded number — Mix's numeric type is f64.
+    fn lex_radix_number(&mut self, line: usize, col: usize, radix: u32) -> MixResult<SpannedToken> {
+        let span = || Span {
+            line,
+            column: col,
+            file: None,
+        };
+        let zero = self.advance().unwrap_or('0');
+        let prefix_ch = self.advance().unwrap_or('?');
+        let prefix = format!("{zero}{prefix_ch}");
+
+        let radix_name = match radix {
+            16 => "hex",
+            8 => "octal",
+            2 => "binary",
+            _ => "radix",
+        };
+        let mut digits = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '_' {
+                self.advance();
+            } else if ch.is_digit(radix) {
+                digits.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        // A plausible-but-invalid digit immediately after the body — OR with
+        // an empty body — is a malformed literal. Reject it at the lexer
+        // boundary rather than splitting it into value + stray token: without
+        // this, `0o78` would lex as `0o7` (7) then a stray `8`, and `0x1G` as
+        // `0x1` then `G`. Only an ALPHANUMERIC follower is a bad digit; an
+        // operator / `.` / space / EOF is a legitimate token boundary
+        // (`0xFF+1`, `0o7 .. "x"`, `0b101)` all stay valid).
+        if let Some(c) = self.peek()
+            && c.is_alphanumeric()
+        {
+            return Err(MixError::LexerError {
+                msg: format!("'{c}' is not a valid {radix_name} digit in a {prefix} literal"),
+                span: span(),
+            });
+        }
+        if digits.is_empty() {
+            return Err(MixError::LexerError {
+                msg: format!("{prefix} literal has no digits"),
+                span: span(),
+            });
+        }
+        let v = u64::from_str_radix(&digits, radix).map_err(|_| MixError::LexerError {
+            msg: format!("{prefix}{digits} is out of range for a 64-bit integer"),
+            span: span(),
+        })?;
+        if v > (1u64 << 53) {
+            return Err(MixError::LexerError {
+                msg: format!(
+                    "{prefix}{digits} exceeds the exact-integer range (2^53); Mix numbers are f64"
+                ),
+                span: span(),
+            });
+        }
+        Ok(self.spanned(Token::Number(v as f64), line, col))
+    }
+
+    fn lex_single_string(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        self.advance(); // skip opening '
+        let mut s = String::new();
+        // Single-quoted strings decode NO `\n` escape — every decoded
+        // newline is a physical one, so the map is strictly increasing.
+        let mut lines: Vec<usize> = if self.record_literal_maps { vec![line] } else { Vec::new() };
+        loop {
+            match self.advance() {
+                None => {
+                    return Err(MixError::LexerError {
+                        msg: "unterminated string".to_string(),
+                        span: Span {
+                            line,
+                            column: col,
+                            file: None,
+                        },
+                    });
+                }
+                Some('\'') => break,
+                Some('\\') => match self.advance() {
+                    Some('\'') => s.push('\''),
+                    Some('\\') => s.push('\\'),
+                    Some(c) => {
+                        s.push('\\');
+                        s.push(c);
+                        if self.record_literal_maps && c == '\n' {
+                            lines.push(self.line);
+                        }
+                    }
+                    None => {
+                        return Err(MixError::LexerError {
+                            msg: "unterminated string".to_string(),
+                            span: Span {
+                                line,
+                                column: col,
+                                file: None,
+                            },
+                        });
+                    }
+                },
+                Some(c) => {
+                    s.push(c);
+                    if self.record_literal_maps && c == '\n' {
+                        lines.push(self.line);
+                    }
+                }
+            }
+        }
+        if self.record_literal_maps {
+            self.literal_maps.push(LiteralLineMap {
+                opener_line: line,
+                heredoc: false,
+                lines,
+            });
+        }
+        Ok(self.spanned(Token::String(s), line, col))
+    }
+
+    fn lex_double_string(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        self.advance(); // skip opening "
+        let mut parts: Vec<StringPart> = Vec::new();
+        let mut current = String::new();
+        // Physical line each decoded line starts on. Seeded with the
+        // opener's line; a DECODED '\n' extends it with the physical line
+        // the NEXT decoded line begins on (unchanged for an escape, the
+        // next line for a physical newline).
+        let mut lines: Vec<usize> = if self.record_literal_maps { vec![line] } else { Vec::new() };
+        // MIX-W2404 candidates for THIS string, and whether the string
+        // spans lines. A multi-line double-quoted string is, overwhelmingly,
+        // NESTED PROGRAM TEXT — an `ssh_mix` body or a `mix -c` program —
+        // in which `$rc`/`$result`/`$stamp` are the INNER program's
+        // variables and being literal is exactly right. Measured on 785
+        // fleet scripts: without this test the rule fired 560 times, nearly
+        // all of them that shape; with it, the count is what the heredoc
+        // twin MIX-W2402 costs. The filing case (`read_file("$sp/x.md")`)
+        // is single-line, as every instance of this mistake is.
+        // A `\"` in the spelling is this repo's established mark of nested
+        // Mix/shell source (it is the whole basis of MIX-W2306), and a
+        // one-line fragment like `"$CMCTL .. \"/_etc/x.mix\""` is the same
+        // inner-program case as the multi-line one. Suppressing on it took
+        // the fleet count from 398 to the residue below.
+        let mut dollars: Vec<StringNote> = Vec::new();
+        let mut multiline = false;
+        let mut nested_source = false;
+
+        // Leading `~` expansion: a bare `~` or `~/...` at the very start of
+        // a double-quoted string expands to `$HOME` at runtime. Mid-string
+        // `~` is always literal (preserves DNS zone tokens like "~bus",
+        // "~example.com", "~." in existing scripts). `~user` is not
+        // supported — only the running user's HOME.
+        if self.peek() == Some('~') && matches!(self.peek_ahead(1), Some('/') | Some('"')) {
+            self.advance(); // consume the `~`
+            parts.push(StringPart::EnvVar("HOME".to_string()));
+        }
+
+        loop {
+            match self.peek() {
+                None => {
+                    return Err(MixError::LexerError {
+                        msg: "unterminated string".to_string(),
+                        span: Span {
+                            line,
+                            column: col,
+                            file: None,
+                        },
+                    });
+                }
+                Some('"') => {
+                    self.advance();
+                    break;
+                }
+                Some('\\') => {
+                    // The line of the BACKSLASH, not of whatever follows:
+                    // `self.advance()` over an escaped physical newline has
+                    // already moved `self.line` on, which reported the
+                    // escape one line below where it was written.
+                    let esc_line = self.line;
+                    self.advance();
+                    match self.advance() {
+                        Some('n') => {
+                            multiline = true;
+                            current.push('\n');
+                            if self.record_literal_maps {
+                                lines.push(self.line);
+                            }
+                        }
+                        Some('t') => current.push('\t'),
+                        Some('r') => current.push('\r'),
+                        Some('e') => current.push('\x1b'),
+                        Some('"') => {
+                            nested_source = true;
+                            current.push('"');
+                        }
+                        Some('\\') => current.push('\\'),
+                        Some('$') => current.push('$'),
+                        Some('~') => current.push('~'),
+                        // `\u{XXXX}` unicode escape (1–6 hex digits in
+                        // braces, Rust convention) — decodes to the
+                        // codepoint so a script can match/strip a real
+                        // char (e.g. `\u{FEFF}` zero-width no-break space).
+                        // ONLY the braced form is an escape: a bare `\u`
+                        // (no following `{`) stays literal `\u`, so existing
+                        // strings with a Windows path (`\users`) or an
+                        // embedded JSON `\uXXXX` are unchanged — a pure
+                        // addition, not a break.
+                        Some('u') if self.peek() == Some('{') => {
+                            let ch = self.lex_unicode_escape(line, col)?;
+                            current.push(ch);
+                            if self.record_literal_maps && ch == '\n' {
+                                lines.push(self.line);
+                            }
+                        }
+                        // Strict data only: the JSON `\uXXXX` form (exactly
+                        // four hex digits, surrogate pairs joined), so text
+                        // produced by json_encode — which escapes control
+                        // characters that way — reads back unchanged.
+                        Some('u') if self.data_mode && self.hex4_at(0).is_some() => {
+                            let ch = self.lex_json_unicode_escape(line, col)?;
+                            current.push(ch);
+                            if self.record_literal_maps && ch == '\n' {
+                                lines.push(self.line);
+                            }
+                        }
+                        // The C/Rust/JS control escapes (0.90.0). Every
+                        // other language has these, so the "unrecognised
+                        // escape keeps the backslash" rule turned a habit
+                        // into silently wrong output that no gate saw — a
+                        // `replace()` wrote a literal `isn\x27t` into a
+                        // committed journal entry (2026-09-17).
+                        //
+                        // `\0` is NUL exactly, never the start of an octal
+                        // escape: octal is ambiguous next to digits
+                        // (`"\012"` is NUL then "12"), and `\u{…}` already
+                        // covers what octal would have been for.
+                        Some('0') => current.push('\0'),
+                        Some('a') => current.push('\u{07}'),
+                        Some('b') => current.push('\u{08}'),
+                        Some('f') => current.push('\u{0C}'),
+                        Some('v') => current.push('\u{0B}'),
+                        // `\xHH` — EXACTLY two hex digits, and the value is
+                        // the CODEPOINT U+00HH, never a raw byte: a Mix
+                        // String is UTF-8, so `"\xff"` is U+00FF (two bytes
+                        // on the wire), not the byte 0xFF. `bytes_from`/
+                        // `bytes_from_hex` are the byte route, and they keep
+                        // a different spelling on purpose. Fewer than two
+                        // hex digits is NOT an error — it stays literal and
+                        // lint reports it, so a pattern that meant the
+                        // regex's own `\x` is not turned into a lex failure.
+                        Some('x') => {
+                            if let (Some(h1), Some(h2)) = (self.peek(), self.peek_ahead(1))
+                                && h1.is_ascii_hexdigit()
+                                && h2.is_ascii_hexdigit()
+                            {
+                                self.advance();
+                                self.advance();
+                                let cp = (h1.to_digit(16).unwrap() * 16) + h2.to_digit(16).unwrap();
+                                // 0x00..=0xFF is always a valid char.
+                                current.push(char::from_u32(cp).expect("0x00..=0xFF is a char"));
+                                if self.record_literal_maps && cp == 0x0A {
+                                    lines.push(self.line);
+                                }
+                            } else {
+                                self.note_unknown_escape(esc_line, 'x');
+                                current.push('\\');
+                                current.push('x');
+                            }
+                        }
+                        Some(c) => {
+                            // A backslash before a PHYSICAL newline: the
+                            // string really does span lines (so the bare-`$`
+                            // batch must be dropped with every other
+                            // multi-line string), and its diagnostic cannot
+                            // quote the escape verbatim without putting a
+                            // raw newline inside the message — which would
+                            // break the one-finding-per-line human format
+                            // and the `--json` text alike.
+                            if c == '\n' || c == '\r' {
+                                multiline = true;
+                            }
+                            self.note_unknown_escape(esc_line, c);
+                            current.push('\\');
+                            current.push(c);
+                            if self.record_literal_maps && c == '\n' {
+                                lines.push(self.line);
+                            }
+                        }
+                        None => {
+                            return Err(MixError::LexerError {
+                                msg: "unterminated string".to_string(),
+                                span: Span {
+                                    line,
+                                    column: col,
+                                    file: None,
+                                },
+                            });
+                        }
+                    }
+                }
+                Some('$') => {
+                    if self.peek_ahead(1) == Some('{') {
+                        // ${varname} interpolation
+                        if !current.is_empty() {
+                            parts.push(StringPart::Literal(std::mem::take(&mut current)));
+                        }
+                        self.advance(); // skip $
+                        self.advance(); // skip {
+                        let mut var_name = String::new();
+                        loop {
+                            match self.advance() {
+                                Some('}') => break,
+                                Some(c) => var_name.push(c),
+                                None => {
+                                    return Err(MixError::LexerError {
+                                        msg: "unterminated interpolation".to_string(),
+                                        span: Span {
+                                            line,
+                                            column: col,
+                                            file: None,
+                                        },
+                                    });
+                                }
+                            }
+                        }
+                        parts.push(StringPart::Variable(var_name));
+                    } else {
+                        // `$(` is NOT command substitution in a double-quoted
+                        // string — removed footgun: it used to shell out and
+                        // execute at lex/build time on the ORCHESTRATOR, not on
+                        // the target shell. `$` followed by anything but `{` is
+                        // now literal text. For a shell `$(...)` destined for a
+                        // child/remote shell, use a single-quoted 'raw' string;
+                        // to splice a command's output, use `run()`/`run_rc()`
+                        // with `..` concat. (Standalone `$(cmd)` as an EXPRESSION
+                        // and heredoc `$(...)` are unaffected — separate forms.)
+                        current.push('$');
+                        self.advance();
+                        self.note_bare_dollar(&mut dollars);
+                    }
+                }
+                Some(c) => {
+                    if c == '\n' {
+                        multiline = true;
+                    }
+                    current.push(c);
+                    self.advance();
+                    if self.record_literal_maps && c == '\n' {
+                        lines.push(self.line);
+                    }
+                }
+            }
+        }
+
+        if !multiline && !nested_source {
+            self.string_notes.append(&mut dollars);
+        }
+
+        if !current.is_empty() {
+            parts.push(StringPart::Literal(current));
+        }
+
+        if self.record_literal_maps {
+            self.literal_maps.push(LiteralLineMap {
+                opener_line: line,
+                heredoc: false,
+                lines,
+            });
+        }
+
+        // Optimize: if no interpolation, return plain string
+        if parts.is_empty() {
+            Ok(self.spanned(Token::String(String::new()), line, col))
+        } else if parts.len() == 1 {
+            if let StringPart::Literal(s) = &parts[0] {
+                return Ok(self.spanned(Token::String(s.clone()), line, col));
+            }
+            Ok(self.spanned(Token::InterpString(parts), line, col))
+        } else {
+            Ok(self.spanned(Token::InterpString(parts), line, col))
+        }
+    }
+
+    /// Record an escape the lexer kept literally, for MIX-W2405.
+    ///
+    /// `u` is EXEMPT: an unbraced `\uXXXX` staying literal is a documented
+    /// design decision (it protects embedded JSON and `C:\users`), so
+    /// warning about it would be noise on code that is already correct.
+    /// `\u{…}` never reaches here at all.
+    fn note_unknown_escape(&mut self, line: usize, c: char) {
+        if c == 'u' {
+            return;
+        }
+        // Never put a raw control character in a diagnostic: `text` is
+        // quoted straight into the message, and a literal newline there
+        // splits one finding across two output lines.
+        let text = match c {
+            '\n' => "\\<newline>".to_string(),
+            '\r' => "\\<carriage-return>".to_string(),
+            '\t' => "\\<tab>".to_string(),
+            c => format!("\\{c}"),
+        };
+        self.string_notes.push(StringNote::UnknownEscape { line, text });
+    }
+
+    /// Record a bare `$name` in a double-quoted literal, for MIX-W2404.
+    /// Called with the `$` already consumed and `self.pos` on the first
+    /// character after it. A `$` followed by anything that is not an
+    /// identifier start (`"$5.00"`, `"cost: $"`) is not a spelling of a
+    /// variable and is never recorded.
+    ///
+    /// Buffered rather than recorded directly: the caller discards the
+    /// whole batch for a MULTI-LINE string. See `lex_double_string`.
+    fn note_bare_dollar(&mut self, out: &mut Vec<StringNote>) {
+        let mut name = String::new();
+        let mut i = 0;
+        while let Some(c) = self.peek_ahead(i) {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                name.push(c);
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        // All-digit names are the positional `$1`-style reads, which are
+        // never a `${name}` mistake.
+        if name.is_empty() || name.chars().all(|c| c.is_ascii_digit()) {
+            return;
+        }
+        out.push(StringNote::BareDollar {
+            line: self.line,
+            name,
+        });
+    }
+
+    /// Parse a `\u{XXXX}` unicode escape (the `\u` is already consumed)
+    /// and return the decoded codepoint (the caller pushes it, so it can
+    /// extend the literal's line map when the codepoint is a newline).
+    /// 1–6 hex digits in braces, matching Rust/JS. Errors loudly on a
+    /// missing brace, empty/over-long hex, a non-hex digit, or a
+    /// codepoint that isn't a valid `char` (e.g. a surrogate) — never
+    /// silently passes through.
+    fn lex_unicode_escape(&mut self, line: usize, col: usize) -> MixResult<char> {
+        let err = |msg: String| MixError::LexerError {
+            msg,
+            span: Span {
+                line,
+                column: col,
+                file: None,
+            },
+        };
+        if self.advance() != Some('{') {
+            return Err(err(
+                "\\u must be followed by '{' — write \\u{FEFF} (braced hex)".to_string(),
+            ));
+        }
+        let mut hex = String::new();
+        loop {
+            match self.advance() {
+                Some('}') => break,
+                Some(c) if c.is_ascii_hexdigit() => {
+                    hex.push(c);
+                    if hex.len() > 6 {
+                        return Err(err("\\u{...} takes at most 6 hex digits".to_string()));
+                    }
+                }
+                Some(c) => {
+                    return Err(err(format!("invalid hex digit '{c}' in \\u{{...}}")));
+                }
+                None => return Err(err("unterminated \\u{...} escape".to_string())),
+            }
+        }
+        if hex.is_empty() {
+            return Err(err("empty \\u{} escape — write \\u{FEFF}".to_string()));
+        }
+        let cp =
+            u32::from_str_radix(&hex, 16).map_err(|_| err(format!("invalid \\u{{{hex}}} hex")))?;
+        char::from_u32(cp)
+            .ok_or_else(|| err(format!("\\u{{{hex}}} is not a valid unicode codepoint")))
+    }
+
+    /// The value of the four hex digits starting `offset` chars ahead, if
+    /// all four are hex.
+    fn hex4_at(&self, offset: usize) -> Option<u32> {
+        let mut v = 0u32;
+        for k in 0..4 {
+            v = v * 16 + self.peek_ahead(offset + k)?.to_digit(16)?;
+        }
+        Some(v)
+    }
+
+    /// Decode a JSON-style `\uXXXX` (strict data only; the `\u` is already
+    /// consumed and four hex digits are known to follow) and return the
+    /// decoded codepoint. A high surrogate must be followed by `\u` + a
+    /// low one and the pair is joined, exactly as JSON defines; a lone
+    /// surrogate is an error, never a silent U+FFFD.
+    fn lex_json_unicode_escape(&mut self, line: usize, col: usize) -> MixResult<char> {
+        let err = |msg: String| MixError::LexerError {
+            msg,
+            span: Span {
+                line,
+                column: col,
+                file: None,
+            },
+        };
+        let hi = self.hex4_at(0).expect("caller checked four hex digits");
+        for _ in 0..4 {
+            self.advance();
+        }
+        let cp = match hi {
+            0xD800..=0xDBFF => {
+                let lo = if self.peek() == Some('\\') && self.peek_ahead(1) == Some('u') {
+                    self.hex4_at(2)
+                } else {
+                    None
+                };
+                match lo {
+                    Some(lo @ 0xDC00..=0xDFFF) => {
+                        for _ in 0..6 {
+                            self.advance();
+                        }
+                        0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+                    }
+                    _ => {
+                        return Err(err(format!(
+                            "\\u{hi:04x} is a high surrogate with no \\uDC00-\\uDFFF low surrogate after it"
+                        )));
+                    }
+                }
+            }
+            0xDC00..=0xDFFF => {
+                return Err(err(format!("\\u{hi:04x} is a lone low surrogate")));
+            }
+            cp => cp,
+        };
+        Ok(char::from_u32(cp).expect("non-surrogate BMP or joined pair is a char"))
+    }
+
+    fn lex_heredoc(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        // Read the delimiter tag (e.g., END, HTML, EOF)
+        let mut tag = String::new();
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                tag.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if tag.is_empty() {
+            return Err(MixError::LexerError {
+                msg: "expected heredoc tag after '<<'".to_string(),
+                span: Span {
+                    line,
+                    column: col,
+                    file: None,
+                },
+            });
+        }
+
+        // Skip to end of current line (consume the newline after <<TAG)
+        let mut trailing = String::new();
+        while let Some(ch) = self.peek() {
+            if ch == '\n' {
+                self.advance(); // advance() handles line counting
+                break;
+            }
+            trailing.push(ch);
+            self.advance();
+        }
+        // B7 (TODO-mix 2026-09-24): `$s = <<END ; die "stop"` used to
+        // DROP everything after the tag — the `die` never ran and the
+        // script continued, rc 0. A heredoc opener owns its line: only
+        // whitespace and a `--` comment may follow the tag.
+        if !trailing.trim().is_empty() && !trailing.trim_start().starts_with("--") {
+            return Err(MixError::LexerError {
+                msg: format!(
+                    "unexpected text after heredoc tag '<<{tag}': the opener owns its line — put '{trailing}' on the next line"
+                ),
+                span: Span {
+                    line,
+                    column: col,
+                    file: None,
+                },
+            });
+        }
+
+        // Accumulate lines until we find the closing tag on its own line
+        let mut body = String::new();
+        // The heredoc body starts on the line AFTER the `<<TAG` opener,
+        // and its physical newlines survive 1:1 into the decoded text —
+        // the escape pass below can only ADD decoded lines (`\n`), never
+        // remove physical ones, so `phys` tracks the physical line each
+        // decoded line begins on.
+        let mut phys = line + 1;
+        let mut lines: Vec<usize> = if self.record_literal_maps { vec![phys] } else { Vec::new() };
+        loop {
+            // Read a line
+            let mut line_content = String::new();
+            let mut hit_eof = true;
+            while let Some(ch) = self.peek() {
+                if ch == '\n' {
+                    self.advance(); // advance() handles line counting
+                    hit_eof = false;
+                    break;
+                }
+                line_content.push(ch);
+                self.advance();
+            }
+
+            // Check if this line is the closing tag
+            if line_content.trim() == tag {
+                // Put back the newline so the main lexer sees a statement boundary
+                if !hit_eof {
+                    self.pos -= 1;
+                    self.line -= 1;
+                    // Rewind column to end of previous line (approximate — column doesn't matter much)
+                    self.column = 1;
+                }
+                break;
+            }
+
+            body.push_str(&line_content);
+            body.push('\n');
+
+            if hit_eof {
+                return Err(MixError::LexerError {
+                    msg: format!("unterminated heredoc (expected '{}')", tag),
+                    span: Span {
+                        line,
+                        column: col,
+                        file: None,
+                    },
+                });
+            }
+        }
+
+        // Remove trailing newline
+        if body.ends_with('\n') {
+            body.pop();
+        }
+
+        // Process interpolation (same as double-quoted strings)
+        let mut parts: Vec<StringPart> = Vec::new();
+        let mut current = String::new();
+        let chars: Vec<char> = body.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
+                // ${var} interpolation
+                if !current.is_empty() {
+                    parts.push(StringPart::Literal(std::mem::take(&mut current)));
+                }
+                i += 2; // skip ${
+                let mut var_name = String::new();
+                while i < chars.len() && chars[i] != '}' {
+                    var_name.push(chars[i]);
+                    i += 1;
+                }
+                if i < chars.len() {
+                    i += 1; // skip }
+                }
+                parts.push(StringPart::Variable(var_name));
+            } else if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '(' {
+                // $(command) substitution
+                if !current.is_empty() {
+                    parts.push(StringPart::Literal(std::mem::take(&mut current)));
+                }
+                i += 2; // skip $(
+                let mut cmd = String::new();
+                let mut depth = 1;
+                while i < chars.len() {
+                    match chars[i] {
+                        '(' => {
+                            depth += 1;
+                            cmd.push('(');
+                        }
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                            cmd.push(')');
+                        }
+                        c => {
+                            cmd.push(c);
+                            // Newlines inside the substitution move the
+                            // physical cursor without adding a decoded
+                            // line to the literal parts.
+                            if c == '\n' {
+                                phys += 1;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                if i < chars.len() {
+                    i += 1;
+                } // skip )
+                parts.push(StringPart::CommandSub(cmd));
+            } else if chars[i] == '\\' && i + 1 < chars.len() {
+                // Escape sequences
+                i += 1;
+                match chars[i] {
+                    'n' => {
+                        current.push('\n');
+                        if self.record_literal_maps {
+                            lines.push(phys);
+                        }
+                    }
+                    't' => current.push('\t'),
+                    'r' => current.push('\r'),
+                    'e' => current.push('\x1b'),
+                    '\\' => current.push('\\'),
+                    '$' => {
+                        current.push('$');
+                        // Preserve that this dollar was explicitly
+                        // escaped. The analyzer scans literal parts for
+                        // bare `$name`; ending the part at `$` prevents
+                        // the following identifier from being mistaken
+                        // for an unescaped spelling. Evaluation still
+                        // concatenates the same bytes.
+                        parts.push(StringPart::Literal(std::mem::take(&mut current)));
+                    }
+                    c => {
+                        current.push('\\');
+                        current.push(c);
+                        // A backslash before a PHYSICAL newline keeps both
+                        // characters: the newline is a decoded line break,
+                        // and the next decoded line starts on the NEXT
+                        // physical line.
+                        if c == '\n' {
+                            phys += 1;
+                            if self.record_literal_maps {
+                                lines.push(phys);
+                            }
+                        }
+                    }
+                }
+                i += 1;
+            } else {
+                let c = chars[i];
+                current.push(c);
+                i += 1;
+                if c == '\n' {
+                    phys += 1;
+                    if self.record_literal_maps {
+                        lines.push(phys);
+                    }
+                }
+            }
+        }
+
+        if !current.is_empty() {
+            parts.push(StringPart::Literal(current));
+        }
+
+        if self.record_literal_maps {
+            self.literal_maps.push(LiteralLineMap {
+                opener_line: line,
+                heredoc: true,
+                lines,
+            });
+        }
+
+        // Keep heredocs distinct even when entirely literal so the AST
+        // retains enough provenance for heredoc-only analyzer checks.
+        if parts.is_empty() {
+            parts.push(StringPart::Literal(String::new()));
+        }
+        Ok(self.spanned(Token::HeredocString(parts), line, col))
+    }
+
+    fn lex_variable(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        self.advance(); // skip $
+
+        // Check for command substitution: $(command)
+        if self.peek() == Some('(') {
+            self.advance(); // skip (
+            return self.lex_command_sub(line, col);
+        }
+
+        let mut name = String::new();
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                name.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if name.is_empty() {
+            return Err(MixError::LexerError {
+                msg: "expected variable name after '$'".to_string(),
+                span: Span {
+                    line,
+                    column: col,
+                    file: None,
+                },
+            });
+        }
+        Ok(self.spanned(Token::Variable(name), line, col))
+    }
+
+    /// Read balanced parens for command substitution: $(...)
+    fn lex_command_sub(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        let mut cmd = String::new();
+        let mut depth = 1;
+        loop {
+            match self.advance() {
+                Some('(') => {
+                    depth += 1;
+                    cmd.push('(');
+                }
+                Some(')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    cmd.push(')');
+                }
+                Some(c) => cmd.push(c),
+                None => {
+                    return Err(MixError::LexerError {
+                        msg: "unterminated command substitution".to_string(),
+                        span: Span {
+                            line,
+                            column: col,
+                            file: None,
+                        },
+                    });
+                }
+            }
+        }
+        Ok(self.spanned(Token::CommandSub(cmd), line, col))
+    }
+
+    fn lex_identifier(&mut self, line: usize, col: usize) -> MixResult<SpannedToken> {
+        let mut name = String::new();
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                name.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        // Dispatch from the single keyword table above — keyword_token is
+        // generated from the same rows as KEYWORDS, so the two cannot
+        // drift. `do` is reserved-and-refused, not a keyword: it lexes to
+        // Token::Do so the parser can raise an instructional error rather
+        // than a bare-identifier no-op. The fallback is the bare-identifier
+        // path (function names, map keys, etc.).
+        if name == "do" {
+            return Ok(self.spanned(Token::Do, line, col));
+        }
+        let token = keyword_token(&name).unwrap_or(Token::String(name));
+        Ok(self.spanned(token, line, col))
+    }
+}
+
+// ── editor highlighting (ced E1 plan `_plan/2026-09-26-ced-e1-implementation.md` §4.3) ──
+//
+// Frozen in ced E1 Stage S; Stage E1b implements `highlight`.
+
+/// Which Mix grammar a buffer holds: executable Mix (`*.mix`) or Mix data
+/// (`*.conf.mix`, `scene.mix` — the [`Lexer::for_data`] rules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MixFlavor {
+    Script,
+    Data,
+}
+
+/// Coarse token classes for syntax colouring. Deliberately not `Token`: an
+/// editor needs classes that survive lexer refactors, and `Token` is flat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TokenClass {
+    Keyword,
+    Identifier,
+    /// `$name`, `${name}`.
+    Variable,
+    /// String literal bodies and delimiters (interpolated parts included).
+    String,
+    Number,
+    /// `true`, `false`, `nil`.
+    Constant,
+    Comment,
+    Operator,
+    Punctuation,
+    /// Text the lexer could not tokenise (to the end of its line).
+    Error,
+}
+
+/// Classify `source` for highlighting. **Never fails and never panics**: an
+/// unterminated string, a bad escape or any other lexer error becomes an
+/// [`TokenClass::Error`] span to the end of that line, and lexing resumes on
+/// the next line. Spans are byte ranges, non-overlapping, in order; bytes not
+/// covered (whitespace) are plain.
+///
+/// It drives the real [`Lexer`] token by token (so it tracks every lexer rule
+/// exactly) and adds what `tokenize` throws away: comments become spans, and a
+/// token that fails to lex is rewound and marked instead of ending the run.
+pub fn highlight(source: &str, flavor: MixFlavor) -> Vec<(std::ops::Range<usize>, TokenClass)> {
+    let mut lx = match flavor {
+        MixFlavor::Script => Lexer::new(source),
+        MixFlavor::Data => Lexer::for_data(source),
+    };
+    // Byte offset of every char index (the lexer counts chars), plus the end.
+    let mut byte_at: Vec<usize> = source.char_indices().map(|(b, _)| b).collect();
+    byte_at.push(source.len());
+
+    // Openers (`"`, `'`, `$(`, `<<TAG`) already seen to run unterminated to
+    // the end of the source. A later one of the same kind cannot close either,
+    // so it is marked without rescanning — otherwise every such opener would
+    // rescan to EOF and a pathological buffer would cost O(n²).
+    let mut unterminated: Vec<String> = Vec::new();
+
+    let mut spans = Vec::new();
+    loop {
+        lx.skip_whitespace_no_newline();
+        let start = lx.pos;
+        let Some(ch) = lx.peek() else { break };
+        if ch == '\n' {
+            lx.advance();
+            continue;
+        }
+        if ch == '#' || (ch == '-' && lx.peek_ahead(1) == Some('-')) {
+            lx.skip_comment();
+            spans.push((byte_at[start]..byte_at[lx.pos], TokenClass::Comment));
+            continue;
+        }
+
+        let (line, column) = (lx.line, lx.column);
+        let opener = opener_key(&lx, ch);
+        let known_bad = opener.as_ref().is_some_and(|k| unterminated.contains(k));
+        lx.token_start = start;
+        let lexed = if known_bad { None } else { Some(lx.next_token_at(ch, line, column)) };
+        let class = match lexed {
+            Some(Ok(tok)) => classify(&tok.token, ch),
+            failed => {
+                // Only the opener itself running out is monotone: a `"…${`
+                // with no `}` says nothing about a later plain `"…"`.
+                let opener_ran_out = matches!(&failed, Some(Err(MixError::LexerError { msg, .. }))
+                    if !msg.contains("interpolation"));
+                if opener_ran_out
+                    && lx.pos >= lx.source.len()
+                    && let Some(key) = opener
+                {
+                    unterminated.push(key);
+                }
+                // Rewind, then mark the rest of this line (newline excluded);
+                // lexing resumes on the next line.
+                lx.pos = start;
+                lx.line = line;
+                lx.column = column;
+                while lx.peek().is_some_and(|c| c != '\n') {
+                    lx.advance();
+                }
+                TokenClass::Error
+            }
+        };
+        if lx.pos <= start {
+            // Every arm above consumes at least one char; never spin if not.
+            lx.advance();
+        }
+        // A heredoc hands back its closing newline, so `pos` never runs past
+        // the source, but clamp anyway: this function must not panic.
+        let end = lx.pos.min(byte_at.len() - 1);
+        spans.push((byte_at[start]..byte_at[end], class));
+    }
+    spans
+}
+
+/// The opener of a construct that may run past its line (and so, when
+/// unterminated, to the end of the source), as a memo key for `highlight`.
+fn opener_key(lx: &Lexer, ch: char) -> Option<String> {
+    match (ch, lx.peek_ahead(1)) {
+        ('"', _) => Some("\"".to_string()),
+        ('\'', _) => Some("'".to_string()),
+        ('$', Some('(')) => Some("$(".to_string()),
+        ('<', Some('<')) => {
+            let mut key = "<<".to_string();
+            let mut i = 2;
+            while let Some(c) = lx.peek_ahead(i).filter(|c| c.is_ascii_alphanumeric() || *c == '_') {
+                key.push(c);
+                i += 1;
+            }
+            Some(key)
+        }
+        _ => None,
+    }
+}
+
+/// The class of a token that lexed from a source starting with `first`.
+fn classify(token: &Token, first: char) -> TokenClass {
+    match token {
+        Token::Number(_) => TokenClass::Number,
+        // A bare word lexes to `String` too; only a quote makes it a literal.
+        // A digit-led `String` is a segment of a hyphenated send target.
+        Token::String(_) if first == '"' || first == '\'' => TokenClass::String,
+        Token::String(_) => TokenClass::Identifier,
+        Token::InterpString(_) | Token::HeredocString(_) => TokenClass::String,
+        Token::Variable(_) | Token::CommandSub(_) => TokenClass::Variable,
+        Token::True | Token::False | Token::Nil => TokenClass::Constant,
+        Token::If
+        | Token::Then
+        | Token::Else
+        | Token::Elif
+        | Token::End
+        | Token::For
+        | Token::Each
+        | Token::In
+        | Token::To
+        | Token::Step
+        | Token::Next
+        | Token::While
+        | Token::Done
+        | Token::Loop
+        | Token::Break
+        | Token::Continue
+        | Token::Function
+        | Token::Return
+        | Token::Select
+        | Token::When
+        | Token::Otherwise
+        | Token::And
+        | Token::Or
+        | Token::Not
+        | Token::Parse
+        | Token::With
+        | Token::Send
+        | Token::Address
+        | Token::Emit
+        | Token::On
+        | Token::Try
+        | Token::Catch
+        | Token::Finally
+        | Token::Die
+        | Token::Export
+        | Token::Alias
+        | Token::Print
+        | Token::Eprint
+        | Token::Source
+        | Token::Include
+        | Token::Do
+        | Token::Sh
+        | Token::Label
+        | Token::StrEq
+        | Token::StrNe => TokenClass::Keyword,
+        Token::Plus
+        | Token::Minus
+        | Token::Star
+        | Token::Slash
+        | Token::Percent
+        | Token::Power
+        | Token::Eq
+        | Token::NotEq
+        | Token::Gt
+        | Token::Lt
+        | Token::GtEq
+        | Token::LtEq
+        | Token::DotDot
+        | Token::NilCoalesce
+        | Token::Question
+        | Token::Pipe
+        | Token::AndAnd
+        | Token::OrOr
+        | Token::Assign
+        | Token::Bang => TokenClass::Operator,
+        Token::LParen
+        | Token::RParen
+        | Token::LBracket
+        | Token::RBracket
+        | Token::LBrace
+        | Token::RBrace
+        | Token::Colon
+        | Token::Comma
+        | Token::Dot
+        | Token::Tilde
+        | Token::Semicolon
+        | Token::Newline
+        | Token::Eof => TokenClass::Punctuation,
+    }
+}
+
+#[cfg(test)]
+mod literal_line_map_tests {
+    use super::Lexer;
+
+    fn sources(src: &str) -> Vec<(String, bool, usize, Vec<usize>)> {
+        Lexer::string_literal_sources(src)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.text,
+                    s.map.heredoc,
+                    s.map.opener_line,
+                    s.map.lines,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_escaped_newline_stays_on_the_openers_line() {
+        // The whole reason the map exists: `\n` decodes to a newline but
+        // the literal occupies ONE physical line.
+        let got = sources("$r = ssh_mix($h, \"print(1)\\nprint(2)\")\n");
+        assert_eq!(
+            got.iter().find(|(t, _, _, _)| t.contains("print")).unwrap(),
+            &("print(1)\nprint(2)".to_string(), false, 1, vec![1, 1]),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_physical_multiline_string_maps_lines_one_to_one() {
+        let src = "$r = ssh_mix($h, \"print(1)\nprint(2)\")\n";
+        let got = sources(src);
+        let (text, heredoc, opener, lines) =
+            got.iter().find(|(t, ..)| t.contains("print")).expect("found");
+        assert_eq!((text.as_str(), *heredoc, *opener), ("print(1)\nprint(2)", false, 1));
+        assert_eq!(lines, &vec![1, 2], "{got:?}");
+    }
+
+    #[test]
+    fn a_single_quoted_multiline_string_maps_one_to_one() {
+        let src = "$r = ssh_mix($h, 'print(1)\nprint(2)')\n";
+        let got = sources(src);
+        let (_, heredoc, opener, lines) =
+            got.iter().find(|(t, ..)| t.contains("print")).expect("found");
+        assert!(!heredoc);
+        assert_eq!(*opener, 1);
+        assert_eq!(lines, &vec![1, 2], "{got:?}");
+    }
+
+    #[test]
+    fn a_heredoc_starts_one_line_below_its_opener() {
+        let src = "$p = <<END\nl1\nl2\nEND\n";
+        let got = sources(src);
+        assert_eq!(
+            got,
+            vec![("l1\nl2".to_string(), true, 1, vec![2, 3])],
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_heredoc_escape_adds_a_decoded_line_on_the_escapes_line() {
+        let src = "$p = <<END\nl1\\nl2\nEND\n";
+        let got = sources(src);
+        assert_eq!(
+            got,
+            vec![("l1\nl2".to_string(), true, 1, vec![2, 2])],
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn unicode_and_hex_escapes_that_decode_to_a_newline_stay_on_their_line() {
+        for (esc, text) in [("\\u{000A}", "\n"), ("\\x0A", "\n")] {
+            let src = format!("$r = ssh_mix($h, \"print(1){esc}print(2)\")\n");
+            let got = sources(&src);
+            let (decoded, _, opener, lines) =
+                got.iter().find(|(t, ..)| t.contains("print")).expect("found");
+            assert_eq!(decoded, &format!("print(1){text}print(2)"));
+            assert_eq!(*opener, 1);
+            assert_eq!(lines, &vec![1, 1], "{esc}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn bareword_identifiers_are_not_literals() {
+        // Identifiers lex to Token::String too; only quote-openers count.
+        let src = "$a = ssh_mix\nprint(ssh_mix($h, 'x'))\n";
+        let got = sources(src);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, "x");
+    }
+
+    #[test]
+    fn multiple_identical_literals_on_one_line_keep_their_own_maps() {
+        let src = "$r = [ssh_mix(\"a\", \"x\\ny\"), ssh_mix(\"b\", \"x\\ny\")]\n";
+        let got = sources(src);
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert_eq!(got[1].0, "x\ny");
+        assert_eq!(got[3].0, "x\ny");
+        assert_eq!(got[1].3, vec![1, 1]);
+        assert_eq!(got[3].3, vec![1, 1]);
+    }
+
+    #[test]
+    fn ordinary_tokenize_records_no_maps_but_the_helper_maps_every_string() {
+        // Map recording is OPT-IN: the ordinary tokenize paths (runtime,
+        // parser, highlighter) must pay nothing per string, while the one
+        // helper that asked for maps gets every literal mapped exactly.
+        use super::Token;
+        let src = "\"hello world\"\n".repeat(3000);
+        let mut lexer = Lexer::new(&src);
+        let tokens = lexer.tokenize().expect("lex");
+        let strings = tokens
+            .iter()
+            .filter(|t| matches!(&t.token, Token::String(_)))
+            .count();
+        assert_eq!(strings, 3000, "3000 string literals tokenized");
+        assert!(
+            lexer.literal_maps.is_empty(),
+            "ordinary tokenize must not record literal maps"
+        );
+        let maps = Lexer::string_literal_sources(&src);
+        assert_eq!(maps.len(), 3000, "the helper maps every literal");
+        assert_eq!(maps[0].map.opener_line, 1);
+        assert_eq!(maps[2999].map.opener_line, 3000);
+        assert_eq!(maps[2999].text, "hello world");
+    }
+
+    #[test]
+    fn a_non_lexing_source_yields_no_sources() {
+        assert!(sources("\"unterminated\n").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::{MixFlavor, TokenClass, highlight};
+    use TokenClass::*;
+    use proptest::prelude::*;
+
+    /// Every name in `KEYWORDS` must lex to a keyword token (never a bare
+    /// identifier) — the registry list and the lexer match cannot drift.
+    /// A keyword added to the match without a `KEYWORDS` entry is caught
+    /// the other way by `mix-shell/tests/man_pages.rs`, which holds the
+    /// manual's keyword table to exactly this set.
+    #[test]
+    fn keyword_set_matches_lexer() {
+        use super::{Lexer, Token};
+        for name in super::KEYWORDS {
+            let mut lexer = Lexer::new(name);
+            let tokens = lexer.tokenize().expect("keyword must lex");
+            // The lexer appends a trailing Eof token; the keyword itself
+            // must be the first (and only non-Eof) token.
+            assert_eq!(
+                tokens.len(),
+                2,
+                "keyword '{name}' should lex to [kw, Eof], got {tokens:?}"
+            );
+            assert!(
+                !matches!(tokens[0].token, Token::String(_)),
+                "keyword '{name}' lexed as a bare identifier — the keyword_table entry and its Token are out of step"
+            );
+            assert!(
+                matches!(tokens[1].token, Token::Eof),
+                "keyword '{name}': trailing token is not Eof"
+            );
+        }
+    }
+
+    fn classes(src: &str, flavor: MixFlavor) -> Vec<(&str, TokenClass)> {
+        highlight(src, flavor).into_iter().map(|(r, c)| (&src[r], c)).collect()
+    }
+
+    #[test]
+    fn golden_sample_covers_every_class() {
+        let src = "-- head\n\
+                   $x = 0x1F + 2 # trailing\n\
+                   if not $x then print(\"a ${x}\", 'b') end\n\
+                   $m = {k: [1, 2.5]}; $s = $(ls)\n\
+                   & bad token\n\
+                   $z = nil ?? false\n";
+        let want = vec![
+            ("-- head", Comment),
+            ("$x", Variable),
+            ("=", Operator),
+            ("0x1F", Number),
+            ("+", Operator),
+            ("2", Number),
+            ("# trailing", Comment),
+            ("if", Keyword),
+            ("not", Keyword),
+            ("$x", Variable),
+            ("then", Keyword),
+            ("print", Keyword),
+            ("(", Punctuation),
+            ("\"a ${x}\"", String),
+            (",", Punctuation),
+            ("'b'", String),
+            (")", Punctuation),
+            ("end", Keyword),
+            ("$m", Variable),
+            ("=", Operator),
+            ("{", Punctuation),
+            ("k", Identifier),
+            (":", Punctuation),
+            ("[", Punctuation),
+            ("1", Number),
+            (",", Punctuation),
+            ("2.5", Number),
+            ("]", Punctuation),
+            ("}", Punctuation),
+            (";", Punctuation),
+            ("$s", Variable),
+            ("=", Operator),
+            ("$(ls)", Variable),
+            ("& bad token", Error),
+            ("$z", Variable),
+            ("=", Operator),
+            ("nil", Constant),
+            ("??", Operator),
+            ("false", Constant),
+        ];
+        let got = classes(src, MixFlavor::Script);
+        assert_eq!(got, want);
+        for class in [Keyword, Identifier, Variable, String, Number, Constant, Comment, Operator, Punctuation, Error] {
+            assert!(got.iter().any(|(_, c)| *c == class), "{class:?} is covered");
+        }
+    }
+
+    #[test]
+    fn unterminated_strings_mark_their_line_and_resume() {
+        for q in ['"', '\''] {
+            let src = format!("$a = {q}open\n$b = 1\n");
+            let open = format!("{q}open");
+            assert_eq!(
+                classes(&src, MixFlavor::Script),
+                vec![("$a", Variable), ("=", Operator), (open.as_str(), Error), ("$b", Variable), ("=", Operator), ("1", Number)],
+            );
+        }
+        let src = "$h = <<EOF\nbody\n$c = 2";
+        assert_eq!(
+            classes(src, MixFlavor::Script),
+            vec![("$h", Variable), ("=", Operator), ("<<EOF", Error), ("body", Identifier), ("$c", Variable), ("=", Operator), ("2", Number)],
+        );
+    }
+
+    #[test]
+    fn a_multi_line_string_or_heredoc_is_one_span() {
+        let src = "$h = <<EOF\nline ${x}\nEOF\nprint($h, \"two\nlines\")\n";
+        assert_eq!(
+            classes(src, MixFlavor::Script),
+            vec![
+                ("$h", Variable),
+                ("=", Operator),
+                ("<<EOF\nline ${x}\nEOF", String),
+                ("print", Keyword),
+                ("(", Punctuation),
+                ("$h", Variable),
+                (",", Punctuation),
+                ("\"two\nlines\"", String),
+                (")", Punctuation),
+            ],
+        );
+    }
+
+    #[test]
+    fn data_flavor_uses_the_strict_data_rules() {
+        // The JSON `\uXXXX` escape is decoded only in data, where a lone
+        // surrogate is a lex error; in a script it is literal text.
+        let src = "{a: \"\\ud83d\\ude00\", b: \"\\ud800\"}\n";
+        let script = classes(src, MixFlavor::Script);
+        assert!(script.iter().all(|(_, c)| *c != Error), "{script:?}");
+        let data = classes(src, MixFlavor::Data);
+        assert_eq!(data[..4], [("{", Punctuation), ("a", Identifier), (":", Punctuation), ("\"\\ud83d\\ude00\"", String)]);
+        assert_eq!(data.last(), Some(&("\"\\ud800\"}", Error)));
+    }
+
+    #[test]
+    fn byte_ranges_follow_multibyte_text_and_crlf() {
+        // A comment runs to the `\n`, so under CRLF it keeps its `\r`.
+        let src = "$a = \"🎉 ü\" -- ☃\r\n$b = 1\r\n";
+        assert_eq!(
+            classes(src, MixFlavor::Script),
+            vec![
+                ("$a", Variable),
+                ("=", Operator),
+                ("\"🎉 ü\"", String),
+                ("-- ☃\r", Comment),
+                ("$b", Variable),
+                ("=", Operator),
+                ("1", Number),
+            ],
+        );
+    }
+
+    #[test]
+    fn repeated_unterminated_openers_stay_linear() {
+        // Each of these runs to the end of the source; without the memo every
+        // line would rescan the rest of the buffer (O(n²)).
+        for line in ["x <<A", "y $(z"] {
+            let src = format!("{line}\n").repeat(40_000);
+            let t = std::time::Instant::now();
+            let spans = highlight(&src, MixFlavor::Script);
+            assert_eq!(spans.iter().filter(|(_, c)| *c == Error).count(), 40_000);
+            assert!(t.elapsed().as_secs() < 5, "{line:?} took {:?}", t.elapsed());
+        }
+    }
+
+    fn check_spans(src: &str, flavor: MixFlavor) -> Result<(), TestCaseError> {
+        let spans = highlight(src, flavor);
+        let mut prev = 0;
+        for (r, _) in &spans {
+            prop_assert!(r.start >= prev && r.start < r.end && r.end <= src.len(), "{r:?} after {prev} in {src:?}");
+            prop_assert!(src.is_char_boundary(r.start) && src.is_char_boundary(r.end));
+            prev = r.end;
+        }
+        Ok(())
+    }
+
+    const PIECES: &[&str] = &[
+        "\"", "'", "${", "}", "$(", ")", "<<EOF", "EOF", "\n", "\r\n", "\\", "\\u{", "\\ud800", "--", "#", "$x", " ", "0x",
+        "0o9", "07", "1e", ".5", "&", "|", "~", "é", "🎉", "if", "end", "send a-1.2", "{", "[", "]", ":", ",", ";", "\t",
+    ];
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+        #[test]
+        fn never_panics_on_arbitrary_text(src in any::<std::string::String>()) {
+            check_spans(&src, MixFlavor::Script)?;
+            check_spans(&src, MixFlavor::Data)?;
+        }
+
+        #[test]
+        fn never_panics_on_mix_shaped_text(parts in proptest::collection::vec(0..PIECES.len(), 0..80)) {
+            let src: std::string::String = parts.iter().map(|&i| PIECES[i]).collect();
+            check_spans(&src, MixFlavor::Script)?;
+            check_spans(&src, MixFlavor::Data)?;
+        }
+    }
+}

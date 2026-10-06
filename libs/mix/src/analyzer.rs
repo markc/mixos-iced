@@ -1,0 +1,5124 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Semantic analyzer — the engine behind `mix lint` (0.29.0, decision
+//! record D3).
+//!
+//! Sits between parse and evaluate, usable by embedders independently
+//! of the CLI. Diagnoses the defect classes that `mix --check` (syntax
+//! only) let through in the CT-provisioning worker: definitely
+//! undefined variables, undefined callables, builtin/user-function
+//! arity mismatches, duplicate parameters/definitions, unreachable
+//! statements, discarded must-use results, and statically resolvable
+//! `require()` failures — plus a capability inventory of the script.
+//!
+//! Design bias: **false positives near zero**. Mix is dynamic
+//! (`source`/`include` load code at runtime, `${...}` interpolation
+//! falls back to the process environment, blocks don't scope, bareword
+//! calls can resolve to function-valued variables), so every rule is
+//! deliberately conservative:
+//!
+//! - A variable read is flagged ONLY when the name is assigned nowhere
+//!   in its visible universe (function body + file top level for
+//!   function code; the whole file for top-level code) — lexical order
+//!   is NOT considered, matching "no block scoping, globals visible
+//!   from functions".
+//! - `${name}` interpolation is never flagged (env fallback).
+//! - All-digit names (`$1`...) and the runtime-injected `rc`/`result`/
+//!   `status`/`event`/`_` are always declared.
+//! - A `source`/`include` anywhere suppresses the undefined checks
+//!   entirely (still reported once as MIX-W2401) — the loaded file can
+//!   define anything.
+//! - A bareword call whose name matches ANY assigned variable is not
+//!   flagged (function-valued-variable dispatch).
+//! - Calls inside `address ... end` blocks are sends, never undefined.
+//! - `MethodCall`/`ValueCall` are dynamic dispatch — skipped.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::{BinOp, ChainOp, Expr, FunctionBody, Param, PathSeg, Stmt, StmtKind, UnaryOp};
+use crate::builtin_info::{FieldInfo, TypeShape};
+use crate::builtins::{self, CapabilityClass};
+use crate::evaluator::INLINE_SPECIAL_FORMS;
+use crate::scope::param_arity;
+use crate::token::StringPart;
+
+/// Diagnostic severity — the D3 wire values are lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+    /// Advisory (0.63.0): rendered and counted separately, NEVER gates —
+    /// `--deny-warnings` ignores notes. The severity a deprecation is
+    /// born at; promotion to `Warning` keeps the code, only the
+    /// severity moves.
+    Note,
+}
+
+impl Severity {
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Note => "note",
+        }
+    }
+}
+
+/// One lint finding. `code` is a permanent identifier — never reused,
+/// never semantically repurposed — from three namespaces:
+///   MIX-E1xxx  errors (the letter encodes the fixed severity)
+///   MIX-W2xxx  warnings that were BORN warnings
+///   MIX-D3xxx  deprecations and release-transition advisories — a
+///              severity-INDEPENDENT namespace: a deprecation's
+///              severity is by design not fixed (it starts as `note`
+///              and may be promoted to `warning` in a later release
+///              with the code unchanged), so its letter must not
+///              claim one.
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    pub code: &'static str,
+    pub severity: Severity,
+    pub file: Option<String>,
+    /// 1-based statement line; `None` when unknown.
+    pub line: Option<usize>,
+    /// Always `None` today (statements carry line precision only).
+    pub column: Option<usize>,
+    pub message: String,
+    pub hint: Option<String>,
+}
+
+/// Analyzer inputs beyond the AST.
+#[derive(Debug, Clone, Default)]
+pub struct AnalyzerConfig {
+    /// Names declared external (`--allow-global NAME`).
+    pub allow_globals: Vec<String>,
+    /// Callables declared external (`--allow-function NAME`), e.g.
+    /// embedder extensions.
+    pub allow_functions: Vec<String>,
+    /// Suppress every undefined-NAME check, as a `source`/`include` does.
+    ///
+    /// An embedder sets it when a body's free names genuinely cannot be
+    /// reasoned about. The nested `ssh_mix` body analysis no longer uses
+    /// this for unknown opts — that case keeps undefined-FUNCTION checks
+    /// running (strict-data bindings cannot create a callable) and
+    /// suppresses only variable checks, reported as MIX-D3018. An
+    /// embedder that sets this also skips `ssh_mix` body analysis, as
+    /// before.
+    pub suppress_name_checks: bool,
+    /// The file's SOURCE text, when the caller has it (0.90.0).
+    ///
+    /// Two rules need what the token stream deliberately forgets: a bare
+    /// `$name` and an unrecognised escape are both properties of a
+    /// DOUBLE-quoted literal's spelling, and `'…'` and `"…"` lex to the
+    /// same `Token::String`. The AST must not grow a variant to say which
+    /// (strict-data parsing refuses `Token::InterpString` outright), so the
+    /// analyzer re-lexes for [`crate::lexer::Lexer::notes_for`] instead.
+    ///
+    /// `None` simply skips those two rules — every other rule is
+    /// unaffected, so an embedder that does not set it loses nothing it
+    /// had before.
+    pub source: Option<String>,
+    /// `--agent` (or `MIX_LINT=agent`): the agentic-first lint profile
+    /// (D2, TODO-mix 2026-09-24). Promotes D3015/W2201/W2302 to errors
+    /// and enables the agent-only rules in [`check_agent_rules`] — the
+    /// failure classes a model driving Mix as an actuator must see at
+    /// error strength: constant-truthy conditions, a function name used
+    /// as a value, an assignment from a nil-returning mutator, and a
+    /// write to an outer variable inside `fn` (which silently binds a
+    /// local). Off by default: the fleet's `--deny-warnings` gates run
+    /// the ordinary profile.
+    pub agent: bool,
+}
+
+/// The result of one file's analysis.
+#[derive(Debug, Clone, Default)]
+pub struct Analysis {
+    pub diagnostics: Vec<Diagnostic>,
+    /// Kebab capability classes the script's builtin calls exercise
+    /// (plus "process" for shell constructs and "bus" for messaging) —
+    /// reported as data, not warnings (D3).
+    pub capabilities: Vec<&'static str>,
+}
+
+/// Runtime-injected variable names a lint must treat as declared.
+/// `reply` is bound by `send` since 0.92.0 (the whole parsed reply body).
+const INJECTED_VARS: &[&str] = &["rc", "result", "reply", "status", "event", "_"];
+
+/// Function names defined by the embedded prelude (parsed once).
+pub fn prelude_function_names() -> &'static HashSet<String> {
+    use std::sync::OnceLock;
+    static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let src = include_str!("../std/prelude.mix");
+        let mut out = HashSet::new();
+        if let Ok(tokens) = crate::lexer::Lexer::new(src).tokenize()
+            && let Ok(stmts) = crate::parser::Parser::new(tokens, src).parse_program()
+        {
+            collect_function_defs(&stmts, &mut out);
+        }
+        out
+    })
+}
+
+/// Recursively collect every `FunctionDef` name (any nesting depth —
+/// definitions execute wherever control flow reaches them, and lint
+/// does not model reachability).
+fn collect_function_defs(stmts: &[Stmt], out: &mut HashSet<String>) {
+    walk_stmts(stmts, &mut |stmt| {
+        if let StmtKind::FunctionDef { name, .. } = &stmt.kind {
+            out.insert(name.clone());
+        }
+    });
+}
+
+/// Generic statement walker: visits every statement at every nesting
+/// depth: statement-kind bodies (if/loops/try/on/address/select) AND
+/// statement lists embedded in this statement's EXPRESSIONS
+/// (if-expression branches, block-lambda bodies, parameter defaults).
+/// The fact-gathering passes (definitions, includes, capabilities,
+/// binders) must see every executable statement, wherever it hides.
+fn walk_stmts(stmts: &[Stmt], visit: &mut dyn FnMut(&Stmt)) {
+    for stmt in stmts {
+        visit(stmt);
+        for body in stmt_bodies(&stmt.kind) {
+            walk_stmts(body, visit);
+        }
+        // Fact-gathering passes (defs, includes, capabilities) want
+        // EVERY executable statement, so descend into lambda bodies too.
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_embedded_stmt_list(expr, true, &mut |body| walk_stmts(body, visit));
+        });
+    }
+}
+
+/// Visit every statement list embedded inside an expression TREE —
+/// `if`-expression branches and, when `into_lambdas`, block-lambda
+/// bodies + lambda parameter-default statements. `if`-branch
+/// statements run in the CURRENT scope (always visited); lambda bodies
+/// run in a fresh function frame, so the *variable-binding* universe
+/// pass excludes them (`into_lambdas=false`) while the fact-gathering
+/// passes include them (codex convergence review, MAJOR: lambda-local
+/// bindings must not leak into the file universe).
+fn for_each_embedded_stmt_list(expr: &Expr, into_lambdas: bool, visit: &mut dyn FnMut(&[Stmt])) {
+    match expr {
+        Expr::If(ifexpr) => {
+            for_each_embedded_stmt_list(&ifexpr.condition, into_lambdas, visit);
+            visit(&ifexpr.then_body);
+            for (c, b) in &ifexpr.else_ifs {
+                for_each_embedded_stmt_list(c, into_lambdas, visit);
+                visit(b);
+            }
+            if let Some(b) = &ifexpr.else_body {
+                visit(b);
+            }
+        }
+        Expr::FunctionLiteral { params, body } => {
+            if !into_lambdas {
+                return;
+            }
+            for p in params {
+                if let Some(d) = &p.default {
+                    for_each_embedded_stmt_list(d, into_lambdas, visit);
+                }
+            }
+            match &**body {
+                FunctionBody::Block(stmts) => visit(stmts),
+                FunctionBody::Expression(e) => for_each_embedded_stmt_list(e, into_lambdas, visit),
+            }
+        }
+        // walk_expr_children skips FunctionLiteral bodies and Expr::If —
+        // both handled above — so this reaches the rest of the tree
+        // without double-visiting.
+        _ => walk_expr_children(expr, &mut |c| {
+            for_each_embedded_stmt_list(c, into_lambdas, visit)
+        }),
+    }
+}
+
+/// Every nested statement list of a statement kind.
+fn stmt_bodies(kind: &StmtKind) -> Vec<&[Stmt]> {
+    match kind {
+        StmtKind::If {
+            then_body,
+            else_ifs,
+            else_body,
+            ..
+        } => {
+            let mut out: Vec<&[Stmt]> = vec![then_body];
+            for (_, b) in else_ifs {
+                out.push(b);
+            }
+            if let Some(b) = else_body {
+                out.push(b);
+            }
+            out
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForEach { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::Loop { body, .. }
+        | StmtKind::On { body, .. }
+        | StmtKind::Address { body, .. } => vec![body],
+        StmtKind::TryCatch {
+            try_body,
+            catch,
+            finally_body,
+        } => {
+            let mut out: Vec<&[Stmt]> = vec![try_body];
+            if let Some(c) = catch {
+                out.push(&c.body);
+            }
+            if let Some(f) = finally_body {
+                out.push(f);
+            }
+            out
+        }
+        StmtKind::Select {
+            cases, otherwise, ..
+        } => {
+            let mut out: Vec<&[Stmt]> = cases.iter().map(|(_, body)| body.as_slice()).collect();
+            if let Some(b) = otherwise {
+                out.push(b);
+            }
+            out
+        }
+        // Lint-walker gap (TODO-mix 2026-09-24): a BLOCK statement used as
+        // a chain operand (`if … end && print(2)`) had its body never
+        // walked — the operand statements' own bodies are reached through
+        // walk_stmt_exprs, but their NESTED bodies were not. Recurse the
+        // operand statements' bodies here so `print($nope)` inside that
+        // if-block is no longer invisible.
+        StmtKind::Chain { left, right, .. } => {
+            let mut out = stmt_bodies(&left.kind);
+            out.extend(stmt_bodies(&right.kind));
+            out
+        }
+        StmtKind::PipeToExternal { stmt: inner, .. } => stmt_bodies(&inner.kind),
+        // FunctionDef bodies are handled by the function-scope pass;
+        // walk them here too so nested defs/binders are discovered by
+        // universe collection (callers that must not descend filter on
+        // the visit side).
+        StmtKind::FunctionDef { body, .. } => match body {
+            FunctionBody::Block(stmts) => vec![stmts],
+            FunctionBody::Expression(_) => vec![],
+        },
+        _ => vec![],
+    }
+}
+
+/// Collect every name a statement list can BIND (assignments, loop
+/// vars, catch vars, parse captures, exports) at any depth, including
+/// inside nested function definitions when `into_functions` is true.
+fn collect_bound_names(stmts: &[Stmt], into_functions: bool, out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Assignment { name, .. }
+            | StmtKind::Export { name, .. }
+            | StmtKind::FieldAssignment { object: name, .. }
+            | StmtKind::IndexAssignment { object: name, .. }
+            | StmtKind::PathAssignment { root: name, .. } => {
+                // Field/index assignment requires the object to exist at
+                // runtime, but "assigned anywhere" is the universe rule;
+                // treating the object as bound keeps `$m.x = 1` after a
+                // dynamic construction FP-free. The read-side check still
+                // catches wholly-unknown names used in expressions.
+                out.insert(name.clone());
+            }
+            StmtKind::For { var, .. } => {
+                out.insert(var.clone());
+            }
+            StmtKind::ForEach { var, index_var, .. } => {
+                out.insert(var.clone());
+                if let Some(iv) = index_var {
+                    out.insert(iv.clone());
+                }
+            }
+            StmtKind::TryCatch { catch: Some(c), .. } => {
+                out.insert(c.var.clone());
+                if let Some(ev) = &c.err_var {
+                    out.insert(ev.clone());
+                }
+            }
+            StmtKind::Parse { parts, .. } => {
+                for part in parts {
+                    if let crate::ast::ParsePart::Variable(name) = part {
+                        out.insert(name.clone());
+                    }
+                }
+            }
+            StmtKind::FunctionDef { .. } if !into_functions => continue,
+            _ => {}
+        }
+        for body in stmt_bodies(&stmt.kind) {
+            if matches!(stmt.kind, StmtKind::FunctionDef { .. }) && !into_functions {
+                continue;
+            }
+            collect_bound_names(body, into_functions, out);
+        }
+        // A top-level `$x = if cond then $y = 1 ... end` binds $x AND
+        // (in the taken branch) $y — if-branches run in the CURRENT
+        // scope, so their bindings join this universe. Lambda bodies do
+        // NOT (a fresh frame — `into_lambdas=false`), so a lambda-local
+        // binding never masks a top-level undefined read (codex
+        // convergence review, MAJOR).
+        if into_functions || !matches!(stmt.kind, StmtKind::FunctionDef { .. }) {
+            walk_stmt_exprs(stmt, &mut |expr| {
+                for_each_embedded_stmt_list(expr, false, &mut |body| {
+                    collect_bound_names(body, into_functions, out)
+                });
+            });
+        }
+    }
+}
+
+/// True when any `source`/`include` statement exists (a dynamic code
+/// barrier: the loaded file can define arbitrary globals/functions).
+fn has_dynamic_include(stmts: &[Stmt]) -> (bool, Option<usize>) {
+    let mut found = None;
+    walk_stmts(stmts, &mut |stmt| {
+        if found.is_none()
+            && matches!(
+                stmt.kind,
+                StmtKind::Source { .. } | StmtKind::Include { .. }
+            )
+        {
+            found = Some(stmt.line);
+        }
+    });
+    (found.is_some(), found)
+}
+
+/// The whole-file analyzer entry point.
+pub fn analyze(stmts: &[Stmt], file: Option<&str>, cfg: &AnalyzerConfig) -> Analysis {
+    analyze_at(stmts, file, cfg, false, false)
+}
+
+/// [`analyze`], told whether `stmts` is itself an `ssh_mix` remote body.
+/// A body's own `ssh_mix` calls are not descended into: the one-level
+/// guard that keeps a body nested in a body from being re-analysed.
+///
+/// `unknown_injected` marks a remote body whose `bindings`/`env` could
+/// not be read statically: dynamic bindings may supply any free DATA
+/// variable, so undefined-VARIABLE checks stand down — but a function
+/// name cannot ride in through strict-data bindings, so undefined-
+/// FUNCTION checks keep running, and a variable read that looks like a
+/// typo of a name the body does bind gets a MIX-D3017 note instead of
+/// silence.
+fn analyze_at(
+    stmts: &[Stmt],
+    file: Option<&str>,
+    cfg: &AnalyzerConfig,
+    remote_body: bool,
+    unknown_injected: bool,
+) -> Analysis {
+    let mut a = Analysis::default();
+    let ctx = FileContext::build(stmts, file, cfg, remote_body, unknown_injected);
+
+    // W2401 + undefined-check suppression on dynamic includes.
+    if let (true, line) = has_dynamic_include(stmts) {
+        a.diagnostics.push(Diagnostic {
+            code: "MIX-W2401",
+            severity: Severity::Warning,
+            file: ctx.file.clone(),
+            line,
+            column: None,
+            message: "source/include loads code at runtime — undefined-name analysis disabled"
+                .to_string(),
+            hint: Some("prefer require() for statically analyzable modules".to_string()),
+        });
+    }
+
+    check_duplicates_and_arity_defs(stmts, &ctx, &mut a);
+    check_builtin_shadowing(stmts, &ctx, &mut a);
+    check_pad_loop_idiom(stmts, &ctx, &mut a);
+    check_unreachable(stmts, &ctx, &mut a);
+    check_requires(stmts, &ctx, &mut a);
+    check_scope(
+        stmts,
+        &ctx,
+        &mut a,
+        &ctx.top_level_names,
+        /* in_address */ false,
+        // A script's FINAL statement is its value: `mix::run`
+        // returns it, and embedders (webd handlers) end a file with
+        // `merge($base, $extra)` to return the merged map. The CLI
+        // discards it, so a trailing dead mutation there goes unflagged —
+        // a deliberate false NEGATIVE, taken because the alternative is a
+        // false POSITIVE on an error-severity rule, and this analyzer's
+        // stated bias is false-positives-near-zero.
+        /* block_is_value */
+        true,
+    );
+    check_recurring_silent_bugs(stmts, &ctx, &mut a);
+    check_string_literal_spelling(stmts, &ctx, &mut a, cfg);
+    check_release_transition_advisories(stmts, &ctx, &mut a);
+    // A remote body may itself contain an `ssh_mix`; its body is analysed
+    // one level deep only (see `analyze_at`). `suppress_name_checks` from
+    // an embedder keeps its pre-existing meaning of "skip bodies too".
+    if !remote_body && !cfg.suppress_name_checks {
+        check_ssh_mix_bodies(stmts, &ctx, &mut a, cfg);
+    }
+    if cfg.agent {
+        promote_agent_diagnostics(&mut a);
+        check_agent_rules(stmts, &ctx, &mut a);
+    }
+    collect_capabilities(stmts, &mut a);
+    a
+}
+
+/// The `--agent` profile (D2): diagnostics an agent MUST see at error
+/// strength. D3015/W2201/W2302 are notes/warnings in the ordinary
+/// profile — a human filters them; an agent's `lint && run` loop should
+/// not. Promotion happens AFTER every check, so it cannot be undone by
+/// emission order.
+const AGENT_PROMOTED: &[&str] = &["MIX-D3015", "MIX-W2201", "MIX-W2302"];
+
+fn promote_agent_diagnostics(a: &mut Analysis) {
+    for d in &mut a.diagnostics {
+        if AGENT_PROMOTED.contains(&d.code) {
+            d.severity = Severity::Error;
+        }
+    }
+}
+
+/// The agent-only rules (D2): failure classes a model driving Mix as an
+/// actuator trips, all errors under `--agent` and silent in the ordinary
+/// profile (the fleet's `--deny-warnings` gates must not change meaning
+/// until these have been triaged against real scripts).
+fn check_agent_rules(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    let known: HashSet<String> = ctx.known_callables.clone();
+    // R4 compares against OUTER VARIABLES, not callables: `$sum = 0` in a
+    // fn must not fire because the prelude defines a `sum` FUNCTION (review
+    // F3.1/F3.4). Only a top-level $variable of the same name is shadowed.
+    let outer_vars: HashSet<String> = ctx.top_level_names.clone();
+
+    fn walk(
+        stmts: &[Stmt],
+        ctx: &FileContext,
+        a: &mut Analysis,
+        known: &HashSet<String>,
+        outer_vars: &HashSet<String>,
+    ) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Assignment { name: _, value } => {
+                    // R2: `$f = bump` stores the STRING "bump" — Mix has
+                    // no first-class function values. Scoped to USER-DEFINED
+                    // names only (file functions, prelude, allow-list):
+                    // builtin names are ordinary string values in config
+                    // (`$mode = "json"`, `$action = "print"` — review F3.1),
+                    // while naming a script's own function is almost always
+                    // the store-then-call bug.
+                    if let Expr::StringLiteral(s) | Expr::EscapedQuoteStringLiteral(s) = value
+                        && known.contains(s)
+                    {
+                        a.diagnostics.push(diag(
+                            ctx,
+                            "MIX-E1503",
+                            Severity::Error,
+                            stmt.line,
+                            format!(
+                                "stores the STRING \"{s}\", not the function — Mix has no first-class \
+                                 function values; call it instead: {s}(...)"
+                            ),
+                            None,
+                        ));
+                    }
+                    // R3: `$n = write_file(...)` binds nil — the mutator
+                    // returns nothing.
+                    if let Expr::FunctionCall { name, .. } = value
+                        && let Some(info) = crate::builtins::builtin_info_of(name)
+                        && matches!(info.contract.returns, TypeShape::Nil)
+                    {
+                        a.diagnostics.push(diag(
+                            ctx,
+                            "MIX-E1504",
+                            Severity::Error,
+                            stmt.line,
+                            format!(
+                                "{name}() returns nil — this assignment binds nil; drop the $var or \
+                                 use a value-returning form"
+                            ),
+                            None,
+                        ));
+                    }
+                }
+                StmtKind::If {
+                    condition,
+                    then_body,
+                    else_ifs,
+                    else_body,
+                } => {
+                    check_truthy(condition, stmt.line, ctx, a);
+                    for (cond, _) in else_ifs {
+                        check_truthy(cond, stmt.line, ctx, a);
+                    }
+                    walk(then_body, ctx, a, known, outer_vars);
+                    for (_, body) in else_ifs {
+                        walk(body, ctx, a, known, outer_vars);
+                    }
+                    if let Some(els) = else_body {
+                        walk(els, ctx, a, known, outer_vars);
+                    }
+                }
+                StmtKind::While { condition, body, .. } => {
+                    // `while true` is the canonical event-pump idiom (review
+                    // F3.3) — exempt it; a `while false` is still flagged.
+                    if !matches!(condition, Expr::BoolLiteral(true)) {
+                        check_truthy(condition, stmt.line, ctx, a);
+                    }
+                    walk(body, ctx, a, known, outer_vars);
+                }
+                StmtKind::For { body, .. }
+                | StmtKind::ForEach { body, .. }
+                | StmtKind::Address { body, .. } => walk(body, ctx, a, known, outer_vars),
+                StmtKind::On { body, .. } => {
+                    // B5 lint half: a request handler with no reply() on any
+                    // path leaves its caller to time out (the runtime now
+                    // answers NO_REPLY rc 17, but the author should know at
+                    // lint time). Topic handlers may legitimately never
+                    // reply, so this is --agent-only and worded for both.
+                    if !body_contains_call(body, "reply") {
+                        a.diagnostics.push(diag(
+                            ctx,
+                            "MIX-W2308",
+                            Severity::Warning,
+                            stmt.line,
+                            "handler has no reply() — a request caller waits out its full timeout \
+                             (the runtime answers rc 17 NO_REPLY, but the caller wanted an answer)"
+                                .to_string(),
+                            Some(
+                                "add reply($value) on every request path (topic-only handlers may \
+                                 ignore this)"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    walk(body, ctx, a, known, outer_vars);
+                }
+                StmtKind::FunctionDef { name, params, body, .. } => {
+                    // R4: an assignment to a name that exists as an OUTER
+                    // VARIABLE (and is not one of this fn's params) creates
+                    // a new local — the outer variable is unchanged.
+                    let param_names: HashSet<&str> =
+                        params.iter().map(|p| p.name.as_str()).collect();
+                    let mut written: HashSet<String> = HashSet::new();
+                    collect_written(body_stmt_list(body), &mut written);
+                    for w in &written {
+                        if outer_vars.contains(w) && !param_names.contains(w.as_str()) {
+                            a.diagnostics.push(diag(
+                                ctx,
+                                "MIX-E1506",
+                                Severity::Error,
+                                stmt.line,
+                                format!(
+                                    "fn {name}() assigns ${w}, which exists in the outer scope — \
+                                     the assignment silently creates a NEW local and the outer ${w} \
+                                     is unchanged"
+                                ),
+                                Some("pass it in, return it, or rename the local".to_string()),
+                            ));
+                        }
+                    }
+                    walk(body_stmt_list(body), ctx, a, known, outer_vars);
+                }
+                StmtKind::TryCatch {
+                    try_body,
+                    catch,
+                    finally_body,
+                } => {
+                    walk(try_body, ctx, a, known, outer_vars);
+                    if let Some(clause) = catch {
+                        walk(&clause.body, ctx, a, known, outer_vars);
+                    }
+                    if let Some(fb) = finally_body {
+                        walk(fb, ctx, a, known, outer_vars);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    walk(stmts, ctx, a, &known, &outer_vars);
+}
+
+/// R1: a condition that is a literal (string/bool/nil/map) or a
+/// process-result map is constant-truthy — `if "false"` and
+/// `if {ok: false}` are always true, and a result map is always a map.
+fn check_truthy(cond: &Expr, line: usize, ctx: &FileContext, a: &mut Analysis) {
+    match cond {
+        Expr::StringLiteral(s) | Expr::EscapedQuoteStringLiteral(s) => {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-E1505",
+                Severity::Error,
+                line,
+                format!(
+                    "condition is the string \"{s}\" — every non-empty string is truthy; compare \
+                     explicitly"
+                ),
+                None,
+            ));
+        }
+        Expr::BoolLiteral(_) | Expr::NilLiteral | Expr::MapLiteral(_) => {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-E1505",
+                Severity::Error,
+                line,
+                "condition is a constant — it never varies".to_string(),
+                None,
+            ));
+        }
+        Expr::FunctionCall { name, .. } => {
+            if let Some(info) = crate::builtins::builtin_info_of(name)
+                && info.contract.effects.must_use
+                && matches!(
+                    info.contract.returns,
+                    TypeShape::Map { .. } | TypeShape::List(_)
+                )
+            {
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1505",
+                    Severity::Error,
+                    line,
+                    format!(
+                        "condition is the result of {name}() — a map/list is always truthy; test \
+                         {name}(...).ok"
+                    ),
+                    None,
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn body_stmt_list(body: &FunctionBody) -> &[Stmt] {
+    match body {
+        FunctionBody::Block(s) => s,
+        FunctionBody::Expression(_) => &[],
+    }
+}
+
+/// Whether any statement in these bodies calls `name` (one level, enough
+/// for the B5 handler check).
+fn body_contains_call(stmts: &[Stmt], name: &str) -> bool {
+    let mut found = false;
+    for stmt in stmts {
+        walk_stmt_exprs(stmt, &mut |expr| {
+            if let Expr::FunctionCall { name: n, .. } = expr
+                && n == name
+            {
+                found = true;
+            }
+        });
+    }
+    found
+}
+
+/// Every `$var = …` written inside these statements, one nesting level
+/// deep — enough to catch the shadowing R4 warns about (an assignment in
+/// a nested if/loop still binds a NEW local at the fn's scope).
+fn collect_written(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Assignment { name, .. } => {
+                out.insert(name.clone());
+            }
+            StmtKind::If {
+                then_body,
+                else_ifs,
+                else_body,
+                ..
+            } => {
+                collect_written(then_body, out);
+                for (_, body) in else_ifs {
+                    collect_written(body, out);
+                }
+                if let Some(els) = else_body {
+                    collect_written(els, out);
+                }
+            }
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForEach { body, .. }
+            | StmtKind::Address { body, .. }
+            | StmtKind::On { body, .. } => collect_written(body, out),
+            StmtKind::TryCatch {
+                try_body,
+                catch,
+                finally_body,
+            } => {
+                collect_written(try_body, out);
+                if let Some(clause) = catch {
+                    collect_written(&clause.body, out);
+                }
+                if let Some(fb) = finally_body {
+                    collect_written(fb, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// MIX-D3015 + MIX-W2405 (0.90.0) — the two rules about how a
+/// DOUBLE-quoted literal was SPELLED, which the token stream no longer
+/// knows (see `AnalyzerConfig::source`).
+///
+/// D3015, bare `$name`: double quotes interpolate `${name}` only, and a
+/// bare `$name` is literal BY DESIGN — the opposite of bash, so anyone
+/// arriving from bash writes it. Four occurrences in one file passed lint
+/// and all four failed at runtime (2026-09-17). Gated on the name being
+/// bound somewhere in the file, exactly as MIX-W2402 gates the heredoc
+/// twin: `"Total: $USD"` in prose must stay silent. `\$name` and `'…'`
+/// never reach the lexer's note.
+///
+/// A NOTE, where the heredoc twin is a warning, and that asymmetry is
+/// measured rather than assumed. Over 785 fleet scripts MIX-W2402 costs 4
+/// findings; this rule costs an order of magnitude more even after the
+/// lexer drops multi-line and escaped-quote strings, because a
+/// double-quoted literal is where scripts carry NESTED source (an
+/// `ssh_mix` body, a `mix -c` program, a test fixture) and a bare `$rc`
+/// in one is the inner program's variable, correctly literal. Shipping
+/// that as a warning would fail `--deny-warnings`, which is a live fleet
+/// deploy gate, on scripts that are not wrong. D3xxx is the
+/// severity-independent namespace precisely so this can be promoted to a
+/// warning, code unchanged, once the residue is worked off.
+///
+/// W2405, unrecognised escape: `"isn\x27t"` printed `isn\x27t` and lint
+/// said nothing, so a `replace()` wrote that into a committed journal
+/// entry. A deliberate backslash is `\\`, so the warning has a clean
+/// escape. `\u` without a brace is exempt — that literal is documented
+/// design, not an accident. This one IS a warning: the same fleet sweep
+/// found two findings, both real.
+fn check_string_literal_spelling(
+    stmts: &[Stmt],
+    ctx: &FileContext,
+    a: &mut Analysis,
+    cfg: &AnalyzerConfig,
+) {
+    let Some(source) = cfg.source.as_deref() else {
+        return;
+    };
+    // A note carries only a line, so the "is this name bound" test is
+    // `top_level_names` plus any PARAMETER whose function's line range
+    // contains that line. Parameters are not file-wide names — without
+    // them a helper's own `print("$p/file")`, the commonest shape of this
+    // mistake, went unreported; with them file-wide, prose that merely
+    // spelled an unrelated helper's parameter became a finding.
+    let scopes = collect_param_scopes(stmts);
+    for note in crate::lexer::Lexer::notes_for(source) {
+        match note {
+            crate::lexer::StringNote::BareDollar { line, name } => {
+                let bound = ctx.top_level_names.contains(&name)
+                    || scopes.iter().any(|s| {
+                        (s.start..=s.end).contains(&line) && s.params.contains(&name)
+                    });
+                if !bound {
+                    continue;
+                }
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-D3015",
+                    Severity::Note,
+                    line,
+                    format!("bare `${name}` in a double-quoted string is literal, not interpolated"),
+                    // Both spellings, neither presented as THE answer. The
+                    // review arm found `raise(…, "… and $root_docs here")`
+                    // in this repo's own generator, where `${root_docs}`
+                    // would splice a LIST into the message and make it
+                    // worse — a hint that leads with the interpolating form
+                    // recommends corruption in exactly the case the rule is
+                    // least sure about.
+                    Some(format!(
+                        "if the value was meant, write `${{{name}}}`; if the text was meant, write `\\${name}` or use a single-quoted '…' string — a note, because only you know which"
+                    )),
+                ));
+            }
+            crate::lexer::StringNote::UnknownEscape { line, text } => {
+                let hint = match text.as_str() {
+                    "\\x" => "`\\xHH` takes exactly two hex digits (0.90.0) — `\\x27`, not `\\x2`; for a literal backslash write `\\\\x`".to_string(),
+                    "\\'" => "double quotes need no escape for `'` — write `'` alone, or `\\\\'` for a literal backslash-quote".to_string(),
+                    // A backslash at end of line. Mix has no in-string line
+                    // continuation, so this keeps BOTH characters — which is
+                    // almost never what a shell/C habit intended.
+                    "\\<newline>" | "\\<carriage-return>" => "a backslash before a line break is NOT a continuation in Mix — both characters are kept; join the pieces with `..`, or write `\\\\` for a literal backslash".to_string(),
+                    _ => format!(
+                        "`{text}` is kept literally (backslash included) — write `\\\\{}` if that is what you want, or use `\\u{{…}}` for a codepoint",
+                        &text[1..]
+                    ),
+                };
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-W2405",
+                    Severity::Warning,
+                    line,
+                    format!("unknown escape `{text}` in a double-quoted string is kept literally"),
+                    Some(hint),
+                ));
+            }
+        }
+    }
+}
+
+/// One parameter scope: the LINE RANGE a `function`/`fn`/lambda covers,
+/// and the names its parameters bind inside it.
+///
+/// A parameter is not a file-wide name — it binds in one frame — but a
+/// [`crate::lexer::StringNote`] carries only a line, so MIX-D3015 has no
+/// scope to resolve against. A line range is the closest thing the note's
+/// coordinates can be matched to: a function's body is contiguous, so
+/// "inside these lines" and "inside this frame" coincide except for source
+/// that interleaves definitions, which Mix cannot express.
+///
+/// Admitting every parameter FILE-WIDE instead was the first cut, and the
+/// round-2 re-review caught what it cost: `fn unrelated($price)` made a
+/// top-level `"The price is $price per item"` a finding, because the name
+/// existed somewhere. Prose that happens to spell an unrelated helper's
+/// parameter must stay silent.
+struct ParamScope {
+    start: usize,
+    end: usize,
+    params: Vec<String>,
+}
+
+/// The maximum statement line anywhere inside `stmts`, including nested
+/// bodies and lambda bodies. `None` for an empty body — a function with no
+/// statements binds its parameters over no lines, so it admits nothing,
+/// which is the safe direction.
+fn max_stmt_line(stmts: &[Stmt]) -> Option<usize> {
+    let mut max = None;
+    walk_stmts(stmts, &mut |stmt| {
+        max = Some(max.map_or(stmt.line, |m: usize| m.max(stmt.line)));
+    });
+    max
+}
+
+fn collect_param_scopes(stmts: &[Stmt]) -> Vec<ParamScope> {
+    let mut out = Vec::new();
+    walk_stmts(stmts, &mut |stmt| {
+        if let StmtKind::FunctionDef { params, body, .. } = &stmt.kind
+            && !params.is_empty()
+        {
+            let end = match body {
+                FunctionBody::Block(b) => max_stmt_line(b).unwrap_or(stmt.line),
+                FunctionBody::Expression(_) => stmt.line,
+            };
+            out.push(ParamScope {
+                start: stmt.line,
+                end: end.max(stmt.line),
+                params: params.iter().map(|p| p.name.clone()).collect(),
+            });
+        }
+        // A lambda has no line of its own, so it is bracketed by the
+        // statement that contains it and the last line of its own body.
+        let line = stmt.line;
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_expr(expr, &mut |e| {
+                if let Expr::FunctionLiteral { params, body } = e
+                    && !params.is_empty()
+                {
+                    let end = match &**body {
+                        FunctionBody::Block(b) => max_stmt_line(b).unwrap_or(line),
+                        FunctionBody::Expression(_) => line,
+                    };
+                    out.push(ParamScope {
+                        start: line,
+                        end: end.max(line),
+                        params: params.iter().map(|p| p.name.clone()).collect(),
+                    });
+                }
+            });
+        });
+    });
+    out
+}
+
+/// Immutable per-file facts shared by the passes.
+struct FileContext {
+    file: Option<String>,
+    /// Every name assigned/bound anywhere at any depth (the "assigned
+    /// anywhere" universe base for top-level code) plus injected +
+    /// allow-listed names.
+    top_level_names: HashSet<String>,
+    /// User function names defined anywhere + prelude + allow-listed.
+    known_callables: HashSet<String>,
+    /// name → (min, max) for names with exactly ONE definition.
+    user_fn_arity: HashMap<String, (usize, usize)>,
+    /// Undefined-name checks suppressed (dynamic include present, or an
+    /// embedder's `suppress_name_checks`). Suppresses BOTH variable and
+    /// callable checks — the conservative pre-existing meaning.
+    dynamic: bool,
+    /// Undefined-VARIABLE checks suppressed: everything `dynamic` covers,
+    /// plus a remote body whose injected names are unknown (dynamic
+    /// bindings/env may supply any free DATA variable). Callable checks
+    /// are NOT suppressed by this alone — strict-data bindings cannot
+    /// create a function, so an undefined function stays undefined.
+    dynamic_vars: bool,
+    /// This context IS a remote body whose injected names are unknown
+    /// (set alongside `dynamic_vars`; `dynamic` may hold for other
+    /// reasons). Variable reads that look like a typo of a bound name get
+    /// a MIX-D3017 note here instead of the silence a source/include
+    /// file gets.
+    remote_unknown_vars: bool,
+    /// These statements are an `ssh_mix` remote body, a separate program:
+    /// "this file" in a message would point at the wrong scope.
+    remote_body: bool,
+    /// String nodes shipped as `ssh_mix` bodies (by [`node_id`]) → the
+    /// names that are the remote program's own; MIX-W2402 stays silent
+    /// for those (see [`remote_body_names`]).
+    remote_body_names: RemoteBodyNames,
+}
+
+impl FileContext {
+    fn build(
+        stmts: &[Stmt],
+        file: Option<&str>,
+        cfg: &AnalyzerConfig,
+        remote_body: bool,
+        unknown_injected: bool,
+    ) -> FileContext {
+        let mut top_level_names = HashSet::new();
+        // The TOP-LEVEL bound universe: blocks don't scope and
+        // definition order is runtime order (no read-before-assign
+        // rule), so any binding in the top-level scope chain — incl.
+        // if-expression branches, which run in the current scope —
+        // makes the name plausible. Function/lambda bodies run in
+        // isolated frames and CANNOT write a top-level name, so their
+        // local bindings are excluded (`into_functions=false`); a
+        // top-level read of a function-local name is a real nil-read
+        // bug and is flagged (codex convergence review, MAJOR). Each
+        // function/lambda body gets its OWN universe in the scope pass.
+        collect_bound_names(stmts, false, &mut top_level_names);
+        for v in INJECTED_VARS {
+            top_level_names.insert((*v).to_string());
+        }
+        for g in &cfg.allow_globals {
+            top_level_names.insert(g.clone());
+        }
+
+        let mut defs = HashSet::new();
+        collect_function_defs(stmts, &mut defs);
+        let mut fn_arity: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        walk_stmts(stmts, &mut |stmt| {
+            if let StmtKind::FunctionDef { name, params, .. } = &stmt.kind {
+                fn_arity
+                    .entry(name.clone())
+                    .or_default()
+                    .push(param_arity(params));
+            }
+        });
+        let user_fn_arity = fn_arity
+            .into_iter()
+            .filter(|(_, v)| v.len() == 1)
+            .map(|(k, v)| (k, v[0]))
+            .collect();
+
+        let mut known_callables: HashSet<String> = defs;
+        known_callables.extend(prelude_function_names().iter().cloned());
+        known_callables.extend(cfg.allow_functions.iter().cloned());
+
+        let (has_include, _) = has_dynamic_include(stmts);
+        let dynamic = has_include || cfg.suppress_name_checks;
+        FileContext {
+            file: file.map(str::to_string),
+            top_level_names,
+            known_callables,
+            user_fn_arity,
+            dynamic,
+            dynamic_vars: dynamic || unknown_injected,
+            remote_unknown_vars: unknown_injected,
+            remote_body,
+            remote_body_names: remote_body_names(stmts),
+        }
+    }
+}
+
+fn is_positional(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Bare `$name` spellings retained inside a heredoc literal part. `${`
+/// and `$(` have already been split into non-literal parts by the lexer,
+/// but keep those exclusions explicit here so this check owns its full
+/// syntax contract.
+fn bare_heredoc_vars(literal: &str) -> Vec<&str> {
+    let bytes = literal.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$'
+            || i + 1 == bytes.len()
+            || matches!(bytes[i + 1], b'{' | b'(')
+            || !(bytes[i + 1].is_ascii_alphanumeric() || bytes[i + 1] == b'_')
+        {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start + 1;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        let name = &literal[start..end];
+        if !is_positional(name) {
+            out.push(name);
+        }
+        i = end;
+    }
+    out
+}
+
+fn diag(
+    ctx: &FileContext,
+    code: &'static str,
+    severity: Severity,
+    line: usize,
+    message: String,
+    hint: Option<String>,
+) -> Diagnostic {
+    Diagnostic {
+        code,
+        severity,
+        file: ctx.file.clone(),
+        line: (line > 0).then_some(line),
+        column: None,
+        message,
+        hint,
+    }
+}
+
+// ── E1301 / E1302 ────────────────────────────────────────────────────
+
+fn check_duplicates_and_arity_defs(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    // Duplicate params on every function definition + lambda.
+    walk_stmts(stmts, &mut |stmt| {
+        if let StmtKind::FunctionDef { name, params, .. } = &stmt.kind {
+            check_dup_params(name, params, stmt.line, ctx, a);
+        }
+        walk_stmt_exprs(stmt, &mut |expr| {
+            if let Expr::FunctionLiteral { params, .. } = expr {
+                check_dup_params("<lambda>", params, stmt.line, ctx, a);
+            }
+        });
+    });
+    // Duplicate definitions within ONE statement list (same scope).
+    fn per_block(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for stmt in stmts {
+            if let StmtKind::FunctionDef { name, .. } = &stmt.kind {
+                if let Some(first) = seen.get(name.as_str()) {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-E1302",
+                        Severity::Error,
+                        stmt.line,
+                        format!("duplicate definition of function '{name}' (first defined at line {first})"),
+                        Some("the later definition silently replaces the earlier one".to_string()),
+                    ));
+                } else {
+                    seen.insert(name.as_str(), stmt.line);
+                }
+            }
+            for body in stmt_bodies(&stmt.kind) {
+                per_block(body, ctx, a);
+            }
+            // Statement lists embedded in expressions (if-expression
+            // branches, lambda bodies) are their own scopes — check
+            // each for duplicate definitions (codex convergence review).
+            walk_stmt_exprs(stmt, &mut |expr| {
+                for_each_embedded_stmt_list(expr, true, &mut |body| per_block(body, ctx, a));
+            });
+        }
+    }
+    per_block(stmts, ctx, a);
+}
+
+fn check_dup_params(
+    name: &str,
+    params: &[Param],
+    line: usize,
+    ctx: &FileContext,
+    a: &mut Analysis,
+) {
+    let mut seen = HashSet::new();
+    for p in params {
+        if !seen.insert(p.name.as_str()) {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-E1301",
+                Severity::Error,
+                line,
+                format!("duplicate parameter '${}' in {}", p.name, name),
+                None,
+            ));
+        }
+    }
+}
+
+// ── W2101 unreachable ────────────────────────────────────────────────
+
+fn terminates_block(kind: &StmtKind) -> bool {
+    match kind {
+        StmtKind::Return(_) | StmtKind::Die(_) | StmtKind::Break(_) | StmtKind::Continue(_) => true,
+        StmtKind::Expression(Expr::FunctionCall { name, args: _ }) => {
+            name == "exit" || name == "panic"
+        }
+        _ => false,
+    }
+}
+
+fn check_unreachable(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    fn per_block(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+        let mut dead_after: Option<usize> = None;
+        for stmt in stmts {
+            if let Some(term_line) = dead_after {
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-W2101",
+                    Severity::Warning,
+                    stmt.line,
+                    format!("unreachable statement (control flow ends at line {term_line})"),
+                    None,
+                ));
+                break; // one finding per block is enough
+            }
+            if terminates_block(&stmt.kind) {
+                dead_after = Some(stmt.line);
+            }
+            for body in stmt_bodies(&stmt.kind) {
+                per_block(body, ctx, a);
+            }
+            // Unreachable code inside if-expression branches / lambda
+            // bodies — each is its own control-flow block (codex
+            // convergence review).
+            walk_stmt_exprs(stmt, &mut |expr| {
+                for_each_embedded_stmt_list(expr, true, &mut |body| per_block(body, ctx, a));
+            });
+        }
+    }
+    per_block(stmts, ctx, a);
+}
+
+// ── E1401 / E1402 require() ──────────────────────────────────────────
+
+/// MIX-D3013 (0.74.0, note): the hand-rolled padding loop —
+///
+/// ```text
+/// while len($o) < $n
+///   $o = $o .. " "
+/// end
+/// ```
+///
+/// — written across four separate sessions in this hub while `lpad`/`rpad`
+/// (and the display-cell `_w` twins) sat in the binary since 0.54.0. A
+/// builtin four independent authors fail to find is a discoverability
+/// defect; this note is the fix that reaches the author at the moment of
+/// writing. Narrow on purpose (the analyzer's false-positives-near-zero
+/// bias): only a `while` whose condition compares `len($v)`/`length($v)`
+/// with `<`/`<=` and whose body self-appends a STRING LITERAL to the same
+/// `$v` is flagged.
+fn check_pad_loop_idiom(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    walk_stmts(stmts, &mut |stmt| {
+        let StmtKind::While { condition, body, .. } = &stmt.kind else {
+            return;
+        };
+        // Condition: len($v) < … or len($v) <= …
+        let Expr::BinaryOp { left, op, .. } = condition else {
+            return;
+        };
+        if !matches!(op, BinOp::Lt | BinOp::LtEq) {
+            return;
+        }
+        let Expr::FunctionCall { name, args } = left.as_ref() else {
+            return;
+        };
+        if name != "len" && name != "length" {
+            return;
+        }
+        let Some(Expr::Variable(v)) = args.first() else {
+            return;
+        };
+        // Body: $v = $v .. <string literal> at any depth.
+        let mut hit = false;
+        walk_stmts(body, &mut |inner| {
+            if let StmtKind::Assignment { name, value } = &inner.kind
+                && name == v
+                && let Expr::BinaryOp { left, op: BinOp::Concat, right } = value
+                && matches!(left.as_ref(), Expr::Variable(lv) if lv == v)
+                && matches!(right.as_ref(), Expr::StringLiteral(_))
+            {
+                hit = true;
+            }
+        });
+        if hit {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-D3013",
+                Severity::Note,
+                stmt.line,
+                format!(
+                    "hand-rolled padding loop over `${v}` — lpad()/rpad() (and the display-cell lpad_w/rpad_w) do this in one call"
+                ),
+                Some("see `mix man strings` § Trim, pad, repeat".to_string()),
+            ));
+        }
+    });
+}
+
+/// MIX-E1303 (0.90.0, was MIX-W2403 from 0.74.0): a user function named
+/// after a builtin is silently dead code — the builtin wins at every call
+/// site (and a builtin-named dot-call even desugars at parse time), so the
+/// definition can never be called. The worst shape of failure this produces
+/// is a script that keeps running while its own function quietly stops
+/// being called — every release that adds a builtin name arms it again
+/// (print_raw, bytes_find, sprintf… were all plausible names for older
+/// scripts to have defined).
+///
+/// PROMOTED TO AN ERROR in 0.90.0, and the 0.74.0 case for keeping it a
+/// warning — "a compat shim written for an older mix is legitimate
+/// authoring" — did not survive contact with the fleet. Two sites existed
+/// across 785 scripts and NEITHER was a shim: one was a hand-rolled
+/// `ends_with` duplicating the builtin (dead, harmless), and the other was
+/// `fn mix_version()` in a pre-commit hook, written to report the version
+/// of a NAMED interpreter and silently answering with the running one's
+/// instead — a live wrong answer that had sat behind a warning for
+/// sixteen releases. Lint is also the only gate an `ssh_mix` body ever
+/// passes through, and a warning does not stop anything by default.
+///
+/// The RUNTIME is deliberately unchanged: the builtin still wins. Letting
+/// the user definition win would flip the behaviour of every existing
+/// shadowing script silently, which is the exact failure mode being
+/// removed here — the fix is to rename, and now the tool says so in a way
+/// that stops the run.
+///
+/// The code MOVED rather than changing severity in place: a code's letter
+/// encodes its severity permanently (`MIX-W2xxx` are warnings that were
+/// BORN warnings), so W2403 is retired, never reused, and its `mix explain`
+/// entry points here.
+///
+/// The name set is `is_builtin` PLUS the evaluator's inline special forms
+/// (0.91.0). `is_builtin` deliberately excludes the evaluator-special names
+/// (`printf`, `serve_name`, …) and never knew the Bus forms (`quit`,
+/// `reply`, `subscribe`, …) at all, yet the `FunctionCall` eval arm
+/// dispatches each of them before any user-function lookup — `fn quit() return 1 end;
+/// print(quit())` printed nil with no diagnostic.
+fn check_builtin_shadowing(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    walk_stmts(stmts, &mut |stmt| {
+        if let StmtKind::FunctionDef { name, .. } = &stmt.kind
+            && (crate::builtins::is_builtin(name)
+                || INLINE_SPECIAL_FORMS.contains(&name.as_str()))
+        {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-E1303",
+                Severity::Error,
+                stmt.line,
+                format!(
+                    "function '{name}' shadows the builtin of the same name and cannot be called BY NAME — the builtin wins at every call site"
+                ),
+                Some(
+                    "rename it; only an extracted function value (or a module exports map indexed as $m[\"name\"]) can still reach it, and a compat shim for an older mix is dead code on this one".to_string(),
+                ),
+            ));
+        }
+    });
+}
+
+fn check_requires(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    let base_dir = ctx
+        .file
+        .as_deref()
+        .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_path_buf()));
+    walk_stmts(stmts, &mut |stmt| {
+        walk_stmt_exprs(stmt, &mut |expr| {
+            let Expr::FunctionCall { name, args } = expr else {
+                return;
+            };
+            if name != "require" {
+                return;
+            }
+            let Some(Expr::StringLiteral(path)) = args.first() else {
+                return; // dynamic path — out of scope for static checks
+            };
+            let p = std::path::Path::new(path);
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else if let Some(dir) = &base_dir {
+                dir.join(p)
+            } else {
+                p.to_path_buf()
+            };
+            if !resolved.is_file() {
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1401",
+                    Severity::Error,
+                    stmt.line,
+                    format!(
+                        "require: module '{path}' not found (resolved: {})",
+                        resolved.display()
+                    ),
+                    None,
+                ));
+                return;
+            }
+            match std::fs::read_to_string(&resolved) {
+                Err(e) => {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-E1401",
+                        Severity::Error,
+                        stmt.line,
+                        format!("require: module '{path}' unreadable: {e}"),
+                        None,
+                    ));
+                }
+                Ok(src) => {
+                    let parsed = crate::lexer::Lexer::new(&src)
+                        .tokenize()
+                        .and_then(|t| crate::parser::Parser::new(t, &src).parse_program());
+                    if let Err(e) = parsed {
+                        a.diagnostics.push(diag(
+                            ctx,
+                            "MIX-E1402",
+                            Severity::Error,
+                            stmt.line,
+                            format!("require: module '{path}' is invalid: {e}"),
+                            None,
+                        ));
+                    }
+                }
+            }
+        });
+    });
+}
+
+// ── scope pass: E1101 / E1102 / E1201 / E1202 / W2201 ───────────────
+
+/// Does this statement hand its body's value onward as its own?
+///
+/// `if`/`select` yield the taken branch's value; `try`/`catch` yield the
+/// body's; an `address` block yields its last statement's. Loops do not
+/// (`for`/`while`/`loop` run their body N times and yield nothing an
+/// expression can consume). Used to decide whether a trailing dead
+/// mutation inside such a body is really dead.
+fn stmt_propagates_value(kind: &StmtKind) -> bool {
+    matches!(
+        kind,
+        StmtKind::If { .. }
+            | StmtKind::Select { .. }
+            | StmtKind::TryCatch { .. }
+            | StmtKind::Address { .. }
+    )
+}
+
+fn check_scope(
+    stmts: &[Stmt],
+    ctx: &FileContext,
+    a: &mut Analysis,
+    names: &HashSet<String>,
+    in_address: bool,
+    // Does this block's LAST statement supply a value someone consumes?
+    // True only for `if`-EXPRESSION branches. Function and lambda block
+    // bodies return nil unless they `return` explicitly (verified against
+    // the binary), and statement bodies (if/for/while/try) are not values
+    // at all — so in those, a trailing dead mutation is just dead.
+    block_is_value: bool,
+) {
+    for (idx, stmt) in stmts.iter().enumerate() {
+        let last_in_block = idx + 1 == stmts.len();
+        // A trailing statement can only be "the block's value" when the
+        // block actually has one.
+        let result_consumed = last_in_block && block_is_value;
+        // W2201: a discarded must-use operation as a bare expression
+        // statement (skip the last statement of a block — it may be the
+        // block's value). Also covers a discarded PURE transform: a
+        // CapabilityClass::Pure builtin that returns a value and mutates
+        // nothing does nothing at all when its result is dropped
+        // (`upper($s)` alone is a no-op) — D3, TODO-mix 2026-09-24.
+        if let StmtKind::Expression(Expr::FunctionCall { name, .. }) = &stmt.kind
+            && !last_in_block
+            && let Some(info) = builtins::builtin_info_of(name)
+        {
+            let pure_transform_discarded = info.capability == CapabilityClass::Pure
+                && !info.contract.effects.mutates_args
+                && !matches!(info.contract.returns, TypeShape::Nil | TypeShape::Any);
+            if info.contract.effects.must_use || pure_transform_discarded {
+                let (msg, hint) = if pure_transform_discarded
+                    && !info.contract.effects.must_use
+                {
+                    (
+                        format!(
+                            "result of {name}() is discarded — it is a pure transform: it returns a new value and mutates nothing, so this statement does nothing"
+                        ),
+                        format!("bind or use it: $r = {name}(...)"),
+                    )
+                } else {
+                    (
+                        format!(
+                            "result of {name}() is discarded — its failure signal is in the returned value"
+                        ),
+                        format!("bind it: $r = {name}(...) and branch on the result"),
+                    )
+                };
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-W2201",
+                    Severity::Warning,
+                    stmt.line,
+                    msg,
+                    Some(hint),
+                ));
+            }
+        }
+
+        // E1501 / E1502: a statement whose whole effect is provably lost.
+        // Both are ERRORS, not warnings: unlike a discarded must-use
+        // result (which merely drops a failure signal), these do nothing
+        // at all, and the script reads as though they did.
+        if let StmtKind::Expression(Expr::FunctionCall { name, args }) = &stmt.kind
+            && !result_consumed
+        {
+            match name.as_str() {
+                // push/pop/shift mutate a list IN PLACE, and can only
+                // reach the caller's list through a bare variable slot.
+                // Given any other first argument — `push($m[$k], $v)`,
+                // `push($m.a, $v)` — they mutate a temporary copy and the
+                // write is lost. (A by-value PARAMETER is a bare variable,
+                // so it stays with the 0.21.9 dead-push diagnostic and is
+                // not double-reported here.)
+                "push" | "pop" | "shift"
+                    if args
+                        .first()
+                        .is_some_and(|a| !matches!(a, Expr::Variable(_))) =>
+                {
+                    // The remedy differs by builtin, and getting it wrong
+                    // CORRUPTS data: `push` returns the appended list, so
+                    // it can be assigned back — but `pop`/`shift` return
+                    // the removed ELEMENT, so `$m[$k] = pop($m[$k])` would
+                    // replace the list with that element.
+                    let hint = if name == "push" {
+                        "assign the result back: $m[$k] = push($m[$k], ...) — push returns the \
+                         appended list when its first argument is not a variable"
+                            .to_string()
+                    } else {
+                        format!(
+                            "{name}() returns the REMOVED ELEMENT, not the list — do not assign it \
+                             back over the list. Hoist first: $l = $m[$k]; $x = {name}($l); \
+                             $m[$k] = $l"
+                        )
+                    };
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-E1501",
+                        Severity::Error,
+                        stmt.line,
+                        format!(
+                            "{name}() here mutates a temporary copy — the write is lost. It can \
+                             only mutate a list held in a bare variable."
+                        ),
+                        Some(hint),
+                    ));
+                }
+                // Pure transforms: they RETURN the new container and
+                // change nothing in place, so a bare call is a no-op.
+                "delete" | "merge" => {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-E1502",
+                        Severity::Error,
+                        stmt.line,
+                        format!(
+                            "{name}() does not mutate — it returns a new value, and this result is \
+                             discarded, so the statement does nothing"
+                        ),
+                        Some(format!("assign it back: $m = {name}($m, ...)")),
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        // Expression-level checks for THIS statement — full tree, so a
+        // nested `$typo` inside a concatenation is seen (lambda bodies
+        // excepted; check_expr gives those their own universe).
+        walk_stmt_exprs(stmt, &mut |expr| {
+            check_expr_tree(expr, stmt.line, ctx, a, names, in_address);
+        });
+
+        // Recurse into bodies. Function definitions get their own
+        // universe (params + body binders + whole-file universe);
+        // address blocks suppress unknown-callable checks.
+        match &stmt.kind {
+            StmtKind::FunctionDef { params, body, .. } => {
+                let mut fn_names: HashSet<String> = names.clone();
+                for p in params {
+                    fn_names.insert(p.name.clone());
+                }
+                // Param defaults evaluate in the callee frame (params +
+                // file universe visible) — scope-check them.
+                for p in params {
+                    if let Some(d) = &p.default {
+                        check_expr_tree(d, stmt.line, ctx, a, &fn_names, in_address);
+                    }
+                }
+                match body {
+                    FunctionBody::Block(body_stmts) => {
+                        collect_bound_names(body_stmts, true, &mut fn_names);
+                        check_scope(body_stmts, ctx, a, &fn_names, in_address, false);
+                    }
+                    FunctionBody::Expression(e) => {
+                        let line = stmt.line;
+                        check_expr_tree(e, line, ctx, a, &fn_names, in_address);
+                    }
+                }
+            }
+            StmtKind::Address { body, .. } => {
+                check_scope(body, ctx, a, names, true, result_consumed);
+            }
+            _ => {
+                // A statement that PROPAGATES its body's value is only a
+                // value itself when its own result is consumed — so the
+                // exemption has to travel down with it. Without this,
+                // `$r = if c then (if c2 then delete($m,"k") else $m end)
+                // else $m end` false-positives on the inner branch, whose
+                // value really does become `$r`. Loop bodies (and a
+                // `finally`) are never values; over-including `finally`
+                // here would only cost a missed diagnostic, never a false
+                // one.
+                let body_is_value = result_consumed && stmt_propagates_value(&stmt.kind);
+                for body in stmt_bodies(&stmt.kind) {
+                    check_scope(body, ctx, a, names, in_address, body_is_value);
+                }
+            }
+        }
+    }
+}
+
+// ── W2311 fmt/sprintf surplus operands (A5) ─────────────────────────
+
+/// Which runtime formatter's grammar a template follows.
+#[derive(Clone, Copy)]
+enum FormatDialect {
+    /// `builtin_fmt` → `mix_format` (builtins.rs): flags `- 0`, width
+    /// digits or `*`, literal precision, conversions `s d f`, `%%`.
+    Fmt,
+    /// `builtin_sprintf` → `sprintf_format` (builtins.rs): flags
+    /// `- + 0 #` and space, width/precision digits or `*`, parsed-and-
+    /// ignored length modifiers (`hh h l ll L q j z t`), conversions
+    /// `d i u o x X f F e E g G s c`.
+    Sprintf,
+}
+
+/// How many operand arguments a literal template consumes — a count over
+/// the EXACT runtime grammars, transcribed from `mix_format` and
+/// `sprintf_format` in builtins.rs (one shared walker, not a divergent
+/// regex or conversion-character count):
+///
+/// - `%%` is a literal percent and consumes nothing;
+/// - a `*` width pulls one operand (fmt), and so does a `*` precision
+///   (sprintf — fmt rejects `.*` at runtime);
+/// - sprintf length modifiers (`h h l L q j z t`) and every flag are
+///   parsed and ignored, consuming nothing;
+/// - every supported conversion consumes exactly one operand.
+///
+/// `None` when the template would RAISE at runtime (trailing or dangling
+/// `%`, unknown conversion, fmt's `.*`, fmt's digit-after-`*` width,
+/// sprintf width/precision overflow): an invalid template can only fail,
+/// so it must not be used to claim a definite surplus operand.
+fn format_operand_count(dialect: FormatDialect, tmpl: &str) -> Option<usize> {
+    let b = tmpl.as_bytes();
+    let mut i = 0;
+    let mut count = 0;
+    while i < b.len() {
+        // Both formatters pass non-`%` text through untouched. `%` cannot
+        // occur inside a multi-byte UTF-8 sequence, so byte stepping is
+        // equivalent to the runtime's codepoint stepping for the count.
+        if b[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= b.len() {
+            return None; // trailing '%'
+        }
+        if b[i] == b'%' {
+            i += 1;
+            continue; // literal %%
+        }
+        // Flags, repeated in any order, before the width.
+        let flags: &[u8] = match dialect {
+            FormatDialect::Fmt => b"-0",
+            FormatDialect::Sprintf => b"-+ 0#",
+        };
+        while i < b.len() && flags.contains(&b[i]) {
+            i += 1;
+        }
+        // Width: literal digits, or `*` pulling the next operand.
+        if i < b.len() && b[i] == b'*' {
+            i += 1;
+            count += 1;
+            // "%*5s" — fmt names the mistake at runtime.
+            if matches!(dialect, FormatDialect::Fmt)
+                && i < b.len()
+                && b[i].is_ascii_digit()
+            {
+                return None;
+            }
+        } else {
+            // sprintf's checked accumulation raises "width is too large";
+            // fmt silently drops an overflowing width, so only sprintf
+            // bails here.
+            let mut width: usize = 0;
+            while i < b.len() && b[i].is_ascii_digit() {
+                if matches!(dialect, FormatDialect::Sprintf) {
+                    width = width
+                        .checked_mul(10)?
+                        .checked_add((b[i] - b'0') as usize)?;
+                }
+                i += 1;
+            }
+        }
+        // Precision.
+        if i < b.len() && b[i] == b'.' {
+            i += 1;
+            match dialect {
+                FormatDialect::Fmt => {
+                    // `.*` is rejected at runtime: "* is width-only".
+                    if i < b.len() && b[i] == b'*' {
+                        return None;
+                    }
+                    while i < b.len() && b[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+                FormatDialect::Sprintf => {
+                    if i < b.len() && b[i] == b'*' {
+                        i += 1;
+                        count += 1;
+                    } else {
+                        let mut precision: usize = 0;
+                        while i < b.len() && b[i].is_ascii_digit() {
+                            precision = precision
+                                .checked_mul(10)?
+                                .checked_add((b[i] - b'0') as usize)?;
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // sprintf length modifiers: parsed and ignored, consume nothing.
+        if matches!(dialect, FormatDialect::Sprintf) {
+            while i < b.len()
+                && matches!(b[i], b'h' | b'l' | b'L' | b'q' | b'j' | b'z' | b't')
+            {
+                i += 1;
+            }
+        }
+        if i >= b.len() {
+            return None; // ends inside a conversion
+        }
+        let conv = b[i] as char;
+        i += 1;
+        let supported = match dialect {
+            FormatDialect::Fmt => matches!(conv, 's' | 'd' | 'f'),
+            FormatDialect::Sprintf => matches!(
+                conv,
+                'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 's' | 'c'
+            ),
+        };
+        if !supported {
+            return None; // unknown conversion raises at runtime
+        }
+        count += 1;
+    }
+    Some(count)
+}
+
+/// Expression checks that need the scope universe: variable reads,
+/// callable resolution, arity.
+fn check_expr(
+    expr: &Expr,
+    line: usize,
+    ctx: &FileContext,
+    a: &mut Analysis,
+    names: &HashSet<String>,
+    in_address: bool,
+) {
+    match expr {
+        Expr::Heredoc(parts) => {
+            let origin = node_id(expr);
+            // The call's bindings/env are unknown: ANY free name could be
+            // a remote binding, so "did you mean `${name}`?" — which
+            // splices the LOCAL value into remote source — stands down
+            // entirely. Its advice is only safe when the name universe is
+            // known.
+            if ctx.remote_body_names.unknown.contains(&origin) {
+                return;
+            }
+            let remote_own = ctx.remote_body_names.own.get(&origin);
+            for part in parts {
+                let StringPart::Literal(literal) = part else {
+                    continue;
+                };
+                for name in bare_heredoc_vars(literal) {
+                    if names.contains(name) && !remote_own.is_some_and(|own| own.contains(name)) {
+                        a.diagnostics.push(diag(
+                            ctx,
+                            "MIX-W2402",
+                            Severity::Warning,
+                            line,
+                            format!(
+                                "`${name}` in heredoc is not interpolated — did you mean `${{{name}}}`?"
+                            ),
+                            Some(format!(
+                                "literal `${name}` output requires no change"
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+        Expr::Variable(name) => {
+            if is_positional(name) || names.contains(name) || ctx.known_callables.contains(name) {
+                return;
+            }
+            if !ctx.dynamic_vars {
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1101",
+                    Severity::Error,
+                    line,
+                    if ctx.remote_body {
+                        format!(
+                            "undefined variable '${name}' (not bound in the remote body or by the \
+                             call's bindings/env — outer-file variables do not ship)"
+                        )
+                    } else {
+                        format!("undefined variable '${name}' (assigned nowhere in this file)")
+                    },
+                    Some(if ctx.remote_body {
+                        // env() in a body reads the REMOTE environment, and
+                        // --allow-global only silences lint; neither ships
+                        // a local value.
+                        format!(
+                            "pass it in through the call: ssh_mix(host, body, {{bindings: {{{name}: …}}}}), \
+                             or assign it inside the body (env(\"{name}\") there reads the REMOTE environment)"
+                        )
+                    } else {
+                        format!(
+                            "assign it, use env(\"{name}\") for environment values, or pass --allow-global {name}"
+                        )
+                    }),
+                ));
+            } else if ctx.remote_unknown_vars {
+                // MIX-D3017: the read cannot be proved undefined (dynamic
+                // bindings/env may supply it) — but when the name is within
+                // edit distance of something THIS body does bind, the typo
+                // is the likelier explanation, so record it instead of
+                // passing silently. A name with no near neighbour is an
+                // ordinary dynamic binding and stays silent. The
+                // runtime-injected names are excluded from the candidate
+                // pool: `$x` → "did you mean '$_'?" is noise, not advice.
+                let mut sorted: Vec<&String> = names
+                    .iter()
+                    .filter(|n| !INJECTED_VARS.contains(&n.as_str()))
+                    .collect();
+                sorted.sort();
+                let in_scope: Vec<String> = sorted.into_iter().cloned().collect();
+                if let Some(suffix) = undefined_variable_hint(name, &in_scope) {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-D3017",
+                        Severity::Note,
+                        line,
+                        format!(
+                            "'${name}' is bound nowhere in this remote body — dynamic \
+                             bindings/env may supply it at runtime, so it is not an \
+                             error{suffix}"
+                        ),
+                        Some(
+                            "if a value is meant to ship from here, pass it through the call's \
+                             bindings/env (and write opts as a map literal so lint can resolve \
+                             the names exactly); if it is a typo, fix it"
+                                .to_string(),
+                        ),
+                    ));
+                }
+            }
+            // else: `dynamic` for another reason (source/include, an
+            // embedder's suppress_name_checks) — silent, as before.
+        }
+        Expr::FunctionCall { name, args } => {
+            // Lambda passed to a HOF? Its body is checked by
+            // check_expr_tree via walk_expr below — here we resolve the
+            // NAME. Unknown-callable rules (E1102):
+            let is_builtin_name = builtins::builtin_info_of(name).is_some()
+                || INLINE_SPECIAL_FORMS.contains(&name.as_str());
+            if !is_builtin_name
+                && !ctx.dynamic
+                && !in_address
+                && !ctx.known_callables.contains(name)
+                && !names.contains(name)
+            {
+                // The runtime's own suggester, so lint — where an agent
+                // looks first — gives the answer the failing run would.
+                let user_fns = ctx.known_callables.iter().map(String::as_str);
+                let fallback =
+                    format!("define it, or pass --allow-function {name} if an embedder provides it");
+                let hint = match function_suggestion(name, user_fns) {
+                    Some(s) => format!("{s} (otherwise {fallback})"),
+                    None => fallback,
+                };
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1102",
+                    Severity::Error,
+                    line,
+                    if ctx.remote_body {
+                        format!(
+                            "undefined function '{name}' (not defined in the remote body — \
+                             outer-file functions do not ship)"
+                        )
+                    } else {
+                        format!("undefined function '{name}' (defined nowhere in this file)")
+                    },
+                    Some(hint),
+                ));
+            }
+            // E1201: builtin contract arity (exact-arity sets honored).
+            if let Some(info) = builtins::builtin_info_of(name)
+                && !info.contract.accepts_arity(args.len())
+            {
+                // A5 (TODO-mix 2026-09-24): a surplus argument that matches
+                // a known reflex shape gets the Mix form named — the
+                // reflex-call table, so a Python/JS/bash hand learns the
+                // Mix spelling at the exact site it guessed wrong.
+                let reflex = REFLEX_SURPLUS_HINTS.iter().find(|(n, count, _)| {
+                    *n == name.as_str() && args.len() == *count
+                });
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1201",
+                    Severity::Error,
+                    line,
+                    format!(
+                        "{name}() called with {} argument(s); contract is {}",
+                        args.len(),
+                        info.signature()
+                    ),
+                    reflex.map(|(_, _, hint)| (*hint).to_string()),
+                ));
+            }
+            // E1202: user-function arity when uniquely defined and not
+            // shadowed by a function-valued variable.
+            if !is_builtin_name
+                && !names.contains(name)
+                && let Some((min, max)) = ctx.user_fn_arity.get(name)
+                && (args.len() < *min || args.len() > *max)
+            {
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1202",
+                    Severity::Error,
+                    line,
+                    format!(
+                        "{name}() called with {} argument(s); definition takes {}",
+                        args.len(),
+                        if min == max {
+                            min.to_string()
+                        } else {
+                            format!("{min}..{max}")
+                        }
+                    ),
+                    None,
+                ));
+            }
+            // MIX-W2311 (A5): fmt/sprintf are variadic, so the generic
+            // arity gate stops at the contract and cannot see surplus
+            // operands past the template — and both builtins SILENTLY
+            // IGNORE them at runtime. Only a direct, unshadowed call
+            // whose template is a string LITERAL that parses cleanly
+            // under the runtime grammar can prove a definite surplus.
+            // A deficit stays silent here: "not enough arguments" is the
+            // runtime's own error, not an unused-operand finding.
+            if matches!(name.as_str(), "fmt" | "sprintf")
+                && !ctx.dynamic
+                && !in_address
+                && !ctx.known_callables.contains(name)
+                && !names.contains(name)
+                && let Some(Expr::StringLiteral(tmpl) | Expr::EscapedQuoteStringLiteral(tmpl)) =
+                    args.first()
+                && let Some(expected) = format_operand_count(
+                    if name == "fmt" {
+                        FormatDialect::Fmt
+                    } else {
+                        FormatDialect::Sprintf
+                    },
+                    tmpl,
+                )
+            {
+                let provided = args.len() - 1;
+                if provided > expected {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-W2311",
+                        Severity::Warning,
+                        line,
+                        format!(
+                            "{name}() template consumes {expected} operand(s) but {provided} were \
+                             provided — the surplus {surplus} argument(s) are silently ignored",
+                            surplus = provided - expected
+                        ),
+                        Some(
+                            "remove the unused argument(s), or extend the template with more \
+                             format placeholders (%s, %d, %f)"
+                                .to_string(),
+                        ),
+                    ));
+                }
+            }
+        }
+        Expr::FunctionLiteral { params, body, .. } => {
+            // A lambda gets its own universe: enclosing names (capture
+            // semantics are stricter at runtime, but lint stays
+            // conservative) + params + body binders. Param defaults are
+            // evaluated in that inner universe.
+            let mut inner: HashSet<String> = names.clone();
+            for p in params {
+                inner.insert(p.name.clone());
+            }
+            for p in params {
+                if let Some(d) = &p.default {
+                    check_expr_tree(d, line, ctx, a, &inner, in_address);
+                }
+            }
+            match &**body {
+                FunctionBody::Block(stmts) => {
+                    let mut with_bound = inner.clone();
+                    collect_bound_names(stmts, true, &mut with_bound);
+                    check_scope(stmts, ctx, a, &with_bound, in_address, false);
+                }
+                FunctionBody::Expression(e) => {
+                    check_expr_tree(e, line, ctx, a, &inner, in_address);
+                }
+            }
+        }
+        Expr::If(ifexpr) => {
+            // Expression-position `if`: check the condition and recurse
+            // the scope pass into every branch's statement list (same
+            // universe — branches don't scope). check_expr_tree does NOT
+            // descend here (walk_expr_children skips Expr::If), so this
+            // is the sole visitor of its condition + branches.
+            check_expr_tree(&ifexpr.condition, line, ctx, a, names, in_address);
+            check_scope(&ifexpr.then_body, ctx, a, names, in_address, true);
+            for (c, b) in &ifexpr.else_ifs {
+                check_expr_tree(c, line, ctx, a, names, in_address);
+                check_scope(b, ctx, a, names, in_address, true);
+            }
+            if let Some(b) = &ifexpr.else_body {
+                check_scope(b, ctx, a, names, in_address, true);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walk one expression tree (NOT descending into FunctionLiteral
+/// bodies — check_expr handles those with their own universe) applying
+/// check_expr to every node.
+fn check_expr_tree(
+    expr: &Expr,
+    line: usize,
+    ctx: &FileContext,
+    a: &mut Analysis,
+    names: &HashSet<String>,
+    in_address: bool,
+) {
+    check_expr(expr, line, ctx, a, names, in_address);
+    walk_expr_children(expr, &mut |child| {
+        check_expr_tree(child, line, ctx, a, names, in_address);
+    });
+}
+
+/// Visit the direct child expressions of a node. FunctionLiteral bodies
+/// are deliberately NOT visited (they carry their own scope universe).
+fn walk_expr_children(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
+    match expr {
+        Expr::BinaryOp { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        Expr::UnaryOp { operand, .. } => visit(operand),
+        Expr::Ternary {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            visit(cond);
+            visit(then_branch);
+            visit(else_branch);
+        }
+        Expr::FunctionCall { args, .. } => {
+            for arg in args {
+                visit(arg);
+            }
+        }
+        Expr::ValueCall { callee, args } => {
+            visit(callee);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            visit(object);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        Expr::Index { object, index } => {
+            visit(object);
+            visit(index);
+        }
+        Expr::FieldAccess { object, .. } => visit(object),
+        Expr::ListLiteral(items) => {
+            for item in items {
+                visit(item);
+            }
+        }
+        Expr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                visit(v);
+            }
+        }
+        Expr::Send { target, args, .. } => {
+            visit(target);
+            for (_, v) in args {
+                visit(v);
+            }
+        }
+        Expr::Sh(inner) => visit(inner),
+        // Expr::If carries statement lists, not child expressions —
+        // handled wholly by check_expr / for_each_embedded_stmt_list,
+        // so it visits NOTHING here (visiting the condition would
+        // double-check it).
+        Expr::If(_) => {}
+        _ => {}
+    }
+}
+
+/// Visit every top-level expression of ONE statement (not nested
+/// statement bodies — the scope pass recurses those itself), applying
+/// the full-tree checker.
+fn walk_stmt_exprs(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
+    let mut go = |e: &Expr| visit(e);
+    match &stmt.kind {
+        StmtKind::Expression(e)
+        | StmtKind::Die(e)
+        | StmtKind::Source { path: e }
+        | StmtKind::Include { path: e } => go(e),
+        StmtKind::Assignment { value, .. } | StmtKind::Export { value, .. } => go(value),
+        StmtKind::FieldAssignment { value, .. } => go(value),
+        StmtKind::IndexAssignment { index, value, .. } => {
+            go(index);
+            go(value);
+        }
+        StmtKind::PathAssignment { path, value, .. } => {
+            for seg in path {
+                if let PathSeg::Index(e) = seg {
+                    go(e);
+                }
+            }
+            go(value);
+        }
+        StmtKind::If {
+            condition,
+            else_ifs,
+            ..
+        } => {
+            go(condition);
+            for (c, _) in else_ifs {
+                go(c);
+            }
+        }
+        StmtKind::For {
+            start, end, step, ..
+        } => {
+            go(start);
+            go(end);
+            if let Some(s) = step {
+                go(s);
+            }
+        }
+        StmtKind::ForEach { iterable, .. } => go(iterable),
+        StmtKind::While { condition, .. } => go(condition),
+        StmtKind::BreakIf(c, _) | StmtKind::ContinueIf(c, _) => go(c),
+        StmtKind::Return(Some(e)) => go(e),
+        StmtKind::Select { value, cases, .. } => {
+            go(value);
+            for (case_value, _) in cases {
+                go(case_value);
+            }
+        }
+        StmtKind::Print { args, .. } => {
+            for e in args {
+                go(e);
+            }
+        }
+        StmtKind::Parse { source, .. } => go(source),
+        StmtKind::Send { target, command, args, .. }
+        | StmtKind::Emit { target, command, args, .. } => {
+            go(target);
+            // Lint-walker gap (TODO-mix 2026-09-24): the COMMAND expression
+            // was never visited — a call or binder inside it was invisible
+            // to every check that rides this walker.
+            go(command);
+            for (_, v) in args {
+                go(v);
+            }
+        }
+        StmtKind::Address { target, .. } => go(target),
+        StmtKind::Alias { name, command } => {
+            if let Some(e) = name {
+                go(e);
+            }
+            if let Some(e) = command {
+                go(e);
+            }
+        }
+        StmtKind::Sh { command } => go(command),
+        StmtKind::PipeToExternal { stmt: inner, .. } => walk_stmt_exprs(inner, visit),
+        StmtKind::Chain { left, right, .. } => {
+            walk_stmt_exprs(left, visit);
+            walk_stmt_exprs(right, visit);
+        }
+        _ => {}
+    }
+}
+
+// ── W2301..W2306 recurring silent-result traps ─────────────────────
+
+#[derive(Clone, Copy)]
+enum ProvenValue {
+    List,
+    Map,
+    BuiltinResult(&'static str),
+}
+
+fn check_recurring_silent_bugs(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    check_proven_value_flow(stmts, ctx, a, &mut HashMap::new());
+    check_assignment_chains(stmts, ctx, a);
+    check_implicit_nil_calls(stmts, ctx, a);
+    check_truthiness_traps(stmts, ctx, a);
+    check_ssh_escaped_quotes(stmts, ctx, a);
+    check_unguarded_edit_chain(stmts, ctx, a);
+    check_shell_command_statements(stmts, ctx, a);
+    check_send_rc_reads(stmts, ctx, a);
+    check_push_assign_back(stmts, ctx, a);
+    check_collection_literal_traps(stmts, ctx, a);
+    check_literal_type_contradictions(stmts, ctx, a);
+}
+
+/// A2 lint half (TODO-mix 2026-09-24): a LITERAL argument whose type
+/// contradicts the contract's declared shape is provably wrong at
+/// authoring time — `mkdir({a: 1})`, `exists([1, 2])`, `len(3)` used to
+/// lint clean and then stringify a side effect onto the wrong target.
+/// The runtime gate (0.103.1) raises TYPE_MISMATCH on the same calls, so
+/// this rule makes the lint agree with the runtime instead of letting
+/// the script crash mid-run. Variables and expressions are left alone —
+/// only a literal PROVES the type. Nil is the documented omitted-arg
+/// sentinel, and a `nil` literal is tested against the declared shape
+/// like any other literal: it satisfies only a shape that admits nil
+/// (`Nil`, `Any`, or an `AnyOf` containing them), and against a
+/// concrete shape it is a contradiction and flagged.
+fn check_literal_type_contradictions(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    use crate::builtin_info::TypeShape;
+    for stmt in stmts {
+        walk_stmt_exprs(stmt, &mut |expr| {
+            let Expr::FunctionCall { name, args } = expr else {
+                return;
+            };
+            let Some(info) = crate::builtins::builtin_info_of(name) else {
+                return;
+            };
+            for (i, (arg, arg_info)) in args.iter().zip(info.contract.args).enumerate() {
+                if arg_info.variadic {
+                    continue;
+                }
+                let shape = arg_info.kind;
+                if matches!(shape, TypeShape::Any) {
+                    continue;
+                }
+                let Some((got, _)) = literal_type_name(arg) else {
+                    continue;
+                };
+                if literal_matches_shape(arg, &shape) {
+                    continue;
+                }
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-E1203",
+                    Severity::Error,
+                    stmt.line,
+                    format!(
+                        "{name}(): argument {} ({}) must be {}, but this literal is {} — the \
+                         call raises TYPE_MISMATCH at runtime (see: mix man io)",
+                        i + 1,
+                        arg_info.name,
+                        shape.human(),
+                        got
+                    ),
+                    None,
+                ));
+            }
+        });
+    }
+}
+
+/// The Mix type name of a LITERAL expression, when the literal proves it.
+fn literal_type_name(expr: &Expr) -> Option<(&'static str, ())> {
+    match expr {
+        Expr::NumberLiteral(_) => Some(("number", ())),
+        Expr::StringLiteral(_) | Expr::EscapedQuoteStringLiteral(_) => Some(("string", ())),
+        Expr::BoolLiteral(_) => Some(("bool", ())),
+        Expr::ListLiteral(_) => Some(("list", ())),
+        Expr::MapLiteral(_) => Some(("map", ())),
+        Expr::NilLiteral => Some(("nil", ())),
+        _ => None,
+    }
+}
+
+/// Whether a literal expression satisfies a contract `TypeShape`.
+fn literal_matches_shape(expr: &Expr, shape: &crate::builtin_info::TypeShape) -> bool {
+    use crate::builtin_info::TypeShape;
+    match shape {
+        TypeShape::Any => true,
+        TypeShape::AnyOf(shapes) => shapes.iter().any(|s| literal_matches_shape(expr, s)),
+        TypeShape::String => matches!(expr, Expr::StringLiteral(_) | Expr::EscapedQuoteStringLiteral(_)),
+        TypeShape::Number => matches!(expr, Expr::NumberLiteral(_)),
+        TypeShape::Bool => matches!(expr, Expr::BoolLiteral(_)),
+        TypeShape::Nil => matches!(expr, Expr::NilLiteral),
+        TypeShape::List(_) => matches!(expr, Expr::ListLiteral(_)),
+        TypeShape::Map { .. } => matches!(expr, Expr::MapLiteral(_)),
+        // Bytes/Buffer/Function literals have no expression spelling —
+        // a literal can never satisfy these, so any literal is a
+        // contradiction; None-shaped literals (variables) are filtered
+        // before this fn.
+        TypeShape::Bytes | TypeShape::Buffer | TypeShape::Function => false,
+    }
+}
+
+/// C9/C10 (TODO-mix 2026-09-24): collection-literal traps the lint can
+/// PROVE — a builtin call whose first argument is a map literal holding a
+/// Function member of the SAME name (the member is unreachable; the
+/// builtin runs), a literal field absent from its literal map (nil at
+/// runtime), and a literal index out of range of its literal list.
+fn check_collection_literal_traps(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    for stmt in stmts {
+        walk_stmt_exprs(stmt, &mut |expr| match expr {
+            Expr::FunctionCall { name, args } => {
+                if (crate::builtins::is_builtin(name) || crate::builtins_hof::lookup(name).is_some())
+                    && let Some(Expr::MapLiteral(entries)) = args.first()
+                    && entries
+                        .iter()
+                        .any(|(k, v)| k == name && matches!(v, Expr::FunctionCall { .. }))
+                {
+                    // C9: `$m = {len: fn() = 99}; $m.len()` runs the
+                    // BUILTIN len on the map — the member fn is dead.
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-W2309",
+                        Severity::Warning,
+                        stmt.line,
+                        format!(
+                            "{name}() here runs the BUILTIN, not the map's member function \
+                             — builtin-named members are unreachable via dot-call"
+                        ),
+                        Some(format!("call it through the index: $m[\"{name}\"]()")),
+                    ));
+                }
+            }
+            Expr::FieldAccess { object, field } => {
+                let Expr::MapLiteral(entries) = object.as_ref() else {
+                    return;
+                };
+                if !entries.iter().any(|(k, _)| k == field) {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-W2310",
+                        Severity::Warning,
+                        stmt.line,
+                        format!("'{field}' is not a key of this literal map — the read is nil at runtime"),
+                        Some(format!("known keys: {}", entries.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "))),
+                    ));
+                }
+            }
+            Expr::Index { object, index } => {
+                let (Expr::ListLiteral(items), Expr::NumberLiteral(n)) =
+                    (object.as_ref(), index.as_ref())
+                else {
+                    return;
+                };
+                if *n >= 0.0 && (*n as usize) >= items.len() {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-W2310",
+                        Severity::Warning,
+                        stmt.line,
+                        format!(
+                            "index {} is out of range of this literal list ({} items) — the read is nil at runtime",
+                            *n as usize,
+                            items.len()
+                        ),
+                        None,
+                    ));
+                }
+            }
+            _ => {}
+        });
+    }
+}
+
+/// B2 (TODO-mix 2026-09-24): a shell command written inside a `.mix` file
+/// is a silent no-op — `hostname` or `systemctl --user daemon-reload`
+/// parse as a bare string, run nothing, exit 0, and lint prints 0/0/0.
+/// A bare-string statement whose head word resolves on PATH is the
+/// shell reflex; flag it as an error naming the Mix form. (A bare string
+/// whose head is NOT on PATH stays silent — it may be a deliberate value
+/// or a typo'd Mix name, which E1101/E1102 cover.)
+fn check_shell_command_statements(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    for stmt in stmts {
+        if let StmtKind::Expression(Expr::StringLiteral(s))
+        | StmtKind::Expression(Expr::EscapedQuoteStringLiteral(s)) = &stmt.kind
+            && let Some(head) = s.split_whitespace().next()
+            && !head.is_empty()
+            && on_path(head)
+        {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-E1507",
+                Severity::Error,
+                stmt.line,
+                format!(
+                    "shell command written as a bare string — .mix files are whole-file Mix, so \
+                     \"{s}\" runs nothing. '{head}' IS on PATH"
+                ),
+                Some(format!(
+                    "run it with run_argv([\"{head}\", ...]) — or drop the string if it is not \
+                     meant to run"
+                )),
+            ));
+        }
+    }
+}
+
+/// A5 (TODO-mix 2026-09-24): the reflex-call table — a SURPLUS argument
+/// on these builtins is a Python/JS/bash hand, so the E1201 hint names
+/// the Mix form at the exact call site. (The doc-shout rows — `range`
+/// inclusivity, `sort` comparator order, `filter` list-first — live in
+/// the manual, linked not duplicated; the get/set/find did-you-mean lives
+/// with the shared suggester, whose targets may be FORMS as well as
+/// builtins — see [`COLLECTION_FORM_SUGGESTIONS`].)
+const REFLEX_SURPLUS_HINTS: &[(&str, usize, &str)] = &[
+    (
+        "remove",
+        2,
+        "remove(path) deletes a FILE — delete(map, key) removes a map key; filter(list, pred) drops list items",
+    ),
+    ("replace", 4, "replace() replaces ALL — replace_first() is the count-1 form"),
+    ("split", 3, "split() takes no limit — split_once() splits at the first occurrence"),
+    ("push", 3, "push() takes one value — call it twice, or concat(list, [a, b])"),
+    ("pop", 2, "pop() takes no index — shift() removes the FIRST element"),
+    ("sort", 2, "sort() takes no comparator — sort_by(fn) compares; sort + reverse for descending"),
+    ("zip", 3, "zip() takes two lists — chain zip() calls"),
+    ("merge", 3, "merge() takes two maps — chain merge() calls"),
+    ("path_join", 3, "path_join() takes two parts — nest it, or join(parts, \"/\")"),
+    ("basename", 2, "basename() takes one arg — strip_suffix(name, suffix)"),
+    ("dkim_keygen", 2, "dkim_keygen() takes no bit length"),
+];
+
+/// Whether `head` names an executable on this host's PATH — the B2 gate:
+/// only a real shell reflex fires, a prose string never does.
+fn on_path(head: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    path.split(':').any(|dir| {
+        let candidate = std::path::Path::new(dir).join(head);
+        candidate.is_file()
+    })
+}
+
+/// B4 (TODO-mix 2026-09-24): `send` failures never touch the exit code —
+/// a script whose sends all fail exits 0. The lint half: a `send` whose
+/// `$rc` (or `$result`/`$reply`) is never READ before the next send or the
+/// end of the block warns. (The opt-in `--strict-send` / `MIX_STRICT_SEND`
+/// execution gate is the deferred half, tracked in the arc ledger.)
+fn check_send_rc_reads(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    for (idx, stmt) in stmts.iter().enumerate() {
+        if !matches!(stmt.kind, StmtKind::Send { .. }) {
+            continue;
+        }
+        // Scan the statements AFTER this send, up to the next send or the
+        // end of the block, for a read of $rc / $result / $reply.
+        let read_before_next = stmts[idx + 1..].iter().take_while(|s| {
+            !matches!(s.kind, StmtKind::Send { .. })
+        }).any(stmt_reads_send_status);
+        if !read_before_next {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-W2307",
+                Severity::Warning,
+                stmt.line,
+                "result of send is never checked — a failed send (rc -2, >=10) exits 0 and the \
+                 script reads as success"
+                    .to_string(),
+                Some("read $rc (or $result/$reply) after the send, or use a checked form".to_string()),
+            ));
+        }
+    }
+}
+
+/// Whether a statement READS `$rc`, `$result` or `$reply` anywhere.
+fn stmt_reads_send_status(stmt: &Stmt) -> bool {
+    let mut reads = false;
+    walk_stmt_exprs(stmt, &mut |expr| {
+        if let Expr::Variable(name) = expr
+            && matches!(name.as_str(), "rc" | "result" | "reply")
+        {
+            reads = true;
+        }
+    });
+    reads
+}
+
+/// 09-24 entry: `$x = push($x, v)` sets `$x` to nil — push mutates in
+/// place and returns nil, so the assign-back form empties the list, and
+/// lint said nothing while E1501's hint actively taught the shape for the
+/// non-variable case. Flag the exact self-assign shape, and reword the
+/// E1501 hint to distinguish the two forms.
+fn check_push_assign_back(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    for stmt in stmts {
+        if let StmtKind::Assignment { name, value } = &stmt.kind
+            && let Expr::FunctionCall {
+                name: call,
+                args,
+            } = value
+            && matches!(call.as_str(), "push" | "pop" | "shift")
+            && let Some(Expr::Variable(target)) = args.first()
+            && target == name
+        {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-E1508",
+                Severity::Error,
+                stmt.line,
+                format!(
+                    "${name} = {call}(${name}, ...) — {call} mutates in place and returns nil \
+                     (push) / the removed element (pop/shift), so this assignment binds the \
+                     WRONG value"
+                ),
+                Some(if call == "push" {
+                    format!("drop the assignment: {call}(${name}, ...) alone already appends")
+                } else {
+                    format!("bind the removed element instead: $x = {call}(${name})")
+                }),
+            ));
+        }
+    }
+}
+
+/// Deep-walk an expression and every descendant (lambda bodies excluded,
+/// same as `walk_expr_children`).
+///
+/// `walk_expr_children` skips `Expr::If` ENTIRELY — its branches are
+/// statement lists, which is the scope pass's business — so the
+/// expression-position `if`'s CONDITIONS would otherwise never be seen by
+/// any caller of this walker. They are ordinary expressions evaluated in
+/// the current scope, so they are visited here; the branch statements are
+/// left to `for_each_embedded_stmt_list`, which is what the statement
+/// walkers use.
+fn for_each_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
+    visit(expr);
+    if let Expr::If(ifexpr) = expr {
+        for_each_expr(&ifexpr.condition, visit);
+        for (c, _) in &ifexpr.else_ifs {
+            for_each_expr(c, visit);
+        }
+        return;
+    }
+    walk_expr_children(expr, &mut |child| for_each_expr(child, visit));
+}
+
+/// The tolerant transforms whose no-op is invisible.
+const TOLERANT_REPLACES: &[&str] = &["replace", "re_replace", "replace_first"];
+
+/// Any spelling of "I checked whether the needle was there" — a `contains`
+/// test, a position/count probe, or a `_must` twin that raises by itself.
+const EDIT_GUARDS: &[&str] = &[
+    "contains",
+    "replace_must",
+    "re_replace_must",
+    "pos",
+    "lastpos",
+    "index_of",
+    "last_index_of",
+    "count_of",
+    "re_match",
+    "re_find",
+];
+
+/// MIX-D3014 (0.90.0): `write_file(path, replace(read_file(path), …))` with
+/// nothing anywhere in the file that could have noticed the needle was
+/// absent.
+///
+/// `replace()` returns the subject UNCHANGED when the needle does not occur,
+/// so this whole shape — the edit-a-file idiom — writes the input straight
+/// back and reports success. On 2026-09-18 three such edits missed, and one
+/// of them shipped a commit that did not compile; there was no signal at any
+/// step. `replace_must()` (0.90.0) is the fix.
+///
+/// Conservative in two directions, because the analyzer's bias is
+/// near-zero false positives. It fires only on a `write_file` whose written
+/// VALUE is a replace call, or a variable the same straight-line block
+/// assigned from one; and ANY guard spelling anywhere in the file silences
+/// it for the whole file — a script that guards one edit has the habit, and
+/// a note it has already answered is noise.
+fn check_unguarded_edit_chain(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    let mut guarded = false;
+    walk_stmts(stmts, &mut |stmt| {
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_expr(expr, &mut |e| {
+                if let Expr::FunctionCall { name, .. } = e
+                    && EDIT_GUARDS.contains(&name.as_str())
+                {
+                    guarded = true;
+                }
+            });
+        });
+    });
+    if guarded {
+        return;
+    }
+    scan_edit_chain_block(stmts, ctx, a, &mut HashMap::new());
+}
+
+/// True when `expr` is (or directly wraps) a tolerant replace call.
+fn is_tolerant_replace(expr: &Expr) -> bool {
+    matches!(expr, Expr::FunctionCall { name, .. } if TOLERANT_REPLACES.contains(&name.as_str()))
+}
+
+fn scan_edit_chain_block(
+    stmts: &[Stmt],
+    ctx: &FileContext,
+    a: &mut Analysis,
+    edited: &mut HashMap<String, usize>,
+) {
+    for stmt in stmts {
+        // Report BEFORE updating the facts, so `$s = replace(...)` followed
+        // by `write_file($p, $s)` is seen in order.
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_expr(expr, &mut |e| {
+                let Expr::FunctionCall { name, args } = e else {
+                    return;
+                };
+                if name.as_str() != "write_file" || args.len() < 2 {
+                    return;
+                }
+                let written = &args[1];
+                let hit = is_tolerant_replace(written)
+                    || matches!(written, Expr::Variable(v) if edited.contains_key(v));
+                if hit {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-D3014",
+                        Severity::Note,
+                        stmt.line,
+                        "write_file() of a replace() result with no check that the needle was there"
+                            .to_string(),
+                        Some(
+                            "replace() returns the subject UNCHANGED when the needle is absent, so a missed edit writes the input back and reports success — use replace_must()/re_replace_must() (they raise NEEDLE_ABSENT, and {count: n} asserts how many sites)"
+                                .to_string(),
+                        ),
+                    ));
+                }
+            });
+        });
+
+        // A `function`/`fn` body is a FRESH frame: its parameters SHADOW
+        // whatever the enclosing block bound, so carrying the facts in
+        // reported a write of an unrelated parameter that merely reused
+        // the name. Every other body (if/while/for/try) runs in the same
+        // scope and does inherit.
+        let nested_is_frame = matches!(&stmt.kind, StmtKind::FunctionDef { .. });
+        for body in stmt_bodies(&stmt.kind) {
+            let mut inner = if nested_is_frame {
+                HashMap::new()
+            } else {
+                edited.clone()
+            };
+            scan_edit_chain_block(body, ctx, a, &mut inner);
+        }
+        // Branch statements of an expression-position `if` run in the
+        // CURRENT scope; lambda bodies do not, so they are left alone
+        // (a conservative false negative, which is this analyzer's bias).
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_embedded_stmt_list(expr, false, &mut |body| {
+                scan_edit_chain_block(body, ctx, a, &mut edited.clone());
+            });
+        });
+
+        // A conditional body that reassigns a name makes the outer fact
+        // UNKNOWN, not still-true: `$s = replace(..)` then `if c then $s =
+        // "x" end` must not keep reporting the write as a replace result.
+        // Facts only ever cause a note, so dropping them is the safe way
+        // to be wrong.
+        if !nested_is_frame {
+            let mut written = HashSet::new();
+            for body in stmt_bodies(&stmt.kind) {
+                collect_bound_names(body, false, &mut written);
+            }
+            walk_stmt_exprs(stmt, &mut |expr| {
+                for_each_embedded_stmt_list(expr, false, &mut |body| {
+                    collect_bound_names(body, false, &mut written);
+                });
+            });
+            for name in written {
+                edited.remove(&name);
+            }
+        }
+
+        if let StmtKind::Assignment { name, value } | StmtKind::Export { name, value } = &stmt.kind {
+            if is_tolerant_replace(value) {
+                edited.insert(name.clone(), stmt.line);
+            } else {
+                edited.remove(name);
+            }
+        }
+    }
+}
+
+/// Flag the narrow source shape that signals Mix source is being nested in an
+/// ssh command string and will be parsed again by the remote login shell.
+/// Provenance from the parser lets this stay quiet for a single-quoted string
+/// that merely contains ordinary double quotes.
+fn check_ssh_escaped_quotes(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    fn check_expr(expr: &Expr, line: usize, ctx: &FileContext, a: &mut Analysis) {
+        if let Expr::FunctionCall { name, args } = expr
+            && matches!(name.as_str(), "ssh_run" | "ssh_must")
+            && matches!(args.get(1), Some(Expr::EscapedQuoteStringLiteral(_)))
+        {
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-W2306",
+                Severity::Warning,
+                line,
+                format!(
+                    "`{name}` string contains escaped quotes — the remote shell re-parses it; use `ssh_mix` with a heredoc to ship source verbatim"
+                ),
+                Some("see `mix man remote` for the `ssh_mix` + heredoc pattern".to_string()),
+            ));
+        }
+        walk_expr_children(expr, &mut |child| check_expr(child, line, ctx, a));
+    }
+
+    walk_stmts(stmts, &mut |stmt| {
+        walk_stmt_exprs(stmt, &mut |expr| check_expr(expr, stmt.line, ctx, a));
+    });
+}
+
+// ── MIX-D3xxx — deprecations and release-transition advisories ───────
+//
+// All emitted at `Severity::Note` in release A (0.63.0): visible in
+// every lint run, never gating. The five regex/grep codes D3001–D3005
+// promote to `Warning` in release A.1 (codes unchanged) once the fleet
+// inventory reads zero, and the names are deleted in release B. The
+// pos-family codes D3008–D3011 stay notes until THEIR count reads zero,
+// whenever that is.
+//
+// D3006/D3007 were the release-transition watch notes for the A.1
+// behaviour flips (map two-var binding; map/list `==` raising). Both
+// flips SHIPPED in 0.68.0 and the notes are RETIRED — a watch note whose
+// flip has landed is worse than no note, because it describes a future
+// that is now the present. Their codes are permanently spent and must
+// never be reused: a log or a script matching "MIX-D3006" means the
+// pre-0.68.0 world, and reusing the number would make that match lie.
+// Static, analyzer-surface only — never emitted at
+// runtime (the `done`/`next` runtime-warning path is the anti-pattern:
+// it would print on every execution of ~800 live call sites).
+//
+// Coverage: every spelling. A member-call of a BUILTIN name desugars to
+// a FunctionCall at parse time (parser.rs `method_desugars_to_ufcs`),
+// so `$s.regex_match(..)` is seen exactly like the bare call — pinned
+// by the lint_notes CLI tests.
+
+/// Pattern-first regex/grep names → their subject-first 0.63.0 twins.
+/// ONE table, shared with the runtime: the evaluator's FUNCTION_UNDEFINED
+/// handler reads it too, so a deleted name gets the same "use X instead"
+/// pointer at runtime (where the straggler actually surfaces) that lint
+/// gives at authoring time. (name, D-code, replacement-call).
+pub(crate) const DEPRECATED_REGEX_CALLS: &[(&str, &str, &str)] = &[
+    ("regex_match", "MIX-D3001", "re_match(s, pattern)"),
+    (
+        "regex_find",
+        "MIX-D3002",
+        "re_find(s, pattern) — NOTE: re_find returns CODEPOINT offsets where regex_find returns byte offsets; adjust offset arithmetic when migrating",
+    ),
+    ("regex_replace", "MIX-D3003", "re_replace(s, pattern, replacement)"),
+    ("regex_split", "MIX-D3004", "re_split(s, pattern)"),
+    ("grep", "MIX-D3005", "grep_lines(text, pattern)"),
+];
+
+/// REXX-style 1-based needle-first search family: declared legacy, not
+/// scheduled for deletion — the note points migrants at the replacements.
+const LEGACY_POS_CALLS: &[(&str, &str, &str)] = &[
+    (
+        "pos",
+        "MIX-D3008",
+        "contains() for yes/no, index_of() / after() / split_once() for positions",
+    ),
+    (
+        "lastpos",
+        "MIX-D3009",
+        "last_index_of() / before_last() / after_last()",
+    ),
+    ("byte_pos", "MIX-D3010", "byte_index_of()"),
+    (
+        "byte_lastpos",
+        "MIX-D3011",
+        "byte-offset search has no 0-based last-occurrence twin yet; see strings.md",
+    ),
+];
+
+fn check_release_transition_advisories(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    // Pos-family calls already covered by the sharper composed-form note
+    // below (substr/slice over a pos-family call in ONE expression) —
+    // suppressed from the generic note so a site gets one note, not two.
+    let mut composed: HashSet<*const Expr> = HashSet::new();
+
+    fn check_expr(
+        expr: &Expr,
+        line: usize,
+        ctx: &FileContext,
+        a: &mut Analysis,
+        composed: &mut HashSet<*const Expr>,
+    ) {
+        if let Expr::FunctionCall { name, args } = expr {
+            if let Some((_, code, repl)) =
+                DEPRECATED_REGEX_CALLS.iter().find(|(n, _, _)| n == name)
+            {
+                a.diagnostics.push(diag(
+                    ctx,
+                    code,
+                    Severity::Note,
+                    line,
+                    format!("`{name}` is pattern-first legacy: use `{repl}` (subject first)"),
+                    Some(
+                        "the five regex/grep legacy names were DELETED in release B (0.73.0) — this call now fails at runtime; \
+                         see `mix man regex`"
+                            .to_string(),
+                    ),
+                ));
+            } else if let Some((_, code, repl)) =
+                LEGACY_POS_CALLS.iter().find(|(n, _, _)| n == name)
+                && !composed.contains(&(expr as *const Expr))
+            {
+                a.diagnostics.push(diag(
+                    ctx,
+                    code,
+                    Severity::Note,
+                    line,
+                    format!("`{name}` is declared legacy (1-based, needle-first): prefer {repl}"),
+                    Some(
+                        "legacy search names stay until their fleet count reads zero — \
+                         migrate opportunistically; see `mix man strings`"
+                            .to_string(),
+                    ),
+                ));
+            }
+            // Sharper composed-form note: `substr($s, pos(..) ± n)` /
+            // `slice($s, pos(..))` in one expression — the 1-based/0-based
+            // off-by-one trap. One-expression-deep only, by design: a
+            // `$p = pos(..); substr($s, $p)` split is caught by the plain
+            // pos-family note above instead.
+            if matches!(name.as_str(), "substr" | "slice" | "grapheme_substr") {
+                for arg in args.iter().skip(1) {
+                    let mut found: Option<(*const Expr, &'static str, &'static str)> = None;
+                    let mut scan = |e: &Expr| {
+                        if let Expr::FunctionCall { name: inner, .. } = e
+                            && let Some((n, code, _)) =
+                                LEGACY_POS_CALLS.iter().find(|(n, _, _)| n == inner)
+                            && found.is_none()
+                        {
+                            found = Some((e as *const Expr, code, n));
+                        }
+                    };
+                    scan(arg);
+                    walk_expr_children(arg, &mut |child| scan(child));
+                    // Emit only on first insertion: a NESTED substr
+                    // (`substr($s, 1 + substr($s, pos(..), 2), 3)`) rescans
+                    // the same pos node from both levels — one site, one
+                    // note (GLM review of d73304a6, finding 1).
+                    if let Some((pos_ptr, code, pos_name)) = found
+                        && composed.insert(pos_ptr)
+                    {
+                        a.diagnostics.push(diag(
+                            ctx,
+                            code,
+                            Severity::Note,
+                            line,
+                            format!(
+                                "`{name}(.., {pos_name}(..) ..)` composes a 1-based position \
+                                 into a 0-based index — the off-by-one trap"
+                            ),
+                            Some(
+                                "use after() / before() / split_once() instead of \
+                                 position arithmetic"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        // Blind-spot arms (GLM review of d73304a6, finding 2):
+        // `walk_expr_children` deliberately skips if-expression internals
+        // and lambda internals (they belong to the embedded-stmt-list
+        // walker), so an advisory pass that promises every spelling must
+        // reach the CONDITIONS and the expression-shaped lambda parts
+        // itself. Branch/lambda BODIES that are statement lists arrive
+        // via advisory_walk's embedded-list pass — no double visits.
+        match expr {
+            Expr::If(ifexpr) => {
+                check_expr(&ifexpr.condition, line, ctx, a, composed);
+                for (c, _) in &ifexpr.else_ifs {
+                    check_expr(c, line, ctx, a, composed);
+                }
+            }
+            Expr::FunctionLiteral { params, body } => {
+                for p in params {
+                    if let Some(d) = &p.default {
+                        check_expr(d, line, ctx, a, composed);
+                    }
+                }
+                if let FunctionBody::Expression(e) = &**body {
+                    check_expr(e, line, ctx, a, composed);
+                }
+            }
+            _ => {}
+        }
+        walk_expr_children(expr, &mut |child| check_expr(child, line, ctx, a, composed));
+    }
+
+    /// Self-contained statement walker: unlike the shared `walk_stmts`
+    /// geometry (built for narrow heuristics), an advisory pass that
+    /// promises coverage must also see (a) statements wrapped by
+    /// `| external` pipes and `&&`/`||` chains, (b) named-fn parameter
+    /// defaults and `= expr` bodies, and (c) the statement lists embedded
+    /// in expressions (if-expression branches, block-lambda bodies) —
+    /// each exactly once (GLM review of d73304a6, finding 2).
+    fn advisory_stmt(
+        stmt: &Stmt,
+        ctx: &FileContext,
+        a: &mut Analysis,
+        composed: &mut HashSet<*const Expr>,
+    ) {
+        match &stmt.kind {
+            StmtKind::PipeToExternal { stmt: inner, .. } => {
+                advisory_stmt(inner, ctx, a, composed);
+                return;
+            }
+            StmtKind::Chain { left, right, .. } => {
+                advisory_stmt(left, ctx, a, composed);
+                advisory_stmt(right, ctx, a, composed);
+                return;
+            }
+            // MIX-D3006 RETIRED in 0.68.0 — the map-binding flip it watched
+            // has shipped: a two-variable loop over a MAP now binds
+            // (key, value). The note existed to make every two-variable site
+            // visible for one release cycle so the flip could be gated on
+            // "no map-pair dependant exists"; the inventory came back with
+            // every site iterating a list, on the fleet and locally, and the
+            // flip landed. Nothing replaces it — there is no longer a
+            // pending change to warn about.
+            // Named-fn parameter defaults and `= expr` bodies:
+            // walk_stmt_exprs has no FunctionDef arm and stmt_bodies
+            // returns nothing for an Expression body.
+            StmtKind::FunctionDef { params, body, .. } => {
+                for p in params {
+                    if let Some(d) = &p.default {
+                        check_expr(d, stmt.line, ctx, a, composed);
+                    }
+                }
+                if let FunctionBody::Expression(e) = body {
+                    check_expr(e, stmt.line, ctx, a, composed);
+                }
+            }
+            _ => {}
+        }
+        walk_stmt_exprs(stmt, &mut |expr| {
+            check_expr(expr, stmt.line, ctx, a, composed)
+        });
+        for body in stmt_bodies(&stmt.kind) {
+            for s in body {
+                advisory_stmt(s, ctx, a, composed);
+            }
+        }
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_embedded_stmt_list(expr, true, &mut |body| {
+                for s in body {
+                    advisory_stmt(s, ctx, a, composed);
+                }
+            })
+        });
+    }
+
+    for stmt in stmts {
+        advisory_stmt(stmt, ctx, a, &mut composed);
+    }
+}
+
+/// Lint the Mix source an `ssh_mix` call ships to a remote (v0.69.0).
+///
+/// `ssh_mix(host, source[, opts])` writes its SECOND argument to a remote
+/// `mix -`. That argument is Mix source, but to every prior version of this
+/// analyzer it was an opaque string literal — so a deploy script's entire
+/// remote half was invisible to `mix lint` and to every inventory built
+/// from it.
+///
+/// That is not a theoretical gap. `deploy_vhost.mix:283` is a two-variable
+/// loop over a MAP living inside such a body, and the MIX-D3006 inventory
+/// that gated the 0.68.0 map-binding flip reported ZERO sites in that file,
+/// locally and on 27/27 fleet nodes. The flip happened to fix that line
+/// rather than break it, but the gate was measured over a corpus that
+/// structurally excluded exactly the code deploy scripts verify with.
+///
+/// TWO RULES, and the second matters more than the first:
+///
+/// 1. A **literal** body is parsed and analysed, and its diagnostics are
+///    reported against the enclosing file at mapped line numbers. Literal
+///    means a plain string, an all-literal heredoc (inline, as the manual's
+///    headline idiom writes it), or a variable whose SOLE binding anywhere
+///    in the file is one of those (see [`sole_string_definitions`]).
+/// 2. A **non-literal** body — any other variable, a concatenation, a
+///    `read_file`, a `${…}` interpolation — cannot be analysed, and is
+///    REPORTED as unanalysable (MIX-D3012) rather than passing silently. An
+///    invisible gap counted as clean is what produced the 0.68.0 near-miss;
+///    a visible one is worth more than the analysis it replaces.
+///
+/// NAME RESOLUTION inside the body runs against the body itself, the
+/// builtins, and the names the call injects — its `bindings` keys and its
+/// `env` keys, both prepended to the shipped source as assignments. Those
+/// are read statically from a map-literal opts argument, or from a
+/// variable bound exactly once to one (the opts twin of the body's
+/// `sole_string_definitions`). When they cannot be read (MIX-D3018), the
+/// boundary is split, not blanket: dynamic bindings/env may supply any
+/// free DATA variable, so undefined-VARIABLE checks stand down — but a
+/// function name cannot ride in through strict-data bindings, so
+/// undefined-FUNCTION checks keep running, and a variable read one edit
+/// away from a name the body binds is reported as a typo-suspect note
+/// (MIX-D3017) rather than skipped silently.
+///
+/// Every `ssh_mix` call is found, at any depth — the loop-over-hosts shape
+/// puts the call inside a `for`, and the 0.69.0 pass searched only
+/// top-level statements, so exactly that shape went unlinted.
+fn check_ssh_mix_bodies(
+    stmts: &[Stmt],
+    ctx: &FileContext,
+    a: &mut Analysis,
+    cfg: &AnalyzerConfig,
+) {
+    // One heredoc bound once and shipped by several calls would otherwise
+    // report every finding once per call. Identical calls are skipped
+    // outright; calls with DIFFERENT bindings are each analysed (they can
+    // disagree about which names are undefined), and `reported` then keeps
+    // one copy of every (code, line, message) they share.
+    let mut analysed: HashSet<(usize, Option<Vec<String>>)> = HashSet::new();
+    let mut reported = BodyDedupe::default();
+    // Exact opener lines keyed by body AST node, from the caller's source
+    // text; see [`source_literal_maps`] for how and why the pairing can
+    // refuse.
+    let mapped = cfg
+        .source
+        .as_deref()
+        .map(|source| source_literal_maps(source, stmts))
+        .unwrap_or_default();
+    for site in collect_remote_sites(stmts) {
+        match site.body {
+            RemoteBody::Literal {
+                src,
+                first_line,
+                origin,
+            } => {
+                // A once-bound body shipped several times reuses its one
+                // AST node's map. Without source text, keep the documented
+                // statement-line estimate.
+                let (first_line, lines) = mapped
+                    .get(&origin)
+                    .cloned()
+                    .unwrap_or((first_line, None));
+                let key = site.injected.as_ref().map(|names| {
+                    let mut v: Vec<String> = names.iter().cloned().collect();
+                    v.sort_unstable();
+                    v
+                });
+                // MIX-D3018, per CALL SITE: the opts are what make the
+                // body's variable universe unknowable, and two calls of the
+                // same body can differ in them. A body that can read its
+                // opts (a literal map, or a variable bound exactly once to
+                // one) never gets this.
+                if site.injected.is_none() {
+                    a.diagnostics.push(diag(
+                        ctx,
+                        "MIX-D3018",
+                        Severity::Note,
+                        site.line,
+                        "ssh_mix opts are not a statically readable map — undefined-VARIABLE \
+                         checks are skipped for this body (its bindings/env may supply any data \
+                         name); undefined-FUNCTION checks still run"
+                            .to_string(),
+                        Some(
+                            "write the opts argument as a map literal — or bind it exactly once \
+                             to one — so lint can resolve the body's names exactly"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if analysed.insert((origin, key)) {
+                    let injected = site.injected.as_ref();
+                    reported.origin = origin;
+                    analyse_remote_body(
+                        &src,
+                        (first_line, lines.as_deref()),
+                        injected,
+                        ctx,
+                        a,
+                        cfg,
+                        &mut reported,
+                    );
+                }
+            }
+            RemoteBody::Interpolated { locals, .. } => a.diagnostics.push(diag(
+                ctx,
+                "MIX-D3012",
+                Severity::Note,
+                site.line,
+                format!(
+                    "ssh_mix body interpolates {} LOCALLY before it ships — it is not a \
+                     literal, so its Mix source was NOT analysed",
+                    locals.join(", ")
+                ),
+                Some(
+                    "pass local values through the `bindings` option and write them bare \
+                     (`$name`) in the body; `${name}` splices the LOCAL value into the remote \
+                     source text"
+                        .to_string(),
+                ),
+            )),
+            RemoteBody::Opaque => a.diagnostics.push(diag(
+                ctx,
+                "MIX-D3012",
+                Severity::Note,
+                site.line,
+                "ssh_mix body is not a string literal — its Mix source cannot be \
+                 analysed, so lint findings and inventory counts EXCLUDE it"
+                    .to_string(),
+                Some(
+                    "pass the remote program as a literal — a single-quoted string or a \
+                     heredoc, inline or assigned ONCE to a variable — and use the `bindings` \
+                     option instead of interpolation to inject values"
+                        .to_string(),
+                ),
+            )),
+        }
+    }
+}
+
+/// Which body findings have been reported. Keyed by the BODY (its origin
+/// node) as well as (code, line, message): one heredoc shipped by calls
+/// with different bindings is one body, so a finding they share is
+/// reported once, while two DIFFERENT bodies whose lines coincide (two
+/// one-line literals in one statement) keep a finding each.
+#[derive(Default)]
+struct BodyDedupe {
+    /// The body being analysed; set before each `analyse_remote_body`.
+    origin: usize,
+    seen: HashSet<(usize, &'static str, Option<usize>, String)>,
+}
+
+impl BodyDedupe {
+    /// True the first time this body reports this finding.
+    fn first(&mut self, d: &Diagnostic) -> bool {
+        self.seen
+            .insert((self.origin, d.code, d.line, d.message.clone()))
+    }
+}
+
+/// What lint can know about one `ssh_mix` body.
+#[derive(Clone)]
+enum RemoteBody {
+    /// The exact source that ships. Inner line N is outer line
+    /// `first_line + N - 1`; `origin` identifies the literal's AST node
+    /// (see [`node_id`]) so a heredoc shared by several calls is analysed
+    /// once, and so MIX-W2402 can recognise it as a remote body.
+    Literal {
+        src: String,
+        /// Best line estimate from the AST alone: the statement line, or
+        /// `+ 1` for a heredoc (see [`check_ssh_mix_bodies`], which
+        /// upgrades this to the opener's real line when the source text
+        /// is at hand).
+        first_line: usize,
+        origin: usize,
+    },
+    /// A string or heredoc with local `${…}`/`$(…)`/`~` substitutions —
+    /// `locals` names them, spelled as written.
+    Interpolated { locals: Vec<String>, origin: usize },
+    /// Anything else: an unresolvable variable, a call, a concatenation.
+    Opaque,
+}
+
+/// One `ssh_mix(host, body[, opts])` call.
+struct RemoteSite {
+    /// The enclosing statement's line.
+    line: usize,
+    body: RemoteBody,
+    /// Names the call injects into the remote program, or `None` when they
+    /// cannot be read statically (see [`remote_injected_names`]).
+    injected: Option<HashSet<String>>,
+}
+
+/// Stable identity of an AST node for the life of one analysis. The
+/// statement tree is borrowed immutably throughout, so an address found by
+/// one pass is the same node another pass visits.
+fn node_id(expr: &Expr) -> usize {
+    std::ptr::from_ref(expr) as usize
+}
+
+/// The body shape of a string-valued expression, or `None` if it is not
+/// a string at all. `line` is the line of the statement holding `expr`.
+fn body_shape(expr: &Expr, line: usize) -> Option<RemoteBody> {
+    let origin = node_id(expr);
+    let (parts, first_line) = match expr {
+        Expr::StringLiteral(src) | Expr::EscapedQuoteStringLiteral(src) => {
+            return Some(RemoteBody::Literal {
+                src: src.clone(),
+                first_line: line,
+                origin,
+            });
+        }
+        // A heredoc's text starts on the line AFTER its `<<TAG` opener.
+        // The statement's own line is the estimate; with the source text
+        // at hand, the opener's real line map upgrades it.
+        Expr::Heredoc(parts) => (parts, line + 1),
+        Expr::InterpolatedString(parts) => (parts, line),
+        _ => return None,
+    };
+    let mut src = String::new();
+    let mut locals = Vec::new();
+    for part in parts {
+        match part {
+            StringPart::Literal(s) => src.push_str(s),
+            StringPart::Variable(n) => locals.push(format!("`${{{n}}}`")),
+            StringPart::CommandSub(c) => locals.push(format!("`$({c})`")),
+            StringPart::EnvVar(n) => locals.push(format!("`~` (${n})")),
+        }
+    }
+    Some(if locals.is_empty() {
+        RemoteBody::Literal {
+            src,
+            first_line,
+            origin,
+        }
+    } else {
+        RemoteBody::Interpolated { locals, origin }
+    })
+}
+
+/// One parser-recorded literal origin joined with the lexer's line map
+/// for that exact source token.
+struct RecordedOrigin {
+    kind: crate::parser::LiteralOriginKind,
+    /// The origin's decoded text — the pairing check compares it with
+    /// the tree node's own text.
+    text: String,
+    /// `None` for a literal the parser built from a bareword (a `send`
+    /// target, an external command word, an `include` path): the lexer
+    /// records no line map for those.
+    map: Option<crate::lexer::LiteralLineMap>,
+}
+
+/// Re-parse `source` with literal-origin recording on and join every
+/// recorded origin to the lexer's line map for its token offset. `None`
+/// when the source does not lex or parse. This is the recording half of
+/// [`source_literal_maps`]; the pairing half is the walk there.
+fn recorded_literal_origins(source: &str, stmts: &[Stmt]) -> Option<Vec<RecordedOrigin>> {
+    let (tokens, by_offset) = crate::lexer::Lexer::lex_with_literal_maps(source)?;
+    let mut parser = crate::parser::Parser::new_speculative(tokens, source)
+        .with_literal_origin_recording();
+    let parsed = parser.parse_program().ok()?;
+    // Literal text alone cannot prove correspondence: two different trees
+    // can contain the same sequence of strings. Require the whole source
+    // tree (including statement lines) before attaching physical origins.
+    if parsed != stmts {
+        return None;
+    }
+    Some(
+        parser
+            .take_literal_origins()
+            .into_iter()
+            .map(|origin| RecordedOrigin {
+                kind: origin.kind,
+                map: by_offset.get(&origin.offset).cloned(),
+                text: origin.text,
+            })
+            .collect(),
+    )
+}
+
+/// Exact opener line and decoded-line → physical-line map for every
+/// literal remote body in `stmts`, keyed by the body's AST node identity
+/// ([`node_id`]). Built only when the caller supplies the file's source
+/// text, by re-parsing it with literal-origin recording enabled: the
+/// parser records, in construction order (its source order — it never
+/// backtracks), one entry per literal Expr it BUILDS. Bare and quoted
+/// map keys, `parse` delimiters and `on` names/doc-strings are never
+/// Exprs, so they are never recorded and cannot steal a body's entry; a
+/// bareword-built `StringLiteral` (a `send` target, an external command
+/// word, an `include` path) IS recorded, which keeps the two lists
+/// aligned.
+///
+/// The recorded list is paired POSITIONALLY with this tree's literal
+/// Exprs walked in source order, and every pair must agree on Expr
+/// variant and decoded text. The first disagreement, or a length
+/// mismatch, refuses the WHOLE mapping — the statement-line estimate
+/// then stands, exactly as if no source had been supplied — because a
+/// partial mapping could silently attach one body's lines to another.
+/// A mapping can be missing, but never misattached.
+fn source_literal_maps(source: &str, stmts: &[Stmt]) -> HashMap<usize, (usize, Option<Vec<usize>>)> {
+    let mut paired: HashMap<usize, (usize, Option<Vec<usize>>)> = HashMap::new();
+    let Some(origins) = recorded_literal_origins(source, stmts) else {
+        return paired;
+    };
+    let mut cursor = 0usize;
+    let mut refused = false;
+    walk_literal_sources(stmts, &mut |expr| {
+        let Some((kind, text)) = crate::parser::literal_expr_shape(expr) else {
+            return;
+        };
+        if refused {
+            return;
+        }
+        let Some(origin) = origins.get(cursor) else {
+            refused = true;
+            return;
+        };
+        cursor += 1;
+        if origin.kind != kind || origin.text != text {
+            refused = true;
+            return;
+        }
+        // A bareword-built literal has no physical opener; nothing to map.
+        let Some(map) = &origin.map else { return };
+        paired.insert(node_id(expr), (map.opener_line, Some(map.lines.clone())));
+    });
+    if refused || cursor != origins.len() {
+        return HashMap::new();
+    }
+    paired
+}
+
+/// Names an `ssh_mix` call injects into its remote program: the keys of
+/// its `bindings` map (prepended as `$name = value` assignments) and of its
+/// `env` map (prepended as `export KEY = "value"` lines). Both are
+/// assignments in the program that actually runs, so both are bound names
+/// of the body.
+///
+/// `None` when that set cannot be known statically — an opts argument
+/// that is not a map literal, or a `bindings`/`env` value that is not one.
+/// (A variable bound exactly once to a map literal is resolved by
+/// [`sole_map_definitions`] before this is consulted, so it does not take
+/// the `None` path.)
+fn remote_injected_names(opts: Option<&Expr>) -> Option<HashSet<String>> {
+    let mut out = HashSet::new();
+    let Some(opts) = opts else {
+        return Some(out);
+    };
+    let Expr::MapLiteral(entries) = opts else {
+        return None;
+    };
+    for (key, value) in entries {
+        if key == "bindings" || key == "env" {
+            let Expr::MapLiteral(inner) = value else {
+                return None;
+            };
+            out.extend(inner.iter().map(|(k, _)| k.clone()));
+        }
+    }
+    Some(out)
+}
+
+type LiteralVisitor<'a> = dyn FnMut(&Expr) + 'a;
+
+/// Visit literal-bearing positions in source order. The general scope
+/// walker visits all branch conditions before their bodies, which is
+/// NOT source order; this one interleaves conditions and bodies exactly
+/// as written, which is the order the parser constructs the literals in
+/// (it never backtracks). Map keys are deliberately NOT visited: they
+/// are plain strings in the AST, not Exprs, and an identical decoded key
+/// must not consume a body's origin.
+fn walk_literal_sources(stmts: &[Stmt], visit: &mut LiteralVisitor<'_>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::If { condition, then_body, else_ifs, else_body } => {
+                walk_literal_expr(condition, visit);
+                walk_literal_sources(then_body, visit);
+                for (condition, body) in else_ifs {
+                    walk_literal_expr(condition, visit);
+                    walk_literal_sources(body, visit);
+                }
+                if let Some(body) = else_body { walk_literal_sources(body, visit); }
+            }
+            StmtKind::Select { value, cases, otherwise } => {
+                walk_literal_expr(value, visit);
+                for (value, body) in cases {
+                    walk_literal_expr(value, visit);
+                    walk_literal_sources(body, visit);
+                }
+                if let Some(body) = otherwise { walk_literal_sources(body, visit); }
+            }
+            StmtKind::FunctionDef { params, body, .. } => {
+                for param in params {
+                    if let Some(value) = &param.default { walk_literal_expr(value, visit); }
+                }
+                walk_literal_function(body, visit);
+            }
+            _ => {
+                walk_stmt_exprs(stmt, &mut |e| walk_literal_expr(e, visit));
+                for body in stmt_bodies(&stmt.kind) { walk_literal_sources(body, visit); }
+            }
+        }
+    }
+}
+
+fn walk_literal_function(body: &FunctionBody, visit: &mut LiteralVisitor<'_>) {
+    match body {
+        FunctionBody::Block(body) => walk_literal_sources(body, visit),
+        FunctionBody::Expression(expr) => walk_literal_expr(expr, visit),
+    }
+}
+
+fn walk_literal_expr(expr: &Expr, visit: &mut LiteralVisitor<'_>) {
+    visit(expr);
+    match expr {
+        Expr::MapLiteral(entries) => {
+            for (_, value) in entries {
+                walk_literal_expr(value, visit);
+            }
+        }
+        Expr::If(e) => {
+            walk_literal_expr(&e.condition, visit);
+            walk_literal_sources(&e.then_body, visit);
+            for (condition, body) in &e.else_ifs {
+                walk_literal_expr(condition, visit);
+                walk_literal_sources(body, visit);
+            }
+            if let Some(body) = &e.else_body { walk_literal_sources(body, visit); }
+        }
+        Expr::FunctionLiteral { params, body } => {
+            for param in params {
+                if let Some(value) = &param.default { walk_literal_expr(value, visit); }
+            }
+            walk_literal_function(body, visit);
+        }
+        // The general walker (`walk_expr_children`) skips a send's
+        // COMMAND expression (lint gap, TODO-mix 2026-09-24); this walk
+        // must not, or its visit order would drift from the parser's
+        // construction order (target, command, args).
+        Expr::Send { target, command, args, .. } => {
+            walk_literal_expr(target, visit);
+            walk_literal_expr(command, visit);
+            for (_, value) in args {
+                walk_literal_expr(value, visit);
+            }
+        }
+        _ => walk_expr_children(expr, &mut |e| walk_literal_expr(e, visit)),
+    }
+}
+
+/// One node reached by [`walk_frames`].
+enum FrameNode<'n> {
+    Stmt(&'n Stmt),
+    /// An expression and the line of the statement that holds it.
+    Expr(&'n Expr, usize),
+}
+
+/// Frame id of top-level code. Every function frame is identified by the
+/// address of its `FunctionDef` statement or `FunctionLiteral` node, which
+/// is never zero.
+const TOP_FRAME: usize = 0;
+
+/// Visit EVERY statement and expression node in the file, each with the id
+/// of the function frame it runs in.
+///
+/// The general walkers each leave a gap on purpose — `walk_expr_children`
+/// skips `if`-expression conditions and lambda bodies, `walk_stmt_exprs`
+/// skips a named function's parameter defaults and `= expr` body — because
+/// their scope-sensitive callers handle those positions themselves. The
+/// `ssh_mix` pass must not miss a call in any of them: an unseen body is
+/// the silent gap this pass exists to close.
+fn walk_frames(stmts: &[Stmt], frame: usize, visit: &mut dyn FnMut(FrameNode<'_>, usize)) {
+    for stmt in stmts {
+        visit(FrameNode::Stmt(stmt), frame);
+        let line = stmt.line;
+        if let StmtKind::FunctionDef { params, body, .. } = &stmt.kind {
+            let inner = std::ptr::from_ref(stmt) as usize;
+            for p in params {
+                if let Some(d) = &p.default {
+                    walk_frame_expr(d, line, inner, visit);
+                }
+            }
+            match body {
+                FunctionBody::Block(b) => walk_frames(b, inner, visit),
+                FunctionBody::Expression(e) => walk_frame_expr(e, line, inner, visit),
+            }
+            continue;
+        }
+        walk_stmt_exprs(stmt, &mut |e| walk_frame_expr(e, line, frame, visit));
+        for body in stmt_bodies(&stmt.kind) {
+            walk_frames(body, frame, visit);
+        }
+    }
+}
+
+fn walk_frame_expr(
+    expr: &Expr,
+    line: usize,
+    frame: usize,
+    visit: &mut dyn FnMut(FrameNode<'_>, usize),
+) {
+    visit(FrameNode::Expr(expr, line), frame);
+    match expr {
+        Expr::If(ifexpr) => {
+            walk_frame_expr(&ifexpr.condition, line, frame, visit);
+            walk_frames(&ifexpr.then_body, frame, visit);
+            for (c, b) in &ifexpr.else_ifs {
+                walk_frame_expr(c, line, frame, visit);
+                walk_frames(b, frame, visit);
+            }
+            if let Some(b) = &ifexpr.else_body {
+                walk_frames(b, frame, visit);
+            }
+        }
+        Expr::FunctionLiteral { params, body } => {
+            let inner = node_id(expr);
+            for p in params {
+                if let Some(d) = &p.default {
+                    walk_frame_expr(d, line, inner, visit);
+                }
+            }
+            match &**body {
+                FunctionBody::Block(b) => walk_frames(b, inner, visit),
+                FunctionBody::Expression(e) => walk_frame_expr(e, line, inner, visit),
+            }
+        }
+        _ => walk_expr_children(expr, &mut |c| walk_frame_expr(c, line, frame, visit)),
+    }
+}
+
+/// Every binder of every name in the file, as the list of frames it is
+/// bound in — every binder kind [`collect_bound_names`] knows, at every
+/// depth, plus function and lambda PARAMETERS (bound in the function's own
+/// frame). `len()` is the binder count: a name bound in two different
+/// functions counts twice, so "bound exactly once" is a conservative,
+/// never an optimistic, claim.
+fn binder_frames(stmts: &[Stmt]) -> HashMap<String, Vec<usize>> {
+    let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+    walk_frames(stmts, TOP_FRAME, &mut |node, frame| {
+        let mut bind = |name: &str, frame: usize| {
+            out.entry(name.to_string()).or_default().push(frame);
+        };
+        match node {
+            FrameNode::Stmt(stmt) => match &stmt.kind {
+                StmtKind::Assignment { name, .. }
+                | StmtKind::Export { name, .. }
+                | StmtKind::FieldAssignment { object: name, .. }
+                | StmtKind::IndexAssignment { object: name, .. }
+                | StmtKind::PathAssignment { root: name, .. } => bind(name, frame),
+                StmtKind::For { var, .. } => bind(var, frame),
+                StmtKind::ForEach { var, index_var, .. } => {
+                    bind(var, frame);
+                    if let Some(iv) = index_var {
+                        bind(iv, frame);
+                    }
+                }
+                StmtKind::TryCatch { catch: Some(c), .. } => {
+                    bind(&c.var, frame);
+                    if let Some(ev) = &c.err_var {
+                        bind(ev, frame);
+                    }
+                }
+                StmtKind::Parse { parts, .. } => {
+                    for part in parts {
+                        if let crate::ast::ParsePart::Variable(name) = part {
+                            bind(name, frame);
+                        }
+                    }
+                }
+                StmtKind::FunctionDef { params, .. } => {
+                    let inner = std::ptr::from_ref(stmt) as usize;
+                    for p in params {
+                        bind(&p.name, inner);
+                    }
+                }
+                _ => {}
+            },
+            FrameNode::Expr(expr, _) => {
+                if let Expr::FunctionLiteral { params, .. } = expr {
+                    for p in params {
+                        bind(&p.name, node_id(expr));
+                    }
+                }
+            }
+        }
+    });
+    out
+}
+
+/// Variables whose SOLE binding in the whole file is an assignment of a
+/// string literal or heredoc — the manual's own idiom binds the remote
+/// program once (`$probe = <<END … END`) and ships it from a loop over
+/// hosts, and a heredoc cannot sit inline in an argument list without
+/// losing that shape. Each comes with the frame it is bound in.
+///
+/// "Sole" is the straight-line guarantee the proven-value facts rely on,
+/// made stronger: not merely "no reassignment between here and the use",
+/// but no other binder of that name ANYWHERE — so the value at every read
+/// is the one literal, whatever the control flow. A `source`/`include`
+/// can bind anything, so a file with one resolves nothing.
+fn sole_string_definitions(stmts: &[Stmt]) -> HashMap<String, (RemoteBody, usize)> {
+    let mut out = HashMap::new();
+    if has_dynamic_include(stmts).0 {
+        return out;
+    }
+    let binders = binder_frames(stmts);
+    walk_frames(stmts, TOP_FRAME, &mut |node, frame| {
+        if let FrameNode::Stmt(stmt) = node
+            && let StmtKind::Assignment { name, value } | StmtKind::Export { name, value } =
+                &stmt.kind
+            && binders.get(name).is_some_and(|f| f.len() == 1)
+            && let Some(shape) = body_shape(value, stmt.line)
+        {
+            out.insert(name.clone(), (shape, frame));
+        }
+    });
+    out
+}
+
+/// Each function frame → (the frame it is defined in, is it a LAMBDA).
+fn frame_parents(stmts: &[Stmt]) -> HashMap<usize, (usize, bool)> {
+    let mut out = HashMap::new();
+    walk_frames(stmts, TOP_FRAME, &mut |node, frame| match node {
+        FrameNode::Stmt(stmt) if matches!(stmt.kind, StmtKind::FunctionDef { .. }) => {
+            out.insert(std::ptr::from_ref(stmt) as usize, (frame, false));
+        }
+        FrameNode::Expr(expr, _) if matches!(expr, Expr::FunctionLiteral { .. }) => {
+            out.insert(node_id(expr), (frame, true));
+        }
+        _ => {}
+    });
+    out
+}
+
+/// Can code running in frame `at` read a variable bound in frame
+/// `bound_in`? Top-level bindings are readable everywhere (a fn reads
+/// globals), and its own frame's are. Beyond that only LAMBDAS see out:
+/// a lambda is a closure over the frame it is written in (probed: a lambda
+/// in `f` reads `f`'s local), while a NAMED nested fn is not (the same read
+/// is NAME_UNDEFINED). So walk outward through lambda boundaries only.
+fn binding_visible(bound_in: usize, at: usize, parents: &HashMap<usize, (usize, bool)>) -> bool {
+    if bound_in == TOP_FRAME || bound_in == at {
+        return true;
+    }
+    let mut cur = at;
+    while let Some(&(parent, true)) = parents.get(&cur) {
+        if parent == bound_in {
+            return true;
+        }
+        cur = parent;
+    }
+    false
+}
+
+/// Every `ssh_mix` call in the file, at any depth — loops, branches, an
+/// `if`-expression's condition, lambda bodies and parameter defaults, a
+/// named function's `= expr` body — with what lint can know about its body
+/// and its injected names.
+fn collect_remote_sites(stmts: &[Stmt]) -> Vec<RemoteSite> {
+    let sole = sole_string_definitions(stmts);
+    let sole_maps = sole_map_definitions(stmts);
+    let parents = frame_parents(stmts);
+    let mut sites = Vec::new();
+    walk_frames(stmts, TOP_FRAME, &mut |node, frame| {
+        let FrameNode::Expr(expr, line) = node else {
+            return;
+        };
+        if let Expr::FunctionCall { name, args } = expr
+            // `ssh_mix_many` ships the same second argument to every host
+            // with the same bindings/env — one body, same analysis.
+            && (name == "ssh_mix" || name == "ssh_mix_many")
+            && let Some(body) = args.get(1)
+        {
+            let body = match body {
+                // Resolved only where the binding is visible at the call
+                // (see `binding_visible`). A local of another function is
+                // undefined here at runtime — the outer E1101 says so — and
+                // analysing its literal would only add noise about a body
+                // that never ships.
+                Expr::Variable(v) => sole
+                    .get(v)
+                    .filter(|(_, bound_in)| binding_visible(*bound_in, frame, &parents))
+                    .map_or(RemoteBody::Opaque, |(shape, _)| shape.clone()),
+                other => body_shape(other, line).unwrap_or(RemoteBody::Opaque),
+            };
+            // The opts twin of the body resolution: a variable bound
+            // exactly once to a map literal (and visible here) supplies
+            // its keys statically, so the body gets full name checks —
+            // `$o = {bindings: {…}}` does not degrade them. Anything else
+            // (a call, a multi-bound name, an unreadable value) stays
+            // unknown and takes the MIX-D3018 boundary.
+            let injected = match args.get(2) {
+                Some(Expr::Variable(v)) => sole_maps
+                    .get(v)
+                    .filter(|(bound_in, _)| binding_visible(*bound_in, frame, &parents))
+                    .and_then(|(_, resolved)| resolved.clone()),
+                other => remote_injected_names(other),
+            };
+            sites.push(RemoteSite {
+                line,
+                body,
+                injected,
+            });
+        }
+    });
+    sites
+}
+
+/// Variables whose SOLE binding in the whole file is an assignment of a
+/// map LITERAL — the opts twin of [`sole_string_definitions`]: the
+/// manual's fleet idiom binds the remote program once (`$probe = <<END
+/// …`), and `$opts = {bindings: {…}}` bound once is the same guarantee
+/// for the injected names. The keys are RESOLVED here (owned), because
+/// `walk_frames`' visit closure is higher-ranked and cannot hand out a
+/// borrow into the tree. Same "sole" rule (a second binder, a loop
+/// variable or a parameter anywhere makes it unknowable), same
+/// visibility check (`binding_visible`), and a `source`/`include` in the
+/// file resolves nothing. `None` per name means "bound to a map literal
+/// whose `bindings`/`env` value is not a map literal" — the keys are
+/// still unknowable, exactly like an unreadable opts argument.
+fn sole_map_definitions(
+    stmts: &[Stmt],
+) -> HashMap<String, (usize, Option<HashSet<String>>)> {
+    let mut out = HashMap::new();
+    if has_dynamic_include(stmts).0 {
+        return out;
+    }
+    let binders = binder_frames(stmts);
+    walk_frames(stmts, TOP_FRAME, &mut |node, frame| {
+        if let FrameNode::Stmt(stmt) = node
+            && let StmtKind::Assignment { name, value } | StmtKind::Export { name, value } =
+                &stmt.kind
+            && binders.get(name).is_some_and(|f| f.len() == 1)
+            && matches!(value, Expr::MapLiteral(_))
+        {
+            out.insert(name.clone(), (frame, remote_injected_names(Some(value))));
+        }
+    });
+    out
+}
+
+/// W2402's view of the remote bodies in a file, keyed by string-node
+/// identity (see [`remote_body_names`]).
+struct RemoteBodyNames {
+    /// Names the remote program OWNS — a bare `$name` for one of these is
+    /// remote Mix code, correctly bare, so "did you mean `${name}`?" must
+    /// not fire.
+    own: HashMap<usize, HashSet<String>>,
+    /// Bodies whose injected names are UNKNOWN (a call with unreadable
+    /// opts): ANY free name could be a remote binding, so W2402 stands
+    /// down for the whole heredoc — its `${name}` advice would splice a
+    /// LOCAL value into a name the remote program owns.
+    unknown: HashSet<usize>,
+}
+
+/// For every string node that ships as an `ssh_mix` body: the names that
+/// are the REMOTE program's own — its injected `bindings`/`env` keys, and
+/// for a literal body also everything it binds itself (its functions'
+/// parameters and locals included) plus the runtime-injected
+/// names. A bare `$name` for one of these in a heredoc body is remote Mix
+/// code, correctly bare, so MIX-W2402 ("did you mean `${name}`?") must not
+/// fire for it: following that advice would splice the LOCAL value in, the
+/// classic bug. Names outside the set still warn.
+fn remote_body_names(stmts: &[Stmt]) -> RemoteBodyNames {
+    let mut out = RemoteBodyNames {
+        own: HashMap::new(),
+        unknown: HashSet::new(),
+    };
+    for site in collect_remote_sites(stmts) {
+        let (origin, own) = match &site.body {
+            RemoteBody::Literal { src, origin, .. } => {
+                let mut own = HashSet::new();
+                let mut lexer = crate::lexer::Lexer::new(src);
+                if let Ok(tokens) = lexer.tokenize()
+                    && let Ok(inner) = crate::parser::Parser::new(tokens, src).parse_program()
+                {
+                    // EVERY binder of the remote program, at every depth —
+                    // a remote fn's own `$x` parameter or local is as much
+                    // remote code as a top-level one, and advising `${x}`
+                    // there would splice the local value into its body.
+                    own.extend(binder_frames(&inner).into_keys());
+                    own.extend(INJECTED_VARS.iter().map(|v| (*v).to_string()));
+                }
+                (*origin, own)
+            }
+            RemoteBody::Interpolated { origin, .. } => (*origin, HashSet::new()),
+            RemoteBody::Opaque => continue,
+        };
+        let unknown_opts = site.injected.is_none();
+        let entry = out.own.entry(origin).or_default();
+        entry.extend(own);
+        entry.extend(site.injected.into_iter().flatten());
+        if unknown_opts {
+            out.unknown.insert(origin);
+        }
+    }
+    out
+}
+
+/// Parse + analyse one literal remote body and fold its diagnostics into
+/// the enclosing file's, with lines mapped: inner line N reports at
+/// `map_inner_line(lines, first_line, N)`.
+///
+/// `lines` is the body's decoded-line → physical-line map when the caller
+/// supplied the source text (`mix lint` does) — built by the lexer while
+/// decoding the literal, so a `\n`-escaped body reports every diagnostic
+/// on the ONE line it physically occupies, and a body opened further down
+/// a multi-line call maps exactly. Without it, `first_line` is the
+/// statement-line estimate (exact for `$x = ssh_mix($HOST, '` and
+/// `$p = <<END`) and the linear `first_line + N - 1` stands.
+///
+/// `injected` is the call's static `bindings`/`env` key set; `None` (not
+/// knowable) suppresses the body's undefined-VARIABLE checks while
+/// undefined-FUNCTION checks keep running — strict-data bindings cannot
+/// create a callable, so a function name the body does not define is
+/// undefined no matter what the opts hold.
+fn analyse_remote_body(
+    src: &str,
+    location: (usize, Option<&[usize]>),
+    injected: Option<&HashSet<String>>,
+    ctx: &FileContext,
+    a: &mut Analysis,
+    cfg: &AnalyzerConfig,
+    reported: &mut BodyDedupe,
+) {
+    let (first_line, lines) = location;
+    let mut lexer = crate::lexer::Lexer::new(src);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        // A body that does not LEX is reported, not swallowed: the remote
+        // would fail the same way, and silence here is the failure mode
+        // this whole pass exists to remove.
+        Err(e) => {
+            let inner_line = error_line(&e);
+            return push_unparsable(
+                a,
+                ctx,
+                map_inner_line(lines, first_line, inner_line),
+                &e.to_string(),
+                reported,
+            );
+        }
+    };
+    let inner = match crate::parser::Parser::new(tokens, src).parse_program() {
+        Ok(s) => s,
+        Err(e) => {
+            let inner_line = error_line(&e);
+            return push_unparsable(
+                a,
+                ctx,
+                map_inner_line(lines, first_line, inner_line),
+                &e.to_string(),
+                reported,
+            );
+        }
+    };
+    let mut allow_globals = cfg.allow_globals.clone();
+    allow_globals.extend(injected.into_iter().flatten().cloned());
+    let inner_cfg = AnalyzerConfig {
+        allow_globals,
+        allow_functions: cfg.allow_functions.clone(),
+        // Deliberately FALSE even when `injected` is `None`: the boundary
+        // below is finer than a blanket suppression. Unknown bindings/env
+        // may supply any free DATA variable (undefined-variable checks
+        // stand down), but a FUNCTION name cannot ride in through
+        // strict-data bindings, so callable checks keep running.
+        suppress_name_checks: false,
+        // The BODY's own text, never the enclosing file's — the spelling
+        // rules must read the source they are reporting lines against.
+        // Lint is the only gate this remote program ever passes through.
+        source: Some(src.to_string()),
+        // The agent profile propagates into remote bodies: an agent
+        // linting its ssh_mix programs wants the same error strength there.
+        agent: cfg.agent,
+    };
+    let nested = analyze_at(&inner, None, &inner_cfg, true, injected.is_none());
+    for mut d in nested.diagnostics {
+        d.file.clone_from(&ctx.file);
+        d.line = Some(map_inner_line(lines, first_line, d.line.unwrap_or(1)));
+        d.message = format!("[inside ssh_mix body] {}", d.message);
+        if reported.first(&d) {
+            a.diagnostics.push(d);
+        }
+    }
+}
+
+/// The inner-source line a lex/parse error is anchored to — used to map
+/// an unparsable body's finding onto the physical line of the failing
+/// token rather than the body's first line. 1 when the error carries no
+/// position at all.
+fn error_line(e: &crate::error::MixError) -> usize {
+    match e {
+        crate::error::MixError::LexerError { span, .. }
+        | crate::error::MixError::ParseError { span, .. }
+        | crate::error::MixError::IncompleteInput { span, .. }
+        | crate::error::MixError::AssignmentChainParseError { span, .. } => span.line,
+        crate::error::MixError::StrictDataViolation { line, .. } => *line,
+        _ => 1,
+    }
+}
+
+/// Map an inner-source line onto the enclosing file: through the
+/// literal's decoded-line → physical-line map when the caller supplied
+/// the source text, else by the documented linear estimate
+/// (`first_line + inner - 1`), which is exact for a physical multi-line
+/// literal or an escape-free heredoc and an explicit best effort for a
+/// `\n`-escaped body (whose extra decoded lines have no physical line of
+/// their own). An inner line past the map's end (a parse error at EOF)
+/// extends from the map's last line by the same linear rule.
+fn map_inner_line(lines: Option<&[usize]>, first_line: usize, inner: usize) -> usize {
+    match lines {
+        Some(ls) => ls
+            .get(inner.saturating_sub(1))
+            .copied()
+            .unwrap_or_else(|| ls.last().copied().unwrap_or(first_line) + inner.saturating_sub(ls.len())),
+        None => first_line + inner.saturating_sub(1),
+    }
+}
+
+fn push_unparsable(
+    a: &mut Analysis,
+    ctx: &FileContext,
+    line: usize,
+    why: &str,
+    reported: &mut BodyDedupe,
+) {
+    let d = diag(
+        ctx,
+        "MIX-D3012",
+        Severity::Note,
+        line,
+        format!("ssh_mix body did not parse as Mix, so it was NOT analysed: {why}"),
+        Some(
+            "if this is deliberately not Mix source, the call is shipping it to \
+             `mix -` on the remote and it will fail there too"
+                .to_string(),
+        ),
+    );
+    if reported.first(&d) {
+        a.diagnostics.push(d);
+    }
+}
+
+/// Builtins whose "not found" sentinel is `-1` and whose "found at the
+/// first position" answer is `0`. In a boolean context both answers are
+/// backwards, because Mix treats `0` as falsy and every non-zero number —
+/// including `-1` — as truthy:
+///
+/// ```text
+/// if index_of("abc", "z")   -- -1, TRUTHY  -> "not found" reads as found
+/// if index_of("abc", "a")   --  0, FALSY   -> "found at 0" reads as absent
+/// ```
+///
+/// Their 1-based twins (`pos`, `lastpos`, `byte_pos`, `byte_lastpos`) are
+/// safe in the same position, since their not-found sentinel is `0` and so
+/// is falsy — which is exactly why this trap is easy to walk into after
+/// using those.
+const MINUS_ONE_SENTINEL_BUILTINS: &[&str] = &["index_of", "byte_index_of", "bytes_find"];
+
+/// Flag a `-1`-sentinel builtin used directly as a truth value.
+///
+/// Deliberately narrow, in line with this analyzer's false-positives-near-zero
+/// bias: only a BARE call in boolean position is reported. Any comparison
+/// (`index_of(..) >= 0`, `!= -1`) is already correct code and is untouched,
+/// because the call is then an operand of the comparison rather than the
+/// condition itself.
+fn check_truthiness_traps(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    fn check_cond(expr: &Expr, line: usize, ctx: &FileContext, a: &mut Analysis) {
+        match expr {
+            Expr::FunctionCall { name, .. }
+                if MINUS_ONE_SENTINEL_BUILTINS.contains(&name.as_str()) =>
+            {
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-W2305",
+                    Severity::Warning,
+                    line,
+                    format!(
+                        "`{name}()` in a condition is backwards: -1 (not found) is truthy, 0 (found at the first position) is falsy"
+                    ),
+                    Some(if name == "bytes_find" {
+                        // `contains()` takes a string or list, so it REJECTS a
+                        // bytes/buffer subject — following the generic hint
+                        // here trades a lint for a runtime error. Only the
+                        // explicit comparison is valid advice for this one.
+                        format!("compare explicitly: {name}(..) >= 0")
+                    } else {
+                        format!(
+                            "use contains() for the yes/no question, or compare explicitly: {name}(..) >= 0"
+                        )
+                    }),
+                ));
+            }
+            // Boolean operators propagate the condition position to their
+            // operands: `if index_of(..) and $x` has the same bug.
+            Expr::UnaryOp {
+                op: UnaryOp::Not,
+                operand,
+            } => check_cond(operand, line, ctx, a),
+            Expr::BinaryOp {
+                left,
+                op: BinOp::And | BinOp::Or,
+                right,
+            } => {
+                check_cond(left, line, ctx, a);
+                check_cond(right, line, ctx, a);
+            }
+            _ => {}
+        }
+    }
+
+    fn walk(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::If {
+                    condition,
+                    else_ifs,
+                    ..
+                } => {
+                    check_cond(condition, stmt.line, ctx, a);
+                    for (c, _) in else_ifs {
+                        check_cond(c, stmt.line, ctx, a);
+                    }
+                }
+                StmtKind::While { condition, .. } => check_cond(condition, stmt.line, ctx, a),
+                StmtKind::BreakIf(c, _) | StmtKind::ContinueIf(c, _) => {
+                    check_cond(c, stmt.line, ctx, a)
+                }
+                _ => {}
+            }
+
+            // Expression-position conditions: `$x = if index_of(..) then`,
+            // and the ternary `index_of(..) ? a : b`.
+            walk_stmt_exprs(stmt, &mut |expr| match expr {
+                Expr::If(ifexpr) => {
+                    check_cond(&ifexpr.condition, stmt.line, ctx, a);
+                    for (c, _) in &ifexpr.else_ifs {
+                        check_cond(c, stmt.line, ctx, a);
+                    }
+                }
+                Expr::Ternary { cond, .. } => check_cond(cond, stmt.line, ctx, a),
+                _ => {}
+            });
+
+            for body in stmt_bodies(&stmt.kind) {
+                walk(body, ctx, a);
+            }
+        }
+    }
+
+    walk(stmts, ctx, a);
+}
+
+/// Statement-order facts only. Branch facts never merge back into their
+/// parent and function frames start empty; both choices deliberately trade
+/// missed warnings for freedom from dynamic-flow false positives.
+fn check_proven_value_flow(
+    stmts: &[Stmt],
+    ctx: &FileContext,
+    a: &mut Analysis,
+    facts: &mut HashMap<String, ProvenValue>,
+) {
+    for stmt in stmts {
+        walk_stmt_exprs(stmt, &mut |expr| {
+            check_proven_expr(expr, stmt.line, ctx, a, facts)
+        });
+
+        match &stmt.kind {
+            StmtKind::FunctionDef { params, body, .. } => {
+                let mut inner = HashMap::new();
+                for param in params {
+                    if let Some(default) = &param.default {
+                        check_proven_expr(default, stmt.line, ctx, a, &inner);
+                    }
+                }
+                match body {
+                    FunctionBody::Block(body) => check_proven_value_flow(body, ctx, a, &mut inner),
+                    FunctionBody::Expression(expr) => {
+                        check_proven_expr(expr, stmt.line, ctx, a, &inner)
+                    }
+                }
+            }
+            _ => {
+                let mut inner = facts.clone();
+                invalidate_child_binders(&stmt.kind, &mut inner);
+                for body in stmt_bodies(&stmt.kind) {
+                    check_proven_value_flow(body, ctx, a, &mut inner.clone());
+                }
+            }
+        }
+
+        invalidate_nested_writes(stmt, facts);
+        match &stmt.kind {
+            StmtKind::Assignment { name, value } | StmtKind::Export { name, value } => {
+                if let Some(proven) = proven_value(value) {
+                    facts.insert(name.clone(), proven);
+                } else {
+                    facts.remove(name);
+                }
+            }
+            StmtKind::FieldAssignment { object, .. } | StmtKind::IndexAssignment { object, .. } => {
+                facts.remove(object);
+            }
+            StmtKind::PathAssignment { root, .. } => {
+                facts.remove(root);
+            }
+            StmtKind::Parse { parts, .. } => {
+                for part in parts {
+                    if let crate::ast::ParsePart::Variable(name) = part {
+                        facts.remove(name);
+                    }
+                }
+            }
+            StmtKind::Source { .. } | StmtKind::Include { .. } => facts.clear(),
+            _ => {}
+        }
+    }
+}
+
+fn invalidate_nested_writes(stmt: &Stmt, facts: &mut HashMap<String, ProvenValue>) {
+    if matches!(stmt.kind, StmtKind::FunctionDef { .. }) {
+        return;
+    }
+    let mut written = HashSet::new();
+    for body in stmt_bodies(&stmt.kind) {
+        collect_bound_names(body, false, &mut written);
+    }
+    walk_stmt_exprs(stmt, &mut |expr| {
+        for_each_embedded_stmt_list(expr, false, &mut |body| {
+            collect_bound_names(body, false, &mut written)
+        });
+    });
+    for name in written {
+        facts.remove(&name);
+    }
+}
+
+fn invalidate_child_binders(kind: &StmtKind, facts: &mut HashMap<String, ProvenValue>) {
+    match kind {
+        StmtKind::For { var, .. } => {
+            facts.remove(var);
+        }
+        StmtKind::ForEach { var, index_var, .. } => {
+            facts.remove(var);
+            if let Some(name) = index_var {
+                facts.remove(name);
+            }
+        }
+        StmtKind::TryCatch { catch: Some(c), .. } => {
+            facts.remove(&c.var);
+            if let Some(name) = &c.err_var {
+                facts.remove(name);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn proven_value(expr: &Expr) -> Option<ProvenValue> {
+    match expr {
+        Expr::ListLiteral(_) => Some(ProvenValue::List),
+        Expr::MapLiteral(_) => Some(ProvenValue::Map),
+        Expr::FunctionCall { name, .. } if builtin_result_fields(name).is_some() => Some(
+            ProvenValue::BuiltinResult(builtins::builtin_info_of(name)?.name),
+        ),
+        _ => None,
+    }
+}
+
+fn expr_is_proven_list(expr: &Expr, facts: &HashMap<String, ProvenValue>) -> bool {
+    matches!(expr, Expr::ListLiteral(_))
+        || matches!(expr, Expr::Variable(name) if matches!(facts.get(name), Some(ProvenValue::List)))
+}
+
+fn expr_is_proven_map(expr: &Expr, facts: &HashMap<String, ProvenValue>) -> bool {
+    matches!(expr, Expr::MapLiteral(_))
+        || matches!(expr, Expr::Variable(name) if matches!(facts.get(name), Some(ProvenValue::Map)))
+}
+
+// `expr_is_proven_collection` was the D3007 operand test and went with the
+// note in 0.68.0. Its job — "is this operand provably a map or list" — is
+// now done by the runtime raise in `eval_binop`, which sees the actual
+// VALUES and therefore catches the untraceable `$a == $b` the static test
+// never could.
+
+fn builtin_result_fields(name: &str) -> Option<&'static [FieldInfo]> {
+    let info = builtins::builtin_info_of(name)?;
+    match info.contract.returns {
+        TypeShape::Map { fields, .. } if !fields.is_empty() => Some(fields),
+        _ => None,
+    }
+}
+
+fn result_origin<'a>(
+    expr: &'a Expr,
+    facts: &'a HashMap<String, ProvenValue>,
+) -> Option<(&'static str, &'static [FieldInfo])> {
+    let name = match expr {
+        Expr::FunctionCall { name, .. } => builtins::builtin_info_of(name)?.name,
+        Expr::Variable(name) => match facts.get(name)? {
+            ProvenValue::BuiltinResult(name) => name,
+            ProvenValue::List | ProvenValue::Map => return None,
+        },
+        _ => return None,
+    };
+    Some((name, builtin_result_fields(name)?))
+}
+
+fn check_proven_expr(
+    expr: &Expr,
+    line: usize,
+    ctx: &FileContext,
+    a: &mut Analysis,
+    facts: &HashMap<String, ProvenValue>,
+) {
+    // MIX-W2301. Since 0.90.0 the RUNTIME raises on a collection operand of
+    // `+`, so this is no longer "it will silently stringify" — it is "this
+    // line will raise when it runs". Kept (unlike MIX-D3007, retired when
+    // the `==` raise shipped) for one reason the `==` case did not have:
+    // lint is the ONLY gate on an `ssh_mix` body and on a branch that the
+    // local test run never takes, so catching it at authoring time still
+    // buys something a runtime raise cannot. Still a WARNING, not an error:
+    // the "proven" facts are straight-line, so a reassigned variable can
+    // make the prediction wrong, and a wrong ERROR would refuse a working
+    // script.
+    if let Expr::BinaryOp {
+        left,
+        op: BinOp::Add,
+        right,
+    } = expr
+    {
+        let (l_list, r_list) = (
+            expr_is_proven_list(left, facts),
+            expr_is_proven_list(right, facts),
+        );
+        let (l_map, r_map) = (
+            expr_is_proven_map(left, facts),
+            expr_is_proven_map(right, facts),
+        );
+        let hint = if l_map || r_map {
+            if l_map && r_map {
+                Some("use merge(map_a, map_b)".to_string())
+            } else {
+                Some("`+` needs numbers or strings; use `..` to build text".to_string())
+            }
+        } else if l_list && r_list {
+            Some("use concat(list_a, list_b)".to_string())
+        } else if l_list || r_list {
+            Some("use push(list, value) to append, or `..` to build text".to_string())
+        } else {
+            None
+        };
+        if let Some(hint) = hint {
+            let kind = if l_map || r_map { "maps" } else { "lists" };
+            a.diagnostics.push(diag(
+                ctx,
+                "MIX-W2301",
+                Severity::Warning,
+                line,
+                format!("`+` is not defined for {kind} — this raises TYPE_ERROR at runtime"),
+                Some(hint),
+            ));
+        }
+    }
+
+    // MIX-D3007 RETIRED in 0.68.0 — the equality flip it watched has
+    // shipped: map/list `==`/`!=` now raises TYPE_ERROR naming deep_eq.
+    // The note was best-effort by design (it only saw operands the
+    // statement-order facts could PROVE were collections, so an
+    // untraceable `$a == $b` passed silently); the runtime raise is the
+    // real fix and it catches every case the note could not. Nothing
+    // replaces it — a static note about a runtime error that now always
+    // fires would be pure noise.
+
+    match expr {
+        Expr::Index { object, index } => {
+            if let Expr::StringLiteral(key) = &**index {
+                check_builtin_result_key(object, key, line, ctx, a, facts);
+            }
+        }
+        Expr::FieldAccess { object, field } => {
+            check_builtin_result_key(object, field, line, ctx, a, facts);
+        }
+        Expr::FunctionLiteral { params, body } => {
+            let inner = HashMap::new();
+            for param in params {
+                if let Some(default) = &param.default {
+                    check_proven_expr(default, line, ctx, a, &inner);
+                }
+            }
+            match &**body {
+                FunctionBody::Block(stmts) => {
+                    check_proven_value_flow(stmts, ctx, a, &mut HashMap::new())
+                }
+                FunctionBody::Expression(expr) => check_proven_expr(expr, line, ctx, a, &inner),
+            }
+            return;
+        }
+        Expr::If(ifexpr) => {
+            check_proven_expr(&ifexpr.condition, line, ctx, a, facts);
+            check_proven_value_flow(&ifexpr.then_body, ctx, a, &mut facts.clone());
+            for (condition, body) in &ifexpr.else_ifs {
+                check_proven_expr(condition, line, ctx, a, facts);
+                check_proven_value_flow(body, ctx, a, &mut facts.clone());
+            }
+            if let Some(body) = &ifexpr.else_body {
+                check_proven_value_flow(body, ctx, a, &mut facts.clone());
+            }
+            return;
+        }
+        _ => {}
+    }
+    walk_expr_children(expr, &mut |child| {
+        check_proven_expr(child, line, ctx, a, facts)
+    });
+}
+
+fn check_builtin_result_key(
+    object: &Expr,
+    key: &str,
+    line: usize,
+    ctx: &FileContext,
+    a: &mut Analysis,
+    facts: &HashMap<String, ProvenValue>,
+) {
+    let Some((builtin, fields)) = result_origin(object, facts) else {
+        return;
+    };
+    if fields.iter().any(|field| field.name == key) {
+        return;
+    }
+    let valid = fields.iter().map(|field| field.name).collect::<Vec<_>>();
+    let suffix = format!("_{key}");
+    let suffix_matches = valid
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.ends_with(&suffix))
+        .collect::<Vec<_>>();
+    let candidates = if suffix_matches.is_empty() {
+        valid.clone()
+    } else {
+        suffix_matches
+    };
+    let closest = candidates
+        .iter()
+        .min_by_key(|candidate| edit_distance(key, candidate))
+        .copied();
+    let hint = closest
+        .map(|candidate| format!("use '{candidate}'; documented keys: {}", valid.join(", ")));
+    a.diagnostics.push(diag(
+        ctx,
+        "MIX-W2304",
+        Severity::Warning,
+        line,
+        format!("{builtin}() result has no documented key '{key}'"),
+        hint,
+    ));
+}
+
+pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut row = (0..=right_chars.len()).collect::<Vec<_>>();
+    for (i, lc) in left.chars().enumerate() {
+        let mut next = vec![i + 1];
+        for (j, rc) in right_chars.iter().enumerate() {
+            next.push(
+                (row[j] + usize::from(lc != *rc))
+                    .min(row[j + 1] + 1)
+                    .min(next[j] + 1),
+            );
+        }
+        row = next;
+    }
+    row[right_chars.len()]
+}
+
+const INT_CAVEAT: &str = " (then trunc() or floor() for a whole number: to_number(\"3.7\") is 3.7)";
+
+/// Foreign-language function names → the Mix builtin that does that job.
+///
+/// Edit distance answers "what is SPELLED like this", which is the wrong
+/// question for a name an agent imported from python/bash/JS: the edit
+/// neighbour of `json_decode` is `json_encode`, the exact opposite of the
+/// `json_parse` it meant (probed 2026-09-18, filed in TODO-mix), and `str`,
+/// `trim_end`, `json_loads` and `len_bytes` had no neighbour at all. This
+/// table is consulted BEFORE edit distance, by lint's MIX-E1102 hint and the
+/// runtime's FUNCTION_UNDEFINED suffix alike, so both give the same answer.
+///
+/// Grow it from every E1102 an agent hits. Two invariants, both tested: every
+/// target is a live builtin, and no foreign name is one (a name that exists
+/// can never be undefined, so its row would be dead and misleading).
+///
+/// Rows are (foreign name, Mix builtin, caveat). The caveat is appended to
+/// the suggestion when the builtin is not a drop-in: `to_number("3.7")` is
+/// 3.7, not the 3 an `int()` caller expects.
+pub(crate) const FOREIGN_FUNCTION_SYNONYMS: &[(&str, &str, &str)] = &[
+    ("json_decode", "json_parse", ""),
+    ("json_loads", "json_parse", ""),
+    ("json_load", "json_parse", ""),
+    ("json_dumps", "json_encode", ""),
+    ("json_dump", "json_encode", ""),
+    ("json_stringify", "json_encode", ""),
+    ("str", "to_string", ""),
+    ("tostring", "to_string", ""),
+    ("int", "to_number", INT_CAVEAT),
+    ("parse_int", "to_number", INT_CAVEAT),
+    ("float", "to_number", ""),
+    ("parse_float", "to_number", ""),
+    ("trim_end", "rtrim", ""),
+    ("rstrip", "rtrim", ""),
+    ("trim_start", "ltrim", ""),
+    ("lstrip", "ltrim", ""),
+    // C/PHP strlen counts BYTES; Mix length() counts codepoints.
+    ("strlen", "byte_length", " (bytes; length() counts characters)"),
+    ("len_bytes", "byte_length", ""),
+    ("byte_len", "byte_length", ""),
+    ("tolower", "lower", ""),
+    ("lowercase", "lower", ""),
+    ("toupper", "upper", ""),
+    ("uppercase", "upper", ""),
+    ("getenv", "env", ""),
+    ("file_exists", "exists", ""),
+    // Host-injected scoped DB is db_query only (db_open/db_close are NOT
+    // builtins); db_open/db_close point at the SQLite-file API — the
+    // 09-25 SHA512-CRYPT session called db_open for a secrets.db file.
+    ("db_open", "sqlopen", " (the SQLite-file API — db_open is the host-injected scoped DB)"),
+    ("db_close", "sqlclose", " (the SQLite-file API)"),
+];
+
+/// Foreign get/set/find → the Mix FORM that does the job.
+///
+/// Unlike [`FOREIGN_FUNCTION_SYNONYMS`] the target is a SYNTAX/form, not a
+/// builtin name — A5 (TODO-mix 2026-09-24) extends the shared
+/// runtime/lint suggestion seam ([`function_suggestion`]) so its targets
+/// no longer have to be callables. A user-defined `fn get/set/find` is a
+/// known callable and never reaches the suggester, so this table can
+/// never shadow one. The range/sort/filter semantics these forms carry
+/// are documented in `mix man collections` (range is inclusive of both
+/// ends; sort orders numbers numerically and everything else
+/// lexicographically; filter is list-first) — the hints point there
+/// rather than duplicate the manual.
+pub(crate) const COLLECTION_FORM_SUGGESTIONS: &[(&str, &str)] = &[
+    (
+        "get",
+        "Mix has no get() — read a map key directly: $m[key] (nil when absent), or get_or(map, key, default) / require_key(map, key) when the key must exist",
+    ),
+    (
+        "set",
+        "Mix has no set() — assign into a map: $m[key] = value (updates in place); for a copy: $m = merge($m, {key: value})",
+    ),
+    (
+        "find",
+        "Mix has no find() — index_of(seq, v) for a position (0-based, -1 when absent), filter(list, fn) to select the matching items, or contains(seq, v) for yes/no — see `mix man collections`",
+    ),
+];
+
+/// The "did you mean" for an undefined function, WITHOUT framing — shared by
+/// the runtime ([`undefined_function_hint`]) and lint's MIX-E1102 hint, so the
+/// two can never disagree about the same name. Four sources, in order:
+///
+///   1. The shared deleted/renamed table (`DEPRECATED_REGEX_CALLS`, which also
+///      drives lint D3001–D3005). A straggler that survives lint — an
+///      extensionless shebang script, a string built at runtime — hits the
+///      SAME rename pointer here, at the point it actually fails.
+///   2. [`COLLECTION_FORM_SUGGESTIONS`] — the foreign get/set/find, where the
+///      answer is a Mix FORM (`$m[key]`, `get_or`/`require_key`, map
+///      assignment, `index_of`/`filter`), not a builtin name to swap in.
+///   3. [`FOREIGN_FUNCTION_SYNONYMS`] — the semantic answer, which beats a
+///      closer lexical neighbour (`json_decode` → `json_parse`, not
+///      `json_encode`).
+///   4. Nearest live name (builtin, HOF, or a caller-supplied user function)
+///      within an edit distance that tightens for short names (≤1 for ≤4
+///      chars, else ≤2), so `lenght`→`length` is caught but two unrelated
+///      3-letter names are not.
+///
+/// Returns `None` when nothing is close enough — no misleading guess is
+/// better than a wrong "did you mean".
+pub(crate) fn function_suggestion<'a>(
+    name: &str,
+    user_fns: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    if let Some((_, _, replacement)) =
+        DEPRECATED_REGEX_CALLS.iter().find(|(n, _, _)| *n == name)
+    {
+        return Some(format!("deleted in mix 0.73.0; use {replacement}"));
+    }
+    if let Some((_, suggestion)) = COLLECTION_FORM_SUGGESTIONS.iter().find(|(n, _)| *n == name) {
+        return Some((*suggestion).to_string());
+    }
+    if let Some((_, target, caveat)) = FOREIGN_FUNCTION_SYNONYMS.iter().find(|(n, _, _)| *n == name)
+    {
+        return Some(format!("did you mean '{target}'?{caveat}"));
+    }
+    let threshold = if name.chars().count() <= 4 { 1 } else { 2 };
+    let mut best: Option<(usize, String)> = None;
+    // Sorted HERE, in the one place both callers share: the runtime hands
+    // over a HashSet, whose iteration order changes per process, so an
+    // equal-distance tie between two user functions used to flip between
+    // runs while lint (which sorted) always said the same thing.
+    let mut user_fns: Vec<&str> = user_fns.into_iter().collect();
+    user_fns.sort_unstable();
+    user_fns.dedup();
+    // Candidates: leaf builtins, the HOF registry (map/filter/sort_by/… live in
+    // a separate table, not BUILTIN_NAMES — a `mapp` typo must still resolve),
+    // and in-scope user functions.
+    let candidates = builtins::BUILTIN_NAMES
+        .iter()
+        .copied()
+        .chain(crate::builtins_hof::HOF_NAMES.iter().copied())
+        .chain(user_fns);
+    for cand in candidates {
+        let d = edit_distance(name, cand);
+        if d == 0 || d > threshold {
+            continue;
+        }
+        // Strictly-better only, so ties keep the FIRST candidate — builtins
+        // in table order, then user functions in sorted order.
+        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, cand.to_string()));
+        }
+    }
+    best.map(|(_, cand)| format!("did you mean '{cand}'?"))
+}
+
+/// Runtime "did you mean" for an undefined function call — the suffix the
+/// evaluator appends to a FUNCTION_UNDEFINED message. The answer itself is
+/// [`function_suggestion`], the same one lint's MIX-E1102 prints.
+pub(crate) fn undefined_function_hint(name: &str, user_fns: &HashSet<String>) -> Option<String> {
+    function_suggestion(name, user_fns.iter().map(String::as_str)).map(|s| format!(" — {s}"))
+}
+
+/// Runtime "did you mean" for an undefined `$variable` read — the suffix the
+/// evaluator appends to a NAME_UNDEFINED message. Nearest in-scope name by
+/// the same tightening edit distance as [`undefined_function_hint`]. `$` is
+/// re-added in the suggestion since the name arrives sigil-stripped.
+pub(crate) fn undefined_variable_hint(name: &str, in_scope: &[String]) -> Option<String> {
+    let threshold = if name.chars().count() <= 4 { 1 } else { 2 };
+    let mut best: Option<(usize, &str)> = None;
+    for cand in in_scope {
+        let d = edit_distance(name, cand);
+        if d == 0 || d > threshold {
+            continue;
+        }
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, cand.as_str()));
+        }
+    }
+    best.map(|(_, cand)| format!(" — did you mean '${cand}'?"))
+}
+
+/// Defence-in-depth for embedders using the public AST + `analyze()` API.
+/// Source text cannot reach this shape because the parser rejects assignments
+/// in every chain operand before constructing the `Chain` node.
+fn check_assignment_chains(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    for stmt in stmts {
+        check_assignment_chain_stmt(stmt, ctx, a);
+        for body in stmt_bodies(&stmt.kind) {
+            check_assignment_chains(body, ctx, a);
+        }
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_embedded_stmt_list(expr, true, &mut |body| {
+                check_assignment_chains(body, ctx, a)
+            });
+        });
+    }
+}
+
+fn check_assignment_chain_stmt(stmt: &Stmt, ctx: &FileContext, a: &mut Analysis) {
+    match &stmt.kind {
+        StmtKind::Chain { left, op, right } => {
+            if is_assignment_chain_operand(left) || is_assignment_chain_operand(right) {
+                let sym = match op {
+                    ChainOp::And => "&&",
+                    ChainOp::Or => "||",
+                };
+                a.diagnostics.push(diag(
+                    ctx,
+                    "MIX-W2303",
+                    Severity::Warning,
+                    stmt.line,
+                    format!("assignment used as an operand of a `{sym}` statement chain"),
+                    Some(
+                        "use `and`/`or` inside the assigned expression, or split the assignment and shell-style chain into separate statements"
+                            .to_string(),
+                    ),
+                ));
+            }
+            check_assignment_chain_stmt(left, ctx, a);
+            check_assignment_chain_stmt(right, ctx, a);
+        }
+        StmtKind::PipeToExternal { stmt, .. } => check_assignment_chain_stmt(stmt, ctx, a),
+        _ => {}
+    }
+}
+
+fn is_assignment_chain_operand(stmt: &Stmt) -> bool {
+    match &stmt.kind {
+        StmtKind::Assignment { .. }
+        | StmtKind::FieldAssignment { .. }
+        | StmtKind::IndexAssignment { .. }
+        | StmtKind::PathAssignment { .. } => true,
+        // Kept in lockstep with the parser predicate of the same name:
+        // `export x = v` and the `alias n = c` DEFINE form bind a value.
+        StmtKind::Export { .. } => true,
+        StmtKind::Alias {
+            command: Some(_), ..
+        } => true,
+        // …as does the terse `function f() = expr` form. The BLOCK form
+        // binds no `=` expression and stays legal.
+        StmtKind::FunctionDef {
+            body: FunctionBody::Expression(_),
+            ..
+        } => true,
+        StmtKind::PipeToExternal { stmt, .. } => is_assignment_chain_operand(stmt),
+        _ => false,
+    }
+}
+
+fn check_implicit_nil_calls(stmts: &[Stmt], ctx: &FileContext, a: &mut Analysis) {
+    let mut definitions: HashMap<String, Vec<bool>> = HashMap::new();
+    walk_stmts(stmts, &mut |stmt| {
+        if let StmtKind::FunctionDef { name, body, .. } = &stmt.kind {
+            let ends_in_expression = matches!(
+                body,
+                FunctionBody::Block(body)
+                    if matches!(body.last().map(|s| &s.kind), Some(StmtKind::Expression(expr))
+                        if !expression_never_returns(expr))
+                        && !block_has_value_return(body)
+            );
+            definitions
+                .entry(name.clone())
+                .or_default()
+                .push(ends_in_expression);
+        }
+    });
+    let bad = definitions
+        .into_iter()
+        .filter_map(|(name, defs)| (defs == [true]).then_some(name))
+        .collect::<HashSet<_>>();
+    if bad.is_empty() {
+        return;
+    }
+
+    // A same-named variable or parameter can redirect bareword dispatch
+    // to a function value. Suppress the rule for that name anywhere in the
+    // file rather than guessing which dynamic value wins at a call site.
+    let mut shadowable = HashSet::new();
+    collect_bound_names(stmts, true, &mut shadowable);
+    walk_stmts(stmts, &mut |stmt| {
+        if let StmtKind::FunctionDef { params, .. } = &stmt.kind {
+            shadowable.extend(params.iter().map(|param| param.name.clone()));
+        }
+    });
+    check_used_call_block(stmts, false, &bad, &shadowable, ctx, a);
+}
+
+fn expression_never_returns(expr: &Expr) -> bool {
+    matches!(expr, Expr::FunctionCall { name, .. }
+        if name == "raise"
+            || builtins::builtin_info_of(name).is_some_and(|info| info.contract.effects.terminates))
+}
+
+fn block_has_value_return(stmts: &[Stmt]) -> bool {
+    for stmt in stmts {
+        if matches!(stmt.kind, StmtKind::Return(Some(_))) {
+            return true;
+        }
+        if !matches!(stmt.kind, StmtKind::FunctionDef { .. })
+            && stmt_bodies(&stmt.kind)
+                .into_iter()
+                .any(block_has_value_return)
+        {
+            return true;
+        }
+        let mut embedded_return = false;
+        walk_stmt_exprs(stmt, &mut |expr| {
+            for_each_embedded_stmt_list(expr, false, &mut |body| {
+                embedded_return |= block_has_value_return(body)
+            });
+        });
+        if embedded_return {
+            return true;
+        }
+    }
+    false
+}
+
+fn check_used_call_block(
+    stmts: &[Stmt],
+    block_value_used: bool,
+    bad: &HashSet<String>,
+    shadowable: &HashSet<String>,
+    ctx: &FileContext,
+    a: &mut Analysis,
+) {
+    for (index, stmt) in stmts.iter().enumerate() {
+        let expression_used = block_value_used && index + 1 == stmts.len();
+        check_used_call_stmt(stmt, expression_used, bad, shadowable, ctx, a);
+    }
+}
+
+fn check_used_call_stmt(
+    stmt: &Stmt,
+    expression_used: bool,
+    bad: &HashSet<String>,
+    shadowable: &HashSet<String>,
+    ctx: &FileContext,
+    a: &mut Analysis,
+) {
+    match &stmt.kind {
+        StmtKind::Expression(expr) => {
+            check_used_call_expr(expr, expression_used, stmt.line, bad, shadowable, ctx, a)
+        }
+        StmtKind::FunctionDef { params, body, .. } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    check_used_call_expr(default, true, stmt.line, bad, shadowable, ctx, a);
+                }
+            }
+            match body {
+                FunctionBody::Block(body) => {
+                    check_used_call_block(body, false, bad, shadowable, ctx, a)
+                }
+                FunctionBody::Expression(expr) => {
+                    check_used_call_expr(expr, true, stmt.line, bad, shadowable, ctx, a)
+                }
+            }
+            return;
+        }
+        StmtKind::Chain { left, right, .. } => {
+            check_used_call_stmt(left, false, bad, shadowable, ctx, a);
+            check_used_call_stmt(right, false, bad, shadowable, ctx, a);
+            return;
+        }
+        StmtKind::PipeToExternal { stmt, .. } => {
+            check_used_call_stmt(stmt, false, bad, shadowable, ctx, a);
+            return;
+        }
+        _ => walk_stmt_exprs(stmt, &mut |expr| {
+            check_used_call_expr(expr, true, stmt.line, bad, shadowable, ctx, a)
+        }),
+    }
+    for body in stmt_bodies(&stmt.kind) {
+        check_used_call_block(body, false, bad, shadowable, ctx, a);
+    }
+}
+
+fn check_used_call_expr(
+    expr: &Expr,
+    used: bool,
+    line: usize,
+    bad: &HashSet<String>,
+    shadowable: &HashSet<String>,
+    ctx: &FileContext,
+    a: &mut Analysis,
+) {
+    if let Expr::FunctionCall { name, .. } = expr
+        && used
+        && bad.contains(name)
+        && !shadowable.contains(name)
+        && builtins::builtin_info_of(name).is_none()
+    {
+        a.diagnostics.push(diag(
+            ctx,
+            "MIX-W2302",
+            Severity::Warning,
+            line,
+            format!("result of {name}() is used, but its block body implicitly returns nil"),
+            Some(format!("add `return` before {name}()'s final expression")),
+        ));
+    }
+    match expr {
+        Expr::If(ifexpr) => {
+            check_used_call_expr(&ifexpr.condition, true, line, bad, shadowable, ctx, a);
+            check_used_call_block(&ifexpr.then_body, used, bad, shadowable, ctx, a);
+            for (condition, body) in &ifexpr.else_ifs {
+                check_used_call_expr(condition, true, line, bad, shadowable, ctx, a);
+                check_used_call_block(body, used, bad, shadowable, ctx, a);
+            }
+            if let Some(body) = &ifexpr.else_body {
+                check_used_call_block(body, used, bad, shadowable, ctx, a);
+            }
+        }
+        Expr::FunctionLiteral { params, body } => {
+            for param in params {
+                if let Some(default) = &param.default {
+                    check_used_call_expr(default, true, line, bad, shadowable, ctx, a);
+                }
+            }
+            match &**body {
+                FunctionBody::Block(body) => {
+                    check_used_call_block(body, false, bad, shadowable, ctx, a)
+                }
+                FunctionBody::Expression(expr) => {
+                    check_used_call_expr(expr, true, line, bad, shadowable, ctx, a)
+                }
+            }
+        }
+        _ => walk_expr_children(expr, &mut |child| {
+            check_used_call_expr(child, true, line, bad, shadowable, ctx, a)
+        }),
+    }
+}
+
+// ── capabilities inventory ───────────────────────────────────────────
+
+fn collect_capabilities(stmts: &[Stmt], a: &mut Analysis) {
+    let mut caps: HashSet<&'static str> = HashSet::new();
+    walk_stmts(stmts, &mut |stmt| {
+        match &stmt.kind {
+            StmtKind::Sh { .. } | StmtKind::PipeToExternal { .. } => {
+                caps.insert("process");
+            }
+            StmtKind::Send { .. }
+            | StmtKind::Emit { .. }
+            | StmtKind::Address { .. }
+            | StmtKind::On { .. } => {
+                caps.insert("bus");
+            }
+            _ => {}
+        }
+        walk_stmt_exprs(stmt, &mut |expr| {
+            collect_expr_caps(expr, &mut caps);
+        });
+    });
+    let mut list: Vec<&'static str> = caps.into_iter().filter(|c| *c != "pure").collect();
+    list.sort_unstable();
+    a.capabilities = list;
+}
+
+fn collect_expr_caps(expr: &Expr, caps: &mut HashSet<&'static str>) {
+    match expr {
+        Expr::FunctionCall { name, args } => {
+            if let Some(info) = builtins::builtin_info_of(name) {
+                caps.insert(info.capability.as_str());
+                for cap in info.contract.required_caps {
+                    caps.insert(cap.as_str());
+                }
+                for cc in info.contract.cond_caps {
+                    if args.iter().any(
+                        |arg| matches!(arg, Expr::MapLiteral(entries) if entries.iter().any(|(k, _)| k == cc.option)),
+                    ) {
+                        caps.insert(cc.capability.as_str());
+                    }
+                }
+            }
+            for arg in args {
+                collect_expr_caps(arg, caps);
+            }
+        }
+        Expr::Sh(_) | Expr::CommandSub(_) => {
+            caps.insert("process");
+        }
+        Expr::Send { .. } => {
+            caps.insert("bus");
+        }
+        Expr::FunctionLiteral { body, .. } => {
+            // A BLOCK body's statements are reached by the caller's
+            // walk_stmts descent (into_lambdas=true), so re-walking here
+            // is redundant AND made nested lambdas O(2^depth) (codex
+            // convergence review, MAJOR). Only an EXPRESSION body (not a
+            // statement) needs collecting here.
+            if let FunctionBody::Expression(e) = &**body {
+                collect_expr_caps(e, caps);
+            }
+        }
+        _ => {
+            walk_expr_children(expr, &mut |child| collect_expr_caps(child, caps));
+        }
+    }
+}
+
+#[cfg(test)]
+mod instructional_error_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn fns(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn deleted_name_pointer_shares_the_lint_table() {
+        // Every deleted regex/grep name resolves to its replacement — the
+        // same DEPRECATED_REGEX_CALLS row lint reads, so the two cannot drift.
+        for (dead, _code, replacement) in DEPRECATED_REGEX_CALLS {
+            let hint = undefined_function_hint(dead, &fns(&[])).unwrap();
+            assert!(hint.contains("deleted in mix 0.73.0"), "{dead}: {hint}");
+            // The replacement call (its name half) must appear.
+            let repl_name = replacement.split('(').next().unwrap();
+            assert!(hint.contains(repl_name), "{dead}: {hint} lacks {repl_name}");
+        }
+    }
+
+    #[test]
+    fn fuzzy_suggests_nearest_builtin_and_user_fn() {
+        // A one-edit typo of a builtin.
+        assert_eq!(
+            undefined_function_hint("lenght", &fns(&[])),
+            Some(" — did you mean 'length'?".to_string())
+        );
+        // A user function beats nothing when it is the nearest.
+        assert_eq!(
+            undefined_function_hint("greeet", &fns(&["greet"])),
+            Some(" — did you mean 'greet'?".to_string())
+        );
+    }
+
+    #[test]
+    fn no_suggestion_when_nothing_is_close() {
+        assert_eq!(undefined_function_hint("xyzzy_qw", &fns(&[])), None);
+        // Short names tighten to distance 1: two unrelated 3-letter names
+        // must not cross-suggest.
+        assert_eq!(undefined_variable_hint("abc", &["xyz".to_string()]), None);
+    }
+
+    #[test]
+    fn every_foreign_synonym_points_at_a_live_builtin_and_is_not_one() {
+        for (foreign, target, _) in FOREIGN_FUNCTION_SYNONYMS {
+            assert!(
+                builtins::builtin_info_of(target).is_some(),
+                "{foreign} -> {target}: target is not a builtin"
+            );
+            // A name that resolves can never be undefined, so its row
+            // would be dead — and would mislead anyone reading the table.
+            assert!(
+                builtins::builtin_info_of(foreign).is_none()
+                    && !crate::builtins_hof::HOF_NAMES.contains(foreign)
+                    && !INLINE_SPECIAL_FORMS.contains(foreign)
+                    && !prelude_function_names().contains(*foreign),
+                "{foreign} resolves already; its synonym row is dead"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_form_names_suggest_mix_forms() {
+        // get/set/find are NOT builtins: the suggester's answer is a FORM
+        // (syntax target), not a name to swap in — the A5 extension of the
+        // shared runtime/lint seam.
+        let get = function_suggestion("get", std::iter::empty()).expect("get suggests");
+        assert!(
+            get.starts_with("Mix has no get()") && get.contains("$m[key]") && get.contains("get_or"),
+            "{get}"
+        );
+        let set = function_suggestion("set", std::iter::empty()).expect("set suggests");
+        assert!(
+            set.starts_with("Mix has no set()") && set.contains("$m[key] = value"),
+            "{set}"
+        );
+        let find = function_suggestion("find", std::iter::empty()).expect("find suggests");
+        assert!(
+            find.starts_with("Mix has no find()")
+                && find.contains("index_of")
+                && find.contains("filter"),
+            "{find}"
+        );
+    }
+
+    #[test]
+    fn every_collection_form_name_is_not_a_live_callable() {
+        // The form table is consulted only for an UNDEFINED name; a row
+        // whose name resolves somewhere would be dead and misleading.
+        for &(foreign, _) in COLLECTION_FORM_SUGGESTIONS {
+            assert!(
+                builtins::builtin_info_of(foreign).is_none()
+                    && !crate::builtins_hof::HOF_NAMES.contains(&foreign)
+                    && !INLINE_SPECIAL_FORMS.contains(&foreign)
+                    && !prelude_function_names().contains(foreign),
+                "{foreign} resolves already; its form row is dead"
+            );
+        }
+        // The builtins the forms name must stay live.
+        for live in ["get_or", "require_key", "index_of", "merge", "contains"] {
+            assert!(builtins::builtin_info_of(live).is_some(), "{live} is not a builtin");
+        }
+        assert!(
+            crate::builtins_hof::HOF_NAMES.contains(&"filter"),
+            "filter is no longer a HOF"
+        );
+    }
+
+    #[test]
+    fn lint_e1102_prints_the_form_suggestion_for_get_set_find() {
+        // The lint half of the shared seam: the E1102 hint leads with the
+        // same text the runtime appends to FUNCTION_UNDEFINED.
+        for (src, name) in [
+            ("print(get({a: 1}, \"a\"))\n", "get"),
+            ("set({a: 1}, \"a\", 2)\n", "set"),
+            ("print(find([1], 1))\n", "find"),
+        ] {
+            let runtime = undefined_function_hint(name, &fns(&[])).expect("runtime suggests");
+            let hint = e1102_hint(src).expect("E1102 fires with a hint");
+            let answer = runtime.trim_start_matches(" — ");
+            assert!(hint.starts_with(answer), "{name}: lint {hint:?} vs runtime {runtime:?}");
+            assert!(hint.contains("--allow-function"), "fallback advice kept: {hint}");
+        }
+    }
+
+    #[test]
+    fn user_defined_get_set_find_are_untouched() {
+        // A user's own get/set/find is a known callable: no E1102 and no
+        // form suggestion — the table only fires for an UNDEFINED name.
+        let src = "fn get($m, $k)\n  return $m[$k]\nend\nfn set($m, $k, $v)\n  $m[$k] = $v\n  return $m\nend\nfn find($l, $v)\n  return index_of($l, $v)\nend\nprint(get({a: 1}, \"a\"))\nprint(set({a: 1}, \"a\", 2))\nprint(find([1, 2], 1))\n";
+        let tokens = crate::lexer::Lexer::new(src).tokenize().unwrap();
+        let stmts = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .unwrap();
+        let diags = analyze(&stmts, None, &AnalyzerConfig::default()).diagnostics;
+        assert!(
+            !diags.iter().any(|d| d.code == "MIX-E1102"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn each_foreign_name_maps_to_its_target() {
+        for (foreign, target, caveat) in FOREIGN_FUNCTION_SYNONYMS {
+            assert_eq!(
+                undefined_function_hint(foreign, &fns(&[])),
+                Some(format!(" — did you mean '{target}'?{caveat}")),
+                "{foreign}"
+            );
+        }
+        // The names the 2026-09-18 probe found with NO suggestion at all.
+        for (foreign, target) in [
+            ("str", "to_string"),
+            ("trim_end", "rtrim"),
+            ("json_loads", "json_parse"),
+            ("len_bytes", "byte_length"),
+        ] {
+            assert_eq!(
+                function_suggestion(foreign, std::iter::empty()),
+                Some(format!("did you mean '{target}'?"))
+            );
+        }
+        // Not drop-ins: the suggestion says what differs.
+        let int = function_suggestion("int", std::iter::empty()).unwrap();
+        assert!(int.starts_with("did you mean 'to_number'?") && int.contains("trunc()"), "{int}");
+        let strlen = function_suggestion("strlen", std::iter::empty()).unwrap();
+        assert!(strlen.starts_with("did you mean 'byte_length'?"), "{strlen}");
+    }
+
+    #[test]
+    fn a_synonym_beats_a_closer_lexical_neighbour() {
+        // `json_encode` is within the lexical threshold (2 edits for a long
+        // name) of `json_decode` and is its opposite — the pre-table answer.
+        assert_eq!(edit_distance("json_decode", "json_encode"), 2);
+        assert_eq!(
+            undefined_function_hint("json_decode", &fns(&[])),
+            Some(" — did you mean 'json_parse'?".to_string())
+        );
+        // Even a user function one edit away loses to the table.
+        assert_eq!(
+            undefined_function_hint("json_decode", &fns(&["json_decodr"])),
+            Some(" — did you mean 'json_parse'?".to_string())
+        );
+    }
+
+    #[test]
+    fn an_equal_distance_tie_between_user_fns_is_deterministic() {
+        // `greet` and `greed` are both one edit from `greex`. The runtime
+        // passes a HashSet, and every new set iterates in its own order —
+        // before the sort, repeated runs answered greed ×5 / greet ×1.
+        for _ in 0..64 {
+            assert_eq!(
+                undefined_function_hint("greex", &fns(&["greet", "greed"])),
+                Some(" — did you mean 'greed'?".to_string())
+            );
+        }
+        let src = "fn greet()\n  return 1\nend\nfn greed()\n  return 2\nend\nprint(greex())\n";
+        assert!(e1102_hint(src).unwrap().starts_with("did you mean 'greed'?"));
+    }
+
+    fn e1102_hint(src: &str) -> Option<String> {
+        let tokens = crate::lexer::Lexer::new(src).tokenize().unwrap();
+        let stmts = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .unwrap();
+        analyze(&stmts, None, &AnalyzerConfig::default())
+            .diagnostics
+            .into_iter()
+            .find(|d| d.code == "MIX-E1102")
+            .and_then(|d| d.hint)
+    }
+
+    #[test]
+    fn lint_e1102_prints_the_runtime_suggestion() {
+        // Same answer, same source of truth: the runtime suffix minus its
+        // " — " framing must appear verbatim in the lint hint — for a
+        // synonym, a lexical typo, a deleted name, and a user function.
+        for (src, name, user) in [
+            ("json_decode(\"{}\")\n", "json_decode", vec![]),
+            ("print(lenght(\"ab\"))\n", "lenght", vec![]),
+            ("print(regex_match(\"^a\", \"abc\"))\n", "regex_match", vec![]),
+            (
+                "fn greet($n)\n  return $n\nend\nprint(greeet(1))\n",
+                "greeet",
+                vec!["greet"],
+            ),
+        ] {
+            let runtime = undefined_function_hint(name, &fns(&user)).expect("runtime suggests");
+            let hint = e1102_hint(src).expect("E1102 fires with a hint");
+            let answer = runtime.trim_start_matches(" — ");
+            assert!(hint.starts_with(answer), "{name}: lint {hint:?} vs runtime {runtime:?}");
+            assert!(hint.contains("--allow-function"), "fallback advice kept: {hint}");
+        }
+        // Nothing close: the plain advice, no invented guess.
+        assert_eq!(
+            e1102_hint("xyzzy_qw(1)\n").as_deref(),
+            Some("define it, or pass --allow-function xyzzy_qw if an embedder provides it")
+        );
+    }
+
+    #[test]
+    fn variable_hint_re_adds_the_sigil() {
+        assert_eq!(
+            undefined_variable_hint("greetng", &["greeting".to_string()]),
+            Some(" — did you mean '$greeting'?".to_string())
+        );
+    }
+}
