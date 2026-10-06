@@ -234,7 +234,6 @@ impl shader::Primitive for GridPrimitive {
     }
 }
 
-
 struct GridTexture {
     bind_group: wgpu::BindGroup,
     texture: wgpu::Texture,
@@ -586,7 +585,8 @@ mod tests {
         });
         let bounds = iced::Rectangle::with_size(iced::Size::new(64.0, 3.0));
         let viewport = shader::Viewport::with_physical_size(
-            iced::Size::new(64, 3), iced::advanced::renderer::Scale::default(),
+            iced::Size::new(64, 3),
+            iced::advanced::renderer::Scale::default(),
         );
         for primitive in &primitives {
             primitive.prepare(&mut pipeline, &device, &queue, &bounds, &viewport);

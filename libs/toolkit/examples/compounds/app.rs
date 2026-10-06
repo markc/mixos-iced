@@ -63,9 +63,24 @@ impl file::Source for Listing<'_> {
 impl Demo {
     pub fn new() -> Self {
         let tokens = Tokens::dark();
-        Self { document: document::Text::from_text(&strings::label("compound-document")).unwrap(),
-            palette: tokens.into(), tokens, files: (0..100_000).map(|index| (PathBuf::from(format!("/example/{index}")), format!("file-{index}.txt"))).collect(),
-            selected: None, split: 0.42, notice: strings::label("compound-files-count"), wheel: 0.0, dark: true }
+        Self {
+            document: document::Text::from_text(&strings::label("compound-document")).unwrap(),
+            palette: tokens.into(),
+            tokens,
+            files: (0..100_000)
+                .map(|index| {
+                    (
+                        PathBuf::from(format!("/example/{index}")),
+                        format!("file-{index}.txt"),
+                    )
+                })
+                .collect(),
+            selected: None,
+            split: 0.42,
+            notice: strings::label("compound-files-count"),
+            wheel: 0.0,
+            dark: true,
+        }
     }
     pub fn update(&mut self, message: Message) {
         match message {
@@ -75,7 +90,9 @@ impl Demo {
             ) => self.selected = Some(path),
             Message::File(message) => self.notice = format!("{message:?}"),
             Message::Split(split) => self.split = split.clamp(0.15, 0.85),
-            Message::Sort(column) => self.notice = strings::format("compound-sort", &[("column", column.to_string())]),
+            Message::Sort(column) => {
+                self.notice = strings::format("compound-sort", &[("column", column.to_string())])
+            }
             Message::Theme => {
                 self.dark = !self.dark;
                 self.tokens = if self.dark {
@@ -125,7 +142,11 @@ impl Demo {
                 ..Default::default()
             },
             columns,
-            [strings::label("compound-name"), strings::label("compound-size"), strings::label("compound-modified")],
+            [
+                strings::label("compound-name"),
+                strings::label("compound-size"),
+                strings::label("compound-modified"),
+            ],
             0,
             true,
             Message::Sort,
@@ -149,7 +170,11 @@ impl Demo {
         let surface = column![
             text(strings::label("compound-terminal")).font(iced::Font::MONOSPACE),
             text(strings::label("compound-terminal-engine")).font(iced::Font::MONOSPACE),
-            text(strings::format("compound-wheel", &[("position", format!("{:.1}", self.wheel))])).font(iced::Font::MONOSPACE)
+            text(strings::format(
+                "compound-wheel",
+                &[("position", format!("{:.1}", self.wheel))]
+            ))
+            .font(iced::Font::MONOSPACE)
         ];
         let terminal = TerminalPane::new(surface, Size::new(1000.0, 100.0), 1.2, self.tokens)
             .focus_ring(true)

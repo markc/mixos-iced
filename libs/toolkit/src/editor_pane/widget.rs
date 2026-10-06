@@ -52,7 +52,6 @@ pub struct EditorPane<'a> {
     pub(super) view: EditorView,
 }
 
-
 pub(super) type Editor<'a> = EditorPane<'a>;
 
 impl<'a, Theme: 'a, R: atext::Renderer<Font = Font> + 'a> From<EditorPane<'a>>
@@ -760,7 +759,10 @@ mod tests {
         let first = EditorPane::new(Text::from_text("alpha").unwrap(), &palette, &view);
         let second = EditorPane::new(Text::from_text("bravo").unwrap(), &palette, &view);
         let mut state = State {
-            metrics: Some(Metrics { cell_w: 8.0, line_h: 20.0 }),
+            metrics: Some(Metrics {
+                cell_w: 8.0,
+                line_h: 20.0,
+            }),
             ..State::default()
         };
         first.sync_scroll(&mut state, Size::new(800.0, 600.0));

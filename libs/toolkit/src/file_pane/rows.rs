@@ -1131,28 +1131,59 @@ mod tests {
     #[test]
     fn scrolling_past_cache_capacity_keeps_every_visible_paragraph() {
         let entries: Vec<_> = (0..100_000)
-            .map(|i| (PathBuf::from(format!("/listing/{i}")), format!("file-{i}.txt")))
+            .map(|i| {
+                (
+                    PathBuf::from(format!("/listing/{i}")),
+                    format!("file-{i}.txt"),
+                )
+            })
             .collect();
         let reads = Cell::new(0);
         let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
-            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+            Listing {
+                entries: &entries,
+                reads: &reads,
+            },
+            Presentation::default(),
+            columns(),
         );
         let renderer = LayoutRenderer::new();
         let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
-        deliver(&mut list, &mut tree, &renderer, Event::Window(iced_core::window::Event::Focused));
+        deliver(
+            &mut list,
+            &mut tree,
+            &renderer,
+            Event::Window(iced_core::window::Event::Focused),
+        );
         for step in 0..1000 {
-            let state = tree.state.downcast_mut::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+            let state = tree
+                .state
+                .downcast_mut::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
             state.offset = (step * 7) as f32 * state.row_h;
-            deliver(&mut list, &mut tree, &renderer, Event::Window(iced_core::window::Event::Focused));
-            let state = tree.state.downcast_ref::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+            deliver(
+                &mut list,
+                &mut tree,
+                &renderer,
+                Event::Window(iced_core::window::Event::Focused),
+            );
+            let state = tree
+                .state
+                .downcast_ref::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
             let first = (state.offset / state.row_h).floor() as usize;
-            for index in first..first + 20 {
+            for (index, (path, _)) in entries.iter().enumerate().skip(first).take(20) {
                 if state.is_visible(index, 280.0) {
-                    assert!(state.cache.contains_key(&entries[index].0), "missing visible paragraph at scroll step {step}, row {index}");
+                    assert!(
+                        state.cache.contains_key(path),
+                        "missing visible paragraph at scroll step {step}, row {index}"
+                    );
                 }
             }
             assert!(state.cache.len() <= 512, "unbounded offscreen cache");
         }
-        assert!(reads.get() < 30_000, "offscreen traversal: {} reads", reads.get());
+        assert!(
+            reads.get() < 30_000,
+            "offscreen traversal: {} reads",
+            reads.get()
+        );
     }
 }
