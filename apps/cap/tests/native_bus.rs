@@ -2,6 +2,7 @@
 //! Agent acceptance against a real noded; the fixture compositor only supplies
 //! deterministic pixels. Hardware capture is tested separately on the desktop.
 use bus::native_client::SupervisedClient;
+use iced::futures::StreamExt;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -83,6 +84,32 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
     );
     let client = ready(&url).await;
     assert!(broker_process.0.try_wait().unwrap().is_none());
+    let (theme_handle, mut themes) = cap::bus::spawn("cap-theme-test", &url).unwrap();
+    let theme = bus::BusMessage::new()
+        .with_header("command", "theme.changed")
+        .with_header("type", "event")
+        .with_body("{}");
+    let (rc, _, _) = client
+        .call_with_headers_raw(
+            "noded",
+            "topic.publish",
+            &std::collections::BTreeMap::from([("name".into(), "theme.changed".into())]),
+            &theme.to_wire(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rc, 0);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(event) = themes.next().await {
+            if event == cap::bus::Delivery::ThemeChanged {
+                return;
+            }
+        }
+        panic!("theme subscription closed");
+    })
+    .await
+    .expect("theme update delivered through native Bus");
+    theme_handle.quit();
     let comp = Arc::new(
         SupervisedClient::connect_options("comp-cap-test", &url)
             .connect()
@@ -182,6 +209,11 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
             .is_err()
     );
     assert_eq!(std::fs::read(&output).unwrap(), exported);
+    client
+        .call("cap-test", "cap.open", json!({"path":source}))
+        .await
+        .unwrap();
+    assert!(info(&client, "cap-test").await["capture"].is_null());
     let caller = client.clone();
     let pending = tokio::spawn(async move {
         caller
@@ -210,7 +242,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
             .to_string()
             .contains("cancelled")
     );
-    assert_eq!(info(&client, "cap-test").await["document"]["width"], 80);
+    assert_eq!(info(&client, "cap-test").await["document"]["width"], 120);
     client
         .call("cap-test", "cap.quit", json!({}))
         .await

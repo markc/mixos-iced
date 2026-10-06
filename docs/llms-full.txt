@@ -277,7 +277,8 @@ screenshot** keeps Cap visible during the delay so you can cancel. Cap then
 asks compd to minimise its own fenced window, captures a fresh frame and
 restores itself. Region mode uses compd's selection overlay; Escape cancels it.
 Screen mode captures one output. Window mode captures the window's client
-image and does not include compositor decorations.
+image, excluding compositor decorations and the pointer. The pointer option
+applies to Screen and Region.
 
 The preview supports fit, zoom and middle-button panning. Draw arrows, lines,
 rectangles, ellipses, freehand strokes, highlights and opaque redactions. Type
@@ -300,7 +301,8 @@ instance. `cap --headless` starts a Bus-only service. `--service NAME`,
 prints the exact build provenance before configuration or display access.
 
 Capture originals live in `$MIXOS_APP_HOME/captures`, otherwise
-`$MIXOS_APPS_HOME/cap/captures`, then `$XDG_STATE_HOME/mixos/apps/cap/captures`
+`$MIXOS_APPS_HOME/cap/captures`, then `$MIXOS_VAR/apps/cap/captures`, then
+`$XDG_STATE_HOME/mixos/apps/cap/captures`
 or `$HOME/.local/state/mixos/apps/cap/captures`.
 
 ## Agent commands (cap.v1)
@@ -312,23 +314,24 @@ completion are event driven; callers can read `cap.info` during a job.
 | Verb | Request | Result |
 |---|---|---|
 | `cap.ping`, `cap.info` | `{}` | version, busy state, document and capture metadata |
-| `cap.capture` | `{mode:"screen", output:"DP-1", cursor:true, delay:0}` | completed capture and document |
-| `cap.capture` | `{mode:"window", window:{id:7,generation:3}}` | fenced window capture |
-| `cap.capture` | `{mode:"region", output:"DP-1"}` | selection, then completed capture |
+| `cap.capture` | `{"mode":"screen", "output":"DP-1", "cursor":true, "delay":0}` | completed capture and document |
+| `cap.capture` | `{"mode":"window", "window":{"id":7,"generation":3}}` | fenced window capture |
+| `cap.capture` | `{"mode":"region", "output":"DP-1"}` | selection, then completed capture |
 | `cap.cancel` | `{}` | cancellation requested; region selection also accepts Escape |
-| `cap.open` | `{path:"/home/user/Pictures/image.png"}` | decoded document |
-| `cap.annotate` | `{kind:"arrow",points:[{x:10,y:10},{x:80,y:60}],colour:[255,0,0,255],width:4}` | stable object ID |
-| `cap.move` | `{id:1,dx:10,dy:5}` | updated document |
-| `cap.delete` | `{id:1}` | updated document |
-| `cap.crop` | `{crop:{x:0,y:0,width:640,height:480}}` or `{crop:null}` | updated document |
+| `cap.open` | `{"path":"/home/user/Pictures/image.png"}` | decoded document |
+| `cap.annotate` | `{"kind":"arrow","points":[{"x":10,"y":10},{"x":80,"y":60}],"colour":[255,0,0,255],"width":4}` | stable object ID |
+| `cap.move` | `{"id":1,"dx":10,"dy":5}` | updated document |
+| `cap.delete` | `{"id":1}` | updated document |
+| `cap.crop` | `{"crop":{"x":0,"y":0,"width":640,"height":480}}` or `{"crop":null}` | updated document |
 | `cap.undo`, `cap.redo` | `{}` | updated document |
-| `cap.export` | `{path:"/home/user/Pictures/new-image.png"}` | saved PNG and document |
+| `cap.export` | `{"path":"/home/user/Pictures/new-image.png"}` | saved PNG and document |
 | `cap.show` | `{}` | activates GUI; refused by a headless instance |
 | `cap.quit` | `{}` | quits if idle and annotations are saved |
 
 Coordinates refer to original image pixels, even after cropping or zooming.
-Images are limited to 32 million pixels, documents to 256 objects and undo to
-128 snapshots. A freehand stroke has at most 16,384 points. Capture requests
+Images are limited to 32 million pixels, documents to 256 objects and 131,072
+points, and undo to 128 snapshots within a 16 MiB history budget. A freehand
+stroke has at most 16,384 points. Capture requests
 complete once; compd applies a three-second capture deadline. Region selection
 has its own bounded deadline. A remote cancel during selection is observed
 after that native selection finishes; Escape cancels immediately.

@@ -1019,9 +1019,11 @@ impl App {
             text_input("0–10", &self.delay)
                 .on_input(Message::Delay)
                 .width(55),
-            checkbox(self.request.cursor)
+            checkbox(self.request.mode != Mode::Window && self.request.cursor)
                 .label(label("pointer"))
-                .on_toggle(Message::Pointer)
+                .on_toggle_maybe(
+                    (!self.busy && self.request.mode != Mode::Window).then_some(Message::Pointer)
+                )
         ]
         .spacing(gap)
         .align_y(iced::Center);
@@ -1315,7 +1317,7 @@ mod tests {
         let pixels = image::open(path).unwrap().to_rgba8();
         assert_eq!(pixels.get_pixel(10, 10).0, [255, 255, 255, 255]);
         assert_ne!(
-            pixels.get_pixel(250, 200).0,
+            pixels.get_pixel(500, 400).0,
             [255, 255, 255, 255],
             "drag guide must render above the opaque image"
         );

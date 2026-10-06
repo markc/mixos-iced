@@ -250,7 +250,8 @@ screenshot</strong> keeps Cap visible during the delay so you can cancel. Cap th
 asks compd to minimise its own fenced window, captures a fresh frame and
 restores itself. Region mode uses compd's selection overlay; Escape cancels it.
 Screen mode captures one output. Window mode captures the window's client
-image and does not include compositor decorations.</p>
+image, excluding compositor decorations and the pointer. The pointer option
+applies to Screen and Region.</p>
 <p>The preview supports fit, zoom and middle-button panning. Draw arrows, lines,
 rectangles, ellipses, freehand strokes, highlights and opaque redactions. Type
 text and drag a box to place it, or use Number for successive numbered boxes.
@@ -269,7 +270,8 @@ instance. <code>cap --headless</code> starts a Bus-only service. <code>--service
 <code>--comp NAME</code> and <code>--noded-url URL</code> select the native endpoints. <code>--version</code>
 prints the exact build provenance before configuration or display access.</p>
 <p>Capture originals live in <code>$MIXOS_APP_HOME/captures</code>, otherwise
-<code>$MIXOS_APPS_HOME/cap/captures</code>, then <code>$XDG_STATE_HOME/mixos/apps/cap/captures</code>
+<code>$MIXOS_APPS_HOME/cap/captures</code>, then <code>$MIXOS_VAR/apps/cap/captures</code>, then
+<code>$XDG_STATE_HOME/mixos/apps/cap/captures</code>
 or <code>$HOME/.local/state/mixos/apps/cap/captures</code>.</p>
 <h2 id="agent-commands-capv1">Agent commands (cap.v1)</h2>
 <p>Requests are strict JSON objects. Unknown fields, malformed geometry and
@@ -277,23 +279,24 @@ commands that would discard dirty annotations are refused. Status and capture
 completion are event driven; callers can read <code>cap.info</code> during a job.</p>
 <table><thead><tr><th>Verb</th><th>Request</th><th>Result</th></tr></thead><tbody>
 <tr><td><code>cap.ping</code>, <code>cap.info</code></td><td><code>{}</code></td><td>version, busy state, document and capture metadata</td></tr>
-<tr><td><code>cap.capture</code></td><td><code>{mode:"screen", output:"DP-1", cursor:true, delay:0}</code></td><td>completed capture and document</td></tr>
-<tr><td><code>cap.capture</code></td><td><code>{mode:"window", window:{id:7,generation:3}}</code></td><td>fenced window capture</td></tr>
-<tr><td><code>cap.capture</code></td><td><code>{mode:"region", output:"DP-1"}</code></td><td>selection, then completed capture</td></tr>
+<tr><td><code>cap.capture</code></td><td><code>{"mode":"screen", "output":"DP-1", "cursor":true, "delay":0}</code></td><td>completed capture and document</td></tr>
+<tr><td><code>cap.capture</code></td><td><code>{"mode":"window", "window":{"id":7,"generation":3}}</code></td><td>fenced window capture</td></tr>
+<tr><td><code>cap.capture</code></td><td><code>{"mode":"region", "output":"DP-1"}</code></td><td>selection, then completed capture</td></tr>
 <tr><td><code>cap.cancel</code></td><td><code>{}</code></td><td>cancellation requested; region selection also accepts Escape</td></tr>
-<tr><td><code>cap.open</code></td><td><code>{path:"/home/user/Pictures/image.png"}</code></td><td>decoded document</td></tr>
-<tr><td><code>cap.annotate</code></td><td><code>{kind:"arrow",points:[{x:10,y:10},{x:80,y:60}],colour:[255,0,0,255],width:4}</code></td><td>stable object ID</td></tr>
-<tr><td><code>cap.move</code></td><td><code>{id:1,dx:10,dy:5}</code></td><td>updated document</td></tr>
-<tr><td><code>cap.delete</code></td><td><code>{id:1}</code></td><td>updated document</td></tr>
-<tr><td><code>cap.crop</code></td><td><code>{crop:{x:0,y:0,width:640,height:480}}</code> or <code>{crop:null}</code></td><td>updated document</td></tr>
+<tr><td><code>cap.open</code></td><td><code>{"path":"/home/user/Pictures/image.png"}</code></td><td>decoded document</td></tr>
+<tr><td><code>cap.annotate</code></td><td><code>{"kind":"arrow","points":[{"x":10,"y":10},{"x":80,"y":60}],"colour":[255,0,0,255],"width":4}</code></td><td>stable object ID</td></tr>
+<tr><td><code>cap.move</code></td><td><code>{"id":1,"dx":10,"dy":5}</code></td><td>updated document</td></tr>
+<tr><td><code>cap.delete</code></td><td><code>{"id":1}</code></td><td>updated document</td></tr>
+<tr><td><code>cap.crop</code></td><td><code>{"crop":{"x":0,"y":0,"width":640,"height":480}}</code> or <code>{"crop":null}</code></td><td>updated document</td></tr>
 <tr><td><code>cap.undo</code>, <code>cap.redo</code></td><td><code>{}</code></td><td>updated document</td></tr>
-<tr><td><code>cap.export</code></td><td><code>{path:"/home/user/Pictures/new-image.png"}</code></td><td>saved PNG and document</td></tr>
+<tr><td><code>cap.export</code></td><td><code>{"path":"/home/user/Pictures/new-image.png"}</code></td><td>saved PNG and document</td></tr>
 <tr><td><code>cap.show</code></td><td><code>{}</code></td><td>activates GUI; refused by a headless instance</td></tr>
 <tr><td><code>cap.quit</code></td><td><code>{}</code></td><td>quits if idle and annotations are saved</td></tr>
 </tbody></table>
 <p>Coordinates refer to original image pixels, even after cropping or zooming.
-Images are limited to 32 million pixels, documents to 256 objects and undo to
-128 snapshots. A freehand stroke has at most 16,384 points. Capture requests
+Images are limited to 32 million pixels, documents to 256 objects and 131,072
+points, and undo to 128 snapshots within a 16 MiB history budget. A freehand
+stroke has at most 16,384 points. Capture requests
 complete once; compd applies a three-second capture deadline. Region selection
 has its own bounded deadline. A remote cancel during selection is observed
 after that native selection finishes; Escape cancels immediately.</p>
