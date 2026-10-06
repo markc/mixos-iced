@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use bus::native_client::BoundedIncomingEvent;
 use bus::{BusMessage, ConnState, Connection, SupervisedClient, SupervisedError};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
@@ -21,6 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
 struct StubState {
     /// `from` of every `noded.register`, in order: one per connection.
     register_names: Vec<String>,
+    register_bodies: Vec<String>,
     /// `name` of every `rc 0` `topic.subscribe`, in order.
     subscribed: Vec<String>,
     /// `name` of every `rc 0` `topic.unsubscribe`, in order.
@@ -51,9 +53,20 @@ struct Stub {
     reject_register_on_reconnect: bool,
     /// Refuse this topic name on every connection.
     reject_topic: Option<String>,
+    flood_on_register: usize,
 }
 
 impl Stub {
+    fn flooding(commands: usize) -> Arc<Stub> {
+        Arc::new(Stub {
+            state: Mutex::new(StubState::default()),
+            drop_conn1: Notify::new(),
+            fail_replay_on_reconnect: false,
+            reject_register_on_reconnect: false,
+            reject_topic: None,
+            flood_on_register: commands,
+        })
+    }
     fn new(fail_replay_on_reconnect: bool, reject_register_on_reconnect: bool) -> Arc<Stub> {
         Arc::new(Stub {
             state: Mutex::new(StubState::default()),
@@ -61,6 +74,7 @@ impl Stub {
             fail_replay_on_reconnect,
             reject_register_on_reconnect,
             reject_topic: None,
+            flood_on_register: 0,
         })
     }
 
@@ -71,6 +85,7 @@ impl Stub {
             fail_replay_on_reconnect: false,
             reject_register_on_reconnect: false,
             reject_topic: Some(topic.to_string()),
+            flood_on_register: 0,
         })
     }
 }
@@ -136,6 +151,7 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                         let collision = {
                             let mut s = stub.state.lock().await;
                             s.register_names.push(from.clone());
+                            s.register_bodies.push(req.body.clone());
                             if forced_reject {
                                 true
                             } else {
@@ -156,6 +172,15 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                             continue;
                         }
                         let _ = sink.send(Message::Text(reply(&req, "0").into())).await;
+                        for sequence in 0..stub.flood_on_register {
+                            let event = BusMessage::new()
+                                .with_header("type", "request")
+                                .with_header("command", "world.test.flood")
+                                .with_header("from", "publisher")
+                                .with_header("id", &format!("flood-{sequence}"))
+                                .with_body(&sequence.to_string());
+                            let _ = sink.send(Message::Text(event.to_wire().into())).await;
+                        }
                         // After a re-register, push an unsolicited request:
                         // it must surface on the receiver taken before the
                         // drop.
@@ -209,7 +234,8 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
 
             // Every name this connection held is freed when its socket closes.
             let mut s = stub.state.lock().await;
-            s.active_registrations.retain(|_, owner| *owner != conn_index);
+            s.active_registrations
+                .retain(|_, owner| *owner != conn_index);
             s.open_connections = s.open_connections.saturating_sub(1);
         });
     }
@@ -332,7 +358,10 @@ async fn call_returns_the_body_as_json_string_or_null() {
         .await
         .unwrap();
     assert_eq!(text, serde_json::Value::String("plain text".into()));
-    let none = client.call("peer", "echo.body", serde_json::Value::Null).await.unwrap();
+    let none = client
+        .call("peer", "echo.body", serde_json::Value::Null)
+        .await
+        .unwrap();
     assert_eq!(none, serde_json::Value::Null);
     let (rc, body, error) = client
         .call_with_headers_raw("peer", "echo.body", &BTreeMap::new(), "{\"raw\":true}")
@@ -377,7 +406,14 @@ async fn registration_rejection_preserves_rc_and_message() {
         Some((10, "stub collision diagnostic wording"))
     );
     // The refused connection closed itself: only the owner is open.
-    assert!(wait_until(5, || stub.state.try_lock().map(|s| s.open_connections == 1).unwrap_or(false)).await);
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| s.open_connections == 1)
+            .unwrap_or(false))
+        .await
+    );
 
     // The supervised form reports the same refusal when it is fatal.
     let error = SupervisedClient::connect_options("taken-service", &url)
@@ -467,9 +503,18 @@ async fn subscribe_records_only_after_rc0() {
         .await
         .expect("initial connect");
 
-    client.subscribe_topic("world.a").await.expect("subscribe a");
-    client.subscribe_topic("world.b").await.expect("subscribe b");
-    client.subscribe_topic("world.a").await.expect("duplicate is a no-op");
+    client
+        .subscribe_topic("world.a")
+        .await
+        .expect("subscribe a");
+    client
+        .subscribe_topic("world.b")
+        .await
+        .expect("subscribe b");
+    client
+        .subscribe_topic("world.a")
+        .await
+        .expect("duplicate is a no-op");
 
     assert_eq!(
         client.subscription_registry().snapshot(),
@@ -478,7 +523,11 @@ async fn subscribe_records_only_after_rc0() {
     let s = stub.state.lock().await;
     assert_eq!(
         s.subscribed,
-        vec!["world.a".to_string(), "world.b".to_string(), "world.a".to_string()],
+        vec![
+            "world.a".to_string(),
+            "world.b".to_string(),
+            "world.a".to_string()
+        ],
         "every subscribe reaches the broker"
     );
 }
@@ -491,16 +540,25 @@ async fn rejected_subscribe_leaves_registry_unchanged() {
         .await
         .expect("initial connect");
 
-    client.subscribe_topic("ok.a").await.expect("subscribe ok.a");
+    client
+        .subscribe_topic("ok.a")
+        .await
+        .expect("subscribe ok.a");
     let err = client
         .subscribe_topic("reserved.x")
         .await
         .expect_err("a refused subscribe must error, not record");
     assert!(
-        matches!(err, SupervisedError::Transport(bus::ClientError::Refused { rc: 10, .. })),
+        matches!(
+            err,
+            SupervisedError::Transport(bus::ClientError::Refused { rc: 10, .. })
+        ),
         "broker rc=10 surfaces as a typed refusal, got {err}"
     );
-    assert_eq!(client.subscription_registry().snapshot(), vec!["ok.a".to_string()]);
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["ok.a".to_string()]
+    );
     assert_eq!(stub.state.lock().await.subscribe_attempts, 2);
 }
 
@@ -512,11 +570,26 @@ async fn unsubscribe_removes_only_after_rc0() {
         .await
         .expect("initial connect");
 
-    client.subscribe_topic("world.a").await.expect("subscribe a");
-    client.subscribe_topic("world.b").await.expect("subscribe b");
-    client.unsubscribe_topic("world.a").await.expect("unsubscribe a");
-    assert_eq!(client.subscription_registry().snapshot(), vec!["world.b".to_string()]);
-    assert_eq!(stub.state.lock().await.unsubscribed, vec!["world.a".to_string()]);
+    client
+        .subscribe_topic("world.a")
+        .await
+        .expect("subscribe a");
+    client
+        .subscribe_topic("world.b")
+        .await
+        .expect("subscribe b");
+    client
+        .unsubscribe_topic("world.a")
+        .await
+        .expect("unsubscribe a");
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["world.b".to_string()]
+    );
+    assert_eq!(
+        stub.state.lock().await.unsubscribed,
+        vec!["world.a".to_string()]
+    );
 
     // A refused unsubscribe leaves the topic recorded.
     client.subscription_registry().record("keep");
@@ -539,7 +612,9 @@ async fn replay_failure_keeps_disconnected_no_false_connected() {
         .await
         .expect("initial connect");
     let _incoming = client.incoming().expect("incoming taken once");
-    client.subscription_registry().record("world.statecache.probe");
+    client
+        .subscription_registry()
+        .record("world.statecache.probe");
 
     stub.drop_conn1.notify_one();
 
@@ -560,7 +635,11 @@ async fn replay_failure_keeps_disconnected_no_false_connected() {
 
     assert_ne!(client.state(), ConnState::Connected);
     let s = stub.state.lock().await;
-    assert!(s.subscribed.is_empty(), "no rejected subscribe may count: {:?}", s.subscribed);
+    assert!(
+        s.subscribed.is_empty(),
+        "no rejected subscribe may count: {:?}",
+        s.subscribed
+    );
     assert!(s.register_names.len() >= 2);
     assert!(
         s.open_connections <= 1,
@@ -659,6 +738,111 @@ async fn close_frees_the_name_and_respond_parts_frames_a_response() {
         "close must let the broker reap the name"
     );
     // After close every outbound call is refused as shutting down.
-    let err = client.call("noded", "noded.list", serde_json::Value::Null).await.unwrap_err();
+    let err = client
+        .call("noded", "noded.list", serde_json::Value::Null)
+        .await
+        .unwrap_err();
     assert!(matches!(err, SupervisedError::ShuttingDown), "got {err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_supervised_lane_reports_socket_reader_overflow_without_growing() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let stub = Stub::flooding(128);
+    tokio::spawn(run_stub(listener, stub));
+
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let client = SupervisedClient::connect_options("bounded-consumer", &url)
+        .bounded_incoming(2)
+        .connect()
+        .await
+        .expect("initial bounded connect");
+    assert!(
+        client.incoming().is_none(),
+        "bounded opt-in must not expose the default unbounded receiver"
+    );
+    let mut incoming = client
+        .incoming_bounded()
+        .expect("bounded receiver is available exactly once");
+
+    let dropped = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match incoming.recv().await {
+                Some(BoundedIncomingEvent::Overflow { dropped }) => break dropped,
+                Some(BoundedIncomingEvent::Command(_)) => {}
+                None => panic!("bounded lane closed before reporting overflow"),
+            }
+        }
+    })
+    .await
+    .expect("flood must produce an observable overflow marker");
+    assert!(dropped > 0);
+    assert!(incoming.overflow_count() >= dropped);
+
+    client.close().await;
+}
+
+/// Version-discovery contract: provenance passed to
+/// `connect_supervised_with_provenance` is sent on the INITIAL register
+/// AND re-sent on every reconnect (built once, cloned from SupervisorCtx).
+/// A regression that sent it only on the first connect would leave a
+/// reconnected citizen provenance-less in `noded.list`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_resends_provenance() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let stub = Stub::new(false, false);
+    tokio::spawn(run_stub(listener, stub.clone()));
+
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let prov = bus::RegisterProvenance::from_parts(
+        "mix",
+        "9.9.9-test",
+        "deadbeefcafe",
+        false,
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:00Z".to_string(),
+    );
+    let client =
+        SupervisedClient::connect_supervised_with_provenance("statecache", &url, Some(prov))
+            .await
+            .expect("initial connect");
+    assert_eq!(client.state(), ConnState::Connected);
+
+    // Initial register carried the provenance body.
+    {
+        let s = stub.state.lock().await;
+        assert_eq!(s.register_bodies.len(), 1);
+        assert!(
+            s.register_bodies[0].contains("9.9.9-test"),
+            "initial register must carry provenance: {:?}",
+            s.register_bodies[0]
+        );
+    }
+
+    // Bounce → reconnect → the SECOND register must carry it too.
+    stub.drop_conn1.notify_one();
+    let stub2 = stub.clone();
+    assert!(
+        wait_until(10, || {
+            stub2
+                .state
+                .try_lock()
+                .map(|s| s.register_bodies.len() >= 2)
+                .unwrap_or(false)
+        })
+        .await,
+        "expected a reconnect re-register"
+    );
+    {
+        let s = stub.state.lock().await;
+        assert!(
+            s.register_bodies[1].contains("9.9.9-test"),
+            "reconnect register must RE-SEND provenance: {:?}",
+            s.register_bodies[1]
+        );
+    }
+    // (No deregister: the contract under test — provenance re-sent on
+    // reconnect — is already asserted; the client drops at scope end.)
 }

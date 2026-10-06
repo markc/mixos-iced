@@ -3,7 +3,10 @@
 //! Typed compatibility surface over the canonical native ABP client.
 
 use super::{ClientError, IncomingCommand};
-use crate::{BusMessage, native_client::NodedClient};
+use crate::{
+    BusMessage,
+    native_client::{NativeIncomingReceiver, NodedClient},
+};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -13,15 +16,36 @@ use tokio::sync::mpsc;
 pub struct Connection {
     name: String,
     inner: NodedClient,
-    incoming: Mutex<Option<mpsc::UnboundedReceiver<IncomingCommand>>>,
+    incoming: Mutex<Option<NativeIncomingReceiver>>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ConnectionOptions {
+    pub provenance: Option<crate::RegisterProvenance>,
+    pub verbs: Option<Vec<crate::VerbDescriptor>>,
+    pub capacity: Option<usize>,
 }
 
 impl Connection {
     pub async fn connect(name: &str, url: &str) -> Result<Self, ClientError> {
-        let inner = NodedClient::connect(name, url)
-            .await
-            .map_err(ClientError::from_native)?;
-        let incoming = inner.incoming_async().await;
+        Self::connect_with_options(name, url, &ConnectionOptions::default()).await
+    }
+
+    pub(crate) async fn connect_with_options(
+        name: &str,
+        url: &str,
+        options: &ConnectionOptions,
+    ) -> Result<Self, ClientError> {
+        let inner = NodedClient::connect_with_provenance_and_capacity(
+            name,
+            url,
+            options.provenance.clone(),
+            options.capacity,
+            options.verbs.clone(),
+        )
+        .await
+        .map_err(ClientError::from_native)?;
+        let incoming = inner.take_native_incoming().await;
         Ok(Self {
             name: name.to_owned(),
             inner,
@@ -36,10 +60,56 @@ impl Connection {
         self.inner.is_connected()
     }
     pub fn take_incoming(&self) -> Option<mpsc::UnboundedReceiver<IncomingCommand>> {
+        let mut incoming = self
+            .incoming
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if matches!(&*incoming, Some(NativeIncomingReceiver::Unbounded(_))) {
+            match incoming.take() {
+                Some(NativeIncomingReceiver::Unbounded(receiver)) => Some(receiver),
+                _ => unreachable!("unbounded receiver checked under lock"),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn take_native_incoming(&self) -> Option<NativeIncomingReceiver> {
         self.incoming
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .take()
+    }
+
+    pub async fn call_typed(
+        &self,
+        to: &str,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<crate::PortReply, ClientError> {
+        self.inner
+            .call_typed(to, command, args)
+            .await
+            .map_err(ClientError::from_native)
+    }
+
+    pub async fn send(
+        &self,
+        to: &str,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<(), ClientError> {
+        self.inner
+            .send(to, command, args)
+            .await
+            .map_err(ClientError::from_native)
+    }
+
+    pub async fn list_services(&self) -> Result<Vec<String>, ClientError> {
+        self.inner
+            .list_services()
+            .await
+            .map_err(ClientError::from_native)
     }
 
     pub async fn call(

@@ -30,8 +30,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 
 use super::IncomingCommand;
-use super::connection::Connection;
+use super::connection::{Connection, ConnectionOptions};
 use super::error::{ClientError, SupervisedError};
+use crate::native_client::NativeIncomingReceiver;
+use crate::native_client::bounded::{
+    BoundedIncomingEvent, BoundedIncomingReceiver, BoundedIncomingSender, bounded_incoming_channel,
+};
 
 /// Attempt budget for the initial connect-and-register. Exhausting it is a
 /// typed fatal: a misconfigured service must fail fast rather than spin
@@ -161,9 +165,25 @@ pub struct SupervisedConnectOptions {
     service_name: String,
     noded_url: String,
     fatal_on_registration_rejection: bool,
+    connection: ConnectionOptions,
 }
 
 impl SupervisedConnectOptions {
+    pub fn with_verbs(mut self, verbs: Vec<crate::VerbDescriptor>) -> Self {
+        self.connection.verbs = Some(verbs);
+        self
+    }
+
+    pub fn with_provenance(mut self, provenance: crate::RegisterProvenance) -> Self {
+        self.connection.provenance = Some(provenance);
+        self
+    }
+
+    pub fn bounded_incoming(mut self, capacity: usize) -> Self {
+        assert!(capacity > 0, "bounded incoming capacity must be non-zero");
+        self.connection.capacity = Some(capacity);
+        self
+    }
     /// Treat a broker registration rejection (collision or admission) as
     /// terminal, on the initial connect and on every reconnect.
     pub fn fatal_on_registration_rejection(mut self, enabled: bool) -> Self {
@@ -199,6 +219,7 @@ pub struct SupervisedClient {
     registry: SubscriptionRegistry,
     /// The outward incoming stream, taken once by the consumer.
     incoming_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<IncomingCommand>>>,
+    bounded_incoming_rx: std::sync::Mutex<Option<BoundedIncomingReceiver>>,
     /// `true` tells the supervisor to stop and not reconnect.
     shutdown_tx: watch::Sender<bool>,
     supervisor: TokioMutex<Option<tokio::task::JoinHandle<()>>>,
@@ -212,6 +233,7 @@ impl SupervisedClient {
             service_name: service_name.to_string(),
             noded_url: noded_url.to_string(),
             fatal_on_registration_rejection: false,
+            connection: ConnectionOptions::default(),
         }
     }
 
@@ -228,6 +250,23 @@ impl SupervisedClient {
             .await
     }
 
+    pub async fn connect_supervised(
+        service_name: &str,
+        noded_url: &str,
+    ) -> Result<Self, SupervisedError> {
+        Self::connect(service_name, noded_url).await
+    }
+
+    pub async fn connect_supervised_with_provenance(
+        service_name: &str,
+        noded_url: &str,
+        provenance: Option<crate::RegisterProvenance>,
+    ) -> Result<Self, SupervisedError> {
+        let mut options = Self::connect_options(service_name, noded_url);
+        options.connection.provenance = provenance;
+        options.connect().await
+    }
+
     async fn connect_with_options(
         options: SupervisedConnectOptions,
     ) -> Result<SupervisedClient, SupervisedError> {
@@ -235,6 +274,7 @@ impl SupervisedClient {
             service_name,
             noded_url,
             fatal_on_registration_rejection,
+            connection: connection_options,
         } = options;
         let (state_tx, _) = watch::channel(ConnState::Connecting);
         let state_publish = Arc::new(std::sync::Mutex::new(()));
@@ -242,7 +282,9 @@ impl SupervisedClient {
         let mut last_err: Option<ClientError> = None;
         let mut connection: Option<Connection> = None;
         for attempt in 0..MAX_INITIAL_ATTEMPTS {
-            match Connection::connect(&service_name, &noded_url).await {
+            match Connection::connect_with_options(&service_name, &noded_url, &connection_options)
+                .await
+            {
                 Ok(c) => {
                     connection = Some(c);
                     break;
@@ -285,13 +327,22 @@ impl SupervisedClient {
         // The supervisor forwards from the first connection's receiver, and
         // every later one, into the single outward channel.
         let first_rx = connection
-            .take_incoming()
+            .take_native_incoming()
             .expect("a fresh connection has its incoming receiver");
 
         let inner = Arc::new(RwLock::new(Arc::new(connection)));
         publish_state(&state_tx, &state_publish, ConnState::Connected);
         let connection_generation = Arc::new(AtomicU64::new(1));
-        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let (out_tx, out_rx, bounded_out_rx) = match connection_options.capacity {
+            Some(capacity) => {
+                let (sender, receiver) = bounded_incoming_channel(capacity);
+                (SupervisorOutgoing::Bounded(sender), None, Some(receiver))
+            }
+            None => {
+                let (sender, receiver) = mpsc::unbounded_channel();
+                (SupervisorOutgoing::Unbounded(sender), Some(receiver), None)
+            }
+        };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let registry = SubscriptionRegistry::new();
 
@@ -306,6 +357,7 @@ impl SupervisedClient {
             service_name: service_name.clone(),
             noded_url,
             fatal_on_registration_rejection,
+            connection_options,
             first_rx,
         }));
 
@@ -315,7 +367,8 @@ impl SupervisedClient {
             state_publish,
             connection_generation,
             registry,
-            incoming_rx: std::sync::Mutex::new(Some(out_rx)),
+            incoming_rx: std::sync::Mutex::new(out_rx),
+            bounded_incoming_rx: std::sync::Mutex::new(bounded_out_rx),
             shutdown_tx,
             supervisor: TokioMutex::new(Some(supervisor)),
             service_name,
@@ -333,6 +386,13 @@ impl SupervisedClient {
         self.incoming_rx
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    pub fn incoming_bounded(&self) -> Option<BoundedIncomingReceiver> {
+        self.bounded_incoming_rx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .take()
     }
 
@@ -377,6 +437,76 @@ impl SupervisedClient {
     /// The live connection, cloned out so no network await holds the lock.
     async fn connection(&self) -> Arc<Connection> {
         self.inner.read().await.clone()
+    }
+
+    pub async fn call_typed(
+        &self,
+        to: &str,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<crate::PortReply, SupervisedError> {
+        self.gate()?;
+        self.connection()
+            .await
+            .call_typed(to, command, args)
+            .await
+            .map_err(SupervisedError::Transport)
+    }
+
+    pub async fn send(
+        &self,
+        to: &str,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<(), SupervisedError> {
+        self.gate()?;
+        self.connection()
+            .await
+            .send(to, command, args)
+            .await
+            .map_err(SupervisedError::Transport)
+    }
+
+    pub async fn list_services(&self) -> Result<Vec<String>, SupervisedError> {
+        self.gate()?;
+        self.connection()
+            .await
+            .list_services()
+            .await
+            .map_err(SupervisedError::Transport)
+    }
+
+    pub async fn respond(
+        &self,
+        incoming: &IncomingCommand,
+        rc: u8,
+        body: &str,
+    ) -> Result<(), SupervisedError> {
+        self.respond_parts(
+            &incoming.from,
+            &incoming.command,
+            incoming.id.as_deref(),
+            rc,
+            body,
+        )
+        .await
+    }
+
+    /// Only shutdown's synthetic terminal replies bypass the outbound gate.
+    /// Ordinary handler replies still fail once the client is shutting down.
+    pub async fn respond_parts_shutdown_synth(
+        &self,
+        to: &str,
+        command: &str,
+        id: Option<&str>,
+        rc: u8,
+        body: &str,
+    ) -> Result<(), SupervisedError> {
+        self.connection()
+            .await
+            .respond_parts(to, command, id, rc, body)
+            .await
+            .map_err(SupervisedError::Transport)
     }
 
     /// See [`Connection::call`].
@@ -495,6 +625,14 @@ impl SupervisedClient {
         }
     }
 
+    pub async fn shutdown(&self) {
+        publish_state(&self.state_tx, &self.state_publish, ConnState::ShuttingDown);
+        let _ = self.shutdown_tx.send(true);
+        if let Some(handle) = self.supervisor.lock().await.take() {
+            let _ = handle.await;
+        }
+    }
+
     /// Graceful deregister: mark `ShuttingDown`, stop the supervisor so it
     /// cannot race a reconnect against the deregister, then issue
     /// `noded.deregister` on the live connection. If the connection is
@@ -533,6 +671,31 @@ fn topic_headers(topic: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("name".to_string(), topic.to_string())])
 }
 
+enum SupervisorOutgoing {
+    Unbounded(mpsc::UnboundedSender<IncomingCommand>),
+    Bounded(BoundedIncomingSender),
+}
+
+impl SupervisorOutgoing {
+    fn forward(&self, event: BoundedIncomingEvent) -> bool {
+        match (self, event) {
+            (Self::Unbounded(sender), BoundedIncomingEvent::Command(command)) => {
+                sender.send(command).is_ok()
+            }
+            (Self::Unbounded(_), BoundedIncomingEvent::Overflow { .. }) => {
+                unreachable!("unbounded native lane cannot overflow")
+            }
+            (Self::Bounded(sender), BoundedIncomingEvent::Command(command)) => {
+                sender.try_send(command)
+            }
+            (Self::Bounded(sender), BoundedIncomingEvent::Overflow { dropped }) => {
+                sender.record_overflow(dropped);
+                true
+            }
+        }
+    }
+}
+
 /// Everything the detached supervisor task owns.
 struct SupervisorCtx {
     inner: Arc<RwLock<Arc<Connection>>>,
@@ -540,12 +703,13 @@ struct SupervisorCtx {
     state_publish: Arc<std::sync::Mutex<()>>,
     connection_generation: Arc<AtomicU64>,
     registry: SubscriptionRegistry,
-    out_tx: mpsc::UnboundedSender<IncomingCommand>,
+    out_tx: SupervisorOutgoing,
     shutdown_rx: watch::Receiver<bool>,
     service_name: String,
     noded_url: String,
     fatal_on_registration_rejection: bool,
-    first_rx: mpsc::UnboundedReceiver<IncomingCommand>,
+    connection_options: ConnectionOptions,
+    first_rx: NativeIncomingReceiver,
 }
 
 /// `true` once a stop has been requested (an explicit shutdown, or the
@@ -595,7 +759,7 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                 maybe = current_rx.recv() => {
                     match maybe {
                         Some(command) => {
-                            if ctx.out_tx.send(command).is_err() {
+                            if !ctx.out_tx.forward(command) {
                                 tracing::info!(
                                     event = "supervised_stop",
                                     service = %ctx.service_name,
@@ -638,7 +802,13 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                 return;
             }
 
-            match Connection::connect(&ctx.service_name, &ctx.noded_url).await {
+            match Connection::connect_with_options(
+                &ctx.service_name,
+                &ctx.noded_url,
+                &ctx.connection_options,
+            )
+            .await
+            {
                 Ok(connection) => {
                     // A stop requested during the connect must not leave a
                     // registered connection behind: a bare drop would keep
@@ -656,7 +826,12 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                     let mut replay_ok = true;
                     for topic in &topics {
                         if let Err(e) = connection
-                            .call_with_headers("noded", "topic.subscribe", &topic_headers(topic), "")
+                            .call_with_headers(
+                                "noded",
+                                "topic.subscribe",
+                                &topic_headers(topic),
+                                "",
+                            )
                             .await
                         {
                             tracing::warn!(
@@ -677,7 +852,7 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
                     }
 
                     let rx = connection
-                        .take_incoming()
+                        .take_native_incoming()
                         .expect("a fresh connection has its incoming receiver");
                     // Final stop check before the swap, so a stop that landed
                     // during replay does not publish a live connection.
@@ -753,14 +928,18 @@ mod tests {
             let ceiling = backoff_ceiling_ms(attempt);
             for _ in 0..256 {
                 let d = backoff_delay(attempt).as_millis() as u64;
-                assert!(d <= ceiling, "delay {d} exceeded ceiling {ceiling} at attempt {attempt}");
+                assert!(
+                    d <= ceiling,
+                    "delay {d} exceeded ceiling {ceiling} at attempt {attempt}"
+                );
             }
         }
     }
 
     #[test]
     fn jitter_varies_between_draws() {
-        let draws: std::collections::BTreeSet<u64> = (0..64).map(|_| jitter_below(1_000_000)).collect();
+        let draws: std::collections::BTreeSet<u64> =
+            (0..64).map(|_| jitter_below(1_000_000)).collect();
         assert!(draws.len() > 1, "consecutive draws must not all coincide");
         assert_eq!(jitter_below(0), 0);
     }

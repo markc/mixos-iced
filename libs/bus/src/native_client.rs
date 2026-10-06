@@ -3,7 +3,7 @@
 //! Native ABP client, including authenticated Unix broker ingress.
 //! All requests pass through noded; no application socket transport is provided.
 
-mod bounded;
+pub(crate) mod bounded;
 mod native;
 pub mod session;
 mod types;
@@ -14,7 +14,7 @@ pub use crate::client::{
     ConnState, MAX_INITIAL_ATTEMPTS, SubscriptionRegistry, SupervisedClient, SupervisedError,
 };
 pub use bounded::{BoundedIncomingEvent, BoundedIncomingReceiver};
-pub use native::{NameCollision, NodedClient, RegistrationRejected, NativeIncomingReceiver};
+pub use native::{NameCollision, NativeIncomingReceiver, NodedClient, RegistrationRejected};
 pub use types::IncomingCommand;
 pub use unix::{
     BrokerAccount, ConnectError, Delivery, UnixConnectOptions, UnixConnectOutcome, VerifiedCommand,

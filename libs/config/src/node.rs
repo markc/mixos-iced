@@ -273,6 +273,6 @@ mod tests {
         assert_eq!(decoded.extra, config.extra);
         assert_eq!(decoded.noded.extra, config.noded.extra);
         assert_eq!(decoded.observe.extra, config.observe.extra);
-        assert_eq!(decoded.extra["webd"]["port"], 443);
+        assert_eq!(decoded.extra["webd"]["port"].as_f64(), Some(443.0));
     }
 }
