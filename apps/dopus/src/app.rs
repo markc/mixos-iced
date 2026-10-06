@@ -213,13 +213,13 @@ pub fn run(
     let theme = theme::resolve(app_theme_override(dirs.as_ref()).as_deref());
     // Read before `theme` moves into the app: iced's default font.
     let ui_font = theme.ui_font;
-    let tint = icons::hex(theme.tokens.text);
+    let tint = icons::hex(theme.tokens.palette.text);
     let icons = Icons::new();
     icons.ensure(
         &[
             &tint,
-            &icons::hex(theme.tokens.muted_text),
-            &icons::hex(theme.tokens.selection_text),
+            &icons::hex(theme.tokens.palette.muted_text),
+            &icons::hex(theme.tokens.palette.selection_text),
         ],
         ICON_PX,
         ICON_SCALE,
@@ -279,8 +279,8 @@ pub fn run(
     .subscription(Dopus::subscription)
     .theme(|app: &Dopus| app.theme.iced_theme())
     .style(|app: &Dopus, _| iced::theme::Style {
-        background_color: app.theme.tokens.surface,
-        text_color: app.theme.tokens.text,
+        background_color: app.theme.tokens.palette.surface,
+        text_color: app.theme.tokens.palette.text,
     })
     .default_font(ui_font)
     .window(iced::window::Settings {
@@ -1077,12 +1077,12 @@ impl Dopus {
         if let Some(note) = self.theme.notes.clone() {
             self.status = Some(format!("Theme: {note}"));
         }
-        self.tint = icons::hex(self.theme.tokens.text);
+        self.tint = icons::hex(self.theme.tokens.palette.text);
         self.icons.ensure(
             &[
                 &self.tint,
-                &icons::hex(self.theme.tokens.muted_text),
-                &icons::hex(self.theme.tokens.selection_text),
+                &icons::hex(self.theme.tokens.palette.muted_text),
+                &icons::hex(self.theme.tokens.palette.selection_text),
             ],
             ICON_PX,
             ICON_SCALE,

@@ -32,7 +32,7 @@ iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayl
 term-core = { path = "crates/term-core" }
 design.workspace = true
 config.workspace = true
-toolkit.workspace = true
+toolkit = { workspace = true, features = ["design"] }
 buildinfo.workspace = true
 libc.workspace = true
 serde_json.workspace = true

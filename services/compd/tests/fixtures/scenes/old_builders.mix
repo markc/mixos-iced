@@ -1,5 +1,5 @@
 -- Exact legacy builder functions; fixed clock and sanitised services/icons.
-$p = require("../../../scripts/lib/panel.mix")
+$p = require("legacy_panel_lib.mix")
 $ME = "scene-fixture"
 $C = {
   panel: "#202326f2", fg: "#fcfcfc", dim: "#a1a9b1", faint: "#6e7680",

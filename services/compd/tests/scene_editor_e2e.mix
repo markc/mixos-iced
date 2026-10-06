@@ -1,10 +1,10 @@
 -- Scene Editor e2e (plan §7 Stages L and T, §8.2): a private noded, the real
--- loader (scenes.mix as `scenes`), fixtures/scene-editor/fake-shell.mix as the
+-- loader (scenes.mix as `scenes`), fixtures/scene-editor/fake_shell.mix as the
 -- scene host `fakeshell` (SCENE_HOST; it cannot be named `shell`), the
 -- shipped editor template's real behaviour, and recording fakes for `apps`
--- (fake-apps.mix) and `ced` (fake-ced.mix). The loader half checks first run,
+-- (fake_apps.mix) and `ced` (fake_ced.mix). The loader half checks first run,
 -- open/close, the safe-open toggle, a Quoin-side dismiss, the user-copy
--- fallback, a behaviour crash, scenes-cli.mix (list, editor --safe, reset, a
+-- fallback, a behaviour crash, scenes_cli.mix (list, editor --safe, reset, a
 -- refusal) and a host without dialogs. The behaviour half drives Quoin-shaped
 -- clicks at `scene-editor`: the Recommended set, Edit through apps.launch and
 -- through ced.open, the scenes-source diagnostics push (broken, re-saved,
@@ -13,23 +13,23 @@
 -- without a renderer. Nothing reaches the host Bus: private TCP port, private
 -- unix socket, admission off, HOME and state dirs in the temp dir.
 -- Run: mix src/desktop/scripts/tests/scene-editor-e2e.mix
--- COSMIX_TEST_MIX / COSMIX_TEST_NODED point at freshly built binaries;
+-- MIXOS_TEST_MIX / MIXOS_TEST_NODED point at freshly built binaries;
 -- defaults are the system install. SE_E2E_KEEP=1 keeps the temp dir (logs).
 $here = dirname(realpath($0))
-$repo = realpath($here .. "/../../../..")
-$scripts = $repo .. "/src/desktop/scripts"
-$mix = env("COSMIX_TEST_MIX", "")
-if $mix == "" then $mix = "/opt/cosmix/bin/mix" end
-$noded = env("COSMIX_TEST_NODED", "")
-if $noded == "" then $noded = "/opt/cosmix/bin/cosmix-noded" end
+$repo = realpath($here .. "/../../..")
+$scripts = $repo .. "/services/compd/scripts"
+$mix = env("MIXOS_TEST_MIX", "")
+if $mix == "" then $mix = "/opt/mixos/bin/mix" end
+$noded = env("MIXOS_TEST_NODED", "")
+if $noded == "" then $noded = "/opt/mixos/bin/noded" end
 for each $bin in [$mix, $noded]
   if not exists($bin) then raise("TEST_CONFIG", "missing binary " .. $bin) end
 end
-$tmp = trim(run_argv_must(["mktemp", "-d", "/tmp/cosmix-se-e2e.XXXXXXXX"]))
+$tmp = trim(run_argv_must(["mktemp", "-d", "/tmp/mixos-se-e2e.XXXXXXXX"]))
 $tag = slice(replace(uuid(), "-", ""), 0, 8)
 $node = $tmp .. "/node.conf.mix"
 $shell_log = $tmp .. "/shell-requests.jsonl"
-$env = {COSMIX_NODE_CONFIG:$node, MIX_STATS:"off", PATH:"/usr/bin:/bin",
+$env = {MIXOS_NODE_CONFIG:$node, MIX_STATS:"off", PATH:"/usr/bin:/bin",
   HOME:$tmp, XDG_STATE_HOME:$tmp, XDG_RUNTIME_DIR:$tmp, XDG_CONFIG_HOME:$tmp .. "/config"}
 $fx = $here .. "/fixtures/scene-editor"
 $apps_log = $tmp .. "/apps-requests.jsonl"
@@ -126,7 +126,7 @@ fn cli($argv)
   for each $k in keys($env)
     $e[$k] = $env[$k]
   end
-  $full = [$mix, $scripts .. "/scenes-cli.mix"]
+  $full = [$mix, $scripts .. "/scenes_cli.mix"]
   for each $a in $argv
     push($full, $a)
   end
@@ -236,7 +236,7 @@ try
   end
   check($alive, "broker exhausted port retries")
 
-  $shell_script = $here .. "/fixtures/scene-editor/fake-shell.mix"
+  $shell_script = $here .. "/fixtures/scene-editor/fake_shell.mix"
   $pids.shell = start_citizen("fakeshell", $shell_script, {FAKE_SHELL_LOG:$shell_log, FAKE_SHELL_OWNER:"scenes"}, "shell.log")
   mkdir($tmp .. "/scenes")
   $loader_env = {SCENES_DIR:$tmp .. "/scenes", SCENES_TEMPLATES:$repo .. "/share/scenes", SCENE_HOST:"fakeshell",
@@ -290,7 +290,7 @@ try
   check($ed.generation > $gen and $ed.behaviour == "running" and $ed.mounted, "crashed editor restarted: " .. json_encode($ed))
   check(editor_pid($pids.scenes) != nil and editor_pid($pids.scenes) != $first_pid, "a new behaviour process")
 
-  -- scenes-cli.mix: list, editor --safe, reset, and a refusal.
+  -- scenes_cli.mix: list, editor --safe, reset, and a refusal.
   $c = cli(["list"])
   check($c.ok and contains($c.stdout, "editor: source=shipped") and contains($c.stdout, "needs_setup"), "cli list: " .. $c.stdout .. $c.stderr)
   $c = cli(["list", "--json"])
@@ -306,13 +306,13 @@ try
 
   -- The mesh refusal table against the real loader, both routes local here
   -- (the attested mesh route runs in the nested gate or live).
-  $mt = run_argv([$mix, $here .. "/scenes-mesh-test.mix"], {clear_env:true, timeout:120,
-    env:{COSMIX_NODE_CONFIG:$node, MIX_STATS:"off", PATH:"/usr/bin:/bin", HOME:$tmp, XDG_RUNTIME_DIR:$tmp,
+  $mt = run_argv([$mix, $here .. "/scenes_mesh_test.mix"], {clear_env:true, timeout:120,
+    env:{MIXOS_NODE_CONFIG:$node, MIX_STATS:"off", PATH:"/usr/bin:/bin", HOME:$tmp, XDG_RUNTIME_DIR:$tmp,
       SCENES_LOCAL_TARGET:"scenes", SCENES_REMOTE_TARGET:"scenes"}})
   check($mt.ok and contains($mt.stdout, "PASS"), "scenes-mesh-test refusal table: " .. $mt.stdout .. $mt.stderr)
 
   -- ── The behaviour half (Stage T): Quoin-shaped clicks at scene-editor ──
-  $pids.apps = start_citizen("apps", $fx .. "/fake-apps.mix", {FAKE_APPS_LOG:$apps_log}, "apps.log")
+  $pids.apps = start_citizen("apps", $fx .. "/fake_apps.mix", {FAKE_APPS_LOG:$apps_log}, "apps.log")
   services_until("apps")
   for each $i in range(1, 100)
     if len((estate().model ?? {}).templates ?? []) >= 5 then break end
@@ -345,13 +345,13 @@ try
   $st = act("editor.scene.edit", "btn_edit_scene", nil)
   check($st.last.kind == "edit", "edit ran: " .. json_encode($st.last))
   $launches = logged($apps_log, "apps.launch")
-  check(len($launches) == 1 and $launches[0].args.id == "dev.cosmix.ced" and deep_eq($launches[0].args.uris, [$panel_scene]),
+  check(len($launches) == 1 and $launches[0].args.id == "dev.mixos.ced" and deep_eq($launches[0].args.uris, [$panel_scene]),
     "apps.launch of ced on the absolute path: " .. json_encode($launches))
   $_ = until("edit hides the editor", "visible", false)
   check(len(logged($ced_log, "ced.open")) == 0, "no ced.open without ced")
 
   -- Edit with ced registered: ced.open, dialog hidden, the verdict pushed.
-  $pids.ced = start_citizen("ced", $fx .. "/fake-ced.mix", {FAKE_CED_LOG:$ced_log}, "ced.log")
+  $pids.ced = start_citizen("ced", $fx .. "/fake_ced.mix", {FAKE_CED_LOG:$ced_log}, "ced.log")
   services_until("ced")
   show_editor()
   $st = act("editor.scene.edit", "btn_edit_scene", nil)

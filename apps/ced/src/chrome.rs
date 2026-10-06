@@ -201,7 +201,7 @@ impl Look {
 
     /// A 1 px rule in the border colour.
     pub fn rule<'a, M: 'a>(&self) -> Element<'a, M> {
-        let border = self.tokens.border;
+        let border = self.tokens.palette.border;
         container(iced::widget::Space::new())
             .width(Length::Fill)
             .height(Length::Fixed(1.0))

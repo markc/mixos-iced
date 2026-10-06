@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Optional `design` adapter: compiled rendered colour pairs and `radius.md`
+  map into the existing palette and metrics, with strict missing-token and
+  unit checks. Ced, DOpus and Term share this conversion.
+
 - Caller-owned `date_picker` and `time_picker`: validated Gregorian dates,
   leap years and ranges; localised calendars and 12/24-hour time editing,
   optional seconds, stable field identities and a single Tab owner.

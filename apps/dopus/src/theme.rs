@@ -254,11 +254,11 @@ fn compile(selection: &Selection) -> Result<Compiled, String> {
 fn fallback() -> (Tokens, Chrome, Option<design::ResolvedTypography>) {
     let t = Tokens::default();
     let chrome = Chrome {
-        secondary: t.muted_surface,
-        secondary_text: t.text,
-        accent: t.ring,
-        success: t.primary,
-        warning: t.primary,
+        secondary: t.palette.muted_surface,
+        secondary_text: t.palette.text,
+        accent: t.palette.ring,
+        success: t.palette.primary,
+        warning: t.palette.primary,
         ..build_chrome(
             &compile(&Selection {
                 scheme: Scheme::default(),
@@ -354,12 +354,12 @@ impl Theme {
         iced::Theme::custom(
             "mixos-dopus",
             iced::theme::Palette {
-                background: self.tokens.surface,
-                text: self.tokens.text,
-                primary: self.tokens.primary,
+                background: self.tokens.palette.surface,
+                text: self.tokens.palette.text,
+                primary: self.tokens.palette.primary,
                 success: self.chrome.success,
                 warning: self.chrome.warning,
-                danger: self.tokens.destructive,
+                danger: self.tokens.palette.destructive,
             },
         )
     }
@@ -426,9 +426,9 @@ mod tests {
                 let tokens = Tokens::from_dictionary(dictionary).unwrap();
                 let style =
                     tokens.tooltip_style(dictionary.metrics["button.border_width"].value as f32);
-                assert_eq!(style.background, Some(tokens.elevated.into()));
-                assert_eq!(style.text_color, Some(tokens.elevated_text));
-                assert_eq!(tokens.elevated.a, 1.0);
+                assert_eq!(style.background, Some(tokens.palette.elevated.into()));
+                assert_eq!(style.text_color, Some(tokens.palette.elevated_text));
+                assert_eq!(tokens.palette.elevated.a, 1.0);
                 assert!(dictionary.colours.pairs["elevated"].contrast_ratio >= 4.5);
                 // The active-pane header pair stays on the now-real muted
                 // surface, which must also clear AA.
@@ -449,8 +449,8 @@ mod tests {
         );
         assert!(theme.notes.is_none(), "{:?}", theme.notes);
         assert_ne!(
-            theme.tokens.surface,
-            Tokens::default().surface,
+            theme.tokens.palette.surface,
+            Tokens::default().palette.surface,
             "not the fallback palette"
         );
         assert!(

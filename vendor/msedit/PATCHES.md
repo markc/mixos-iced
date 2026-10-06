@@ -20,6 +20,10 @@ distinct package names and pinned dependencies, and the adapter references
 this single global vendor directory. Those layout changes add no alternate
 buffer or highlighter implementation.
 
+External path modules declare their child file paths explicitly, including
+the extracted stdext module, so the same buffer compiles from its global
+vendor location without `mod.rs` files or duplicate implementations.
+
 Guards: the retained allocation-failure and Unicode buffer tests, property
 and OT convergence tests, deterministic generator and committed-definition
 freshness tests. A refresh must preserve all of them.

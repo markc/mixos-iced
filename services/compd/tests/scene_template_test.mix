@@ -94,10 +94,10 @@ for each $case in $cases
     $model = $models.notes($input.notes)
   end
   if $record then
-    write_file($fixtures .. "/" .. $case.id .. ".scene.mix", $doc)
+    write_file($fixtures .. "/" .. replace($case.id, "-", "_") .. ".scene.mix", $doc)
     write_file($fixtures .. "/" .. $case.id .. ".model.json", json_encode($model) .. "\n")
   else
-    check(read_file($fixtures .. "/" .. $case.id .. ".scene.mix") == $doc, "exact old document: " .. $case.id)
+    check(read_file($fixtures .. "/" .. replace($case.id, "-", "_") .. ".scene.mix") == $doc, "exact old document: " .. $case.id)
     check(deep_eq(json_parse(read_file($fixtures .. "/" .. $case.id .. ".model.json")), $model), "model capture: " .. $case.id)
   end
   push($manifest, {id: $case.id, name: $case.name})
@@ -321,10 +321,10 @@ for each $case in $panel_cases
   $model = $models.panel($snap, $case.icons, $at)
   $panel_models[$case.id] = $model
   if $record then
-    write_file($fixtures .. "/" .. $case.id .. ".scene.mix", $doc)
+    write_file($fixtures .. "/" .. replace($case.id, "-", "_") .. ".scene.mix", $doc)
     write_file($fixtures .. "/" .. $case.id .. ".model.json", json_encode($model) .. "\n")
   else
-    check(read_file($fixtures .. "/" .. $case.id .. ".scene.mix") == $doc, "exact old document: " .. $case.id)
+    check(read_file($fixtures .. "/" .. replace($case.id, "-", "_") .. ".scene.mix") == $doc, "exact old document: " .. $case.id)
     check(deep_eq(json_parse(read_file($fixtures .. "/" .. $case.id .. ".model.json")), $model), "model capture: " .. $case.id)
   end
   -- Same mount, same page, and the same visible tree by shape.

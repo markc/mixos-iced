@@ -1,16 +1,16 @@
 // Adapted Microsoft Edit modules; see buffer/README.md and LICENSE.
 
-    pub mod document;
-    pub mod gap_buffer;
-    pub mod helpers;
-    pub mod navigation;
-    pub mod simd;
-    pub mod unicode;
-    pub mod stdext {
-        pub mod helpers;
-        pub mod sys_unix;
-        pub mod unicode {
-            mod utf8;
-            pub use utf8::*;
-        }
-    }
+#[path = "buffer/document.rs"]
+pub mod document;
+#[path = "buffer/gap_buffer.rs"]
+pub mod gap_buffer;
+#[path = "buffer/helpers.rs"]
+pub mod helpers;
+#[path = "buffer/navigation.rs"]
+pub mod navigation;
+#[path = "buffer/simd.rs"]
+pub mod simd;
+#[path = "buffer/stdext.rs"]
+pub mod stdext;
+#[path = "buffer/unicode.rs"]
+pub mod unicode;

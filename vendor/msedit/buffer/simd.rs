@@ -5,7 +5,9 @@
 
 //! Provides various high-throughput utilities.
 
+#[path = "simd/lines_bwd.rs"]
 pub mod lines_bwd;
+#[path = "simd/lines_fwd.rs"]
 pub mod lines_fwd;
 
 pub use lines_bwd::*;
@@ -17,7 +19,9 @@ mod test {
     pub fn make_rng() -> impl FnMut() -> usize {
         let mut state = 1442695040888963407u64;
         move || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             state as usize
         }
     }

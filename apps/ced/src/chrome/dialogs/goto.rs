@@ -82,7 +82,7 @@ impl Goto {
                 "Line (1–{}), optionally :column",
                 self.lines.max(1)
             ))
-            .color(look.tokens.muted_text),
+            .color(look.tokens.palette.muted_text),
             text_input("42 or 42:7", &self.input)
                 .id(INPUT)
                 .on_input(move |s| m(GotoMsg::Input(s)))
@@ -94,7 +94,10 @@ impl Goto {
         ]
         .spacing(8);
         if let Some(e) = &self.error {
-            body = body.push(look.small(e.as_str()).color(look.tokens.destructive));
+            body = body.push(
+                look.small(e.as_str())
+                    .color(look.tokens.palette.destructive),
+            );
         }
         frame(
             look,

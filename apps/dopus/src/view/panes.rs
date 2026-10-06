@@ -108,14 +108,14 @@ pub(super) fn pane_header<'a>(
         })
         .style(look.strip(
             if active {
-                look.tokens.muted_surface
+                look.tokens.palette.muted_surface
             } else {
                 look.chrome.secondary
             },
             if active {
-                look.tokens.text
+                look.tokens.palette.text
             } else {
-                look.tokens.muted_text
+                look.tokens.palette.muted_text
             },
         ))
         .into()
@@ -130,13 +130,16 @@ pub(super) fn summary_footer(
         text: footer.text,
         font: look.ui_font,
         px: look.small_px,
-        color: look.tokens.muted_text,
+        color: look.tokens.palette.muted_text,
     })
     .width(Length::Fill)
     .max_width(footer.width)
     .padding([look.chrome.small, look.chrome.pad])
     .clip(true)
-    .style(look.strip(look.tokens.muted_surface, look.tokens.muted_text))
+    .style(look.strip(
+        look.tokens.palette.muted_surface,
+        look.tokens.palette.muted_text,
+    ))
     .into()
 }
 
@@ -194,7 +197,7 @@ impl Divider {
             edge: look.chrome.edge,
             target,
             sides,
-            border: look.tokens.border,
+            border: look.tokens.palette.border,
             accent: look.chrome.accent,
         }
     }

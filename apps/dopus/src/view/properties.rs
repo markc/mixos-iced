@@ -76,7 +76,7 @@ pub fn sidebar<'a>(
         text: title,
         font: look.ui_font,
         px: look.sidebar_px(),
-        color: look.tokens.text,
+        color: look.tokens.palette.text,
     });
     for (label, value) in fields {
         content = content.push(
@@ -84,13 +84,13 @@ pub fn sidebar<'a>(
                 text(label)
                     .font(look.ui_font)
                     .size(look.sidebar_px())
-                    .color(look.tokens.muted_text),
+                    .color(look.tokens.palette.muted_text),
                 text(value)
                     .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
                     .shaping(iced::advanced::text::Shaping::Advanced)
                     .font(look.ui_font)
                     .size(look.sidebar_px())
-                    .color(look.tokens.text)
+                    .color(look.tokens.palette.text)
                     .width(Length::Fill),
             ]
             .spacing(look.chrome.small),

@@ -264,26 +264,26 @@ fn compile(selection: &Selection) -> Result<Compiled, String> {
 fn fallback() -> (Tokens, Chrome, Palette, Option<design::ResolvedTypography>) {
     let t = Tokens::default();
     let chrome = Chrome {
-        secondary: t.muted_surface,
-        secondary_text: t.text,
-        accent: t.ring,
-        warning: t.primary,
-        success: t.primary,
+        secondary: t.palette.muted_surface,
+        secondary_text: t.palette.text,
+        accent: t.palette.ring,
+        warning: t.palette.primary,
+        success: t.palette.primary,
     };
-    let hl = [t.text; HL_CLASSES];
+    let hl = [t.palette.text; HL_CLASSES];
     let palette = Palette {
-        background: t.surface,
-        text: t.text,
-        gutter_background: t.surface,
-        gutter_text: t.muted_text,
-        current_line: t.muted_surface,
-        selection: t.selection,
-        caret: t.ring,
-        human_other: t.primary,
-        agent: t.ring,
-        error: t.destructive,
-        warning: t.primary,
-        note: t.muted_text,
+        background: t.palette.surface,
+        text: t.palette.text,
+        gutter_background: t.palette.surface,
+        gutter_text: t.palette.muted_text,
+        current_line: t.palette.muted_surface,
+        selection: t.palette.selection,
+        caret: t.palette.ring,
+        human_other: t.palette.primary,
+        agent: t.palette.ring,
+        error: t.palette.destructive,
+        warning: t.palette.primary,
+        note: t.palette.muted_text,
         highlight: hl,
     };
     (t, chrome, palette, None)
@@ -458,12 +458,12 @@ impl Theme {
         iced::Theme::custom(
             "mixos-ced",
             iced::theme::Palette {
-                background: self.tokens.surface,
-                text: self.tokens.text,
-                primary: self.tokens.primary,
+                background: self.tokens.palette.surface,
+                text: self.tokens.palette.text,
+                primary: self.tokens.palette.primary,
                 success: self.chrome.success,
                 warning: self.chrome.warning,
-                danger: self.tokens.destructive,
+                danger: self.tokens.palette.destructive,
             },
         )
     }
@@ -630,8 +630,8 @@ mod tests {
         );
         assert!(theme.notes.is_none(), "{:?}", theme.notes);
         assert_ne!(
-            theme.tokens.surface,
-            Tokens::default().surface,
+            theme.tokens.palette.surface,
+            Tokens::default().palette.surface,
             "not the fallback palette"
         );
         assert!(

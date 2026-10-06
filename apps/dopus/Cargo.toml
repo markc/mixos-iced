@@ -20,7 +20,7 @@ mod_module_files = "deny"
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia", "image"] }
 iced_tiny_skia = { workspace = true, features = ["image", "wayland"] }
-toolkit = { workspace = true, features = ["tiny-skia"] }
+toolkit = { workspace = true, features = ["tiny-skia", "design"] }
 design.workspace = true
 dopus-core = { path = "crates/dopus-core" }
 bus = { workspace = true, features = ["native"] }

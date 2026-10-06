@@ -24,6 +24,7 @@ mod_module_files = "deny"
 # features, for the examples.
 [features]
 default = []
+design = ["dep:design"]
 # Eager raster decoding (`images`). iced's workspace turns the `image`
 # crate on with no codecs, so the png codec is enabled here too: a
 # standalone `cargo test -p toolkit` must decode its fixtures.
@@ -37,6 +38,7 @@ gallery-wgpu = ["gallery", "wgpu", "iced/wgpu-bare"]
 gallery-tiny-skia = ["gallery", "tiny-skia", "iced/tiny-skia"]
 
 [dependencies]
+design = { workspace = true, optional = true }
 iced_core = { workspace = true, features = ["advanced"] }
 iced_futures = { workspace = true }
 iced_widget = { workspace = true }

@@ -471,7 +471,7 @@ fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rect
                 wrapping: iced::advanced::text::Wrapping::None,
             },
             position,
-            look.tokens.popover_text,
+            look.tokens.palette.popover_text,
             clip,
         )
     });
@@ -824,7 +824,9 @@ mod tests {
             .layers()
             .iter()
             .flat_map(|layer| layer.quads.iter())
-            .filter(|(_, background)| *background == iced::Background::Color(look.tokens.selection))
+            .filter(|(_, background)| {
+                *background == iced::Background::Color(look.tokens.palette.selection)
+            })
             .map(|(quad, _)| quad.bounds)
             .collect();
         assert_eq!(backgrounds.len(), 2);
@@ -1220,12 +1222,14 @@ mod tests {
         let selection = quads
             .iter()
             .position(|(_, background)| {
-                *background == iced::Background::Color(look.tokens.selection)
+                *background == iced::Background::Color(look.tokens.palette.selection)
             })
             .expect("selected row background");
         let outline = quads
             .iter()
-            .position(|(quad, _)| quad.border.width > 0.0 && quad.border.color == look.tokens.ring)
+            .position(|(quad, _)| {
+                quad.border.width > 0.0 && quad.border.color == look.tokens.palette.ring
+            })
             .expect("drop target outline");
         assert!(
             outline > selection,

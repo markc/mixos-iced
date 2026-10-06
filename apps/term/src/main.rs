@@ -230,8 +230,8 @@ fn run(settings: config::Settings) -> Result<(), String> {
     .theme(iced::Theme::Dark)
     .default_font(ui_font)
     .style(|state: &State, _theme| iced::theme::Style {
-        background_color: state.tokens.surface,
-        text_color: state.tokens.text,
+        background_color: state.tokens.palette.surface,
+        text_color: state.tokens.palette.text,
     })
     .window(iced::window::Settings {
         size: Size::new(900.0, 560.0),
@@ -795,7 +795,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_theme| container::Style {
-            background: Some(tokens.surface.into()),
+            background: Some(tokens.palette.surface.into()),
             ..container::Style::default()
         })
         .into()
@@ -822,17 +822,17 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
         button(text(label).size(13.0)).padding([3.0, 12.0]).style(
             move |_theme: &iced::Theme, status: button::Status| {
                 let (background, text_color) = if active {
-                    (tokens.primary, tokens.primary_text)
+                    (tokens.palette.primary, tokens.palette.primary_text)
                 } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                    (tokens.muted_surface, tokens.text)
+                    (tokens.palette.muted_surface, tokens.palette.text)
                 } else {
-                    (tokens.card, tokens.muted_text)
+                    (tokens.palette.card, tokens.palette.muted_text)
                 };
                 button::Style {
                     background: Some(Background::Color(background)),
                     text_color,
                     border: Border {
-                        radius: tokens.radius.into(),
+                        radius: tokens.metrics.radius.md.into(),
                         ..Border::default()
                     },
                     ..button::Style::default()
@@ -843,7 +843,7 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
     let mut strip: Row<'_, Message> = Row::new().spacing(4.0).padding([3.0, 6.0]);
     // Put failures first so a long tab list cannot push the notice offscreen.
     if let Some(notice) = &state.paste_notice {
-        strip = strip.push(text(notice).size(13.0).color(tokens.text));
+        strip = strip.push(text(notice).size(13.0).color(tokens.palette.text));
     }
     for label in &state.shape.tabs {
         strip = strip
@@ -854,7 +854,7 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fixed(layout::strip_height(scale)))
         .style(move |_theme| container::Style {
-            background: Some(tokens.card.into()),
+            background: Some(tokens.palette.card.into()),
             ..container::Style::default()
         })
         .into()
@@ -910,7 +910,7 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
         // texture must not paint over the neighbour.
         .clip(true)
         .style(move |_theme| container::Style {
-            background: Some(tokens.surface.into()),
+            background: Some(tokens.palette.surface.into()),
             ..container::Style::default()
         });
     let outer = container(inner)
@@ -932,9 +932,9 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
 /// keeps focus changes from resizing a PTY — only its colour.
 fn frame_colour(shape: &Shape, id: u64, tokens: toolkit::Tokens) -> iced::Color {
     if id == shape.active_pane && shape.visible().len() > 1 {
-        tokens.ring
+        tokens.palette.ring
     } else {
-        tokens.border
+        tokens.palette.border
     }
 }
 
@@ -1654,7 +1654,7 @@ mod tests {
     fn the_focus_ring_shows_only_when_there_is_more_than_one_pane() {
         let tokens = theme::tokens();
         assert_ne!(
-            tokens.ring, tokens.border,
+            tokens.palette.ring, tokens.palette.border,
             "the test needs two distinct tokens"
         );
         let lone = Shape {
@@ -1662,7 +1662,7 @@ mod tests {
             tree: Some(Node::Leaf(7)),
             active_pane: 7,
         };
-        assert_eq!(frame_colour(&lone, 7, tokens), tokens.border);
+        assert_eq!(frame_colour(&lone, 7, tokens), tokens.palette.border);
 
         let split = Shape {
             tree: Some(Node::Split {
@@ -1673,8 +1673,8 @@ mod tests {
             }),
             ..lone
         };
-        assert_eq!(frame_colour(&split, 7, tokens), tokens.ring);
-        assert_eq!(frame_colour(&split, 8, tokens), tokens.border);
+        assert_eq!(frame_colour(&split, 7, tokens), tokens.palette.ring);
+        assert_eq!(frame_colour(&split, 8, tokens), tokens.palette.border);
     }
 
     /// A real `State` with a PTY-backed tab set, no window and no Bus.

@@ -99,10 +99,10 @@ fn editor(look: Look, pane_id: PaneId, text: &str) -> Element<'_, Msg> {
 fn bar_look(look: &Look) -> impl Fn(&iced::Theme, button::Status) -> button::Style + 'static {
     let edge = look.chrome.edge;
     let (background, border, text_color, radius) = (
-        look.tokens.input,
-        look.tokens.input,
+        look.tokens.palette.input,
+        look.tokens.palette.input,
         look.chrome.secondary_text,
-        look.tokens.radius,
+        look.tokens.metrics.radius.md,
     );
     move |_theme, _status| button::Style {
         background: Some(background.into()),
@@ -125,13 +125,13 @@ fn field_look(
 {
     let edge = look.chrome.edge;
     let (background, border, text_color, muted, ring, selection, radius) = (
-        look.tokens.input,
-        look.tokens.input,
+        look.tokens.palette.input,
+        look.tokens.palette.input,
         look.chrome.secondary_text,
-        look.tokens.muted_text,
-        look.tokens.ring,
-        look.tokens.selection,
-        look.tokens.radius,
+        look.tokens.palette.muted_text,
+        look.tokens.palette.ring,
+        look.tokens.palette.selection,
+        look.tokens.metrics.radius.md,
     );
     move |_theme, status| iced::widget::text_input::Style {
         background: background.into(),

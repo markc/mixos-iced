@@ -6,7 +6,9 @@
 
 //! Everything related to Unicode lives here.
 
+#[path = "unicode/measurement.rs"]
 mod measurement;
+#[path = "unicode/tables.rs"]
 mod tables;
 
 pub use measurement::*;

@@ -18,7 +18,7 @@ pub fn navigation<'a>(
     panels_open: [bool; 2],
     actions: &[crate::verbs::ActionRow],
 ) -> Element<'a, Msg> {
-    let disabled_tint = crate::icons::hex(look.tokens.muted_text);
+    let disabled_tint = crate::icons::hex(look.tokens.palette.muted_text);
     let control = |icon, action, label| {
         let enabled = enabled(active, busy, action);
         let tint = if enabled { tint } else { &disabled_tint };
@@ -66,9 +66,9 @@ pub fn navigation<'a>(
     .align_y(iced::Alignment::Center);
     let panel = |icon, action, name: &str, open| {
         let tint = crate::icons::hex(if open {
-            look.tokens.selection_text
+            look.tokens.palette.selection_text
         } else {
-            look.tokens.muted_text
+            look.tokens.palette.muted_text
         });
         let button = button(super::image_widget(look, icons, &tint, icon))
             .padding(look.chrome.small)
@@ -76,7 +76,7 @@ pub fn navigation<'a>(
             .style(move |theme, status| {
                 let mut style = super::button_look(&look)(theme, status);
                 if open {
-                    style.background = Some(look.tokens.selection.into());
+                    style.background = Some(look.tokens.palette.selection.into());
                 }
                 style
             });

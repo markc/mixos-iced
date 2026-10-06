@@ -64,7 +64,7 @@ mod tests {
         let resolved = resolve().expect("the embedded design compiles for term");
         // Not a colour assertion — a contrast one. Surface and text coming
         // back equal would render an invisible window and still be "tokens".
-        assert_ne!(resolved.surface, resolved.text);
-        assert_ne!(resolved.surface, Tokens::default().surface);
+        assert_ne!(resolved.palette.surface, resolved.palette.text);
+        assert_ne!(resolved.palette.surface, Tokens::default().palette.surface);
     }
 }

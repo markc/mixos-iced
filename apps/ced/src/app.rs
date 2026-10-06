@@ -280,8 +280,8 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
     .subscription(App::subscription)
     .theme(|app: &App| app.theme.iced_theme())
     .style(|app: &App, _| iced::theme::Style {
-        background_color: app.theme.tokens.surface,
-        text_color: app.theme.tokens.text,
+        background_color: app.theme.tokens.palette.surface,
+        text_color: app.theme.tokens.palette.text,
     })
     .default_font(ui_font)
     .window(iced::window::Settings {
@@ -1651,9 +1651,9 @@ impl App {
                 column![
                     look.text("No file open")
                         .size(look.ui_px * 1.3)
-                        .color(look.tokens.muted_text),
+                        .color(look.tokens.palette.muted_text),
                     look.small("Ctrl+O opens a file · Ctrl+N starts a new buffer")
-                        .color(look.tokens.muted_text),
+                        .color(look.tokens.palette.muted_text),
                 ]
                 .spacing(8)
                 .align_x(iced::Alignment::Center),
@@ -1668,7 +1668,7 @@ impl App {
                     "Opening {}…",
                     tab.path.as_deref().unwrap_or("buffer")
                 ))
-                .color(look.tokens.muted_text),
+                .color(look.tokens.palette.muted_text),
             )
             .center(Length::Fill)
             .style(look.strip(self.theme.palette.background, self.theme.palette.text))

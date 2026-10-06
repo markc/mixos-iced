@@ -247,8 +247,8 @@ pub fn button_look(
 ) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style + 'static {
     let (text, hover, radius) = (
         look.chrome.secondary_text,
-        look.tokens.muted_surface,
-        look.tokens.radius,
+        look.tokens.palette.muted_surface,
+        look.tokens.metrics.radius.md,
     );
     move |_theme, status| iced::widget::button::Style {
         background: match status {

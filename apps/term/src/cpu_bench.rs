@@ -59,7 +59,13 @@ fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
         surface.paint(&mut raster, &screen, &[]);
         surface.cache_handle(1);
         let height = baseline.height + 64;
-        let viewport = Viewport::with_physical_size(Size::new(800, height), scale);
+        let viewport = Viewport::with_physical_size(
+            Size::new(800, height),
+            iced::advanced::renderer::Scale {
+                window: scale,
+                application: 1.0,
+            },
+        );
         let clip = Rectangle::with_size(viewport.logical_size());
         let images = surface.images(scale);
         for pair in images.windows(2) {
@@ -155,7 +161,13 @@ fn tiny_skia_frame_bench() {
                 default_text_size: Pixels(13.0),
                 ..Default::default()
             });
-            let viewport = Viewport::with_physical_size(Size::new(2250, 1250), 2.5);
+            let viewport = Viewport::with_physical_size(
+                Size::new(2250, 1250),
+                iced::advanced::renderer::Scale {
+                    window: 2.5,
+                    application: 1.0,
+                },
+            );
             let bounds = Rectangle::with_size(viewport.logical_size());
             let mut targets: Vec<_> = (0..3)
                 .map(|_| tiny_skia::Pixmap::new(2250, 1250).unwrap())
@@ -314,7 +326,13 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
         };
         let mut surface = Surface::default();
         let mut reference = RgbaBand::default();
-        let mut viewport = Viewport::with_physical_size(Size::new(480, 480), scale);
+        let mut viewport = Viewport::with_physical_size(
+            Size::new(480, 480),
+            iced::advanced::renderer::Scale {
+                window: scale,
+                application: 1.0,
+            },
+        );
         let mut full = Rectangle::with_size(viewport.logical_size());
         let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
             default_text_size: Pixels(13.0),
@@ -340,7 +358,13 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
             if n % 97 == 23 {
                 scale = if scale == 2.5 { 1.0 } else { 2.5 };
                 raster = raster.resized(scale, 13.0).unwrap();
-                viewport = Viewport::with_physical_size(Size::new(480, 480), scale);
+                viewport = Viewport::with_physical_size(
+                    Size::new(480, 480),
+                    iced::advanced::renderer::Scale {
+                        window: scale,
+                        application: 1.0,
+                    },
+                );
                 full = Rectangle::with_size(viewport.logical_size());
                 history = PresentHistory::default(); // configure_surface does this too
             }
@@ -714,7 +738,13 @@ fn tiny_skia_foot_phases_bench() {
         default_text_size: Pixels(13.0),
         ..Default::default()
     });
-    let viewport = Viewport::with_physical_size(Size::new(2250, 1250), 2.5);
+    let viewport = Viewport::with_physical_size(
+        Size::new(2250, 1250),
+        iced::advanced::renderer::Scale {
+            window: 2.5,
+            application: 1.0,
+        },
+    );
     let bounds = Rectangle::with_size(viewport.logical_size());
     let mut mask = tiny_skia::Mask::new(2250, 1250).unwrap();
     let pixels = Bytes::from(rgba);

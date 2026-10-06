@@ -296,7 +296,7 @@ fn dialog_button<'a>(
         border: Border {
             color: border,
             width: if quiet { look.chrome.edge } else { 0.0 },
-            radius: look.tokens.radius.into(),
+            radius: look.tokens.metrics.radius.md.into(),
         },
         ..Default::default()
     })
@@ -311,14 +311,14 @@ fn field_look(
 ) -> impl Fn(&iced::Theme, iced::widget::text_input::Status) -> iced::widget::text_input::Style + 'static
 {
     let (background, border, text_color, muted, ring, warning, selection, radius) = (
-        look.tokens.input,
-        look.tokens.border,
-        look.tokens.popover_text,
-        look.tokens.muted_text,
-        look.tokens.ring,
+        look.tokens.palette.input,
+        look.tokens.palette.border,
+        look.tokens.palette.popover_text,
+        look.tokens.palette.muted_text,
+        look.tokens.palette.ring,
         look.chrome.warning,
-        look.tokens.selection,
-        look.tokens.radius,
+        look.tokens.palette.selection,
+        look.tokens.metrics.radius.md,
     );
     move |_theme, status| iced::widget::text_input::Style {
         background: background.into(),

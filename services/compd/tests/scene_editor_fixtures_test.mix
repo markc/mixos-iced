@@ -102,12 +102,12 @@ check($props.panel_changed_no_dialog.dialog == nil, "dialog null when none is lo
 
 -- 4. State files parse (the unreadable one must not), with the frozen records.
 for each $name in ["state-forks", "state-promoting-staged", "state-promoting-swapped", "state-promoting-placed", "state-resetting-swapped"]
-  $state = data_parse(read_file($fx .. "/" .. $name .. ".conf.mix"))
+  $state = data_parse(read_file($fx .. "/" .. replace($name, "-", "_") .. ".conf.mix"))
   check($state.schema_version == 1 and type($state.enabled) == "list" and type($state.origins) == "map", $name .. ": base shape")
   check(not contains($state.enabled, "editor"), $name .. ": editor is never enabled")
 end
 for each $phase in ["staged", "swapped", "placed"]
-  $state = data_parse(read_file($fx .. "/state-promoting-" .. $phase .. ".conf.mix"))
+  $state = data_parse(read_file($fx .. "/state_promoting_" .. $phase .. ".conf.mix"))
   check($state.promoting.phase == $phase and starts_with($state.promoting.stage, ".stage-") and starts_with($state.promoting.backup, ".recovery/"), "promoting " .. $phase)
 end
 $unreadable = true
