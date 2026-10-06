@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Small neutral string backend for presentation tests.
 
-use toolkit::editor_pane::*;
 use std::ops::Range;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use toolkit::editor_pane::*;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -28,17 +28,22 @@ impl Text {
             body: Arc::from(body),
             starts: Arc::from(starts),
             identity: NEXT.fetch_add(1, Ordering::Relaxed),
-            revision: 0, state: ViewState::default(),
+            revision: 0,
+            state: ViewState::default(),
         })
     }
 }
 
 impl Source for Text {
-    fn state(&self) -> ViewState { self.state.clone() }
+    fn state(&self) -> ViewState {
+        self.state.clone()
+    }
     fn identity(&self) -> u64 {
         self.identity
     }
-    fn revision(&self) -> u64 { self.revision }
+    fn revision(&self) -> u64 {
+        self.revision
+    }
     fn len(&self) -> usize {
         self.body.len()
     }
@@ -143,13 +148,21 @@ impl Text {
         starts.extend(self.body.match_indices('\n').map(|(offset, _)| offset + 1));
         self.starts = Arc::from(starts);
         self.revision += 1;
-        self.state.sel = Selection { anchor: a + text.len(), head: a + text.len() };
+        self.state.sel = Selection {
+            anchor: a + text.len(),
+            head: a + text.len(),
+        };
     }
     pub fn apply(&mut self, message: Message) {
         match message {
             Message::Scrolled(scroll) => self.state.scroll = scroll,
-            Message::Preedit(_) => { self.state.composition = Some(self.state.sel.head..self.state.sel.head); }
-            Message::ImeCommit(text) => { self.replace_selection(&text); self.state.composition = None; }
+            Message::Preedit(_) => {
+                self.state.composition = Some(self.state.sel.head..self.state.sel.head);
+            }
+            Message::ImeCommit(text) => {
+                self.replace_selection(&text);
+                self.state.composition = None;
+            }
             Message::Command(command) => match command {
                 Command::Insert(text) => self.replace_selection(&text),
                 Command::Newline => self.replace_selection("\n"),
@@ -158,41 +171,77 @@ impl Text {
                     if self.state.sel.anchor == self.state.sel.head {
                         let head = self.state.sel.head;
                         let other = if command == Command::Backspace {
-                            self.body[..head].grapheme_indices(true).next_back().map_or(0, |(offset, _)| offset)
+                            self.body[..head]
+                                .grapheme_indices(true)
+                                .next_back()
+                                .map_or(0, |(offset, _)| offset)
                         } else {
-                            self.body[head..].graphemes(true).next().map_or(head, |text| head + text.len())
+                            self.body[head..]
+                                .graphemes(true)
+                                .next()
+                                .map_or(head, |text| head + text.len())
                         };
                         self.state.sel.anchor = other;
                     }
                     self.replace_selection("");
                 }
                 Command::SetSelection(selection) => self.state.sel = selection,
-                Command::SelectAll => self.state.sel = Selection { anchor: 0, head: self.len() },
+                Command::SelectAll => {
+                    self.state.sel = Selection {
+                        anchor: 0,
+                        head: self.len(),
+                    }
+                }
                 Command::SelectLine(at) => {
                     let line = self.line_of(at);
-                    self.state.sel = Selection { anchor: self.line_start(line).unwrap_or(0), head: self.content_end(line) };
+                    self.state.sel = Selection {
+                        anchor: self.line_start(line).unwrap_or(0),
+                        head: self.content_end(line),
+                    };
                 }
                 Command::SelectWord(at) => {
-                    if let Some((start, word)) = self.body.unicode_word_indices().find(|(start, word)| at >= *start && at <= start + word.len()) {
-                        self.state.sel = Selection { anchor: start, head: start + word.len() };
+                    if let Some((start, word)) = self
+                        .body
+                        .unicode_word_indices()
+                        .find(|(start, word)| at >= *start && at <= start + word.len())
+                    {
+                        self.state.sel = Selection {
+                            anchor: start,
+                            head: start + word.len(),
+                        };
                     }
                 }
                 Command::Move { to, extend } => {
                     let head = self.clamp_offset(self.state.sel.head);
                     let next = match to {
                         Motion::To(offset) => self.clamp_offset(offset),
-                        Motion::DocStart => 0, Motion::DocEnd => self.len(),
+                        Motion::DocStart => 0,
+                        Motion::DocEnd => self.len(),
                         Motion::Home => self.line_start(self.line_of(head)).unwrap_or(0),
                         Motion::End => self.content_end(self.line_of(head)),
-                        Motion::Left => self.body[..head].grapheme_indices(true).next_back().map_or(0, |(offset, _)| offset),
-                        Motion::Right => self.body[head..].graphemes(true).next().map_or(head, |text| head + text.len()),
-                        Motion::WordLeft => self.body[..head].unicode_word_indices().next_back().map_or(0, |(offset, _)| offset),
-                        Motion::WordRight => self.body[head..].unicode_word_indices().next().map_or(self.len(), |(offset, word)| head + offset + word.len()),
+                        Motion::Left => self.body[..head]
+                            .grapheme_indices(true)
+                            .next_back()
+                            .map_or(0, |(offset, _)| offset),
+                        Motion::Right => self.body[head..]
+                            .graphemes(true)
+                            .next()
+                            .map_or(head, |text| head + text.len()),
+                        Motion::WordLeft => self.body[..head]
+                            .unicode_word_indices()
+                            .next_back()
+                            .map_or(0, |(offset, _)| offset),
+                        Motion::WordRight => self.body[head..]
+                            .unicode_word_indices()
+                            .next()
+                            .map_or(self.len(), |(offset, word)| head + offset + word.len()),
                         // A small example model; full engine-specific motions remain intents.
                         _ => head,
                     };
                     self.state.sel.head = next;
-                    if !extend { self.state.sel.anchor = next; }
+                    if !extend {
+                        self.state.sel.anchor = next;
+                    }
                 }
                 _ => {}
             },

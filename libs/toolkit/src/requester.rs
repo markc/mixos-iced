@@ -279,7 +279,9 @@ impl Requester {
     }
 
     /// The latest navigation or submission error.
-    pub fn error(&self) -> Option<&str> { self.error.as_deref() }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
 
     /// The dialog title for the mode.
     #[must_use]
@@ -455,7 +457,10 @@ impl Requester {
         let location = row![
             button(text("↑").size(m.text.md))
                 .on_press(Message::from(Event::Parent))
-                .style(move |_, status| theme::button::secondary(&crate::Theme::new(tokens), status)),
+                .style(move |_, status| theme::button::secondary(
+                    &crate::Theme::new(tokens),
+                    status
+                )),
             text(self.dir.to_string_lossy().to_string())
                 .size(m.text.sm)
                 .width(Length::Fill),
@@ -504,7 +509,9 @@ impl Requester {
                     },
                     ..iced_widget::button::Style::default()
                 });
-            list = list.push(iced_widget::mouse_area(item).on_double_click(Message::from(Event::Activate(i))));
+            list = list.push(
+                iced_widget::mouse_area(item).on_double_click(Message::from(Event::Activate(i))),
+            );
         }
         if self.truncated {
             list = list.push(
@@ -542,11 +549,9 @@ impl Requester {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.clone());
                 let msg = Message::from(Event::Recent(path.clone()));
-                recent = recent.push(
-                    button(text(name).size(m.text.sm))
-                        .on_press(msg)
-                        .style(move |_, status| theme::button::text(&crate::Theme::new(tokens), status)),
-                );
+                recent = recent.push(button(text(name).size(m.text.sm)).on_press(msg).style(
+                    move |_, status| theme::button::text(&crate::Theme::new(tokens), status),
+                ));
             }
             body = body.push(
                 scrollable(recent).direction(scrollable::Direction::Horizontal(

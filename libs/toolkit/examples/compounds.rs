@@ -2,4 +2,6 @@
 //! Run with `--features gallery-tiny-skia` or `gallery-wgpu`.
 #[path = "compounds/app.rs"]
 mod app;
-fn main() -> toolkit::iced::Result { app::run() }
+fn main() -> toolkit::iced::Result {
+    app::run()
+}

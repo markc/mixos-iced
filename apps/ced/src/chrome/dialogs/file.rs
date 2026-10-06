@@ -93,7 +93,7 @@ impl FileDialog {
                 look.tokens,
                 &self.strings,
             )
-            .map(|event| Msg::Dialog(DialogMsg::File(event)));
+            .map(file_message);
         let action = match self.mode {
             FileMode::Open => "Open",
             FileMode::SaveAs { .. } => "Save",
@@ -119,9 +119,25 @@ impl FileDialog {
     }
 }
 
+fn file_message(event: FileMsg) -> Msg {
+    match event {
+        FileMsg::Complete => Msg::FileTab,
+        event => Msg::Dialog(DialogMsg::File(event)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_uses_the_cursor_positioning_handler() {
+        assert!(matches!(file_message(FileMsg::Complete), Msg::FileTab));
+        assert!(matches!(
+            file_message(FileMsg::Input("src/".into())),
+            Msg::Dialog(DialogMsg::File(FileMsg::Input(_)))
+        ));
+    }
 
     fn tree() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
