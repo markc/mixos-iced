@@ -9,11 +9,13 @@ The compositor is built with `--no-default-features --features backend-all`;
 Run `mix tools/collect_units.mix` to collect units under `target/mixos/units`.
 Run `mix tools/collect_apps.mix` to collect desktop entries under
 `target/mixos/share/applications`; install them in `/opt/mixos/share/applications`
-and include `/opt/mixos/share` in the session's `XDG_DATA_DIRS`, preserving
-the image's `/usr/local/share:/usr/share` entries so its cursor themes remain
-discoverable. These paths refer to the image's filesystem. Compd falls back
-to its built-in arrow if no usable theme image can be loaded; explicitly
-hidden cursors and client-supplied cursor surfaces retain their behaviour.
+and include `/opt/mixos/share` in the session's `XDG_DATA_DIRS`. A profile
+that restricts that variable to its own application catalogue can set
+`XCURSOR_PATH=/opt/mixos/share/icons:/usr/local/share/icons:/usr/share/icons`
+to find the image's cursor themes separately. These paths refer to the
+image's filesystem. Compd falls back to its built-in arrow if no usable
+theme image can be loaded; explicitly hidden cursors and client-supplied
+cursor surfaces retain their behaviour.
 The collector never installs or starts them. An image installer supplies the
 `mixos` account, the `seat` group and `/etc/mixos/session/4.env`. Its account
 must have the numeric identity selected for the desktop profile; a controlled
