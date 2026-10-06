@@ -3,6 +3,8 @@
 //! terminal surface. Production engines bind to the same neutral interfaces.
 #[path = "document.rs"]
 mod document;
+#[path = "../gallery/strings.rs"]
+mod strings;
 use std::path::{Path, PathBuf};
 use toolkit::iced::widget::{button, column, container, row, text};
 use toolkit::iced::{self, Element, Length, Size};
@@ -61,9 +63,9 @@ impl file::Source for Listing<'_> {
 impl Demo {
     pub fn new() -> Self {
         let tokens = Tokens::dark();
-        Self { document: document::Text::from_text("Borrowed document\n\tTab cells · 中 · e\u{301} · 👨‍👩‍👧\n\nType, select and scroll here.\n").unwrap(),
+        Self { document: document::Text::from_text(&strings::label("compound-document")).unwrap(),
             palette: tokens.into(), tokens, files: (0..100_000).map(|index| (PathBuf::from(format!("/example/{index}")), format!("file-{index}.txt"))).collect(),
-            selected: None, split: 0.42, notice: "100,000 files · viewport-only shaping".into(), wheel: 0.0, dark: true }
+            selected: None, split: 0.42, notice: strings::label("compound-files-count"), wheel: 0.0, dark: true }
     }
     pub fn update(&mut self, message: Message) {
         match message {
@@ -73,7 +75,7 @@ impl Demo {
             ) => self.selected = Some(path),
             Message::File(message) => self.notice = format!("{message:?}"),
             Message::Split(split) => self.split = split.clamp(0.15, 0.85),
-            Message::Sort(column) => self.notice = format!("Sort column {column}"),
+            Message::Sort(column) => self.notice = strings::format("compound-sort", &[("column", column.to_string())]),
             Message::Theme => {
                 self.dark = !self.dark;
                 self.tokens = if self.dark {
@@ -94,7 +96,7 @@ impl Demo {
     pub fn theme(&self) -> Theme {
         Theme::new(self.tokens)
     }
-    pub fn document(&self) -> &impl editor::Source {
+    pub fn document(&self) -> &document::Text {
         &self.document
     }
     pub fn view(&self) -> Element<'_, Message, Theme> {
@@ -123,20 +125,20 @@ impl Demo {
                 ..Default::default()
             },
             columns,
-            ["Name".into(), "Size".into(), "Modified".into()],
+            [strings::label("compound-name"), strings::label("compound-size"), strings::label("compound-modified")],
             0,
             true,
             Message::Sort,
         );
         let files = file::column(
-            text("Synthetic files"),
+            text(strings::label("compound-files")),
             header,
             listing.map(Message::File),
             text(self.notice.clone()),
             1,
         );
         let editor: Element<'_, editor::Message, Theme> = EditorPane::new(
-            self.document.clone(),
+            self.document().clone(),
             &self.palette,
             &editor::View::default(),
         )
@@ -145,9 +147,9 @@ impl Demo {
             .on_drag(Message::Split)
             .on_double_click(|| Message::Split(0.5));
         let surface = column![
-            text("$ shared terminal surface").font(iced::Font::MONOSPACE),
-            text("Cells and scrolling belong to the supplied engine.").font(iced::Font::MONOSPACE),
-            text(format!("wheel position: {:.1}", self.wheel)).font(iced::Font::MONOSPACE)
+            text(strings::label("compound-terminal")).font(iced::Font::MONOSPACE),
+            text(strings::label("compound-terminal-engine")).font(iced::Font::MONOSPACE),
+            text(strings::format("compound-wheel", &[("position", format!("{:.1}", self.wheel))])).font(iced::Font::MONOSPACE)
         ];
         let terminal = TerminalPane::new(surface, Size::new(1000.0, 100.0), 1.2, self.tokens)
             .focus_ring(true)
@@ -155,8 +157,8 @@ impl Demo {
         container(
             column![
                 row![
-                    text("Reusable editor, file and terminal panes"),
-                    button("Switch theme").on_press(Message::Theme)
+                    text(strings::label("compound-heading")),
+                    button(text(strings::label("compound-theme"))).on_press(Message::Theme)
                 ]
                 .spacing(12),
                 panes,
@@ -173,7 +175,7 @@ impl Demo {
 pub fn run() -> iced::Result {
     iced::application(Demo::new, Demo::update, Demo::view)
         .theme(Demo::theme)
-        .title("Compound panes")
+        .title(strings::label("compound-title"))
         .window_size(Size::new(1100.0, 700.0))
         .run()
 }

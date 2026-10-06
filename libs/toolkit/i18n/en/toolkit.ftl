@@ -285,3 +285,20 @@ flows-copy = Copy here
 flows-move = Move here
 flows-cancel = Cancel
 flows-vector-fallback = Vector icon fallback
+compound-title = Compound panes
+compound-heading = Reusable editor, file and terminal panes
+compound-theme = Switch theme
+compound-files = Synthetic files
+compound-files-count = 100,000 files · viewport-only shaping
+compound-name = Name
+compound-size = Size
+compound-modified = Modified
+compound-sort = Sort column { $column }
+compound-terminal = $ shared terminal surface
+compound-terminal-engine = Cells and scrolling belong to the supplied engine.
+compound-wheel = wheel position: { $position }
+compound-document =
+    Borrowed document
+    Tab cells · 中 · é · 👨‍👩‍👧
+
+    Type, select and scroll here.

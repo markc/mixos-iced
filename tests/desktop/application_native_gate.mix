@@ -1,0 +1,170 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Exercise the consuming applications on an owned compositor and ABP broker.
+-- Named exact-commit binaries only; this gate never builds or touches a VT.
+-- mix tests/desktop/application_native_gate.mix --bin-dir PATH
+$n = require("nested_host_lib.mix")
+$root = trim(run_argv_must(["git", "rev-parse", "--show-toplevel"]))
+$options = getopt(args(), {"bin-dir": {arg: true}})
+if len($options.errors) != 0 then raise("ARGS", join($options.errors, "; ")) end
+$bins = get_or($options.opts, "bin-dir", "")
+for each $name in ["mix", "noded", "compd", "editd", "ced", "dopus", "term"]
+  if not is_file($bins .. "/" .. $name) then raise("BINARIES", "missing named " .. $name) end
+end
+if which("bwrap") == nil then raise("TEST_SUPPORT", "bwrap is required to bind the fresh PTY shell in an owned mount namespace") end
+export MIXOS_TEST_MIX=$bins .. "/mix"
+fn check($condition, $message)
+  if not $condition then raise("APPLICATION_NATIVE", $message) end
+end
+fn rpc($service, $verb, $args)
+  $r = $n.call($service, $verb, $args)
+  check($r.rc == 0, $service .. " " .. $verb .. ": " .. json_encode($r))
+  return $r.result
+end
+fn wait_service($service, $verb)
+  for each $i in range(1, 60)
+    $r = $n.call($service, $verb, {})
+    if $r.rc == 0 then return $r.result end
+    sleep(0.25)
+  end
+  raise("APPLICATION_NATIVE", "service did not register: " .. $service)
+end
+fn window($session, $app)
+  for each $i in range(1, 60)
+    $rows = rpc($session.service, "comp.windows.list", {}).windows
+    $matches = filter($rows, fn($row) = $row.app_id == "dev.mixos." .. $app)
+    if len($matches) == 1 then return $matches[0] end
+    sleep(0.25)
+  end
+  raise("APPLICATION_NATIVE", "window did not map: " .. $app)
+end
+fn place($session, $window)
+  rpc($session.service, "comp.window.place", {id: $window.id, generation: $window.generation, x: 0, y: 0, width: 1100, height: 700})
+  rpc($session.service, "comp.window.wait", {match: {id: $window.id, generation: $window.generation}, until: "size", width: 1100, height: 700, timeout_ms: 15000})
+  rpc($session.service, "comp.window.focus", {id: $window.id, generation: $window.generation})
+end
+fn key($session, $key, $modifiers)
+  return rpc($session.service, "comp.input.key", {seat: "human", key: $key, modifiers: $modifiers})
+end
+fn capture($session, $window, $path)
+  rpc($session.service, "comp.capture.frame", {path: $path, window: {id: $window.id, generation: $window.generation}})
+  check(is_file($path) and stat($path).size > 1000, "blank capture " .. $path)
+end
+for each $scale in [1, 2.5]
+  $run = $n.new_run("/tmp/application-native")
+  $session = nil
+  $bus = nil
+  $children = []
+  $ok = false
+  try
+    $bus = $n.private_bus({dir: $run.path, name: "application-native", noded: $bins .. "/noded"})
+    $session = $n.start({bin: $bins .. "/compd", tag: "apps", run: $run,
+      config: $root .. "/tests/desktop/smoke-settings.json", width: 2800, height: 1800,
+      scale: $scale, software: true})
+    check($n.wait_ready($session, 30), "private compositor failed")
+    check($session.dbus == "", "unexpected compatibility session bus")
+    rpc($session.service, "comp.props.set", {path: "input.host.passthrough", value: false})
+    $client = $n.client_env($session, {HOME: $run.path .. "/home", XDG_CONFIG_HOME: $run.path .. "/home/config",
+      XDG_STATE_HOME: $run.path .. "/home/state", MIXOS_ETC: $run.path .. "/etc", MIXOS_VAR: $run.path .. "/var",
+      TERM_NOTIFY: "0", LIBGL_ALWAYS_SOFTWARE: "1", WGPU_BACKEND: "gl"})
+    for each $app in ["editd", "ced", "dopus", "term"]
+      $argv = [$bins .. "/" .. $app]
+      if $app == "editd" then push($argv, "serve") end
+      if $app == "term" then
+        -- The PTY's canonical shell path resolves to this candidate only in
+        -- the test child's mount namespace; the host installation is intact.
+        $argv = ["bwrap", "--bind", "/", "/", "--ro-bind", $bins .. "/mix", "/opt/mixos/bin/mix", "--", $bins .. "/term"]
+      end
+      $p = spawn($argv, {env: $client, stdout: {file: $run.path .. "/" .. $app .. ".log"}, stderr: "stdout", detach: true})
+      push($children, $p)
+    end
+    wait_service("edit", "edit.ping")
+    wait_service("ced", "ced.ping")
+    wait_service("dopus", "dopus.ping")
+    wait_service("term", "term.tabs")
+    $ced = window($session, "ced")
+    $dopus = window($session, "dopus")
+    $term = window($session, "term")
+
+    -- Real EditorPane layout and primary-seat keyboard input.
+    $file = $run.path .. "/document.txt"
+    write_file($file, "native editor\n")
+    $tab = rpc("ced", "ced.open", {paths: [$file]}).tabs[0].tab
+    rpc("ced", "ced.wait", {tab: $tab, phase: "live", timeout_ms: 15000})
+    place($session, $ced)
+    rpc("ced", "ced.select", {tab: $tab, anchor: 0, head: 0})
+    $layout = rpc("ced", "ced.layout", {tab: $tab})
+    check($layout.cell_w > 0 and $layout.visible_rows > 0, "EditorPane geometry missing")
+    rpc($session.service, "comp.input.pointer.move", {seat: "human", window: {id: $ced.id, generation: $ced.generation}, x: $layout.editor.x + $layout.gutter_w + 2, y: $layout.editor.y + $layout.line_height / 2, corners: false})
+    rpc($session.service, "comp.input.pointer.button", {seat: "human", button: "left", action: "press"})
+    rpc($session.service, "comp.input.pointer.button", {seat: "human", button: "left", action: "release"})
+    rpc($session.service, "comp.input.key", {seat: "human", text: "T6 "})
+    rpc("ced", "ced.wait", {tab: $tab, idle: true, timeout_ms: 15000})
+    $state = rpc("ced", "ced.state", {tab: $tab, text: true})
+    check(starts_with($state.text, "T6 native editor"), "native editor input: " .. json_encode($state))
+    capture($session, $ced, $run.path .. "/ced.png")
+
+    -- FilePane listing, shared header and real keyboard transfer/dialog path.
+    $source = $run.path .. "/source"
+    $target = $run.path .. "/target"
+    mkdir($source); mkdir($target)
+    write_file($source .. "/payload.txt", "native file transfer\n")
+    rpc("dopus", "dopus.open", {paths: [$source, $target]})
+    place($session, $dopus)
+    $listed = false
+    for each $i in range(1, 60)
+      $state = rpc("dopus", "dopus.state", {})
+      if $state.panes[0].rows == 1 then $listed = true; break end
+      sleep(0.1)
+    end
+    check($listed, "FilePane listing did not arrive")
+    rpc("dopus", "dopus.action", {id: "selection.first", pane: "left"})
+    key($session, "c", ["ctrl"])
+    key($session, "Return", [])
+    $copied = false
+    for each $i in range(1, 60)
+      if is_file($target .. "/payload.txt") then $copied = true; break end
+      sleep(0.1)
+    end
+    check($copied and hash_file($source .. "/payload.txt", "sha256") == hash_file($target .. "/payload.txt", "sha256"), "native file copy failed")
+    key($session, "x", ["ctrl"])
+    key($session, "Escape", [])
+    check(is_file($source .. "/payload.txt"), "cancelled transfer removed source")
+    capture($session, $dopus, $run.path .. "/dopus.png")
+
+    -- Real TerminalPane and PTY, then shared tab/pane controls and repaint.
+    place($session, $term)
+    rpc($session.service, "comp.input.key", {seat: "human", text: "print(\"T6_PTY_output\")"})
+    key($session, "Return", [])
+    $painted = false
+    for each $i in range(1, 60)
+      $screen = rpc("term", "term.snapshot", {})
+      if count_of(to_string($screen), "T6_PTY_output") >= 2 then $painted = true; break end
+      sleep(0.1)
+    end
+    check($painted, "terminal PTY did not produce output: " .. to_string($screen))
+    key($session, "e", ["ctrl", "shift"])
+    sleep(0.5)
+    $panes = rpc("term", "term.panes", {})
+    check(count_of(to_string($panes), "pane=") >= 2, "terminal split did not create two panes")
+    capture($session, $term, $run.path .. "/term.png")
+    for each $p in $children
+      check(process_alive($p), "application exited during native acceptance")
+    end
+    write_file($run.path .. "/acceptance.json", json_encode({scale: $scale, editor: $layout, terminal: $panes, dbus: false}))
+    $ok = true
+    print("PASS consuming native applications at scale " .. to_string($scale) .. ": " .. $run.path)
+  catch $error
+    print("FAIL consuming native applications: " .. to_string($error))
+    for each $log in glob($run.path .. "/*.log")
+      print($log .. "\n" .. read_file($log))
+    end
+  finally
+    for each $p in $children
+      if process_alive($p) then $k = kill($p, 15) end
+    end
+    if $session != nil then $n.stop($session) end
+    if $bus != nil then $n.stop_bus($bus) end
+    print("native application evidence retained: " .. $run.path)
+  end
+  if not $ok then exit(1) end
+end

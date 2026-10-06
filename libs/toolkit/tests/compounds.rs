@@ -62,7 +62,7 @@ fn compound_surfaces_render_at_native_and_fractional_scale() {
     use iced_core::{mouse, renderer, theme::Base};
     let app = app::Demo::new();
     let size = Size::new(1100.0, 700.0);
-    let mut renderer = iced_futures::futures::executor::block_on(iced_renderer::Renderer::new(
+    let mut renderer = iced_futures::futures::executor::block_on(<iced_renderer::Renderer as Headless>::new(
         renderer::Settings::default(),
         Some("tiny-skia"),
     ))
