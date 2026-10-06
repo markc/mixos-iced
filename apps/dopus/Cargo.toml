@@ -1,0 +1,46 @@
+[package]
+name = "dopus"
+version = "0.4.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Native Wayland twin-pane file manager"
+
+[package.metadata.mixos]
+component = "dopus"
+kind = "app"
+layer = "desktop"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia", "image"] }
+iced_tiny_skia = { workspace = true, features = ["image", "wayland"] }
+toolkit = { workspace = true, features = ["tiny-skia"] }
+design.workspace = true
+dopus-core = { path = "crates/dopus-core" }
+bus = { workspace = true, features = ["native"] }
+config.workspace = true
+buildinfo.workspace = true
+actions = { path = "crates/actions" }
+resvg = "=0.47.0"
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+chrono = { workspace = true, default-features = false, features = ["clock"] }
+serde.workspace = true
+serde_json.workspace = true
+unicode-segmentation = "1"
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+iced_runtime.workspace = true
+tempfile.workspace = true
+iced-tiny-skia-pixels = { package = "tiny-skia", version = "=0.11.4", default-features = false, features = ["std"] }
+
+[build-dependencies]
+buildinfo.workspace = true

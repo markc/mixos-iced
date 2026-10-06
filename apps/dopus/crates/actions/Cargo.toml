@@ -1,0 +1,23 @@
+[package]
+name = "actions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "DOpus mesh-free action registry and keyboard resolution"
+
+[package.metadata.mixos]
+component = "dopus"
+kind = "app"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+config.workspace = true
+serde.workspace = true
+thiserror.workspace = true

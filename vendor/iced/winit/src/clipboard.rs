@@ -16,6 +16,9 @@ mod platform {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
+    #[cfg(target_os = "linux")]
+    use arboard::{GetExtLinux, LinuxClipboardKind, SetExtLinux};
+
     /// A buffer for short-term storage and transfer within and between
     /// applications.
     pub struct Clipboard {
@@ -67,6 +70,11 @@ mod platform {
 
                 let result = match kind {
                     Kind::Text => get.text().map(Content::Text),
+                    #[cfg(target_os = "linux")]
+                    Kind::PrimaryText => get
+                        .clipboard(LinuxClipboardKind::Primary)
+                        .text()
+                        .map(Content::PrimaryText),
                     Kind::Html => get.html().map(Content::Html),
                     #[cfg(feature = "image")]
                     Kind::Image => get.image().map(|image| {
@@ -114,6 +122,10 @@ mod platform {
 
                 let result = match content {
                     Content::Text(text) => set.text(text),
+                    #[cfg(target_os = "linux")]
+                    Content::PrimaryText(text) => {
+                        set.clipboard(LinuxClipboardKind::Primary).text(text)
+                    }
                     Content::Html(html) => set.html(html, None),
                     #[cfg(feature = "image")]
                     Content::Image(image) => set.image(arboard::ImageData {

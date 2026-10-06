@@ -1,0 +1,46 @@
+[package]
+name = "ced"
+version = "0.1.5"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Native Wayland editor over shared edit Bus buffers"
+
+[package.metadata.mixos]
+component = "ced"
+kind = "app"
+layer = "desktop"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia"] }
+iced_tiny_skia.workspace = true
+toolkit = { workspace = true, features = ["tiny-skia"] }
+design.workspace = true
+editor-model = { path = "crates/editor-model" }
+edit.workspace = true
+bus = { workspace = true, features = ["native"] }
+config.workspace = true
+buildinfo.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+scene.workspace = true
+sha2.workspace = true
+rand.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+tempfile.workspace = true
+
+[build-dependencies]
+buildinfo.workspace = true

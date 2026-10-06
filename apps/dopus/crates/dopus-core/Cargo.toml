@@ -1,0 +1,30 @@
+[package]
+name = "dopus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "DOpus renderer-free navigation, listings, file operations and persistence"
+
+[package.metadata.mixos]
+component = "dopus"
+kind = "app"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+config.workspace = true
+files = { path = "../files" }
+chrono = { workspace = true, default-features = false, features = ["clock"] }
+serde.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["user"] }
+
+[dev-dependencies]
+tempfile.workspace = true

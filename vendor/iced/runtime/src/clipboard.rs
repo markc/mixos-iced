@@ -52,6 +52,19 @@ pub fn read_text() -> Task<Result<Arc<String>, Error>> {
     })
 }
 
+/// Read text from the native primary selection.
+pub fn read_primary() -> Task<Option<String>> {
+    read(Kind::PrimaryText).map(|result| match result.as_deref() {
+        Ok(Content::PrimaryText(text)) => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// Write the native primary selection without producing an application message.
+pub fn write_primary<T>(text: String) -> Task<T> {
+    write(Content::PrimaryText(text)).discard()
+}
+
 /// Read the current HTML contents of the clipboard.
 pub fn read_html() -> Task<Result<Arc<String>, Error>> {
     task::oneshot(|channel| {

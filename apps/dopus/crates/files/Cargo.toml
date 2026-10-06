@@ -1,0 +1,34 @@
+[package]
+name = "files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "DOpus headless atomic filesystem operations and file corpus support"
+
+[package.metadata.mixos]
+component = "dopus"
+kind = "app"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+bus.workspace = true
+blake3.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "1"
+rusqlite = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

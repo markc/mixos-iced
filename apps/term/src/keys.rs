@@ -24,7 +24,7 @@
 //! a hundred is not a thing that happens.
 
 use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer};
+use iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
 type KeyHandler<'a, Message> = Box<dyn Fn(&iced::keyboard::Event) -> Option<Message> + 'a>;
@@ -115,12 +115,8 @@ where
         self.content.as_widget().state()
     }
 
-    fn children(&self) -> Vec<Tree> {
-        self.content.as_widget().children()
-    }
-
-    fn diff(&self, tree: &mut Tree) {
-        self.content.as_widget().diff(tree);
+    fn diff(&mut self, tree: &mut Tree) {
+        self.content.as_widget_mut().diff(tree);
     }
 
     fn size(&self) -> Size<Length> {
@@ -155,7 +151,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -179,9 +174,9 @@ where
             shell.capture_event();
             return;
         }
-        self.content.as_widget_mut().update(
-            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-        );
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, shell, viewport);
         // Merge after children: a focused text field's IME request wins.
         if matches!(
             event,

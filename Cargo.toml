@@ -4,10 +4,10 @@
 
 [workspace]
 resolver = "3"
-members = ["libs/*", "services/compd", "services/compd/crates/*", "services/noded", "services/noded/crates/*", "tools/native-gallery", "cli/mix-shell", "apps/term/crates/*", "apps/term"]
+members = ["libs/*", "services/compd", "services/compd/crates/*", "services/noded", "services/noded/crates/*", "tools/native-gallery", "cli/mix-shell", "apps/term/crates/*", "apps/term", "apps/ced", "apps/ced/crates/*", "apps/dopus", "apps/dopus/crates/*", "services/editd"]
 # The comp policy cores (surfaces, ledger, comp-model, policy, comp-service)
 # keep their own default lints: they do not opt into [workspace.lints].
-exclude = ["vendor"]
+exclude = ["vendor", "vendor/teletypewriter", "vendor/msedit/lsh", "vendor/msedit/stdext"]
 
 [workspace.package]
 version = "0.1.1"
@@ -105,6 +105,7 @@ mesh = { path = "services/noded/crates/mesh" }
 mesh-trust = { path = "services/noded/crates/mesh-trust" }
 design = { path = "libs/design" }
 expr = { path = "libs/expr" }
+edit = { path = "libs/edit" }
 scene = { path = "libs/scene" }
 strict = { path = "libs/strict" }
 toolkit = { path = "libs/toolkit" }

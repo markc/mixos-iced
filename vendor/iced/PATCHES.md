@@ -129,3 +129,19 @@ fractional scale, damage lineage, overlay order and forced-fallback equivalence.
 Term adds end-to-end sparse-damage and offscreen pixel comparisons.
 The optional raster-probe counts copies; reference-raster disables the fast
 path for comparative tests. Neither feature is enabled in production.
+
+## Primary selection and CPU presentation
+
+Term and Ced need primary selection independently of the regular clipboard.
+Core clipboard kinds/content now represent primary text; the runtime queues
+the same native action, and the existing arboard 3.6 Wayland backend selects
+LinuxClipboardKind::Primary through its extension traits. Other platforms
+return the existing unsupported result; no D-Bus integration is added.
+Native acceptance must verify primary and clipboard stay distinct.
+
+The CPU compositor retains the source PresentHistory implementation, including
+buffer-age repair, front-buffer damage, outward-rounded physical damage and
+pre-present callbacks even on empty frames. Failed presents do not enter
+history. Its unit tests and Term offscreen pixel tests exercise the actual
+production implementation, rather than a duplicate model. The iced 0.15
+backend and renderer settings APIs remain intact.

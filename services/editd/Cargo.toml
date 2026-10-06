@@ -1,0 +1,43 @@
+[package]
+name = "editd"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Shared editor buffers over the native edit Bus service"
+
+[package.metadata.mixos]
+component = "editd"
+kind = "service"
+layer = "core"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+edit.workspace = true
+bus = { workspace = true, features = ["native"] }
+config.workspace = true
+buildinfo.workspace = true
+props = { workspace = true, features = ["bus"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+notify.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+rand.workspace = true
+libc.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+buildinfo.workspace = true

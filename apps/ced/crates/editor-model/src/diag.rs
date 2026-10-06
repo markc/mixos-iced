@@ -1,0 +1,324 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Diagnostics for one buffer view — frontend lint results (ced E1 plan
+//! §4.10) and external source-tagged sets (Scene Editor plan §4.4.1).
+//!
+//! One set per `source`: [`LINT_SOURCE`] is the frontend's own lint
+//! ([`Diagnostics::accept`] or in-process `accept_items`); any other source
+//! is an external set (`ced.diagnostics`). Replacing one source's set never
+//! touches another's; [`Diagnostics::items`] is the union, the lint set first.
+//!
+//! Contracts:
+//! - Input is `mix lint --json -` output (`schema_version` 2:
+//!   `{diagnostics:[{file, line, column, code, severity: error|warning|note,
+//!   message, hint}]}`) run on CAPTURED bytes at a tagged gen; any other
+//!   schema_version is refused.
+//! - Results for another epoch, buffer, language or `cfg` are dropped.
+//! - Covered-range invalidation: a diagnostic covers its whole source line at
+//!   the tagged gen; if any delta since touched that range it is DROPPED, not
+//!   mapped. Diagnostics on untouched lines map through the deltas.
+
+use std::ops::Range;
+
+use edit::anchor::{Bias, map_point};
+use edit::ot::Edit;
+
+use crate::highlight::ResultTag;
+use crate::types::{DeltaKind, ViewDelta};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Note,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// View byte range the squiggle covers.
+    pub range: Range<usize>,
+    /// 1-based line it was reported on (at the tagged gen).
+    pub line: usize,
+    pub severity: Severity,
+    pub code: String,
+    pub message: String,
+    pub hint: Option<String>,
+    /// Which set it belongs to: [`LINT_SOURCE`] for the frontend lint,
+    /// otherwise the external source that sent it (e.g. `scenes`). The
+    /// Problems panel labels rows with it.
+    pub source: String,
+}
+
+/// The frontend's own lint set (`mix lint --json`, or in-process scene lint).
+pub const LINT_SOURCE: &str = "lint";
+
+/// An already-parsed diagnostic for [`Diagnostics::accept_items`]: in-process
+/// scene lint, or an external set from `ced.diagnostics`. 1-based `line`;
+/// `column` 1-based or `None` (the squiggle then covers the line past its
+/// indentation, as for lint results without a column).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagItem {
+    pub line: usize,
+    pub column: Option<usize>,
+    pub severity: Severity,
+    pub code: String,
+    pub message: String,
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagError {
+    BadJson(String),
+    UnsupportedSchema(u64),
+    StaleTag,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Diagnostics {
+    /// Every set, grouped by source: the lint set first, then external sets
+    /// in the order they first arrived.
+    items: Vec<Diagnostic>,
+    /// Per item: the whole source line it covers (incl. its `\n`), view coords.
+    covered: Vec<Range<usize>>,
+}
+
+#[derive(serde::Deserialize)]
+struct Report {
+    schema_version: u64,
+    #[serde(default)]
+    diagnostics: Vec<RawDiag>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawDiag {
+    #[serde(default)]
+    code: String,
+    severity: String,
+    line: Option<usize>,
+    column: Option<usize>,
+    #[serde(default)]
+    message: String,
+    hint: Option<String>,
+}
+
+impl Diagnostics {
+    /// Replace the lint set ([`LINT_SOURCE`]) with a `mix lint --json`
+    /// result for `tag`. `deltas_since` are the view deltas after `tag.gen`,
+    /// in order (for covered-range invalidation). External sets are kept.
+    pub fn accept(
+        &mut self,
+        current: &ResultTag,
+        tag: ResultTag,
+        text_at_tag: &str,
+        lint_json: &str,
+        deltas_since: &[ViewDelta],
+    ) -> Result<(), DiagError> {
+        check_tag(current, &tag)?;
+        let report: Report =
+            serde_json::from_str(lint_json).map_err(|e| DiagError::BadJson(e.to_string()))?;
+        if report.schema_version != 2 {
+            return Err(DiagError::UnsupportedSchema(report.schema_version));
+        }
+        let items: Vec<DiagItem> = report
+            .diagnostics
+            .into_iter()
+            .map(|raw| DiagItem {
+                line: raw.line.unwrap_or(1),
+                column: raw.column,
+                severity: match raw.severity.as_str() {
+                    "error" => Severity::Error,
+                    "warning" => Severity::Warning,
+                    _ => Severity::Note,
+                },
+                code: raw.code,
+                message: raw.message,
+                hint: raw.hint,
+            })
+            .collect();
+        self.replace(LINT_SOURCE, text_at_tag, &items, deltas_since);
+        Ok(())
+    }
+
+    /// Replace **only `source`'s** set with `items` for `tag` (Scene Editor
+    /// plan §4.4.1).
+    ///
+    /// Same stale-tag rule and covered-range invalidation as [`accept`]: a
+    /// result for another epoch, buffer, language or `cfg`, or for a gen
+    /// ahead of `current`, is `StaleTag`; items are located in
+    /// `text_at_tag` and then mapped through `deltas_since`. Other sources'
+    /// sets are untouched; an empty `items` clears `source`'s set. Every
+    /// stored [`Diagnostic`] carries `source`. [`items`] returns the union of
+    /// all sets; `apply_delta` maps every set and `Resync` clears every set
+    /// (the caller re-applies stored external sets after a Resync).
+    ///
+    /// [`accept`]: Self::accept
+    /// [`items`]: Self::items
+    pub fn accept_items(
+        &mut self,
+        source: &str,
+        current: &ResultTag,
+        tag: ResultTag,
+        text_at_tag: &str,
+        items: &[DiagItem],
+        deltas_since: &[ViewDelta],
+    ) -> Result<(), DiagError> {
+        check_tag(current, &tag)?;
+        self.replace(source, text_at_tag, items, deltas_since);
+        Ok(())
+    }
+
+    /// `source`'s set, located in `text_at_tag` and mapped through `deltas`,
+    /// takes the place of its previous set (the lint set goes first; a new
+    /// external source goes last).
+    fn replace(
+        &mut self,
+        source: &str,
+        text_at_tag: &str,
+        items: &[DiagItem],
+        deltas: &[ViewDelta],
+    ) {
+        let mut next = Diagnostics::default();
+        for item in items {
+            let line = item.line.max(1);
+            let Some((covered, range)) = locate(text_at_tag, line, item.column) else {
+                continue;
+            };
+            next.items.push(Diagnostic {
+                range,
+                line,
+                severity: item.severity,
+                code: item.code.clone(),
+                message: item.message.clone(),
+                hint: item.hint.clone(),
+                source: source.to_owned(),
+            });
+            next.covered.push(covered);
+        }
+        for d in deltas {
+            next.apply_delta(d);
+        }
+        let at = if source == LINT_SOURCE {
+            0
+        } else {
+            self.items
+                .iter()
+                .position(|d| d.source == source)
+                .unwrap_or(self.items.len())
+        };
+        let (mut items, mut covered): (Vec<_>, Vec<_>) = std::mem::take(&mut self.items)
+            .into_iter()
+            .zip(std::mem::take(&mut self.covered))
+            .filter(|(d, _)| d.source != source)
+            .unzip();
+        // Removing the old set only shifts later sources down: no item of
+        // `source` stood before `at`, so it is still the right slot.
+        items.splice(at..at, next.items);
+        covered.splice(at..at, next.covered);
+        self.items = items;
+        self.covered = covered;
+    }
+
+    /// Drop diagnostics whose covered line the delta touched; map the rest.
+    pub fn apply_delta(&mut self, d: &ViewDelta) {
+        if d.kind == DeltaKind::Resync {
+            self.items.clear();
+            self.covered.clear();
+            return;
+        }
+        for e in &d.edits {
+            let items = std::mem::take(&mut self.items);
+            let covered = std::mem::take(&mut self.covered);
+            for (mut item, cov) in items.into_iter().zip(covered) {
+                if touches(&cov, e) {
+                    continue;
+                }
+                item.range = map(item.range, e);
+                self.items.push(item);
+                self.covered.push(map(cov, e));
+            }
+        }
+    }
+
+    pub fn items(&self) -> &[Diagnostic] {
+        &self.items
+    }
+}
+
+/// A result for another epoch, buffer, language or `cfg`, or for a gen ahead
+/// of `current`, is stale.
+fn check_tag(current: &ResultTag, tag: &ResultTag) -> Result<(), DiagError> {
+    let same = current.epoch == tag.epoch
+        && current.buffer == tag.buffer
+        && current.language == tag.language
+        && current.cfg == tag.cfg;
+    if !same || tag.view_gen > current.view_gen {
+        return Err(DiagError::StaleTag);
+    }
+    Ok(())
+}
+
+/// The covered line (with its `\n`) and the squiggle range for a 1-based line
+/// and 1-based scalar column in `text`. Without a column the squiggle is the
+/// line's content past its indentation; with one it runs over the word there
+/// (at least one scalar).
+fn locate(text: &str, line: usize, column: Option<usize>) -> Option<(Range<usize>, Range<usize>)> {
+    let start = if line == 1 {
+        0
+    } else {
+        text.match_indices('\n').nth(line - 2).map(|(i, _)| i + 1)?
+    };
+    let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+    let covered = start..(end + 1).min(text.len());
+    let content = text[start..end].trim_end_matches('\r');
+    let squiggle = match column.filter(|&c| c >= 1) {
+        None => {
+            let indent = content.len() - content.trim_start().len();
+            start + indent..start + content.len()
+        }
+        Some(col) => {
+            let at = content
+                .char_indices()
+                .nth(col - 1)
+                .map_or(content.len(), |(i, _)| i);
+            let word = content[at..]
+                .char_indices()
+                .find(|&(_, c)| !(c.is_alphanumeric() || "_$.".contains(c)))
+                .map_or(content.len() - at, |(i, _)| i);
+            let len = if word > 0 {
+                word
+            } else {
+                content[at..].chars().next().map_or(0, char::len_utf8)
+            };
+            start + at..start + at + len
+        }
+    };
+    // An empty line (or a column past its end) still gets a visible mark.
+    let squiggle = if squiggle.is_empty() {
+        squiggle.start..squiggle.start
+    } else {
+        squiggle
+    };
+    Some((covered, squiggle))
+}
+
+/// Whether an edit changes the covered line: any delete reaching into it
+/// (deleting the `\n` before it only joins it to the previous line, so a
+/// delete ENDING at its start does not count), or an insert inside it or at
+/// its start (unless the insert is whole lines, ending in `\n`).
+fn touches(cov: &Range<usize>, e: &Edit) -> bool {
+    let p = e.offset;
+    let delete_hits = e.delete > 0 && p < cov.end && p + e.delete > cov.start;
+    let insert_hits = !e.insert.is_empty()
+        && ((p > cov.start && p < cov.end) || (p == cov.start && !e.insert.ends_with('\n')));
+    delete_hits || insert_hits
+}
+
+/// A non-expanding range anchor: whole lines inserted at its start push it
+/// down (start `After`), text inserted at its end stays outside (end `Before`).
+fn map(r: Range<usize>, e: &Edit) -> Range<usize> {
+    let s = map_point(r.start, Bias::After, e).0;
+    let t = map_point(r.end, Bias::Before, e).0.max(s);
+    s..t
+}
+
+#[cfg(test)]
+mod tests;

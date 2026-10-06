@@ -50,6 +50,8 @@ pub enum Event {
 #[non_exhaustive]
 pub enum Content {
     Text(String),
+    /// Text in the native primary selection, separate from the clipboard.
+    PrimaryText(String),
     Html(String),
     #[cfg(feature = "image")]
     Image(Image),
@@ -81,6 +83,8 @@ impl From<Vec<PathBuf>> for Content {
 #[non_exhaustive]
 pub enum Kind {
     Text,
+    /// The native primary selection.
+    PrimaryText,
     Html,
     #[cfg(feature = "image")]
     Image,

@@ -499,6 +499,7 @@ mod tests {
             map.insert((*k).to_string(), (*v).to_string());
         }
         IncomingCommand {
+            generation: 0,
             from: String::new(),
             command: "maild.stats.snapshot".to_string(),
             id: None,

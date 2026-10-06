@@ -1,0 +1,25 @@
+[package]
+name = "syntax"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "ced's deterministic Microsoft Edit syntax adapter"
+
+[package.metadata.mixos]
+component = "ced"
+kind = "app"
+layer = "core"
+contract = "none"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+lsh = { package = "msedit-lsh", path = "../../../../vendor/msedit/lsh" }
+stdext = { package = "msedit-stdext", path = "../../../../vendor/msedit/stdext" }
+
+[dev-dependencies]
+proptest = "1"

@@ -1,0 +1,3685 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The semantic heart of dopus: twin-pane state, navigation, sorting, the
+//! async listing/count pipeline, operation single-flight, the confirm/prompt
+//! reservation book and the config settle debounce.
+//!
+//! Ported from src/desktop/apps/filemgr/src/browser.rs (Bevy/ctk); filemgr
+//! stays untouched until retirement. Pure logic (sorting, filtering,
+//! formatting, drop legality) is lifted near-verbatim with original line
+//! citations; the Bevy resources/entities become plain state on
+//! [`DopusCore`] and [`PaneModel`]. The only data a view needs is
+//! [`DopusCore::visible_rows`].
+//!
+//! The core never reads the wall clock for behaviour: time-sensitive entry
+//! points take `Instant`/`SystemTime` parameters so tests inject fixed times.
+
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use chrono::{DateTime, Local, Utc};
+
+use crate::config::{CURRENT_SCHEMA, ConfigFile, DOpusConfig, PaneConfig, SortColumn};
+use crate::events::{ConfirmAnswer, CoreEvent, PromptKind, StatusKind};
+use crate::ops::{FileOpKind, FileOperation};
+use crate::worker::WorkerHandle;
+
+/// Directory-count worker cap (browser.rs:317).
+const DIRECTORY_COUNT_CONCURRENCY: usize = 4;
+
+/// Config settle debounce (filemgr `ConfigPersistence`, browser.rs:90).
+const CONFIG_SETTLE: Duration = Duration::from_millis(350);
+
+/// Idle information-panel text (browser.rs:548).
+const INFO_IDLE: &str = "Select a file or folder";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneId {
+    Left,
+    Right,
+}
+
+impl PaneId {
+    pub fn index(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => 1,
+        }
+    }
+
+    /// `other_pane` (browser.rs:1922).
+    pub fn other(self) -> PaneId {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+/// One row of pane data (browser.rs:459-467). `name` is the display
+/// projection (control characters sanitised, browser.rs:1434-1438); `path`
+/// retains the real OsStr bytes for every filesystem operation.
+#[derive(Clone, Debug)]
+pub struct FileEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    pub child_count: Option<usize>,
+    pub modified: Option<SystemTime>,
+}
+
+/// Back/forward navigation with the 128-entry back cap and forward cleared on
+/// every new navigation (browser.rs:260-290).
+#[derive(Debug, Default)]
+pub struct NavigationHistory {
+    pub back: Vec<PathBuf>,
+    pub forward: Vec<PathBuf>,
+}
+
+impl NavigationHistory {
+    fn record_new(&mut self, current: &Path, target: &Path) -> bool {
+        if current == target {
+            return false;
+        }
+        self.back.push(current.to_path_buf());
+        if self.back.len() > 128 {
+            self.back.remove(0);
+        }
+        self.forward.clear();
+        true
+    }
+
+    fn back(&mut self, current: &Path) -> Option<PathBuf> {
+        let target = self.back.pop()?;
+        self.forward.push(current.to_path_buf());
+        Some(target)
+    }
+
+    fn forward(&mut self, current: &Path) -> Option<PathBuf> {
+        let target = self.forward.pop()?;
+        self.back.push(current.to_path_buf());
+        Some(target)
+    }
+}
+
+/// One pane's plain state (browser.rs `PaneState`, 229-248, minus entities).
+#[derive(Debug)]
+pub struct PaneModel {
+    pub path: PathBuf,
+    /// This pane's current listing generation; a reply is accepted only when
+    /// it matches (browser.rs:1571).
+    pub generation: u64,
+    // The worker-side mirror of `generation` lives in `WorkerHandle::
+    // generations` (worker.rs) — one array, updated only by
+    // `store_generation`; panes hold no second copy to drift.
+    /// Accepted listing/count replies, including child listings. A cheap
+    /// cache key that cannot miss replies batched into one UI update.
+    pub listing_revision: u64,
+    pub listing: bool,
+    /// The last root listing failed; an empty result must not look successful.
+    listing_failed: bool,
+    pub root: Vec<FileEntry>,
+    pub children: HashMap<PathBuf, Vec<FileEntry>>,
+    pub expanded: HashSet<PathBuf>,
+    pub pending_children: HashSet<PathBuf>,
+    /// Focused member of the selection, used by Open and Properties.
+    pub selected: Option<PathBuf>,
+    /// Selected rows. Use `DopusCore::selected_paths` for visible ordering.
+    pub selected_paths: HashSet<PathBuf>,
+    selection_anchor: Option<PathBuf>,
+    pub history: NavigationHistory,
+    pub show_hidden: bool,
+    pub sort: SortColumn,
+    pub ascending: bool,
+    pub status: String,
+    /// Directory-count jobs sent but not yet replied (browser.rs
+    /// `pending_counts`, 240).
+    pub(crate) pending_counts: usize,
+    /// A count reply changed a child count while Size sort was active;
+    /// re-sort once every outstanding count has landed (browser.rs:241).
+    pub(crate) count_sort_dirty: bool,
+}
+
+impl PaneModel {
+    /// Footer text, shared by the window and Bus snapshots.
+    pub fn footer_summary(&self) -> String {
+        if self.listing {
+            "…".into()
+        } else if self.listing_failed {
+            self.status.clone()
+        } else {
+            pane_summary(&self.root)
+        }
+    }
+
+    fn new(path: PathBuf, show_hidden: bool, sort: SortColumn, ascending: bool) -> Self {
+        Self {
+            path,
+            generation: 0,
+            listing_revision: 0,
+            listing: false,
+            listing_failed: false,
+            root: Vec::new(),
+            children: HashMap::new(),
+            expanded: HashSet::new(),
+            pending_children: HashSet::new(),
+            selected: None,
+            selected_paths: HashSet::new(),
+            selection_anchor: None,
+            history: NavigationHistory::default(),
+            show_hidden,
+            sort,
+            ascending,
+            status: "Loading…".into(),
+            pending_counts: 0,
+            count_sort_dirty: false,
+        }
+    }
+
+    /// `action_selection_available` (browser.rs:251-253).
+    fn action_selection_available(&self) -> bool {
+        !self.listing && !self.selected_paths.is_empty()
+    }
+
+    /// `action_rows_available` (browser.rs:255-257).
+    fn action_rows_available(&self) -> bool {
+        !self.listing && !self.root.is_empty()
+    }
+}
+
+/// A queued directory-count job (browser.rs:319-324).
+#[derive(Debug)]
+pub(crate) struct CountJob {
+    pub pane: PaneId,
+    pub generation: u64,
+    pub entry_path: PathBuf,
+    pub show_hidden: bool,
+}
+
+/// Single-flight operation slot (browser.rs `FileActionState.pending`, 413).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpState {
+    Idle,
+    Running,
+}
+
+/// What a reserved token will launch when resolved (browser.rs `ConfirmedOp`
+/// 422-427 plus `NameEditKind` 454-457).
+enum Reservation {
+    Delete {
+        sources: Vec<PathBuf>,
+        source_pane: PaneId,
+    },
+    NewFolder {
+        parent: PathBuf,
+        pane: PaneId,
+    },
+    Rename {
+        source: PathBuf,
+        pane: PaneId,
+    },
+}
+
+/// The public face of an outstanding reservation, for
+/// [`DopusCore::outstanding_reservations`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReservationKind {
+    Delete,
+    NewFolder,
+    Rename,
+}
+
+impl Reservation {
+    fn kind(&self) -> ReservationKind {
+        match self {
+            Reservation::Delete { .. } => ReservationKind::Delete,
+            Reservation::NewFolder { .. } => ReservationKind::NewFolder,
+            Reservation::Rename { .. } => ReservationKind::Rename,
+        }
+    }
+}
+
+/// Token-keyed reservation book (browser.rs
+/// `FileActionState.pending_confirm`/`pending_name_edit`, 405-411 — MAPS, not
+/// slots, because "the service queues concurrent modals — a second confirm
+/// must not orphan the first"). Tokens are minted monotonically by the core
+/// and echoed back by the app; each is consumed exactly once — by a
+/// resolution, a withdrawal, or nothing at all (fail-closed). The BTreeMap
+/// keeps `outstanding_reservations` in mint order.
+struct ConfirmBook {
+    next_token: u64,
+    entries: std::collections::BTreeMap<u64, Reservation>,
+}
+
+impl ConfirmBook {
+    fn new() -> Self {
+        Self {
+            next_token: 1,
+            entries: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn insert(&mut self, reservation: Reservation) -> u64 {
+        let token = self.next_token;
+        self.next_token += 1;
+        self.entries.insert(token, reservation);
+        token
+    }
+}
+
+/// The headless twin-pane browser. All methods run on the caller's (UI)
+/// thread; filesystem work happens on detached worker threads that reply
+/// through the channel returned by [`DopusCore::new`].
+pub struct DopusCore {
+    sidebars: [crate::config::SidebarConfig; 2],
+    properties: [crate::properties::Slot; 2],
+    places_home: PathBuf,
+    places_cache: std::cell::OnceCell<Vec<(&'static str, PathBuf)>>,
+    #[cfg(test)]
+    places_stat_passes: std::cell::Cell<usize>,
+    panes: [PaneModel; 2],
+    active: PaneId,
+    split_ratio: f32,
+    operation: OpState,
+    confirms: ConfirmBook,
+    /// Idle/status text and operation results. Selection metadata has its
+    /// own snapshot, independent of transient status messages.
+    info: String,
+    last_observed: Option<DOpusConfig>,
+    pending_config: Option<DOpusConfig>,
+    config_dirty_since: Option<Instant>,
+    config_file: Option<ConfigFile>,
+    /// Global listing nonce (browser.rs `ListingInbox.nonce`, 141): every
+    /// `start_listing` bumps it, so generations are unique across panes.
+    listing_nonce: u64,
+    count_queue: VecDeque<CountJob>,
+    workers: WorkerHandle,
+    /// Derived view-facing events awaiting [`DopusCore::tick`] or
+    /// [`DopusCore::on_event`].
+    pending: Vec<CoreEvent>,
+}
+
+impl DopusCore {
+    /// Build the core from a startup config and optionally a persistence
+    /// target. Both panes start listing immediately; their `ListingStarted`
+    /// events are waiting in the queue for the first [`DopusCore::tick`].
+    pub fn new(
+        config: DOpusConfig,
+        config_file: Option<ConfigFile>,
+    ) -> (Self, mpsc::Receiver<CoreEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let workers = WorkerHandle::new(tx);
+        let home = home_directory();
+        let left_start = configured_directory(&config.left.path, &home);
+        let right_start = configured_directory(&config.right.path, &home);
+        let mut core = Self {
+            sidebars: [config.places.normalised(), config.properties.normalised()],
+            properties: Default::default(),
+            places_home: home,
+            places_cache: std::cell::OnceCell::new(),
+            #[cfg(test)]
+            places_stat_passes: std::cell::Cell::new(0),
+            panes: [
+                PaneModel::new(
+                    left_start,
+                    config.left.show_hidden,
+                    config.left.sort,
+                    config.left.ascending,
+                ),
+                PaneModel::new(
+                    right_start,
+                    config.right.show_hidden,
+                    config.right.sort,
+                    config.right.ascending,
+                ),
+            ],
+            active: if config.active_pane == "right" {
+                PaneId::Right
+            } else {
+                PaneId::Left
+            },
+            split_ratio: config.split_ratio,
+            operation: OpState::Idle,
+            confirms: ConfirmBook::new(),
+            info: INFO_IDLE.into(),
+            last_observed: None,
+            pending_config: None,
+            config_dirty_since: None,
+            config_file,
+            listing_nonce: 0,
+            count_queue: VecDeque::new(),
+            workers,
+            pending: Vec::new(),
+        };
+        core.start_listing(PaneId::Left);
+        core.start_listing(PaneId::Right);
+        (core, rx)
+    }
+
+    // -- view projections ---------------------------------------------------
+
+    pub fn pane(&self, pane: PaneId) -> &PaneModel {
+        &self.panes[pane.index()]
+    }
+
+    pub fn active(&self) -> PaneId {
+        self.active
+    }
+
+    /// Cached Places projection. Repeated views do no filesystem stats.
+    /// Every relist and explicit Places refresh invalidates the snapshot.
+    pub fn places(&self) -> &[(&'static str, PathBuf)] {
+        self.places_cache.get_or_init(|| {
+            #[cfg(test)]
+            self.places_stat_passes
+                .set(self.places_stat_passes.get() + 1);
+            places(&self.places_home)
+        })
+    }
+
+    /// Recheck Places on the next view, coalescing multiple invalidations.
+    pub fn refresh_places(&mut self) {
+        self.places_cache.take();
+    }
+
+    /// The flatten projection (browser.rs `flatten_entries`, 1991-2012,
+    /// depth cap 64). The only data a view needs.
+    pub fn visible_rows(&self, pane: PaneId) -> Vec<VisibleRow> {
+        let pane = &self.panes[pane.index()];
+        let mut visible = Vec::new();
+        flatten_entries(&pane.root, 0, &pane.expanded, &pane.children, &mut visible);
+        visible
+    }
+
+    pub fn info(&self) -> &str {
+        &self.info
+    }
+
+    /// Action availability as plain data (filemgr action.rs:114-124, extended
+    /// with the fields the iced keymap layer needs). The keymap/action layer
+    /// itself is not ported — the app uses `mixos-actions` directly.
+    pub fn availability(&self) -> AvailabilitySnapshot {
+        let pane = &self.panes[self.active.index()];
+        AvailabilitySnapshot {
+            can_go_back: !pane.history.back.is_empty(),
+            can_go_forward: !pane.history.forward.is_empty(),
+            can_go_parent: pane.path.parent().is_some(),
+            has_selection: pane.action_selection_available(),
+            selection_count: pane.selected_paths.len(),
+            selection_is_dir: pane
+                .selected
+                .as_deref()
+                .and_then(|selected| find_entry(pane, selected))
+                .is_some_and(|entry| entry.is_dir),
+            rows_available: pane.action_rows_available(),
+            operation_running: self.operation == OpState::Running,
+            show_hidden: pane.show_hidden,
+            sort: pane.sort,
+            ascending: pane.ascending,
+        }
+    }
+
+    /// The session config as it would be persisted right now (browser.rs
+    /// `persist_config` snapshot, 3578-3602). Derived from pane state — the
+    /// config is never stored as a second copy.
+    pub fn config_snapshot(&self) -> DOpusConfig {
+        let pane_config = |pane: &PaneModel| PaneConfig {
+            path: pane.path.clone(),
+            show_hidden: pane.show_hidden,
+            sort: pane.sort,
+            ascending: pane.ascending,
+        };
+        DOpusConfig {
+            schema_version: CURRENT_SCHEMA,
+            places: self.sidebars[0],
+            properties: self.sidebars[1],
+            left: pane_config(&self.panes[PaneId::Left.index()]),
+            right: pane_config(&self.panes[PaneId::Right.index()]),
+            active_pane: match self.active {
+                PaneId::Left => "left",
+                PaneId::Right => "right",
+            }
+            .into(),
+            split_ratio: self.split_ratio,
+        }
+    }
+
+    /// Pure snapshot: no stat or directory walk on the caller/UI thread.
+    /// Counts are read from the existing generation-checked count queue.
+    pub fn properties(&self, pane: PaneId) -> crate::properties::Properties {
+        let model = self.pane(pane);
+        let entry = model
+            .selected
+            .as_ref()
+            .and_then(|path| find_entry(model, path));
+        if let Some(entry) = entry {
+            let metadata = self.properties[pane.index()]
+                .cached
+                .as_ref()
+                .filter(|(generation, path, _)| {
+                    *generation == model.generation && *path == entry.path
+                })
+                .map(|(_, _, result)| result.clone().map(Box::new));
+            crate::properties::Properties::Entry {
+                entry: entry.clone(),
+                count_pending: model.pending_counts > 0,
+                metadata,
+            }
+        } else {
+            crate::properties::Properties::Folder {
+                path: sanitise_display_path(&model.path),
+                summary: pane_summary(&model.root),
+            }
+        }
+    }
+
+    fn dispatch_properties(&mut self, now: Instant) {
+        for pane in [PaneId::Left, PaneId::Right] {
+            let model = self.pane(pane);
+            let Some(path) = model.selected.clone() else {
+                continue;
+            };
+            let generation = model.generation;
+            let slot = &mut self.properties[pane.index()];
+            if slot
+                .cached
+                .as_ref()
+                .is_some_and(|(g, p, _)| *g == generation && *p == path)
+            {
+                continue;
+            }
+            if let Some((_, _, started)) = slot
+                .in_flight
+                .iter()
+                .find(|(g, p, _)| *g == generation && *p == path)
+            {
+                if now.saturating_duration_since(*started) >= Duration::from_secs(5) {
+                    slot.cached = Some((generation, path, Err("Metadata lookup timed out".into())));
+                }
+                continue;
+            }
+            // A stuck stat/NSS call cannot be killed safely. Allow selection
+            // changes to bypass it, but bound outstanding OS threads per pane.
+            if slot.in_flight.len() >= 4 {
+                // Capacity is transient, not a metadata result. Leave this
+                // selection pending so the next tick retries after a drain.
+                continue;
+            }
+            slot.in_flight.push((generation, path.clone(), now));
+            self.workers.spawn_properties(pane, generation, path);
+        }
+    }
+
+    // -- navigation ---------------------------------------------------------
+
+    pub fn navigate(&mut self, pane: PaneId, path: PathBuf) {
+        self.navigate_new(pane, path);
+    }
+
+    pub fn go_back(&mut self) {
+        self.go_back_in(self.active);
+    }
+
+    /// Apply to a pane without changing keyboard focus.
+    pub fn go_back_in(&mut self, pane_id: PaneId) {
+        let target = {
+            let pane = &mut self.panes[pane_id.index()];
+            match pane.history.back(&pane.path) {
+                Some(target) => target,
+                None => return,
+            }
+        };
+        self.panes[pane_id.index()].path = target;
+        self.start_listing(pane_id);
+    }
+
+    pub fn go_forward(&mut self) {
+        self.go_forward_in(self.active);
+    }
+
+    /// Apply to a pane without changing keyboard focus.
+    pub fn go_forward_in(&mut self, pane_id: PaneId) {
+        let target = {
+            let pane = &mut self.panes[pane_id.index()];
+            match pane.history.forward(&pane.path) {
+                Some(target) => target,
+                None => return,
+            }
+        };
+        self.panes[pane_id.index()].path = target;
+        self.start_listing(pane_id);
+    }
+
+    /// Navigate to the parent of the active pane's directory, if any. The
+    /// single source of truth for "go up" (browser.rs:3425-3438).
+    pub fn go_parent(&mut self) {
+        self.go_parent_in(self.active);
+    }
+
+    /// Apply to a pane without changing keyboard focus.
+    pub fn go_parent_in(&mut self, pane_id: PaneId) {
+        if let Some(parent) = self.panes[pane_id.index()]
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+        {
+            self.navigate_new(pane_id, parent);
+        }
+    }
+
+    pub fn go_home(&mut self) {
+        self.go_home_in(self.active);
+    }
+
+    /// Apply to a pane without changing keyboard focus.
+    pub fn go_home_in(&mut self, pane_id: PaneId) {
+        self.navigate_new(pane_id, home_directory());
+    }
+
+    /// `navigate_new` (browser.rs:3383-3395): record history only when the
+    /// target differs, then always relist.
+    fn navigate_new(&mut self, pane_id: PaneId, target: PathBuf) {
+        let changed = {
+            let pane = &mut self.panes[pane_id.index()];
+            pane.history.record_new(&pane.path, &target)
+        };
+        if changed {
+            self.panes[pane_id.index()].path = target;
+        }
+        self.start_listing(pane_id);
+    }
+
+    pub fn refresh(&mut self) {
+        self.refresh_in(self.active);
+    }
+
+    /// Relist a pane without changing keyboard focus.
+    pub fn refresh_in(&mut self, pane: PaneId) {
+        self.start_listing(pane);
+    }
+
+    // -- view options -------------------------------------------------------
+
+    /// Flip the active pane's hidden-file visibility and re-list (browser.rs
+    /// 3440-3452).
+    pub fn toggle_hidden(&mut self) {
+        self.toggle_hidden_in(self.active);
+    }
+
+    /// Toggle hidden files without changing keyboard focus.
+    pub fn toggle_hidden_in(&mut self, pane_id: PaneId) {
+        self.panes[pane_id.index()].show_hidden = !self.panes[pane_id.index()].show_hidden;
+        self.start_listing(pane_id);
+    }
+
+    /// Set the active pane's sort. Same column toggles direction; a new
+    /// column adopts the requested direction (browser.rs:3178-3196 — filemgr
+    /// hardcoded ascending on switch; the flag keeps the core API explicit
+    /// while the app passes `true` for identical behaviour).
+    pub fn set_sort(&mut self, column: SortColumn, ascending: bool) {
+        self.set_sort_in(self.active, column, ascending);
+    }
+
+    /// Sort a pane without changing keyboard focus.
+    pub fn set_sort_in(&mut self, pane_id: PaneId, column: SortColumn, ascending: bool) {
+        let pane = &mut self.panes[pane_id.index()];
+        if pane.sort == column {
+            pane.ascending = !pane.ascending;
+        } else {
+            pane.sort = column;
+            pane.ascending = ascending;
+        }
+        sort_all_entries(pane);
+        pane.count_sort_dirty = false;
+    }
+
+    pub fn set_active_pane(&mut self, pane: PaneId) {
+        self.active = pane;
+        self.emit(CoreEvent::InfoChanged);
+    }
+
+    pub fn switch_pane(&mut self) {
+        self.set_active_pane(self.active.other());
+    }
+
+    pub fn set_split_ratio(&mut self, ratio: f32) {
+        self.split_ratio = ratio;
+    }
+
+    pub fn sidebar(&self, sidebar: crate::config::Sidebar) -> crate::config::SidebarConfig {
+        self.sidebars[match sidebar {
+            crate::config::Sidebar::Places => 0,
+            crate::config::Sidebar::Properties => 1,
+        }]
+    }
+    pub fn toggle_sidebar(&mut self, sidebar: crate::config::Sidebar) {
+        let index = match sidebar {
+            crate::config::Sidebar::Places => 0,
+            crate::config::Sidebar::Properties => 1,
+        };
+        self.sidebars[index].open = !self.sidebars[index].open;
+    }
+    pub fn set_sidebar_width(&mut self, sidebar: crate::config::Sidebar, width: f32) {
+        let index = match sidebar {
+            crate::config::Sidebar::Places => 0,
+            crate::config::Sidebar::Properties => 1,
+        };
+        self.sidebars[index].width = width;
+        self.sidebars[index] = self.sidebars[index].normalised();
+    }
+
+    // -- selection ----------------------------------------------------------
+
+    /// Move the selection over [`DopusCore::visible_rows`] (browser.rs
+    /// `select_relative`, 3208-3227).
+    pub fn select_relative(&mut self, pane: PaneId, delta: isize) {
+        self.select_relative_modified(pane, delta, false, false);
+    }
+
+    pub fn select_relative_modified(
+        &mut self,
+        pane: PaneId,
+        delta: isize,
+        ctrl: bool,
+        shift: bool,
+    ) {
+        let rows = self.visible_rows(pane);
+        if rows.is_empty() {
+            return;
+        }
+        let current = self.panes[pane.index()]
+            .selected
+            .as_ref()
+            .and_then(|selected| rows.iter().position(|row| &row.entry.path == selected));
+        let index = current
+            .map_or(0, |index| index.saturating_add_signed(delta))
+            .min(rows.len() - 1);
+        self.select_modified(pane, rows[index].entry.path.clone(), ctrl, shift);
+    }
+
+    /// Jump to the first or last visible row (browser.rs `select_edge`,
+    /// 3229-3241).
+    pub fn select_edge(&mut self, pane: PaneId, last: bool) {
+        self.select_edge_modified(pane, last, false, false);
+    }
+
+    pub fn select_edge_modified(&mut self, pane: PaneId, last: bool, ctrl: bool, shift: bool) {
+        let rows = self.visible_rows(pane);
+        let index = if last {
+            rows.len().checked_sub(1)
+        } else if rows.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        if let Some(index) = index {
+            self.select_modified(pane, rows[index].entry.path.clone(), ctrl, shift);
+        }
+    }
+
+    /// Direct selection (the plain-state equivalent of `select_row`,
+    /// browser.rs:2867-2873: selecting a row also activates its pane).
+    pub fn select_path(&mut self, pane: PaneId, path: Option<PathBuf>) {
+        // An explicit selection retries a previous metadata error. Any
+        // still-running request is reused, so retries cannot bypass the cap.
+        if self.properties[pane.index()]
+            .cached
+            .as_ref()
+            .is_some_and(|(_, _, result)| result.is_err())
+        {
+            self.properties[pane.index()].cached = None;
+        }
+        let model = &mut self.panes[pane.index()];
+        model.selected_paths = path.iter().cloned().collect();
+        model.selection_anchor = path.clone();
+        model.selected = path;
+        self.active = pane;
+        self.emit(CoreEvent::SelectionChanged { pane });
+        self.emit(CoreEvent::InfoChanged);
+    }
+
+    /// Apply desktop selection modifiers against the current visible row order.
+    /// Shift retains the last plain/Ctrl click as its anchor; Ctrl+Shift adds
+    /// the range to existing selection. Ctrl alone toggles one row.
+    pub fn select_modified(&mut self, pane: PaneId, path: PathBuf, ctrl: bool, shift: bool) {
+        let rows = self.visible_rows(pane);
+        let Some(target) = rows.iter().position(|row| row.entry.path == path) else {
+            return;
+        };
+        if !ctrl && !shift {
+            self.select_path(pane, Some(path));
+            return;
+        }
+        if self.properties[pane.index()]
+            .cached
+            .as_ref()
+            .is_some_and(|(_, _, result)| result.is_err())
+        {
+            self.properties[pane.index()].cached = None;
+        }
+        let model = &mut self.panes[pane.index()];
+        if shift {
+            let anchor = model
+                .selection_anchor
+                .as_ref()
+                .and_then(|path| rows.iter().position(|row| &row.entry.path == path))
+                .unwrap_or(target);
+            if !ctrl {
+                model.selected_paths.clear();
+            }
+            model.selected_paths.extend(
+                rows[anchor.min(target)..=anchor.max(target)]
+                    .iter()
+                    .map(|row| row.entry.path.clone()),
+            );
+            if model.selection_anchor.is_none() {
+                model.selection_anchor = Some(path.clone());
+            }
+            model.selected = Some(path);
+        } else {
+            model.selection_anchor = Some(path.clone());
+            if model.selected_paths.remove(&path) {
+                model.selected = rows
+                    .iter()
+                    .find(|row| model.selected_paths.contains(&row.entry.path))
+                    .map(|row| row.entry.path.clone());
+            } else {
+                model.selected_paths.insert(path.clone());
+                model.selected = Some(path);
+            }
+        }
+        self.active = pane;
+        self.emit(CoreEvent::SelectionChanged { pane });
+        self.emit(CoreEvent::InfoChanged);
+    }
+
+    /// Focus a selected member without changing the group or range anchor.
+    pub fn focus_selected_path(&mut self, pane: PaneId, path: PathBuf) -> bool {
+        let model = &mut self.panes[pane.index()];
+        if !model.selected_paths.contains(&path) {
+            return false;
+        }
+        model.selected = Some(path);
+        self.active = pane;
+        self.emit(CoreEvent::SelectionChanged { pane });
+        self.emit(CoreEvent::InfoChanged);
+        true
+    }
+
+    /// Selection in visible order, followed by any pinned paths not in the
+    /// projection. No filesystem work is performed by this snapshot.
+    pub fn selected_paths(&self, pane: PaneId) -> Vec<PathBuf> {
+        let model = self.pane(pane);
+        let mut remaining = model.selected_paths.clone();
+        let mut selected = self
+            .visible_rows(pane)
+            .into_iter()
+            .filter_map(|row| remaining.remove(&row.entry.path).then_some(row.entry.path))
+            .collect::<Vec<_>>();
+        let mut remaining = remaining.into_iter().collect::<Vec<_>>();
+        remaining.sort();
+        selected.extend(remaining);
+        selected
+    }
+
+    /// Top-level selected paths for recursive operations and drag payloads.
+    /// Selecting a folder and its child transfers/deletes the folder once.
+    pub fn operation_sources(&self, pane: PaneId) -> Vec<PathBuf> {
+        let sources = self.selected_paths(pane);
+        sources
+            .iter()
+            .filter(|source| {
+                !sources.iter().any(|parent| {
+                    parent != *source
+                        && source.starts_with(parent)
+                        && find_entry(self.pane(pane), parent).is_some_and(|entry| entry.is_dir)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    // -- tree ---------------------------------------------------------------
+
+    /// Expand/collapse a directory row (browser.rs `on_tree_changed`,
+    /// 2427-2473). The first expansion lists children carrying the captured
+    /// generation; a later reply is accepted only if that generation still
+    /// governs the pane.
+    pub fn toggle_expand(&mut self, pane: PaneId, path: &Path) {
+        let mut collapsed = false;
+        {
+            let pane = &mut self.panes[pane.index()];
+            // Only directories expand (browser.rs:2443-2445).
+            match find_entry(pane, path) {
+                Some(entry) if entry.is_dir => {}
+                _ => return,
+            }
+            if pane.expanded.contains(path) {
+                pane.expanded.remove(path);
+                collapsed = true;
+            } else {
+                pane.expanded.insert(path.to_path_buf());
+            }
+            if !collapsed && pane.children.contains_key(path) {
+                // Already listed: the flatten projection picks it up.
+                return;
+            }
+        }
+        if collapsed {
+            let visible = self.visible_rows(pane);
+            let model = &mut self.panes[pane.index()];
+            let count = model.selected_paths.len();
+            model
+                .selected_paths
+                .retain(|path| visible.iter().any(|row| &row.entry.path == path));
+            if model
+                .selected
+                .as_ref()
+                .is_some_and(|path| !model.selected_paths.contains(path))
+            {
+                model.selected = visible
+                    .iter()
+                    .find(|row| model.selected_paths.contains(&row.entry.path))
+                    .map(|row| row.entry.path.clone());
+            }
+            if model
+                .selection_anchor
+                .as_ref()
+                .is_some_and(|path| !visible.iter().any(|row| &row.entry.path == path))
+            {
+                model.selection_anchor = model.selected.clone();
+            }
+            if count != model.selected_paths.len() {
+                self.emit(CoreEvent::SelectionChanged { pane });
+                self.emit(CoreEvent::InfoChanged);
+            }
+            return;
+        }
+        self.start_child_listing(pane, path.to_path_buf());
+    }
+
+    /// `start_child_listing` (browser.rs:1403-1422): deduplicated through
+    /// `pending_children`, carrying the pane's captured generation.
+    fn start_child_listing(&mut self, pane_id: PaneId, path: PathBuf) {
+        let (generation, show_hidden) = {
+            let pane = &mut self.panes[pane_id.index()];
+            if !pane.pending_children.insert(path.clone()) {
+                return;
+            }
+            (pane.generation, pane.show_hidden)
+        };
+        self.workers
+            .spawn_listing(pane_id, generation, path, false, show_hidden);
+    }
+
+    // -- opening & operations -----------------------------------------------
+
+    /// Open the active pane's selection: a directory navigates, a non-directory
+    /// emits [`CoreEvent::OpenFile`] — the `xdg-open` spawn stays in the app
+    /// (browser.rs:3255-3281).
+    pub fn open_selection(&mut self) {
+        let pane_id = self.active;
+        let Some(path) = self.panes[pane_id.index()].selected.clone() else {
+            return;
+        };
+        match find_entry(&self.panes[pane_id.index()], &path) {
+            Some(entry) if entry.is_dir => self.navigate_new(pane_id, path),
+            Some(_) => self.emit(CoreEvent::OpenFile(path)),
+            None => {}
+        }
+    }
+
+    pub fn copy_selection_to_other_pane(&mut self) {
+        self.transfer_selection(true);
+    }
+
+    pub fn move_selection_to_other_pane(&mut self) {
+        self.transfer_selection(false);
+    }
+
+    /// `transfer_selection` (browser.rs:3283-3305).
+    fn transfer_selection(&mut self, copy: bool) {
+        let pane_id = self.active;
+        let sources = self.operation_sources(pane_id);
+        if sources.is_empty() {
+            return;
+        }
+        let destination = self.panes[pane_id.other().index()].path.clone();
+        let action = if copy {
+            DropAction::Copy
+        } else {
+            DropAction::Move
+        };
+        if let Ok(operation) = transfer_operation(action, sources, destination) {
+            self.start_operation(operation, pane_id);
+        }
+    }
+
+    /// Transfer the gesture's pinned paths through the normal single-flight worker.
+    /// `Ask` is a pending UI decision and never a file operation.
+    pub fn transfer_paths(
+        &mut self,
+        source_pane: PaneId,
+        sources: Vec<PathBuf>,
+        destination: PathBuf,
+        action: DropAction,
+    ) -> Result<(), String> {
+        if action == DropAction::Ask {
+            return Err("Choose Move or Copy before transferring items".into());
+        }
+        if !file_drop_actions_batch(&sources, &destination, !self.is_idle()).contains(action) {
+            return Err("This destination cannot receive the dragged items".into());
+        }
+        let operation = transfer_operation(action, sources, destination)?;
+        if self.start_operation(operation, source_pane) {
+            Ok(())
+        } else {
+            Err("Another file operation is still running".into())
+        }
+    }
+
+    /// Raise the destructive-delete confirmation (browser.rs
+    /// `request_delete_confirm`, 958-992). Refuses while anything is in
+    /// flight; the token is resolved through [`DopusCore::confirm`].
+    pub fn delete_selection(&mut self) {
+        if !self.is_idle() {
+            return;
+        }
+        let pane_id = self.active;
+        let sources = self.operation_sources(pane_id);
+        if sources.is_empty() {
+            return;
+        }
+        let subject = if sources.len() == 1 {
+            "this item".to_owned()
+        } else {
+            format!("these {} items", sources.len())
+        };
+        let paths = sources
+            .iter()
+            .map(|source| sanitise_display_path(source))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let message = format!("Permanently delete {subject}?\n\n{paths}\n\nThis cannot be undone.");
+        let token = self.confirms.insert(Reservation::Delete {
+            sources,
+            source_pane: pane_id,
+        });
+        self.emit(CoreEvent::ConfirmRequested { token, message });
+    }
+
+    /// Resolve a delete confirmation. Anything but an explicit yes fails
+    /// closed: the reservation is consumed and no operation runs. A token is
+    /// consumed exactly once — a second resolution finds nothing and must
+    /// never start a second operation.
+    pub fn confirm(&mut self, token: u64, answer: ConfirmAnswer) {
+        // Fail closed on unknown, stale or foreign (prompt) tokens without
+        // touching them (browser.rs:1160-1171 dismiss/future-outcome law).
+        match self.confirms.entries.get(&token) {
+            Some(Reservation::Delete { .. }) => {}
+            _ => return,
+        }
+        let Some(Reservation::Delete {
+            sources,
+            source_pane,
+        }) = self.confirms.entries.remove(&token)
+        else {
+            unreachable!("reservation kind guarded above");
+        };
+        if answer == ConfirmAnswer::Yes {
+            let operation = if sources.len() == 1 {
+                FileOperation::delete(sources[0].clone())
+            } else {
+                FileOperation::delete_batch(sources).expect("reserved delete has sources")
+            };
+            self.start_operation(operation, source_pane);
+        }
+    }
+
+    /// Raise the new-folder name prompt (browser.rs `open_name_edit`,
+    /// 3325-3381 — refused while an operation runs or a name edit is
+    /// pending). Resolved through [`DopusCore::prompt_text`].
+    pub fn begin_new_folder(&mut self) {
+        if !self.is_idle() || self.name_edit_pending() {
+            return;
+        }
+        let pane = self.active;
+        let parent = self.panes[pane.index()].path.clone();
+        let token = self
+            .confirms
+            .insert(Reservation::NewFolder { parent, pane });
+        self.emit(CoreEvent::PromptRequested {
+            token,
+            kind: PromptKind::NewFolder,
+            initial: "New Folder".to_owned(),
+        });
+    }
+
+    /// Raise the rename prompt. The initial text is deliberately NOT
+    /// display-sanitised (browser.rs:3353-3355): it becomes the rename target
+    /// when submitted, and a display projection here would silently rename an
+    /// unchanged filename on Enter.
+    pub fn begin_rename(&mut self) {
+        if !self.is_idle() || self.name_edit_pending() {
+            return;
+        }
+        let pane = self.active;
+        if self.panes[pane.index()].selected_paths.len() != 1 {
+            return;
+        }
+        let Some(source) = self.panes[pane.index()].selected.clone() else {
+            return;
+        };
+        let initial = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let token = self.confirms.insert(Reservation::Rename { source, pane });
+        self.emit(CoreEvent::PromptRequested {
+            token,
+            kind: PromptKind::Rename,
+            initial,
+        });
+    }
+
+    /// Resolve a name prompt. `None` (dismissal) withdraws the reservation;
+    /// an INVALID name (per [`validate_filename`]) leaves it open — the
+    /// dialog is still up in the view — and explains on the status line;
+    /// a valid name starts the operation, unless another operation holds the
+    /// single-flight slot, in which case the reservation is still consumed,
+    /// a status line explains, and nothing runs (fails exactly once).
+    pub fn prompt_text(&mut self, token: u64, text: Option<String>) {
+        match self.confirms.entries.get(&token) {
+            Some(Reservation::NewFolder { .. } | Reservation::Rename { .. }) => {}
+            // Unknown, stale or foreign (confirm) token: fail closed.
+            _ => return,
+        }
+        // Dismissed outcomes resolve fail-closed (browser.rs:1132-1158: a
+        // non-text interaction result consumes the edit and runs nothing).
+        let Some(text) = text else {
+            self.confirms.entries.remove(&token);
+            return;
+        };
+        // filemgr's text field refused submit on an invalid name (validator
+        // attached at browser.rs:3367, submit gated in ctk interaction.rs:2361),
+        // so its operation layer could never see one. The core is the last
+        // toolkit-free chokepoint for the same law: an invalid name is NOT a
+        // resolution — the reservation stays open for a corrected retry or a
+        // dismissal, and the status line carries the validator's message.
+        let name = match validate_filename(&text) {
+            Ok(name) => name,
+            Err(message) => {
+                self.set_status(None, &message);
+                return;
+            }
+        };
+        let reservation = self
+            .confirms
+            .entries
+            .remove(&token)
+            .expect("reservation kind guarded above");
+        match reservation {
+            Reservation::NewFolder { parent, pane } => {
+                self.start_operation(FileOperation::new_folder(parent.join(&name)), pane);
+            }
+            Reservation::Rename { source, pane } => {
+                if let Some(parent) = source.parent().map(Path::to_path_buf) {
+                    self.start_operation(FileOperation::rename(source, parent.join(&name)), pane);
+                }
+                // No resolvable parent: the reservation is consumed and
+                // nothing runs — fail closed.
+            }
+            Reservation::Delete { .. } => unreachable!("reservation kind guarded above"),
+        }
+    }
+
+    /// `start_operation` (browser.rs:1783-1830). Single-flight: while one
+    /// operation runs, new requests produce a status line, never a silent
+    /// queue.
+    fn start_operation(&mut self, operation: FileOperation, source_pane: PaneId) -> bool {
+        if !self.is_idle() {
+            self.set_status(Some(source_pane), "Another file operation is still running");
+            return false;
+        }
+        self.operation = OpState::Running;
+        let verb = match operation.kind {
+            FileOpKind::Copy => "Copying",
+            FileOpKind::Move => "Moving",
+            FileOpKind::Delete => "Deleting",
+            FileOpKind::NewFolder => "Creating",
+            FileOpKind::Rename => "Renaming",
+            FileOpKind::BatchCopy => "Copying batch",
+            FileOpKind::BatchMove => "Moving batch",
+            FileOpKind::BatchDelete => "Deleting batch",
+        };
+        self.set_status(
+            Some(source_pane),
+            &format!("{verb} {}…", operation.source.display()),
+        );
+        self.workers.spawn_operation(operation, source_pane);
+        true
+    }
+
+    /// Outstanding reservations in mint (oldest-first) order. filemgr's
+    /// modals were always answerable on screen; the core's tokens exist only
+    /// in emitted events, so an app that loses one (UI restart, event bug)
+    /// needs this to re-show or withdraw it — see [`DopusCore::withdraw`].
+    pub fn outstanding_reservations(&self) -> Vec<(u64, ReservationKind)> {
+        self.confirms
+            .entries
+            .iter()
+            .map(|(token, reservation)| (*token, reservation.kind()))
+            .collect()
+    }
+
+    /// Withdraw a reservation without resolving it — fail-closed: no
+    /// operation runs. Idempotent; unknown tokens are ignored. The recovery
+    /// path for a dialog whose event was lost.
+    pub fn withdraw(&mut self, token: u64) {
+        self.confirms.entries.remove(&token);
+    }
+
+    fn is_idle(&self) -> bool {
+        // filemgr's `FileActionState::is_idle` (browser.rs:419-421)
+        // deliberately EXCLUDES the pending-confirm/name-edit maps — "the
+        // service queues concurrent modals — a second confirm must not orphan
+        // the first" — so a dialog on screen never blocks an operation or a
+        // second dialog. The drop-decision slots it DOES include have no v1
+        // counterpart here (no drag-and-drop yet).
+        self.operation == OpState::Idle
+    }
+
+    /// filemgr's `open_name_edit` guard (browser.rs:3330): a second name
+    /// edit is refused while one is pending; delete confirms queue.
+    fn name_edit_pending(&self) -> bool {
+        self.confirms.entries.values().any(|reservation| {
+            matches!(
+                reservation,
+                Reservation::NewFolder { .. } | Reservation::Rename { .. }
+            )
+        })
+    }
+
+    // -- worker replies -----------------------------------------------------
+
+    /// Re-enter a worker reply (or pass through any other event). Returns the
+    /// derived view-facing events, including any queued by earlier mutators.
+    /// Stale replies are validated and dropped here.
+    pub fn on_event(&mut self, event: CoreEvent) -> Vec<CoreEvent> {
+        match event {
+            CoreEvent::PropertiesArrived {
+                pane,
+                generation,
+                path,
+                result,
+            } => {
+                let current = self.pane(pane).generation == generation
+                    && self.pane(pane).selected.as_ref() == Some(&path);
+                let slot = &mut self.properties[pane.index()];
+                if let Some(index) = slot
+                    .in_flight
+                    .iter()
+                    .position(|(g, p, _)| *g == generation && *p == path)
+                {
+                    slot.in_flight.swap_remove(index);
+                    if current {
+                        slot.cached = Some((generation, path, result));
+                    }
+                }
+            }
+            CoreEvent::ListingArrived {
+                pane,
+                generation,
+                path,
+                root,
+                result,
+            } => self.receive_listing(pane, generation, path, root, result),
+            CoreEvent::CountArrived {
+                pane,
+                generation,
+                path,
+                count,
+            } => self.receive_count(pane, generation, path, count),
+            CoreEvent::OperationArrived {
+                kind,
+                source_pane,
+                result,
+            } => self.receive_operation(kind, source_pane, result),
+            // Mutators' outputs are already in the queue; a view event fed
+            // back in passes through unchanged.
+            other => self.emit(other),
+        }
+        self.take_events()
+    }
+
+    /// `receive_listings` (browser.rs:1544-1639).
+    fn receive_listing(
+        &mut self,
+        pane_id: PaneId,
+        generation: u64,
+        path: PathBuf,
+        root: bool,
+        result: Result<Vec<FileEntry>, String>,
+    ) {
+        enum Listing {
+            Ok {
+                jobs: Vec<CountJob>,
+                status: String,
+            },
+            Err {
+                selection_cleared: bool,
+                status: String,
+            },
+        }
+        // Stale rejection (browser.rs:1571-1573): a reply is accepted ONLY
+        // when BOTH the pane's generation and — for root listings — its path
+        // match what is currently expected.
+        let listing = {
+            let pane = &mut self.panes[pane_id.index()];
+            if pane.generation != generation || root && pane.path != path {
+                return;
+            }
+            pane.listing_revision = pane.listing_revision.wrapping_add(1);
+            pane.pending_children.remove(&path);
+            if root {
+                pane.listing = false;
+                pane.listing_failed = result.is_err();
+            }
+            match result {
+                Ok(mut entries) => {
+                    if !root {
+                        pane.count_sort_dirty |=
+                            set_backing_child_count(pane, &path, Some(entries.len()))
+                                && pane.sort == SortColumn::Size;
+                    }
+                    let jobs = entries
+                        .iter()
+                        .filter(|entry| entry.is_dir)
+                        .map(|entry| CountJob {
+                            pane: pane_id,
+                            generation,
+                            entry_path: entry.path.clone(),
+                            show_hidden: pane.show_hidden,
+                        })
+                        .collect::<Vec<_>>();
+                    pane.pending_counts = pane.pending_counts.saturating_add(jobs.len());
+                    sort_entries(&mut entries, pane.sort, pane.ascending);
+                    if root {
+                        pane.root = entries;
+                    } else {
+                        pane.children.insert(path.clone(), entries);
+                    }
+                    if pane.pending_counts == 0 && pane.count_sort_dirty {
+                        sort_all_entries(pane);
+                        pane.count_sort_dirty = false;
+                    }
+                    let status = pane_summary(&pane.root);
+                    pane.status = status.clone();
+                    Listing::Ok { jobs, status }
+                }
+                Err(error) => {
+                    let mut selection_cleared = false;
+                    if root {
+                        // clear_pane_rows (browser.rs:1352-1357): an error
+                        // leaves the pane empty with no selection.
+                        pane.selected = None;
+                        pane.selected_paths.clear();
+                        pane.selection_anchor = None;
+                        pane.root.clear();
+                        selection_cleared = true;
+                    }
+                    let status = sanitise_display_text(&error);
+                    pane.status = status.clone();
+                    Listing::Err {
+                        selection_cleared,
+                        status,
+                    }
+                }
+            }
+        };
+        let mut events = Vec::new();
+        match listing {
+            Listing::Ok { jobs, status } => {
+                self.count_queue.extend(jobs);
+                events.push(CoreEvent::Status {
+                    kind: StatusKind::Summary,
+                    pane: Some(pane_id),
+                    text: status,
+                });
+            }
+            Listing::Err {
+                selection_cleared,
+                status,
+            } => {
+                if selection_cleared {
+                    events.push(CoreEvent::SelectionChanged { pane: pane_id });
+                }
+                events.push(CoreEvent::Status {
+                    kind: StatusKind::Message,
+                    pane: Some(pane_id),
+                    text: status,
+                });
+            }
+        }
+        // A listing for the active pane resets the information panel
+        // (browser.rs:1633-1637).
+        if self.active == pane_id {
+            self.info = INFO_IDLE.into();
+            events.push(CoreEvent::InfoChanged);
+        }
+        self.pending.extend(events);
+        self.dispatch_counts();
+    }
+
+    /// `receive_directory_counts` (browser.rs:1675-1759).
+    fn receive_count(
+        &mut self,
+        pane_id: PaneId,
+        generation: u64,
+        path: PathBuf,
+        count: Option<usize>,
+    ) {
+        let pane = &mut self.panes[pane_id.index()];
+        if pane.generation != generation {
+            return;
+        }
+        pane.pending_counts = pane.pending_counts.saturating_sub(1);
+        pane.listing_revision = pane.listing_revision.wrapping_add(1);
+        pane.count_sort_dirty |=
+            set_backing_child_count(pane, &path, count) && pane.sort == SortColumn::Size;
+        // A count for the active pane's selected row repaints the information
+        // panel (browser.rs `count_reply_repaints_information`, 1753-1759).
+        let repaints_info =
+            self.active == pane_id && pane.selected.as_deref() == Some(path.as_path());
+        if pane.pending_counts == 0 && pane.count_sort_dirty {
+            sort_all_entries(pane);
+            pane.count_sort_dirty = false;
+        }
+        if repaints_info {
+            self.emit(CoreEvent::InfoChanged);
+        }
+        self.dispatch_counts();
+    }
+
+    /// `receive_operations` (browser.rs:1832-1894). After EVERY operation
+    /// reply — success OR failure — BOTH panes relist exactly once: a batch
+    /// stops at its first runtime error with earlier items already
+    /// transferred, and a failed move or delete can also have mutated the
+    /// tree before failing, so a failure is not evidence that the panes still
+    /// match the disk. One relist per reply either way — never one per batch
+    /// item.
+    fn receive_operation(
+        &mut self,
+        kind: FileOpKind,
+        source_pane: PaneId,
+        result: Result<String, String>,
+    ) {
+        self.operation = OpState::Idle;
+        match result {
+            Ok(message) => {
+                self.info = sanitise_display_text(&message);
+                self.emit(CoreEvent::InfoChanged);
+            }
+            Err(error) => {
+                // Error text lands on the source pane's status line, prefixed
+                // by the failing kind exactly as filemgr wrote it
+                // (browser.rs:1861-1877).
+                let label = match kind {
+                    FileOpKind::Copy => "Copy",
+                    FileOpKind::Move => "Move",
+                    FileOpKind::Delete => "Delete",
+                    FileOpKind::NewFolder => "Create folder",
+                    FileOpKind::Rename => "Rename",
+                    FileOpKind::BatchCopy => "Batch copy",
+                    FileOpKind::BatchMove => "Batch move",
+                    FileOpKind::BatchDelete => "Batch delete",
+                };
+                self.set_status(Some(source_pane), &format!("{label} failed: {error}"));
+            }
+        }
+        for pane_id in [PaneId::Left, PaneId::Right] {
+            self.start_listing(pane_id);
+        }
+        self.emit(CoreEvent::RefreshAll);
+    }
+
+    /// `dispatch_directory_counts` (browser.rs:1641-1673): fill the worker
+    /// cap from the queue, re-checking the pane's live generation at dispatch.
+    fn dispatch_counts(&mut self) {
+        while self.workers.count_in_flight.load(AtomicOrdering::Acquire)
+            < DIRECTORY_COUNT_CONCURRENCY
+        {
+            let Some(job) = self.count_queue.pop_front() else {
+                break;
+            };
+            let live_generation = Arc::clone(&self.workers.generations[job.pane.index()]);
+            if live_generation.load(AtomicOrdering::Acquire) != job.generation {
+                continue;
+            }
+            self.workers.spawn_count(job);
+        }
+    }
+
+    // -- frame pump ---------------------------------------------------------
+
+    /// Per-frame work: count dispatch plus the config settle debounce
+    /// (browser.rs `persist_config`, 3564-3622). Returns the derived
+    /// view-facing events queued so far.
+    pub fn tick(&mut self, now: Instant) -> Vec<CoreEvent> {
+        self.dispatch_properties(now);
+        self.dispatch_counts();
+        let snapshot = self.config_snapshot();
+        if self.last_observed.as_ref() != Some(&snapshot) {
+            self.last_observed = Some(snapshot.clone());
+            self.pending_config = Some(snapshot);
+            self.config_dirty_since = Some(now);
+        }
+        if let Some(since) = self.config_dirty_since
+            && now.duration_since(since) >= CONFIG_SETTLE
+        {
+            self.config_dirty_since = None;
+            let mut save_error = None;
+            if let Some(snapshot) = self.pending_config.take() {
+                let mut saved = true;
+                if let Some(file) = &self.config_file {
+                    match file.save(&snapshot) {
+                        Ok(false) => saved = false, // poison-pill refusal
+                        Ok(true) => {}
+                        Err(error) => {
+                            saved = false;
+                            save_error = Some(error);
+                        }
+                    }
+                }
+                // Only a real write (or no file to write) counts as
+                // settled: an app mirroring "persisted" on this event
+                // must not be told the config was saved when the poison
+                // pill refused it or the write failed.
+                if saved {
+                    self.emit(CoreEvent::ConfigSettled(snapshot));
+                }
+            }
+            if let Some(error) = save_error {
+                self.set_status(None, &error);
+            }
+        }
+        self.take_events()
+    }
+
+    // -- internals ----------------------------------------------------------
+
+    /// `start_listing` (browser.rs:1359-1397). Bumps the global nonce and the
+    /// pane's generation (both the u64 and the worker-side Arc), purges the
+    /// pane's queued count jobs, clears rows/children/expansion, and spawns
+    /// the listing.
+    fn start_listing(&mut self, pane_id: PaneId) {
+        self.refresh_places();
+        self.listing_nonce += 1;
+        let generation = self.listing_nonce;
+        let (path, show_hidden) = {
+            let pane = &mut self.panes[pane_id.index()];
+            pane.generation = generation;
+            // Every queued job for this pane belongs to a generation
+            // superseded by the listing just started. Purge it immediately
+            // even when all workers are occupied, so repeated refreshes
+            // cannot accumulate directory-sized stale batches behind the
+            // four in-flight jobs (browser.rs:1368-1372).
+            self.count_queue.retain(|job| job.pane != pane_id);
+            // clear_pane_rows (browser.rs:1352-1357).
+            pane.selected = None;
+            pane.selected_paths.clear();
+            pane.selection_anchor = None;
+            pane.listing = true;
+            pane.listing_failed = false;
+            pane.root.clear();
+            pane.children.clear();
+            pane.expanded.clear();
+            pane.pending_children.clear();
+            pane.pending_counts = 0;
+            pane.count_sort_dirty = false;
+            (pane.path.clone(), pane.show_hidden)
+        };
+        self.workers.store_generation(pane_id, generation);
+        self.workers
+            .spawn_listing(pane_id, generation, path, true, show_hidden);
+        self.emit(CoreEvent::ListingStarted { pane: pane_id });
+        self.emit(CoreEvent::SelectionChanged { pane: pane_id });
+    }
+
+    fn set_status(&mut self, pane: Option<PaneId>, message: &str) {
+        // Status text is presentation-only. File-operation errors retain raw
+        // paths internally, but controls must not create forged status lines
+        // (browser.rs:1909-1920).
+        let text = sanitise_display_text(message);
+        if let Some(pane) = pane {
+            self.panes[pane.index()].status = text.clone();
+        }
+        self.emit(CoreEvent::Status {
+            kind: StatusKind::Message,
+            pane,
+            text,
+        });
+    }
+
+    fn emit(&mut self, event: CoreEvent) {
+        self.pending.push(event);
+    }
+
+    fn take_events(&mut self) -> Vec<CoreEvent> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// One flattened, depth-annotated row (browser.rs `VisibleEntry`, 1939-1943).
+#[derive(Clone, Debug)]
+pub struct VisibleRow {
+    pub entry: FileEntry,
+    pub depth: usize,
+}
+
+/// `flatten_entries` (browser.rs:1991-2012). Depth is capped at 64.
+fn flatten_entries(
+    entries: &[FileEntry],
+    depth: usize,
+    expanded: &HashSet<PathBuf>,
+    children: &HashMap<PathBuf, Vec<FileEntry>>,
+    output: &mut Vec<VisibleRow>,
+) {
+    if depth > 64 {
+        return;
+    }
+    for entry in entries {
+        output.push(VisibleRow {
+            entry: entry.clone(),
+            depth,
+        });
+        if entry.is_dir
+            && expanded.contains(&entry.path)
+            && let Some(entries) = children.get(&entry.path)
+        {
+            flatten_entries(entries, depth + 1, expanded, children, output);
+        }
+    }
+}
+
+/// Find an entry by path across the pane's root listing and expanded children.
+fn find_entry<'a>(pane: &'a PaneModel, path: &Path) -> Option<&'a FileEntry> {
+    pane.root
+        .iter()
+        .find(|entry| entry.path == path)
+        .or_else(|| {
+            pane.children
+                .values()
+                .flatten()
+                .find(|entry| entry.path == path)
+        })
+}
+
+/// `set_backing_child_count` (browser.rs:1761-1774): update the entry's child
+/// count wherever it lives, reporting whether anything changed.
+fn set_backing_child_count(pane: &mut PaneModel, path: &Path, count: Option<usize>) -> bool {
+    for entry in pane
+        .root
+        .iter_mut()
+        .chain(pane.children.values_mut().flatten())
+    {
+        if entry.path == path {
+            let changed = entry.child_count != count;
+            entry.child_count = count;
+            return changed;
+        }
+    }
+    false
+}
+
+fn sort_all_entries(pane: &mut PaneModel) {
+    sort_entries(&mut pane.root, pane.sort, pane.ascending);
+    for entries in pane.children.values_mut() {
+        sort_entries(entries, pane.sort, pane.ascending);
+    }
+}
+
+/// `entry_visible` (browser.rs:1478-1480): the dot-prefix rule.
+pub fn entry_visible(name: &str, show_hidden: bool) -> bool {
+    show_hidden || !name.starts_with('.')
+}
+
+/// `sanitise_display_text` (browser.rs:1482-1492): control characters become
+/// U+FFFD in the DISPLAY PROJECTION ONLY — real OsStr bytes are kept for
+/// operations, and rename input is deliberately NOT sanitised.
+/// `validate_filename` (ctk/src/text_field.rs:90, attached to every filemgr
+/// name prompt at browser.rs:3367 with submit gated in ctk
+/// interaction.rs:2361): trim, and reject empty, ".", ".." or any path
+/// separator. filemgr's operation layer could never see a bad name; the core
+/// enforces the same law at the prompt-resolution boundary, the last
+/// toolkit-free chokepoint. A name containing `/` would otherwise cross
+/// directories (`rename /data/a.txt` + `"sub/b.txt"` = a silent move).
+pub fn validate_filename(value: &str) -> Result<String, String> {
+    let name = value.trim();
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
+        Err("Enter a single valid file name".into())
+    } else {
+        Ok(name.into())
+    }
+}
+
+pub fn sanitise_display_text(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+/// `sanitise_display_path` (browser.rs:1494-1498): sanitise the complete
+/// rendered path, not only its final component — Unix permits control
+/// characters in every ancestor directory name.
+pub fn sanitise_display_path(path: &Path) -> String {
+    sanitise_display_text(&path.to_string_lossy())
+}
+
+/// `read_directory` (browser.rs:1424-1456).
+pub fn read_directory(directory: &Path, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
+    let read = std::fs::read_dir(directory)
+        .map_err(|error| format!("{}: {error}", sanitise_display_path(directory)))?;
+    let mut entries = Vec::new();
+    for entry in read.flatten() {
+        let raw_name = entry.file_name();
+        let lossy_name = raw_name.to_string_lossy();
+        if !entry_visible(&lossy_name, show_hidden) {
+            continue;
+        }
+        // Unix permits control characters, including hard line breaks, in a
+        // filename. Replace them only in the display projection so a name can
+        // never turn a no-wrap row into multiple lines; `entry.path()` below
+        // retains the real OsString bytes for every filesystem operation.
+        let name = sanitise_display_text(&lossy_name);
+        let path = entry.path();
+        let metadata = entry.metadata().ok();
+        let is_dir = metadata.as_ref().is_some_and(std::fs::Metadata::is_dir);
+        let size = metadata
+            .as_ref()
+            .filter(|_| !is_dir)
+            .map(std::fs::Metadata::len);
+        entries.push(FileEntry {
+            path,
+            name,
+            is_dir,
+            size,
+            child_count: None,
+            modified: metadata.and_then(|metadata| metadata.modified().ok()),
+        });
+    }
+    Ok(entries)
+}
+
+/// `count_directory_entries` (browser.rs:1458-1476): same filter as
+/// `read_directory`, abortable per entry through `cancelled`.
+pub fn count_directory_entries(
+    directory: &Path,
+    show_hidden: bool,
+    mut cancelled: impl FnMut() -> bool,
+) -> Option<usize> {
+    let read = std::fs::read_dir(directory).ok()?;
+    let mut count = 0;
+    for entry in read {
+        if cancelled() {
+            return None;
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        count += usize::from(entry_visible(&name.to_string_lossy(), show_hidden));
+    }
+    Some(count)
+}
+
+/// `compare_known` (browser.rs:1500-1514): known values sort by direction,
+/// unknowns always last.
+fn compare_known<T: Ord>(left: Option<T>, right: Option<T>, ascending: bool) -> CmpOrdering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let ordering = left.cmp(&right);
+            if ascending {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        }
+        (Some(_), None) => CmpOrdering::Less,
+        (None, Some(_)) => CmpOrdering::Greater,
+        (None, None) => CmpOrdering::Equal,
+    }
+}
+
+/// `sort_entries` (browser.rs:1516-1542): directories first regardless of
+/// direction; Name case-insensitive; Size for directories by known child
+/// counts with unknowns last; Modified `Option<SystemTime>` None-last;
+/// raw-name tie-break.
+pub fn sort_entries(entries: &mut [FileEntry], column: SortColumn, ascending: bool) {
+    entries.sort_by(|left, right| {
+        let directory_order = right.is_dir.cmp(&left.is_dir);
+        if directory_order != CmpOrdering::Equal {
+            return directory_order;
+        }
+        let primary = match column {
+            SortColumn::Name => {
+                let ordering = left.name.to_lowercase().cmp(&right.name.to_lowercase());
+                if ascending {
+                    ordering
+                } else {
+                    ordering.reverse()
+                }
+            }
+            SortColumn::Size => {
+                if left.is_dir {
+                    compare_known(left.child_count, right.child_count, ascending)
+                } else {
+                    compare_known(left.size, right.size, ascending)
+                }
+            }
+            SortColumn::Modified => compare_known(left.modified, right.modified, ascending),
+        };
+        primary.then_with(|| left.name.cmp(&right.name))
+    });
+}
+
+/// `home_directory` (browser.rs:3643-3647).
+pub fn home_directory() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// `configured_directory` (browser.rs:3649-3656): a configured path that no
+/// longer exists falls back to home rather than erroring at startup.
+fn configured_directory(value: &Path, fallback: &Path) -> PathBuf {
+    if value.is_dir() {
+        value.to_path_buf()
+    } else {
+        fallback.to_path_buf()
+    }
+}
+
+/// `filesystem_root` (browser.rs:3658-3663).
+fn filesystem_root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .last()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// The Places list (browser.rs `spawn_places` data, 1267-1284): Home, the
+/// filesystem root, then the XDG user directories that exist.
+pub fn places(home: &Path) -> Vec<(&'static str, PathBuf)> {
+    let mut places = vec![
+        ("Home", home.to_path_buf()),
+        ("Filesystem", filesystem_root(home)),
+    ];
+    for name in [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Music",
+        "Pictures",
+        "Videos",
+    ] {
+        let path = home.join(name);
+        if path.is_dir() {
+            places.push((name, path));
+        }
+    }
+    places
+}
+
+// -- formatters (browser.rs:3665-3785) ------------------------------------
+
+/// `format_size` (browser.rs:3665-3677): binary and compact.
+pub fn format_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let bytes = bytes as f64;
+    if bytes < KIB {
+        format!("{} B", bytes as u64)
+    } else if bytes < KIB * KIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else if bytes < KIB * KIB * KIB {
+        format!("{:.1} MiB", bytes / (KIB * KIB))
+    } else {
+        format!("{:.1} GiB", bytes / (KIB * KIB * KIB))
+    }
+}
+
+/// `format_child_count` (browser.rs:3679-3683).
+pub fn format_child_count(count: Option<usize>) -> String {
+    count
+        .map(|count| format!("{count} {}", if count == 1 { "item" } else { "items" }))
+        .unwrap_or_default()
+}
+
+/// `format_file_info` (browser.rs:3685-3708), restructured from the Bevy
+/// `FileRow` component to [`FileEntry`].
+pub fn format_file_info(entry: &FileEntry, _now: SystemTime) -> String {
+    let (quantity_label, quantity) = if entry.is_dir {
+        (
+            "Contents",
+            entry
+                .child_count
+                .map(|count| format!("{count} {}", if count == 1 { "item" } else { "items" }))
+                .unwrap_or_else(|| "—".into()),
+        )
+    } else {
+        (
+            "Size",
+            entry.size.map(format_size).unwrap_or_else(|| "—".into()),
+        )
+    };
+    format!(
+        "{}\nType: {}\n{quantity_label}: {quantity}\nModified: {}\n\n{}",
+        entry.name,
+        if entry.is_dir { "Folder" } else { "File" },
+        entry
+            .modified
+            .map(format_modified_at)
+            .unwrap_or_else(|| "—".into()),
+        sanitise_display_path(&entry.path)
+    )
+}
+
+/// `pane_summary` (browser.rs:3710-3726).
+pub fn pane_summary(entries: &[FileEntry]) -> String {
+    let folders = entries.iter().filter(|entry| entry.is_dir).count();
+    let files = entries.len().saturating_sub(folders);
+    let bytes = entries
+        .iter()
+        .filter(|entry| !entry.is_dir)
+        .filter_map(|entry| entry.size)
+        .sum();
+    format!(
+        "{} {}, {} {} ({})",
+        folders,
+        if folders == 1 { "folder" } else { "folders" },
+        files,
+        if files == 1 { "file" } else { "files" },
+        format_size(bytes)
+    )
+}
+
+/// Local absolute modification time, always dd/mm/yy HH:MM.
+pub fn format_modified_at(modified: SystemTime) -> String {
+    format_absolute_system_time(modified).unwrap_or_else(|| "—".into())
+}
+
+/// `format_absolute_system_time` (browser.rs:3734-3737).
+fn format_absolute_system_time(modified: SystemTime) -> Option<String> {
+    let utc = system_time_to_utc(modified)?;
+    Some(format_absolute_datetime(utc.with_timezone(&Local)))
+}
+
+/// `system_time_to_utc` (browser.rs:3739-3760): `None` outside chrono's
+/// range instead of panicking.
+fn system_time_to_utc(time: SystemTime) -> Option<DateTime<Utc>> {
+    let (seconds, nanoseconds) = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => (
+            i64::try_from(duration.as_secs()).ok()?,
+            duration.subsec_nanos(),
+        ),
+        Err(error) => {
+            let duration = error.duration();
+            let seconds = i64::try_from(duration.as_secs()).ok()?;
+            let nanoseconds = duration.subsec_nanos();
+            if nanoseconds == 0 {
+                (seconds.checked_neg()?, 0)
+            } else {
+                (
+                    seconds.checked_neg()?.checked_sub(1)?,
+                    1_000_000_000 - nanoseconds,
+                )
+            }
+        }
+    };
+    DateTime::<Utc>::from_timestamp(seconds, nanoseconds)
+}
+
+/// `format_absolute_datetime` (browser.rs:3762-3768).
+fn format_absolute_datetime<Tz>(modified: DateTime<Tz>) -> String
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    modified.format("%d/%m/%y %H:%M").to_string()
+}
+
+// -- drop legality (browser.rs:2661-2732) ----------------------------------
+//
+// Ported now, while fresh, for a later drag-and-drop arc; v1 has no OS DnD.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropAction {
+    Copy,
+    Move,
+    Ask,
+}
+
+/// The keyboard modifiers a drop carries (the plain-data stand-in for Bevy's
+/// `Modifiers`, browser.rs:2705-2713).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DropModifiers {
+    pub control: bool,
+    pub shift: bool,
+}
+
+/// The allowed-actions mask (the plain-data stand-in for ctk's `ActionMask`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DropActionMask {
+    copy: bool,
+    move_: bool,
+    ask: bool,
+}
+
+impl DropActionMask {
+    pub const NONE: Self = Self {
+        copy: false,
+        move_: false,
+        ask: false,
+    };
+    pub const ALL: Self = Self {
+        copy: true,
+        move_: true,
+        ask: true,
+    };
+
+    pub const fn contains(self, action: DropAction) -> bool {
+        match action {
+            DropAction::Copy => self.copy,
+            DropAction::Move => self.move_,
+            DropAction::Ask => self.ask,
+        }
+    }
+}
+
+/// `file_drop_actions` (browser.rs:2661-2667).
+pub fn file_drop_actions(source: &Path, destination: &Path, busy: bool) -> DropActionMask {
+    if busy || !drop_destination_is_distinct(source, destination) {
+        DropActionMask::NONE
+    } else {
+        DropActionMask::ALL
+    }
+}
+
+/// `file_drop_actions_batch` (browser.rs:2669-2679).
+pub fn file_drop_actions_batch(
+    sources: &[PathBuf],
+    destination: &Path,
+    busy: bool,
+) -> DropActionMask {
+    if sources.is_empty()
+        || sources
+            .iter()
+            .any(|source| !drop_destination_is_distinct(source, destination))
+    {
+        DropActionMask::NONE
+    } else {
+        file_drop_actions(&sources[0], destination, busy)
+    }
+}
+
+/// `drop_destination_is_distinct` (browser.rs:2685-2703). Resolves the
+/// existing source and destination once each and compares filesystem
+/// identity, not lexical spelling. A source symlink is an entry to copy/move,
+/// never a directory root: `symlink_metadata` deliberately prevents its
+/// target from participating in the descendant test.
+pub fn drop_destination_is_distinct(source: &Path, destination: &Path) -> bool {
+    let Ok(source_metadata) = std::fs::symlink_metadata(source) else {
+        return false;
+    };
+    let Ok(destination) = destination.canonicalize() else {
+        return false;
+    };
+    if source_metadata.is_dir() && !source_metadata.file_type().is_symlink() {
+        let Ok(source) = source.canonicalize() else {
+            return false;
+        };
+        source.parent() != Some(destination.as_path()) && !destination.starts_with(source)
+    } else {
+        source
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .is_some_and(|parent| parent != destination)
+    }
+}
+
+/// `requested_drop_action` (browser.rs:2705-2713): the KDE convention —
+/// Ctrl copies, Shift moves, anything else asks.
+pub fn requested_drop_action(modifiers: DropModifiers) -> DropAction {
+    if modifiers.control {
+        DropAction::Copy
+    } else if modifiers.shift {
+        DropAction::Move
+    } else {
+        DropAction::Ask
+    }
+}
+
+/// `transfer_operation` (browser.rs:2715-2732).
+pub fn transfer_operation(
+    action: DropAction,
+    sources: Vec<PathBuf>,
+    destination: PathBuf,
+) -> Result<FileOperation, String> {
+    let [source] = sources.as_slice() else {
+        return match action {
+            DropAction::Copy => FileOperation::copy_batch(sources, destination),
+            DropAction::Move => FileOperation::move_batch(sources, destination),
+            DropAction::Ask => unreachable!("Ask requires transfer confirmation"),
+        };
+    };
+    Ok(match action {
+        DropAction::Copy => FileOperation::copy(source.clone(), destination),
+        DropAction::Move => FileOperation::move_to(source.clone(), destination),
+        DropAction::Ask => unreachable!("Ask requires transfer confirmation"),
+    })
+}
+
+/// Action availability as plain data (filemgr action.rs:114-124, extended per
+/// the dopus keymap contract).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AvailabilitySnapshot {
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    pub can_go_parent: bool,
+    pub has_selection: bool,
+    pub selection_count: usize,
+    pub selection_is_dir: bool,
+    pub rows_available: bool,
+    pub operation_running: bool,
+    pub show_hidden: bool,
+    pub sort: SortColumn,
+    pub ascending: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_instant() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn properties_reject_stale_selection_and_generation_and_never_wait_for_counts() {
+        use crate::properties::Properties;
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        let generation = core.pane(pane).generation;
+        let first = PathBuf::from("first");
+        let second = PathBuf::from("second");
+        core.panes[0].root = vec![entry("first", false), entry("second", true)];
+        core.select_path(pane, Some(first.clone()));
+        core.properties[0].in_flight = vec![(generation, first.clone(), Instant::now())];
+        core.select_path(pane, Some(second.clone()));
+        core.on_event(CoreEvent::PropertiesArrived {
+            pane,
+            generation,
+            path: first,
+            result: Err("stale selection".into()),
+        });
+        assert!(core.properties[0].in_flight.is_empty());
+        assert!(matches!(
+            core.properties(pane),
+            Properties::Entry { metadata: None, .. }
+        ));
+        core.properties[0].in_flight = vec![(generation - 1, second.clone(), Instant::now())];
+        core.on_event(CoreEvent::PropertiesArrived {
+            pane,
+            generation: generation - 1,
+            path: second.clone(),
+            result: Err("stale generation".into()),
+        });
+        assert!(matches!(
+            core.properties(pane),
+            Properties::Entry { metadata: None, .. }
+        ));
+        core.properties[0].in_flight = vec![(generation, second.clone(), Instant::now())];
+        core.take_events();
+        let events = core.on_event(CoreEvent::PropertiesArrived {
+            pane,
+            generation,
+            path: second,
+            result: Err("permission denied".into()),
+        });
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::InfoChanged))
+        );
+        let Properties::Entry {
+            entry,
+            metadata: Some(Err(error)),
+            ..
+        } = core.properties(pane)
+        else {
+            panic!("current result missing")
+        };
+        assert_eq!(
+            entry.child_count, None,
+            "metadata does not await the count queue"
+        );
+        assert_eq!(error, "permission denied");
+        core.select_path(pane, None);
+        let Properties::Folder { summary, .. } = core.properties(pane) else {
+            panic!("summary missing")
+        };
+        assert_eq!(summary, pane_summary(&core.pane(pane).root));
+    }
+
+    #[test]
+    fn sidebar_changes_settle_and_persist_without_changing_panes() {
+        use crate::config::Sidebar;
+        let (_dir, mut core, _rx) = core_fixture();
+        let before = core.config_snapshot();
+        let now = Instant::now();
+        core.tick(now);
+        core.toggle_sidebar(Sidebar::Places);
+        core.set_sidebar_width(Sidebar::Properties, 0.25);
+        core.tick(now + Duration::from_millis(10));
+        let events = core.tick(now + Duration::from_millis(400));
+        let snapshot = core.config_snapshot();
+        assert_eq!(snapshot.left, before.left);
+        assert_eq!(snapshot.right, before.right);
+        assert_eq!(snapshot.active_pane, before.active_pane);
+        assert_eq!(snapshot.split_ratio, before.split_ratio);
+        assert!(!snapshot.places.open);
+        assert_eq!(snapshot.properties.width, 0.25);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CoreEvent::ConfigSettled(c) if c == &snapshot))
+        );
+    }
+
+    #[test]
+    fn stuck_properties_time_out_and_new_selections_bypass_them_with_a_cap() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        let now = Instant::now();
+        let generation = core.pane(pane).generation;
+        let first = core.pane(pane).path.join("stuck");
+        core.select_path(pane, Some(first.clone()));
+        core.properties[0]
+            .in_flight
+            .push((generation, first.clone(), now));
+        core.dispatch_properties(now + Duration::from_secs(6));
+        assert!(
+            core.properties[0]
+                .cached
+                .as_ref()
+                .unwrap()
+                .2
+                .as_ref()
+                .unwrap_err()
+                .contains("timed out")
+        );
+        let second = core.pane(pane).path.join("next");
+        core.select_path(pane, Some(second.clone()));
+        core.dispatch_properties(now + Duration::from_secs(6));
+        assert_eq!(core.properties[0].in_flight.len(), 2);
+        assert!(
+            core.properties[0]
+                .in_flight
+                .iter()
+                .any(|(_, path, _)| *path == second)
+        );
+        for name in ["stuck-2", "stuck-3"] {
+            core.properties[0]
+                .in_flight
+                .push((generation, PathBuf::from(name), now));
+        }
+        core.select_path(pane, Some(core.pane(pane).path.join("over-cap")));
+        core.dispatch_properties(now + Duration::from_secs(6));
+        assert_eq!(core.properties[0].in_flight.len(), 4);
+        assert!(core.properties[0].cached.is_none());
+        let selected = core.pane(pane).selected.clone().unwrap();
+        core.on_event(CoreEvent::PropertiesArrived {
+            pane,
+            generation,
+            path: first,
+            result: Err("late".into()),
+        });
+        assert_eq!(core.properties[0].in_flight.len(), 3);
+        // No click or selection change: capacity becoming free is enough.
+        core.dispatch_properties(now + Duration::from_secs(7));
+        assert_eq!(core.properties[0].in_flight.len(), 4);
+        assert!(
+            core.properties[0]
+                .in_flight
+                .iter()
+                .any(|(_, path, _)| *path == selected)
+        );
+    }
+
+    /// A core rooted at a temp directory with `left/` and `right/` panes.
+    fn core_fixture() -> (tempfile::TempDir, DopusCore, mpsc::Receiver<CoreEvent>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("left")).unwrap();
+        std::fs::create_dir(dir.path().join("right")).unwrap();
+        let config = DOpusConfig {
+            left: PaneConfig {
+                path: dir.path().join("left"),
+                ..Default::default()
+            },
+            right: PaneConfig {
+                path: dir.path().join("right"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (core, rx) = DopusCore::new(config, None);
+        (dir, core, rx)
+    }
+
+    fn selection_fixture(core: &mut DopusCore, paths: &[PathBuf]) {
+        let pane = &mut core.panes[PaneId::Left.index()];
+        pane.listing = false;
+        pane.root = paths
+            .iter()
+            .map(|path| {
+                let mut row = entry(&path.to_string_lossy(), false);
+                row.path = path.clone();
+                row.name = path.file_name().unwrap().to_string_lossy().into_owned();
+                row
+            })
+            .collect();
+    }
+
+    #[test]
+    fn ctrl_toggles_and_shift_ranges_retain_the_anchor_in_visible_order() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        let paths = ["a", "b", "c", "d", "e"].map(PathBuf::from);
+        selection_fixture(&mut core, &paths);
+        core.select_modified(pane, paths[1].clone(), false, false);
+        core.select_modified(pane, paths[4].clone(), true, false);
+        assert_eq!(
+            core.selected_paths(pane),
+            vec![paths[1].clone(), paths[4].clone()]
+        );
+        core.select_modified(pane, paths[4].clone(), true, false);
+        assert_eq!(core.pane(pane).selected, Some(paths[1].clone()));
+        // A toggled-off row remains the range anchor.
+        core.select_modified(pane, paths[2].clone(), false, true);
+        assert_eq!(core.selected_paths(pane), paths[2..].to_vec());
+        core.select_modified(pane, paths[3].clone(), false, true);
+        assert_eq!(core.selected_paths(pane), paths[3..].to_vec());
+        core.select_modified(pane, paths[0].clone(), true, true);
+        assert_eq!(core.selected_paths(pane), paths.to_vec());
+        assert_eq!(core.availability().selection_count, 5);
+        core.begin_rename();
+        assert!(core.outstanding_reservations().is_empty());
+        core.select_modified(pane, paths[2].clone(), false, false);
+        assert_eq!(core.selected_paths(pane), vec![paths[2].clone()]);
+        core.select_modified(pane, paths[2].clone(), true, false);
+        assert!(core.selected_paths(pane).is_empty());
+        assert!(core.pane(pane).selected.is_none());
+        assert!(!core.availability().has_selection);
+    }
+
+    #[test]
+    fn shift_keyboard_and_sorted_ranges_use_the_current_projection() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        let paths = ["a", "b", "c", "d"].map(PathBuf::from);
+        selection_fixture(&mut core, &paths);
+        core.select_modified(pane, paths[1].clone(), false, false);
+        core.set_sort_in(pane, SortColumn::Name, true);
+        assert_eq!(core.visible_rows(pane)[0].entry.path, paths[3]);
+        core.select_relative_modified(pane, -1, false, true);
+        assert_eq!(
+            core.selected_paths(pane),
+            vec![paths[2].clone(), paths[1].clone()]
+        );
+        core.select_edge_modified(pane, false, false, true);
+        assert_eq!(
+            core.selected_paths(pane),
+            vec![paths[3].clone(), paths[2].clone(), paths[1].clone()]
+        );
+        core.select_edge_modified(pane, true, false, true);
+        assert_eq!(
+            core.selected_paths(pane),
+            vec![paths[1].clone(), paths[0].clone()]
+        );
+        core.refresh_in(pane);
+        assert!(core.pane(pane).selected_paths.is_empty());
+        assert!(core.pane(pane).selection_anchor.is_none());
+    }
+
+    #[test]
+    fn expanded_children_participate_in_ranges_and_collapse_prunes_hidden_selection() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        let folder = PathBuf::from("folder");
+        let child = folder.join("child");
+        let last = PathBuf::from("last");
+        selection_fixture(&mut core, &[folder.clone(), last.clone()]);
+        let model = &mut core.panes[pane.index()];
+        model.root[0].is_dir = true;
+        model.expanded.insert(folder.clone());
+        model
+            .children
+            .insert(folder.clone(), vec![entry("folder/child", false)]);
+        core.select_modified(pane, folder.clone(), false, false);
+        core.select_modified(pane, last.clone(), false, true);
+        assert_eq!(
+            core.selected_paths(pane),
+            vec![folder.clone(), child.clone(), last.clone()]
+        );
+        assert_eq!(
+            core.operation_sources(pane),
+            vec![folder.clone(), last.clone()]
+        );
+        core.select_modified(pane, child.clone(), false, false);
+        core.toggle_expand(pane, &folder);
+        assert!(core.selected_paths(pane).is_empty());
+        assert!(core.pane(pane).selected.is_none());
+        assert!(core.pane(pane).selection_anchor.is_none());
+        core.toggle_expand(pane, &folder);
+        assert!(core.selected_paths(pane).is_empty());
+        core.select_modified(pane, child, false, true);
+        assert_eq!(core.selected_paths(pane), vec![folder.join("child")]);
+    }
+
+    fn wait_for_operation(core: &mut DopusCore, rx: &mpsc::Receiver<CoreEvent>) {
+        loop {
+            let event = rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("operation reply");
+            let completed = if let CoreEvent::OperationArrived { ref result, .. } = event {
+                assert!(result.is_ok(), "{result:?}");
+                true
+            } else {
+                false
+            };
+            core.on_event(event);
+            if completed {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn selection_copy_and_move_pin_all_sources_through_the_worker() {
+        for copy in [true, false] {
+            let (dir, mut core, rx) = core_fixture();
+            let paths = [dir.path().join("left/a.txt"), dir.path().join("left/b.txt")];
+            for path in &paths {
+                std::fs::write(path, path.file_name().unwrap().as_encoded_bytes()).unwrap();
+            }
+            selection_fixture(&mut core, &paths);
+            core.select_modified(PaneId::Left, paths[0].clone(), false, false);
+            core.select_modified(PaneId::Left, paths[1].clone(), true, false);
+            if copy {
+                core.copy_selection_to_other_pane();
+            } else {
+                core.move_selection_to_other_pane();
+            }
+            core.select_path(PaneId::Left, None);
+            wait_for_operation(&mut core, &rx);
+            for path in &paths {
+                let name = path.file_name().unwrap();
+                assert_eq!(
+                    std::fs::read(dir.path().join("right").join(name)).unwrap(),
+                    name.as_encoded_bytes()
+                );
+                assert_eq!(path.exists(), copy);
+            }
+            assert!(!core.availability().operation_running);
+        }
+    }
+
+    #[test]
+    fn delete_confirmation_pins_the_complete_selection_and_survives_selection_changes() {
+        let (dir, mut core, rx) = core_fixture();
+        let paths = ["a.txt", "b.txt", "keep.txt"].map(|name| dir.path().join("left").join(name));
+        for path in &paths {
+            std::fs::write(path, b"contents").unwrap();
+        }
+        selection_fixture(&mut core, &paths);
+        core.select_modified(PaneId::Left, paths[0].clone(), false, false);
+        core.select_modified(PaneId::Left, paths[1].clone(), true, false);
+        core.delete_selection();
+        let (token, message) = core
+            .pending
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::ConfirmRequested { token, message } => Some((*token, message.clone())),
+                _ => None,
+            })
+            .expect("complete selection confirmation");
+        assert!(message.contains("these 2 items"));
+        assert!(message.contains("a.txt"));
+        assert!(message.contains("b.txt"));
+        core.select_path(PaneId::Left, Some(paths[2].clone()));
+        core.confirm(token, ConfirmAnswer::Yes);
+        wait_for_operation(&mut core, &rx);
+        assert!(!paths[0].exists());
+        assert!(!paths[1].exists());
+        assert!(paths[2].exists());
+        core.confirm(token, ConfirmAnswer::Yes);
+        assert!(!core.availability().operation_running);
+    }
+
+    #[test]
+    fn pinned_transfers_require_a_choice_and_use_the_worker_single_flight() {
+        for action in [DropAction::Copy, DropAction::Move] {
+            let (dir, mut core, rx) = core_fixture();
+            let source = dir.path().join("left/pinned.txt");
+            let destination = dir.path().join("right");
+            std::fs::write(&source, b"pinned contents").unwrap();
+            assert!(
+                core.transfer_paths(
+                    PaneId::Left,
+                    vec![source.clone()],
+                    destination.clone(),
+                    DropAction::Ask
+                )
+                .is_err()
+            );
+            assert!(source.exists());
+            assert!(!destination.join("pinned.txt").exists());
+            assert!(!core.availability().operation_running);
+            core.select_path(PaneId::Left, Some(dir.path().join("left/unrelated.txt")));
+            core.transfer_paths(
+                PaneId::Left,
+                vec![source.clone()],
+                destination.clone(),
+                action,
+            )
+            .unwrap();
+            assert!(core.availability().operation_running);
+            assert!(
+                core.transfer_paths(
+                    PaneId::Left,
+                    vec![source.clone()],
+                    destination.clone(),
+                    action
+                )
+                .is_err()
+            );
+            loop {
+                let event = rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("transfer worker reply");
+                if let CoreEvent::OperationArrived { ref result, .. } = event {
+                    assert!(result.is_ok(), "{result:?}");
+                    core.on_event(event);
+                    break;
+                }
+                core.on_event(event);
+            }
+            assert_eq!(
+                std::fs::read(destination.join("pinned.txt")).unwrap(),
+                b"pinned contents"
+            );
+            assert_eq!(source.exists(), action == DropAction::Copy);
+            assert!(!core.availability().operation_running);
+        }
+    }
+
+    fn pane_fixture() -> PaneModel {
+        PaneModel::new(PathBuf::from("/fixture"), false, SortColumn::Name, true)
+    }
+
+    fn entry(name: &str, is_dir: bool) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(name),
+            name: name.into(),
+            is_dir,
+            size: None,
+            child_count: None,
+            modified: None,
+        }
+    }
+
+    // -- sorting (browser.rs tests ~:4952-5113) ------------------------------
+
+    #[test]
+    fn directory_sort_puts_folders_first_then_names_case_insensitively() {
+        let mut entries = vec![entry("z", false), entry("B", true), entry("a", true)];
+        sort_entries(&mut entries, SortColumn::Name, true);
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            ["a", "B", "z"]
+        );
+    }
+
+    #[test]
+    fn descending_size_sort_keeps_directories_first() {
+        let mut entries = vec![
+            {
+                let mut entry = entry("small", false);
+                entry.size = Some(10);
+                entry
+            },
+            {
+                let mut entry = entry("folder", true);
+                entry.child_count = Some(4);
+                entry
+            },
+            {
+                let mut entry = entry("large", false);
+                entry.size = Some(100);
+                entry
+            },
+        ];
+        sort_entries(&mut entries, SortColumn::Size, false);
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            ["folder", "large", "small"]
+        );
+    }
+
+    #[test]
+    fn folder_size_sort_uses_known_child_counts_and_leaves_unknowns_last() {
+        let mut entries = vec![
+            entry("unknown", true),
+            {
+                let mut entry = entry("large", true);
+                entry.child_count = Some(12);
+                entry
+            },
+            {
+                let mut entry = entry("small", true);
+                entry.child_count = Some(2);
+                entry
+            },
+        ];
+
+        sort_entries(&mut entries, SortColumn::Size, true);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["small", "large", "unknown"]
+        );
+        sort_entries(&mut entries, SortColumn::Size, false);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["large", "small", "unknown"]
+        );
+    }
+
+    #[test]
+    fn a_changed_child_listing_count_reorders_size_sorted_folders() {
+        let mut pane = pane_fixture();
+        pane.sort = SortColumn::Size;
+        pane.root = vec![
+            {
+                let mut entry = entry("growing", true);
+                entry.path = PathBuf::from("/fixture/growing");
+                entry.child_count = Some(2);
+                entry
+            },
+            {
+                let mut entry = entry("steady", true);
+                entry.path = PathBuf::from("/fixture/steady");
+                entry.child_count = Some(10);
+                entry
+            },
+        ];
+        sort_all_entries(&mut pane);
+        assert_eq!(pane.root[0].name, "growing");
+
+        assert!(set_backing_child_count(
+            &mut pane,
+            Path::new("/fixture/growing"),
+            Some(102)
+        ));
+        sort_all_entries(&mut pane);
+
+        assert_eq!(pane.root[0].name, "steady");
+        assert!(!set_backing_child_count(
+            &mut pane,
+            Path::new("/fixture/growing"),
+            Some(102)
+        ));
+    }
+
+    // -- format family (browser.rs tests ~:5115-5208) ------------------------
+
+    #[test]
+    fn size_format_is_binary_and_compact() {
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1536), "1.5 KiB");
+        assert_eq!(format_child_count(Some(1)), "1 item");
+        assert_eq!(format_child_count(Some(15)), "15 items");
+        assert_eq!(format_child_count(None), "");
+    }
+
+    #[test]
+    fn folder_information_reports_contents_instead_of_inode_size() {
+        let mut folder = entry("/fixture/folder", true);
+        folder.size = Some(4096);
+        folder.child_count = Some(15);
+
+        let info = format_file_info(&folder, SystemTime::UNIX_EPOCH);
+        assert!(info.contains("\nContents: 15 items\n"));
+        assert!(!info.contains("\nSize: "));
+    }
+
+    #[test]
+    fn information_panel_sanitises_controls_in_the_complete_display_path() {
+        let entry = FileEntry {
+            path: "/fixture\nancestor/short\nname.md".into(),
+            name: "short\u{fffd}name.md".into(),
+            is_dir: false,
+            size: Some(12),
+            child_count: None,
+            modified: None,
+        };
+
+        let info = format_file_info(&entry, SystemTime::UNIX_EPOCH);
+
+        assert!(info.ends_with("/fixture\u{fffd}ancestor/short\u{fffd}name.md"));
+        assert!(!info.contains("fixture\nancestor"));
+        assert!(!info.contains("short\nname.md"));
+        assert_eq!(info.matches('\n').count(), 5);
+    }
+
+    #[test]
+    fn pane_summary_matches_dolphin_style_counts() {
+        let mut folder = entry("folder", true);
+        folder.child_count = Some(2);
+        let mut file = entry("file", false);
+        file.size = Some(1536);
+        let entries = vec![folder, file];
+        assert_eq!(pane_summary(&entries), "1 folder, 1 file (1.5 KiB)");
+    }
+
+    #[test]
+    fn footer_distinguishes_loading_failure_and_success_and_status_is_typed() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        assert_eq!(core.pane(pane).footer_summary(), "…");
+        let reply = |core: &DopusCore, result| CoreEvent::ListingArrived {
+            pane,
+            generation: core.pane(pane).generation,
+            path: core.pane(pane).path.clone(),
+            root: true,
+            result,
+        };
+        let events = core.on_event(reply(&core, Err("Permission denied".into())));
+        assert_eq!(core.pane(pane).footer_summary(), "Permission denied");
+        assert!(events.iter().any(|event| matches!(event,
+            CoreEvent::Status { kind: StatusKind::Message, text, .. } if text == "Permission denied"
+        )));
+        core.start_listing(pane);
+        assert_eq!(core.pane(pane).footer_summary(), "…");
+        let events = core.on_event(reply(&core, Ok(Vec::new())));
+        let summary = core.pane(pane).footer_summary();
+        assert_eq!(summary, "0 folders, 0 files (0 B)");
+        assert!(events.iter().any(|event| matches!(event,
+            CoreEvent::Status { kind: StatusKind::Summary, text, .. } if text == &summary
+        )));
+        // A message with exactly the same text must still be a message.
+        core.set_status(Some(pane), &summary);
+        assert!(core.take_events().iter().any(|event| matches!(event,
+            CoreEvent::Status { kind: StatusKind::Message, text, .. } if text == &summary
+        )));
+        core.start_listing(pane);
+        assert_eq!(core.pane(pane).footer_summary(), "…");
+    }
+
+    // -- visibility, counts, sanitisation (browser.rs ~:5209-5258) -----------
+
+    #[test]
+    fn dotfiles_follow_the_per_pane_hidden_setting() {
+        assert!(!entry_visible(".git", false));
+        assert!(entry_visible(".git", true));
+        assert!(entry_visible("music", false));
+    }
+
+    #[test]
+    fn child_count_uses_the_listing_filter_and_honours_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::File::create(dir.path().join("visible")).unwrap();
+        std::fs::File::create(dir.path().join(".hidden")).unwrap();
+
+        assert_eq!(
+            count_directory_entries(dir.path(), false, || false),
+            Some(1)
+        );
+        assert_eq!(count_directory_entries(dir.path(), true, || false), Some(2));
+        assert_eq!(count_directory_entries(dir.path(), true, || true), None);
+    }
+
+    #[test]
+    fn a_new_listing_purges_only_that_panes_queued_counts() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        for (pane, generation) in [(PaneId::Left, 1), (PaneId::Right, 2), (PaneId::Left, 3)] {
+            core.count_queue.push_back(CountJob {
+                pane,
+                generation,
+                entry_path: PathBuf::from(format!("/{generation}")),
+                show_hidden: false,
+            });
+        }
+
+        // A relist of the left pane must purge exactly its queued jobs
+        // (browser.rs:1399-1401).
+        core.refresh();
+
+        assert_eq!(core.count_queue.len(), 1);
+        assert_eq!(core.count_queue[0].pane, PaneId::Right);
+    }
+
+    #[test]
+    fn read_directory_sanitises_display_controls_but_keeps_the_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_name = "short\nname\t.md";
+        std::fs::File::create(dir.path().join(real_name)).unwrap();
+
+        let entries = read_directory(dir.path(), true).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "short\u{fffd}name\u{fffd}.md");
+        assert_eq!(
+            entries[0].path.file_name().unwrap().to_string_lossy(),
+            real_name
+        );
+    }
+
+    // -- chrono boundaries (browser.rs ~:5260-5306) ---------------------------
+
+    #[test]
+    fn absolute_modified_time_is_fixed_width_and_24_hour() {
+        use chrono::TimeZone;
+
+        let timezone = chrono::FixedOffset::east_opt(10 * 60 * 60).unwrap();
+        let modified = timezone
+            .with_ymd_and_hms(2025, 11, 25, 11, 20, 0)
+            .single()
+            .unwrap();
+
+        assert_eq!(format_absolute_datetime(modified), "25/11/25 11:20");
+        for (hour, expected) in [(0, "25/11/25 00:05"), (15, "25/11/25 15:05")] {
+            let modified = timezone
+                .with_ymd_and_hms(2025, 11, 25, hour, 5, 0)
+                .single()
+                .unwrap();
+            assert_eq!(format_absolute_datetime(modified), expected);
+            assert_eq!(format_absolute_datetime(modified).len(), 14);
+        }
+        // Both recent and old values use the same absolute shape.
+        for age in [0, 60, 86_400, 8 * 86_400] {
+            let rendered = format_modified_at(SystemTime::now() - Duration::from_secs(age));
+            assert_eq!(rendered.len(), 14);
+            assert!(!rendered.contains("ago"));
+        }
+    }
+
+    #[test]
+    fn out_of_chrono_range_modified_time_falls_back_without_panicking() {
+        let out_of_range_seconds = u64::try_from(DateTime::<Utc>::MAX_UTC.timestamp())
+            .unwrap()
+            .saturating_add(86_400);
+        let modified = UNIX_EPOCH
+            .checked_add(Duration::from_secs(out_of_range_seconds))
+            .unwrap();
+
+        assert!(system_time_to_utc(modified).is_none());
+        assert_eq!(format_modified_at(modified), "—");
+    }
+
+    // -- stale rejection + history (browser.rs ~:5309-5325) -------------------
+
+    #[test]
+    fn stale_listing_requires_both_matching_generation_and_path() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+
+        core.navigate(PaneId::Left, PathBuf::from("/music"));
+        let generation = core.pane(PaneId::Left).generation;
+        let revision = core.pane(PaneId::Left).listing_revision;
+
+        // Both match: accepted.
+        let events = core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation,
+            path: PathBuf::from("/music"),
+            root: true,
+            result: Ok(vec![]),
+        });
+        assert!(!events.is_empty(), "the matching reply is accepted");
+        assert!(!core.pane(PaneId::Left).listing);
+        assert_eq!(core.pane(PaneId::Left).listing_revision, revision + 1);
+
+        // Generation mismatch: rejected.
+        core.navigate(PaneId::Left, PathBuf::from("/music"));
+        let generation = core.pane(PaneId::Left).generation;
+        core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation: generation + 1,
+            path: PathBuf::from("/music"),
+            root: true,
+            result: Ok(vec![entry("/music/x", false)]),
+        });
+        assert!(
+            core.pane(PaneId::Left).listing,
+            "a stale generation must not complete the listing"
+        );
+        assert!(core.pane(PaneId::Left).root.is_empty());
+
+        // Path mismatch (root replies): rejected.
+        core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation,
+            path: PathBuf::from("/other"),
+            root: true,
+            result: Ok(vec![entry("/other/x", false)]),
+        });
+        assert!(core.pane(PaneId::Left).root.is_empty());
+    }
+
+    #[test]
+    fn listing_revision_tracks_count_replies_even_when_batched() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let pane = PaneId::Left;
+        let generation = core.pane(pane).generation;
+        let revision = core.pane(pane).listing_revision;
+        let path = core.pane(pane).path.join("folder");
+        core.receive_count(pane, generation.wrapping_add(1), path.clone(), Some(1));
+        assert_eq!(core.pane(pane).listing_revision, revision);
+        core.receive_count(pane, generation, path.clone(), Some(2));
+        core.receive_count(pane, generation, path, Some(3));
+        assert_eq!(core.pane(pane).listing_revision, revision + 2);
+    }
+
+    /// The port-restructured interaction the new test pins: a lazy child
+    /// listing captured one generation, then navigation supersedes it — the
+    /// late children reply must be rejected outright.
+    #[test]
+    fn late_children_reply_after_navigation_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        // Root the left pane at the temp root itself.
+        let config = DOpusConfig {
+            left: PaneConfig {
+                path: dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            right: PaneConfig {
+                path: dir.path().join("right"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (mut core, _rx) = DopusCore::new(config, None);
+        core.tick(now_instant());
+
+        let generation = core.pane(PaneId::Left).generation;
+        core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation,
+            path: dir.path().to_path_buf(),
+            root: true,
+            result: Ok(vec![{
+                let mut entry = entry(&folder.to_string_lossy(), true);
+                entry.path = folder.clone();
+                entry.name = "folder".into();
+                entry
+            }]),
+        });
+
+        // Expand: a child listing starts, carrying the captured generation.
+        core.toggle_expand(PaneId::Left, &folder);
+        assert!(core.pane(PaneId::Left).pending_children.contains(&folder));
+        let child_generation = core.pane(PaneId::Left).generation;
+
+        // Navigate away (into the folder itself): the pane's generation moves on.
+        core.navigate(PaneId::Left, folder.clone());
+        let new_generation = core.pane(PaneId::Left).generation;
+        assert_ne!(child_generation, new_generation);
+        // Flush the navigate-emitted events so the assertions below see only
+        // what the late reply itself derives.
+        let _ = core.tick(now_instant());
+
+        // The late children reply, addressed to the superseded generation,
+        // must be rejected: not merged, not even touched.
+        let events = core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation: child_generation,
+            path: folder.clone(),
+            root: false,
+            result: Ok(vec![entry("late.txt", false)]),
+        });
+        assert!(events.is_empty(), "the late reply must be dropped silently");
+        assert!(!core.pane(PaneId::Left).children.contains_key(&folder));
+        assert!(
+            !core.pane(PaneId::Left).pending_children.contains(&folder),
+            "a rejected reply must not disturb the new generation's state"
+        );
+    }
+
+    #[test]
+    fn new_navigation_clears_forward_history() {
+        let mut history = NavigationHistory::default();
+        assert!(history.record_new(Path::new("/a"), Path::new("/b")));
+        assert_eq!(history.back(Path::new("/b")), Some(PathBuf::from("/a")));
+        assert_eq!(history.forward(Path::new("/a")), Some(PathBuf::from("/b")));
+        assert_eq!(history.back(Path::new("/b")), Some(PathBuf::from("/a")));
+        assert!(history.record_new(Path::new("/a"), Path::new("/c")));
+        assert_eq!(history.forward(Path::new("/c")), None);
+    }
+
+    #[test]
+    fn navigation_start_clears_selection_and_disables_actions() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        // Land the startup listing so the pane is no longer `listing` —
+        // `has_selection` is gated on it (`action_selection_available`,
+        // browser.rs:236-240), and selection only ever happens on listed rows.
+        let generation = core.pane(PaneId::Left).generation;
+        core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation,
+            path: core.pane(PaneId::Left).path.clone(),
+            root: true,
+            result: Ok(vec![]),
+        });
+
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/old")));
+        assert!(core.availability().has_selection);
+
+        core.navigate(PaneId::Left, core.pane(PaneId::Left).path.clone());
+
+        let availability = core.availability();
+        assert!(core.pane(PaneId::Left).listing);
+        assert!(core.pane(PaneId::Left).selected.is_none());
+        assert!(!availability.has_selection);
+        assert!(!availability.rows_available);
+    }
+
+    // -- drop-legality quartet (browser.rs tests ~:4365-4483) -----------------
+
+    #[test]
+    fn file_drop_rejects_same_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        std::fs::write(&source, b"source").unwrap();
+        assert_eq!(
+            file_drop_actions(&source, dir.path(), false),
+            DropActionMask::NONE
+        );
+    }
+
+    #[test]
+    fn file_drop_rejects_directory_self_and_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let child = source.join("child");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert_eq!(
+            file_drop_actions(&source, &source, false),
+            DropActionMask::NONE
+        );
+        assert_eq!(
+            file_drop_actions(&source, &child, false),
+            DropActionMask::NONE
+        );
+        assert_eq!(
+            file_drop_actions(&source, &destination, false),
+            DropActionMask::ALL
+        );
+    }
+
+    #[test]
+    fn file_drop_rejects_while_an_operation_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let destination = dir.path().join("destination");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert_eq!(
+            file_drop_actions(&source, &destination, true),
+            DropActionMask::NONE
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_drop_containment_resolves_dotdot_and_symlink_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let child = source.join("child");
+        let elsewhere = dir.path().join("elsewhere");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::create_dir(&other).unwrap();
+
+        let dotdot_inside = other.join("..").join("source").join("child");
+        assert_eq!(
+            file_drop_actions(&source, &dotdot_inside, false),
+            DropActionMask::NONE
+        );
+
+        let lexical_descendant_but_distinct = source.join("..").join("elsewhere");
+        assert_eq!(
+            file_drop_actions(&source, &lexical_descendant_but_distinct, false),
+            DropActionMask::ALL
+        );
+
+        let alias_inside = dir.path().join("alias-inside");
+        std::os::unix::fs::symlink(&child, &alias_inside).unwrap();
+        assert_eq!(
+            file_drop_actions(&source, &alias_inside, false),
+            DropActionMask::NONE
+        );
+
+        let source_link = dir.path().join("source-link");
+        std::os::unix::fs::symlink(&source, &source_link).unwrap();
+        assert_eq!(
+            file_drop_actions(&source_link, &child, false),
+            DropActionMask::ALL,
+            "a source symlink is moved/copied as a link, not as its directory target"
+        );
+    }
+
+    #[test]
+    fn file_drop_modifiers_map_to_kde_actions() {
+        assert_eq!(
+            requested_drop_action(DropModifiers::default()),
+            DropAction::Ask
+        );
+        assert_eq!(
+            requested_drop_action(DropModifiers {
+                control: true,
+                ..Default::default()
+            }),
+            DropAction::Copy
+        );
+        assert_eq!(
+            requested_drop_action(DropModifiers {
+                shift: true,
+                ..Default::default()
+            }),
+            DropAction::Move
+        );
+        assert_eq!(
+            requested_drop_action(DropModifiers {
+                control: true,
+                shift: true,
+            }),
+            DropAction::Copy
+        );
+    }
+
+    #[test]
+    fn commit_trusts_any_action_in_the_negotiated_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let destination = dir.path().join("destination");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+
+        let allowed = file_drop_actions(&source, &destination, false);
+        assert_eq!(
+            requested_drop_action(DropModifiers::default()),
+            DropAction::Ask
+        );
+        assert!(allowed.contains(DropAction::Move));
+    }
+
+    // -- reservation state machine (browser.rs:387-427 + tests ~:4653-4927,
+    //    restructured from ctk interaction results to token-keyed calls) -----
+
+    fn confirm_token(core: &mut DopusCore) -> u64 {
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/target")));
+        core.delete_selection();
+        let events = core.tick(now_instant());
+        events
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::ConfirmRequested { token, .. } => Some(*token),
+                _ => None,
+            })
+            .expect("delete_selection must raise a ConfirmRequested")
+    }
+
+    #[test]
+    fn a_confirmed_delete_starts_one_operation_and_consumes_the_token() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        let token = confirm_token(&mut core);
+
+        core.confirm(token, ConfirmAnswer::Yes);
+        assert!(core.availability().operation_running);
+
+        // The token is consumed: a replayed resolution must be a no-op —
+        // the reservation fails exactly once, never twice (browser.rs test
+        // ~:4693, restructured).
+        core.confirm(token, ConfirmAnswer::Yes);
+        core.confirm(token, ConfirmAnswer::No);
+
+        // And while the operation runs, a new delete request is refused
+        // rather than queued (browser.rs:967-969).
+        let before = core.pending.len();
+        core.delete_selection();
+        assert_eq!(core.pending.len(), before);
+        assert!(core.availability().operation_running);
+    }
+
+    #[test]
+    fn dismissed_or_unknown_confirm_fails_closed() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+
+        // Unknown token: nothing happens at all.
+        core.confirm(4242, ConfirmAnswer::Yes);
+        assert!(!core.availability().operation_running);
+
+        let token = confirm_token(&mut core);
+        core.confirm(token, ConfirmAnswer::No);
+        assert!(!core.availability().operation_running);
+
+        // Consumed by the dismissal: a later yes finds nothing.
+        core.confirm(token, ConfirmAnswer::Yes);
+        assert!(!core.availability().operation_running);
+    }
+
+    #[test]
+    fn prompt_dismissal_withdraws_and_text_applies_on_rename() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/old name.txt")));
+
+        core.begin_rename();
+        let events = core.tick(now_instant());
+        let (token, initial) = events
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::PromptRequested { token, initial, .. } => {
+                    Some((*token, initial.clone()))
+                }
+                _ => None,
+            })
+            .expect("begin_rename must raise a PromptRequested");
+        assert_eq!(initial, "old name.txt");
+
+        // Dismissal withdraws: nothing runs, and the dead token stays dead.
+        core.prompt_text(token, None);
+        assert!(!core.availability().operation_running);
+        core.prompt_text(token, Some("new name.txt".into()));
+        assert!(!core.availability().operation_running);
+
+        // A fresh reservation applies the text as the rename target.
+        core.begin_rename();
+        let events = core.tick(now_instant());
+        let token = events
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::PromptRequested { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+        core.prompt_text(token, Some("new name.txt".into()));
+        assert!(core.availability().operation_running);
+    }
+
+    #[test]
+    fn cross_kind_and_busy_reservations_fail_closed() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+
+        // A confirm token is not a prompt token and vice versa.
+        let confirm_id = confirm_token(&mut core);
+        core.prompt_text(confirm_id, Some("whatever".into()));
+        assert!(!core.availability().operation_running);
+        core.confirm(confirm_id, ConfirmAnswer::Yes);
+
+        // While that operation runs, prompts and confirms are refused.
+        core.begin_new_folder();
+        core.begin_rename();
+        core.delete_selection();
+        let events = core.tick(now_instant());
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                CoreEvent::PromptRequested { .. } | CoreEvent::ConfirmRequested { .. }
+            )),
+            "nothing new may be reserved while an operation is in flight"
+        );
+    }
+
+    #[test]
+    fn second_operation_while_running_reports_instead_of_queueing() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/a.txt")));
+        core.copy_selection_to_other_pane();
+        assert!(core.availability().operation_running);
+
+        // Single-flight (browser.rs:1792-1800): a second request produces a
+        // status line, never a silent queue or a second running operation.
+        core.copy_selection_to_other_pane();
+        assert!(
+            core.pane(PaneId::Left)
+                .status
+                .contains("Another file operation is still running")
+        );
+        assert!(core.availability().operation_running);
+    }
+
+    // -- review round 1: restored laws (cold-review fix pass, 2026-09-27) ----
+
+    #[test]
+    fn invalid_prompt_names_keep_the_reservation_and_explain() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/a.txt")));
+        core.begin_rename();
+        let events = core.tick(now_instant());
+        let token = events
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::PromptRequested { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+
+        // A name that would cross directories ("../evil") or is empty is NOT
+        // a resolution: filemgr's field refused submit (ctk validate_filename,
+        // browser.rs:3367); the core keeps the dialog's reservation open and
+        // explains on the status line.
+        for bad in ["../evil", "sub/b.txt", "  ", "."] {
+            core.prompt_text(token, Some(bad.into()));
+            assert!(
+                !core.availability().operation_running,
+                "'{bad}' must never start an operation"
+            );
+            assert_eq!(
+                core.outstanding_reservations(),
+                vec![(token, ReservationKind::Rename)],
+                "'{bad}' must keep the reservation open for a corrected retry"
+            );
+        }
+        let events = core.tick(now_instant());
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Status { pane: None, .. })),
+            "the validator's message reaches the status line"
+        );
+
+        // Dismissal still withdraws the unresolvable dialog.
+        core.prompt_text(token, None);
+        assert!(core.outstanding_reservations().is_empty());
+    }
+
+    #[test]
+    fn prompt_text_trims_and_applies_through_the_real_pipeline() {
+        let (dir, mut core, rx) = core_fixture();
+        let source = dir.path().join("left/a.txt");
+        std::fs::write(&source, b"a").unwrap();
+        core.tick(now_instant());
+        core.select_path(PaneId::Left, Some(source.clone()));
+        core.begin_rename();
+        let events = core.tick(now_instant());
+        let token = events
+            .iter()
+            .find_map(|event| match event {
+                CoreEvent::PromptRequested { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+
+        // Whitespace is trimmed by the validator, then the worker thread
+        // performs the rename for real. The channel also carries the real
+        // startup listing reply — drain until the operation lands.
+        core.prompt_text(token, Some("  b.txt  ".into()));
+        let deadline = std::time::Duration::from_secs(5);
+        let mut reply = rx.recv_timeout(deadline).expect("the workers must reply");
+        while !matches!(reply, CoreEvent::OperationArrived { .. }) {
+            reply = rx
+                .recv_timeout(deadline)
+                .expect("the rename reply must arrive");
+        }
+        let CoreEvent::OperationArrived { result, .. } = reply else {
+            unreachable!("guarded by the loop")
+        };
+        assert!(result.is_ok(), "rename must succeed: {result:?}");
+        let target = dir.path().join("left/b.txt");
+        assert!(target.exists(), "the trimmed name is the rename target");
+        assert!(!source.exists());
+    }
+
+    #[test]
+    fn a_second_delete_confirm_queues_a_second_modal() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        let first = confirm_token(&mut core);
+        // filemgr queues concurrent modals (browser.rs:405-409): a second
+        // confirm must not orphan the first.
+        let second = confirm_token(&mut core);
+        assert_ne!(first, second);
+        assert_eq!(
+            core.outstanding_reservations(),
+            vec![
+                (first, ReservationKind::Delete),
+                (second, ReservationKind::Delete)
+            ]
+        );
+        // Withdrawing one leaves the other answerable.
+        core.withdraw(second);
+        assert_eq!(
+            core.outstanding_reservations(),
+            vec![(first, ReservationKind::Delete)]
+        );
+    }
+
+    #[test]
+    fn an_operation_runs_while_a_confirm_is_open() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        let _token = confirm_token(&mut core);
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/a.txt")));
+
+        // A dialog on screen is not an operation (filemgr's is_idle excludes
+        // the confirm maps, browser.rs:419-421): the copy starts and the
+        // status says Copying, not the "another operation" refusal.
+        core.copy_selection_to_other_pane();
+        assert!(core.availability().operation_running);
+        assert!(core.pane(PaneId::Left).status.contains("Copying"));
+        assert!(
+            !core
+                .pane(PaneId::Left)
+                .status
+                .contains("Another file operation is still running")
+        );
+    }
+
+    #[test]
+    fn a_name_edit_refuses_while_another_is_pending() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        core.select_path(PaneId::Left, Some(PathBuf::from("/fixture/a.txt")));
+        core.begin_rename();
+        let events = core.tick(now_instant());
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::PromptRequested { .. }))
+        );
+
+        // open_name_edit's own guard (browser.rs:3330): a second name edit
+        // while one is pending is refused; the delete confirm still queues.
+        core.begin_new_folder();
+        core.begin_rename();
+        assert_eq!(core.outstanding_reservations().len(), 1);
+        let _second_confirm = confirm_token(&mut core);
+        assert_eq!(core.outstanding_reservations().len(), 2);
+    }
+
+    #[test]
+    fn count_replies_repaint_the_information_panel_for_the_selected_row_only() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        let generation = core.pane(PaneId::Left).generation;
+        let selected = PathBuf::from("/fixture/selected");
+        let other = PathBuf::from("/fixture/other");
+        core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation,
+            path: core.pane(PaneId::Left).path.clone(),
+            root: true,
+            result: Ok(vec![
+                {
+                    let mut row = entry("selected", true);
+                    row.path = selected.clone();
+                    row
+                },
+                {
+                    let mut row = entry("other", true);
+                    row.path = other.clone();
+                    row
+                },
+            ]),
+        });
+        core.select_path(PaneId::Left, Some(selected.clone()));
+
+        // count_reply_repaints_information (browser.rs:1753-1759, test
+        // ~:5165): active pane AND the selected row.
+        let events = core.on_event(CoreEvent::CountArrived {
+            pane: PaneId::Left,
+            generation,
+            path: selected.clone(),
+            count: Some(3),
+        });
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::InfoChanged))
+        );
+
+        // A foreign pane's count does not repaint.
+        let events = core.on_event(CoreEvent::CountArrived {
+            pane: PaneId::Right,
+            generation: core.pane(PaneId::Right).generation,
+            path: PathBuf::from("/fixture/right-row"),
+            count: Some(1),
+        });
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::InfoChanged))
+        );
+
+        // Neither does the active pane's count for a different row.
+        let events = core.on_event(CoreEvent::CountArrived {
+            pane: PaneId::Left,
+            generation,
+            path: other,
+            count: Some(1),
+        });
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::InfoChanged))
+        );
+    }
+
+    #[test]
+    fn failed_operations_prefix_their_kind_on_the_status_line() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+        core.on_event(CoreEvent::OperationArrived {
+            kind: FileOpKind::NewFolder,
+            source_pane: PaneId::Left,
+            result: Err("mkdir /x: permission denied".into()),
+        });
+        assert!(
+            core.pane(PaneId::Left)
+                .status
+                .contains("Create folder failed: mkdir /x: permission denied")
+        );
+    }
+
+    #[test]
+    fn config_settled_is_not_emitted_when_the_poison_pill_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.conf.mix");
+        std::fs::write(&config_path, b"{ not conf.mix }").unwrap();
+        let (_config, file) = crate::config::ConfigFile::load(dir.path());
+        assert!(!file.allow_save, "malformed config must pill the file");
+
+        let (mut core, _rx) = DopusCore::new(DOpusConfig::default(), Some(file));
+        let _ = core.tick(now_instant());
+        core.set_split_ratio(0.7);
+        let _ = core.tick(now_instant());
+        let settled = core.tick(now_instant() + std::time::Duration::from_millis(400));
+        assert!(
+            !settled
+                .iter()
+                .any(|event| matches!(event, CoreEvent::ConfigSettled(_))),
+            "a pill-refused write must not be reported as settled"
+        );
+    }
+
+    // -- operation replies (browser.rs:1879-1894) -----------------------------
+
+    #[test]
+    fn every_operation_reply_relists_both_panes_once() {
+        let (_dir, mut core, _rx) = core_fixture();
+        core.tick(now_instant());
+
+        let events = core.on_event(CoreEvent::OperationArrived {
+            kind: FileOpKind::Copy,
+            source_pane: PaneId::Left,
+            result: Ok("Copied /a to /b".into()),
+        });
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CoreEvent::ListingStarted { .. }))
+                .count(),
+            2,
+            "success relists both panes exactly once"
+        );
+        assert!(matches!(events.last(), Some(CoreEvent::RefreshAll)));
+        assert!(!core.availability().operation_running);
+
+        // Failure relists too: the tree may have been mutated before failing.
+        let events = core.on_event(CoreEvent::OperationArrived {
+            kind: FileOpKind::Delete,
+            source_pane: PaneId::Right,
+            result: Err("deleting /a: permission denied".into()),
+        });
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CoreEvent::ListingStarted { .. }))
+                .count(),
+            2,
+            "failure relists both panes exactly once"
+        );
+    }
+
+    #[test]
+    fn places_views_share_one_stat_pass_until_refresh_or_operation_reply() {
+        let (dir, mut core, _rx) = core_fixture();
+        core.places_home = dir.path().to_owned();
+        let first = core.places().to_vec();
+        assert_eq!(core.places(), first.as_slice());
+        assert_eq!(core.places_stat_passes.get(), 1);
+
+        let documents = dir.path().join("Documents");
+        std::fs::create_dir(&documents).unwrap();
+        assert!(!core.places().iter().any(|(_, path)| path == &documents));
+        core.refresh_places();
+        assert!(core.places().iter().any(|(_, path)| path == &documents));
+        assert_eq!(core.places_stat_passes.get(), 2);
+
+        for result in [Ok("done".to_owned()), Err("partial failure".to_owned())] {
+            let before = core.places_stat_passes.get();
+            core.on_event(CoreEvent::OperationArrived {
+                kind: FileOpKind::Copy,
+                source_pane: PaneId::Left,
+                result,
+            });
+            core.places();
+            core.places();
+            assert_eq!(
+                core.places_stat_passes.get(),
+                before + 1,
+                "both relists coalesce into one Places stat pass"
+            );
+        }
+        let before = core.places_stat_passes.get();
+        core.refresh();
+        core.places();
+        assert_eq!(core.places_stat_passes.get(), before + 1);
+    }
+
+    // -- config settle debounce (browser.rs:3564-3622) -------------------------
+
+    #[test]
+    fn config_settles_after_the_debounce_and_only_once_per_change() {
+        let (_dir, mut core, _rx) = core_fixture();
+        let t0 = now_instant();
+        core.tick(t0); // baseline observation
+
+        core.set_split_ratio(0.7);
+        let events = core.tick(t0 + Duration::from_millis(100));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::ConfigSettled(_))),
+            "the debounce has not elapsed"
+        );
+
+        let events = core.tick(t0 + Duration::from_millis(600));
+        match events
+            .iter()
+            .find(|event| matches!(event, CoreEvent::ConfigSettled(_)))
+        {
+            Some(CoreEvent::ConfigSettled(config)) => assert_eq!(config.split_ratio, 0.7),
+            other => panic!("expected ConfigSettled, got {other:?}"),
+        }
+
+        // No change, no settle.
+        let events = core.tick(t0 + Duration::from_millis(1_200));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::ConfigSettled(_))),
+            "an unchanged config must not settle twice"
+        );
+    }
+
+    #[test]
+    fn config_snapshot_is_derived_from_pane_state() {
+        let (_dir, core, _rx) = core_fixture();
+        let snapshot = core.config_snapshot();
+        assert_eq!(snapshot.schema_version, CURRENT_SCHEMA);
+        assert_eq!(snapshot.left.path, _dir.path().join("left"));
+        assert_eq!(snapshot.right.path, _dir.path().join("right"));
+        assert_eq!(snapshot.active_pane, "left");
+        assert_eq!(snapshot.split_ratio, 0.5);
+    }
+
+    // -- places (browser.rs:1267-1284) ----------------------------------------
+
+    #[test]
+    fn places_list_home_filesystem_and_existing_xdg_directories() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("Documents")).unwrap();
+        std::fs::File::create(home.path().join("Music")).unwrap(); // a file, not a place
+
+        let places = places(home.path());
+        let names: Vec<_> = places.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["Home", "Filesystem", "Documents"]);
+        assert_eq!(places[1].1, PathBuf::from("/"));
+    }
+}

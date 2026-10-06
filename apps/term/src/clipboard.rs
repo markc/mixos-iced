@@ -165,7 +165,7 @@ fn read(pane: u64, primary: bool) -> Task<Message> {
     let task = if primary {
         iced::clipboard::read_primary()
     } else {
-        iced::clipboard::read()
+        iced::clipboard::read_text().map(|result| result.ok().map(|text| (*text).clone()))
     };
     task.map(move |text| Message::Paste(pane, text))
 }
@@ -240,7 +240,7 @@ impl State {
             .lock()
             .expect("terminal")
             .selection_text();
-        text.map_or_else(Task::none, iced::clipboard::write)
+        text.map_or_else(Task::none, |text| iced::clipboard::write(text).discard())
     }
 
     pub(super) fn paste(&mut self, pane: u64, text: Option<String>) {

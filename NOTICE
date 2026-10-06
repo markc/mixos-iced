@@ -148,3 +148,45 @@ The native tiny-skia extension follows the same provenance, within iced (MIT).
 Vendored teletypewriter 0.5.27: Raphael Amorim and Rio contributors, MIT,
 rio revision 932c1a7d9e07b4db5924f7a0dd689e823c3a1442; see its PATCHES.md
 and LICENSE.
+
+Microsoft Edit buffer and syntax sources: Microsoft Corporation, MIT,
+revision 826b4c097b6f14ba0a846dc56f2f0223a3aaf73a; see vendor/msedit.
+Ced, editd and DOpus retain source from cosmix e0297242305f3a3c3de09f1ca01e8faa771768da (Mark Constable, MIT).
+
+DOpus bundled Lucide SVG files, each cleared under the retained ISC and
+Feather MIT licence text (apps/dopus/assets/icons/LUCIDE-LICENSE):
+- archive.svg
+- arrow-left-right.svg
+- arrow-left.svg
+- arrow-right.svg
+- arrow-up.svg
+- chevron-down.svg
+- chevron-right.svg
+- chevron-up.svg
+- copy.svg
+- download.svg
+- eye-off.svg
+- eye.svg
+- file-code.svg
+- file-image.svg
+- file-music.svg
+- file-text.svg
+- file-video-camera.svg
+- file.svg
+- folder-open.svg
+- folder.svg
+- grid-2x2.svg
+- hard-drive.svg
+- house.svg
+- info.svg
+- list.svg
+- log-out.svg
+- menu.svg
+- music.svg
+- panel-left.svg
+- panel-right.svg
+- pin-off.svg
+- pin.svg
+- refresh-cw.svg
+- search.svg
+- trash-2.svg
