@@ -8,7 +8,7 @@
 //! set, the sources are empty and toolkit falls back to iced's generic
 //! families; the [`FontOrigin`] says why, for the one startup log line.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assets::{AssetSet, Lookup};
 use toolkit::fonts::Role;
@@ -153,6 +153,13 @@ pub fn register_installed() -> Result<Option<&'static AssetSet>, &'static str> {
         let Some(set) = assets::mixos::discover().map_err(|error| error.to_string())? else {
             return Ok(None);
         };
+        // Additional faces such as UI/italic roles must match their locked
+        // family too. Validate source metadata before freezing the install.
+        for role in set.roles() {
+            if let (Some(path), Some(expected)) = (set.font_path(role), set.family(role)) {
+                check_font_family(&path, expected).map_err(|error| format!("{role} font: {error}"))?;
+            }
+        }
         let sources = fonts_of(&set);
         let installed = toolkit::fonts::install(sources.set, sources.icons)
             .map_err(|error| error.to_string())?;
@@ -174,6 +181,16 @@ pub fn register_installed() -> Result<Option<&'static AssetSet>, &'static str> {
     }
 }
 
+fn check_font_family(path: &Path, expected: &str) -> Result<(), String> {
+    let mut db = toolkit::graphics::text::cosmic_text::fontdb::Database::new();
+    db.load_font_file(path).map_err(|error| error.to_string())?;
+    if db.faces().any(|face| face.families.iter().any(|(family, _)| family.eq_ignore_ascii_case(expected))) {
+        Ok(())
+    } else {
+        Err(format!("expected family {expected:?} is absent from {}", path.display()))
+    }
+}
+
 /// A named material icon from the registered asset set.
 pub fn material_icon(name: &str) -> Result<Option<(char, iced_core::Font)>, &'static str> {
     register_installed()?;
@@ -183,6 +200,16 @@ pub fn material_icon(name: &str) -> Result<Option<(char, iced_core::Font)>, &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn additional_face_metadata_cannot_claim_another_family() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ui.ttf");
+        std::fs::write(&path, include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf")).unwrap();
+        assert!(check_font_family(&path, "Inter").is_ok());
+        assert!(check_font_family(&path, "Noto Sans").unwrap_err().contains("absent"));
+        assert!(check_font_family(&directory.path().join("missing.ttf"), "Inter").is_err());
+    }
 
     #[test]
     fn an_empty_lookup_names_what_it_searched() {

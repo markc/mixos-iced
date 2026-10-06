@@ -458,6 +458,9 @@ mod tests {
         assert_eq!(set.family("ui"), Some("Noto Sans"));
         assert_eq!(theme.ui.0, "Noto Sans");
         assert_eq!(theme.ui_font.weight, application::iced::font::Weight::Light);
+        let generic = toolkit::fonts::font_for("Missing UI family", &[], 300, false, false);
+        assert_eq!(generic.family, application::iced::font::Family::SansSerif);
+        assert_eq!(generic.weight, application::iced::font::Weight::Light);
     }
 
     #[test]
