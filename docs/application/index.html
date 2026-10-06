@@ -265,7 +265,7 @@ including renamed, development and build dependencies. Unit and renderer
 tests exercise the extracted controls. The desktop acceptance gate
 <code>tests/desktop/application_native_gate.mix --bin-dir &lt;candidate-binaries&gt;</code>
 uses an owned broker and nested compositor, exercises native keyboard input,
-file copy/cancellation and real PTY output, and captures the apps at scales
+file copy, deletion cancellation and real PTY output, and captures the apps at scales
 1 and 2.5. It requires <code>bwrap</code> to bind the candidate shell at its canonical
 path inside the test terminal's mount namespace. It leaves existing desktop
 sessions and the host installation intact.</p>
