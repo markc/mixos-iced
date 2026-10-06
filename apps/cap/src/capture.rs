@@ -138,6 +138,31 @@ pub async fn own_window(bus: &BusHandle, comp: &str) -> Result<Target, String> {
         })
         .ok_or_else(|| "Cap window is not yet known to compd".into())
 }
+pub async fn show(bus: &BusHandle, comp: &str, target: Target) -> Result<Value, String> {
+    let restored = bus
+        .call(
+            comp,
+            "comp.window.restore",
+            json!(target),
+            Duration::from_secs(5),
+        )
+        .await?;
+    if restored["minimized"].as_bool() != Some(false) {
+        return Err(format!("Cap restoration was not confirmed: {restored}"));
+    }
+    let focused = bus
+        .call(
+            comp,
+            "comp.window.focus",
+            json!({"id":target.id,"generation":target.generation,"raise":true}),
+            Duration::from_secs(5),
+        )
+        .await?;
+    if focused["focused"].as_bool() != Some(true) {
+        return Err(format!("Cap activation was refused: {focused}"));
+    }
+    Ok(focused)
+}
 
 #[derive(Debug, Clone)]
 pub struct Captured {
@@ -303,6 +328,36 @@ pub fn absolute(path: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn activation_reports_compositor_focus_refusal() {
+        let (bus, mut effects) = BusHandle::response_sink();
+        let driver = tokio::spawn(async move {
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("restore")
+            };
+            assert_eq!(verb, "comp.window.restore");
+            reply.send(Ok(json!({"minimized":false}))).unwrap();
+            let Some(crate::bus::Effect::Call { verb, reply, .. }) = effects.recv().await else {
+                panic!("focus")
+            };
+            assert_eq!(verb, "comp.window.focus");
+            reply
+                .send(Ok(json!({"focused":false,"refused":"exclusive_layer"})))
+                .unwrap();
+        });
+        let error = show(
+            &bus,
+            "comp.test",
+            Target {
+                id: 1,
+                generation: 2,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("exclusive_layer"));
+        driver.await.unwrap();
+    }
     #[test]
     fn refreshed_window_metadata_preserves_the_selected_identity() {
         let before =

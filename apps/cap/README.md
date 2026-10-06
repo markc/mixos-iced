@@ -1,5 +1,11 @@
 # Cap
 
+This keeps the existing capture application's short name during its native
+transplant. Debian's Capistrano also installs `/usr/bin/cap`
+([package file list](https://packages.debian.org/es/sid/all/capistrano/filelist)).
+MixOS's desktop entry invokes `/opt/mixos/bin/cap` explicitly; the installation
+does not replace a host distribution's binary.
+
 Native Wayland screenshots and editable annotations. compd owns capture and
 interactive region selection; Cap provides an iced window and a Bus service.
 There is no D-Bus or portal dependency.

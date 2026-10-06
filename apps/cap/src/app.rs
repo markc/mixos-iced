@@ -421,8 +421,15 @@ impl App {
         match message {
             Message::Refresh => self.refresh(),
             Message::Shown(id, result) => {
+                self.busy = false;
+                if let Err(error) = &result {
+                    self.error(error);
+                }
                 self.reply(id, result);
-                Task::none()
+                self.pending
+                    .take()
+                    .map(|action| self.request_pending(action))
+                    .unwrap_or_else(Task::none)
             }
             Message::Refreshed(result) => {
                 match result {
@@ -878,20 +885,13 @@ impl App {
                 }
                 match verbs::operation(verb, value.clone()) {
                     Ok(Operation::Show) => {
-                        if let Some(target) = self.own.clone()
-                            && let Some(bus) = self.bus.clone()
-                        {
+                        if let Some(bus) = self.bus.clone() {
                             let comp = self.comp.clone();
+                            self.busy = true;
                             return Task::perform(
                                 async move {
-                                    bus.call(
-                                        &comp,
-                                        "comp.window.restore",
-                                        json!(target),
-                                        Duration::from_secs(5),
-                                    )
-                                    .await?;
-                                    bus.call(&comp,"comp.window.focus",json!({"id":target.id,"generation":target.generation,"raise":true}),Duration::from_secs(5)).await
+                                    let target = capture::own_window(&bus, &comp).await?;
+                                    capture::show(&bus, &comp, target).await
                                 },
                                 move |result| Message::Shown(id, result),
                             );
@@ -1210,6 +1210,36 @@ mod tests {
         )
         .unwrap();
         initial(look, PathBuf::from("/tmp"))
+    }
+    #[test]
+    fn activation_holds_the_job_slot_until_compositor_confirmation() {
+        let mut app = test_app();
+        let (bus, mut effects) = BusHandle::response_sink();
+        app.bus = Some(bus);
+        let command = |id, verb: &str| {
+            Message::Bus(Delivery::Command(crate::bus::Command {
+                id,
+                verb: verb.into(),
+                body: "{}".into(),
+                caller_key: "local:test".into(),
+            }))
+        };
+        let _ = app.update(command(1, "cap.show"));
+        assert!(app.busy);
+        let _ = app.update(command(2, "cap.capture"));
+        let Effect::Respond { id, rc, .. } = effects.try_recv().unwrap() else {
+            panic!("capture must be refused")
+        };
+        assert_eq!(id, 2);
+        assert_ne!(rc, 0);
+        let _ = app.update(Message::Shown(1, Err("exclusive_layer".into())));
+        assert!(!app.busy);
+        let Effect::Respond { id, rc, body } = effects.try_recv().unwrap() else {
+            panic!("activation reply")
+        };
+        assert_eq!(id, 1);
+        assert_ne!(rc, 0);
+        assert!(body.contains("exclusive_layer"));
     }
     #[test]
     fn document_replacement_clears_preview_and_rejects_old_raster_results() {

@@ -196,8 +196,25 @@ impl Document {
         })
     }
     pub fn open(path: &Path) -> Result<Self, String> {
-        let mut reader = image::ImageReader::open(path)
+        use std::io::{BufReader, Seek};
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err("image input must be a regular file".into());
+        }
+        let probe = file.try_clone().map_err(|e| e.to_string())?;
+        let (w, h) = image::ImageReader::new(BufReader::new(probe))
+            .with_guessed_format()
             .map_err(|e| e.to_string())?
+            .into_dimensions()
+            .map_err(|e| e.to_string())?;
+        check_size(w, h)?;
+        file.rewind().map_err(|e| e.to_string())?;
+        let mut reader = image::ImageReader::new(BufReader::new(file))
             .with_guessed_format()
             .map_err(|e| e.to_string())?;
         let mut limits = image::Limits::default();
@@ -205,13 +222,6 @@ impl Document {
         limits.max_image_height = Some(16384);
         limits.max_alloc = Some(MAX_PIXELS * 8);
         reader.limits(limits);
-        let (w, h) = image::ImageReader::open(path)
-            .map_err(|e| e.to_string())?
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?
-            .into_dimensions()
-            .map_err(|e| e.to_string())?;
-        check_size(w, h)?;
         Self::new(reader.decode().map_err(|e| e.to_string())?.to_rgba8())
     }
     pub fn dimensions(&self) -> (u32, u32) {
@@ -581,6 +591,18 @@ fn paint_text(pixmap: &mut Pixmap, shape: &Shape) -> Result<(), String> {
 mod tests {
     use super::*;
     use image::Rgba;
+    #[test]
+    fn non_regular_image_inputs_are_refused_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pipe.png");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is NUL-terminated and lives for this synchronous call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(Document::open(&path).unwrap_err().contains("regular file"));
+        assert!(Document::open(directory.path()).is_err());
+        assert!(Document::open(Path::new("/dev/zero")).is_err());
+    }
     fn doc() -> Document {
         Document::new(RgbaImage::from_pixel(32, 24, Rgba([255, 255, 255, 255]))).unwrap()
     }
