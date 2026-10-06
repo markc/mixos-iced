@@ -89,6 +89,11 @@ Incorporated code
 Third-party vendored code under vendor/ keeps its own licence files, and each
 directory records its upstream base and local patches (vendor/README.md).
 
+dirs-sys 0.5.0, vendor/dirs-sys, Simon Ochsenreither and contributors,
+MIT OR Apache-2.0; original LICENSE-MIT and LICENSE-APACHE retained.
+Base 8bcd4aa2c35990d57a2cff2953793525fc42709c; local dependency removal is
+recorded in vendor/dirs-sys/PATCHES.md.
+
 Third-party assets and licences in the compd binary
 ----------------------------------------------------
 

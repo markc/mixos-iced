@@ -1207,12 +1207,17 @@ mod tests {
     use super::*;
     use crate::bus::Effect;
     fn test_app() -> App {
-        let theme = appearance::Theme::from_source("cap-test", "mode: \"dark\"\n").unwrap();
-        let look = appearance::install_with(
-            &theme,
-            appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
-        )
-        .unwrap();
+        static LOOK: OnceLock<appearance::Appearance> = OnceLock::new();
+        let look = LOOK
+            .get_or_init(|| {
+                let theme = appearance::Theme::from_source("cap-test", "mode: \"dark\"\n").unwrap();
+                appearance::install_with(
+                    &theme,
+                    appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
+                )
+                .unwrap()
+            })
+            .clone();
         initial(look, PathBuf::from("/tmp"))
     }
     #[test]

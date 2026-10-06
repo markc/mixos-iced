@@ -46,7 +46,7 @@ pub fn tooltip_style(mut tokens: Tokens, width: f32) -> iced_widget::container::
 
 /// The installed look: the tokens for the current theme, the context they
 /// came from, and the fonts registered with iced.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Appearance {
     /// Colours and metrics for the widgets' `style` calls.
     pub tokens: Tokens,
