@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=MixOS scene loader for session %i
+Requires=compd@%i.service
+After=compd@%i.service apps@%i.service
+BindsTo=compd@%i.service
+PartOf=session@%i.target
+
+[Service]
+Type=simple
+User=mixos
+EnvironmentFile=/etc/mixos/session/%i.env
+UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+ExecStart=/opt/mixos/bin/mix --serve /opt/mixos/share/compd/scripts/scenes.mix --name scenes
+KillMode=control-group
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=1

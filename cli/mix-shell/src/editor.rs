@@ -6,12 +6,19 @@
 //! mode restoration must succeed before `Suspended`/`RestoredAndStopped`.
 //! The admission owner still rechecks identity, deadline and revision before
 //! consuming a prompt. A suspension acknowledgement alone is not permission.
+#[path = "editor/buffer.rs"]
 pub mod buffer;
+#[path = "editor/history.rs"]
 pub mod history;
+#[path = "editor/input.rs"]
 pub mod input;
+#[path = "editor/render.rs"]
 pub mod render;
+#[path = "editor/runtime.rs"]
 pub mod runtime;
+#[path = "editor/signals.rs"]
 pub mod signals;
+#[path = "editor/terminal.rs"]
 pub mod terminal;
 
 use buffer::{Buffer, EditError};

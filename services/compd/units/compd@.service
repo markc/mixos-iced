@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=MixOS compositor on VT%i
+Requires=noded@%i.service seatd@%i.service
+After=noded@%i.service seatd@%i.service
+BindsTo=noded@%i.service seatd@%i.service
+PartOf=session@%i.target
+
+[Service]
+Type=simple
+User=mixos
+SupplementaryGroups=seat
+EnvironmentFile=/etc/mixos/session/%i.env
+UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+Environment=LIBSEAT_BACKEND=seatd MIXOS_CONTAIN_CHILDREN=1
+ExecStart=/opt/mixos/bin/compd kms-live --socket ${WAYLAND_DISPLAY} --scale ${MIXOS_OUTPUT_SCALE} --config-file ${MIXOS_COMPD_CONFIG} --bus-service comp --scene-service shell
+TTYPath=/dev/tty%i
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+Delegate=yes
+KillMode=control-group
+TimeoutStopSec=10

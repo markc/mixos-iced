@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=Native MixOS session on VT%i
+Requires=noded@%i.service seatd@%i.service compd@%i.service
+Wants=apps@%i.service scenes@%i.service editd@%i.service
+After=noded@%i.service seatd@%i.service compd@%i.service apps@%i.service scenes@%i.service editd@%i.service

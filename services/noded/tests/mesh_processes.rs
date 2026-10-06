@@ -53,6 +53,7 @@ async fn connect(
         gid: unsafe { libc::getegid() },
     });
     options.endpoint = Some(root.join("run/bus.sock"));
+    options.require_native_session = true;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         assert!(
@@ -60,16 +61,15 @@ async fn connect(
             "broker exited; see {}",
             root.display()
         );
-        if let Ok(outcome) = NodedClient::connect_unix(name, url, &options, None).await {
-            let UnixConnectOutcome::VerifiedUnix(connection) = outcome else {
-                panic!("Unix verification cannot fall back to TCP");
-            };
-            return connection;
-        }
+        let error = match NodedClient::connect_unix(name, url, &options, None).await {
+            Ok(UnixConnectOutcome::VerifiedUnix(connection)) => return connection,
+            Ok(_) => panic!("Unix verification cannot fall back to TCP"),
+            Err(error) => error,
+        };
         assert!(
             tokio::time::Instant::now() < deadline,
-            "broker readiness deadline: {}",
-            root.display()
+            "broker readiness deadline: {}: {error}",
+            root.display(),
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -82,7 +82,9 @@ async fn two_production_brokers_route_verified_native_clients() {
             "noded-mesh-{}-{:032x}", std::process::id(), rand::random::<u128>()
         ));
         fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        // Native ingress serves separate UIDs and refuses non-traversable
+        // existing ancestors. No directory listing or write access is granted.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o711)).unwrap();
         let mut fixture = Fixture { root, children: Vec::new() };
         let names = ["alpha", "beta"];
         let ips = ["127.0.0.2", "127.0.0.3"];

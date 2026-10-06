@@ -940,6 +940,7 @@ mod widget_tests {
         let mut router =
             router(content, shared, Message::Actions).on_edit_cancel("location", Message::Cancel);
         let mut tree = Tree::new(&router as &dyn Widget<Message, iced::Theme, ()>);
+        router.diff(&mut tree);
         let limits = layout::Limits::new(Size::ZERO, Size::new(300.0, 100.0));
         let node = router.layout(&mut tree, &(), &limits);
         router.operate(

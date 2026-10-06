@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=Private seat broker for MixOS VT%i
+PartOf=session@%i.target
+Before=compd@%i.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/mixos/session/%i.env
+UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+RuntimeDirectory=mixos/seat/%i
+RuntimeDirectoryMode=0755
+ExecStart=/usr/bin/seatd -s ${SEATD_SOCK} -g seat
+KillMode=control-group
+TimeoutStopSec=10

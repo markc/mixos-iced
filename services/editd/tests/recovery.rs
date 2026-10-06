@@ -71,6 +71,7 @@ fn cmd(verb: &str, args: Value) -> IncomingCommand {
     let mut headers = BTreeMap::new();
     headers.insert("broker_origin".to_string(), "local".to_string());
     IncomingCommand {
+        generation: 0,
         from: "tester".into(),
         command: verb.into(),
         id: Some("1".into()),

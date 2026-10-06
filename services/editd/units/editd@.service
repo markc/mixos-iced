@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=MixOS shared editor service for session %i
+Requires=noded@%i.service
+After=noded@%i.service
+BindsTo=noded@%i.service
+PartOf=session@%i.target
+
+[Service]
+Type=simple
+User=mixos
+EnvironmentFile=/etc/mixos/session/%i.env
+UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+ExecStart=/opt/mixos/bin/editd serve
+KillMode=control-group
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=1

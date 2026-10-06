@@ -80,6 +80,7 @@ mod tests {
             ..Default::default()
         });
         let mut tree = Tree::new(element.as_widget());
+        element.as_widget_mut().diff(&mut tree);
         let node = element.as_widget_mut().layout(
             &mut tree,
             &renderer,

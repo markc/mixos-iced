@@ -75,6 +75,7 @@ fn cmd(who: Who, verb: &str, args: Value) -> IncomingCommand {
         Who::Unstamped => String::new(),
     };
     IncomingCommand {
+        generation: 0,
         from,
         command: verb.into(),
         id: Some("1".into()),

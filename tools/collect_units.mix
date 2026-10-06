@@ -1,0 +1,44 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Collect component-owned session units. Never installs or starts services.
+$root = dirname(dirname(realpath($0)))
+$dest = $root .. "/target/mixos/units"
+$owners = []
+for each $kind in ["apps", "services", "cli", "libs"]
+  for each $manifest in glob($root .. "/" .. $kind .. "/*/Cargo.toml")
+    push($owners, dirname($manifest))
+  end
+end
+push($owners, $root .. "/session")
+for each $kind in ["apps", "services", "cli", "libs", "session"]
+  $pattern = $kind == "session" ? "/session/units/*" : "/" .. $kind .. "/*/units/*"
+  for each $source in glob($root .. $pattern)
+    if is_file($source) and not contains($owners, dirname(dirname($source))) then
+      raise("UNIT_ORPHAN", "Unit has no owning component: " .. $source)
+    end
+  end
+end
+$files = {}
+for each $owner in $owners
+  for each $source in glob($owner .. "/units/*")
+    if is_file($source) then
+      $name = basename($source)
+      if not ends_with($name, ".service") and not ends_with($name, ".socket") and not ends_with($name, ".target") then
+        raise("UNIT_KIND", "Unknown unit kind: " .. $source)
+      end
+      if has_key($files, $name) then
+        raise("UNIT_DUPLICATE", "Duplicate unit " .. $name .. ": " .. $files[$name] .. " and " .. $source)
+      end
+      $files[$name] = $source
+    end
+  end
+end
+mkdir($dest, {parents:true})
+for each $existing in glob($dest .. "/*")
+  if is_file($existing) and not has_key($files, basename($existing)) then
+    raise("UNIT_STALE", "Unowned unit in generated output: " .. $existing)
+  end
+end
+for each $name in keys($files)
+  copy($files[$name], $dest .. "/" .. $name)
+end
+print(json_encode({destination:$dest, units:keys($files)}))

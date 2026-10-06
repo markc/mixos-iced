@@ -631,6 +631,7 @@ mod tests {
         });
         let mut layer = single_list(&rows, dir.path(), &icons, &expanded, shared.clone(), look);
         let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        layer.diff(&mut tree);
         // The chevron normally toggles a directory; modifiers must select it.
         let point = Point::new(5.0, 10.0);
         for modifiers in [
@@ -811,6 +812,7 @@ mod tests {
         )
         .selected_paths(&selected);
         let mut tree = Tree::new(&list as &dyn Widget<RowsMsg, iced::Theme, Renderer>);
+        list.diff(&mut tree);
         let viewport = Rectangle::with_size(Size::new(600.0, 300.0));
         let node = list.layout(
             &mut tree,
@@ -888,6 +890,7 @@ mod tests {
             look,
         );
         let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        layer.diff(&mut tree);
         send(
             &mut layer,
             &mut tree,
@@ -957,6 +960,7 @@ mod tests {
         });
         let mut layer = single_list(&rows, dir.path(), &icons, &expanded, shared.clone(), look);
         let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        layer.diff(&mut tree);
         for cancel_at_root in [false, true] {
             send(
                 &mut layer,
@@ -1051,6 +1055,7 @@ mod tests {
                 .into();
             let mut layer = Layer::new(content, shared.clone(), look, &icons, "");
             let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        layer.diff(&mut tree);
             let renderer = Renderer::new(iced::advanced::renderer::Settings {
                 default_font: look.ui_font,
                 default_text_size: iced::Pixels(look.px),
@@ -1203,6 +1208,7 @@ mod tests {
         );
         let mut tree =
             Tree::new(&list as &dyn Widget<crate::view::rows::RowsMsg, iced::Theme, Renderer>);
+        list.diff(&mut tree);
         let mut renderer = Renderer::new(iced::advanced::renderer::Settings {
             default_font: look.ui_font,
             default_text_size: iced::Pixels(look.px),
@@ -1391,6 +1397,7 @@ mod tests {
                 "",
             );
             let mut tree = Tree::new(&layer as &dyn Widget<Msg, iced::Theme, Renderer>);
+        layer.diff(&mut tree);
             assert!(
                 send(
                     &mut layer,
