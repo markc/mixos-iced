@@ -24,7 +24,7 @@ sqlite = ["dep:rusqlite"]
 [dependencies]
 bus.workspace = true
 blake3.workspace = true
-uuid = { workspace = true, features = ["v7"] }
+uuid = { workspace = true, features = ["v4", "v7"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "1"

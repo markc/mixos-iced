@@ -251,9 +251,8 @@ end
 -- workstation has one). A software compositor cannot import a GPU client's
 -- dmabufs, which is how a Vulkan client stalls before its first frame.
 --
--- A private session bus (dbus-daemon, when installed) is started per run and
--- exported to the compositor and, through `session.dbus`, to the clients:
--- waybar and other GTK clients refuse to start without one.
+-- Native runs clear session-bus variables and start no D-Bus server.
+-- A compatibility-client gate can explicitly request `dbus: true`.
 --
 -- Returns {kind, bin, socket, service, runtime, log, host_log, pids}, or
 -- exits 2 when the host or the compositor cannot start. `config` is compd's
@@ -302,7 +301,7 @@ fn start($opts)
   -- A private session bus for this run (dbus-daemon prints its address).
   $dbus_address = ""
   $dbus_pid = nil
-  $dbus_daemon = which("dbus-daemon")
+  $dbus_daemon = $opts.dbus == true ? which("dbus-daemon") : nil
   if $dbus_daemon != nil and $dbus_daemon != "" then
     $dbus_address = "unix:path=" .. $run .. "/session-bus"
     $dbus_pid = spawn([$dbus_daemon, "--session", "--nofork", "--nopidfile", "--address=" .. $dbus_address],
@@ -316,14 +315,17 @@ fn start($opts)
       print("  WARN: the private session bus never appeared (" .. $run .. "/dbus.log); continuing without one")
       $dbus_address = ""
     end
-  else
-    print("  WARN: no dbus-daemon on PATH; clients that need a session bus (waybar) will not start")
+  elif $opts.dbus == true then
+    print("  ERROR: compatibility gate requested D-Bus but dbus-daemon is unavailable")
+    exit(2)
   end
   $width = to_string($opts["width"] ?? 1280)
   $height = to_string($opts["height"] ?? 800)
   $hp = spawn([$weston, "--backend=headless", "--renderer=" .. $renderer, "--socket=wl-host",
     "--width=" .. $width, "--height=" .. $height, "--idle-time=0"],
-    {env: {XDG_RUNTIME_DIR: $run}, stdout: {file: $host_log}, stderr: "stdout", detach: true})
+    {env: {XDG_RUNTIME_DIR: $run, DBUS_SESSION_BUS_ADDRESS: nil,
+      DBUS_STARTER_ADDRESS: nil, DBUS_STARTER_BUS_TYPE: nil},
+      stdout: {file: $host_log}, stderr: "stdout", detach: true})
   $t = 0
   while not exists($run .. "/wl-host") and $t < 50
     sleep(0.2)
@@ -361,6 +363,10 @@ fn start($opts)
   for each $name in keys($opts["env"] ?? {})
     $cenv[$name] = to_string($opts["env"][$name])
   end
+  -- The gate's mode wins over inherited or caller-supplied session buses.
+  $cenv["DBUS_SESSION_BUS_ADDRESS"] = $dbus_address != "" ? $dbus_address : nil
+  $cenv["DBUS_STARTER_ADDRESS"] = nil
+  $cenv["DBUS_STARTER_BUS_TYPE"] = nil
   -- Persistence must stay private even when the caller supplies an env map.
   $cenv["MIXOS_VAR"] = $run .. "/var"
   $argv = [$bin, "--nested", "--socket", $socket, "--bus-service", $service, "--config-file=" .. $opts["config"]]
