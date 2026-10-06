@@ -7,3 +7,4 @@
 // this crate.
 
 pub mod scope;
+pub mod containment;

@@ -41,7 +41,7 @@ pub fn announce_session(wayland_socket: &str, desktop_name: &str) {
         ("XDG_CURRENT_DESKTOP", desktop_name),
         ("XDG_SESSION_TYPE", "wayland"),
     ]) {
-        Ok(()) => info!("session environment propagated to systemd and D-Bus"),
+        Ok(()) => info!("session environment ready (activation adapters enabled: {})", cfg!(feature = "desktop-dbus")),
         Err(err) => warn!("could not propagate the session environment: {err}"),
     }
 }
@@ -77,6 +77,7 @@ fn run(program: &str, leading: &[&str], pairs: &[(&str, &str)]) -> Result<(), St
 /// alone still serves the portals and `systemd-run --user`, and D-Bus alone still serves
 /// directly-activated services. A partial success says which half is missing rather than
 /// discarding the half that worked.
+#[cfg(feature = "desktop-dbus")]
 fn publish(pairs: &[(&str, &str)]) -> io::Result<()> {
     if pairs.is_empty() {
         return Ok(());
@@ -97,6 +98,13 @@ fn publish(pairs: &[(&str, &str)]) -> io::Result<()> {
         }
         (Err(a), Err(b)) => Err(io::Error::other(format!("{a}; {b}"))),
     }
+}
+
+#[cfg(not(feature = "desktop-dbus"))]
+fn publish(_pairs: &[(&str, &str)]) -> io::Result<()> {
+    // Launch requests carry this session's environment directly. Do not mutate
+    // the host's user manager or an activation bus belonging to another VT.
+    Ok(())
 }
 
 /// Update the activation environments with `KEY=VALUE` pairs, so later
@@ -199,6 +207,9 @@ pub fn retract_session_env(active: bool, owned: &[(&str, &str)]) {
 /// writing it first: it is the harder dependency and the half that carries the portals,
 /// so it is the half a stale value does the damage through.
 fn show_environment() -> Option<String> {
+    if !cfg!(feature = "desktop-dbus") {
+        return None;
+    }
     if !systemd_booted() {
         return None;
     }

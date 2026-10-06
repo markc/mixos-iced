@@ -27,7 +27,7 @@ pollster = { workspace = true }
 smithay = { workspace = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }
-zbus = { workspace = true }
+zbus = { workspace = true, optional = true }
 
 [build-dependencies]
 bindgen = { workspace = true, optional = true }
@@ -35,6 +35,7 @@ cc = { workspace = true, optional = true }
 pkg-config = { workspace = true, optional = true }
 
 [features]
+desktop-dbus = ["dep:zbus"]
 # Q-K / D11: link libav for hardware video capture (VA-API, NVENC). Off by
 # default; without it the encoders refuse to start and nothing links ffmpeg.
 capture-ffmpeg = ["dep:bindgen", "dep:cc", "dep:pkg-config"]

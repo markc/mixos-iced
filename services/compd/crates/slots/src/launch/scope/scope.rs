@@ -1,7 +1,9 @@
 //! `StartTransientUnit` against `org.freedesktop.systemd1` (user bus), and the
 //! per-session slice that makes those scopes collectable again.
 
+#[cfg(feature = "desktop-dbus")]
 use zbus::blocking::Connection;
+#[cfg(feature = "desktop-dbus")]
 use zbus::zvariant::Value;
 
 // Every spawn goes through the hygiene wrapper — see `process.child`.
@@ -65,7 +67,11 @@ pub fn session_slice() -> String {
 /// session bus is a separate daemon that can be absent, and — the case this is really
 /// for — can be torn down BEFORE us at logout. That is the moment the slice most needs
 /// stopping and the moment the bus is least likely to answer.
+#[cfg(feature = "desktop-dbus")]
 pub fn stop_session_slice() -> Result<(), String> {
+    if super::containment::enabled() {
+        return super::containment::kill_all();
+    }
     let slice = session_slice();
     let bus = stop_over_bus(&slice);
     if bus.is_ok() {
@@ -82,6 +88,17 @@ pub fn stop_session_slice() -> Result<(), String> {
     }
 }
 
+#[cfg(not(feature = "desktop-dbus"))]
+pub fn stop_session_slice() -> Result<(), String> {
+    super::containment::kill_all()
+}
+
+#[cfg(not(feature = "desktop-dbus"))]
+pub fn adopt_into_scope(_pid: u32, _unit: &str) -> Result<(), String> {
+    Err("systemd scope adapter is disabled; native placement happens before exec".into())
+}
+
+#[cfg(feature = "desktop-dbus")]
 fn stop_over_bus(slice: &str) -> Result<(), String> {
     let conn = Connection::session().map_err(|e| format!("session bus: {e}"))?;
     conn.call_method(
@@ -122,6 +139,7 @@ fn systemctl(args: &[&str]) -> Result<(), String> {
 /// apps simply keep the placement they were launched with. The fallback in
 /// `stop_session_slice` still earns its keep for the ordinary case of a bus that was
 /// present at launch and gone by logout.
+#[cfg(feature = "desktop-dbus")]
 pub fn adopt_into_scope(pid: u32, unit: &str) -> Result<(), String> {
     let conn = Connection::session().map_err(|e| format!("session bus: {e}"))?;
 

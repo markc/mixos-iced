@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Shared types for mixos-client across native and WASM backends.
+//! Shared types for native ABP client across native and WASM backends.
 
 use std::collections::BTreeMap;
 

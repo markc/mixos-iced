@@ -4,7 +4,7 @@
 //! facility (Q8).
 //!
 //! This is **not** the heavyweight persistent SPEC-12 mutation store
-//! (`mixos-lib-props-store`, cos repo): no on-disk backend, no audit HMAC,
+//! (`Cosmix property-store`, cos repo): no on-disk backend, no audit HMAC,
 //! no namespace schema. It is a lightweight in-memory ledger a daemon opts
 //! into to accept *revisioned* control writes against its property paths and
 //! publish coalesced `props.changed` events. Read-only `PropTree` consumers

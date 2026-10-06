@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! mixos-noded — Consolidated node daemon.
+//! noded — Consolidated node daemon.
 //!
 //! Single binary running the broker (WebSocket message broker), system
 //! monitor, and Bus traffic logger as async tasks.
@@ -131,7 +131,7 @@ async fn async_main() -> Result<()> {
         node = %node,
         listen = %listen,
         spec_dir = ?spec_dir,
-        "Starting mixos-noded",
+        "Starting noded",
     );
 
     // Start the broker with a readiness signal
@@ -219,7 +219,7 @@ async fn async_main() -> Result<()> {
         };
     }
 
-    tracing::info!("mixos-noded stopped");
+    tracing::info!("noded stopped");
     Ok(())
 }
 

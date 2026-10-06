@@ -136,7 +136,7 @@ pub fn teardown(state: &mut Loop, nested: bool) {
     // can only ever name this compositor's own launches. A nested dev session stopping it
     // cannot touch the host's.
     match slots::launch::scope::scope::stop_session_slice() {
-        Ok(()) => info!("session slice stopped; launched apps are going with us"),
+        Ok(()) => info!("session application containment collected"),
         Err(err) => warn!("could not stop the session slice; apps may outlive us: {err}"),
     }
     if nested {

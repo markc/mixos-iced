@@ -81,7 +81,7 @@ pub struct MeshConfig {
 
 impl MeshConfig {
     /// Load mesh config from an explicit `mesh.conf.mix` file path (the
-    /// `mixos-noded --mesh-config` path).
+    /// `noded --mesh-config` path).
     ///
     /// A read or parse failure is a hard error.
     pub fn load(path: &str) -> Result<Self> {
@@ -285,7 +285,7 @@ struct TransportState {
 
 /// Manages connections to remote mesh peers.
 ///
-/// Used by mixos-noded to bridge messages to remote nodes.
+/// Used by noded to bridge messages to remote nodes.
 pub struct MeshPeers {
     config: MeshConfig,
     /// Desired endpoints, active connections and shared attempts have one

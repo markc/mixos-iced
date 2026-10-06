@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NodeConfig {
+    /// Unowned service sections survive typed read/encode round trips.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
     pub node: String,
     pub wg_ip: String,
     pub mesh: Option<String>,
@@ -48,6 +51,8 @@ pub enum AdmissionMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NodedConfig {
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
     pub port: u16,
     /// Published system broker endpoint (BUS-013), independent of client XDG.
     #[serde(deserialize_with = "absolute_unix_socket")]
@@ -83,6 +88,7 @@ fn absolute_unix_socket<'de, D: serde::Deserializer<'de>>(
 impl Default for NodedConfig {
     fn default() -> Self {
         Self {
+            extra: Default::default(),
             port: 4200,
             unix_socket: None,
             pending_grants_per_parent: 32,
@@ -113,6 +119,8 @@ impl NodedConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ObserveConfig {
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
     /// Anchored service-name globs admitted to `noded.observe.start`.
     /// The broker validates pattern syntax and ignores invalid entries.
     pub allowed_services: Vec<String>,
@@ -254,5 +262,17 @@ mod tests {
         let config: NodeConfig = strict::from_str("node: beta\nwg_ip: '192.0.2.2'\nwebd: { port: 443 }\nobserve: { allowed_services: [tower] }\n").unwrap();
         assert_eq!(config.noded_url(), "ws://192.0.2.2:4200/ws");
         assert_eq!(config.observe.allowed_services, vec!["tower"]);
+    }
+
+    #[test]
+    fn typed_node_round_trip_preserves_unowned_sections() {
+        let source = "node: alpha\nwebd: { port: 443, tls: true }\nnoded: { future_option: [a, b] }\nobserve: { future_policy: { enabled: true } }\n";
+        let config: NodeConfig = strict::from_str(source).unwrap();
+        let encoded = strict::to_string_pretty(&config).unwrap();
+        let decoded: NodeConfig = strict::from_str(&encoded).unwrap();
+        assert_eq!(decoded.extra, config.extra);
+        assert_eq!(decoded.noded.extra, config.noded.extra);
+        assert_eq!(decoded.observe.extra, config.observe.extra);
+        assert_eq!(decoded.extra["webd"]["port"], 443);
     }
 }

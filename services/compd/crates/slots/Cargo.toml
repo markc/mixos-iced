@@ -23,7 +23,14 @@ serde_json = { workspace = true }
 smithay = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
-zbus = { workspace = true }
+zbus = { workspace = true, optional = true }
+
+[features]
+desktop-dbus = ["dep:zbus"]
 
 [dev-dependencies]
 serde = { workspace = true }
+
+[[example]]
+name = "containment-probe"
+path = "tests/containment_probe.rs"

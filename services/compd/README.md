@@ -36,6 +36,12 @@ cargo build --profile release-fast -p compd --features backend-all   # both
 `capture-ffmpeg` adds hardware video capture through libav; the default build
 links no FFmpeg.
 
+`desktop-dbus` explicitly enables the optional desktop compatibility adapters.
+The default native session has no D-Bus client or portal dependency. It passes
+environment directly to children; delegated cgroup placement before exec and
+`cgroup.kill` provide complete cleanup when `MIXOS_CONTAIN_CHILDREN=1`. See
+[`docs/native-session.md`](../../docs/native-session.md) for the profile and gates.
+
 ## Run
 
 Nested, inside another Wayland session:

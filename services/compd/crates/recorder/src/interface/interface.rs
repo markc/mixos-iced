@@ -746,6 +746,10 @@ fn save_default(state: &mut Loop, renderer: &mut GlesRenderer) {
 /// Spawn the XDG portal "Save As" dialog on a background thread; the result is
 /// drained by `poll_saveas`. No-op if one is already in flight.
 fn save_as(state: &mut Loop) {
+    if !graphics::capture::encode::portal::available() {
+        warn!("capture Save As is unavailable; use Save to write to the default path");
+        return;
+    }
     let CapturePhase::Saving { media, saveas, .. } = &mut state.inner.kernel.get_mut(&world::driver::capture::base::CAPTURE_MUT).phase else {
         return;
     };

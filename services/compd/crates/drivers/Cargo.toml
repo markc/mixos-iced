@@ -19,6 +19,9 @@ workspace = true
 model = { workspace = true }
 slots = { workspace = true }
 libpulse-binding = { workspace = true }
-mpris = { workspace = true }
+mpris = { workspace = true, optional = true }
 smithay = { workspace = true }
-zbus = { workspace = true }
+zbus = { workspace = true, optional = true }
+
+[features]
+desktop-dbus = ["dep:mpris", "dep:zbus"]

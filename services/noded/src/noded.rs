@@ -30,7 +30,7 @@ use bus::native_session::{
     Assurance, BrokerPrincipal, HexBytes, PrincipalVersion, TransportIdentity, stamp_principal,
     strip_principal,
 };
-use bus::wire::{self, BusMessage, BusTarget};
+use bus::wire::{BusMessage, BusTarget};
 use config::node::AdmissionMode;
 use futures_util::{SinkExt, StreamExt};
 use mesh::{MeshConfig, MeshInbound, MeshPeers, PeerConfig, ReconcileReport};
@@ -109,7 +109,7 @@ fn warn_drop(last_at_ms: &AtomicU64, dropped: &AtomicU64, mk: impl FnOnce(u64) -
 
 /// One registered service: its outbound delivery channel plus the build
 /// provenance + binding metadata it supplied at `noded.register`
-/// (SPEC 02 §4.1; `mixos-lib-bus::service_info`).
+/// (SPEC 02 §4.1; `bus::service_info`).
 /// `info.name` mirrors the registry key.
 #[derive(Clone)]
 pub(crate) struct ServiceEntry {
@@ -1145,7 +1145,7 @@ fn d2_seed_path() -> std::path::PathBuf {
 /// point of the type is to distinguish the **normal** pre-ceremony "absent"
 /// state from a **present-but-unreadable** file — the misconfiguration that
 /// silently disabled proving until the observe-flip surfaced it (a root-only
-/// `0600` seed is unreadable by the unprivileged `mixos-noded` user). Absent
+/// `0600` seed is unreadable by the unprivileged `noded` user). Absent
 /// is silent; unreadable/malformed are LOUD.
 #[derive(Debug, PartialEq, Eq)]
 enum SeedRead {
@@ -1180,8 +1180,8 @@ fn classify_seed_read(raw: std::io::Result<String>) -> SeedRead {
 
 /// Read this node's `kind:"d2"` admission seed (SPEC 13 §9a, slice 2-c-1) —
 /// base64 32-byte at `/etc/mixos/noded/d2.seed`. The corrected perms are
-/// **`root:mixos-noded 0640`** (NOT root-only `0600`): noded runs as the
-/// unprivileged `mixos-noded` user, so a root-only seed is unreadable and the
+/// **`root:noded 0640`** (NOT root-only `0600`): noded runs as the
+/// unprivileged `noded` user, so a root-only seed is unreadable and the
 /// node is silently prover-incapable. Returns `None` on missing/unreadable/
 /// malformed: the node then cannot PROVE itself to a peer (the prover-incapable
 /// state), which is NOT an error — the seed is provisioned by the d2 key
@@ -1205,7 +1205,7 @@ fn load_d2_seed(path: &std::path::Path) -> Option<[u8; 32]> {
             tracing::warn!(
                 path = %path.display(),
                 error = %kind,
-                "d2 admission seed present but UNREADABLE — noded runs as the unprivileged mixos-noded user; the seed must be root:mixos-noded 0640 (§9a). Node is prover-incapable until fixed."
+                "d2 admission seed present but UNREADABLE — noded runs as the unprivileged noded user; the seed must be root:noded 0640 (§9a). Node is prover-incapable until fixed."
             );
             None
         }
@@ -1937,7 +1937,7 @@ async fn ws_handler(
     // we buffer + parse it. axum's defaults (64 MiB message / 16 MiB
     // frame) are far larger than any legitimate Bus control frame; the
     // ~1 MiB norm (MAX_SNAPSHOT_BYTES) leaves generous headroom at 16/8
-    // MiB. Mirrors the native-transport cap (mixos-lib-bus
+    // MiB. Mirrors the native-transport cap (bus
     // MAX_MESSAGE_BYTES) so neither ingress path is unbounded.
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(bus::WS_MAX_FRAME_BYTES)
@@ -4634,7 +4634,7 @@ async fn handle_noded_command(
         // a third-party peer to a per-namespace slice of its
         // `<svc>.props.records.changed` or `<svc>.props.audit` topic.
         // The lower-level `topic.subscribe` is reservation-gated and
-        // rejects every peer; the watch verbs in `mixos-lib-props-store`
+        // rejects every peer; the watch verbs in `Cosmix property-store`
         // call this verb after their own capability re-check so the
         // live-fan-out wire becomes reachable from
         // `<svc>.props.watch` / `<svc>.props.audit.watch`.
@@ -4787,7 +4787,7 @@ async fn handle_noded_command(
             .await;
             // Accept args as either an `args` header (string-encoded JSON,
             // per SPEC 07 §2 examples) or as the message body (RPC-style
-            // call from Mix/mixos-lib-client, which puts named args in the
+            // call from Mix/bus::native_client, which puts named args in the
             // body). Header takes precedence.
             let args_json = crate::props::parse_args(msg.get("args")).or_else(|| {
                 if msg.body.is_empty() {
@@ -5218,7 +5218,7 @@ mod tests {
             "loopback is not the wg ip"
         );
         assert!(
-            !bind_is_wg("192.0.2.5:4200", wg),
+            !bind_is_wg("198.51.100.5:4200", wg),
             "a LAN/public ip is not wg"
         );
         assert!(!bind_is_wg("not-an-addr", wg), "unparseable fails closed");
@@ -6124,7 +6124,7 @@ mod tests {
     // SPEC 12 / C10b — `noded.props.subscribe_grant` verb tests
     //
     // These exercise the verb's parsing, auth gate, and broker call
-    // via a raw WebSocket round-trip. `mixos-lib-client::call()`
+    // via a raw WebSocket round-trip. `bus::native_client::call()`
     // can't be used directly because the verb requires custom Bus
     // headers (`topic`, `target_peer`, `namespace`) and inspecting
     // the response body's `subscription_id`/`namespace` payload.

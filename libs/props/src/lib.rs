@@ -7,10 +7,10 @@
 //! `<svc>.props.*` consumer needs without taking on the substrate
 //! machinery (NamespaceSpec, hooks, runtime, storage backends, audit
 //! HMAC, SPEC 12 mutation router) that lives in the sibling
-//! `mixos-lib-props-store` crate (cos repo).
+//! `Cosmix property-store` crate (cos repo).
 //!
 //! The default feature set ships only the pure-type surface. Enable
-//! the opt-in `bus` feature to pull `mixos-lib-bus` + `chrono` and
+//! the opt-in `bus` feature to pull `bus` + `chrono` and
 //! gain the `bus::dispatch_props` (SPEC 07 §2 read wire) and
 //! `publish::*` (SPEC 07 §3/§4 wire builders) modules.
 //!

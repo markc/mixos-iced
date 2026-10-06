@@ -34,3 +34,6 @@ iced_widget = { workspace = true, features = ["wgpu"] }
 smithay = { workspace = true }
 uuid = { workspace = true }
 xcursor = { workspace = true }
+
+[features]
+desktop-dbus = ["drivers/desktop-dbus", "graphics/desktop-dbus", "slots/desktop-dbus"]

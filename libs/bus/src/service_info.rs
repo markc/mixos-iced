@@ -3,9 +3,9 @@
 //! `ServiceInfo` / `NodeInfo` — the Bus service & node discovery wire
 //! types (SPEC 02 §4.1).
 //!
-//! These live in `mixos-lib-bus` (the bottom of `bus ← mix ← cos`) so
-//! both the broker (`mixos-noded`, in cos) that *emits* them and
-//! `mixos-lib-client` (in bus) that *parses* them share one definition.
+//! These live in `bus` (the bottom of `bus ← mix ← cos`) so
+//! both the broker (`noded`, in cos) that *emits* them and
+//! `bus::native_client` (in bus) that *parses* them share one definition.
 //!
 //! ## Open struct = additive-safe
 //!
@@ -209,7 +209,7 @@ pub struct RegisterProvenance {
 }
 
 impl RegisterProvenance {
-    /// Assemble from a `mixos-lib-buildinfo` `build_info!()`'s parts
+    /// Assemble from a `buildinfo` `build_info!()`'s parts
     /// (passed individually so this crate stays free of a buildinfo dep)
     /// plus the binary name and a process-start timestamp. Stamps the
     /// current pid. `started_at` should be captured ONCE at process start
@@ -250,7 +250,7 @@ pub struct NodeInfo {
     /// Cross-mesh FQDN this node belongs to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<String>,
-    /// The local `mixos-noded`'s own build provenance.
+    /// The local `noded`'s own build provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noded: Option<ServiceInfo>,
     /// Node uptime in seconds (live).

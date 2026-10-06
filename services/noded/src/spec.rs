@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn find_by_name_rejects_path_traversal() {
-        let tmp = std::env::temp_dir().join("mixos-noded-spec-traversal-test");
+        let tmp = std::env::temp_dir().join("noded-spec-traversal-test");
         let _ = std::fs::create_dir_all(&tmp);
         // Sibling file outside the spec dir we must NOT reach.
         let outside = tmp.join("outside.md");
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn loads_real_spec_file() {
         // Synthesize one in tmp.
-        let tmp = std::env::temp_dir().join("mixos-noded-spec-test.md");
+        let tmp = std::env::temp_dir().join("noded-spec-test.md");
         let mut f = std::fs::File::create(&tmp).unwrap();
         write!(f, "---\ntitle: Test\nchapter: 99\n---\n# Hi\n").unwrap();
         let msg = load_spec_file(&tmp).unwrap();

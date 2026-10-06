@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bus::wire::{self, BusMessage};
+use bus::wire::BusMessage;
 use tokio::sync::{RwLock, mpsc};
 
 /// Maximum cached snapshot body size in bytes (§ 3.11.2).

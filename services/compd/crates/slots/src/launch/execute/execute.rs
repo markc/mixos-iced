@@ -39,6 +39,12 @@ pub fn execute(req: &LaunchRequest, scope: bool) -> LaunchOutcome {
     cmd.stdout(stdout);
     cmd.stderr(stderr);
 
+    // Attach before exec, so even a client that immediately double-forks stays
+    // within the session's delegated cgroup and cannot escape cleanup.
+    if let Err(error) = super::super::scope::containment::configure_command(&mut cmd) {
+        return fail(req, format!("session containment failed: {error}"));
+    }
+
     // `child.spawn`, never `Command::spawn` directly: it refuses a program that
     // could not be resolved (the ordinary failure — a plan naming a binary that
     // isn't installed) BEFORE forking, and holds the reaper off for the fork+exec
@@ -54,7 +60,7 @@ pub fn execute(req: &LaunchRequest, scope: bool) -> LaunchOutcome {
         Err(e) => return fail(req, format!("spawn failed: {e}")),
     };
 
-    if scope {
+    if scope && cfg!(feature = "desktop-dbus") && !super::super::scope::containment::enabled() {
         if let Err(e) = adopt_into_scope(pid, &req.unit) {
             warn!("scope adoption failed for pid {pid} ({}): {e}", req.unit);
         }

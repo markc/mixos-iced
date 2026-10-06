@@ -9,6 +9,10 @@
 // Developer logging: bring error!/warn!/info!/trace!/abort! into scope.
 
 pub mod frame;
+#[cfg(feature = "desktop-dbus")]
+pub mod portal;
+#[cfg(not(feature = "desktop-dbus"))]
+#[path = "dialog_unavailable.rs"]
 pub mod portal;
 pub mod readback;
 pub mod reencode;

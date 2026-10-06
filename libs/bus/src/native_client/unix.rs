@@ -21,7 +21,7 @@ pub struct BrokerAccount {
 }
 
 /// Explicit Unix opt-in. Supply the node-config value from the cos layer;
-/// this crate deliberately has no dependency on mixos-lib-config.
+/// this crate deliberately has no dependency on config.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct UnixConnectOptions {

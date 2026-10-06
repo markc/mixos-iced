@@ -4,7 +4,7 @@
 //!
 //! `<svc>.props.{get,list,describe}` against a [`PropTree`]. The
 //! sibling SPEC 12 §5–§8 mutation router (`mutation::PropsRouter`)
-//! lives in `mixos-lib-props-store` (cos repo); that crate's
+//! lives in `Cosmix property-store` (cos repo); that crate's
 //! `bus.rs` is a thin shim re-exporting `dispatch_props` /
 //! `build_response` / `PropsResponse` from here and declaring its
 //! own `pub mod mutation;` so `props::bus::mutation::PropsRouter`

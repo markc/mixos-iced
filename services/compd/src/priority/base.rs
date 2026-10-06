@@ -66,6 +66,7 @@ fn auto() {
     }
 }
 
+#[cfg(feature = "desktop-dbus")]
 fn rtkit_high_priority(nice: i32) -> Result<(), String> {
     let tid = unsafe { libc::gettid() } as u64;
     let conn = zbus::blocking::Connection::system().map_err(|e| format!("system bus: {e}"))?;
@@ -78,4 +79,9 @@ fn rtkit_high_priority(nice: i32) -> Result<(), String> {
     )
     .map(|_| ())
     .map_err(|e| format!("MakeThreadHighPriority: {e}"))
+}
+
+#[cfg(not(feature = "desktop-dbus"))]
+fn rtkit_high_priority(_nice: i32) -> Result<(), String> {
+    Err("RTKit adapter is disabled in this build".into())
 }

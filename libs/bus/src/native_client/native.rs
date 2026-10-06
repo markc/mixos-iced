@@ -3,11 +3,11 @@
 //! Native (non-WASM) noded client using tokio-tungstenite.
 //!
 //! `lib-client` is bus-bound (will move to `markc/bus` at extraction
-//! time) and must NOT depend on `mixos-lib-config` (which stays in
+//! time) and must NOT depend on `config` (which stays in
 //! cos) — that's the dep direction the bus-cos extraction plan
 //! enforces. The previous `resolve_noded_url()` /
 //! `connect_default()` / `connect_anonymous_default()` convenience
-//! helpers depended on `mixos-lib-config::node::load_node_config()`
+//! helpers depended on `config::node::load_node_config()`
 //! for broker URL discovery. As of 2026-05-28 pre-extraction step 2,
 //! those helpers move to `config::client_helpers` (gated under
 //! lib-config's opt-in `client-helpers` Cargo feature). lib-client
@@ -237,7 +237,7 @@ impl Drop for PendingGuard {
     }
 }
 
-/// Bus WebSocket client for communicating with mixos-noded.
+/// Bus WebSocket client for communicating with noded.
 pub struct NodedClient {
     service_name: Arc<RwLock<String>>,
     verbs: Arc<RwLock<Option<String>>>,
@@ -292,7 +292,7 @@ impl std::error::Error for NameCollision {}
 ///
 /// This deliberately preserves only the machine-readable return code and the
 /// broker's diagnostic message. It does not claim that the refusal was a name
-/// collision: current `mixos-noded` replies do not distinguish collision from
+/// collision: current `noded` replies do not distinguish collision from
 /// admission policy with a separate code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrationRejected {
@@ -490,7 +490,7 @@ impl NodedClient {
         // would leak a live (broker-side) connection plus its reader
         // task — and an unbounded supervisor retry against a
         // persistent register failure (e.g. a name collision that
-        // real `mixos-noded` answers rc=10 *without* hanging up)
+        // real `noded` answers rc=10 *without* hanging up)
         // would accumulate them. Tear the half-built client down
         // explicitly before surfacing the error.
         if let Err(e) = client.register().await {
@@ -724,7 +724,7 @@ impl NodedClient {
         if rc >= 10 {
             // Error-message precedence:
             //   1. body's structured `message` field (SPEC 12 §9 —
-            //      `err_with` in `mixos-lib-props-store/src/bus/mutation.rs`)
+            //      `err_with` in `Cosmix property-store/src/bus/mutation.rs`)
             //   2. body's `error` field (other services' convention)
             //   3. response `error` header (noded.props.subscribe_grant
             //      and other header-only responders return errors here
@@ -941,7 +941,7 @@ impl NodedClient {
     /// to; the two produce byte-identical wire output (same headers, same
     /// order). It exists so callers holding only the correlation tuple —
     /// notably the SPEC 18 WS-R Mix `reply` path, whose neutral
-    /// `mixos-lib-mix` `BusHandler` boundary must not name this crate's
+    /// `mix` `BusHandler` boundary must not name this crate's
     /// `IncomingCommand` wire type — can answer a request without
     /// fabricating a synthetic `IncomingCommand`. Fabrication would be a
     /// latent partial-truth hazard: a future `respond` that reads more
@@ -1435,7 +1435,7 @@ mod pending_guard_tests {
     //! SPEC 18 Phase 2 WS4 — [`PendingGuard`] is the substrate fix
     //! for the R1 BLOCKER (per-`send` `timeout=` dropping the inner
     //! `call()` future would leak the pending-correlation entry). The
-    //! integration test in `mixos-lib-mix` exercises the upstream
+    //! integration test in `mix` exercises the upstream
     //! contract ("the inner future is actually dropped on elapsed");
     //! these unit tests pin the substrate side ("on drop, the guard
     //! removes the entry it armed; on disarm, the entry survives").

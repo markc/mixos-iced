@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub fn available() -> bool { true }
+
 /// Open the portal Save dialog. Returns the chosen path, or `None`.
 pub fn save_file_dialog(title: &str, suggested_name: &str) -> Option<PathBuf> {
     use zbus::blocking::{Connection, Proxy};

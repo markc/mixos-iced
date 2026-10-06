@@ -23,6 +23,7 @@ mod_module_files = "deny"
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 # One `getuid(2)` call: root resolves the system directories, everyone
 # else the XDG ones.

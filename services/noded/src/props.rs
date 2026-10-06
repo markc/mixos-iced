@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! SPEC 07 §2 property surface for mixos-noded (L1 conformance).
+//! SPEC 07 §2 property surface for noded (L1 conformance).
 //!
 //! Exposes config, lifecycle, services, and topics as a uniform
 //! `PropTree`. Wired into the broker dispatch via `handle_props_command`.
@@ -507,7 +507,6 @@ impl ChangeBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bus::wire;
 
     fn snap(log_level: &str) -> NodedPropsSnapshot {
         NodedPropsSnapshot {

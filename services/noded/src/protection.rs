@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Broker-owned observation classification. Never deserialised from a header.
-use bus::wire::{self, BusMessage};
+use bus::wire::BusMessage;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum TrafficClass {

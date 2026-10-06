@@ -22,15 +22,15 @@ contract = "none"
 default = ["client"]
 # The broker client: tokio + WebSocket transport, supervised reconnect, and
 # broker URL discovery (which reads node.conf.mix as strict data).
-client = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tracing", "dep:strict"]
+client = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:tracing", "dep:strict", "dep:anyhow", "dep:libc", "dep:ed25519-dalek", "dep:rand"]
 native = ["client"]
 
 [dependencies]
-anyhow.workspace = true
+anyhow = { workspace = true, optional = true }
 serde.workspace = true
-libc.workspace = true
-ed25519-dalek.workspace = true
-rand.workspace = true
+libc = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 serde_json = { version = "=1.0.151" }
 strict = { path = "../strict", optional = true }
 tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "sync", "time", "io-util"], optional = true }

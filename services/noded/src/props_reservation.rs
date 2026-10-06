@@ -127,7 +127,7 @@ pub(crate) fn visible_in_list(name: &str, peer_id: &str) -> bool {
 /// emits exactly this shape; this helper makes it a broker-side
 /// invariant so a buggy or malicious owner cannot inject spoofed
 /// `command` / `from` / `to` / `id` / `type` headers that the
-/// granted subscriber's `mixos-lib-client` reader_loop would
+/// granted subscriber's `bus::native_client` reader_loop would
 /// dispatch as a routed Bus command. The `topic_*` headers (stamped
 /// by the broker on every publish) survive because the broker
 /// re-applies them after this canonicalisation.
