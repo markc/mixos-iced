@@ -4,6 +4,25 @@
 use iced_core::{Event, Renderer, mouse, shell, time::Instant, window};
 use iced_runtime::user_interface::{State, UserInterface};
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Pass {
+    Draw,
+    Retry,
+    Defer,
+}
+
+/// Match iced's three-pass budget: settle layout/messages at one timestamp,
+/// then yield to the host instead of letting a publishing widget block it.
+pub(super) fn next_pass(attempt: usize, state: &State, messages: bool) -> Pass {
+    if !messages && !state.has_layout_changed() {
+        Pass::Draw
+    } else if attempt < 2 {
+        Pass::Retry
+    } else {
+        Pass::Defer
+    }
+}
+
 pub(super) fn prepare<Message, Theme, R: Renderer>(
     ui: &mut UserInterface<'_, Message, Theme, R>,
     cursor: mouse::Cursor,
@@ -186,5 +205,70 @@ mod tests {
             for at in emitted { last = Some(at); reductions += 1; }
         }
         panic!("redraw callback did not settle");
+    }
+
+    #[test]
+    fn a_persistent_redraw_publisher_yields_after_three_passes() {
+        let now = Instant::now();
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let mut cache = Cache::default();
+        let mut delivered = Vec::new();
+        for attempt in 0..4 {
+            // This valid callback deliberately has no reducer-owned last time.
+            let view: Element<'_, Instant, Theme, Paint> = toolkit::keys::keys(Space::new(), |_| None)
+                .on_redraw(None, |at| at).into();
+            let mut ui = UserInterface::build(view, Size::new(100.0, 50.0), cache, &mut renderer);
+            let mut messages = shell::Bus::new();
+            let state = prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, now);
+            let emitted: Vec<_> = messages.drain().collect();
+            let pass = next_pass(attempt, &state, !emitted.is_empty());
+            cache = ui.into_cache();
+            delivered.extend(emitted);
+            if pass == Pass::Defer {
+                assert_eq!(attempt, 2);
+                assert_eq!(delivered, vec![now; 3], "retain all messages, including the deferred pass");
+                return;
+            }
+            assert_eq!(pass, Pass::Retry);
+        }
+        panic!("persistent redraw callback exceeded the frame budget");
+    }
+
+    #[test]
+    fn relayout_retries_prepare_recreated_responsive_buttons() {
+        struct Resize(bool);
+        impl iced_widget::transition::Program for Resize {
+            type Value = bool;
+            fn go(&mut self, large: bool, _: Instant) { self.0 = large; }
+            fn is_animating(&self, _: Instant) -> bool { true }
+        }
+        let view = || -> Element<'_, u8, Theme, Paint> {
+            iced_widget::Transition::new(|| Resize(false), true, |size: &Resize, _| {
+                iced_widget::Responsive::new(|_| self::view(true))
+                    .height(if size.0 { 40 } else { 20 })
+            }).into()
+        };
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let cursor = mouse::Cursor::Available(Point::new(5.0, 5.0));
+        let mut ui = UserInterface::build(view(), Size::new(100.0, 50.0), Cache::default(), &mut renderer);
+        let now = Instant::now() + iced_core::time::Duration::from_secs(1);
+        let mut messages = shell::Bus::new();
+        let state = prepare(&mut ui, cursor, &mut renderer, &waker, &mut messages, now);
+        assert_eq!(messages.drain().count(), 0);
+        assert!(state.has_layout_changed());
+        assert_eq!(next_pass(0, &state, false), Pass::Retry);
+        renderer.0.clear();
+        ui.draw(&mut renderer, &Theme::Dark, &renderer::Style::default(), cursor);
+        assert_eq!(renderer.0, vec![button::background(&Theme::Dark, button::Status::Disabled).background.unwrap()], "relayout created a button after its frame event");
+        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view(), Size::new(100.0, 50.0), cache, &mut renderer);
+        let state = prepare(&mut ui, cursor, &mut renderer, &waker, &mut messages, now);
+        assert_eq!(messages.drain().count(), 0);
+        assert_eq!(next_pass(1, &state, false), Pass::Draw);
+        renderer.0.clear();
+        ui.draw(&mut renderer, &Theme::Dark, &renderer::Style::default(), cursor);
+        assert_eq!(renderer.0, vec![button::background(&Theme::Dark, button::Status::Hovered).background.unwrap()]);
     }
 }

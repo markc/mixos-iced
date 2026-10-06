@@ -415,6 +415,7 @@ impl<U: IcedUi> IcedRuntime<U> {
 
         let mut cache = std::mem::take(&mut self.cache);
         let now = Instant::now();
+        let mut attempt = 0;
         loop {
             let mut ui = UserInterface::build(self.ui.view(), bounds, cache, &mut renderer_guard);
 
@@ -434,12 +435,24 @@ impl<U: IcedUi> IcedRuntime<U> {
                 &mut ui, self.cursor, &mut *renderer_guard, self.wake.waker(),
                 &mut messages, now,
             );
-            self.redraw_request = super::frame::after_update(self.redraw_request, state, now, true);
             let messages: Vec<_> = messages.drain().collect();
-            if !messages.is_empty() {
-                cache = ui.into_cache();
-                dispatch_messages(&mut self.ui, &mut self.message_handler, messages);
-                continue;
+            let pass = super::frame::next_pass(attempt, &state, !messages.is_empty());
+            self.redraw_request = super::frame::after_update(self.redraw_request, state, now, true);
+            match pass {
+                super::frame::Pass::Retry => {
+                    cache = ui.into_cache();
+                    dispatch_messages(&mut self.ui, &mut self.message_handler, messages);
+                    attempt += 1;
+                    continue;
+                }
+                super::frame::Pass::Defer => {
+                    // Keep the final pass's messages for the next tick and paint
+                    // now. Continuous publishers/invalidators must yield.
+                    self.queued_messages.extend(messages);
+                    self.redraw_request = RedrawRequest::NextFrame;
+                    super::wake::notify();
+                }
+                super::frame::Pass::Draw => {}
             }
 
             ui.draw(
