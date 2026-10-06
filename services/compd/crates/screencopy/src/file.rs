@@ -61,6 +61,16 @@ pub fn pending_output(output: &Output) -> bool {
     })
 }
 
+pub fn pending_picture(output: &Output, cursor: bool) -> bool {
+    REQUESTS.with_borrow(|requests| {
+        requests.iter().any(|request| {
+            request.output == output.name()
+                && request.spec.window.is_none()
+                && request.spec.cursor == cursor
+        })
+    })
+}
+
 pub fn pending_windows() -> bool {
     REQUESTS.with_borrow(|requests| requests.iter().any(|request| request.spec.window.is_some()))
 }
@@ -140,8 +150,13 @@ pub fn service<R: ExportMem>(
     source: Source<'_, '_, R>,
     output: &Output,
     kind: CaptureSource,
+    cursor: bool,
 ) {
-    let requests = take(|request| request.output == output.name() && request.spec.window.is_none());
+    let requests = take(|request| {
+        request.output == output.name()
+            && request.spec.window.is_none()
+            && request.spec.cursor == cursor
+    });
     if requests.is_empty() {
         return;
     }
@@ -193,17 +208,68 @@ fn complete(
     output: &Output,
     kind: CaptureSource,
 ) -> Result<Value, String> {
+    if let Some(expected) = spec.output_generation {
+        let actual = output
+            .user_data()
+            .get::<comp_model::capture::OutputGeneration>()
+            .map(|generation| generation.0.load(std::sync::atomic::Ordering::Relaxed));
+        if actual != Some(expected) {
+            return Err("output changed after capture admission".into());
+        }
+    }
     let size = readback.size;
-    write(spec, size.w as u32, size.h as u32, pixels)?;
-    Ok(comp_model::capture::reply(
-        &spec.path,
+    let (width, height, cropped) = crop_region(
+        spec,
         size.w as u32,
         size.h as u32,
+        pixels,
+        output.current_scale().fractional_scale(),
+    )?;
+    write(spec, width, height, &cropped)?;
+    Ok(comp_model::capture::reply(
+        &spec.path,
+        width,
+        height,
         output.current_scale().fractional_scale(),
         &output.name(),
         spec.window,
         kind,
     ))
+}
+
+fn crop_region<'a>(
+    spec: &CaptureFrameSpec,
+    width: u32,
+    height: u32,
+    pixels: &'a [u8],
+    scale: f64,
+) -> Result<(u32, u32, std::borrow::Cow<'a, [u8]>), String> {
+    use smithay::utils::{Logical, Rectangle};
+    if pixels.len() != width as usize * height as usize * 3 {
+        return Err("capture RGB layout mismatch".into());
+    }
+    let Some(region) = spec.region else {
+        return Ok((width, height, pixels.into()));
+    };
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("capture scale invalid".into());
+    }
+    let logical = Rectangle::<i32, Logical>::new(
+        (region.x, region.y).into(),
+        (region.width, region.height).into(),
+    );
+    let rect = crate::scaled_region(
+        logical,
+        scale,
+        Rectangle::from_size((width as i32, height as i32).into()),
+    )
+    .ok_or("capture region outside output")?;
+    let mut cropped = Vec::with_capacity(rect.size.w as usize * rect.size.h as usize * 3);
+    for y in rect.loc.y..rect.loc.y + rect.size.h {
+        let start = (y as usize * width as usize + rect.loc.x as usize) * 3;
+        cropped.extend_from_slice(&pixels[start..start + rect.size.w as usize * 3]);
+    }
+    Ok((rect.size.w as u32, rect.size.h as u32, cropped.into()))
 }
 
 fn rgb(
@@ -257,6 +323,18 @@ fn write(spec: &CaptureFrameSpec, width: u32, height: u32, pixels: &[u8]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fractional_regions_round_outwards_and_clip() {
+        let spec = comp_model::capture::parse(&serde_json::json!({"path":"/tmp/a",
+            "region":{"x":1,"y":1,"width":2,"height":1}}))
+        .unwrap();
+        let pixels: Vec<u8> = (0..5 * 4 * 3).collect();
+        let (w, h, p) = crop_region(&spec, 5, 4, &pixels, 1.5).unwrap();
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(&p[..12], &pixels[18..30]);
+        assert_eq!(&p[12..], &pixels[33..45]);
+        assert!(crop_region(&spec, 1, 1, &[0, 0, 0], 2.5).is_err());
+    }
     #[test]
     fn readback_channel_order_and_orientation() {
         let bgra = [3, 2, 1, 255, 6, 5, 4, 255];

@@ -432,13 +432,22 @@ fn compose(
 
             // Bus screenshots use the just-rendered window framebuffer. The
             // wire vocabulary uses "offscreen" for the nested render source.
-            if screencopy::file::pending_output(&context.output) {
+            if screencopy::file::pending_picture(&context.output, true) {
                 offscreen = true; // readback/map can change the current GL target
                 if context.render_failures == 0 {
-                    screencopy::file::service(gles_renderer, screencopy::Source {
-                        framebuffer: &gles_framebuffer,
-                        readback: screencopy::Readback { size: present_size, origin_bottom_left: true },
-                    }, &context.output, screencopy::file::CaptureSource::Offscreen);
+                    screencopy::file::service(
+                        gles_renderer,
+                        screencopy::Source {
+                            framebuffer: &gles_framebuffer,
+                            readback: screencopy::Readback {
+                                size: present_size,
+                                origin_bottom_left: true,
+                            },
+                        },
+                        &context.output,
+                        screencopy::file::CaptureSource::Offscreen,
+                        true,
+                    );
                 } else {
                     screencopy::file::fail_output(&context.output, "window render failed");
                 }
@@ -456,7 +465,9 @@ fn compose(
             // Rendering it leaves the texture current, so `draw` makes the window
             // surface current again before the swap (`offscreen`).
             let mut cursorless_texture = None;
-            if screencopy::sources_due(&context.output, damage.as_deref()).cursorless {
+            if screencopy::sources_due(&context.output, damage.as_deref()).cursorless
+                || screencopy::file::pending_picture(&context.output, false)
+            {
                 offscreen = true;
                 match screencopy::render_offscreen(
                     gles_renderer,
@@ -475,6 +486,26 @@ fn compose(
                     .map_err(|err| warn!("screencopy: cursorless texture not bound ({err})"))
                     .ok()
             });
+            if let Some(framebuffer) = cursorless_framebuffer.as_ref() {
+                screencopy::file::service(
+                    gles_renderer,
+                    screencopy::Source {
+                        framebuffer,
+                        readback: screencopy::Readback {
+                            size: present_size,
+                            origin_bottom_left: false,
+                        },
+                    },
+                    &context.output,
+                    screencopy::file::CaptureSource::Offscreen,
+                    false,
+                );
+            } else if screencopy::file::pending_picture(&context.output, false) {
+                screencopy::file::fail_output_capture(
+                    &context.output,
+                    "cursorless window copy failed",
+                );
+            }
             captures = Some(screencopy::service(
                 gles_renderer,
                 Some(screencopy::Source {

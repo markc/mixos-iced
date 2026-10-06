@@ -137,6 +137,17 @@ fn refresh_output_generations(lp: &mut Loop) {
         })
         .collect();
     lp.inner.comp.observe_outputs(&present);
+    for output in lp.inner.host_space().state.outputs() {
+        let generation = lp.inner.comp.output_generation(&output.name());
+        let data = output.user_data();
+        data.insert_if_missing(|| {
+            comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(generation))
+        });
+        data.get::<comp_model::capture::OutputGeneration>()
+            .expect("inserted generation")
+            .0
+            .store(generation, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Refresh the default output (the host Space's first output) the workspace

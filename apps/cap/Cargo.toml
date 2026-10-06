@@ -1,0 +1,45 @@
+[package]
+name = "cap"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Native Wayland screenshots and editable annotations over the Bus"
+
+[package.metadata.mixos]
+component = "cap"
+kind = "app"
+layer = "desktop"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia", "canvas", "image-without-codecs"] }
+iced_winit = { path = "../../vendor/iced/winit", features = ["wayland", "image"] }
+iced_runtime = { workspace = true, features = ["image"] }
+toolkit = { workspace = true, features = ["tiny-skia", "image"] }
+appearance.workspace = true
+bus = { workspace = true, features = ["native"] }
+config.workspace = true
+buildinfo.workspace = true
+image.workspace = true
+tiny-skia = "=0.12.0"
+fluent-bundle = "0.15"
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+iced_test.workspace = true
+
+[build-dependencies]
+buildinfo.workspace = true

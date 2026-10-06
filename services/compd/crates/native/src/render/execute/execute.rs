@@ -869,40 +869,64 @@ pub fn execute(
             }
 
             // Bus capture copies the real KMS result, including promoted planes.
-            // It never replays a potentially different scene on the active VT.
-            let output = &ctx_ref.outputs[output_idx].output;
-            if screencopy::file::pending_output(output) {
-                let copied = (|| -> Result<(), String> {
-                    let mut texture = screencopy::offscreen_texture(r.as_mut(), size)?;
-                    let mut target = r.bind(&mut texture).map_err(|err| format!("bind Bus capture: {err}"))?;
-                    let sync = scene_result.blit_frame_result(
-                        size, Transform::Normal, Scale::from(output_scale),
-                        &mut *r, &mut target, [Rectangle::from_size(size)], std::iter::empty::<Id>(),
-                    ).map_err(|err| format!("copy KMS capture: {err:?}"))?;
-                    sync.wait().map_err(|err| format!("wait KMS capture: {err:?}"))?;
-                    screencopy::file::service(r.as_mut(), screencopy::Source {
-                        framebuffer: target.as_ref(),
-                        readback: screencopy::Readback { size, origin_bottom_left: false },
-                    }, output, screencopy::file::CaptureSource::Kms);
-                    Ok(())
-                })();
-                if let Err(err) = copied { screencopy::file::fail_output(output, &err); }
-            }
+                // It never replays a potentially different scene on the active VT.
+                let output = &ctx_ref.outputs[output_idx].output;
+                if screencopy::file::pending_picture(output, true) {
+                    let copied = (|| -> Result<(), String> {
+                        let mut texture = screencopy::offscreen_texture(r.as_mut(), size)?;
+                        let mut target = r
+                            .bind(&mut texture)
+                            .map_err(|err| format!("bind Bus capture: {err}"))?;
+                        let sync = scene_result
+                            .blit_frame_result(
+                                size,
+                                Transform::Normal,
+                                Scale::from(output_scale),
+                                &mut *r,
+                                &mut target,
+                                [Rectangle::from_size(size)],
+                                std::iter::empty::<Id>(),
+                            )
+                            .map_err(|err| format!("copy KMS capture: {err:?}"))?;
+                        sync.wait()
+                            .map_err(|err| format!("wait KMS capture: {err:?}"))?;
+                        screencopy::file::service(
+                            r.as_mut(),
+                            screencopy::Source {
+                                framebuffer: target.as_ref(),
+                                readback: screencopy::Readback {
+                                    size,
+                                    origin_bottom_left: false,
+                                },
+                            },
+                            output,
+                            screencopy::file::CaptureSource::Kms,
+                            true,
+                        );
+                        Ok(())
+                    })();
+                    if let Err(err) = copied {
+                        screencopy::file::fail_output(output, &err);
+                    }
+                }
 
-            // ---- wlr-screencopy. ----
-            // Read the frame KMS will receive: its primary buffer plus the
-            // promoted planes. Replaying the scene is needed only when a
-            // cursorless copy must remove a cursor baked into the primary.
-            if screencopy::active() {
-                let output = ctx_ref.outputs[output_idx].output.clone();
-                let scale = output_scale;
-                let damage = screencopy::frame_damage(&output, size, scale, &scene.Element);
-                let due = screencopy::sources_due(&output, damage.as_deref());
-                let cursor_ids: Vec<Id> = scene.Element.iter()
-                    .filter(|element| element.is_cursor())
-                    .map(|element| element.id().clone())
-                    .collect();
-                let cursor_separate = cursor_ids.iter().all(|id| {
+                // ---- wlr-screencopy. ----
+                // Read the frame KMS will receive: its primary buffer plus the
+                // promoted planes. Replaying the scene is needed only when a
+                // cursorless copy must remove a cursor baked into the primary.
+                if screencopy::active() || screencopy::file::pending_picture(output, false) {
+                    let output = ctx_ref.outputs[output_idx].output.clone();
+                    let scale = output_scale;
+                    let damage = screencopy::frame_damage(&output, size, scale, &scene.Element);
+                    let mut due = screencopy::sources_due(&output, damage.as_deref());
+                    due.cursorless |= screencopy::file::pending_picture(&output, false);
+                    let cursor_ids: Vec<Id> = scene
+                        .Element
+                        .iter()
+                        .filter(|element| element.is_cursor())
+                        .map(|element| element.id().clone())
+                        .collect();
+                    let cursor_separate = cursor_ids.iter().all(|id| {
                     scene_result.cursor_element.is_some_and(|element| element.id() == id)
                         || scene_result.overlay_elements.iter().any(|element| element.id() == id)
                         || matches!(
@@ -911,60 +935,93 @@ pub fn execute(
                                 if element.id() == id
                         )
                 });
-                let mut render = |with_pointer: bool| {
-                    let result = (|| -> Result<_, String> {
-                        if !with_pointer && !cursor_separate {
-                            return screencopy::render_offscreen(
-                                r.as_mut(), &scene.Element, |element| !element.is_cursor(), size, scale,
-                            );
-                        }
-                        let mut texture = screencopy::offscreen_texture(r.as_mut(), size)?;
-                        {
-                            let mut target = r.bind(&mut texture)
-                                .map_err(|err| format!("bind KMS copy target: {err}"))?;
-                            scene_result.blit_frame_result(
-                                size,
-                                Transform::Normal,
-                                Scale::from(scale),
-                                &mut *r,
-                                &mut target,
-                                [Rectangle::from_size(size)],
-                                cursor_ids.iter().filter(|_| !with_pointer).cloned(),
-                            ).map_err(|err| format!("copy KMS frame: {err:?}"))?;
-                        }
-                        Ok(texture)
-                    })();
-                    result
-                    .map_err(|err| warn!("screencopy: offscreen render failed ({err})"))
-                    .ok()
-                };
-                let mut with_pointer = if due.cursor { render(true) } else { None };
-                let mut without_pointer = if due.cursorless { render(false) } else { None };
-                let gles: &mut smithay::backend::renderer::gles::GlesRenderer = r.as_mut();
-                let with_target = with_pointer.as_mut().and_then(|texture| {
-                    gles.bind(texture)
-                        .map_err(|err| warn!("screencopy: offscreen texture not bound ({err})"))
-                        .ok()
-                });
-                let without_target = without_pointer.as_mut().and_then(|texture| {
-                    gles.bind(texture)
-                        .map_err(|err| warn!("screencopy: offscreen texture not bound ({err})"))
-                        .ok()
-                });
-                let readback = screencopy::Readback { size, origin_bottom_left: false };
-                screencopy.push(screencopy::service(
-                    gles,
-                    with_target
-                        .as_ref()
-                        .map(|framebuffer| screencopy::Source { framebuffer, readback }),
-                    without_target
-                        .as_ref()
-                        .map(|framebuffer| screencopy::Source { framebuffer, readback }),
-                    &output,
-                    damage.as_deref(),
-                ));
-            }
-            drop(scene_result);
+                    let mut render = |with_pointer: bool| {
+                        let result = (|| -> Result<_, String> {
+                            if !with_pointer && !cursor_separate {
+                                return screencopy::render_offscreen(
+                                    r.as_mut(),
+                                    &scene.Element,
+                                    |element| !element.is_cursor(),
+                                    size,
+                                    scale,
+                                );
+                            }
+                            let mut texture = screencopy::offscreen_texture(r.as_mut(), size)?;
+                            {
+                                let mut target = r
+                                    .bind(&mut texture)
+                                    .map_err(|err| format!("bind KMS copy target: {err}"))?;
+                                let sync = scene_result
+                                    .blit_frame_result(
+                                        size,
+                                        Transform::Normal,
+                                        Scale::from(scale),
+                                        &mut *r,
+                                        &mut target,
+                                        [Rectangle::from_size(size)],
+                                        cursor_ids.iter().filter(|_| !with_pointer).cloned(),
+                                    )
+                                    .map_err(|err| format!("copy KMS frame: {err:?}"))?;
+                                sync.wait()
+                                    .map_err(|err| format!("wait KMS frame: {err:?}"))?;
+                            }
+                            Ok(texture)
+                        })();
+                        result
+                            .map_err(|err| warn!("screencopy: offscreen render failed ({err})"))
+                            .ok()
+                    };
+                    let mut with_pointer = if due.cursor { render(true) } else { None };
+                    let mut without_pointer = if due.cursorless { render(false) } else { None };
+                    let gles: &mut smithay::backend::renderer::gles::GlesRenderer = r.as_mut();
+                    let with_target = with_pointer.as_mut().and_then(|texture| {
+                        gles.bind(texture)
+                            .map_err(|err| warn!("screencopy: offscreen texture not bound ({err})"))
+                            .ok()
+                    });
+                    let without_target = without_pointer.as_mut().and_then(|texture| {
+                        gles.bind(texture)
+                            .map_err(|err| warn!("screencopy: offscreen texture not bound ({err})"))
+                            .ok()
+                    });
+                    let readback = screencopy::Readback {
+                        size,
+                        origin_bottom_left: false,
+                    };
+                    if let Some(framebuffer) = without_target.as_ref() {
+                        screencopy::file::service(
+                            gles,
+                            screencopy::Source {
+                                framebuffer,
+                                readback,
+                            },
+                            &output,
+                            screencopy::file::CaptureSource::Kms,
+                            false,
+                        );
+                    } else if screencopy::file::pending_picture(&output, false) {
+                        screencopy::file::fail_output_capture(
+                            &output,
+                            "cursorless KMS copy failed",
+                        );
+                    }
+                    screencopy.push(screencopy::service(
+                        gles,
+                        with_target.as_ref().map(|framebuffer| screencopy::Source {
+                            framebuffer,
+                            readback,
+                        }),
+                        without_target
+                            .as_ref()
+                            .map(|framebuffer| screencopy::Source {
+                                framebuffer,
+                                readback,
+                            }),
+                        &output,
+                        damage.as_deref(),
+                    ));
+                }
+                drop(scene_result);
             drop(r);
 
             last_result_empty = scene_is_empty;

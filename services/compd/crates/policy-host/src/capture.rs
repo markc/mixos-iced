@@ -4,10 +4,10 @@ use comp_model::capture::CaptureFrameSpec;
 use comp_model::reply::ControlReply;
 use dispatcher::state::state::RedrawReason;
 use dispatcher::wire::trait_::wire_trait::WireTrait;
-use world::state::Loop;
 use serde_json::json;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use std::time::{Duration, Instant};
+use world::state::Loop;
 
 pub fn start(
     lp: &mut Loop,
@@ -68,6 +68,16 @@ pub fn start(
         });
         return;
     };
+    if spec
+        .output_generation
+        .is_some_and(|expected| expected != lp.inner.comp.output_generation(&output.name()))
+    {
+        answer(ControlReply::refused(
+            "output_changed",
+            json!({"output":output.name()}),
+        ));
+        return;
+    }
     let id = screencopy::file::enqueue(&output, spec, move |result| {
         answer(match result {
             Ok(body) => ControlReply::Body(body),

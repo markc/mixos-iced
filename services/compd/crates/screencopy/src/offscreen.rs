@@ -45,14 +45,14 @@ pub fn capture<E>(
     } else {
         crate::SourcesDue::default()
     };
-    let mut cursor = if due.cursor || file::pending_output(output) {
+    let mut cursor = if due.cursor || file::pending_picture(output, true) {
         crate::render_offscreen(renderer, elements, |_| true, size, scale)
             .map_err(|err| model::warn!("capture: offscreen render failed: {err}"))
             .ok()
     } else {
         None
     };
-    let mut cursorless = if due.cursorless {
+    let mut cursorless = if due.cursorless || file::pending_picture(output, false) {
         crate::render_offscreen(
             renderer,
             elements,
@@ -89,9 +89,24 @@ pub fn capture<E>(
             },
             output,
             file::CaptureSource::Offscreen,
+            true,
         );
-    } else {
+    } else if file::pending_picture(output, true) {
         file::fail_output_capture(output, "offscreen render or bind failed");
+    }
+    if let Some(framebuffer) = cursorless_target.as_ref() {
+        file::service(
+            renderer,
+            Source {
+                framebuffer,
+                readback,
+            },
+            output,
+            file::CaptureSource::Offscreen,
+            false,
+        );
+    } else if file::pending_picture(output, false) {
+        file::fail_output_capture(output, "cursorless offscreen render or bind failed");
     }
     if serve_plain_copies {
         crate::service_inner(
@@ -121,10 +136,8 @@ pub fn capture_windows<E>(
     mut elements: impl FnMut(
         &mut GlesRenderer,
         comp_model::capture::CaptureWindow,
-    ) -> Result<
-        (Vec<E>, Size<i32, Physical>),
-        comp_model::reply::ControlReply,
-    >,
+    )
+        -> Result<(Vec<E>, Size<i32, Physical>), comp_model::reply::ControlReply>,
 ) where
     E: RenderElement<GlesRenderer>,
 {
