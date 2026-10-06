@@ -75,6 +75,12 @@ try
   check($boot.scenes.editor.dismissed,"app registration confirms first-run activation")
   $boot=$loader.services($boot,["shell","apps"],false)
   check($boot.scenes.editor.dismissed,"closing the app never repeats first-run")
+  $boot.scenes.editor.dismissed=false;$boot.editor_first_run_pending=true
+  $boot=$app.activation_failed($boot,"test startup failed")
+  $boot=$loader.services($boot,["shell","apps"],false)
+  check(not $boot.editor_first_run_pending and $boot.scenes.editor.diagnostic.error_code=="SCENES_EDITOR_START_FAILED","failed startup is explicit and does not leave a sticky pending launch")
+  $boot=$loader.request($boot,"editor.open",{view:"gallery"})
+  check($boot.rc==0 and not $boot.editor_activation_failed,"manual open may retry a failed startup")
   print("native scene editor backend: snapshots, stale refusal, recovery, upstream failure and routing pass")
 finally
   run_argv_must(["rm","-rf","--",$tmp])

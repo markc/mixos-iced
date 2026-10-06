@@ -444,6 +444,14 @@ check(length($x.calls) == 2 and $x.plan.failed.code == "SCENES_COLLISION" and co
 $x = run_plan(click("editor.template.install", cargs("btn_install", nil), $ui), [refused("SCENES_STATE_UNREADABLE", "state.conf.mix could not be read")])
 check(length($x.calls) == 1 and contains($x.message, "SCENES_STATE_UNREADABLE"), "other refusals are not retried")
 check(click("editor.template.install", cargs("btn_install", nil), $e.default_ui()).kind == "ui", "install needs a selected template")
+$long_template = $templates.templates[0]
+$long_template.template = join(map(range(1, 64), fn($n) = "a"), "")
+$long_data = $D
+$long_data.templates = {templates:[$long_template]}
+$long_ui = $e.default_ui()
+$long_ui.template = $long_template.template
+$long_plan = $e.plan_click("editor.template.install", cargs("btn_install", nil), $long_ui, $long_data)
+check(len($long_plan.steps[0].retry.args.name) == 64 and re_match($long_plan.steps[0].retry.args.name, "^[a-z0-9][a-z0-9_-]{0,63}$"), "collision retry remains a valid name for a maximum-length template")
 
 -- recommended: install what is missing, enable what is off, stop at the first refusal.
 $rl = $list
@@ -557,6 +565,9 @@ $q = $e.plan_click("editor.edge.size", cargs("size_left_plus", nil), $ui, $ED)
 check($q.kind == "ui" and contains($q.message, "largest"), "left at 500 is a no-op")
 check($e.plan_click("editor.edge.size", cargs("size_bottom_minus", nil), $ui, $ED).steps[0].args.thickness_px == 24, "bottom clamps to 24")
 check($e.plan_click("editor.edge.size", cargs("size_right_plus", nil), $ui, $ED).steps[0].args.thickness_px == 390, "the output budget clamps")
+$tiny = $ED
+$tiny.props.panels.right.max_thickness_px = 1
+check(length($e.plan_click("editor.edge.size", cargs("size_right_plus", nil), $ui, $tiny).steps) == 0, "an output budget below the minimum never sends an over-budget resize")
 check($e.plan_click("editor.edge.size", cargs("size_top_plus", nil), $ui, data($list, $templates, nil, [])).kind == "ui", "no snapshot, no resize")
 check(click("editor.edge.size", cargs("size_top_plus", nil), $ui).steps[0].args.thickness_px == 24, "top from 0 clamps up to 24")
 

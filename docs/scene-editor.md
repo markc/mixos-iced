@@ -94,3 +94,5 @@ outcome. First-run dismissal follows confirmed window activation, with one
 pending launch completed by the app's registration event. Loader inventory
 reports the frontend, registration and pending launch separately from the
 retained legacy scene record.
+An unconfirmed first-run launch ends with an explicit startup diagnostic after
+a bounded deadline. It requires a manual open to retry and never loops launches.

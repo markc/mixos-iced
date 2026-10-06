@@ -501,7 +501,7 @@ fn plan_install($node, $ui, $data)
   if type($t.diagnostic) == "map" then return plan($ui, "ui", [], "Template " .. $t.template .. " is invalid: " .. to_string($t.diagnostic.message)) end
   $enable = $node == "btn_install_enable"
   $s = bus_step($data.svc.loader, "scenes.install", {template: $t.template, enable: $enable}, "Install " .. $t.template)
-  $s.retry = {code: "SCENES_COLLISION", args: {template: $t.template, name: $t.template .. "-2", enable: $enable}}
+  $s.retry = {code: "SCENES_COLLISION", args: {template: $t.template, name: substr($t.template, 0, 62) .. "-2", enable: $enable}}
   $p = plan($ui, "install", [$s], "")
   $p.subject = {enable: $enable}
   return $p
@@ -621,6 +621,7 @@ fn plan_size($node, $ui, $data)
   $lo = $RANGE[$edge][0]
   $hi = $RANGE[$edge][1]
   if type($panel.max_thickness_px) == "number" and $panel.max_thickness_px < $hi then $hi = floor($panel.max_thickness_px) end
+  if $hi < $lo then return plan($ui, "ui", [], edge_label($edge) .. " edge has insufficient space for its minimum thickness") end
   $now = round($panel.width_px)
   $want = $parts[2] == "plus" ? $now + $STEP[$edge] : $now - $STEP[$edge]
   $want = max($lo, min($hi, $want))

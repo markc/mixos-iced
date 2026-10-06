@@ -27,6 +27,31 @@ $ROOT = $state.root
 $state.handover_delay = 1
 $state.handover_armed = false
 $state.editor_diagnostics_armed = false
+$state.editor_activation_armed = false
+$state.editor_activation_seq = 0
+
+fn schedule_editor_activation($s)
+  if $s.editor_first_run_pending != true or $s.editor_activation_armed then return $s end
+  $s.editor_activation_armed = true
+  $s.editor_activation_seq = $s.editor_activation_seq + 1
+  task_start("scenes.editor.activation", json_encode({seq:$s.editor_activation_seq}))
+  return $s
+end
+
+-- One bounded startup deadline, not a polling/relaunch loop. Failure is
+-- explicit; a manual open may retry without duplicating a pending launch.
+on scenes.editor.activation async
+  if len(keys($event.headers)) != 0 then return end
+  sleep(5)
+end
+
+on scenes.editor.activation
+  if len(keys($event.headers)) != 0 or $event.args.seq != $state.editor_activation_seq then return end
+  $state.editor_activation_armed = false
+  if $state.editor_first_run_pending != true then return end
+  $state = $state.editor_frontend.activation_failed($state, "Scene Editor did not confirm activation within its startup deadline; open it again to retry")
+  $state = $loader.changed($state)
+end
 
 fn schedule_editor_diagnostics($s)
   if $s.editor_app != true or $s.editor_diagnostics_armed or not contains($s.services ?? [], env("CED_SERVICE", "ced")) then return $s end
@@ -68,7 +93,8 @@ end
 
 fn refresh_services($s, $reconnect)
   $r = $s.io.rpc("noded", "noded.props.get", {})
-  return schedule_handover($loader.services($s, (($r ?? {}).services ?? {}).registered, $reconnect))
+  $s = schedule_handover($loader.services($s, (($r ?? {}).services ?? {}).registered, $reconnect))
+  return schedule_editor_activation($s)
 end
 
 on fs.changed
@@ -317,6 +343,7 @@ on scenes.editor.open desc "Open Scene Editor {safe?,view?,scene?,first_run?}; S
   $state = $loader.request($state, "editor.open", $event.args ?? {})
   reply($state.rc, json_encode($state.response))
   $state = $loader.changed($state)
+  $state = schedule_editor_activation($state)
 end
 
 on scenes.editor.close desc "Close Scene Editor {unload?}; the legacy frontend hides or unloads its scene"

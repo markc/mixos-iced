@@ -1518,6 +1518,7 @@ fn first_run($s)
   if not $s.first_run_enabled or not $s.state_ok or $s.scenes.editor.dismissed or not needs_setup($s) then return $s end
   -- A hot-reload commit is not a boot: never re-summon the editor gallery.
   if $s.reload_commit == true then return $s end
+  if $s.editor_app == true and $s.editor_activation_failed == true then return $s end
   if $s.editor_app == true and not contains($s.services ?? [], env("APPS_SERVICE", "apps")) then return $s end
   if $s.editor_app == true and $s.editor_first_run_pending == true and not contains($s.services ?? [], env("SCENE_EDITOR_SERVICE", "scene-editor")) then return $s end
   $response = $s.response

@@ -171,7 +171,13 @@ fn diagnostics($s, $loader)
   $open = $helpers.open_paths($tabs)
   $pending = []
   for each $req in $sends
-    if not contains($open, $req.path) then continue end
+    if not contains($open, $req.path) then
+      if not has_key($current, $req.path) then continue end
+      if not contains($pending, $req.path) then push($pending, $req.path) end
+      if has_key($seen, $req.path) then $diff.seen[$req.path] = $seen[$req.path]
+      else $diff.seen = delete($diff.seen, $req.path) end
+      continue
+    end
     try
       $_ = $s.io.rpc($ced, "ced.diagnostics", $req)
     catch $message
@@ -201,8 +207,21 @@ fn open($s, $args)
     $s.response = {name:"editor", source:"application", service:$service, pending:true, launch:$receipt}
     if $args.first_run == true then $s.editor_first_run_pending = true end
   end
+  if $args.first_run != true then
+    $s.editor_first_run_pending = false
+    $s.editor_activation_failed = false
+    $s.editor_activation_armed = false
+    $s.editor_activation_seq = ($s.editor_activation_seq ?? 0) + 1
+  end
   -- Dismissal follows confirmed activation, never a spawn-only receipt.
   -- A pending launch is completed on the service's registration event.
+  return $s
+end
+
+fn activation_failed($s, $message)
+  $s.editor_first_run_pending = false
+  $s.editor_activation_failed = true
+  $s.scenes.editor.diagnostic = {error_code:"SCENES_EDITOR_START_FAILED", message:$message}
   return $s
 end
 

@@ -91,8 +91,35 @@ try
   $r=call("scenes","scenes.editor.action",{action:"remove",selection:$selection,state_token:$snap.state_token,confirmed:true})
   check($r.rc==10 and $r.result.failure.code=="SCENES_STALE" and is_dir($tmp .. "/scenes/notes"),"native confirmation detects a save ahead of the watcher")
   $snap=snapshot($selection)
+  rpc("scenes","scenes.enable",{name:"notes"})
+  $path=$tmp .. "/scenes/notes/scene.mix"
+  $closed_good=read_file($path)
+  $closed_bad=replace($closed_good,"\"title\":\"Notifications\"","\"title\":\"BROKEN closed tab\"")
+  write_file($path,$closed_bad)
+  $closed_problem=false
+  for each $i in range(1,100)
+    $rows=rpc("scenes","scenes.list",{}).scenes
+    if any($rows,fn($row)=$row.name=="notes" and len($row.problems)>0) then $closed_problem=true;break end
+    sleep(0.1)
+  end
+  check($closed_problem,"a file changed while Ced's tab is closed has a loader verdict")
+  rpc("ced","ced.open",{paths:[$path]})
+  snapshot($selection)
+  $delivered=false
+  for each $i in range(1,100)
+    if any(logs("ced","ced.diagnostics"),fn($row)=$row.args.path==$path and $row.args.digest==hash_sha256($closed_bad) and len($row.args.diagnostics)>0) then $delivered=true;break end
+    sleep(0.1)
+  end
+  check($delivered,"a closed-tab verdict remains pending and is delivered after the tab opens and a native refresh")
+  write_file($path,$closed_good)
+  for each $i in range(1,100)
+    if not any(rpc("scenes","scenes.list",{}).scenes,fn($row)=$row.name=="notes" and len($row.problems)>0) then break end
+    sleep(0.1)
+  end
+  $snap=snapshot($selection)
+  $opened_before=len(logs("ced","ced.open"))
   $r=rpc("scenes","scenes.editor.action",{action:"edit-scene",selection:$selection,state_token:$snap.state_token})
-  check(len(logs("ced","ced.open"))==1 and len(logs("ced","ced.diagnostics"))>=1,"source opens in Ced with loader diagnostics")
+  check(len(logs("ced","ced.open"))==$opened_before+1 and len(logs("ced","ced.diagnostics"))>=1,"source opens in Ced with loader diagnostics")
   $snap=snapshot($selection)
   $r=rpc("scenes","scenes.editor.action",{action:"mode",edge:"bottom",mode:"pinned",selection:$selection,state_token:$snap.state_token})
   check($r.panels.bottom.mode=="pinned","panel plan executes native host verb and returns its result")
@@ -118,9 +145,16 @@ try
   $snap=snapshot($selection)
   $r=rpc("scenes","scenes.editor.action",{action:"remove",selection:$selection,state_token:$snap.state_token,confirmed:true})
   check($r.selection.scene==nil and not is_dir($tmp .. "/scenes/notes") and is_dir($tmp .. "/scenes/.recovery"),"confirmed native removal retains recovery data")
-  $r=rpc("scenes","scenes.editor.open",{view:"arrange"})
+  $r=rpc("scenes","scenes.editor.open",{view:"arrange",first_run:true})
   check($r.source=="application" and logs("apps","apps.launch")[0].args.uris[0]=="mixos-scene-editor:arrange/","default cold activation launches the desktop app")
   check(len(logs("shell","shell.dialog.show"))==0,"normal activation does not create the legacy compositor dialog")
+  $failed=false
+  for each $i in range(1,100)
+    $editor=rpc("scenes","scenes.list",{}).editor
+    if not $editor.application_pending and ($editor.diagnostic ?? {}).error_code=="SCENES_EDITOR_START_FAILED" then $failed=true;break end
+    sleep(0.1)
+  end
+  check($failed and len(logs("apps","apps.launch"))==1,"failed first-run launch has a bounded native deadline and never spins relaunches")
   $r=call("scenes","scenes.editor.action",{action:"arbitrary",target:"noded",verb:"anything"})
   check($r.rc==10 and $r.result.error_code=="SCENES_ARGUMENT","frontend cannot act as an arbitrary RPC relay")
   print("native scene editor Bus acceptance: " .. to_string($checks.count) .. " checks passed")
