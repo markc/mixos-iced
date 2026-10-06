@@ -6,6 +6,8 @@
   reusing its existing planner and reducer. Normal editor activation routes
   the independent Scene Editor app; `SCENES_EDITOR_APP=0` retains the legacy
   scene frontend. No scene files or editor user copies are removed.
+- Passive loader reload preparation retains complete scene entries, so the
+  committed mount receives an integer generation fence before behaviour starts.
 
 ## 0.1.5
 

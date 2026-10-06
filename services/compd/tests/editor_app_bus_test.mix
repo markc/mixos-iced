@@ -92,6 +92,16 @@ try
   check($r.rc==10 and $r.result.failure.code=="SCENES_STALE" and is_dir($tmp .. "/scenes/notes"),"native confirmation detects a save ahead of the watcher")
   $snap=snapshot($selection)
   rpc("scenes","scenes.enable",{name:"notes"})
+  $old_generation = filter(rpc("scenes","scenes.list",{}).scenes,fn($row)=$row.name=="notes")[0].generation
+  $saved_state = read_file($tmp .. "/scenes/state.conf.mix")
+  rpc("scenes","RELOAD",{})
+  $reloaded = false
+  for each $i in range(1,100)
+    $row = filter(rpc("scenes","scenes.list",{}).scenes,fn($row)=$row.name=="notes")[0]
+    if $row.mounted and $row.behaviour=="running" and $row.generation>$old_generation then $reloaded=true;break end
+    sleep(0.1)
+  end
+  check($reloaded and read_file($tmp .. "/scenes/state.conf.mix")==$saved_state,"native loader reload mounts and restarts an enabled scene with a fresh integer fence without changing desired state")
   $path=$tmp .. "/scenes/notes/scene.mix"
   $closed_good=read_file($path)
   $closed_bad=replace($closed_good,"\"title\":\"Notifications\"","\"title\":\"BROKEN closed tab\"")

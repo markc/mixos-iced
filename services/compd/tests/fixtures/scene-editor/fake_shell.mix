@@ -79,6 +79,10 @@ end
 on shell.scene.load
   note("shell.scene.load")
   $a = req()
+  if type($a.model_generation) != "number" or $a.model_generation < 0 or floor($a.model_generation) != $a.model_generation then
+    refuse("SCENE_MODEL_GENERATION", "model_generation must be an exact nonnegative integer")
+    return
+  end
   if contains($a.source ?? "", "BROKEN") then
     reply(10, json_encode({error_code:"scene_invalid", message:"invalid document", diagnostics:[{line:7, code:"mix-parse", severity:"Error", message:"parse"}]}))
     return

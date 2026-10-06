@@ -67,6 +67,9 @@ fn prepare_reload($s)
     if $c.behaviour_digest != "" then $s.io.check($dir .. "/behaviour.mix", {lint:check_mode($s, $n, $dir)}) end
     $v = $s.io.rpc($s.host, "shell.scene.validate", $c.source)
     if type($v) != "map" then fail("SCENES_SNAPSHOT", "missing scene validation receipt", {}) end
+    -- observe writes display fields; it must never create a partial entry.
+    -- The post-swap mount needs the initial integer generation fence.
+    if not has_key($s.scenes, $n) then $s.scenes[$n] = entry($n) end
     $s = observe($s, $n, $dir)
   end
   -- A reload is not a boot: never re-summon the first-run editor gallery.

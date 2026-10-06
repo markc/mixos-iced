@@ -41,6 +41,9 @@ fn rpc($host, $verb, $body)
     if $d.name == $host_state.load_error then raise("SCENES_UPSTREAM", "load timed out", {rpc:"shell.scene.load"}) end
     if contains($source, "BROKEN") then raise("SCENES_UPSTREAM", "invalid document", {rc:10, upstream:{diagnostics:[{line:7, code:"mix-parse", severity:"Error", message:"parse"}]}}) end
     if $verb == "shell.scene.load" then
+      if type($body.model_generation) != "number" or $body.model_generation < 0 or floor($body.model_generation) != $body.model_generation then
+        raise("SCENES_UPSTREAM", "invalid generation fence", {rc:10, upstream:{error_code:"SCENE_MODEL_GENERATION"}})
+      end
       -- Seat occupancy is invisible to validate (plan rule 6.5).
       if $host_state.refuse_edge != nil and $d.window.edge == $host_state.refuse_edge then
         raise("SCENES_UPSTREAM", "scene host refused request", {rc:10, upstream:{error_code:"SUBPANEL_COLLISION", message:"page is held by another owner"}})
@@ -754,6 +757,7 @@ try
   $cand.first_run_enabled = false
   $cand = $l.prepare_reload($cand)
   check($cand.reload_commit == true, "candidate preparation marks the reload commit")
+  check($cand.scenes.probe.generation == 0 and $cand.scenes.probe.status == "disabled", "passive reload creates a complete scene entry with an integer generation fence")
   check(len(calls("launch")) == $before_launch and len(calls("stop")) == $before_stop and len(calls("shell.scene.load")) == $before_load, "candidate preparation is passive: no launch, stop or load")
   check(read_file($seam_root .. "/state.conf.mix") == $state_bytes, "candidate preparation writes nothing")
   -- An enabled scene the host would refuse must refuse the swap (revert).
