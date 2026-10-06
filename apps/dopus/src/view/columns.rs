@@ -1,236 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Sort header using exactly the same measured column geometry as FileList.
-use super::{Look, elide::shape, rows::Columns};
+//! Sort policy and action labels for the shared responsive file header.
+use super::{Look, rows::{Columns, presentation}};
 use crate::app::{Msg, PaneOp};
-use application::cpu::Renderer;
-use application::iced::advanced::text::{self, Paragraph as _, Renderer as _};
-use application::iced::advanced::{
-    Layout, Renderer as _, Shell, Widget, layout, mouse, renderer,
-    widget::{Tree, tree},
-};
-use application::iced::{Element, Event, Length, Point, Rectangle, Size};
+use application::iced::Element;
 use dopus_core::{PaneId, SortColumn};
 
-type Para = <Renderer as text::Renderer>::Paragraph;
-pub struct Header {
-    pub look: Look,
-    pub pane: PaneId,
-    pub sort: SortColumn,
-    pub ascending: bool,
-    labels: [String; 3],
-    tips: Vec<Element<'static, Msg>>,
-    columns: Columns,
-}
+pub struct Header;
 impl Header {
-    pub fn new(
-        look: Look,
-        pane: PaneId,
-        sort: SortColumn,
-        ascending: bool,
-        actions: &[crate::verbs::ActionRow],
-        columns: Columns,
-    ) -> Self {
+    pub fn new(look: Look, pane: PaneId, sort: SortColumn, ascending: bool,
+        actions: &[crate::verbs::ActionRow], columns: Columns) -> Element<'static, Msg> {
         use actions::filemgr;
-        Self {
-            look,
-            pane,
-            sort,
-            ascending,
-            tips: Vec::new(),
-            columns,
-            labels: [
+        let sorts = [SortColumn::Name, SortColumn::Size, SortColumn::Modified];
+        let selected = sorts.iter().position(|column| *column == sort).unwrap_or(0);
+        toolkit::file_pane::Header::new(presentation(look), columns,
+            ["Name".into(), "Size".into(), "Modified".into()], selected, ascending,
+            move |column| Msg::Pane(pane, PaneOp::Sort(sorts[column])))
+            .colours(look.chrome.secondary, look.chrome.secondary_text)
+            .tooltip([
                 (filemgr::VIEW_SORT_NAME, "Sort by name"),
                 (filemgr::VIEW_SORT_SIZE, "Sort by size"),
                 (filemgr::VIEW_SORT_MODIFIED, "Sort by modified time"),
-            ]
-            .map(|(id, label)| super::tips::action_label(actions, id, label)),
-        }
-    }
-    fn labels(&self) -> [Para; 3] {
-        [
-            ("Name", SortColumn::Name),
-            ("Size", SortColumn::Size),
-            ("Modified", SortColumn::Modified),
-        ]
-        .map(|(label, sort)| {
-            let label = if sort == self.sort {
-                format!("{label} {}", if self.ascending { "↑" } else { "↓" })
-            } else {
-                label.into()
-            };
-            shape(&label, self.look.ui_font, self.look.small_px)
-        })
-    }
-}
-impl Widget<Msg, application::iced::Theme, Renderer> for Header {
-    fn diff(&mut self, _tree: &mut Tree) {
-        // Region children are reconciled in layout, once widths are known.
-    }
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<[Para; 3]>()
-    }
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Shrink)
-    }
-    fn state(&self) -> tree::State {
-        tree::State::new(self.labels())
-    }
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        let labels = self.labels();
-        let height = labels[0].min_bounds().height + self.look.chrome.small * 2.0;
-        *tree.state.downcast_mut::<[Para; 3]>() = labels;
-        let size = limits.resolve(Length::Fill, Length::Shrink, Size::new(0.0, height));
-        let regions = self
-            .columns
-            .cells(size.width)
-            .into_iter()
-            .zip(&self.labels)
-            .filter(|((_, width), _)| *width > 0.0)
-            .map(|((x, width), label)| {
-                (
-                    Rectangle {
-                        x,
-                        y: 0.0,
-                        width,
-                        height,
-                    },
-                    label.clone(),
-                )
-            })
-            .collect();
-        super::tips::regions(self.look, regions, &mut self.tips, tree, renderer, size)
-    }
-    fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        shell: &mut Shell<'_, Msg>,
-        viewport: &Rectangle,
-    ) {
-        let bounds = layout.bounds();
-        let hover = if bounds
-            .intersection(viewport)
-            .is_some_and(|clip| cursor.is_over(clip))
-        {
-            cursor
-        } else {
-            mouse::Cursor::Unavailable
-        };
-        for ((tip, state), child) in self
-            .tips
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-        {
-            tip.as_widget_mut()
-                .update(state, event, child, hover, renderer, shell, viewport);
-        }
-        if matches!(
-            event,
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-        ) && bounds
-            .intersection(viewport)
-            .is_some_and(|clip| cursor.is_over(clip))
-        {
-            let x = cursor.position().unwrap_or_default().x - bounds.x;
-            if let Some(i) = self
-                .columns
-                .cells(bounds.width)
-                .iter()
-                .position(|(start, width)| x >= *start && x < start + width)
-            {
-                shell.publish(Msg::Pane(
-                    self.pane,
-                    PaneOp::Sort([SortColumn::Name, SortColumn::Size, SortColumn::Modified][i]),
-                ));
-                shell.capture_event();
-            }
-        }
-    }
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut Renderer,
-        _: &application::iced::Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        let bounds = layout.bounds();
-        let Some(clip) = bounds.intersection(viewport) else {
-            return;
-        };
-        renderer.with_layer(clip, |renderer| {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds,
-                    ..Default::default()
-                },
-                self.look.chrome.secondary,
-            );
-            for (i, ((start, width), para)) in self
-                .columns
-                .cells(bounds.width)
-                .into_iter()
-                .zip(tree.state.downcast_ref::<[Para; 3]>())
-                .enumerate()
-            {
-                if width <= 0.0 {
-                    continue;
-                }
-                let cell = Rectangle {
-                    x: bounds.x + start,
-                    width,
-                    ..bounds
-                };
-                let x = if i == 0 {
-                    cell.x
-                } else {
-                    cell.x + cell.width - para.min_bounds().width
-                };
-                renderer.with_layer(cell, |renderer| {
-                    renderer.fill_paragraph(
-                        para,
-                        Point::new(x, bounds.y + self.look.chrome.small),
-                        self.look.chrome.secondary_text,
-                        cell,
-                    )
-                });
-            }
-        });
-    }
-
-    fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'b>,
-        renderer: &Renderer,
-        viewport: &Rectangle,
-        translation: application::iced::Vector,
-    ) -> Option<
-        application::iced::advanced::overlay::Element<'b, Msg, application::iced::Theme, Renderer>,
-    > {
-        application::iced::advanced::overlay::from_children(
-            &mut self.tips,
-            tree,
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
-    }
-}
-impl<'a> From<Header> for Element<'a, Msg> {
-    fn from(value: Header) -> Self {
-        Element::new(value)
+            ].map(|(id, label)| super::tips::action_label(actions, id, label)),
+                move |label, size| super::tips::tip(look,
+                    application::iced::widget::Space::new().width(size.width).height(size.height), label))
+            .into()
     }
 }

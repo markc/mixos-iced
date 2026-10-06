@@ -379,7 +379,7 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(RowState::new(self.look))
+        tree::State::new(RowState::<Renderer::Paragraph>::new(self.look))
     }
 
     fn layout(
@@ -670,7 +670,6 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        use iced_core::text::Renderer as _;
         let bounds = layout.bounds();
         let Some(clip) = bounds.intersection(viewport) else {
             return;
@@ -879,4 +878,68 @@ where Renderer: atext::Renderer<Font = iced_core::Font> + 'static {
 
 impl<'a, Theme: 'a, Renderer: atext::Renderer<Font = iced_core::Font> + 'static> From<FilePane<'a, Theme, Renderer>> for Element<'a, Message, Theme, Renderer> {
     fn from(list: FilePane<'a, Theme, Renderer>) -> Self { Element::new(list) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_renderer::LayoutRenderer;
+    use std::cell::Cell;
+
+    struct Listing<'a> { entries: &'a [(PathBuf, String)], reads: &'a Cell<usize> }
+    impl Source for Listing<'_> {
+        fn root(&self) -> &Path { Path::new("/listing") }
+        fn len(&self) -> usize { self.entries.len() }
+        fn row(&self, index: usize) -> Option<Row<'_>> {
+            self.reads.set(self.reads.get() + 1);
+            self.entries.get(index).map(|(path, name)| Row { path, name, depth: 0, is_dir: false })
+        }
+        fn size_text(&self, _index: usize) -> String { "1 KiB".into() }
+        fn modified_text(&self, _index: usize) -> String { "01/01/26 12:00".into() }
+    }
+    fn columns() -> Columns {
+        Columns { name_min: 80.0, size: 80.0, modified: 100.0, gap: 8.0, pad: 8.0 }
+    }
+    fn deliver(list: &mut FilePane<'_, crate::Theme, LayoutRenderer>, tree: &mut Tree,
+        renderer: &LayoutRenderer, event: Event) -> Vec<Message> {
+        let viewport = Rectangle::with_size(Size::new(600.0, 280.0));
+        let node = list.layout(tree, renderer, &layout::Limits::new(Size::ZERO, viewport.size()));
+        let mut bus = iced_core::shell::Bus::new();
+        list.update(tree, &event, Layout::new(&node), mouse::Cursor::Available(Point::new(80.0, 10.0)),
+            renderer, &mut Shell::new(&iced_core::window::Headless, iced_core::shell::Waker::noop(), &mut bus), &viewport);
+        bus.drain().collect()
+    }
+
+    #[test]
+    fn hundred_thousand_entries_access_and_shape_only_the_viewport() {
+        let entries: Vec<_> = (0..100_000).map(|i| (PathBuf::from(format!("/listing/{i}")), format!("file-{i}.txt"))).collect();
+        let reads = Cell::new(0);
+        let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
+            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns());
+        let renderer = LayoutRenderer::new();
+        let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
+        for _ in 0..20 {
+            deliver(&mut list, &mut tree, &renderer, Event::Window(iced_core::window::Event::Focused));
+        }
+        assert!(reads.get() < 1000, "accessed {} offscreen entries", reads.get());
+        let state = tree.state.downcast_ref::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+        assert!(state.cache.len() > 1 && state.cache.len() < 20);
+    }
+
+    #[test]
+    fn relisting_between_press_and_release_never_selects_the_replacement() {
+        let first = [(PathBuf::from("/listing/first"), "first".into())];
+        let replacement = [(PathBuf::from("/listing/other"), "other".into())];
+        let reads = Cell::new(0);
+        let make = |entries| FilePane::<crate::Theme, LayoutRenderer>::new(
+            Listing { entries, reads: &reads }, Presentation::default(), columns());
+        let mut list = make(&first);
+        let renderer = LayoutRenderer::new();
+        let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
+        assert_eq!(deliver(&mut list, &mut tree, &renderer,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))), vec![Message::Press]);
+        let mut list = make(&replacement);
+        assert!(deliver(&mut list, &mut tree, &renderer,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))).is_empty());
+    }
 }

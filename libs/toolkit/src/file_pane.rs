@@ -7,6 +7,8 @@ use iced_core::{Element, Font, Length, Point, Rectangle, Size};
 use crate::Tokens;
 
 mod rows;
+mod header;
+pub use header::Header;
 pub use rows::{Columns, FilePane, listing_size_width};
 
 #[derive(Debug, Clone, PartialEq)]

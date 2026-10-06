@@ -12,13 +12,13 @@
 use std::ops::Range;
 use std::time::Instant;
 
-use iced_core::text::{self as atext};
-use iced_core::{mouse, renderer};
-use iced_core::{Border, Color, Font, Pixels, Point, Rectangle, Size};
-use super::{Origin, OriginKind};
 use super::Severity;
-use super::{Class as HlClass, SliceBudget};
 use super::line_of;
+use super::{Class as HlClass, SliceBudget};
+use super::{Origin, OriginKind};
+use iced_core::text::{self as atext};
+use iced_core::{Border, Color, Font, Pixels, Point, Rectangle, Size};
+use iced_core::{mouse, renderer};
 
 use super::layout::{self as geo, Geometry, STRIP_W};
 use super::lines::{self, LineCells};
@@ -925,13 +925,13 @@ fn ago(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use iced_core::{Background, Transformation};
-    use super::super::fixture::Text;
     use super::super::Source;
     use super::super::ViewState as EditorModel;
+    use super::super::fixture::Text;
+    use iced_core::{Background, Transformation};
 
     use super::super::layout::Metrics;
-    use super::super::{View as EditorView, Palette};
+    use super::super::{Palette, View as EditorView};
     use super::*;
 
     /// The window the widget sits in (the base layer).
@@ -992,12 +992,8 @@ mod tests {
         fn allocate_image(
             &mut self,
             _: &iced_core::image::Handle,
-            _: impl FnOnce(
-                Result<
-                    iced_core::image::Allocation,
-                    iced_core::image::Error,
-                >,
-            ) + Send
+            _: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
+            + Send
             + 'static,
         ) {
         }

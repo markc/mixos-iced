@@ -207,8 +207,8 @@ pub fn offset_at(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::fixture::Text;
+    use super::*;
 
     fn cfg() -> MeasureCfg {
         MeasureCfg {

@@ -1,94 +1,217 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Adapters from the file-management engine to shared file presentation.
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use crate::icons::{self, Icons};
+use crate::view::Look;
 use application::cpu::Renderer;
 use application::iced::advanced::text::Paragraph as _;
 use application::iced::{Point, Rectangle};
 use dopus_core::{FileEntry, VisibleRow};
-use crate::icons::{self, Icons};
-use crate::view::Look;
-use toolkit::file_pane as pane;
 pub use pane::{Columns, Message as RowsMsg, listing_size_width};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use toolkit::file_pane as pane;
 pub type FileList<'a> = pane::FilePane<'a, application::iced::Theme, Renderer>;
 
 pub fn presentation(look: Look) -> pane::Presentation {
-    pane::Presentation { ui_font: look.ui_font, mono_font: look.mono_font, px: look.px, small_px: look.small_px,
-        tokens: look.tokens, chrome: pane::Metrics { icon: look.chrome.icon, small: look.chrome.small,
-            pad: look.chrome.pad, gap: look.chrome.gap, edge: look.chrome.edge } }
+    pane::Presentation {
+        ui_font: look.ui_font,
+        mono_font: look.mono_font,
+        px: look.px,
+        small_px: look.small_px,
+        tokens: look.tokens,
+        chrome: pane::Metrics {
+            icon: look.chrome.icon,
+            small: look.chrome.small,
+            pad: look.chrome.pad,
+            gap: look.chrome.gap,
+            edge: look.chrome.edge,
+        },
+    }
 }
 
 fn columns_new(look: Look, rows: &[VisibleRow]) -> Columns {
-    let measure = |s: &str| FileList::shape(s, look.mono_font, look.small_px).min_bounds().width;
-    Columns { name_min: look.chrome.icon * 2.0 + look.chrome.small
-        + FileList::shape("MMMM", look.ui_font, look.px).min_bounds().width,
-        size: listing_size_width(rows.iter().map(|row| size_text(&row.entry)), look.chrome.small, measure),
-        modified: measure("88/88/88 88:88"), gap: look.chrome.gap, pad: look.chrome.pad }
+    let measure = |s: &str| {
+        FileList::shape(s, look.mono_font, look.small_px)
+            .min_bounds()
+            .width
+    };
+    Columns {
+        name_min: look.chrome.icon * 2.0
+            + look.chrome.small
+            + FileList::shape("MMMM", look.ui_font, look.px)
+                .min_bounds()
+                .width,
+        size: listing_size_width(
+            rows.iter().map(|row| size_text(&row.entry)),
+            look.chrome.small,
+            measure,
+        ),
+        modified: measure("88/88/88 88:88"),
+        gap: look.chrome.gap,
+        pad: look.chrome.pad,
+    }
 }
 
-struct Listing<'a> { rows: &'a [VisibleRow], root: &'a Path, selected: Option<&'a Path>,
-    expanded: &'a HashSet<PathBuf> }
+struct Listing<'a> {
+    rows: &'a [VisibleRow],
+    root: &'a Path,
+    selected: Option<&'a Path>,
+    expanded: &'a HashSet<PathBuf>,
+}
 impl pane::Source for Listing<'_> {
-    fn root(&self) -> &Path { self.root }
-    fn len(&self) -> usize { self.rows.len() }
-    fn row(&self, index: usize) -> Option<pane::Row<'_>> {
-        self.rows.get(index).map(|row| pane::Row { path: &row.entry.path, name: &row.entry.name,
-            depth: row.depth, is_dir: row.entry.is_dir })
+    fn root(&self) -> &Path {
+        self.root
     }
-    fn selected(&self) -> Option<&Path> { self.selected }
-    fn is_expanded(&self, path: &Path) -> bool { self.expanded.contains(path) }
-    fn size_text(&self, index: usize) -> String { size_text(&self.rows[index].entry) }
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+    fn row(&self, index: usize) -> Option<pane::Row<'_>> {
+        self.rows.get(index).map(|row| pane::Row {
+            path: &row.entry.path,
+            name: &row.entry.name,
+            depth: row.depth,
+            is_dir: row.entry.is_dir,
+        })
+    }
+    fn selected(&self) -> Option<&Path> {
+        self.selected
+    }
+    fn is_expanded(&self, path: &Path) -> bool {
+        self.expanded.contains(path)
+    }
+    fn size_text(&self, index: usize) -> String {
+        size_text(&self.rows[index].entry)
+    }
     fn modified_text(&self, index: usize) -> String {
-        self.rows[index].entry.modified.map(dopus_core::format_modified_at).unwrap_or_else(|| "—".into())
+        self.rows[index]
+            .entry
+            .modified
+            .map(dopus_core::format_modified_at)
+            .unwrap_or_else(|| "—".into())
     }
 }
 
-struct Transfer { shared: super::drag::Shared, pane: dopus_core::PaneId }
+struct Transfer {
+    shared: super::drag::Shared,
+    pane: dopus_core::PaneId,
+}
 impl pane::Transfer for Transfer {
-    fn cancel_epoch(&self) -> u64 { super::drag::lock(&self.shared).cancel_epoch }
-    fn active(&self) -> bool { super::drag::lock(&self.shared).active.is_some() }
+    fn cancel_epoch(&self) -> u64 {
+        super::drag::lock(&self.shared).cancel_epoch
+    }
+    fn active(&self) -> bool {
+        super::drag::lock(&self.shared).active.is_some()
+    }
     fn highlight(&self) -> Option<Rectangle> {
         let state = super::drag::lock(&self.shared);
-        state.active.as_ref().or(state.pending.as_ref()).and_then(|gesture| gesture.target.as_ref()).map(|target| target.highlight)
+        state
+            .active
+            .as_ref()
+            .or(state.pending.as_ref())
+            .and_then(|gesture| gesture.target.as_ref())
+            .map(|target| target.highlight)
     }
-    fn hover(&self, directory: Option<&Path>, root: &Path, bounds: Rectangle, highlight: Rectangle, _pointer: Point, busy: bool) {
+    fn hover(
+        &self,
+        directory: Option<&Path>,
+        root: &Path,
+        bounds: Rectangle,
+        highlight: Rectangle,
+        _pointer: Point,
+        busy: bool,
+    ) {
         let mut state = super::drag::lock(&self.shared);
-        if let Some(active) = state.active.as_mut() && self.pane != active.pane {
+        if let Some(active) = state.active.as_mut()
+            && self.pane != active.pane
+        {
             let destination = directory.unwrap_or(root);
-            if dopus_core::model::file_drop_actions(&active.source, destination, busy).contains(dopus_core::DropAction::Ask) {
-                active.target = Some(super::drag::Target { path: destination.to_path_buf(), root: root.to_path_buf(), bounds, highlight });
+            if dopus_core::model::file_drop_actions(&active.source, destination, busy)
+                .contains(dopus_core::DropAction::Ask)
+            {
+                active.target = Some(super::drag::Target {
+                    path: destination.to_path_buf(),
+                    root: root.to_path_buf(),
+                    bounds,
+                    highlight,
+                });
             }
         }
     }
     fn start(&self, path: &Path, is_dir: bool, root: &Path, pointer: Point) -> bool {
         let mut state = super::drag::lock(&self.shared);
-        if state.active.is_some() || state.pending.is_some() { return false; }
-        state.active = Some(super::drag::Gesture { pane: self.pane, source_root: root.to_path_buf(),
-            source: path.to_path_buf(), is_dir, pointer, target: None });
+        if state.active.is_some() || state.pending.is_some() {
+            return false;
+        }
+        state.active = Some(super::drag::Gesture {
+            pane: self.pane,
+            source_root: root.to_path_buf(),
+            source: path.to_path_buf(),
+            is_dir,
+            pointer,
+            target: None,
+        });
         true
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn file_list<'a>(rows: &'a [VisibleRow], selected: Option<&'a Path>, root: &'a Path,
-    expanded: &'a HashSet<PathBuf>, icons: &'a Icons, tint: &'a str, look: Look,
-    actions: &[crate::verbs::ActionRow], columns: Columns, id: dopus_core::PaneId,
-    drag: super::drag::Shared, busy: bool) -> FileList<'a> {
-    FileList::new(Listing { rows, root, selected, expanded }, presentation(look), columns)
-        .tint(tint).busy(busy)
-        .open_label(super::tips::action_label(actions, actions::filemgr::FILE_OPEN, "Open"))
-        .transfer(Transfer { shared: drag, pane: id })
-        .tooltip(move |label, size| super::tips::tip(look,
-            application::iced::widget::Space::new().width(size.width).height(size.height), label))
-        .decoration(move |renderer, index, decoration, bounds, clip| {
-            let row = &rows[index];
-            let icon = match decoration {
-                pane::Decoration::ChevronDown => icons::Icon::ChevronDown,
-                pane::Decoration::ChevronRight => icons::Icon::ChevronRight,
-                pane::Decoration::Entry => icons::file_icon(&row.entry.path, row.entry.is_dir, expanded.contains(&row.entry.path)),
-            };
-            icons.draw(renderer, icon, tint, bounds, clip);
-        })
+pub fn file_list<'a>(
+    rows: &'a [VisibleRow],
+    selected: Option<&'a Path>,
+    root: &'a Path,
+    expanded: &'a HashSet<PathBuf>,
+    icons: &'a Icons,
+    tint: &'a str,
+    look: Look,
+    actions: &[crate::verbs::ActionRow],
+    columns: Columns,
+    id: dopus_core::PaneId,
+    drag: super::drag::Shared,
+    busy: bool,
+) -> FileList<'a> {
+    FileList::new(
+        Listing {
+            rows,
+            root,
+            selected,
+            expanded,
+        },
+        presentation(look),
+        columns,
+    )
+    .tint(tint)
+    .busy(busy)
+    .open_label(super::tips::action_label(
+        actions,
+        actions::filemgr::FILE_OPEN,
+        "Open",
+    ))
+    .transfer(Transfer {
+        shared: drag,
+        pane: id,
+    })
+    .tooltip(move |label, size| {
+        super::tips::tip(
+            look,
+            application::iced::widget::Space::new()
+                .width(size.width)
+                .height(size.height),
+            label,
+        )
+    })
+    .decoration(move |renderer, index, decoration, bounds, clip| {
+        let row = &rows[index];
+        let icon = match decoration {
+            pane::Decoration::ChevronDown => icons::Icon::ChevronDown,
+            pane::Decoration::ChevronRight => icons::Icon::ChevronRight,
+            pane::Decoration::Entry => icons::file_icon(
+                &row.entry.path,
+                row.entry.is_dir,
+                expanded.contains(&row.entry.path),
+            ),
+        };
+        icons.draw(renderer, icon, tint, bounds, clip);
+    })
 }
 
 fn size_text(entry: &FileEntry) -> String {

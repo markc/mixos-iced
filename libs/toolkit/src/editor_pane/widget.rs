@@ -13,20 +13,18 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use super::{
+    Command as EditCommand, Motion, Scroll, Selection, Source, ViewState, clamp_offset, line_of,
+};
 use iced_core::layout::{self, Layout};
 use iced_core::text::{self as atext, Paragraph};
 use iced_core::widget::{Tree, tree};
-use iced_core::{
-    InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer,
-};
-use iced_core::{
-    Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window,
-};
-use super::{Selection, Source, ViewState, Command as EditCommand, Motion, Scroll, clamp_offset, line_of};
+use iced_core::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, keyboard, window};
+use iced_core::{InputMethod, Shell, Widget, clipboard, input_method, mouse, renderer};
 
 use super::layout::{self as geo, Geometry, Metrics};
 use super::lines::{self, Checkpoints};
-use super::{Message as EditorMsg, View as EditorView, LayoutReport, Palette, draw, ime, input};
+use super::{LayoutReport, Message as EditorMsg, Palette, View as EditorView, draw, ime, input};
 
 /// Change tints last this long (plan §4.5).
 pub const TINT: Duration = Duration::from_secs(2);
@@ -36,13 +34,14 @@ const PRIMARY_MAX: usize = 1024 * 1024;
 const WHEEL_LINES: f32 = 3.0;
 
 impl<'a> EditorPane<'a> {
-    pub fn new(
-        source: impl Source + 'a,
-        palette: &'a Palette,
-        view: &EditorView,
-    ) -> Self {
+    pub fn new(source: impl Source + 'a, palette: &'a Palette, view: &EditorView) -> Self {
         let model = source.state();
-        Self { text: Box::new(source), model, palette, view: view.clone() }
+        Self {
+            text: Box::new(source),
+            model,
+            palette,
+            view: view.clone(),
+        }
     }
 }
 
@@ -55,8 +54,8 @@ pub struct EditorPane<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::fixture::Text;
+    use super::*;
 
     #[test]
     fn document_switch_cancels_composition_and_discards_pending_interactions() {
@@ -65,14 +64,20 @@ mod tests {
         let first = EditorPane::new(Text::from_text("alpha").unwrap(), &palette, &view);
         let second = EditorPane::new(Text::from_text("bravo").unwrap(), &palette, &view);
         let mut state = State::default();
-        state.metrics = Some(Metrics { cell_w: 8.0, line_h: 20.0 });
+        state.metrics = Some(Metrics {
+            cell_w: 8.0,
+            line_h: 20.0,
+        });
         first.sync_scroll(&mut state, Size::new(800.0, 600.0));
         state.ime.preedit("ni");
         state.ime.anchored = true;
         state.drag = Some(Drag::Text);
         state.drag_offset = Some(4);
         state.primary_pending = true;
-        state.echo.push_back(Scroll { first_line: 20, x_cells: 4 });
+        state.echo.push_back(Scroll {
+            first_line: 20,
+            x_cells: 4,
+        });
         state.tint_seen.borrow_mut().insert(7, Instant::now());
         state.max_cells.set(1000);
         second.sync_scroll(&mut state, Size::new(800.0, 600.0));
@@ -82,7 +87,10 @@ mod tests {
         assert!(state.drag_offset.is_none() && !state.primary_pending);
         assert!(state.tint_seen.borrow().is_empty());
         assert_eq!(state.max_cells.get(), 0);
-        assert!(!state.ime.commit(), "queued commit belongs to the old document");
+        assert!(
+            !state.ime.commit(),
+            "queued commit belongs to the old document"
+        );
         state.ime.closed();
         assert!(state.ime.preedit("new") && state.ime.commit());
     }
@@ -93,7 +101,9 @@ pub(super) type Editor<'a> = EditorPane<'a>;
 impl<'a, Theme: 'a, R: atext::Renderer<Font = Font> + 'a> From<EditorPane<'a>>
     for Element<'a, EditorMsg, Theme, R>
 {
-    fn from(pane: EditorPane<'a>) -> Self { Self::new(pane) }
+    fn from(pane: EditorPane<'a>) -> Self {
+        Self::new(pane)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -243,8 +253,12 @@ impl<'a> Editor<'a> {
             // Follow a motion always; follow an edit only when the caret was
             // on screen (an agent editing elsewhere must not yank the view).
             if (moved && !edited) || st.caret_visible || st.seen_head.is_none() {
-                let (line, cells) =
-                    lines::cells_of(self.text.as_ref(), &self.view.measure, &mut st.ck.borrow_mut(), head);
+                let (line, cells) = lines::cells_of(
+                    self.text.as_ref(),
+                    &self.view.measure,
+                    &mut st.ck.borrow_mut(),
+                    head,
+                );
                 let next = geo::follow(
                     st.scroll,
                     line,

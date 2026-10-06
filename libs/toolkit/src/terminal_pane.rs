@@ -124,8 +124,11 @@ where
         } else {
             palette.border
         };
-        let clipped = crate::FlushColumn::new().push(pane.surface)
-            .width(Length::Fill).height(Length::Fill).clip(true);
+        let clipped = crate::FlushColumn::new()
+            .push(pane.surface)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true);
         let inner = container(clipped)
             .width(Length::Fill)
             .height(Length::Fill)
