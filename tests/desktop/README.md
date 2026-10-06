@@ -3,8 +3,11 @@
 `application_native_gate.mix --bin-dir PATH` exercises Ced, DOpus and Term
 using named candidate binaries, a private ABP broker and nested compositor.
 It checks editor layout/input, file copy/cancellation and real terminal PTY
-output, with captures at scales 1 and 2.5. It requires `bwrap` for an isolated
-candidate shell binding and never restarts an existing desktop session.
+output and native enrolment of both Mix PTYs, with captures at scales 1 and
+2.5. It requires `bwrap`, `setpriv` and non-interactive `sudo` for an isolated
+candidate shell binding that preserves broker ownership verification. Term
+runs as the invoking user after privileges are dropped. The gate never
+restarts an existing desktop session.
 
 Mix scripts that run compd for real and judge it by evidence: Bus replies,
 observation topics, frame traces and screenshots. Nothing here touches a live

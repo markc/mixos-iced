@@ -1,5 +1,5 @@
 -- nested_host_lib.mix — start, drive and stop a PRIVATE nested compd on its
--- version: 0.2.0
+-- version: 0.2.1
 -- own headless weston host.
 --
 --   $n = require("nested_host_lib.mix")   -- from a script beside it
@@ -312,7 +312,10 @@ fn start($opts)
   if len($service) > 31 then
     $service = $kind .. "-" .. $id
   end
-  $chmod = run_argv(["chmod", "0700", $run])
+  -- The broker's shared native ingress needs traversable ancestors. Keep
+  -- the Wayland runtime private in its own child rather than closing the
+  -- common run directory after private_bus() has validated it.
+  $chmod = run_argv(["chmod", "0711", $run])
   if $chmod.exit_code != 0 then
     print("  ERROR: chmod " .. $run .. ": " .. $chmod.stderr)
     exit(2)
@@ -320,6 +323,9 @@ fn start($opts)
   mkdir($run .. "/etc", {parents: true})
   mkdir($run .. "/var", {parents: true})
   mkdir($run .. "/run", {parents: true})
+  $runtime = $run .. "/wayland"
+  mkdir($runtime, {parents: true})
+  chmod($runtime, 0o700)
   $host_log = $run .. "/weston.log"
   $log = $run .. "/compositor.log"
   $renderer = $opts["host_renderer"] ?? "gl"
@@ -348,21 +354,21 @@ fn start($opts)
   $height = to_string($opts["height"] ?? 800)
   $hp = spawn([$weston, "--backend=headless", "--renderer=" .. $renderer, "--socket=wl-host",
     "--width=" .. $width, "--height=" .. $height, "--idle-time=0"],
-    {env: {XDG_RUNTIME_DIR: $run, DBUS_SESSION_BUS_ADDRESS: nil,
+    {env: {XDG_RUNTIME_DIR: $runtime, DBUS_SESSION_BUS_ADDRESS: nil,
       DBUS_STARTER_ADDRESS: nil, DBUS_STARTER_BUS_TYPE: nil, DBUS_SYSTEM_BUS_ADDRESS:nil},
       stdout: {file: $host_log}, stderr: "stdout", detach: true})
   $t = 0
-  while not exists($run .. "/wl-host") and $t < 50
+  while not exists($runtime .. "/wl-host") and $t < 50
     sleep(0.2)
     $t = $t + 1
   end
-  if not exists($run .. "/wl-host") then
+  if not exists($runtime .. "/wl-host") then
     $killed = kill($hp, 15)
     print("  ERROR: the weston host socket never appeared (" .. $host_log .. ")")
     exit(2)
   end
   $cenv = {
-    XDG_RUNTIME_DIR: $run,
+    XDG_RUNTIME_DIR: $runtime,
     WAYLAND_DISPLAY: "wl-host",
     WINIT_UNIX_BACKEND: "wayland",
     DISPLAY: "",
@@ -402,7 +408,7 @@ fn start($opts)
   if $dbus_pid != nil then
     push($pids, $dbus_pid)
   end
-  return {kind: $kind, bin: $bin, socket: $socket, service: $service, runtime: $run,
+  return {kind: $kind, bin: $bin, socket: $socket, service: $service, runtime: $runtime,
           log: $log, host_log: $host_log, pids: $pids, comp_pid: $cp, dbus: $dbus_address, run: $record}
 end
 

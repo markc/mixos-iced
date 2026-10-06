@@ -309,10 +309,12 @@ including renamed, development and build dependencies. Unit and renderer
 tests exercise the extracted controls. The desktop acceptance gate
 `tests/desktop/application_native_gate.mix --bin-dir <candidate-binaries>`
 uses an owned broker and nested compositor, exercises native keyboard input,
-file copy, deletion cancellation and real PTY output, and captures the apps at scales
-1 and 2.5. It requires `bwrap` to bind the candidate shell at its canonical
-path inside the test terminal's mount namespace. It leaves existing desktop
-sessions and the host installation intact.
+file copy, deletion cancellation, real PTY output and native enrolment of both
+Mix shells, and captures the apps at scales 1 and 2.5. It requires `bwrap`,
+`setpriv` and non-interactive `sudo` to bind the candidate shell at its canonical
+path inside the test terminal's mount namespace. Term runs as the invoking user
+after privileges are dropped. Existing desktop sessions and the host
+installation stay intact.
 
 ---
 

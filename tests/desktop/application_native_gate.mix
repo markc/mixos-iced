@@ -10,7 +10,11 @@ $bins = get_or($options.opts, "bin-dir", "")
 for each $name in ["mix", "noded", "compd", "editd", "ced", "dopus", "term"]
   if not is_file($bins .. "/" .. $name) then raise("BINARIES", "missing named " .. $name) end
 end
-if which("bwrap") == nil then raise("TEST_SUPPORT", "bwrap is required to bind the fresh PTY shell in an owned mount namespace") end
+for each $support in ["bwrap", "sudo", "setpriv"]
+  if which($support) == nil then raise("TEST_SUPPORT", $support .. " is required for the owned PTY mount namespace") end
+end
+$check_support = run_argv(["sudo", "-n", "true"], {timeout:10})
+if not $check_support.ok then raise("TEST_SUPPORT", "non-interactive sudo is required to preserve native broker UID verification in the mount namespace") end
 export MIXOS_TEST_MIX=$bins .. "/mix"
 fn check($condition, $message)
   if not $condition then raise("APPLICATION_NATIVE", $message) end
@@ -49,12 +53,15 @@ fn capture($session, $window, $path)
   rpc($session.service, "comp.capture.frame", {path: $path, window: {id: $window.id, generation: $window.generation}})
   check(is_file($path) and stat($path).size > 1000, "blank capture " .. $path)
 end
-fn wait_action($id, $enabled)
+fn wait_action($id, $enabled, $reselect)
   for each $i in range(1, 100)
     $actions = rpc("dopus", "dopus.actions.list", {}).actions
     $matches = filter($actions, fn($action) = $action.id == $id)
     check(len($matches) == 1, "missing action state: " .. $id)
     if $matches[0].enabled == $enabled then return end
+    -- Completion can deliver a late relist after the copied bytes appear.
+    -- Re-establish the source selection until the real action is available.
+    if $reselect == true then rpc("dopus", "dopus.action", {id: "selection.first", pane: "left"}) end
     sleep(0.1)
   end
   raise("APPLICATION_NATIVE", "action did not become " .. to_string($enabled) .. ": " .. $id)
@@ -81,11 +88,23 @@ for each $scale in [1, 2.5]
       if $app == "editd" then push($argv, "serve") end
       if $app == "term" then
         -- The PTY's canonical shell path resolves to this candidate only in
-        -- the test child's mount namespace; the host installation is intact.
-        $argv = ["bwrap", "--bind", "/", "/", "--ro-bind", $bins .. "/mix", "/opt/mixos/bin/mix", "--", $bins .. "/term"]
+        -- the test child's mount namespace. Unprivileged bwrap remaps host
+        -- root to nobody, correctly failing native ingress ownership checks.
+        -- Create only a mount namespace, then drop all privilege before Term.
+        $argv = ["sudo", "-n", "bwrap", "--bind", "/", "/", "--dev", "/dev", "--ro-bind", $bins .. "/mix", "/opt/mixos/bin/mix", "--clearenv"]
+        $launch = merge($client, {PATH:env("PATH"), USER:env("USER"),
+          MIXOS_BROKER_ACCOUNT:env("MIXOS_BROKER_ACCOUNT"), MIXOS_NODE_CONFIG:$bus.conf,
+          COSMIX_NODE_CONFIG:$bus.conf, MIXOS_NODED_URL:$bus.url, COSMIX_NODED_URL:$bus.url,
+          MIXOS_RUN:$run.path .. "/run"})
+        for each $name in keys($launch)
+          if $launch[$name] != nil then
+            $argv = concat($argv, ["--setenv", $name, to_string($launch[$name])])
+          end
+        end
+        $argv = concat($argv, ["--", "setpriv", "--reuid", to_string(uid()), "--regid", to_string(gid()), "--clear-groups", "--no-new-privs", $bins .. "/term"])
       end
       $p = spawn($argv, {env: $client, stdout: {file: $run.path .. "/" .. $app .. ".log"}, stderr: "stdout", detach: true})
-      push($children, $p)
+      push($children, {pid:$p, privileged_launcher:$app == "term"})
     end
     wait_service("edit", "edit.ping")
     wait_service("ced", "ced.ping")
@@ -135,17 +154,18 @@ for each $scale in [1, 2.5]
       sleep(0.1)
     end
     check($copied and hash_file($source .. "/payload.txt", "sha256") == hash_file($target .. "/payload.txt", "sha256"), "native file copy failed")
-    wait_action("file.delete", true)
-    wait_action("location.focus", true)
+    rpc("dopus", "dopus.action", {id: "selection.first", pane: "left"})
+    wait_action("file.delete", true, true)
+    wait_action("location.focus", true, false)
     -- Copy/Move start directly; only destructive Delete raises a confirmation.
     -- Exercise the real cancellable dialog, rather than assuming Ctrl+X does.
     key($session, "Delete", [])
     -- Location focus is disabled while a modal owns the window. Observe
     -- that real transition and its reversal through the existing Bus API.
-    wait_action("location.focus", false)
+    wait_action("location.focus", false, false)
     capture($session, $dopus, $run.path .. "/dopus-cancel-dialog.png")
     key($session, "Escape", [])
-    wait_action("location.focus", true)
+    wait_action("location.focus", true, false)
     check(is_file($source .. "/payload.txt") and is_file($target .. "/payload.txt"), "cancelled deletion removed a file")
     capture($session, $dopus, $run.path .. "/dopus.png")
 
@@ -161,14 +181,25 @@ for each $scale in [1, 2.5]
     end
     check($painted, "terminal PTY did not produce output: " .. to_string($screen))
     key($session, "e", ["ctrl", "shift"])
-    sleep(0.5)
-    $panes = rpc("term", "term.panes", {})
-    check(count_of(to_string($panes), "pane=") >= 2, "terminal split did not create two panes")
-    capture($session, $term, $run.path .. "/term.png")
-    for each $p in $children
-      check(process_alive($p), "application exited during native acceptance")
+    $panes = ""
+    $split = false
+    for each $i in range(1, 60)
+      $panes = rpc("term", "term.panes", {})
+      $rows = filter(lines(to_string($panes)), fn($line) = starts_with($line, "id="))
+      if len($rows) == 2 then $split = true; break end
+      sleep(0.1)
     end
-    write_file($run.path .. "/acceptance.json", json_encode({scale: $scale, editor: $layout, terminal: $panes, dbus: false}))
+    check($split, "terminal split did not create two panes: " .. json_encode($panes))
+    $bindings = map($rows, fn($row) = slice(split($row, " ")[0], 3))
+    for each $pane in $bindings
+      check($n.await_log($run.path .. "/term.log", "term native session pane " .. $pane .. ": child binding Attached", 15),
+        "real Mix PTY did not enrol with the native session broker: pane " .. $pane)
+    end
+    capture($session, $term, $run.path .. "/term.png")
+    for each $child in $children
+      check(process_alive($child.pid), "application exited during native acceptance")
+    end
+    write_file($run.path .. "/acceptance.json", json_encode({scale: $scale, editor: $layout, terminal: $panes, native_bindings: $bindings, dbus: false}))
     $ok = true
     print("PASS consuming native applications at scale " .. to_string($scale) .. ": " .. $run.path)
   catch $error
@@ -177,8 +208,16 @@ for each $scale in [1, 2.5]
       print($log .. "\n" .. read_file($log))
     end
   finally
-    for each $p in $children
-      if process_alive($p) then $k = kill($p, 15) end
+    for each $child in $children
+      if process_alive($child.pid) then
+        if $child.privileged_launcher then
+          -- The mount setup's sudo supervisor remains root-owned; stop only
+          -- the launcher recorded by this run, which forwards TERM to Term.
+          $k = run_argv(["sudo", "-n", "kill", "-TERM", "--", to_string($child.pid)], {timeout:10})
+        else
+          $k = kill($child.pid, 15)
+        end
+      end
     end
     if $session != nil then $n.stop($session) end
     if $bus != nil then $n.stop_bus($bus) end
