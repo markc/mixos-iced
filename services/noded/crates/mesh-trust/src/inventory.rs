@@ -951,7 +951,7 @@ mod tests {
         let (gk, state, payload) = genesis_fixture(1);
         let sig = sign(&gk, "genesis", &payload);
         let mut tampered = payload;
-        tampered.subnet = "192.0.2.0/24".into(); // changes canonical bytes
+        tampered.subnet = "198.51.100.0/24".into(); // changes canonical bytes
         let inv = SignedInventory {
             signatures: vec![sig],
             payload: tampered,
