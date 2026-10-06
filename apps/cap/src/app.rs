@@ -426,6 +426,9 @@ impl App {
                     self.error(error);
                 }
                 self.reply(id, result);
+                if self.picker.is_some() || self.confirm {
+                    return Task::none();
+                }
                 self.pending
                     .take()
                     .map(|action| self.request_pending(action))
@@ -1287,6 +1290,48 @@ mod tests {
         assert_eq!(id, 1);
         assert_ne!(rc, 0);
         assert!(body.contains("exclusive_layer"));
+    }
+    #[test]
+    fn activation_preserves_save_as_for_pending_dirty_close() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = test_app();
+        app.directory = directory.path().into();
+        let mut document = Document::new(image::RgbaImage::new(10, 10)).unwrap();
+        document
+            .set_crop(Some(Crop {
+                x: 0,
+                y: 0,
+                width: 5,
+                height: 5,
+            }))
+            .unwrap();
+        app.document = Some(document);
+        let _ = app.update(Message::Quit);
+        assert!(app.confirm);
+        let _ = app.update(Message::Save);
+        let _ = app.update(Message::Request(requester::Event::Input(
+            "chosen.png".into(),
+        )));
+        let (bus, _) = BusHandle::response_sink();
+        app.bus = Some(bus);
+        let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
+            id: 1,
+            verb: "cap.show".into(),
+            body: "{}".into(),
+            caller_key: "local:test".into(),
+        })));
+        let _ = app.update(Message::Shown(1, Ok(json!({"focused":true}))));
+        assert!(!app.confirm);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        let outcome = app
+            .picker
+            .as_mut()
+            .unwrap()
+            .update(requester::Event::Submit);
+        let Some(requester::Outcome::Save { path, .. }) = outcome else {
+            panic!("save requester retained: {outcome:?}");
+        };
+        assert_eq!(PathBuf::from(path), directory.path().join("chosen.png"));
     }
     #[test]
     fn file_picker_cannot_start_export_during_activation() {

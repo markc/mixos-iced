@@ -172,7 +172,6 @@ pub struct Captured {
 }
 
 pub fn media_directory() -> Result<PathBuf, String> {
-    use std::os::unix::fs::DirBuilderExt;
     let env = |name| {
         std::env::var_os(name)
             .map(PathBuf::from)
@@ -185,12 +184,31 @@ pub fn media_directory() -> Result<PathBuf, String> {
         .or_else(|| env("HOME").map(|p| p.join(".local/state/mixos/apps/cap")))
         .ok_or("no absolute application state directory")?;
     let directory = base.join("captures");
+    secure_directory(&directory)?;
+    Ok(directory)
+}
+
+fn secure_directory(directory: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&directory)
+        .create(directory)
         .map_err(|e| e.to_string())?;
-    Ok(directory)
+    // Secure existing installations too. Operate on the opened directory,
+    // rejecting a final symlink and directories owned by another account.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(directory)
+        .map_err(|e| e.to_string())?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    // SAFETY: geteuid has no arguments or memory preconditions.
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err("capture directory belongs to another account".into());
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())
 }
 
 /// `own` is resolved before minimising. The compositor executes its visibility
@@ -328,6 +346,25 @@ pub fn absolute(path: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn existing_capture_directory_is_secured_and_symlinks_are_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("captures");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        secure_directory(&directory).unwrap();
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let link = root.path().join("linked");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        assert!(secure_directory(&link).is_err());
+        let ordinary_file = root.path().join("file");
+        std::fs::write(&ordinary_file, "not a directory").unwrap();
+        assert!(secure_directory(&ordinary_file).is_err());
+    }
     #[tokio::test]
     async fn activation_reports_compositor_focus_refusal() {
         let (bus, mut effects) = BusHandle::response_sink();
