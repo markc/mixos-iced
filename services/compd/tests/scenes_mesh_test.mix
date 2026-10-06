@@ -6,7 +6,12 @@ $remote = env("SCENES_REMOTE_TARGET")
 if $local == "" or $remote == "" then raise("TEST_CONFIG", "set both scenes target routes") end
 fn call($target, $verb, $body)
   send $target $verb body=json_encode($body) timeout=5
-  $value = type($result) == "string" ? json_parse($result) : $result
+  $value = $result
+  -- Runtime-owned lifecycle refusals may be plain text. Keep their rc/body;
+  -- the authored scene verbs below still require structured error records.
+  if type($value) == "string" then
+    try $value = json_parse($value) catch $ignored end
+  end
   return {rc:$rc, body:$value}
 end
 for each $target in [$local, $remote]
