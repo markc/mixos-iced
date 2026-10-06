@@ -7953,6 +7953,7 @@ dependencies = [
  "smithay",
  "tempfile",
  "thiserror 2.0.20",
+ "toolkit",
  "wgpu",
 ]
 

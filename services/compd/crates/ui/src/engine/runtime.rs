@@ -56,6 +56,21 @@ where
     }
 }
 
+fn dispatch_messages<U: IcedUi>(
+    ui: &mut U,
+    handler: &mut Option<Box<dyn MessageHandler<U::Message>>>,
+    messages: Vec<U::Message>,
+) {
+    let mut messages: std::collections::VecDeque<_> = messages.into();
+    while let Some(message) = messages.pop_front() {
+        if let Some(handler) = handler.as_mut() {
+            handler.handle(&message);
+        }
+        ui.update(message.clone());
+        messages.extend(ui.process(&message));
+    }
+}
+
 /// One Iced UI instance.
 ///
 /// Generic over `U: IcedUi`. Holds the UI state itself, the Iced render
@@ -321,26 +336,17 @@ impl<U: IcedUi> IcedRuntime<U> {
         // Record what iced wants next. `Outdated` => the cache is stale and a
         // rebuild is needed (ask for a frame). `Updated` carries the widgets'
         // redraw request, which is what keeps an animation going.
-        self.redraw_request = match state {
-            State::Updated { redraw_request, .. } => redraw_request,
-            State::Outdated => RedrawRequest::NextFrame,
-        };
+        let drew = events.iter().any(|event| {
+            matches!(event, IcedEvent::Window(window::Event::RedrawRequested(_)))
+        });
+        self.redraw_request = super::frame::after_update(self.redraw_request, state, now, drew);
 
         // ── Phase 2: handler + reducer + process derivations ───────────
         //
         // `messages` becomes a VecDeque so `process()` follow-ups can be
         // pushed onto the back while we pop from the front. The handler
         // sees every message, including derived ones.
-        let mut messages: std::collections::VecDeque<_> = messages.into();
-        while let Some(message) = messages.pop_front() {
-            if let Some(handler) = self.message_handler.as_mut() {
-                handler.handle(&message);
-            }
-            self.ui.update(message.clone());
-            for follow_up in self.ui.process(&message) {
-                messages.push_back(follow_up);
-            }
-        }
+        dispatch_messages(&mut self.ui, &mut self.message_handler, messages);
 
         self.dirty |= changed;
         self.dirty || self.engine.global_dirty.redraw_pending()
@@ -407,41 +413,47 @@ impl<U: IcedUi> IcedRuntime<U> {
 
         let mut renderer_guard = self.engine.renderer_borrow();
 
-        let cache = std::mem::take(&mut self.cache);
-        let mut ui = UserInterface::build(self.ui.view(), bounds, cache, &mut renderer_guard);
-
-        // Re-establish the overlay layout before drawing. `UserInterface::draw`
-        // only renders an overlay (pick_list / combo_box dropdown, `tooltip`
-        // widget) when its `overlay` field is populated — and that field is set
-        // by `update`, NOT carried in the `Cache` (which holds only the widget
-        // tree). We build a FRESH `UserInterface` here, separate from the one
-        // `tick()` updated, so without this call `self.overlay` is `None` and
-        // `draw` early-returns: an *open* dropdown would never appear. The
-        // fresh view also needs RedrawRequested to establish hover/pressed
-        // styles; these live in the widget, not in Cache. Preserve messages
-        // and future redraw requests from the frame event.
+        let mut cache = std::mem::take(&mut self.cache);
         let now = Instant::now();
-        let mut messages = iced_core::shell::Bus::new();
-        let state = super::frame::prepare(
-            &mut ui, self.cursor, &mut *renderer_guard, self.wake.waker(),
-            &mut messages, now,
-        );
-        self.redraw_request = super::frame::after_draw(self.redraw_request, state, now);
-        self.queued_messages.extend(messages.drain());
-        if !self.queued_messages.is_empty() {
-            super::wake::notify();
+        loop {
+            let mut ui = UserInterface::build(self.ui.view(), bounds, cache, &mut renderer_guard);
+
+            // Re-establish the overlay layout before drawing. `UserInterface::draw`
+            // only renders an overlay (pick_list / combo_box dropdown, `tooltip`
+            // widget) when its `overlay` field is populated — and that field is set
+            // by `update`, NOT carried in the `Cache` (which holds only the widget
+            // tree). We build a FRESH `UserInterface` here, separate from the one
+            // `tick()` updated, so without this call `self.overlay` is `None` and
+            // `draw` early-returns: an *open* dropdown would never appear. The
+            // fresh view also needs RedrawRequested to establish hover/pressed
+            // styles; these live in the widget, not in Cache. Apply frame messages
+            // before painting and retry at the SAME instant, so an on_redraw
+            // callback does not perpetually generate another frame.
+            let mut messages = iced_core::shell::Bus::new();
+            let state = super::frame::prepare(
+                &mut ui, self.cursor, &mut *renderer_guard, self.wake.waker(),
+                &mut messages, now,
+            );
+            self.redraw_request = super::frame::after_update(self.redraw_request, state, now, true);
+            let messages: Vec<_> = messages.drain().collect();
+            if !messages.is_empty() {
+                cache = ui.into_cache();
+                dispatch_messages(&mut self.ui, &mut self.message_handler, messages);
+                continue;
+            }
+
+            ui.draw(
+                &mut renderer_guard,
+                &self.ui.theme(),
+                &Style {
+                    text_color: Color::WHITE,
+                },
+                self.cursor,
+            );
+
+            self.cache = ui.into_cache();
+            break;
         }
-
-        ui.draw(
-            &mut renderer_guard,
-            &self.ui.theme(),
-            &Style {
-                text_color: Color::WHITE,
-            },
-            self.cursor,
-        );
-
-        self.cache = ui.into_cache();
 
         renderer_guard.present(
             Some(clear_colour()),

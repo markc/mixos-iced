@@ -31,11 +31,17 @@ pub(super) fn visual_input(event: &Event, cursor: mouse::Cursor) -> bool {
     }
 }
 
-/// A NextFrame from tick is answered by this draw. Preserve a future deadline
-/// promised on an earlier event as well as requests made while preparing draw.
-pub(super) fn after_draw(previous: window::RedrawRequest, state: State, now: Instant) -> window::RedrawRequest {
+/// Preserve outstanding redraw requests across ordinary input. A frame answers
+/// NextFrame and elapsed deadlines, retaining future and newly requested frames.
+pub(super) fn after_update(
+    previous: window::RedrawRequest,
+    state: State,
+    now: Instant,
+    drew: bool,
+) -> window::RedrawRequest {
     let future = match previous {
-        window::RedrawRequest::At(at) if at > now => previous,
+        window::RedrawRequest::NextFrame if !drew => previous,
+        window::RedrawRequest::At(at) if !drew || at > now => previous,
         _ => window::RedrawRequest::Wait,
     };
     let requested = match state {
@@ -130,10 +136,55 @@ mod tests {
             let mut ui = UserInterface::build(view, Size::new(100.0, 50.0), Cache::default(), &mut renderer);
             prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut shell::Bus::new(), now)
         };
-        assert_eq!(after_draw(window::RedrawRequest::NextFrame, idle(), now), window::RedrawRequest::Wait);
+        assert_eq!(after_update(window::RedrawRequest::NextFrame, idle(), now, true), window::RedrawRequest::Wait);
         let later = now + iced_core::time::Duration::from_secs(1);
-        assert_eq!(after_draw(window::RedrawRequest::At(later), idle(), now), window::RedrawRequest::At(later));
-        assert_eq!(after_draw(window::RedrawRequest::At(now), idle(), now), window::RedrawRequest::Wait);
-        assert_eq!(after_draw(window::RedrawRequest::Wait, State::Outdated, now), window::RedrawRequest::NextFrame);
+        assert_eq!(after_update(window::RedrawRequest::At(later), idle(), now, true), window::RedrawRequest::At(later));
+        assert_eq!(after_update(window::RedrawRequest::At(now), idle(), now, true), window::RedrawRequest::Wait);
+        assert_eq!(after_update(window::RedrawRequest::Wait, State::Outdated, now, true), window::RedrawRequest::NextFrame);
+    }
+
+    #[test]
+    fn ignored_input_keeps_an_unfulfilled_deadline_until_its_frame() {
+        let now = Instant::now();
+        let deadline = now + iced_core::time::Duration::from_secs(1);
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let view: Element<'_, u8, Theme, Paint> = Space::new().into();
+        let mut ui = UserInterface::build(view, Size::new(100.0, 50.0), Cache::default(), &mut renderer);
+        let mut messages = shell::Bus::new();
+        let event = Event::Keyboard(iced_core::keyboard::Event::ModifiersChanged(iced_core::keyboard::Modifiers::SHIFT));
+        let (state, _) = ui.update(&window::Headless, &waker, &[event], mouse::Cursor::Unavailable, &mut renderer, &mut messages);
+        assert_eq!(messages.drain().count(), 0);
+        let next = after_update(window::RedrawRequest::At(deadline), state, now, false);
+        assert_eq!(next, window::RedrawRequest::At(deadline));
+        let state = prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, deadline);
+        assert_eq!(after_update(next, state, deadline, true), window::RedrawRequest::Wait);
+    }
+
+    #[test]
+    fn redraw_callback_retries_at_the_same_instant_then_settles_to_idle() {
+        let now = Instant::now();
+        let mut last = None;
+        let mut cache = Cache::default();
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let mut reductions = 0;
+        for attempt in 0..3 {
+            let view: Element<'_, Instant, Theme, Paint> = toolkit::keys::Keys::new(Space::new(), |_| None)
+                .on_redraw(last, |at| at).into();
+            let mut ui = UserInterface::build(view, Size::new(100.0, 50.0), cache, &mut renderer);
+            let mut messages = shell::Bus::new();
+            let state = prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, now);
+            let emitted: Vec<_> = messages.drain().collect();
+            cache = ui.into_cache();
+            if emitted.is_empty() {
+                assert_eq!(attempt, 1, "exactly one reducer/rebuild retry");
+                assert_eq!(reductions, 1);
+                assert_eq!(after_update(window::RedrawRequest::Wait, state, now, true), window::RedrawRequest::Wait);
+                return;
+            }
+            for at in emitted { last = Some(at); reductions += 1; }
+        }
+        panic!("redraw callback did not settle");
     }
 }
