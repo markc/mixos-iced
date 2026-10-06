@@ -1284,6 +1284,52 @@ mod tests {
         );
     }
     #[test]
+    fn explicit_agent_window_target_survives_a_different_gui_selection() {
+        let mut app = test_app();
+        let (bus, _) = BusHandle::response_sink();
+        app.bus = Some(bus);
+        app.windows = capture::windows(
+            &json!({"windows":[{"id":9,"generation":2,"title":"Cached selection"}]}),
+        );
+        app.selected_window = app.windows.first().cloned();
+        let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
+            id: 1,
+            verb: "cap.capture".into(),
+            body: json!({"mode":"window","window":{"id":7,"generation":3}}).to_string(),
+            caller_key: "local:test".into(),
+        })));
+        assert!(app.busy);
+        assert_eq!(
+            app.request.window,
+            Some(Target {
+                id: 7,
+                generation: 3
+            })
+        );
+    }
+    #[test]
+    fn a_dirty_document_dialog_refuses_agent_replacement() {
+        let mut app = test_app();
+        app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());
+        app.confirm = true;
+        let (bus, mut effects) = BusHandle::response_sink();
+        app.bus = Some(bus);
+        let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
+            id: 1,
+            verb: "cap.open".into(),
+            body: json!({"path":"/tmp/another.png"}).to_string(),
+            caller_key: "local:test".into(),
+        })));
+        let Effect::Respond { rc, body, .. } = effects.try_recv().unwrap() else {
+            panic!("refusal")
+        };
+        assert_ne!(rc, 0);
+        assert!(body.contains("dialog"));
+        assert!(app.confirm);
+        assert!(!app.busy);
+        assert_eq!(app.document.as_ref().unwrap().dimensions(), (10, 10));
+    }
+    #[test]
     fn document_replacement_clears_preview_and_rejects_old_raster_results() {
         let mut app = test_app();
         app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());

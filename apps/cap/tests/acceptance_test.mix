@@ -13,7 +13,8 @@ for each $command in [
   $result = run_argv($command,{cwd:$root,timeout:3600,env:{ICED_TEST_BACKEND:"tiny-skia"},stderr:"stdout",max_output:2000000})
   print($result.stdout)
   if not $result.ok or $result.stdout_truncated then
-    print(json_encode($result))
+    print(json_encode({ok:$result.ok,exit_code:$result.exit_code,error:$result.error,
+      timed_out:$result.timed_out,stdout_truncated:$result.stdout_truncated}))
     exit(1)
   end
 end
