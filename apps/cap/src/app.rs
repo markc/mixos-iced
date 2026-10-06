@@ -13,9 +13,7 @@ use crate::{
 use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use iced::{
     Element, Subscription, Task, mouse,
-    widget::{
-        self, button, canvas, column, container, row, slider, text, text_input,
-    },
+    widget::{self, button, canvas, column, container, row, slider, text, text_input},
     window,
 };
 use serde_json::{Value, json};
@@ -466,12 +464,17 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenMenu(index) => {
-                if self.modal() { return Task::none(); }
-                widget::operate(toolkit::menu::open_operation(menu::BAR_ID, index))
+                if self.modal() {
+                    return Task::none();
+                }
+                iced::advanced::widget::operate(toolkit::menu::open_operation(menu::BAR_ID, index))
+                    .discard()
                     .chain(Task::done(Message::Noop))
             }
             Message::Menu(action) => {
-                if !menu::enabled(&action, &self.menu_context()) { return Task::none(); }
+                if !menu::enabled(&action, &self.menu_context()) {
+                    return Task::none();
+                }
                 let message = match action {
                     menu::Action::Open => Message::Open,
                     menu::Action::Save => Message::Save,
@@ -486,7 +489,9 @@ impl App {
                     menu::Action::Delay(delay) => Message::Delay(delay.to_string()),
                     menu::Action::Pointer(pointer) => Message::Pointer(pointer),
                     menu::Action::Tool(tool) => {
-                        if tool == Tool::Draw(Kind::Text) { self.dialog = Some(Dialog::Properties); }
+                        if tool == Tool::Draw(Kind::Text) {
+                            self.dialog = Some(Dialog::Properties);
+                        }
                         Message::Tool(tool)
                     }
                     menu::Action::Undo => Message::Undo,
@@ -931,7 +936,9 @@ impl App {
                             self.update(Message::OpenMenu(index))
                         } else if let Some(action) = menu::shortcut(&key, modifiers) {
                             self.update(Message::Menu(action))
-                        } else { Task::none() }
+                        } else {
+                            Task::none()
+                        }
                     }
                     _ => Task::none(),
                 }
@@ -1094,7 +1101,12 @@ impl App {
         let status = row![
             text(&self.status),
             widget::space().width(iced::Fill),
-            text(format!("{} · {} · {:.0}%", label(self.request.mode.key()), label(self.tool.key()), self.zoom * 100.0)),
+            text(format!(
+                "{} · {} · {:.0}%",
+                label(self.request.mode.key()),
+                label(self.tool.key()),
+                self.zoom * 100.0
+            )),
             text(
                 self.document
                     .as_ref()
@@ -1117,7 +1129,10 @@ impl App {
             menubar.map(Message::Menu),
             content,
             container(status).padding(tokens.metrics.spacing.sm),
-        ].height(iced::Fill).width(iced::Fill).into();
+        ]
+        .height(iced::Fill)
+        .width(iced::Fill)
+        .into();
         if self.confirm {
             let dialog = column![
                 text(label("discard-title")),
@@ -1170,30 +1185,54 @@ impl App {
                         text(label("width")),
                         slider(0.5..=40.0, self.width, Message::Width).width(iced::Fill),
                         text(format!("{:.1}", self.width)),
-                    ].spacing(gap).align_y(iced::Center),
+                    ]
+                    .spacing(gap)
+                    .align_y(iced::Center),
                     text(label("colour")),
                     toolkit::ColorPicker::new(self.colour, Message::Colour).width(iced::Fill),
                     text(label("annotation-text")),
-                    text_input(crate::strings::label_ref("text-placeholder"), &self.annotation_text)
-                        .on_input(Message::Text).width(iced::Fill),
+                    text_input(
+                        crate::strings::label_ref("text-placeholder"),
+                        &self.annotation_text
+                    )
+                    .on_input(Message::Text)
+                    .width(iced::Fill),
                     row![
                         text(label("text-size")),
-                        text_input(crate::strings::label_ref("text-size-range"), &self.text_size)
-                            .on_input(Message::TextSize).width(iced::Fill),
-                    ].spacing(gap).align_y(iced::Center),
+                        text_input(
+                            crate::strings::label_ref("text-size-range"),
+                            &self.text_size
+                        )
+                        .on_input(Message::TextSize)
+                        .width(iced::Fill),
+                    ]
+                    .spacing(gap)
+                    .align_y(iced::Center),
                 ],
-                Dialog::Shortcuts => column![text(label("shortcuts")), text(label("shortcuts-body"))],
-                Dialog::About => column![text(label("about")), text(format!("{} {}", label("title"), env!("CARGO_PKG_VERSION"))), text(label("about-body"))],
-            }.spacing(tokens.metrics.spacing.md);
+                Dialog::Shortcuts => {
+                    column![text(label("shortcuts")), text(label("shortcuts-body"))]
+                }
+                Dialog::About => column![
+                    text(label("about")),
+                    text(format!("{} {}", label("title"), env!("CARGO_PKG_VERSION"))),
+                    text(label("about-body"))
+                ],
+            }
+            .spacing(tokens.metrics.spacing.md);
             toolkit::dialog::Modal::new(
                 base,
-                widget::opaque(container(
-                    container(body.push(action("done", Message::Keep, true)))
-                        .padding(tokens.metrics.spacing.lg)
-                        .width(520)
-                        .style(toolkit::theme::container::card),
-                ).center(iced::Fill)),
-            ).on_key(modal_key).into()
+                widget::opaque(
+                    container(
+                        container(body.push(action("done", Message::Keep, true)))
+                            .padding(tokens.metrics.spacing.lg)
+                            .width(520)
+                            .style(toolkit::theme::container::card),
+                    )
+                    .center(iced::Fill),
+                ),
+            )
+            .on_key(modal_key)
+            .into()
         } else {
             base
         }
@@ -1243,26 +1282,45 @@ mod tests {
         use iced::keyboard::key::Named;
         let mut app = test_app();
         let mut ui = iced_test::Simulator::with_size(
-            iced::Settings::default(), iced::Size::new(760.0, 450.0), app.view(),
+            iced::Settings::default(),
+            iced::Size::new(760.0, 450.0),
+            app.view(),
         );
         ui.tap_key(Named::F10);
         ui.tap_key(Named::Enter);
         let messages: Vec<_> = ui.into_messages().collect();
-        assert!(matches!(messages.as_slice(), [Message::Menu(menu::Action::Open)]), "{messages:?}");
-        for message in messages { let _ = app.update(message); }
+        assert!(
+            matches!(messages.as_slice(), [Message::Menu(menu::Action::Open)]),
+            "{messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
         assert!(app.picker.is_some());
         let _ = app.update(Message::Keep);
 
         app.document = Some(Document::new(image::RgbaImage::new(100, 100)).unwrap());
         let mut ui = iced_test::Simulator::with_size(
-            iced::Settings::default(), iced::Size::new(760.0, 450.0), app.view(),
+            iced::Settings::default(),
+            iced::Size::new(760.0, 450.0),
+            app.view(),
         );
         ui.tap_key(Named::F10);
-        for _ in 0..3 { ui.tap_key(Named::ArrowRight); }
+        for _ in 0..3 {
+            ui.tap_key(Named::ArrowRight);
+        }
         ui.tap_key(Named::Enter);
         let messages: Vec<_> = ui.into_messages().collect();
-        assert!(matches!(messages.as_slice(), [Message::Menu(menu::Action::Tool(Tool::Select))]), "{messages:?}");
-        for message in messages { let _ = app.update(message); }
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Menu(menu::Action::Tool(Tool::Select))]
+            ),
+            "{messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
         assert_eq!(app.tool, Tool::Select);
     }
     #[test]
@@ -1277,17 +1335,29 @@ mod tests {
         let (bus, mut effects) = BusHandle::response_sink();
         app.bus = Some(bus);
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1, verb: "cap.open".into(), body: json!({"path":"/tmp/another.png"}).to_string(), caller_key: "local:test".into(),
+            id: 1,
+            verb: "cap.open".into(),
+            body: json!({"path":"/tmp/another.png"}).to_string(),
+            caller_key: "local:test".into(),
         })));
-        let Effect::Respond { rc, .. } = effects.try_recv().unwrap() else { panic!("refusal"); };
+        let Effect::Respond { rc, .. } = effects.try_recv().unwrap() else {
+            panic!("refusal");
+        };
         assert_ne!(rc, 0);
         let mut ui = iced_test::Simulator::with_size(
-            iced::Settings::default(), iced::Size::new(760.0, 450.0), app.view(),
+            iced::Settings::default(),
+            iced::Size::new(760.0, 450.0),
+            app.view(),
         );
         ui.tap_key(iced::keyboard::key::Named::Escape);
         let messages: Vec<_> = ui.into_messages().collect();
-        assert!(matches!(messages.as_slice(), [Message::Keep]), "{messages:?}");
-        for message in messages { let _ = app.update(message); }
+        assert!(
+            matches!(messages.as_slice(), [Message::Keep]),
+            "{messages:?}"
+        );
+        for message in messages {
+            let _ = app.update(message);
+        }
         assert!(app.dialog.is_none());
         assert_eq!(app.annotation_text, "Keep this annotation");
         assert_eq!(app.tool, Tool::Draw(Kind::Text));
