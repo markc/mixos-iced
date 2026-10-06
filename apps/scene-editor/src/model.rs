@@ -47,7 +47,9 @@ impl Selection {
             }
         }
         if let Some(page) = &self.page
-            && (!EDGES.contains(&page.edge.as_str()) || page.page.is_empty() || page.page.len() > 256)
+            && (!EDGES.contains(&page.edge.as_str())
+                || page.page.is_empty()
+                || page.page.len() > 256)
         {
             return Err("invalid page selection".into());
         }
@@ -58,7 +60,9 @@ pub fn valid_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value.as_bytes()[0].is_ascii_alphanumeric()
-        && value.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_".contains(&c))
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_".contains(&c))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,7 +70,9 @@ pub struct Snapshot(pub Value);
 impl Snapshot {
     pub fn parse(value: Value) -> Result<Self, String> {
         if value["schema"] != "scene-editor.snapshot.v1"
-            || value["state_token"].as_str().is_none_or(|s| s.len() != 64 || !s.bytes().all(|c| c.is_ascii_hexdigit()))
+            || value["state_token"]
+                .as_str()
+                .is_none_or(|s| s.len() != 64 || !s.bytes().all(|c| c.is_ascii_hexdigit()))
             || !value["model"].is_object()
             || !value["inventory"]["scenes"].is_array()
             || !value["templates"]["templates"].is_array()
@@ -82,37 +88,58 @@ impl Snapshot {
         serde_json::from_value(self.0["selection"].clone()).unwrap_or_default()
     }
     pub fn scene(&self, selection: &Selection) -> Option<&Value> {
-        self.0["inventory"]["scenes"].as_array()?.iter()
+        self.0["inventory"]["scenes"]
+            .as_array()?
+            .iter()
             .find(|row| row["name"].as_str() == selection.scene.as_deref())
     }
     pub fn template(&self, selection: &Selection) -> Option<&Value> {
-        self.0["templates"]["templates"].as_array()?.iter()
+        self.0["templates"]["templates"]
+            .as_array()?
+            .iter()
             .find(|row| row["template"].as_str() == selection.template.as_deref())
     }
     pub fn writable(&self) -> bool {
         self.0["inventory"]["state_ok"].as_bool() == Some(true)
     }
     pub fn page_owner(&self, page: &str) -> Option<String> {
-        self.0["inventory"]["scenes"].as_array()?.iter()
-            .find(|row| row["page"].as_str() == Some(page))?
-            ["name"].as_str().map(str::to_owned)
+        self.0["inventory"]["scenes"]
+            .as_array()?
+            .iter()
+            .find(|row| row["page"].as_str() == Some(page))?["name"]
+            .as_str()
+            .map(str::to_owned)
     }
-    pub fn model(&self) -> &Value { &self.0["model"] }
+    pub fn model(&self) -> &Value {
+        &self.0["model"]
+    }
 }
-pub fn string(value: &Value) -> &str { value.as_str().unwrap_or("") }
-pub fn rows(value: &Value) -> &[Value] { value.as_array().map(Vec::as_slice).unwrap_or_default() }
+pub fn string(value: &Value) -> &str {
+    value.as_str().unwrap_or("")
+}
+pub fn rows(value: &Value) -> &[Value] {
+    value.as_array().map(Vec::as_slice).unwrap_or_default()
+}
 
 /// Launcher URI carries a validated selection, never source or a file path.
 pub fn launch_selection(uri: &str) -> Result<Selection, String> {
-    let suffix = uri.strip_prefix("mixos-scene-editor:").ok_or("unknown launcher URI")?;
-    let (view, scene) = suffix.split_once('/').ok_or("launcher URI needs view/scene")?;
+    let suffix = uri
+        .strip_prefix("mixos-scene-editor:")
+        .ok_or("unknown launcher URI")?;
+    let (view, scene) = suffix
+        .split_once('/')
+        .ok_or("launcher URI needs view/scene")?;
     let view = match view {
         "gallery" => View::Gallery,
         "installed" => View::Installed,
         "arrange" => View::Arrange,
         _ => return Err("unknown launcher view".into()),
     };
-    let selection = Selection { view, scene: (!scene.is_empty()).then(|| scene.into()), ..Default::default() };
+    let selection = Selection {
+        view,
+        scene: (!scene.is_empty()).then(|| scene.into()),
+        ..Default::default()
+    };
     selection.validate()?;
     Ok(selection)
 }
@@ -128,11 +155,28 @@ mod tests {
     use super::*;
     #[test]
     fn launch_arguments_are_data_and_never_paths_or_code() {
-        assert_eq!(launch_selection("mixos-scene-editor:installed/panel").unwrap().scene.as_deref(), Some("panel"));
-        for uri in ["/tmp/a.mix", "mixos-scene-editor:unknown/panel", "mixos-scene-editor:gallery/../x", "mixos-scene-editor:gallery/X", "mixos-scene-editor:gallery/a/b"] {
+        assert_eq!(
+            launch_selection("mixos-scene-editor:installed/panel")
+                .unwrap()
+                .scene
+                .as_deref(),
+            Some("panel")
+        );
+        for uri in [
+            "/tmp/a.mix",
+            "mixos-scene-editor:unknown/panel",
+            "mixos-scene-editor:gallery/../x",
+            "mixos-scene-editor:gallery/X",
+            "mixos-scene-editor:gallery/a/b",
+        ] {
             assert!(launch_selection(uri).is_err());
         }
-        assert!(launch_selection("mixos-scene-editor:gallery/").unwrap().scene.is_none());
+        assert!(
+            launch_selection("mixos-scene-editor:gallery/")
+                .unwrap()
+                .scene
+                .is_none()
+        );
     }
     #[test]
     fn bad_snapshots_never_replace_authoritative_state() {

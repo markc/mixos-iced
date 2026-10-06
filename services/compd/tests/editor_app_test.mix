@@ -11,6 +11,7 @@ fn check($condition,$message)
 end
 fn rpc($target,$verb,$args)
   if $target=="scenes" then raise("SELF_RPC","recursive loader RPC") end
+  if $verb=="shell.scenes.list" then return [] end
   if $verb=="shell.props.get" then return {panels:{bottom:{mode:"docked",width_px:40,pages:[],declared:[]}}} end
   if $verb=="shell.scene.validate" then return {valid:true} end
   if $verb=="apps.launch" then return {launched:true,args:$args} end
@@ -41,6 +42,9 @@ try
   check($s.rc==10 and $s.response.error_code=="SCENES_CONFIRM" and is_dir($tmp .. "/notes"),"removal requires explicit confirmation")
   $s=$app.request($s,"action",{action:"mode",edge:"bottom",mode:"pinned",selection:$selection,state_token:$installed_token},$loader)
   check($s.rc==10 and $s.response.failure.code=="HOST_REFUSED" and is_dir($tmp .. "/notes"),"upstream refusal remains a refusal with authoritative snapshot")
+  write_file($tmp .. "/notes/scene.mix",read_file($tmp .. "/notes/scene.mix") .. "\n-- externally saved after snapshot\n")
+  $s=$app.request($s,"action",{action:"remove",selection:$selection,state_token:$installed_token,confirmed:true},$loader)
+  check($s.rc==10 and $s.response.failure.code=="SCENES_STALE" and is_dir($tmp .. "/notes"),"disk save that beats its watcher event also refuses stale removal")
   $s=$app.request($s,"snapshot",{selection:$selection},$loader)
   $token=$s.response.state_token
   $s=$app.request($s,"action",{action:"remove",selection:$selection,state_token:$token,confirmed:true},$loader)
@@ -59,6 +63,15 @@ try
   check($s.rc==0 and $s.response.shown and $s.response.args.scene=="panel","warm activation forwards selection")
   $s=$loader.request($s,"editor.close",{})
   check($s.rc==0 and $s.response.quitting,"close routes registered app")
+  mkdir($tmp .. "/fresh")
+  $boot=$loader.initial($tmp .. "/fresh",$templates,"shell","scenes",$io)
+  $boot.editor_app=true;$boot.editor_frontend=$app;$boot.first_run_enabled=true
+  $boot=$loader.services($boot,["shell"],false)
+  check(not $boot.scenes.editor.dismissed,"first-run launch waits for launcher registration")
+  $boot=$loader.services($boot,["shell","apps"],false)
+  check($boot.scenes.editor.dismissed,"later launcher registration completes the owed first-run launch")
+  $boot=$loader.services($boot,["shell","apps","scene-editor"],false)
+  check($boot.scenes.editor.dismissed,"later registrations preserve first-run dismissal")
   print("native scene editor backend: snapshots, stale refusal, recovery, upstream failure and routing pass")
 finally
   run_argv_must(["rm","-rf","--",$tmp])

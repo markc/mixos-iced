@@ -1495,6 +1495,15 @@ fn services($s, $names, $reconnect)
       end
     end
   end
+  -- App registration can arrive after the host's initial remount. Retry this
+  -- owed first-run launch on the registry event, never with a timer.
+  if $live and $s.editor_app == true then
+    try
+      $s = first_run($s)
+    catch $message, $error
+      $s.scenes.editor.diagnostic = {error_code:$error.code, message:$message, context:$error.details}
+    end
+  end
   return $s
 end
 
@@ -1502,6 +1511,7 @@ fn first_run($s)
   if not $s.first_run_enabled or not $s.state_ok or $s.scenes.editor.dismissed or not needs_setup($s) then return $s end
   -- A hot-reload commit is not a boot: never re-summon the editor gallery.
   if $s.reload_commit == true then return $s end
+  if $s.editor_app == true and not contains($s.services ?? [], env("APPS_SERVICE", "apps")) then return $s end
   $response = $s.response
   $rc = $s.rc
   $s = editor_open($s, {view:"gallery", first_run:true})

@@ -201,11 +201,12 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iced",
  "iced_program",
  "iced_runtime",
+ "iced_test",
  "iced_tiny_skia",
 ]
 
@@ -1013,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "buildinfo",
  "comp-model",
@@ -6404,6 +6405,21 @@ dependencies = [
  "serde",
  "serde_json",
  "strict",
+]
+
+[[package]]
+name = "scene-editor"
+version = "0.1.0"
+dependencies = [
+ "appearance",
+ "application",
+ "buildinfo",
+ "bus",
+ "fluent-bundle",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toolkit",
 ]
 
 [[package]]

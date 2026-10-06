@@ -80,6 +80,12 @@ fn request($s, $kind, $args, $loader)
     if type($args) != "map" then raise("SCENES_ARGUMENT", "arguments must be a map") end
     $ui = selection($args)
     $helpers = require($s.templates .. "/editor/lib.mix")
+    if $kind == "action" then
+      -- Drain disk changes even when this request beats the watcher event.
+      -- The token must describe current files before a destructive plan.
+      $s = $loader.rescan($s, false)
+      $s = $loader.changed($s)
+    end
     $data = data($s, $loader)
     if $kind == "snapshot" then
       $s.response = envelope($data, $ui, $helpers)
