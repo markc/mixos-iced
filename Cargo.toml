@@ -95,7 +95,6 @@ zbus = { version = "=5.19.0", default-features = false, features = ["blocking-ap
 # Shared libraries (libs/).
 appearance = { path = "libs/appearance" }
 assets = { path = "libs/assets" }
-appearance = { path = "libs/appearance" }
 buildinfo = { path = "libs/buildinfo" }
 bus = { path = "libs/bus", default-features = false }
 config = { path = "libs/config" }

@@ -1,12 +1,16 @@
+# appearance: the MixOS look for an iced application, in one call. It maps a
+# compiled `design` theme onto toolkit's plain `Tokens`, and the pinned asset
+# set (`assets`) onto a toolkit `FontSet` and `IconFont`. Every piece of
+# MixOS glue toolkit must not carry lives here; toolkit never depends on it.
 [package]
 name = "appearance"
+description = "The MixOS look for iced applications: design tokens and the pinned fonts, fed to toolkit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "MixOS design and verified asset adapter for the generic widget toolkit"
 
 [package.metadata.mixos]
 component = "appearance"
@@ -18,8 +22,23 @@ contract = "none"
 mod_module_files = "deny"
 
 [dependencies]
-toolkit.workspace = true
-design.workspace = true
-assets.workspace = true
-iced_core.workspace = true
-iced_widget.workspace = true
+# The pinned font, icon and emoji set (its MixOS search path).
+assets = { workspace = true }
+# The theme file's directory (`theme.conf.mix` under the etc dir).
+config = { workspace = true }
+# The design source and its compiler: colours, metrics, typography.
+design = { workspace = true }
+# `Color` and `Font`, the iced types the mapped tokens are made of.
+iced_core = { workspace = true }
+iced_widget = { workspace = true }
+toolkit = { workspace = true }
+
+[dev-dependencies]
+# Fixture asset sets are written the way the installer writes them: a
+# strict-data manifest locking each file's size and both hashes.
+blake3 = { version = "=1.8.6" }
+hex = { version = "=0.4.3" }
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+strict = { path = "../strict" }
+tempfile = { version = "=3.27.0" }

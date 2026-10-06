@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use appearance::tokens::colour;
+use appearance::conversion::colour;
 use design::{
     DesignCompileResult, DesignContext, DiagnosticSeverity, LinearRgba, Mode, ResolvedDictionary,
     ResolvedTypeRecord, Scheme, SourceIdentity, TypographyRole,
@@ -165,7 +165,7 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
             typography,
         }) => {
             match (
-                appearance::tokens::from_dictionary(&dictionary),
+                appearance::conversion::from_dictionary(&dictionary),
                 build_palette(&dictionary),
             ) {
                 (Ok(tokens), Ok((palette, chrome))) => (tokens, chrome, palette, Some(typography)),

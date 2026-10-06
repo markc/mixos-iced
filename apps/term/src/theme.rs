@@ -49,7 +49,7 @@ fn resolve() -> Result<Tokens, String> {
     let DesignCompileResult::Success(compiled) = design::compile_design(&document, context) else {
         return Err("embedded design does not compile".into());
     };
-    appearance::tokens::from_dictionary(compiled.candidate.dictionary())
+    appearance::conversion::from_dictionary(compiled.candidate.dictionary())
         .map_err(|error| format!("design dictionary: {error}"))
 }
 

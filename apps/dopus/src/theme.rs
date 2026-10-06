@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use appearance::tokens::colour;
+use appearance::conversion::colour;
 use design::{
     DesignCompileResult, DesignContext, Mode, ResolvedDictionary, ResolvedTypeRecord, Scheme,
     SourceIdentity, TypographyRole,
@@ -177,7 +177,7 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
             dictionary,
             typography,
         }) => match (
-            appearance::tokens::from_dictionary(&dictionary),
+            appearance::conversion::from_dictionary(&dictionary),
             build_chrome(&dictionary),
         ) {
             (Ok(tokens), Ok(chrome)) => (tokens, chrome, Some(typography)),
@@ -423,7 +423,7 @@ mod tests {
                 })
                 .unwrap();
                 let dictionary = &compiled.dictionary;
-                let tokens = appearance::tokens::from_dictionary(dictionary).unwrap();
+                let tokens = appearance::conversion::from_dictionary(dictionary).unwrap();
                 let style = appearance::tooltip_style(
                     tokens,
                     dictionary.metrics["button.border_width"].value as f32,
