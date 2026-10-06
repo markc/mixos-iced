@@ -1,4 +1,5 @@
 #!/opt/mixos/bin/mix
+-- version: 0.1.1
 -- Install the MixOS brand icons into the shared icon tree.
 -- Default root: $MIXOS_SHARE, otherwise /opt/mixos/share. --root for a sandbox.
 --
@@ -21,8 +22,21 @@ if not starts_with($root, "/") or $root == "/" then
   raise("BRAND_ROOT", "Destination must be an absolute share directory")
 end
 $brand = dirname(realpath($0))
+$theme=$root .. "/icons/hicolor"
+-- A self-contained image need not have a distro-owned hicolor index.
+-- Keep existing theme metadata when installing beside another desktop.
+if not is_file($theme .. "/index.theme") then
+  mkdir($theme,{parents:true})
+  write_atomic($theme .. "/index.theme","[Icon Theme]\nName=Hicolor\nDirectories=symbolic/apps\n\n[symbolic/apps]\nSize=48\nType=Scalable\nMinSize=1\nMaxSize=512\nContext=Applications\n",{mode:0o644})
+end
+$native_theme=$root .. "/icons/mixos"
+if not is_file($native_theme .. "/index.theme") then
+  mkdir($native_theme,{parents:true})
+  write_atomic($native_theme .. "/index.theme",read_file($brand .. "/../icons/index.theme"),{mode:0o644})
+end
 $icons = {
-  "icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg": "logos/mixos-black-transparent.svg"
+  "icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg": "logos/mixos-black-transparent.svg",
+  "icons/mixos/symbolic/apps/dev.mixos-symbolic.svg": "logos/mixos-black-transparent.svg"
 }
 for each $dest in sort(keys($icons))
   $src = $brand .. "/" .. $icons[$dest]

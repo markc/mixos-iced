@@ -1,4 +1,4 @@
--- version: 0.1.0
+-- version: 0.1.1
 -- apps -- the application-registry citizen: the data foundation for the
 -- desktop launcher and the taskbar's app icons. It scans the freedesktop
 -- desktop-entry directories, resolves icons through the icon-theme spec and
@@ -138,6 +138,8 @@ end
 
 on "apps.reload" desc "rescan the desktop-entry directories now"
   $apps = $a.scan_apps($a.application_dirs(), $a.locale_id(), "MIXOS")
+  -- Installed/replaced themes must clear cached misses as well as entries.
+  $icon_ctx = $a.icon_ctx()
   publish(serve_name() .. ".changed", json_encode({reason: "reload", count: len($apps)}), {command: "apps.changed"})
   reply(0, json_encode({count: len($apps)}))
 end

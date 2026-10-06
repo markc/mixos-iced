@@ -1,0 +1,19 @@
+[Icon Theme]
+Name=MixOS
+Comment=Material Symbols Rounded for the MixOS desktop
+Inherits=hicolor
+Directories=symbolic/apps,symbolic/status
+
+[symbolic/apps]
+Size=24
+Type=Scalable
+MinSize=1
+MaxSize=512
+Context=Applications
+
+[symbolic/status]
+Size=24
+Type=Scalable
+MinSize=1
+MaxSize=512
+Context=Status

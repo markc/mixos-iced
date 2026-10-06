@@ -1,4 +1,4 @@
--- version: 0.2.0
+-- version: 0.2.1
 -- The bottom panel's behaviour: compositor, tray, notification and popup
 -- state in; one complete model out through the loader (scenes.model). The
 -- layout is static in scene.mix. Clicks arrive as {scene,node,kind,item?};
@@ -14,8 +14,8 @@ $APPS = env("APPS_SERVICE", "apps")
 $TRAY = env("TRAY_SERVICE", "tray")
 $NOTIFY = env("NOTIFY_SERVICE", "notify")
 $NODED = env("NODED_SERVICE", "noded")
--- Status icons come from the dark variant so they read on the dark panel.
-$ICON_THEME = env("PANEL_ICON_THEME", "breeze-dark")
+-- The shipped symbolic Material icons take the panel ink in either scheme.
+$ICON_THEME = env("PANEL_ICON_THEME", "mixos")
 -- PipeWire lives in the login session's runtime dir, not the desktop's.
 $PW_RUNTIME = env("PIPEWIRE_RUNTIME_DIR", "/run/user/" .. to_string(uid()))
 -- The loader-owned popup scenes the panel's buttons toggle.
@@ -255,16 +255,22 @@ fn window_icon($app_id)
     if $icon_name == "" then $icon_name = $app_id end
   end
   $path = apps_icon($icon_name, 48, "")
-  if $path == "" then $path = apps_icon("application-x-executable", 48, "") end
+  if $path == "" then $path = apps_icon("application-x-executable-symbolic", 48, "") end
   return $path
 end
 
 fn resolve_icons()
   if length(keys($state.icons.windows)) + length(keys($state.icons.plain)) >= 512 then $state.icons = empty_icons() end
+  if not has_key($state.icons.themed,"dev.mixos-symbolic") then
+    $state.icons.themed["dev.mixos-symbolic"] = apps_icon("dev.mixos-symbolic",48,$ICON_THEME)
+  end
   for each $name in $m.PANEL_THEMED_ICONS
     if not has_key($state.icons.themed, $name) then
       $size = starts_with($name, "start-here") ? 48 : 22
-      $state.icons.themed[$name] = apps_icon($name, $size, $ICON_THEME)
+      $symbolic = starts_with($name,"start-here") ? $name : $name .. "-symbolic"
+      $path = apps_icon($symbolic, $size, $ICON_THEME)
+      if $path == "" and $symbolic != $name then $path = apps_icon($name, $size, $ICON_THEME) end
+      $state.icons.themed[$name] = $path
     end
   end
   for each $w in $t.panel_tasks($state.windows, $state.ws_current, $state.tasks_scope, $m.MAX_TASKS)

@@ -36,6 +36,18 @@ Apple touch icons have solid backgrounds and square canvases. Leave the
 corner masking to the device. The set was checked for dimensions, opacity
 and vector/raster consistency, but not on physical Apple devices.
 
+## Using it on the desktop
+
+`mix share/brand/install.mix --root /opt/mixos/share` installs the transparent
+M as `dev.mixos-symbolic` in MixOS and hicolor. A fresh image gets the small theme
+indexes needed for lookup; an existing hicolor index is preserved. MixOS resolves
+the M directly even when that existing index omits symbolic apps. Include the share root in
+`XDG_DATA_DIRS`. Scene-host tints the symbolic SVG with the foreground colour,
+and the panel prefers it over legacy launcher icons.
+
+Install [`share/icons`](../icons/README.md) alongside it for the bundled
+Material Symbols used by panel controls and core application entries.
+
 ## Using it on a website
 
 Copy one favicon folder into the site's public root and add, inside `<head>`:

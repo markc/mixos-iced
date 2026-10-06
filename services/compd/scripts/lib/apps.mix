@@ -150,6 +150,11 @@ fn default_theme()
       if $theme != "" then return $theme end
     end
   end
+  -- The self-contained image supplies its own default; explicit preferences
+  -- above still win when the registry runs beside an existing desktop.
+  for each $directory in icon_dirs()
+    if is_file($directory .. "/mixos/index.theme") then return "mixos" end
+  end
   if is_dir("/usr/share/icons/breeze") then return "breeze" end
   return "hicolor"
 end

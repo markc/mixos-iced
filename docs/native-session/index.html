@@ -251,6 +251,16 @@ and ordinary capture Save. Player transport, system suspend and portal Save As
 report unavailable until their native owners/adapters are connected.</p>
 <p>Applications receive the session environment directly at launch. No user-wide
 environment is published or retracted by the native profile.</p>
+<p>The image carries its own Material Symbols Rounded SVG icon theme and the
+canonical M launcher mark. Install both into the session's shared data tree;
+no host icon package or runtime download is needed:</p>
+<pre><code class="language-text">mix share/icons/install.mix --root /opt/mixos/share
+mix share/brand/install.mix --root /opt/mixos/share
+mix share/icons/install.mix --root /opt/mixos/share --verify
+</code></pre>
+<p>Include that root in <code>XDG_DATA_DIRS</code>. The apps registry selects the installed
+MixOS theme; symbolic SVGs take the foreground colour and scale with the output.
+<code>apps.reload</code> rescans entries and clears icon-theme misses after an asset update.</p>
 <p>For complete child cleanup, the OS supervisor delegates the session's cgroup
 and sets <code>MIXOS_CONTAIN_CHILDREN=1</code>. compd creates a fresh apps subgroup and
 attaches children before exec. Kernel <code>cgroup.kill</code> collects the entire subtree,

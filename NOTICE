@@ -94,6 +94,30 @@ MIT OR Apache-2.0; original LICENSE-MIT and LICENSE-APACHE retained.
 Base 8bcd4aa2c35990d57a2cff2953793525fc42709c; local dependency removal is
 recorded in vendor/dirs-sys/PATCHES.md.
 
+Third-party desktop assets
+-------------------------
+
+Bundled desktop Material Symbols Rounded SVGs (share/icons/material),
+Google LLC, Apache-2.0. Unmodified upstream files at
+bd8cb85bd4bad964fe6918f79665bb40c3a8efef; full per-file URLs, sizes and hashes
+in share/icons/material.conf.mix. Licence retained as share/icons/material/LICENSE.
+These are installed desktop assets rather than compiled into compd:
+- share/icons/material/notifications.svg
+- share/icons/material/notifications_active.svg
+- share/icons/material/volume_off.svg
+- share/icons/material/volume_up.svg
+- share/icons/material/volume_down.svg
+- share/icons/material/volume_mute.svg
+- share/icons/material/wifi.svg
+- share/icons/material/wifi_off.svg
+- share/icons/material/settings_ethernet.svg
+- share/icons/material/desktop_windows.svg
+- share/icons/material/terminal.svg
+- share/icons/material/edit_note.svg
+- share/icons/material/folder_open.svg
+- share/icons/material/screenshot_monitor.svg
+- share/icons/material/apps.svg
+
 Third-party assets and licences in the compd binary
 ----------------------------------------------------
 

@@ -184,19 +184,25 @@ try
     "terminal argv not parsed and prefixed onto the app argv")
 
   -- apps.reload rebinds the scanned index after the tree changed.
+  $late_icon={name:"late-symbolic",size:22,theme:"late-theme"}
+  check(call("apps","apps.icon",json_encode($late_icon)).rc == 14,"missing theme must be cached before installation")
+  fixture("data/icons/late-theme/index.theme","[Icon Theme]\nName=Late\nDirectories=symbolic\n\n[symbolic]\nSize=22\nType=Scalable\nMinSize=1\nMaxSize=512\n")
+  fixture("data/icons/late-theme/symbolic/late-symbolic.svg","<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0h24v24H0z\"/></svg>")
   check(call("apps", "apps.get", json_encode({id: "late"})).rc == 14, "stale index served an app that does not exist yet")
   fixture("data/applications/late.desktop", "[Desktop Entry]\n" ..
     "Type=Application\nName=Late App\nExec=" .. $tmp .. "/bin/recorder late-arg\n")
   $reload = call("apps", "apps.reload", "{}")
   check($reload.rc == 0 and $reload.result.count == 7, "apps.reload count wrong (expected 7 index entries)")
   check(call("apps", "apps.get", json_encode({id: "late"})).rc == 0, "apps.reload did not rebind the index")
+  $resolved_late=call("apps","apps.icon",json_encode($late_icon))
+  check($resolved_late.rc == 0 and ends_with($resolved_late.result.path,"/late-theme/symbolic/late-symbolic.svg"),"apps.reload did not invalidate an installed theme's cached miss")
 
   -- Icon resolution through the citizen (theme chain, fixture hicolor).
   $icon = call("apps", "apps.icon", json_encode({name: "apps-bus-test-icon", size: 22}))
   check($icon.rc == 0 and ends_with($icon.result.path, "/data/icons/hicolor/22x22/apps-bus-test-icon.png"),
     "apps.icon did not resolve the fixture icon")
 
-  print("PASS apps Bus surface: list excludes NoDisplay while get/launch find it, launch argv on the real Bus, terminal argv parsing, reload rebind, icon resolve")
+  print("PASS apps Bus surface: list excludes NoDisplay while get/launch find it, launch argv on the real Bus, terminal argv parsing, reload rebind, icon resolve and installed-theme cache invalidation")
 finally
   if $svc_pid != nil then $_kill_svc = run_argv(["kill", "--", to_string($svc_pid)], {timeout: 10}) end
   if $noded_pid != nil then $_kill_noded = run_argv(["kill", "--", to_string($noded_pid)], {timeout: 10}) end
