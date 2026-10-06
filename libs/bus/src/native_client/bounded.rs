@@ -122,6 +122,14 @@ pub(crate) struct BoundedIncomingSender {
 }
 
 impl BoundedIncomingSender {
+    pub(crate) async fn closed(&self) {
+        self.sender.closed().await;
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+
     /// Returns `false` only when the consumer has gone away.
     pub(crate) fn try_send(&self, command: IncomingCommand) -> bool {
         match self.sender.try_send(command) {

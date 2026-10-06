@@ -147,8 +147,12 @@ const ENV_VAR: &str = "MIXOS_NODE_CONFIG";
 fn search_paths() -> Vec<PathBuf> {
     let primary_dir = crate::path(crate::Dir::Etc);
     let mixos_etc_set =
-        std::env::var_os("MIXOS_ETC").is_some() || std::env::var_os("MIXOS").is_some();
+        has_override(std::env::var_os("MIXOS_ETC")) || has_override(std::env::var_os("MIXOS"));
     build_search_paths(&primary_dir, mixos_etc_set)
+}
+
+fn has_override(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
 }
 
 /// Pure helper extracted from `search_paths()` so the search order
@@ -248,6 +252,19 @@ mod tests {
     }
     #[test]
     fn explicit_etc_isolates_and_system_path_deduplicates() {
+        assert!(!has_override(None));
+        assert!(!has_override(Some("".into())));
+        assert!(has_override(Some("/sandbox".into())));
+        assert_eq!(
+            build_search_paths(
+                Path::new("/home/user/.config/mixos"),
+                has_override(Some("".into()))
+            ),
+            vec![
+                PathBuf::from("/home/user/.config/mixos/node.conf.mix"),
+                PathBuf::from("/etc/mixos/node.conf.mix")
+            ]
+        );
         assert_eq!(
             build_search_paths(Path::new("/sandbox"), true),
             vec![PathBuf::from("/sandbox/node.conf.mix")]

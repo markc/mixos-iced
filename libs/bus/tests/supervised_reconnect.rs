@@ -779,12 +779,10 @@ async fn replies_retain_the_generation_that_delivered_the_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropped_incoming_consumer_publishes_terminal_and_frees_registration() {
-    let stub = Stub::flooding(1);
+    let stub = Stub::new(false, false);
     let (url, _acceptor) = start(&stub).await;
     let client = SupervisedClient::connect("responder", &url).await.unwrap();
     drop(client.incoming().unwrap());
-    // If the initial frame was already forwarded, the replacement sends one.
-    stub.drop_conn1.notify_one();
     assert!(wait_until(5, || client.state() == ConnState::ShuttingDown).await);
     assert!(
         wait_until(5, || stub
@@ -800,6 +798,27 @@ async fn dropped_incoming_consumer_publishes_terminal_and_frees_registration() {
             .await,
         Err(SupervisedError::ShuttingDown)
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropped_quiet_bounded_consumer_frees_registration() {
+    let stub = Stub::new(false, false);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("bounded-responder", &url)
+        .bounded_incoming(2)
+        .connect()
+        .await
+        .unwrap();
+    drop(client.incoming_bounded().unwrap());
+    assert!(wait_until(5, || client.state() == ConnState::ShuttingDown).await);
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| s.open_connections == 0 && s.active_registrations.is_empty())
+            .unwrap_or(false))
+        .await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

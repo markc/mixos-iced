@@ -655,28 +655,30 @@ impl SupervisedClient {
         }
     }
 
-    /// Graceful deregister: mark `ShuttingDown`, stop the supervisor so it
-    /// cannot race a reconnect against the deregister, then issue
-    /// `noded.deregister` on the live connection. If the connection is
+    /// Graceful deregister: mark `ShuttingDown` to fence reconnect publication,
+    /// issue `noded.deregister` on the retained connection, then stop and join
+    /// the supervisor. If the connection is
     /// already down the broker dropped the name on socket close, and this
     /// reports [`SupervisedError::Disconnected`]: already gone, carry on.
     pub async fn deregister(&self) -> Result<(), SupervisedError> {
         publish_state(&self.state_tx, &self.state_publish, ConnState::ShuttingDown);
-        let _ = self.shutdown_tx.send(true);
-        // Join the supervisor first. Once it has returned, `inner` can no
-        // longer be swapped, so the liveness decision below is race-free.
-        if let Some(handle) = self.supervisor.lock().await.take() {
-            let _ = handle.await;
-        }
+        // Cancellation must still wake terminal cleanup; signalling before
+        // the RPC would let that cleanup close its transport prematurely.
+        let stop = StopOnDrop(&self.shutdown_tx);
         let connection = self.connection().await;
-        if connection.is_connected() {
+        let result = if connection.is_connected() {
             connection
                 .deregister()
                 .await
                 .map_err(SupervisedError::Transport)
         } else {
             Err(SupervisedError::Disconnected)
+        };
+        drop(stop);
+        if let Some(handle) = self.supervisor.lock().await.take() {
+            let _ = handle.await;
         }
+        result
     }
 }
 
@@ -693,12 +695,34 @@ fn topic_headers(topic: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("name".to_string(), topic.to_string())])
 }
 
+struct StopOnDrop<'a>(&'a watch::Sender<bool>);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.send(true);
+    }
+}
+
 enum SupervisorOutgoing {
     Unbounded(mpsc::UnboundedSender<IncomingCommand>),
     Bounded(BoundedIncomingSender),
 }
 
 impl SupervisorOutgoing {
+    async fn closed(&self) {
+        match self {
+            Self::Unbounded(sender) => sender.closed().await,
+            Self::Bounded(sender) => sender.closed().await,
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Unbounded(sender) => sender.is_closed(),
+            Self::Bounded(sender) => sender.is_closed(),
+        }
+    }
+
     fn forward(&self, event: BoundedIncomingEvent) -> bool {
         match (self, event) {
             (Self::Unbounded(sender), BoundedIncomingEvent::Command(command)) => {
@@ -776,6 +800,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
         // drops or a stop is requested.
         loop {
             tokio::select! {
+                _ = ctx.out_tx.closed() => return,
                 changed = ctx.shutdown_rx.changed() => {
                     // An `Err` means the sender (the client) is gone: stop.
                     if changed.is_err() || stop_requested(&ctx.shutdown_rx) {
@@ -825,6 +850,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
         let new_rx = loop {
             let delay = backoff_delay(attempt);
             tokio::select! {
+                _ = ctx.out_tx.closed() => return,
                 changed = ctx.shutdown_rx.changed() => {
                     if changed.is_err() || stop_requested(&ctx.shutdown_rx) {
                         return;
@@ -848,7 +874,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                     // registered connection behind: a bare drop would keep
                     // the detached reader, and so the name, alive while
                     // `deregister()` reports `Disconnected`.
-                    if stop_requested(&ctx.shutdown_rx) {
+                    if stop_requested(&ctx.shutdown_rx) || ctx.out_tx.is_closed() {
                         connection.close().await;
                         return;
                     }
@@ -860,6 +886,10 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                     // registry update before this snapshot, or a waiting
                     // operation uses the fully published new connection.
                     let _transaction = tokio::select! {
+                        _ = ctx.out_tx.closed() => {
+                            connection.close().await;
+                            return;
+                        }
                         _ = ctx.shutdown_rx.changed() => {
                             connection.close().await;
                             return;
@@ -900,7 +930,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                         .expect("a fresh connection has its incoming receiver");
                     // Final stop check before the swap, so a stop that landed
                     // during replay does not publish a live connection.
-                    if stop_requested(&ctx.shutdown_rx) {
+                    if stop_requested(&ctx.shutdown_rx) || ctx.out_tx.is_closed() {
                         connection.close().await;
                         return;
                     }
