@@ -38,8 +38,10 @@ fn main() {
     );
     let mut command = Command::new(std::env::current_exe().unwrap());
     command.arg("--descendant").stdout(Stdio::piped());
-    containment::configure_command(&mut command).expect("native pre-exec placement");
+    let permit = containment::begin_spawn().expect("session launch is open");
+    containment::configure_command(&mut command, &permit).expect("native pre-exec placement");
     let mut child = command.spawn().expect("launch containment fixture");
+    drop(permit);
     let stdout = child.stdout.take().unwrap();
     let mut ready = libc::pollfd {
         fd: stdout.as_raw_fd(),
@@ -61,6 +63,10 @@ fn main() {
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
     assert!(pidfd >= 0, "detached grandchild must still be alive");
     containment::kill_all().expect("collect all descendants without a bus");
+    assert!(
+        containment::begin_spawn().is_err(),
+        "shutdown refuses later launches"
+    );
     let mut exit = libc::pollfd {
         fd: pidfd,
         events: libc::POLLIN,
@@ -70,7 +76,11 @@ fn main() {
         unsafe { libc::poll(&mut exit, 1, 5000) } > 0,
         "detached grandchild survived cleanup"
     );
-    assert_ne!(exit.revents & libc::POLLIN, 0, "pidfd did not report process exit");
+    assert_ne!(
+        exit.revents & libc::POLLIN,
+        0,
+        "pidfd did not report process exit"
+    );
     unsafe {
         libc::close(pidfd);
     }

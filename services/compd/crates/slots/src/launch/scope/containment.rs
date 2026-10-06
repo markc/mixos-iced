@@ -5,13 +5,30 @@
 //! happens in the forked child before exec, closing the post-spawn adoption race.
 
 use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock, RwLockReadGuard};
+use std::time::{Duration, Instant};
 
 static APPS: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+static LAUNCHES: RwLock<bool> = RwLock::new(true);
+
+/// Held across configuration and spawn, so shutdown waits for every in-flight
+/// fork/exec and refuses all later launches before collecting descendants.
+pub struct SpawnPermit {
+    _guard: RwLockReadGuard<'static, bool>,
+}
+
+pub fn begin_spawn() -> Result<SpawnPermit, String> {
+    let guard = LAUNCHES.read().map_err(|_| "launch fence poisoned")?;
+    if !*guard {
+        return Err("session is shutting down".into());
+    }
+    Ok(SpawnPermit { _guard: guard })
+}
 
 pub fn enabled() -> bool {
     std::env::var_os("MIXOS_CONTAIN_CHILDREN").is_some_and(|value| value == "1")
@@ -54,7 +71,7 @@ fn initialise() -> Result<PathBuf, String> {
 
 /// Configure an application's child-side cgroup placement. Enabling containment
 /// makes failed delegation a launch failure, rather than leaving an unowned app.
-pub fn configure_command(command: &mut Command) -> Result<(), String> {
+pub fn configure_command(command: &mut Command, _permit: &SpawnPermit) -> Result<(), String> {
     if !enabled() {
         return Ok(());
     }
@@ -88,6 +105,8 @@ pub fn configure_command(command: &mut Command) -> Result<(), String> {
 /// Collect the entire apps subtree, including descendants that changed process
 /// group or double-forked. The supervisor collects it too on an ungraceful exit.
 pub fn kill_all() -> Result<(), String> {
+    let mut launches = LAUNCHES.write().map_err(|_| "launch fence poisoned")?;
+    *launches = false;
     if !enabled() {
         return Err("native child containment is disabled".into());
     }
@@ -95,7 +114,45 @@ pub fn kill_all() -> Result<(), String> {
         return Ok(());
     };
     let apps = apps.as_ref().map_err(Clone::clone)?;
-    fs::write(apps.join("cgroup.kill"), "1").map_err(|error| error.to_string())
+    let mut events = fs::File::open(apps.join("cgroup.events"))
+        .map_err(|error| format!("open apps cgroup events: {error}"))?;
+    fs::write(apps.join("cgroup.kill"), "1").map_err(|error| error.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        events
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let mut status = String::new();
+        events
+            .read_to_string(&mut status)
+            .map_err(|error| error.to_string())?;
+        if status.lines().any(|line| line == "populated 0") {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("apps cgroup is still populated after cleanup deadline".into());
+        }
+        let mut pollfd = libc::pollfd {
+            fd: events.as_raw_fd(),
+            events: libc::POLLPRI,
+            revents: 0,
+        };
+        // cgroup.events changes wake poll; no process-list polling or sleeps.
+        let result = unsafe {
+            libc::poll(
+                &mut pollfd,
+                1,
+                remaining.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(format!("watch apps cgroup: {error}"));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

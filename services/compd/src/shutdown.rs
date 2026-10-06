@@ -33,9 +33,9 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
 
 use model::{info, warn};
+use world::environment::interface::lifecycle::lifecycle as env_lifecycle;
 use world::state::Loop;
 use world::state::state::StatusSession;
-use world::environment::interface::lifecycle::lifecycle as env_lifecycle;
 use x11_wm::display::display;
 
 /// Block SIGTERM and SIGINT process-wide, before any thread exists.
@@ -91,7 +91,11 @@ pub fn register(event_loop: &mut EventLoop<'static, Loop>) {
             let mut buf = [0u8; 128]; // size_of::<signalfd_siginfo>()
             loop {
                 let n = unsafe {
-                    libc::read(fd.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+                    libc::read(
+                        fd.as_raw_fd(),
+                        buf.as_mut_ptr() as *mut libc::c_void,
+                        buf.len(),
+                    )
                 };
                 if n <= 0 {
                     break;
@@ -127,6 +131,14 @@ pub fn register(event_loop: &mut EventLoop<'static, Loop>) {
 /// The display is deliberately NOT touched here — see the restore in `main`, which runs
 /// first because it is the part the user is looking at.
 pub fn teardown(state: &mut Loop, nested: bool) {
+    if let Some(executor) = state
+        .inner
+        .kernel
+        .get(&crate::execution::driver::executor::executor::EXECUTOR)
+        .as_ref()
+    {
+        executor.shutdown();
+    }
     // The XWayland DISPLAY descriptor goes on an orderly shutdown, nested or
     // not: it is keyed by our own socket, so it can only be ours.
     if let Err(err) = policy_host::xwayland::remove_descriptor() {
@@ -145,10 +157,18 @@ pub fn teardown(state: &mut Loop, nested: bool) {
     // Whether we are the session on screen, as the fallback rule only. Ownership is
     // normally decided by reading the values back; see `retract_session_env`.
     let active = matches!(state.inner.status_session, StatusSession::Active);
-    let wayland_display = state.inner.loader.socket_name.to_string_lossy().into_owned();
+    let wayland_display = state
+        .inner
+        .loader
+        .socket_name
+        .to_string_lossy()
+        .into_owned();
     let x_display = display::get().unwrap_or_default();
     env_lifecycle::retract_session_env(
         active,
-        &[("WAYLAND_DISPLAY", &wayland_display), ("DISPLAY", &x_display)],
+        &[
+            ("WAYLAND_DISPLAY", &wayland_display),
+            ("DISPLAY", &x_display),
+        ],
     );
 }

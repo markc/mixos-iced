@@ -1,10 +1,10 @@
 //! `execute()` — the one place a child is actually spawned.
 
 use crate::launch::scope::scope::adopt_into_scope;
+use crate::launch::types::types::{LaunchOutcome, LaunchRequest};
 use crate::library::process::child::hygiene::hygiene::command;
 use crate::library::process::child::journal::journal;
 use crate::library::process::child::spawn::spawn::spawn_detached;
-use crate::launch::types::types::{LaunchOutcome, LaunchRequest};
 
 /// Spawn `req` and return its outcome.
 ///
@@ -16,6 +16,10 @@ use crate::launch::types::types::{LaunchOutcome, LaunchRequest};
 /// We never `wait` here. `spawn_detached` hands the child's exit descriptor to the event
 /// loop, which reaps that ONE child when it reports readable — see `child.pidfd`.
 pub fn execute(req: &LaunchRequest, scope: bool) -> LaunchOutcome {
+    let permit = match super::super::scope::containment::begin_spawn() {
+        Ok(permit) => permit,
+        Err(error) => return fail(req, error),
+    };
     let mut argv = req.argv.iter();
     let Some(program) = argv.next() else {
         return fail(req, "launch request has no program".into());
@@ -41,7 +45,7 @@ pub fn execute(req: &LaunchRequest, scope: bool) -> LaunchOutcome {
 
     // Attach before exec, so even a client that immediately double-forks stays
     // within the session's delegated cgroup and cannot escape cleanup.
-    if let Err(error) = super::super::scope::containment::configure_command(&mut cmd) {
+    if let Err(error) = super::super::scope::containment::configure_command(&mut cmd, &permit) {
         return fail(req, format!("session containment failed: {error}"));
     }
 
@@ -66,13 +70,26 @@ pub fn execute(req: &LaunchRequest, scope: bool) -> LaunchOutcome {
         }
     }
 
-    LaunchOutcome { correlation: req.correlation, token: req.token.clone(), pid: Some(pid), result: Ok(()) }
+    LaunchOutcome {
+        correlation: req.correlation,
+        token: req.token.clone(),
+        pid: Some(pid),
+        result: Ok(()),
+    }
 }
 
 fn fail(req: &LaunchRequest, reason: String) -> LaunchOutcome {
     // Name BOTH resolvable inputs. `spawn` reports a failed `chdir` and a failed
     // `exec` with the same bare ENOENT, so a message carrying neither path sends
     // you looking at the binary when the pinned working directory is what moved.
-    warn!("launch failed: {reason} (argv={:?} cwd={:?})", req.argv, req.working_dir);
-    LaunchOutcome { correlation: req.correlation, token: req.token.clone(), pid: None, result: Err(reason) }
+    warn!(
+        "launch failed: {reason} (argv={:?} cwd={:?})",
+        req.argv, req.working_dir
+    );
+    LaunchOutcome {
+        correlation: req.correlation,
+        token: req.token.clone(),
+        pid: None,
+        result: Err(reason),
+    }
 }

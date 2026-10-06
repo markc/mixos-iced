@@ -1138,7 +1138,7 @@ fn emit_listener_endpoint_state(
 
 /// The §9a runtime read contract for this node's d2 admission seed.
 fn d2_seed_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("/etc/mixos/noded/d2.seed")
+    config::path(config::Dir::Etc).join("noded/d2.seed")
 }
 
 /// The outcome of reading the d2 admission seed file (SPEC 13 §9a, 2-c-2a). The

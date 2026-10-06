@@ -74,9 +74,9 @@ pub struct AuthorityPaths {
 impl Default for AuthorityPaths {
     fn default() -> Self {
         Self {
-            genesis_pub: PathBuf::from("/etc/mixos/noded/genesis.pub"),
-            signed: PathBuf::from("/var/lib/mixos/noded/inventory.signed"),
-            baseline: PathBuf::from("/var/lib/mixos/noded/inventory.baseline"),
+            genesis_pub: config::path(config::Dir::Etc).join("noded/genesis.pub"),
+            signed: config::path(config::Dir::Var).join("noded/inventory.signed"),
+            baseline: config::path(config::Dir::Var).join("noded/inventory.baseline"),
         }
     }
 }
@@ -192,7 +192,10 @@ pub fn load_and_verify(paths: &AuthorityPaths) -> Posture {
         }
     };
 
-    let baseline = read_baseline(&paths.baseline);
+    let baseline = match read_baseline(&paths.baseline) {
+        Ok(baseline) => baseline,
+        Err(reason) => return Posture::Unverified { reason },
+    };
     let state = trust_state(&genesis_pub, &baseline);
 
     match signed.verify(&state) {
@@ -312,33 +315,41 @@ fn trust_state(genesis_pub: &[u8], baseline: &Baseline) -> NodeTrustState {
 }
 
 /// Read the persisted `(epoch, recovery_generation, hash)` baseline. Numeric
-/// values never seen are `0` (§6.4); an absent hash is the one-time migration
-/// state from the legacy two-field format. A missing/unreadable file remains the
-/// cold-boot baseline.
-fn read_baseline(path: &Path) -> Baseline {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Baseline::default();
+/// values start at `0` only when the file does not exist. An absent hash is the
+/// one-time migration state from the legacy two-field format. An unreadable or
+/// corrupt floor must never reset the anti-rollback state.
+fn read_baseline(path: &Path) -> Result<Baseline, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Baseline::default());
+        }
+        Err(error) => return Err(format!("reading baseline {}: {error}", path.display())),
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Baseline::default();
-    };
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("malformed baseline {}: {error}", path.display()))?;
     let epoch = v
         .get("epoch")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .ok_or("baseline epoch must be an unsigned integer")?;
     let recovery_gen = v
         .get("recovery_generation")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let hash = v
-        .get("hash")
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string);
-    Baseline {
+        .ok_or("baseline recovery_generation must be an unsigned integer")?;
+    let hash = match v.get("hash") {
+        None => None,
+        Some(serde_json::Value::String(hash))
+            if hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            Some(hash.clone())
+        }
+        Some(_) => return Err("baseline hash must be a 64-character hexadecimal string".into()),
+    };
+    Ok(Baseline {
         epoch,
         recovery_generation: recovery_gen,
         hash,
-    }
+    })
 }
 
 /// Serialise every baseline update across noded processes. Lock acquisition is
@@ -369,7 +380,7 @@ fn compare_and_ratchet_baseline(
         .map_err(|e| format!("opening baseline lock {}: {e}", lock_path.display()))?;
     acquire_baseline_lock(&lock_file, &lock_path)?;
 
-    let fresh = read_baseline(path);
+    let fresh = read_baseline(path)?;
     let accepted = signed
         .verify(&trust_state(genesis_pub, &fresh))
         .map_err(|e| format!("fresh-floor verification failed under lock: {e}"))?;
@@ -600,33 +611,56 @@ mod tests {
     #[test]
     fn read_baseline_defaults_to_zero() {
         let dir = tmpdir("baseline");
-        assert_eq!(read_baseline(&dir.join("missing")), Baseline::default());
+        assert_eq!(
+            read_baseline(&dir.join("missing")).unwrap(),
+            Baseline::default()
+        );
         let bp = dir.join("b.json");
         write(&bp, r#"{"epoch": 7, "recovery_generation": 2}"#);
         assert_eq!(
-            read_baseline(&bp),
+            read_baseline(&bp).unwrap(),
             Baseline {
                 epoch: 7,
                 recovery_generation: 2,
                 hash: None,
             }
         );
-        // corrupt → cold-boot default, never a panic
-        write(&bp, "not json");
-        assert_eq!(read_baseline(&bp), Baseline::default());
+        // Corruption must not erase an existing rollback floor.
+        for invalid in [
+            "not json",
+            "{}",
+            r#"{"epoch":7,"recovery_generation":null}"#,
+            r#"{"epoch":7,"recovery_generation":2,"hash":null}"#,
+            r#"{"epoch":7,"recovery_generation":2,"hash":"bad"}"#,
+        ] {
+            write(&bp, invalid);
+            assert!(read_baseline(&bp).is_err(), "{invalid}");
+        }
+        assert!(
+            read_baseline(&dir).is_err(),
+            "a directory is not a missing floor"
+        );
     }
 
     #[test]
     fn write_then_read_baseline_round_trips_atomically() {
         let dir = tmpdir("bwrite");
         let bp = dir.join("inventory.baseline");
-        write_baseline_file(&bp, 42, 3, "abc123").unwrap();
+        write_baseline_file(
+            &bp,
+            42,
+            3,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
         assert_eq!(
-            read_baseline(&bp),
+            read_baseline(&bp).unwrap(),
             Baseline {
                 epoch: 42,
                 recovery_generation: 3,
-                hash: Some("abc123".into()),
+                hash: Some(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into()
+                ),
             }
         );
         // no unique temp file is left behind
@@ -661,6 +695,38 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_existing_floor_cannot_accept_a_signed_inventory_or_be_overwritten() {
+        let dir = tmpdir("corrupt_floor");
+        let paths = paths_in(&dir);
+        let signing_key = SigningKey::from_bytes(&[19u8; 32]);
+        write_signed_inventory(
+            &paths,
+            &signing_key,
+            1,
+            serde_json::json!([{
+                "name": "alpha", "mesh_ip": "192.0.2.5", "bus": true, "status": "active"
+            }]),
+        );
+        for corrupt in ["not json", r#"{"epoch":100,"recovery_generation":null}"#] {
+            write(&paths.baseline, corrupt);
+            assert!(matches!(
+                load_and_verify(&paths),
+                Posture::Unverified { .. }
+            ));
+            assert_eq!(std::fs::read_to_string(&paths.baseline).unwrap(), corrupt);
+            let signed = SignedInventory::parse(&std::fs::read(&paths.signed).unwrap()).unwrap();
+            let result = compare_and_ratchet_baseline(
+                &paths.baseline,
+                &signed,
+                signing_key.verifying_key().as_bytes(),
+                &signed.payload.canonical_blake3(),
+            );
+            assert!(result.is_err(), "the locked reread must also fail closed");
+            assert_eq!(std::fs::read_to_string(&paths.baseline).unwrap(), corrupt);
+        }
+    }
+
+    #[test]
     fn old_two_field_baseline_accepts_once_and_migrates_to_hash() {
         let dir = tmpdir("baseline_migration");
         let paths = paths_in(&dir);
@@ -677,7 +743,7 @@ mod tests {
 
         assert!(matches!(load_and_verify(&paths), Posture::Verified(_)));
         assert_eq!(
-            read_baseline(&paths.baseline),
+            read_baseline(&paths.baseline).unwrap(),
             Baseline {
                 epoch: 7,
                 recovery_generation: 0,
@@ -721,7 +787,8 @@ mod tests {
         let dir = tmpdir("view_before_ratchet");
         let paths = paths_in(&dir);
         let signing_key = SigningKey::from_bytes(&[12u8; 32]);
-        write_baseline_file(&paths.baseline, 1, 0, "old-hash").unwrap();
+        let old_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        write_baseline_file(&paths.baseline, 1, 0, old_hash).unwrap();
         let before = std::fs::read(&paths.baseline).unwrap();
         write_signed_inventory(
             &paths,
@@ -739,11 +806,11 @@ mod tests {
         assert!(reason.contains("member[1]: invalid mesh_ip \"not-an-ip\""));
         assert_eq!(std::fs::read(&paths.baseline).unwrap(), before);
         assert_eq!(
-            read_baseline(&paths.baseline),
+            read_baseline(&paths.baseline).unwrap(),
             Baseline {
                 epoch: 1,
                 recovery_generation: 0,
-                hash: Some("old-hash".into()),
+                hash: Some(old_hash.into()),
             }
         );
     }
@@ -762,7 +829,7 @@ mod tests {
             }]),
         );
         assert!(matches!(load_and_verify(&paths), Posture::Verified(_)));
-        let pinned = read_baseline(&paths.baseline);
+        let pinned = read_baseline(&paths.baseline).unwrap();
         assert_eq!(pinned.hash.as_deref(), Some(first_hash.as_str()));
 
         let conflicting_hash = write_signed_inventory(
@@ -778,7 +845,7 @@ mod tests {
             panic!("same fold with different hash must reject");
         };
         assert!(reason.contains("conflicts with the accepted baseline hash"));
-        assert_eq!(read_baseline(&paths.baseline), pinned);
+        assert_eq!(read_baseline(&paths.baseline).unwrap(), pinned);
     }
 
     #[test]
@@ -813,7 +880,7 @@ mod tests {
         assert!(high_result.join().unwrap().is_ok());
 
         assert_eq!(
-            read_baseline(&paths.baseline),
+            read_baseline(&paths.baseline).unwrap(),
             Baseline {
                 epoch: 3,
                 recovery_generation: 0,

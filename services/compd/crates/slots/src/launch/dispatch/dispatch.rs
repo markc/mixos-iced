@@ -1,7 +1,8 @@
 //! `LaunchWorker`: the handle held in the executor for off-thread launches.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::mpsc;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use smithay::reexports::calloop::channel::Sender as CalloopSender;
@@ -23,7 +24,13 @@ enum Job {
 /// fixed at spawn — it depends only on systemd availability, not per-launch.
 #[derive(Clone)]
 pub struct LaunchWorker {
-    tx: mpsc::Sender<Job>,
+    inner: Arc<Worker>,
+}
+
+struct Worker {
+    tx: Mutex<Option<mpsc::Sender<Job>>>,
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
+    stopping: Arc<AtomicBool>,
 }
 
 impl LaunchWorker {
@@ -33,11 +40,19 @@ impl LaunchWorker {
     /// (`child.pidfd`), so nothing about reaping is threaded through here.
     pub fn spawn(outcomes: CalloopSender<LaunchOutcome>, scope: bool) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
-        thread::Builder::new()
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = stopping.clone();
+        let thread = thread::Builder::new()
             .name("compd-launch".into())
-            .spawn(move || run(rx, outcomes, scope))
+            .spawn(move || run(rx, outcomes, scope, worker_stopping))
             .unwrap_or_else(|e| abort!("spawn launch worker: {e:?}"));
-        Self { tx }
+        Self {
+            inner: Arc::new(Worker {
+                tx: Mutex::new(Some(tx)),
+                thread: Mutex::new(Some(thread)),
+                stopping,
+            }),
+        }
     }
 
     /// Queue a launch. A gone worker is REPORTED, not swallowed: this thread is
@@ -45,15 +60,52 @@ impl LaunchWorker {
     /// again — which looks exactly like an app declining to open a window.
     pub fn submit(&self, req: LaunchRequest) {
         let program = req.argv.first().cloned();
-        if self.tx.send(Job::Launch(req)).is_err() {
+        let tx = self
+            .inner
+            .tx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if tx
+            .as_ref()
+            .is_none_or(|tx| tx.send(Job::Launch(req)).is_err())
+        {
             error!("launch worker gone; launch dropped: {program:?}");
         }
     }
 
+    /// Close the queue, discard waiting launches and join the in-flight launch.
+    /// Every clone shares this shutdown, so no sender can reopen the lane.
+    pub fn shutdown(&self) {
+        self.inner.stopping.store(true, Ordering::Release);
+        self.inner
+            .tx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(thread) = self
+            .inner
+            .thread
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            if thread.join().is_err() {
+                error!("launch worker panicked during shutdown");
+            }
+        }
+    }
 }
 
-fn run(rx: mpsc::Receiver<Job>, outcomes: CalloopSender<LaunchOutcome>, scope: bool) {
+fn run(
+    rx: mpsc::Receiver<Job>,
+    outcomes: CalloopSender<LaunchOutcome>,
+    scope: bool,
+    stopping: Arc<AtomicBool>,
+) {
     while let Ok(job) = rx.recv() {
+        if stopping.load(Ordering::Acquire) {
+            break;
+        }
         let req = match job {
             Job::Launch(req) => req,
         };
@@ -66,7 +118,12 @@ fn run(rx: mpsc::Receiver<Job>, outcomes: CalloopSender<LaunchOutcome>, scope: b
             Err(_) => {
                 error!("launch panicked: {:?}", req.argv.first());
                 let result = Err(String::from("launch panicked"));
-                LaunchOutcome { correlation: req.correlation, token: req.token.clone(), pid: None, result }
+                LaunchOutcome {
+                    correlation: req.correlation,
+                    token: req.token.clone(),
+                    pid: None,
+                    result,
+                }
             }
         };
         if outcomes.send(outcome).is_err() {

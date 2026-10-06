@@ -8,14 +8,14 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock, RwLockReadGuard, mpsc, oneshot, watch};
+use tokio::sync::{RwLock, RwLockReadGuard, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite;
 
 use base64::Engine as _;
@@ -85,7 +85,9 @@ impl MeshConfig {
     ///
     /// A read or parse failure is a hard error.
     pub fn load(path: &str) -> Result<Self> {
-        Ok(config::load_conf_mix_path::<Self>(std::path::Path::new(path))?)
+        Ok(config::load_conf_mix_path::<Self>(std::path::Path::new(
+            path,
+        ))?)
     }
 
     /// Load `mesh.conf.mix` from the default directory
@@ -263,6 +265,29 @@ struct PendingCall {
     response: oneshot::Sender<std::result::Result<BusMessage, String>>,
 }
 
+/// A call future can be dropped at any await. Removing its entry synchronously
+/// keeps cancellation bounded, without spawning a second cleanup task.
+struct PendingGuard {
+    pending: Arc<Mutex<HashMap<String, PendingCall>>>,
+    id: String,
+    generation: uuid::Uuid,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if pending
+            .get(&self.id)
+            .is_some_and(|call| call.connection_generation == self.generation)
+        {
+            pending.remove(&self.id);
+        }
+    }
+}
+
 #[derive(Clone)]
 enum AttemptOutcome {
     Pending,
@@ -406,7 +431,7 @@ impl MeshPeers {
         // instead of a generic "connection closed" with no report entry.
         // Lock order state → pending matches every other nesting site.
         if !retired_generations.is_empty() {
-            let mut pending = self.pending.lock().await;
+            let mut pending = self.pending.lock().expect("pending calls lock poisoned");
             let message_ids: Vec<_> = pending
                 .iter()
                 .filter(|(_, call)| retired_generations.contains_key(&call.connection_generation))
@@ -468,11 +493,15 @@ impl MeshPeers {
         let node_name = peer.name.clone();
         let connection = self.ensure_connected(&peer).await?;
 
-        // Set up response channel
-        let msg_id = msg
-            .get("id")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        // Client IDs are scoped to their own connections. Give this hop a
+        // fresh correlation ID so two clients both using "1" cannot collide.
+        let caller_id = msg.get("id").map(str::to_owned);
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let _pending_guard = PendingGuard {
+            pending: self.pending.clone(),
+            id: msg_id.clone(),
+            generation: connection.generation,
+        };
 
         // Send the message with the id
         let mut msg = msg;
@@ -491,7 +520,14 @@ impl MeshPeers {
 
         // Wait for response with timeout
         match tokio::time::timeout(RESPONSE_TIMEOUT, resp_rx).await {
-            Ok(Ok(Ok(resp))) => Ok(resp),
+            Ok(Ok(Ok(mut resp))) => {
+                if let Some(caller_id) = caller_id {
+                    resp.set("id", &caller_id);
+                } else {
+                    resp.headers.remove("id");
+                }
+                Ok(resp)
+            }
             Ok(Ok(Err(reason))) => anyhow::bail!("Call to {node_name} failed: {reason}"),
             Ok(Err(_)) => {
                 self.remove_pending(&msg_id, connection.generation).await;
@@ -529,7 +565,7 @@ impl MeshPeers {
     ) -> Result<()> {
         let state = self.state.read().await;
         self.validate_outbound_locked(&state, peer, connection)?;
-        let mut pending = self.pending.lock().await;
+        let mut pending = self.pending.lock().expect("pending calls lock poisoned");
         if pending.contains_key(&message_id) {
             anyhow::bail!("Duplicate pending message id {message_id}");
         }
@@ -576,7 +612,7 @@ impl MeshPeers {
         // already-dropped oneshot is harmless). Lock order state → pending,
         // as at every other nesting site.
         let _state = self.state.read().await;
-        let mut pending = self.pending.lock().await;
+        let mut pending = self.pending.lock().expect("pending calls lock poisoned");
         if pending
             .get(message_id)
             .is_some_and(|call| call.connection_generation == generation)
@@ -966,9 +1002,13 @@ async fn connect_and_publish(
                 continue;
             };
 
-            // Check if this is a response to a pending request
-            if let Some(id) = bus_msg.get("id") {
-                let mut calls = pending.lock().await;
+            // Only responses can satisfy a call. An event or inbound request
+            // may legitimately carry an ID matching an unrelated request.
+            if let Some(id) = bus_msg
+                .get("id")
+                .filter(|_| bus_msg.get("type") == Some("response"))
+            {
+                let mut calls = pending.lock().expect("pending calls lock poisoned");
                 if calls
                     .get(id)
                     .is_some_and(|call| call.connection_generation == generation)
@@ -1016,7 +1056,7 @@ async fn fail_pending_generation(
     generation: uuid::Uuid,
     reason: &str,
 ) {
-    let mut pending = pending.lock().await;
+    let mut pending = pending.lock().expect("pending calls lock poisoned");
     let ids: Vec<_> = pending
         .iter()
         .filter(|(_, call)| call.connection_generation == generation)
@@ -1522,15 +1562,18 @@ mod tests {
             .connections
             .insert("beta".into(), connection.clone());
         let (response, receive) = oneshot::channel();
-        mesh.pending.lock().await.insert(
-            "rpc-1".into(),
-            PendingCall {
-                peer: "beta".into(),
-                connection_generation: connection.generation,
-                class: "props.get".into(),
-                response,
-            },
-        );
+        mesh.pending
+            .lock()
+            .expect("pending calls lock poisoned")
+            .insert(
+                "rpc-1".into(),
+                PendingCall {
+                    peer: "beta".into(),
+                    connection_generation: connection.generation,
+                    class: "props.get".into(),
+                    response,
+                },
+            );
 
         let report = mesh
             .reconcile_endpoints(HashMap::new(), AuthorityRevision::default())
@@ -1587,6 +1630,124 @@ mod tests {
             let _ = closed_tx.send(());
         });
         (endpoint, closed_rx, task)
+    }
+
+    async fn next_bus_frame(
+        websocket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> BusMessage {
+        loop {
+            match websocket.next().await.unwrap().unwrap() {
+                tungstenite::Message::Text(text) => return bus::parse(&text).unwrap(),
+                tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+                frame => panic!("unexpected frame: {frame:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_clients_can_use_the_same_id_and_receive_their_own_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let beta = peer("beta", listener.local_addr().unwrap());
+        let (mesh, _incoming) = test_mesh_with_peer(beta.clone());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            websocket
+                .send(tungstenite::Message::Ping(Vec::new().into()))
+                .await
+                .unwrap();
+            let _registration = next_bus_frame(&mut websocket).await;
+            let first = next_bus_frame(&mut websocket).await;
+            let second = next_bus_frame(&mut websocket).await;
+            assert_ne!(first.get("id"), second.get("id"));
+            for request in [second, first] {
+                let response = BusMessage::new()
+                    .with_header("type", "response")
+                    .with_header("id", request.get("id").unwrap())
+                    .with_body(request.command_name().unwrap());
+                websocket
+                    .send(tungstenite::Message::Text(response.to_wire().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+        let request = |command| {
+            BusMessage::new()
+                .with_header("type", "request")
+                .with_header("id", "1")
+                .with_header("command", command)
+        };
+        let calls = async {
+            tokio::join!(
+                mesh.call(beta.clone(), request("first")),
+                mesh.call(beta, request("second"))
+            )
+        };
+        let (first, second) = tokio::time::timeout(Duration::from_secs(2), calls)
+            .await
+            .unwrap();
+        for (reply, expected) in [(first.unwrap(), "first"), (second.unwrap(), "second")] {
+            assert_eq!(reply.get("id"), Some("1"));
+            assert_eq!(reply.body, expected);
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_event_cannot_complete_a_call_and_cancellation_removes_its_entry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let beta = peer("beta", listener.local_addr().unwrap());
+        let (mesh, mut incoming) = test_mesh_with_peer(beta.clone());
+        let mesh = Arc::new(mesh);
+        let (event_sent, event_received) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            websocket
+                .send(tungstenite::Message::Ping(Vec::new().into()))
+                .await
+                .unwrap();
+            let _registration = next_bus_frame(&mut websocket).await;
+            let request = next_bus_frame(&mut websocket).await;
+            let event = BusMessage::new()
+                .with_header("type", "event")
+                .with_header("id", request.get("id").unwrap())
+                .with_header("command", "props.changed");
+            websocket
+                .send(tungstenite::Message::Text(event.to_wire().into()))
+                .await
+                .unwrap();
+            event_sent.send(()).unwrap();
+            while websocket.next().await.is_some() {}
+        });
+        let caller_mesh = mesh.clone();
+        let caller = tokio::spawn(async move {
+            caller_mesh
+                .call(
+                    beta,
+                    BusMessage::new()
+                        .with_header("id", "1")
+                        .with_header("command", "pending"),
+                )
+                .await
+        });
+        event_received.await.unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), incoming.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.message.get("type"), Some("event"));
+        assert!(
+            !caller.is_finished(),
+            "events do not satisfy response correlation"
+        );
+        assert_eq!(mesh.pending.lock().unwrap().len(), 1);
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert!(mesh.pending.lock().unwrap().is_empty());
+        mesh.reconcile_endpoints(HashMap::new(), AuthorityRevision::default())
+            .await;
+        server.await.unwrap();
     }
 
     #[tokio::test]

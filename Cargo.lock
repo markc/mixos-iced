@@ -766,6 +766,7 @@ dependencies = [
  "anyhow",
  "libc",
  "serde",
+ "serde_json",
  "strict",
  "tracing",
 ]

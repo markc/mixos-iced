@@ -1,11 +1,11 @@
 use smithay::reexports::calloop::channel::Sender as CalloopSender;
 
-use slots::storage::token::base::{Token, TokenMut};
-use slots::launch::policy::policy::{LaunchDispatch, LAUNCH_DISPATCH};
-use slots::launch::execute::execute::execute;
-use slots::launch::dispatch::dispatch::LaunchWorker;
 use slots::launch::container::container::wrap_podman;
+use slots::launch::dispatch::dispatch::LaunchWorker;
+use slots::launch::execute::execute::execute;
+use slots::launch::policy::policy::{LAUNCH_DISPATCH, LaunchDispatch};
 use slots::launch::types::types::{LaunchOutcome, LaunchRequest};
+use slots::storage::token::base::{Token, TokenMut};
 
 /// App-launch driver. Held in kernel storage; populated by the loader's
 /// `install`. Every outcome is posted on `outcome_tx` so orchestration can
@@ -38,13 +38,24 @@ pub struct Executor {
 pub type BaseEnv = Box<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
 
 impl Executor {
+    pub fn shutdown(&self) {
+        if let Some(worker) = &self.worker {
+            worker.shutdown();
+        }
+    }
+
     pub fn new(
         worker: Option<LaunchWorker>,
         outcome_tx: CalloopSender<LaunchOutcome>,
         base_env: BaseEnv,
         scope: bool,
     ) -> Self {
-        Self { worker, outcome_tx, base_env, scope }
+        Self {
+            worker,
+            outcome_tx,
+            base_env,
+            scope,
+        }
     }
 
     /// Launch `request`. The faithful base env is prepended; caller-supplied
