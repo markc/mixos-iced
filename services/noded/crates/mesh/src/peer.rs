@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, RwLock, RwLockReadGuard, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite;
 
 use base64::Engine as _;
-use bus::wire::{self, BusMessage};
+use bus::wire::BusMessage;
 use mesh_trust::admission::{AdmissionTranscript, sign_admission_transcript};
 pub use mesh_trust::routing::DEFAULT_NODED_PORT;
 
@@ -85,7 +85,7 @@ impl MeshConfig {
     ///
     /// A read or parse failure is a hard error.
     pub fn load(path: &str) -> Result<Self> {
-        config::load_conf_mix_path::<Self>(std::path::Path::new(path))
+        Ok(config::load_conf_mix_path::<Self>(std::path::Path::new(path))?)
     }
 
     /// Load `mesh.conf.mix` from the default directory
