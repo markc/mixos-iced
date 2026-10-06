@@ -156,6 +156,7 @@ pub struct MixBusHandler {
     /// private attachment owner publishes a change. Scripts keep SPEC 18's
     /// explicit reconnect contract, including the zero-cost absence latch.
     native_attachment_generation: Option<Cell<u64>>,
+    incoming_in_use: Cell<bool>,
     /// Cached probe state + broker client. `Mutex` rather than `OnceCell`
     /// so [`BusHandler::reconnect`] can reset to `Unprobed` (SPEC 18 §3.3:
     /// the WS8 acceptance harness induces a `noded` bounce and
@@ -202,6 +203,32 @@ pub struct MixBusHandler {
     /// and undo the reset. `Cell` is fine — `MixBusHandler` is `!Send`,
     /// only the current-thread evaluator touches it.
     incoming_generation: Cell<u64>,
+}
+
+/// Serialise incoming initialisation and reads, including their await points.
+/// A reset admits a new reader; dropping an old future cannot release its loan.
+struct IncomingUse<'a> {
+    busy: &'a Cell<bool>,
+    generation: &'a Cell<u64>,
+    at_take: u64,
+}
+impl<'a> IncomingUse<'a> {
+    fn take(busy: &'a Cell<bool>, generation: &'a Cell<u64>) -> Option<Self> {
+        if busy.replace(true) {
+            return None;
+        }
+        Some(Self { busy, generation, at_take: generation.get() })
+    }
+    fn current(&self) -> bool {
+        self.generation.get() == self.at_take
+    }
+}
+impl Drop for IncomingUse<'_> {
+    fn drop(&mut self) {
+        if self.current() {
+            self.busy.set(false);
+        }
+    }
 }
 
 /// RAII guard that restores a `UnboundedReceiver` to a shared `RefCell` slot
@@ -313,6 +340,7 @@ impl MixBusHandler {
     pub fn new() -> Self {
         MixBusHandler {
             native_attachment_generation: None,
+            incoming_in_use: Cell::new(false),
             mesh: tokio::sync::Mutex::new(MeshState::Unprobed),
             serve: tokio::sync::Mutex::new(None),
             incoming: RefCell::new(None),
@@ -365,6 +393,7 @@ impl MixBusHandler {
     }
 
     fn reset_incoming(&self) {
+        self.incoming_in_use.set(false);
         *self.incoming.borrow_mut() = None;
         *self.incoming_closed.borrow_mut() = false;
         *self.incoming_broken.borrow_mut() = false;
@@ -760,6 +789,7 @@ impl BusHandler for MixBusHandler {
     fn next_incoming<'a>(&'a self) -> Pin<Box<dyn Future<Output = Option<IncomingEvent>> + 'a>> {
         Box::pin(async move {
             self.reconcile_native_attachment().await;
+            let usage = IncomingUse::take(&self.incoming_in_use, &self.incoming_generation)?;
             if *self.incoming_closed.borrow() {
                 return None;
             }
@@ -783,7 +813,11 @@ impl BusHandler for MixBusHandler {
             // that has no broker behind it. The send/emit/etc. paths
             // remain the loud-failure surface for Lost.
             if self.incoming.borrow().is_none() {
-                let client = match self.serve_access().await {
+                let access = self.serve_access().await;
+                if !usage.current() {
+                    return None;
+                }
+                let client = match access {
                     Ok(c) => c,
                     Err(MeshErr::NeverPresent) | Err(MeshErr::Lost) => {
                         *self.incoming_closed.borrow_mut() = true;
@@ -791,6 +825,9 @@ impl BusHandler for MixBusHandler {
                     }
                 };
                 let rx = client.incoming_async().await;
+                if !usage.current() {
+                    return None;
+                }
                 match rx {
                     Some(rx) => *self.incoming.borrow_mut() = Some(rx),
                     None => {
@@ -829,6 +866,9 @@ impl BusHandler for MixBusHandler {
             // `recv()` returned None (connection closed), mark closed so
             // future calls short-circuit.
             drop(guard);
+            if !usage.current() {
+                return None;
+            }
 
             match result {
                 Some(cmd) => Some(IncomingEvent {
@@ -2544,5 +2584,64 @@ mod tests {
         // The broken_flag must NOT be set — this is the "stale" path,
         // not the "RefCell-already-borrowed" path.
         assert!(!*h.incoming_broken.borrow());
+    }
+
+    fn incoming_test_command() -> ::bus::native_client::IncomingCommand {
+        ::bus::native_client::IncomingCommand {
+            generation: 0,
+            from: "fixture".into(),
+            command: "fixture.current".into(),
+            id: None,
+            args: serde_json::Value::Null,
+            body: String::new(),
+            headers: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_incoming_read_does_not_close_the_loaned_stream() {
+        use std::task::{Context, Poll, Waker};
+        let h = MixBusHandler::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        *h.incoming.borrow_mut() = Some(rx);
+        let mut first = h.next_incoming();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(first.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(h.next_incoming().await.is_none());
+        assert!(!*h.incoming_closed.borrow());
+        tx.send(incoming_test_command()).unwrap();
+        assert_eq!(first.await.unwrap().command, "fixture.current");
+        let mut cancelled = h.next_incoming();
+        assert!(matches!(cancelled.as_mut().poll(&mut cx), Poll::Pending));
+        drop(cancelled);
+        tx.send(incoming_test_command()).unwrap();
+        assert_eq!(h.next_incoming().await.unwrap().command, "fixture.current");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn old_incoming_completion_cannot_publish_or_close_a_new_generation() {
+        use std::task::{Context, Poll, Waker};
+        for queued in [false, true] {
+            let h = MixBusHandler::new();
+            let (old_tx, old_rx) = tokio::sync::mpsc::unbounded_channel();
+            *h.incoming.borrow_mut() = Some(old_rx);
+            let mut old = h.next_incoming();
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(matches!(old.as_mut().poll(&mut cx), Poll::Pending));
+            h.reconnect().await.unwrap();
+            let (new_tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
+            *h.incoming.borrow_mut() = Some(new_rx);
+            let mut current = h.next_incoming();
+            assert!(matches!(current.as_mut().poll(&mut cx), Poll::Pending));
+            if queued {
+                old_tx.send(incoming_test_command()).unwrap();
+            }
+            drop(old_tx);
+            assert!(old.await.is_none(), "old commands and closure are fenced");
+            assert!(!*h.incoming_closed.borrow());
+            assert!(h.incoming_in_use.get(), "old completion cannot release a new loan");
+            new_tx.send(incoming_test_command()).unwrap();
+            assert_eq!(current.await.unwrap().command, "fixture.current");
+        }
     }
 }
