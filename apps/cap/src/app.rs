@@ -1202,6 +1202,7 @@ struct Picture<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::Effect;
     fn test_app() -> App {
         let theme = appearance::Theme::from_source("cap-test", "mode: \"dark\"\n").unwrap();
         let look = appearance::install_with(
