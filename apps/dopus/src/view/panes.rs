@@ -62,7 +62,7 @@ pub fn pane_column<'a>(
             pane_header(look, first_row, pane, pane_id, active, editing),
             sort_header(look, pane, pane_id, actions, columns),
             Element::new(
-                rows::FileList::new(
+                rows::file_list(
                     pane_rows,
                     pane.selected.as_deref(),
                     &pane.path,

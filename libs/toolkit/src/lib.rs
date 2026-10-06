@@ -21,6 +21,7 @@ pub mod dialog;
 pub mod dnd;
 pub mod drop_down;
 pub mod editor_pane;
+pub mod file_pane;
 pub mod elide;
 pub mod fader;
 pub mod fit_text;
@@ -86,6 +87,7 @@ pub use dnd::{
 };
 pub use drop_down::{Alignment, DropDown, Offset};
 pub use editor_pane::EditorPane;
+pub use file_pane::FilePane;
 pub use elide::{Label, middle};
 pub use fader::Fader;
 pub use fit_text::FitText;

@@ -2,6 +2,10 @@
 
 ## 0.2.2
 
+- Share virtual file rows through a borrowed listing provider, optional native
+  transfer bridge and caller-supplied decorations. Cache and draw only visible
+  rows; validate the pressed path after asynchronous relists.
+
 - `EditorPane` exposes a neutral borrowed document source, typed editing
   intents and viewport geometry. Shared drawing and input retain Unicode
   clusters, bounded long-line checkpoints, annotations, IME and scroll echoes.

@@ -591,7 +591,7 @@ mod tests {
             gap: 4.0,
             pad: 4.0,
         };
-        let content = Element::new(crate::view::rows::FileList::new(
+        let content = Element::new(crate::view::rows::file_list(
             rows,
             None,
             root,
@@ -795,7 +795,7 @@ mod tests {
             default_text_size: application::iced::Pixels(look.px),
             ..Default::default()
         });
-        let mut list = FileList::new(
+        let mut list = crate::view::rows::file_list(
             &rows,
             Some(&rows[2].entry.path),
             dir.path(),
@@ -1038,7 +1038,7 @@ mod tests {
             };
             let expanded = std::collections::HashSet::new();
             let list = |pane: PaneId| -> Element<'_, Msg> {
-                Element::new(FileList::new(
+                Element::new(crate::view::rows::file_list(
                     &rows[pane.index()],
                     None,
                     &roots[pane.index()],
@@ -1198,7 +1198,7 @@ mod tests {
             gap: 4.0,
             pad: 4.0,
         };
-        let mut list = FileList::new(
+        let mut list = crate::view::rows::file_list(
             &rows,
             Some(&target),
             dir.path(),

@@ -2,6 +2,9 @@
 
 ## 0.4.3
 
+- Use toolkit's shared FilePane for row layout, cached drawing and stable click
+  tracking; retain filesystem and native transfer policy in app adapters.
+
 Use shared application hosting and renderer interfaces, including window
 defaults, close deferral and the single task worker. Existing Bus bytes remain.
 
