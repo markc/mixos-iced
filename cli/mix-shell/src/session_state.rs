@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Owned, bounded stage-A state. No evaluator, transport or child waits here.
 use crate::editor::Generation;
-use ::bus::native_session::{DecimalU64, HexBytes, RecordRef, SessionRecord};
 use ::bus::native_client::session::boottime_ms;
+use ::bus::native_session::{DecimalU64, HexBytes, RecordRef, SessionRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
@@ -50,7 +50,9 @@ pub(crate) enum Phase {
 pub(crate) enum Transition {
     ShellReady,
     PromptPreparing,
-    PromptReady { continuation: bool },
+    PromptReady {
+        continuation: bool,
+    },
     LineAccepted,
     /// A line the shell never typed, carrying the identity the admission owner
     /// already minted, echoed and recorded. Adopting it rather than minting a
@@ -63,9 +65,15 @@ pub(crate) enum Transition {
     EvaluationAccepted,
     EvaluationStarted,
     EvaluationFinished,
-    ForegroundChanged { active: bool },
-    DirectoryChanged { cwd: Option<String> },
-    AttachmentChanged { source: Option<Source> },
+    ForegroundChanged {
+        active: bool,
+    },
+    DirectoryChanged {
+        cwd: Option<String>,
+    },
+    AttachmentChanged {
+        source: Option<Source>,
+    },
     ShellExit,
     ShellReplacement,
 }
@@ -341,11 +349,20 @@ pub(crate) fn enabled() -> bool {
 }
 /// Internal notification version only; conveys no identity, scope or authority.
 pub(crate) fn attachment_generation() -> u64 {
-    STATE.get().map_or(0, |state| {
-        state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .attachment_generation
+    attachment_notice().0
+}
+/// Broker epoch is an opaque invalidation hint, never admission authority.
+pub(crate) fn attachment_notice() -> (u64, Option<HexBytes<16>>) {
+    STATE.get().map_or((0, None), |state| {
+        let state = state.lock().unwrap_or_else(|poison| poison.into_inner());
+        (
+            state.attachment_generation,
+            state
+                .snapshot
+                .source
+                .as_ref()
+                .map(|source| source.broker_epoch),
+        )
     })
 }
 pub(crate) fn commit(transition: Transition) {

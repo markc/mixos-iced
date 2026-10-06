@@ -157,6 +157,7 @@ pub struct MixBusHandler {
     /// explicit reconnect contract, including the zero-cost absence latch.
     native_attachment_generation: Option<Cell<u64>>,
     incoming_in_use: Cell<bool>,
+    serve_epoch: Cell<Option<::bus::native_session::HexBytes<16>>>,
     /// Cached probe state + broker client. `Mutex` rather than `OnceCell`
     /// so [`BusHandler::reconnect`] can reset to `Unprobed` (SPEC 18 §3.3:
     /// the WS8 acceptance harness induces a `noded` bounce and
@@ -217,7 +218,11 @@ impl<'a> IncomingUse<'a> {
         if busy.replace(true) {
             return None;
         }
-        Some(Self { busy, generation, at_take: generation.get() })
+        Some(Self {
+            busy,
+            generation,
+            at_take: generation.get(),
+        })
     }
     fn current(&self) -> bool {
         self.generation.get() == self.at_take
@@ -341,6 +346,7 @@ impl MixBusHandler {
         MixBusHandler {
             native_attachment_generation: None,
             incoming_in_use: Cell::new(false),
+            serve_epoch: Cell::new(None),
             mesh: tokio::sync::Mutex::new(MeshState::Unprobed),
             serve: tokio::sync::Mutex::new(None),
             incoming: RefCell::new(None),
@@ -361,12 +367,16 @@ impl MixBusHandler {
 
     async fn reconcile_native_attachment(&self) {
         if self.native_attachment_generation.is_some() {
-            self.reconcile_native_generation(crate::session_state::attachment_generation())
-                .await;
+            let (generation, epoch) = crate::session_state::attachment_notice();
+            self.reconcile_native_generation(generation, epoch).await;
         }
     }
 
-    async fn reconcile_native_generation(&self, generation: u64) {
+    async fn reconcile_native_generation(
+        &self,
+        generation: u64,
+        epoch: Option<::bus::native_session::HexBytes<16>>,
+    ) {
         let Some(observed) = &self.native_attachment_generation else {
             return;
         };
@@ -379,16 +389,45 @@ impl MixBusHandler {
         if observed.get() == generation {
             return;
         }
-        // Attachment resumption need not replace the ordinary Bus connection.
-        // Keep a live lane and its registrations. Leave the notification pending
-        // so a late disconnect of that lane can still trigger reconciliation.
-        if matches!(&*mesh, MeshState::Connected(lane) if lane.is_connected()) {
+        // REPL's current-thread runtime parks at the prompt: a dead reader can
+        // still report connected until it gets polled. Compare independently
+        // verified broker context with the native owner's opaque epoch hint.
+        // Same-broker resumption keeps a live lane and its registrations.
+        let keep = match (&*mesh, epoch) {
+            (MeshState::Connected(lane), Some(epoch)) if lane.is_connected() => {
+                if let Lane::Verified(connection) = lane.as_ref() {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        connection.session_context(),
+                    )
+                    .await
+                    .is_ok_and(|result| result.is_ok_and(|context| context.broker_epoch == epoch))
+                        && lane.is_connected()
+                } else {
+                    false
+                }
+            }
+            (MeshState::Connected(lane), None) => lane.is_connected(),
+            _ => false,
+        };
+        let mut serve = self.serve.lock().await;
+        let keep_serve = serve.as_ref().is_some_and(|lane| {
+            lane.is_connected() && epoch.is_none_or(|epoch| self.serve_epoch.get() == Some(epoch))
+        });
+        // Leave the hint pending while all existing lanes remain healthy: a
+        // late EOF must still rearm them. A main-call timeout must not discard
+        // a same-epoch dedicated service connection and its registrations.
+        if keep && (serve.is_none() || keep_serve) {
             return;
         }
-        let mut serve = self.serve.lock().await;
-        *mesh = MeshState::Unprobed;
-        *serve = None;
-        self.reset_incoming();
+        if !keep {
+            *mesh = MeshState::Unprobed;
+        }
+        if !keep_serve {
+            *serve = None;
+            self.serve_epoch.set(None);
+            self.reset_incoming();
+        }
         observed.set(generation);
     }
 
@@ -489,6 +528,22 @@ impl MixBusHandler {
         let url = crate::node_config::resolve_noded_url();
         match ::bus::native_client::NodedClient::connect_anonymous(&url).await {
             Ok(client) => {
+                if self.native_attachment_generation.is_some()
+                    && let Lane::Verified(connection) = lane.as_ref()
+                {
+                    // Bind service-lane continuity to independently verified
+                    // context, never the unverified TCP peer's assertions.
+                    self.serve_epoch.set(
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            connection.session_context(),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .map(|context| context.broker_epoch),
+                    );
+                }
                 let arc = std::sync::Arc::new(Lane::Anonymous(client));
                 *serve = Some(arc.clone());
                 Ok(arc)
@@ -1124,8 +1179,11 @@ impl BusHandler for MixBusHandler {
             // deliberately does NOT override this (the SupervisedClient
             // self-recovers; a citizen calling bus_reconnect() is a
             // harmless trait-default no-op).
-            *self.mesh.lock().await = MeshState::Unprobed;
-            *self.serve.lock().await = None;
+            let mut mesh = self.mesh.lock().await;
+            let mut serve = self.serve.lock().await;
+            *mesh = MeshState::Unprobed;
+            *serve = None;
+            self.serve_epoch.set(None);
             // Also clear the incoming-receiver state. Without this, a
             // `next_incoming` that hit `NeverPresent` (closing the
             // sticky `incoming_closed` flag) or a previously corrupted
@@ -1977,7 +2035,7 @@ mod tests {
     async fn native_attachment_change_rearms_once_and_preserves_script_latches() {
         let script = MixBusHandler::new();
         script.test_force_state(MeshState::Lost).await;
-        script.reconcile_native_generation(1).await;
+        script.reconcile_native_generation(1, None).await;
         assert_eq!(script.test_state_label().await, "Lost");
 
         let mut interactive = MixBusHandler::new();
@@ -1985,17 +2043,80 @@ mod tests {
         interactive.test_force_state(MeshState::Lost).await;
         *interactive.incoming_closed.borrow_mut() = true;
         *interactive.incoming_broken.borrow_mut() = true;
-        interactive.reconcile_native_generation(1).await;
+        interactive.reconcile_native_generation(1, None).await;
         assert_eq!(interactive.test_state_label().await, "Lost");
-        interactive.reconcile_native_generation(2).await;
+        interactive.reconcile_native_generation(2, None).await;
         assert_eq!(interactive.test_state_label().await, "Unprobed");
         assert!(!*interactive.incoming_closed.borrow());
         assert!(!*interactive.incoming_broken.borrow());
         let version = interactive.incoming_generation.get();
         interactive.test_force_state(MeshState::NeverPresent).await;
-        interactive.reconcile_native_generation(2).await;
+        interactive.reconcile_native_generation(2, None).await;
         assert_eq!(interactive.test_state_label().await, "NeverPresent");
         assert_eq!(interactive.incoming_generation.get(), version);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_main_recovery_preserves_same_epoch_service_and_receiver() {
+        use ::bus::native_client::NodedClient;
+        let broker = term_test_broker::Broker::start();
+        let verified = MixBusHandler::connect_verified_with(&broker.url, &broker.options())
+            .await
+            .unwrap();
+        let epoch = verified.session_context().await.unwrap().broker_epoch;
+        let service = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+        service
+            .register_as("fixture.repl-continuity")
+            .await
+            .unwrap();
+        let receiver = service.incoming_async().await.unwrap();
+        let lane = std::sync::Arc::new(Lane::Anonymous(service));
+        let mut h = MixBusHandler::new();
+        h.native_attachment_generation = Some(Cell::new(1));
+        h.test_force_state(MeshState::Lost).await;
+        *h.serve.lock().await = Some(lane.clone());
+        h.serve_epoch.set(Some(epoch));
+        *h.incoming.borrow_mut() = Some(receiver);
+        let incoming_generation = h.incoming_generation.get();
+
+        h.reconcile_native_generation(2, Some(epoch)).await;
+        assert_eq!(h.test_state_label().await, "Unprobed");
+        assert!(std::sync::Arc::ptr_eq(
+            h.serve.lock().await.as_ref().unwrap(),
+            &lane
+        ));
+        assert_eq!(h.incoming_generation.get(), incoming_generation);
+        let sender = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+        sender
+            .send(
+                "fixture.repl-continuity",
+                "fixture.current",
+                serde_json::Value::Null,
+            )
+            .await
+            .unwrap();
+        let mut receiver = h.incoming.borrow_mut().take().unwrap();
+        let command = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            command.command, "fixture.current",
+            "original broker registration survives"
+        );
+
+        let other = term_test_broker::Broker::start();
+        let other_verified = MixBusHandler::connect_verified_with(&other.url, &other.options())
+            .await
+            .unwrap();
+        let other_epoch = other_verified.session_context().await.unwrap().broker_epoch;
+        assert_ne!(epoch, other_epoch);
+        *h.incoming.borrow_mut() = Some(receiver);
+        h.reconcile_native_generation(3, Some(other_epoch)).await;
+        assert!(h.serve.lock().await.is_none());
+        assert!(h.incoming.borrow().is_none());
+        assert_ne!(h.incoming_generation.get(), incoming_generation);
+        sender.close().await;
     }
 
     #[test]
@@ -2639,9 +2760,35 @@ mod tests {
             drop(old_tx);
             assert!(old.await.is_none(), "old commands and closure are fenced");
             assert!(!*h.incoming_closed.borrow());
-            assert!(h.incoming_in_use.get(), "old completion cannot release a new loan");
+            assert!(
+                h.incoming_in_use.get(),
+                "old completion cannot release a new loan"
+            );
             new_tx.send(incoming_test_command()).unwrap();
             assert_eq!(current.await.unwrap().command, "fixture.current");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reconnect_keeps_the_main_lane_locked_through_incoming_reset() {
+        use std::task::{Context, Poll, Waker};
+        let h = MixBusHandler::new();
+        let held_serve = h.serve.lock().await;
+        let mut reset = h.reconnect();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(reset.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(
+            h.mesh.try_lock().is_err(),
+            "no replacement client can be published during reset"
+        );
+        let mut incoming = h.next_incoming();
+        assert!(matches!(incoming.as_mut().poll(&mut cx), Poll::Pending));
+        drop(incoming);
+        drop(held_serve);
+        reset.await.unwrap();
+        assert_eq!(h.test_state_label().await, "Unprobed");
+        assert!(!h.incoming_in_use.get());
+        assert!(!*h.incoming_closed.borrow());
+        assert!(h.incoming.borrow().is_none());
     }
 }
