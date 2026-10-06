@@ -5,6 +5,7 @@ use crate::{
     bus::{self, BusHandle, Delivery},
     capture::{self, Mode, Request, Target, Window},
     document::{Crop, Document, Kind, Point, Shape},
+    menu,
     strings::label,
     verbs::{self, Operation},
     viewport::Viewport,
@@ -13,7 +14,7 @@ use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use iced::{
     Element, Subscription, Task, mouse,
     widget::{
-        self, button, canvas, checkbox, column, container, pick_list, row, slider, text, text_input,
+        self, button, canvas, column, container, row, slider, text, text_input,
     },
     window,
 };
@@ -46,6 +47,15 @@ pub enum Tool {
     Crop,
     Draw(Kind),
 }
+impl Tool {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Select => "select",
+            Self::Crop => "crop",
+            Self::Draw(kind) => kind.key(),
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub enum Gesture {
     Add(Shape),
@@ -60,8 +70,25 @@ enum Pending {
     Open,
     Quit,
 }
+#[derive(Debug, Clone, Copy)]
+enum Dialog {
+    Properties,
+    Shortcuts,
+    About,
+}
+impl Dialog {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Properties => "properties",
+            Self::Shortcuts => "shortcuts",
+            Self::About => "about",
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub enum Message {
+    Menu(menu::Action),
+    OpenMenu(usize),
     Bus(Delivery),
     Window(window::Id, window::Event),
     Refresh,
@@ -155,6 +182,7 @@ pub struct App {
     picker_strings: requester::Strings,
     pending: Option<Pending>,
     confirm: bool,
+    dialog: Option<Dialog>,
 }
 fn initial(look: appearance::Appearance, directory: PathBuf) -> App {
     let colour = look.tokens.palette.destructive;
@@ -199,6 +227,7 @@ fn initial(look: appearance::Appearance, directory: PathBuf) -> App {
         },
         pending: None,
         confirm: false,
+        dialog: None,
     }
 }
 pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Result<(), String> {
@@ -297,7 +326,24 @@ impl App {
         })
     }
     fn info(&self) -> Value {
-        json!({"schema":"cap.v1","busy":self.busy,"status":self.status,"document":self.document.as_ref().map(Document::info),"path":self.path,"capture":self.metadata,"mode":self.request.mode,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")})
+        json!({"schema":"cap.v1","busy":self.busy,"status":self.status,"document":self.document.as_ref().map(Document::info),"path":self.path,"capture":self.metadata,"mode":self.request.mode,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"ui":{"menu_bar":true,"tool":self.tool.key(),"zoom":self.zoom,"dialog":self.dialog.map(Dialog::key)}})
+    }
+    fn modal(&self) -> bool {
+        self.confirm || self.picker.is_some() || self.dialog.is_some()
+    }
+    fn menu_context(&self) -> menu::Context<'_> {
+        menu::Context {
+            document: self.document.as_ref(),
+            selected: self.selected,
+            request: &self.request,
+            outputs: &self.outputs,
+            windows: &self.windows,
+            window: self.selected_window.as_ref(),
+            tool: self.tool,
+            busy: self.busy,
+            capturing: self.cancel.is_some(),
+            modal: self.modal(),
+        }
     }
     fn reply(&self, id: u64, result: Result<Value, String>) {
         if let Some(bus) = &self.bus {
@@ -419,6 +465,48 @@ impl App {
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenMenu(index) => {
+                if self.modal() { return Task::none(); }
+                widget::operate(toolkit::menu::open_operation(menu::BAR_ID, index))
+                    .chain(Task::done(Message::Noop))
+            }
+            Message::Menu(action) => {
+                if !menu::enabled(&action, &self.menu_context()) { return Task::none(); }
+                let message = match action {
+                    menu::Action::Open => Message::Open,
+                    menu::Action::Save => Message::Save,
+                    menu::Action::Copy => Message::Copy,
+                    menu::Action::Quit => Message::Quit,
+                    menu::Action::Take => Message::Take,
+                    menu::Action::Cancel => Message::Cancel,
+                    menu::Action::Refresh => Message::Refresh,
+                    menu::Action::Mode(mode) => Message::Mode(mode),
+                    menu::Action::Output(output) => Message::Output(output),
+                    menu::Action::Window(window) => Message::Choose(window),
+                    menu::Action::Delay(delay) => Message::Delay(delay.to_string()),
+                    menu::Action::Pointer(pointer) => Message::Pointer(pointer),
+                    menu::Action::Tool(tool) => {
+                        if tool == Tool::Draw(Kind::Text) { self.dialog = Some(Dialog::Properties); }
+                        Message::Tool(tool)
+                    }
+                    menu::Action::Undo => Message::Undo,
+                    menu::Action::Redo => Message::Redo,
+                    menu::Action::Delete => Message::Delete,
+                    menu::Action::Uncrop => Message::Uncrop,
+                    menu::Action::ZoomIn => Message::Zoom(self.zoom * 1.25),
+                    menu::Action::ZoomOut => Message::Zoom(self.zoom / 1.25),
+                    menu::Action::Fit => Message::Fit,
+                    menu::Action::Properties | menu::Action::Shortcuts | menu::Action::About => {
+                        self.dialog = Some(match action {
+                            menu::Action::Properties => Dialog::Properties,
+                            menu::Action::Shortcuts => Dialog::Shortcuts,
+                            _ => Dialog::About,
+                        });
+                        return Task::none();
+                    }
+                };
+                self.update(message)
+            }
             Message::Refresh => self.refresh(),
             Message::Shown(id, result) => {
                 self.busy = false;
@@ -426,7 +514,7 @@ impl App {
                     self.error(error);
                 }
                 self.reply(id, result);
-                if self.picker.is_some() || self.confirm {
+                if self.modal() {
                     return Task::none();
                 }
                 self.pending
@@ -602,7 +690,7 @@ impl App {
                 Task::none()
             }
             Message::Gesture(gesture) => {
-                if self.busy || self.picker.is_some() || self.confirm {
+                if self.busy || self.modal() {
                     return Task::none();
                 };
                 match gesture {
@@ -807,6 +895,7 @@ impl App {
             }
             Message::Quit => self.request_pending(Pending::Quit),
             Message::Keep => {
+                self.dialog = None;
                 self.pending = None;
                 self.confirm = false;
                 self.picker = None;
@@ -823,7 +912,9 @@ impl App {
                 use iced::keyboard::{Key, key::Named};
                 match key {
                     Key::Named(Named::Escape) => {
-                        if self.confirm {
+                        if self.dialog.is_some() {
+                            self.dialog = None;
+                        } else if self.confirm {
                             self.pending = None;
                             self.confirm = false;
                         } else if self.picker.is_some() {
@@ -835,21 +926,12 @@ impl App {
                         self.selected = None;
                         self.preview()
                     }
-                    Key::Named(Named::Delete) if !self.confirm && self.picker.is_none() => {
-                        self.update(Message::Delete)
-                    }
-                    Key::Character(s)
-                        if modifiers.control() && self.picker.is_none() && !self.confirm =>
-                    {
-                        match s.as_str() {
-                            "z" if modifiers.shift() => self.update(Message::Redo),
-                            "z" => self.update(Message::Undo),
-                            "y" => self.update(Message::Redo),
-                            "s" => self.update(Message::Save),
-                            "o" => self.update(Message::Open),
-                            "c" => self.update(Message::Copy),
-                            _ => Task::none(),
-                        }
+                    _ if !self.modal() => {
+                        if let Some(index) = menu::mnemonic(&key, modifiers) {
+                            self.update(Message::OpenMenu(index))
+                        } else if let Some(action) = menu::shortcut(&key, modifiers) {
+                            self.update(Message::Menu(action))
+                        } else { Task::none() }
                     }
                     _ => Task::none(),
                 }
@@ -868,7 +950,7 @@ impl App {
                     self.reply(id, Ok(self.info()));
                     return Task::none();
                 }
-                if (self.picker.is_some() || self.confirm) && verb != "cap.show" {
+                if self.modal() && verb != "cap.show" {
                     self.reply(id, Err("dialog active".into()));
                     return Task::none();
                 }
@@ -984,122 +1066,11 @@ impl App {
             let b = button(text(label(key)));
             if enabled { b.on_press(message) } else { b }
         };
-        let mut modes = row![].spacing(gap);
-        for mode in Mode::ALL {
-            modes = modes.push(action(mode.key(), Message::Mode(mode), !self.busy).style(
-                if self.request.mode == mode {
-                    toolkit::theme::button::primary
-                } else {
-                    toolkit::theme::button::secondary
-                },
-            ));
-        }
-        let controls = row![
-            modes,
-            pick_list(
-                self.request.output.clone(),
-                self.outputs.clone(),
-                String::clone
-            )
-            .on_select(Message::Output)
-            .placeholder(label("output")),
-            pick_list(
-                self.selected_window.clone(),
-                self.windows.clone(),
-                Window::to_string
-            )
-            .on_select(Message::Choose)
-            .placeholder(label("choose-window"))
-            .width(180),
-            text(label("delay")),
-            text_input("0–10", &self.delay)
-                .on_input(Message::Delay)
-                .width(55),
-            checkbox(self.request.mode != Mode::Window && self.request.cursor)
-                .label(label("pointer"))
-                .on_toggle_maybe(
-                    (!self.busy && self.request.mode != Mode::Window).then_some(Message::Pointer)
-                )
-        ]
-        .spacing(gap)
-        .align_y(iced::Center);
-        let actions = row![
-            action("take", Message::Take, !self.busy),
-            action("cancel", Message::Cancel, self.busy),
-            action("refresh", Message::Refresh, !self.busy),
-            action("open", Message::Open, !self.busy),
-            action("save", Message::Save, !self.busy && self.document.is_some()),
-            action("copy", Message::Copy, !self.busy && self.document.is_some()),
-            widget::space().width(iced::Fill),
-            action(
-                "undo",
-                Message::Undo,
-                !self.busy && self.document.as_ref().is_some_and(Document::can_undo)
-            ),
-            action(
-                "redo",
-                Message::Redo,
-                !self.busy && self.document.as_ref().is_some_and(Document::can_redo)
-            )
-        ]
-        .spacing(gap);
-        let mut tools = row![
-            action("select", Message::Tool(Tool::Select), !self.busy),
-            action("crop", Message::Tool(Tool::Crop), !self.busy)
-        ]
-        .spacing(gap);
-        for kind in Kind::ALL {
-            tools = tools.push(
-                action(kind.key(), Message::Tool(Tool::Draw(kind)), !self.busy).style(
-                    if self.tool == Tool::Draw(kind) {
-                        toolkit::theme::button::primary
-                    } else {
-                        toolkit::theme::button::secondary
-                    },
-                ),
-            );
-        }
-        let settings = row![
-            text(label("width")),
-            slider(0.5..=40.0, self.width, Message::Width).width(120),
-            text(format!("{:.1}", self.width)),
-            action(
-                "delete",
-                Message::Delete,
-                self.selected.is_some() && !self.busy
-            ),
-            action(
-                "uncrop",
-                Message::Uncrop,
-                self.document.as_ref().is_some_and(|d| d.crop().is_some()) && !self.busy
-            ),
-            action("fit", Message::Fit, true),
-            button("−").on_press(Message::Zoom(self.zoom / 1.25)),
-            text(format!("{} {:.0}%", label("zoom"), self.zoom * 100.0)),
-            button("+").on_press(Message::Zoom(self.zoom * 1.25)),
-            widget::space().width(iced::Fill),
-            text(label("colour")),
-            toolkit::ColorPicker::new(self.colour, Message::Colour).width(180)
-        ]
-        .spacing(gap)
-        .align_y(iced::Center);
-        let settings = column![
-            settings,
-            row![
-                text_input(
-                    crate::strings::label_ref("text-placeholder"),
-                    &self.annotation_text
-                )
-                .on_input(Message::Text)
-                .width(iced::Fill),
-                text(label("text-size")),
-                text_input("8–256", &self.text_size)
-                    .on_input(Message::TextSize)
-                    .width(70)
-            ]
-            .spacing(gap)
-        ]
-        .spacing(gap);
+        let menubar: Element<'_, menu::Action, Theme> =
+            toolkit::Menu::bar(menu::bar(&self.menu_context()))
+                .id(menu::BAR_ID)
+                .style(tokens.menu_style())
+                .into();
         let content: Element<'_, Message, Theme> =
             if let (Some(doc), Some(image)) = (&self.document, &self.preview) {
                 let canvas: Element<'_, Message, Theme> = canvas::Canvas::new(Picture {
@@ -1123,6 +1094,7 @@ impl App {
         let status = row![
             text(&self.status),
             widget::space().width(iced::Fill),
+            text(format!("{} · {} · {:.0}%", label(self.request.mode.key()), label(self.tool.key()), self.zoom * 100.0)),
             text(
                 self.document
                     .as_ref()
@@ -1141,10 +1113,11 @@ impl App {
             )
         ]
         .spacing(gap);
-        let base: Element<'_, Message, Theme> =
-            container(column![controls, actions, tools, settings, content, status].spacing(gap))
-                .padding(tokens.metrics.spacing.md)
-                .into();
+        let base: Element<'_, Message, Theme> = column![
+            menubar.map(Message::Menu),
+            content,
+            container(status).padding(tokens.metrics.spacing.sm),
+        ].height(iced::Fill).width(iced::Fill).into();
         if self.confirm {
             let dialog = column![
                 text(label("discard-title")),
@@ -1189,6 +1162,38 @@ impl App {
             )
             .on_key(modal_key)
             .into()
+        } else if let Some(dialog) = self.dialog {
+            let body = match dialog {
+                Dialog::Properties => column![
+                    text(label("annotation-properties")),
+                    row![
+                        text(label("width")),
+                        slider(0.5..=40.0, self.width, Message::Width).width(iced::Fill),
+                        text(format!("{:.1}", self.width)),
+                    ].spacing(gap).align_y(iced::Center),
+                    text(label("colour")),
+                    toolkit::ColorPicker::new(self.colour, Message::Colour).width(iced::Fill),
+                    text(label("annotation-text")),
+                    text_input(crate::strings::label_ref("text-placeholder"), &self.annotation_text)
+                        .on_input(Message::Text).width(iced::Fill),
+                    row![
+                        text(label("text-size")),
+                        text_input(crate::strings::label_ref("text-size-range"), &self.text_size)
+                            .on_input(Message::TextSize).width(iced::Fill),
+                    ].spacing(gap).align_y(iced::Center),
+                ],
+                Dialog::Shortcuts => column![text(label("shortcuts")), text(label("shortcuts-body"))],
+                Dialog::About => column![text(label("about")), text(format!("{} {}", label("title"), env!("CARGO_PKG_VERSION"))), text(label("about-body"))],
+            }.spacing(tokens.metrics.spacing.md);
+            toolkit::dialog::Modal::new(
+                base,
+                widget::opaque(container(
+                    container(body.push(action("done", Message::Keep, true)))
+                        .padding(tokens.metrics.spacing.lg)
+                        .width(520)
+                        .style(toolkit::theme::container::card),
+                ).center(iced::Fill)),
+            ).on_key(modal_key).into()
         } else {
             base
         }
@@ -1232,6 +1237,64 @@ mod tests {
             })
             .clone();
         initial(look, PathBuf::from("/tmp"))
+    }
+    #[test]
+    fn keyboard_menus_dispatch_real_actions_at_the_minimum_window_size() {
+        use iced::keyboard::key::Named;
+        let mut app = test_app();
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(), iced::Size::new(760.0, 450.0), app.view(),
+        );
+        ui.tap_key(Named::F10);
+        ui.tap_key(Named::Enter);
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::Menu(menu::Action::Open)]), "{messages:?}");
+        for message in messages { let _ = app.update(message); }
+        assert!(app.picker.is_some());
+        let _ = app.update(Message::Keep);
+
+        app.document = Some(Document::new(image::RgbaImage::new(100, 100)).unwrap());
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(), iced::Size::new(760.0, 450.0), app.view(),
+        );
+        ui.tap_key(Named::F10);
+        for _ in 0..3 { ui.tap_key(Named::ArrowRight); }
+        ui.tap_key(Named::Enter);
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::Menu(menu::Action::Tool(Tool::Select))]), "{messages:?}");
+        for message in messages { let _ = app.update(message); }
+        assert_eq!(app.tool, Tool::Select);
+    }
+    #[test]
+    fn text_properties_block_background_actions_and_preserve_text_on_escape() {
+        let mut app = test_app();
+        app.document = Some(Document::new(image::RgbaImage::new(100, 100)).unwrap());
+        let _ = app.update(Message::Menu(menu::Action::Tool(Tool::Draw(Kind::Text))));
+        assert!(matches!(app.dialog, Some(Dialog::Properties)));
+        let _ = app.update(Message::Text("Keep this annotation".into()));
+        let _ = app.update(Message::Menu(menu::Action::Open));
+        assert!(app.picker.is_none());
+        let (bus, mut effects) = BusHandle::response_sink();
+        app.bus = Some(bus);
+        let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
+            id: 1, verb: "cap.open".into(), body: json!({"path":"/tmp/another.png"}).to_string(), caller_key: "local:test".into(),
+        })));
+        let Effect::Respond { rc, .. } = effects.try_recv().unwrap() else { panic!("refusal"); };
+        assert_ne!(rc, 0);
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(), iced::Size::new(760.0, 450.0), app.view(),
+        );
+        ui.tap_key(iced::keyboard::key::Named::Escape);
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::Keep]), "{messages:?}");
+        for message in messages { let _ = app.update(message); }
+        assert!(app.dialog.is_none());
+        assert_eq!(app.annotation_text, "Keep this annotation");
+        assert_eq!(app.tool, Tool::Draw(Kind::Text));
+        let _ = app.update(Message::Menu(menu::Action::ZoomIn));
+        assert_eq!(app.zoom, 1.25);
+        let _ = app.update(Message::Menu(menu::Action::Fit));
+        assert_eq!(app.zoom, 1.0);
     }
     #[test]
     fn escape_closes_each_modal_and_discards_its_pending_action() {

@@ -4,6 +4,40 @@ text-tool = Text
 number-tool = Number
 text-placeholder = Type annotation text, then drag a box
 text-size = Text size
+text-size-range = 8–256
+annotation-text = Annotation text
+annotation-properties = Annotation properties…
+menu-file = File
+menu-edit = Edit
+menu-capture = Capture
+menu-annotate = Annotate
+menu-view = View
+menu-help = Help
+capture-mode = Mode
+quit = Quit
+done = Done
+zoom-in = Zoom in
+zoom-out = Zoom out
+shortcuts = Keyboard shortcuts
+about = About Cap
+about-body = Native screenshots and editable annotations for MixOS.
+shortcuts-body =
+    Ctrl+N — Take screenshot
+    Ctrl+O — Open PNG
+    Ctrl+S — Save As
+    Ctrl+C — Copy image
+    Ctrl+Z — Undo
+    Ctrl+Shift+Z / Ctrl+Y — Redo
+    Delete — Delete selected annotation
+    Ctrl+P — Annotation properties
+    Ctrl++ / Ctrl+− — Zoom in / out
+    Ctrl+0 — Fit preview
+    Ctrl+Q — Quit
+    F10 — Activate menus
+    Alt+F / E / C / A / V / H — Open a menu
+    Arrows, Enter — Navigate menus
+    Escape — Close menu or dialogue; cancel capture
+    Middle mouse drag — Pan preview
 screen = Full screen
 window = Window
 region = Region

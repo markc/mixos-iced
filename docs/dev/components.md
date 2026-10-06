@@ -7,7 +7,7 @@ checked separately by the layering gate.
 
 | Package | Owner | Kind | Layer | Contract | Version |
 |---|---|---|---|---|---|
-| [cap](https://github.com/markc/mixos/blob/main/apps/cap/Cargo.toml) | cap | app | desktop | public | 0.1.0 |
+| [cap](https://github.com/markc/mixos/blob/main/apps/cap/Cargo.toml) | cap | app | desktop | public | 0.1.1 |
 | [ced](https://github.com/markc/mixos/blob/main/apps/ced/Cargo.toml) | ced | app | desktop | public | 0.1.6 |
 | [editor-model](https://github.com/markc/mixos/blob/main/apps/ced/crates/editor-model/Cargo.toml) | ced | app | core | none | 0.1.1 |
 | [syntax](https://github.com/markc/mixos/blob/main/apps/ced/crates/syntax/Cargo.toml) | ced | app | core | none | 0.1.1 |

@@ -244,27 +244,42 @@
 <p>Cap takes screenshots through compd and edits a separate annotation document.
 Its iced window uses the shared toolkit and Fluent catalogue. Both its GUI and
 agent commands use the native ABP Bus. A D-Bus session is unnecessary.</p>
-<p>Choose <strong>Screen</strong>, <strong>Window</strong> or <strong>Region</strong>, select an output or window, set a
-delay of 0–10 seconds and choose whether to include the pointer. <strong>Take
-screenshot</strong> keeps Cap visible during the delay so you can cancel. Cap then
+<p>The window has <strong>File</strong>, <strong>Edit</strong>, <strong>Capture</strong>, <strong>Annotate</strong>, <strong>View</strong> and
+<strong>Help</strong> menus above the preview canvas, with status and current tool below.
+The menus use the same shared toolkit control as Ced. F10 activates the bar;
+Alt+F/E/C/A/V/H opens a menu, and arrows, Enter and Escape navigate it.</p>
+<p>Under <strong>Capture</strong>, choose <strong>Mode → Full screen</strong>, <strong>Window</strong> or <strong>Region</strong>,
+select an output or window, set a delay of 0–10 seconds and choose whether to
+include the pointer. Checked entries show the current choices. <strong>Capture →
+Take screenshot</strong> (Ctrl+N) keeps Cap visible during the delay so you can cancel
+with <strong>Capture → Cancel</strong> or Escape. Cap then
 asks compd to minimise its own fenced window, captures a fresh frame and
 restores itself. Region mode uses compd's selection overlay; Escape cancels it.
 Screen mode captures one output. Window mode captures the window's client
 image, excluding compositor decorations and the pointer. The pointer option
 applies to Screen and Region.</p>
-<p>The preview supports fit, zoom and middle-button panning. Draw arrows, lines,
+<p>The <strong>View</strong> menu provides fit (Ctrl+0) and zoom (Ctrl++/Ctrl+−); middle-button
+dragging pans the preview. Choose tools from <strong>Annotate</strong> to draw arrows, lines,
 rectangles, ellipses, freehand strokes, highlights and opaque redactions. Type
-text and drag a box to place it, or use Number for successive numbered boxes.
+text in <strong>Annotate → Annotation properties</strong> (Ctrl+P) and drag a box to place
+it, or use Number for successive numbered boxes. Choosing Text opens those
+properties automatically. The properties dialogue also sets colour, stroke
+width and text size. Press Done or Escape to return to the canvas.
 Text uses the bundled Inter font and shares the preview/export painter. Select
 an object to move it or delete it. Crop changes the export rectangle without
 discarding source pixels. Undo and redo operate on complete gestures. Source
 pixels remain immutable; preview, PNG export and image clipboard use the same
 painter.</p>
-<p><strong>Save As</strong> writes a new PNG atomically and refuses an existing destination,
+<p><strong>File → Save As</strong> (Ctrl+S) writes a new PNG atomically and refuses an existing destination,
 including a symlink. Choose a fresh filename rather than overwriting another
 image. Closing the app, opening an image or taking another screenshot prompts
 when annotations have not been saved. PNG export flattens the annotations;
 editable objects are held in memory for this initial version.</p>
+<p><strong>Edit</strong> contains undo (Ctrl+Z), redo (Ctrl+Shift+Z or Ctrl+Y), copy image
+(Ctrl+C), delete selected annotation (Delete), and reset crop. <strong>Help →
+Keyboard shortcuts</strong> (F1) lists the bindings. Actions that cannot run in the
+current document or job state are disabled; a dialogue blocks background
+commands until it is closed.</p>
 <p><code>cap [IMAGE]</code> opens the window. A second invocation activates the existing
 instance. <code>cap --headless</code> starts a Bus-only service. <code>--service NAME</code>,
 <code>--comp NAME</code> and <code>--noded-url URL</code> select the native endpoints. <code>--version</code>
