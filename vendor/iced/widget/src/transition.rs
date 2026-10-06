@@ -228,7 +228,11 @@ where
             } = tree.state.downcast_mut();
 
             if instant == redraw {
-                shell.request_redraw();
+                // A host may retry one frame after reducing messages or
+                // relayout. An idle transition must not keep that host awake.
+                if animation.is_animating(*instant) {
+                    shell.request_redraw();
+                }
             } else {
                 let was_animating = animation.is_animating(*instant);
 

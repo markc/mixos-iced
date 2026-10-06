@@ -236,6 +236,40 @@ mod tests {
     }
 
     #[test]
+    fn idle_transition_with_redraw_callback_settles_without_future_frames() {
+        let now = Instant::now() + iced_core::time::Duration::from_secs(1);
+        let mut last = None;
+        let mut cache = Cache::default();
+        let mut renderer = Paint::default();
+        let waker = shell::Waker::new(|| {});
+        let mut next = window::RedrawRequest::Wait;
+        for attempt in 0..3 {
+            let transition = iced_widget::transition::Transition::new(
+                || iced_core::animation::Animation::new(0.0_f32),
+                0.0_f32,
+                |_, _| Space::new(),
+            );
+            let view: Element<'_, Instant, Theme, Paint> = toolkit::keys::keys(transition, |_| None)
+                .on_redraw(last, |at| at).into();
+            let mut ui = UserInterface::build(view, Size::new(100.0, 50.0), cache, &mut renderer);
+            let mut messages = shell::Bus::new();
+            let state = prepare(&mut ui, mouse::Cursor::Unavailable, &mut renderer, &waker, &mut messages, now);
+            let emitted: Vec<_> = messages.drain().collect();
+            let pass = next_pass(attempt, &state, !emitted.is_empty());
+            next = after_update(next, state, now, true);
+            cache = ui.into_cache();
+            if pass == Pass::Draw {
+                assert_eq!(attempt, 1);
+                assert_eq!(next, window::RedrawRequest::Wait, "an idle transition must not extend a callback retry into another frame");
+                return;
+            }
+            assert_eq!(pass, Pass::Retry);
+            for at in emitted { last = Some(at); }
+        }
+        panic!("idle transition and redraw callback failed to settle");
+    }
+
+    #[test]
     fn relayout_retries_prepare_recreated_responsive_buttons() {
         struct Resize(bool);
         impl iced_widget::transition::Program for Resize {
@@ -267,6 +301,8 @@ mod tests {
         let state = prepare(&mut ui, cursor, &mut renderer, &waker, &mut messages, now);
         assert_eq!(messages.drain().count(), 0);
         assert_eq!(next_pass(1, &state, false), Pass::Draw);
+        assert_eq!(after_update(window::RedrawRequest::Wait, state, now, true), window::RedrawRequest::NextFrame,
+            "an active transition must retain its animation wake");
         renderer.0.clear();
         ui.draw(&mut renderer, &Theme::Dark, &renderer::Style::default(), cursor);
         assert_eq!(renderer.0, vec![button::background(&Theme::Dark, button::Status::Hovered).background.unwrap()]);

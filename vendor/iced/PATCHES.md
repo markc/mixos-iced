@@ -145,3 +145,17 @@ pre-present callbacks even on empty frames. Failed presents do not enter
 history. Its unit tests and Term offscreen pixel tests exercise the actual
 production implementation, rather than a duplicate model. The iced 0.15
 backend and renderer settings APIs remain intact.
+
+## Idle transition redraw retries
+
+`widget/src/transition.rs`: receiving `RedrawRequested` twice at the same
+instant only requests another frame while the transition is animating.
+Iced's host retries a frame after message reduction or layout invalidation;
+the previous unconditional request could make an idle transition beside a
+guarded redraw callback keep producing frames forever.
+
+The actual `Keys` + idle `Transition` regression in compd's UI host guards
+this change (`idle_transition_with_redraw_callback_settles_without_future_frames`).
+The Transition/Responsive relayout test also asserts that an active
+transition continues requesting frames. Run `cargo test -p ui --lib`.
+Retire this patch when upstream handles idle same-instant retries.
