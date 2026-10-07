@@ -67,6 +67,8 @@ use std::slice;
 use std::sync::Arc;
 
 mod presentation;
+mod native_presentation;
+use native_presentation::feedback as request_frame_feedback;
 
 #[cfg(feature = "native-frame-probe")]
 pub mod native_frame_probe;
@@ -494,6 +496,7 @@ async fn run_instance<P>(
     use winit::event_loop::ControlFlow;
 
     let mut window_manager = window::Manager::new();
+    let mut capacity_epoch = presentation::CapacityEpoch::default();
     let mut is_window_opening = !is_daemon;
 
     let mut compositor = None;
@@ -942,7 +945,7 @@ async fn run_instance<P>(
                         let present_span = debug::present(id);
                         let binding = interface.frame_presentation().cloned();
                         window.presentation.drawn(binding.clone());
-                        let binding = binding.filter(|binding| window.presentation.needs(binding));
+                        let binding = window.presentation.feedback_candidate();
                         #[cfg(feature = "native-frame-probe")]
                         let scope =
                             window
@@ -953,12 +956,14 @@ async fn run_instance<P>(
                                         .expect("one native draw scope")
                                 });
                         let mut feedback = None;
+                        let mut pre_present_called = false;
                         let result = current_compositor.present(
                             &mut window.renderer,
                             &mut window.surface,
                             window.state.viewport(),
                             window.state.background_color(),
                             || {
+                                pre_present_called = true;
                                 window.raw.pre_present_notify();
                                 if binding.is_some() {
                                     feedback = Some(request_frame_feedback(&window.raw));
@@ -988,7 +993,12 @@ async fn run_instance<P>(
                                             binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
                                         }
                                     }
-                                    Err(reason) => binding.observe(id, None, reason),
+                                    Err(reason) => {
+                                        if reason == core::window::presentation::FrameOutcome::Capacity {
+                                            window.presentation.native_capacity_blocked();
+                                        }
+                                        binding.observe(id, None, reason);
+                                    }
                                 },
                                 None => {}
                             }
@@ -1033,7 +1043,7 @@ async fn run_instance<P>(
                                         );
                                     }
 
-                                    window.raw.request_redraw();
+                                    native_presentation::recover_redraw(&window.raw, pre_present_called);
                                 }
                                 compositor::SurfaceError::Occluded => {
                                     present_span.finish();
@@ -1046,8 +1056,12 @@ async fn run_instance<P>(
                                     log::warn!("Error {error:?} when presenting surface.");
 
                                     // Try rendering all windows again next frame.
-                                    for (_id, window) in window_manager.iter_mut() {
-                                        window.raw.request_redraw();
+                                    for (window_id, window) in window_manager.iter_mut() {
+                                        if window_id == id {
+                                            native_presentation::recover_redraw(&window.raw, pre_present_called);
+                                        } else {
+                                            window.raw.request_redraw();
+                                        }
                                     }
                                 }
                             },
@@ -1142,6 +1156,26 @@ async fn run_instance<P>(
                         }
                     }
                     event::Event::AboutToWait => {
+                        let blocked = window_manager.iter_mut().any(|(_, window)| window.presentation.is_capacity_blocked());
+                        if !blocked {
+                            capacity_epoch.idle();
+                        } else {
+                            let epoch = window_manager.iter_mut().find_map(|(_, window)| {
+                                native_presentation::capacity(&window.raw).ok().map(|capacity| capacity.release_epoch)
+                            });
+                            if epoch.is_some_and(|epoch| capacity_epoch.should_scan(epoch)) {
+                                for (_, window) in window_manager.iter_mut() {
+                                    if window.presentation.is_capacity_blocked()
+                                        && let Ok(capacity) = native_presentation::capacity(&window.raw)
+                                        && window.presentation.take_capacity_retry(capacity.available)
+                                    {
+                                        window.raw.request_redraw();
+                                    }
+                                }
+                                // CapacityEpoch retains the generation sampled before this
+                                // scan. A racing release publishes a new epoch and wake.
+                            }
+                        }
                         if actions > 0 {
                             proxy.free_slots(actions);
                             actions = 0;
@@ -1324,49 +1358,6 @@ fn deliver_frame_feedback(
     drop(feedback);
     if let Some(binding) = binding {
         binding.observe(window, Some(request), outcome);
-    }
-}
-
-/// Request feedback synchronously at the actual pre-commit boundary.
-fn request_frame_feedback(
-    window: &winit::window::Window,
-) -> Result<u64, core::window::presentation::FrameOutcome> {
-    use core::window::presentation::FrameOutcome;
-    #[cfg(all(
-        feature = "wayland",
-        any(
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "dragonfly",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        )
-    ))]
-    {
-        use winit::platform::wayland::WindowExtWayland;
-        window
-            .request_presentation_feedback()
-            .map(|id| id.get())
-            .map_err(|error| match error {
-                winit::presentation::PresentationError::Unsupported => FrameOutcome::Unsupported,
-                winit::presentation::PresentationError::Capacity => FrameOutcome::Capacity,
-                winit::presentation::PresentationError::Exhausted => FrameOutcome::Exhausted,
-                winit::presentation::PresentationError::Closed => FrameOutcome::Closed,
-            })
-    }
-    #[cfg(not(all(
-        feature = "wayland",
-        any(
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "dragonfly",
-            target_os = "netbsd",
-            target_os = "openbsd"
-        )
-    )))]
-    {
-        let _ = window;
-        Err(FrameOutcome::Unsupported)
     }
 }
 

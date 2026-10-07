@@ -9,6 +9,21 @@ use std::collections::BTreeMap;
 
 const CAP: usize = 8;
 
+/// One process generation per runtime; no timer or query-driven redraw.
+#[derive(Default)]
+pub(crate) struct CapacityEpoch(Option<u64>);
+
+impl CapacityEpoch {
+    pub(crate) fn idle(&mut self) {
+        self.0 = None;
+    }
+    pub(crate) fn should_scan(&mut self, epoch: u64) -> bool {
+        let changed = self.0 != Some(epoch) || epoch == u64::MAX;
+        self.0 = Some(epoch);
+        changed
+    }
+}
+
 struct Submission {
     binding: FrameBinding,
     successful: bool,
@@ -19,6 +34,7 @@ pub(crate) struct Ledger {
     pending: BTreeMap<u64, Submission>,
     proven: Option<(u64, FrameBinding)>,
     latest: Option<FrameBinding>,
+    capacity_blocked: bool,
 }
 
 impl Ledger {
@@ -28,14 +44,20 @@ impl Ledger {
             pending: BTreeMap::new(),
             proven: None,
             latest: None,
+            capacity_blocked: false,
         }
     }
     pub fn drawn(&mut self, binding: Option<FrameBinding>) {
         self.latest = binding;
+        if self.latest.is_none() {
+            self.capacity_blocked = false;
+        }
     }
     pub fn needs(&self, binding: &FrameBinding) -> bool {
-        self.pending.len() < CAP
-            && !self
+        self.pending.len() < CAP && self.requires_evidence(binding)
+    }
+    fn requires_evidence(&self, binding: &FrameBinding) -> bool {
+        !self
                 .proven
                 .as_ref()
                 .is_some_and(|(_, proven)| proven.same_presentation(binding))
@@ -43,6 +65,39 @@ impl Ledger {
                 .pending
                 .values()
                 .any(|entry| entry.successful && entry.binding.same_presentation(binding))
+    }
+    pub(crate) fn feedback_candidate(&mut self) -> Option<FrameBinding> {
+        let binding = self.latest.clone()?;
+        if !self.requires_evidence(&binding) {
+            self.capacity_blocked = false;
+            return None;
+        }
+        self.capacity_blocked = !self.needs(&binding);
+        (!self.capacity_blocked).then_some(binding)
+    }
+    pub(crate) fn native_capacity_blocked(&mut self) {
+        self.capacity_blocked = true;
+    }
+    pub(crate) fn is_capacity_blocked(&self) -> bool {
+        self.capacity_blocked
+    }
+    pub(crate) fn take_capacity_retry(&mut self, native_available: bool) -> bool {
+        if !self.capacity_blocked {
+            return false;
+        }
+        let Some(binding) = &self.latest else {
+            self.capacity_blocked = false;
+            return false;
+        };
+        if !self.requires_evidence(binding) {
+            self.capacity_blocked = false;
+            return false;
+        }
+        if native_available && self.pending.len() < CAP {
+            self.capacity_blocked = false;
+            return true;
+        }
+        false
     }
     pub fn submitted(&mut self, id: u64, binding: FrameBinding, successful: bool) {
         debug_assert!(self.pending.len() < CAP && !self.pending.contains_key(&id));
@@ -102,6 +157,72 @@ impl Drop for Ledger {
 mod tests {
     use super::*;
     use crate::core::window::presentation::{FrameObserver, FrameStamp};
+
+    #[test]
+    fn capacity_epoch_scans_initial_wait_and_changes_without_repeated_generation_work() {
+        let mut epoch = CapacityEpoch::default();
+        assert!(epoch.should_scan(0));
+        assert!(!epoch.should_scan(0));
+        assert!(epoch.should_scan(1));
+        assert!(!epoch.should_scan(1));
+        epoch.idle();
+        assert!(epoch.should_scan(1), "a newly blocked runtime gets its initial availability check");
+        assert!(epoch.should_scan(u64::MAX));
+        assert!(epoch.should_scan(u64::MAX), "terminal epoch must reconcile each real native wake");
+    }
+
+    #[test]
+    fn local_capacity_wait_keeps_failed_ids_and_queues_one_retry_after_retirement() {
+        let target = binding(9, FrameObserver::new(|_| {}));
+        let mut ledger = Ledger::new(Id::unique());
+        ledger.drawn(Some(target.clone()));
+        for id in 1..=CAP as u64 {
+            ledger.submitted(id, target.clone(), false);
+        }
+        assert!(ledger.feedback_candidate().is_none());
+        assert!(ledger.is_capacity_blocked());
+        assert!(!ledger.take_capacity_retry(true), "local entries must actually retire");
+        assert!(ledger.resolve(1, presented()).is_none(), "failed ID cannot prove its eventual native commit");
+        assert!(!ledger.take_capacity_retry(false));
+        assert!(ledger.take_capacity_retry(true));
+        assert!(!ledger.take_capacity_retry(true), "repeated wakes cannot enqueue another retry");
+        let candidate = ledger.feedback_candidate().unwrap();
+        assert!(candidate.same_presentation(&target));
+        ledger.submitted(9, candidate, true);
+        ledger.native_capacity_blocked();
+        assert!(!ledger.take_capacity_retry(true), "successful pending proof suppresses redundant work");
+        assert!(!ledger.is_capacity_blocked());
+    }
+
+    #[test]
+    fn native_capacity_refusal_rearms_after_an_admission_race_and_binding_retirement_clears_it() {
+        let mut ledger = Ledger::new(Id::unique());
+        ledger.drawn(Some(binding(1, FrameObserver::new(|_| {}))));
+        assert!(ledger.feedback_candidate().is_some());
+        ledger.native_capacity_blocked();
+        assert!(!ledger.take_capacity_retry(false));
+        assert!(ledger.take_capacity_retry(true));
+        assert!(ledger.feedback_candidate().is_some());
+        ledger.native_capacity_blocked();
+        assert!(!ledger.take_capacity_retry(false));
+        assert!(ledger.is_capacity_blocked());
+        ledger.drawn(None);
+        assert!(!ledger.is_capacity_blocked());
+        assert!(!ledger.take_capacity_retry(true));
+    }
+
+    #[cfg(feature = "native-frame-probe")]
+    #[test]
+    fn probe_reads_the_actual_immutable_pending_binding_and_success_flag() {
+        let target = binding(1, FrameObserver::new(|_| {}));
+        let mut ledger = Ledger::new(Id::unique());
+        ledger.submitted(1, target.clone(), false);
+        let (captured, successful) = ledger.pending_binding(1).unwrap();
+        assert!(captured.same_presentation(&target));
+        assert!(!successful);
+        assert!(ledger.resolve(1, presented()).is_none());
+        assert!(ledger.pending_binding(1).is_none());
+    }
 
     #[test]
     fn an_unsupported_only_window_still_notifies_its_drawn_observer_on_retirement() {

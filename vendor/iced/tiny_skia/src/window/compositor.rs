@@ -172,6 +172,10 @@ pub fn present(
         surface
             .history
             .submit(renderer.layers(), background_color, on_pre_present, || {
+                #[cfg(feature = "native-frame-probe")]
+                if crate::core::window::presentation::probe::take_before_commit_failure() {
+                    return Err(compositor::SurfaceError::Other);
+                }
                 let result = buffer
                     .present_with_damage(&physical_damage)
                     .map_err(|_| compositor::SurfaceError::Lost);

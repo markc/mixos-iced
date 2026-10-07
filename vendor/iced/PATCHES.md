@@ -1,5 +1,29 @@
 # vendor/iced: local patches
 
+## Failed pre-commit presentation and capacity recovery
+
+The shared native presentation helper tracks whether the actual pre-present hook
+ran. Recoverable Lost/Outdated and ordinary Other failures request Winit's one-shot
+pacing retry only for that failed window; pre-hook failures use ordinary redraw,
+and Occluded/OutOfMemory retain their visibility/fatal policies. The original
+native callback and unsuccessful feedback tombstones remain owned until actual
+retirement. No resize, extra commit, observer message or timer supplies recovery.
+
+The actual commit ledger marks local/native capacity refusal independently of
+already-proven or successfully pending bindings. At AboutToWait, before the idle
+shortcut, one process release epoch reconciles live blocked windows against their
+own native availability. A queued retry consumes its blocked flag; losing native
+admission rearms it. An untracked successful commit is allowed to drain failed
+requests, whose eventual native Presented still cannot prove success. Actual
+Charge retirement wakes this path even when the original window's event is
+suppressed. Epoch exhaustion reconciles each existing native wake without wrapping.
+Ledger guards use this production module, including the root embedding.
+
+The non-default core fault scope now also supports BeforeCommit. Tiny-skia consumes
+it after the actual pre-present callback and before buffer submission; AfterCommit
+retains its original meaning. The real pre-commit and repeated-capacity native
+fixtures remain required acceptance work.
+
 ## Non-default native frame ordering acceptance
 
 `native-frame-probe` forwards through core, graphics, runtime, tiny-skia,
