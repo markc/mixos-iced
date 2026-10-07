@@ -2,9 +2,9 @@
 //! Conflict details (§3.7 "Show"): who won, which lines, and exactly the
 //! text of yours that was not applied, with Copy and Re-insert.
 
-use application::iced::widget::{column, container, scrollable};
 use application::Element;
-use application::iced::{Length};
+use application::iced::Length;
+use application::iced::widget::{column, container, scrollable};
 use editor_model::types::{Conflict, TabId};
 
 use super::{DialogMsg, frame};

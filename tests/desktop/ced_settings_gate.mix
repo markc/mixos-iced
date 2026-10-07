@@ -127,9 +127,10 @@ fn launch($home,$label,$paths)
   return {pid:$child,log:$log,at:$at}
 end
 fn presented($launch,$budget)
-  $row = comp("comp.window.wait",{match:{app_id:"dev.mixos.ced",pid:$launch.pid},until:"presented",timeout_ms:5000}).window
+  $row = comp("comp.window.wait",{match:{app_id:"dev.mixos.ced"},until:"presented",timeout_ms:5000}).window
   $elapsed = (time()-$launch.at)*1000
   check($row != nil,"Ced did not present")
+  check($row.pid == $launch.pid,"Presented window belongs to another process")
   check($elapsed <= $budget,"First map took " .. to_string($elapsed) .. "ms, budget " .. to_string($budget))
   print("Ced first map " .. to_string($elapsed) .. "ms " .. $launch.log)
   return {id:$row.id,generation:$row.generation}

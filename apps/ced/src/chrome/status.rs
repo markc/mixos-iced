@@ -5,8 +5,8 @@
 //! INS/OVR, the pending count when above 0, and a red `UNPROTECTED` while the
 //! edit service is volatile or its recovery is degraded.
 
-use application::iced::widget::{button, container, row};
 use application::Element;
+use application::iced::widget::{button, container, row};
 use application::iced::{Alignment, Length, Padding};
 use edit::wire::{DiskState, Eol};
 use editor_model::mirror::{Mirror, Phase};

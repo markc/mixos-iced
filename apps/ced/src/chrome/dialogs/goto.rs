@@ -2,9 +2,9 @@
 //! Go to Line (`L[:C]`), Ctrl+G. Lines are 1-based; the column is editd's
 //! (scalars, 1-based) and optional.
 
-use application::iced::widget::{column, text_input};
 use application::Element;
-use application::iced::{Padding};
+use application::iced::Padding;
+use application::iced::widget::{column, text_input};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;

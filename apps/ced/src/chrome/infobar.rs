@@ -6,8 +6,8 @@
 //! state every frame (state is truth); the app only remembers which ones the
 //! user dismissed.
 
-use application::iced::widget::{button, column, container, row};
 use application::Element;
+use application::iced::widget::{button, column, container, row};
 use application::iced::{Alignment, Background, Border, Length, Padding};
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};

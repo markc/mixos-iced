@@ -21,10 +21,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use application::Element;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::keyboard::{Key, key::Named};
 use application::iced::widget::{column, container, stack};
-use application::Element;
 use application::iced::{Length, Size, Subscription, Task};
 use editor_model::diag::Diagnostics;
 use editor_model::model::{EditCommand, Motion};

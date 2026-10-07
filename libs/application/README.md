@@ -4,6 +4,8 @@ Import `application::Element` for the host's selected native renderer. With
 `tiny-skia`, its default stays software even in combined workspace builds that
 also enable iced's GPU renderer. An explicit backend type remains available for
 renderer-generic or GPU hosts; `start` infers it from the supplied view.
+Native host factories with explicit widget return types use
+`application::widget::{Text, Button}` so their defaults agree with `Element`.
 
 Shared native application hosting for Ced, DOpus and Term. `start` takes the
 initial state and boot task exactly once, selects a single asynchronous task

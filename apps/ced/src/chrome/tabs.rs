@@ -4,8 +4,8 @@
 //! focused, `⟳` while (re)attaching. Click selects, middle-click or the `×`
 //! closes, the strip scrolls sideways on overflow.
 
-use application::iced::widget::{container, row};
 use application::Element;
+use application::iced::widget::{container, row};
 use application::iced::{Alignment, Length};
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};

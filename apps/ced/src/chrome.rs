@@ -18,8 +18,8 @@ pub mod status;
 pub mod tabs;
 pub mod timer;
 
-use application::iced::widget::{button, container, text};
 use application::Element;
+use application::iced::widget::{button, container, text};
 use application::iced::{Background, Border, Color, Length, Padding};
 
 use crate::theme::{Chrome, Theme};
@@ -65,7 +65,7 @@ impl Look {
     pub fn text<'a>(
         &self,
         value: impl text::IntoFragment<'a>,
-    ) -> application::iced::widget::Text<'a> {
+    ) -> application::widget::Text<'a> {
         text(value).font(self.ui).size(self.ui_px)
     }
 
@@ -73,7 +73,7 @@ impl Look {
     pub fn small<'a>(
         &self,
         value: impl text::IntoFragment<'a>,
-    ) -> application::iced::widget::Text<'a> {
+    ) -> application::widget::Text<'a> {
         text(value).font(self.ui).size(self.small_px())
     }
 
@@ -81,7 +81,7 @@ impl Look {
     pub fn code<'a>(
         &self,
         value: impl text::IntoFragment<'a>,
-    ) -> application::iced::widget::Text<'a> {
+    ) -> application::widget::Text<'a> {
         text(value).font(self.mono).size(self.small_px())
     }
 
@@ -214,7 +214,7 @@ impl Look {
         &self,
         label: impl text::IntoFragment<'a>,
         on_press: Option<M>,
-    ) -> application::iced::widget::Button<'a, M> {
+    ) -> application::widget::Button<'a, M> {
         button(self.text(label))
             .padding(Padding::from([4, 12]))
             .on_press_maybe(on_press)

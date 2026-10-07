@@ -3,8 +3,8 @@
 //! from its recovery files that no one holds are offered once — Open, or
 //! Discard (`edit.close force:true`, which deletes their recovery files).
 
-use application::iced::widget::{column, row};
 use application::Element;
+use application::iced::widget::{column, row};
 use application::iced::{Alignment, Length};
 
 use super::{DialogMsg, frame};

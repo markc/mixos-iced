@@ -28,6 +28,17 @@ pub type Renderer = iced::Renderer;
 pub type Element<'a, Message, Theme = iced::Theme, Backend = Renderer> =
     iced::Element<'a, Message, Theme, Backend>;
 
+/// Renderer-selected return types for native host factories. Re-exported
+/// widget builders remain generic and infer the enclosing Element's backend.
+pub mod widget {
+    pub use iced::widget::*;
+
+    pub type Text<'a, Theme = iced::Theme, Backend = super::Renderer> =
+        iced::widget::Text<'a, Theme, Backend>;
+    pub type Button<'a, Message, Theme = iced::Theme, Backend = super::Renderer> =
+        iced::widget::Button<'a, Message, Theme, Backend>;
+}
+
 #[cfg(feature = "settings")]
 pub mod presentation;
 

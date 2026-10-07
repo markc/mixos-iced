@@ -12,8 +12,8 @@
 //! controller runs the requests (`ced.action search.*` carries the same
 //! arguments, so a Bus caller gets identical behaviour).
 
-use application::iced::widget::{button, container, row, text_input};
 use application::Element;
+use application::iced::widget::{button, container, row, text_input};
 use application::iced::{Alignment, Length, Padding};
 
 use super::Look;
