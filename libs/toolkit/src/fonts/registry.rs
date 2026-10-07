@@ -755,7 +755,7 @@ impl fmt::Display for RegistrationError {
                     "selection identity {alias:?} already holds different content"
                 )
             }
-            Self::Renderer(error) => write!(f, "renderer registration failed: {error}"),
+            Self::Renderer(error) => write!(f, "renderer registration failed: {error:?}"),
             Self::RendererVersionExhausted => {
                 write!(f, "renderer font-system version is exhausted")
             }
@@ -1229,7 +1229,7 @@ fn parse_sources(
             len: bytes.len() as u64,
         };
         let mut db = fontdb::Database::new();
-        db.load_font_source(fontdb::Source::Binary(blob.bytes.clone()));
+        db.load_font_source(fontdb::Source::Binary(Arc::new(blob.bytes.clone())));
         if db.is_empty() {
             return Err(RegistrationError::SourceUnparsable { source });
         }
@@ -1329,7 +1329,7 @@ fn selection_digest(
     hasher.update(&requested.to_le_bytes());
     hasher.update(&effective.to_le_bytes());
     match policy {
-        WeightPolicy::Exact => hasher.update(&[0]),
+        WeightPolicy::Exact => { hasher.update(&[0]); }
         WeightPolicy::Substitute { reason, .. } => {
             hasher.update(&[1]);
             write_bytes(&mut hasher, reason.as_bytes());
@@ -1360,10 +1360,10 @@ fn icon_selection_digest(
     *hasher.finalize().as_bytes()
 }
 
-fn resolve_face(
-    parsed: &[ParsedSource],
+fn resolve_face<'a>(
+    parsed: &'a [ParsedSource],
     face_ref: &SourceFace,
-) -> Result<(FaceKey, &ParsedFace), RegistrationError> {
+) -> Result<(FaceKey, &'a ParsedFace), RegistrationError> {
     let Some(source) = parsed.get(face_ref.source) else {
         return Err(RegistrationError::FaceOutOfRange {
             source: face_ref.source,

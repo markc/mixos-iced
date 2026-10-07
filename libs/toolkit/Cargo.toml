@@ -68,7 +68,7 @@ unicode-segmentation = "1.13"
 
 [dev-dependencies]
 edit = { path = "../edit" }
-iced_tiny_skia = { workspace = true, features = ["wayland"] }
+iced_tiny_skia = { workspace = true, features = ["wayland", "geometry"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 unicode-width = "=0.2.2"
 # Tests shape real text; iced's embedded Fira Sans means no host font is read.

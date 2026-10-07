@@ -57,7 +57,7 @@ fn collection(bytes: &'static [u8], family: &str, role: &str) -> FontCollection 
     }
 }
 
-fn selection(key: &str, families: &[&str], weight: u16) -> SelectionRequest {
+fn selection_request(key: &str, families: &[&str], weight: u16) -> SelectionRequest {
     SelectionRequest {
         key: key.into(),
         families: families.iter().map(|name| name.to_string()).collect(),
@@ -71,7 +71,7 @@ fn selection(key: &str, families: &[&str], weight: u16) -> SelectionRequest {
 fn batch(bytes: &'static [u8], family: &str, role: &str, weight: u16) -> RegistrationBatch {
     RegistrationBatch {
         collection: collection(bytes, family, role),
-        selections: vec![selection(role, &[family], weight)],
+        selections: vec![selection_request(role, &[family], weight)],
         icons: Vec::new(),
     }
 }
@@ -197,8 +197,8 @@ fn registry_end_to_end_scenarios() {
         .register_batch(RegistrationBatch {
             collection: collection(FIRA, "Fira Sans", "body"),
             selections: vec![
-                selection("body", &["Fira Sans"], 400),
-                selection("copy", &["Fira Sans"], 400),
+                selection_request("body", &["Fira Sans"], 400),
+                selection_request("copy", &["Fira Sans"], 400),
             ],
             icons: Vec::new(),
         })
@@ -260,7 +260,7 @@ fn registry_end_to_end_scenarios() {
     let fallback = registry
         .register_batch(RegistrationBatch {
             collection: collection(INTER_VARIABLE, "Inter", "ui"),
-            selections: vec![selection("ui", &["Missing", "Inter"], 400)],
+            selections: vec![selection_request("ui", &["Missing", "Inter"], 400)],
             icons: Vec::new(),
         })
         .expect("declared fallback");
@@ -316,7 +316,7 @@ fn registry_end_to_end_scenarios() {
     let with_b = registry
         .register_batch(RegistrationBatch {
             collection: arabic_collection.clone(),
-            selections: vec![selection("ar", &["Noto Sans", "Noto Sans Arabic"], 400)],
+            selections: vec![selection_request("ar", &["Noto Sans", "Noto Sans Arabic"], 400)],
             icons: Vec::new(),
         })
         .expect("arabic fallback");
@@ -347,7 +347,7 @@ fn registry_end_to_end_scenarios() {
     let latin_only = registry
         .register_batch(RegistrationBatch {
             collection: arabic_collection,
-            selections: vec![selection("la", &["Noto Sans"], 400)],
+            selections: vec![selection_request("la", &["Noto Sans"], 400)],
             icons: Vec::new(),
         })
         .expect("latin only");
@@ -425,7 +425,7 @@ fn registry_end_to_end_scenarios() {
     let err = registry
         .register_batch(RegistrationBatch {
             collection: icon_collection.clone(),
-            selections: vec![selection("ui", &["Fira Sans"], 400)],
+            selections: vec![selection_request("ui", &["Fira Sans"], 400)],
             icons: vec![IconSelectionRequest {
                 key: "icons".into(),
                 family: "Fira Sans".into(),
