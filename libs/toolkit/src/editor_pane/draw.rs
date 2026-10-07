@@ -1201,10 +1201,8 @@ mod tests {
             cell_w: 10.0,
             line_h: 20.0,
         };
-        let st = State {
-            metrics: Some(metrics),
-            ..State::default()
-        };
+        let mut st = State::default();
+        st.metrics = Some(metrics);
         let g = Geometry::new(
             Rectangle {
                 x: 100.0,
