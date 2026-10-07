@@ -675,7 +675,10 @@ where
     }
 
     /// Associate evidence with this constructed view, never with its cache.
-    pub fn with_frame_presentation(mut self, binding: Option<crate::core::window::presentation::FrameBinding>) -> Self {
+    pub fn with_frame_presentation(
+        mut self,
+        binding: Option<crate::core::window::presentation::FrameBinding>,
+    ) -> Self {
         self.frame_presentation = binding;
         self
     }

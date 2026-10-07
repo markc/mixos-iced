@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Immutable rendered-view identity and observation-only presentation receipts.
 
-use std::{fmt, sync::Arc};
 use super::Id;
+use std::{fmt, sync::Arc};
 
 /// Identity supplied by the owner of the view being constructed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -70,12 +70,18 @@ impl FrameObserver {
         Self(Arc::new(observe))
     }
     /// Whether two sinks name the same observation owner.
-    pub fn same_owner(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+    pub fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     /// Store one copied observation without sending an application message.
-    pub fn observe(&self, observation: FrameObservation) { (self.0)(observation); }
+    pub fn observe(&self, observation: FrameObservation) {
+        (self.0)(observation);
+    }
 }
 impl fmt::Debug for FrameObserver {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_struct("FrameObserver").finish_non_exhaustive() }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrameObserver").finish_non_exhaustive()
+    }
 }
 
 /// Bound alongside view construction and retained with that exact interface.
@@ -93,6 +99,11 @@ impl FrameBinding {
     }
     /// Deliver bounded copied metadata after native feedback ownership retires.
     pub fn observe(&self, window: Id, request_id: Option<u64>, outcome: FrameOutcome) {
-        self.observer.observe(FrameObservation {window, stamp: self.stamp, request_id, outcome});
+        self.observer.observe(FrameObservation {
+            window,
+            stamp: self.stamp,
+            request_id,
+            outcome,
+        });
     }
 }

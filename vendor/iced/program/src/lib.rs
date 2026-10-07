@@ -102,7 +102,11 @@ pub trait Program: Sized {
         1.0
     }
 
-    fn frame_presentation(&self, _state: &Self::State, _window: window::Id) -> Option<window::presentation::FrameBinding> {
+    fn frame_presentation(
+        &self,
+        _state: &Self::State,
+        _window: window::Id,
+    ) -> Option<window::presentation::FrameBinding> {
         None
     }
 
@@ -156,7 +160,11 @@ pub fn with_title<P: Program>(
             self.program.update(state, message)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             self.program.frame_presentation(state, window)
         }
 
@@ -235,7 +243,11 @@ pub fn with_subscription<P: Program>(
             self.program.update(state, message)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             self.program.frame_presentation(state, window)
         }
 
@@ -321,7 +333,11 @@ pub fn with_theme<P: Program>(
             self.program.update(state, message)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             self.program.frame_presentation(state, window)
         }
 
@@ -400,7 +416,11 @@ pub fn with_style<P: Program>(
             self.program.update(state, message)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             self.program.frame_presentation(state, window)
         }
 
@@ -475,7 +495,11 @@ pub fn with_scale_factor<P: Program>(
             self.program.update(state, message)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             self.program.frame_presentation(state, window)
         }
 
@@ -584,7 +608,11 @@ pub fn with_frame_presentation<P: Program>(
             self.program.style(state, theme)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             (self.frame_presentation)(state, window)
         }
     }
@@ -640,7 +668,11 @@ pub fn with_executor<P: Program, E: Executor>(
             self.program.update(state, message)
         }
 
-        fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        fn frame_presentation(
+            &self,
+            state: &Self::State,
+            window: window::Id,
+        ) -> Option<window::presentation::FrameBinding> {
             self.program.frame_presentation(state, window)
         }
 
@@ -711,7 +743,10 @@ impl<P: Program> Instance<P> {
     }
 
     /// Produces the current widget tree of the [`Instance`].
-    pub fn frame_presentation(&self, window: window::Id) -> Option<window::presentation::FrameBinding> {
+    pub fn frame_presentation(
+        &self,
+        window: window::Id,
+    ) -> Option<window::presentation::FrameBinding> {
         self.program.frame_presentation(&self.state, window)
     }
     pub fn view(&self, window: window::Id) -> Element<'_, P::Message, P::Theme, P::Renderer> {

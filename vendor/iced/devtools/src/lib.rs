@@ -109,7 +109,11 @@ where
         state.scale_factor(&self.program, window)
     }
 
-    fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+    fn frame_presentation(
+        &self,
+        state: &Self::State,
+        window: window::Id,
+    ) -> Option<window::presentation::FrameBinding> {
         self.program.frame_presentation(state.state(), window)
     }
 }

@@ -333,7 +333,11 @@ impl<P: Program> Program for Daemon<P> {
         debug::hot(|| self.raw.scale_factor(state, window))
     }
 
-    fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+    fn frame_presentation(
+        &self,
+        state: &Self::State,
+        window: window::Id,
+    ) -> Option<window::presentation::FrameBinding> {
         debug::hot(|| self.raw.frame_presentation(state, window))
     }
     fn presets(&self) -> &[Preset<Self::State, Self::Message>] {
