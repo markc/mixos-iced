@@ -7,10 +7,14 @@ not yet implemented.
 
 ```text
 settingsd init --instance example
+settingsd seed --instance example
 settingsd serve --instance example
 ```
 
-The first command explicitly initialises new state. Serve fails for a missing or
+Init explicitly initialises new state. Seed provisions a first-run session
+profile or validates an existing one unchanged; a retained writer lock prevents
+seed from recreating an established missing primary, including without a backup.
+Serve fails for a missing or
 unsupported established store. Both accept `--profile` and `--root` for an
 explicit binding/test directory. Use an isolated broker when testing.
 
@@ -22,6 +26,9 @@ incarnation. A missing primary fails visibly, including when a backup exists.
 I/O faults and intact unsupported documents fail without automatic rollback.
 The packaged unit binds the instance to its machine hostname; its session/VT
 number is a supervision attribute and never a second instance identity.
+The session target now wants/upholds the authority. The unit seeds before
+serving, and application/compositor startup does not wait for settings readiness.
+An image must provision its service account's writable `MIXOS_ETC/settings` root.
 
 See [the settings contract](../../docs/spec/settings/README.md). Worker tests:
 `cargo test -p settingsd`; real native gate:

@@ -178,6 +178,27 @@ impl Store {
         desktop: Desktop,
     ) -> anyhow::Result<(Self, Accepted)> {
         let store = Self::lock(root, true)?;
+        Self::initialise(store, binding, desktop)
+    }
+    /// Session provisioning is idempotent only for a valid existing primary.
+    /// A retained lock inode is evidence of an established or interrupted
+    /// profile: never recreate its missing primary, even without a backup.
+    pub fn seed(root: &Path, binding: Binding) -> anyhow::Result<(Self, Accepted)> {
+        if root.try_exists()? {
+            // An empty directory pre-provisioned for the account is allowed.
+            // Once writer.lock exists, only explicit init can recover an
+            // interrupted first creation; normal seed cannot erase history.
+            if std::fs::symlink_metadata(root.join("writer.lock")).is_ok() {
+                return Self::open(root, &binding);
+            }
+        }
+        Self::create(root, binding, Desktop::default())
+    }
+    fn initialise(
+        store: Self,
+        binding: Binding,
+        desktop: Desktop,
+    ) -> anyhow::Result<(Self, Accepted)> {
         anyhow::ensure!(
             !store.path().exists() && !store.backup().exists(),
             "profile already initialised; initialise never overwrites accepted/backup data"

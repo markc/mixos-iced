@@ -1,6 +1,6 @@
 # Native VT session
 
-`session@4.target` composes component-owned units for noded, compd, editd,
+`session@4.target` composes component-owned units for noded, compd, editd, settingsd,
 the application registry, the scene loader and a private seatd instance.
 It starts no session D-Bus server. Application control uses ABP through noded.
 The compositor is built with `--no-default-features --features backend-all`;
@@ -34,6 +34,13 @@ dependency closure.
 Provision the profile's writable state directory for its service account,
 including `MIXOS_VAR/edit/recovery` with mode `0700`. Editor readiness must
 include `edit.info` reporting `volatile:false` and `recovery.ok:true`.
+Also provision the service account's writable `MIXOS_ETC/settings` parent.
+Settingsd seeds a first-run default profile before serving; subsequent starts
+validate existing state and refuse missing established/unsupported data. Its
+instance binding is the machine hostname, while the unit number identifies the
+session's VT. The target wants/upholds settingsd without making applications or
+the compositor wait for it: degraded startup is allowed. Native GUI settings
+adapters remain in development; adding the unit does not enable live theming.
 
 The environment file defines absolute `MIXOS_ETC`, `MIXOS_VAR`, `MIXOS_RUN`,
 `MIXOS_SHARE`, `MIXOS_NODE_CONFIG`, `MIXOS_COMPD_CONFIG`, `HOME`,

@@ -592,6 +592,16 @@ settingsd, applications and compd. The plain component names `settings` and
 the toolkit remains independent of settings transport. No COSMIC implementation
 or GPL/MPL code is incorporated.
 
+Settings behaviour has one shared implementation per concern: `settings`
+consumer ordering/recovery and render-domain comparison; `appearance`
+projection-to-toolkit/iced mapping; `toolkit` reusable controls and role/default
+builders; and `application` reusable event-loop activation/invalidation.
+Applications retain their service lifetime, content and deliberate overrides.
+Compd owns output geometry, work areas, Wayland configuration and presentation.
+Standard widgets inherit current defaults without copied app palettes, font
+captures or settings handlers. Extract repeated components during migrations;
+keep headless crates independent of renderers and toolkit independent of Bus.
+
 Each profile has one exclusive writer. Authored settings, revision and bounded
 operation receipts share a durable strict-data replacement. A no-op persists a
 receipt without changing semantic revision. The durable store incarnation fences
@@ -741,7 +751,7 @@ checked separately by the layering gate.
 | [mix](https://github.com/markc/mixos/blob/main/libs/mix/Cargo.toml) | mix | lib | mix | public | 0.109.1 |
 | [props](https://github.com/markc/mixos/blob/main/libs/props/Cargo.toml) | props | lib | core | none | 0.1.1 |
 | [scene](https://github.com/markc/mixos/blob/main/libs/scene/Cargo.toml) | scene | lib | core | none | 0.1.1 |
-| [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.1.0 |
+| [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.2.0 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
 | [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.3 |
 | [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.6 |
@@ -1047,7 +1057,7 @@ Status: accepted initial authority contract, version 0.1.0. Full desktop consume
 integration remains in development. No frozen ABP wire bytes change.
 
 `settingsd` serves one explicitly initialised profile in the initial slice.
-`settings` provides shared headless types, resolver and pure snapshot reducer;
+`settings` provides shared headless types, resolver, consumer and snapshot reducer;
 `design::DesignReadProjection` is render data that cannot construct an accepted
 design or fork compiler apply lineage. The current apps are Ced, Dopus, Term,
 Cap, BusViewer and Scene Editor; compd owns the iced Quoin shell.
@@ -1149,6 +1159,29 @@ Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.
 
+The settings library API is now 0.2.0; authority verbs and snapshot schema remain
+0.1.0 and 1. The shared consumer performs subscribe-before-get over the host's
+existing supervised Bus connection through its optional native executor. It
+owns no transport/task/incoming receiver. Hosts feed connection generations,
+deliveries and explicit queue loss, execute at most one current action, and
+cancel superseded work. Bootstrap buffers one latest candidate; loss coalesces
+one later full read. A bounded history suppresses repeated rejected confirmation
+candidates. Transport recovery has one pending backoff from 250 ms to 30 seconds;
+success/disconnect cancels it. Protocol/target/schema refusal is visible and
+quiescent until a new event or explicit refresh. Every native call is bounded
+to one second; the host must also cap the combined initial bootstrap to one
+second and show a labelled fallback while recovery continues.
+
+One context-specific change plan separates paint, text, layout, resources, motion
+and optional shell geometry. Source/provenance/revision-only changes advance
+evidence without rendering work. Received accepted data is distinct from staged
+and applied data. Prepare all resources, then on the renderer event loop check
+the stage ticket immediately before synchronous activation and acknowledgement,
+without an intervening await. Old connection, consumer and stage completions
+cannot claim application. Hosts must fence the actual swap as well as its report.
+Identical render inputs need no swap; application never proves presentation.
+Local persistent fallback cache and artifact/resource preparation remain pending.
+
 ## Topics and storage
 
 Publish retained `settingsd.desktop.changed.<profile>`, owned by the registered
@@ -1193,9 +1226,15 @@ compiler interpretation fail without an automatic backup rollback.
 
 `settingsd init --instance example` explicitly creates a profile and refuses
 existing accepted/backup data. `settingsd serve --instance example` never
-materialises defaults for a missing established store. Installer seeding and
-automatic session adoption are separate later work; the unit is packaged but
-the session target does not yet start it automatically.
+materialises defaults for a missing established store. `settingsd seed --instance
+example` provisions a first-run profile or validates an existing primary without
+rewriting valid state. A retained writer.lock is establishment evidence: seed
+refuses a missing established primary even without a backup. Existing-store
+corruption uses the same validated, evidence-preserving recovery as serve.
+The unit seeds before serving, binds the instance to the machine hostname, and
+the session target wants/upholds it. Settings readiness never blocks application
+or compositor startup. The image provisions the authority account's writable
+MixOS settings parent; isolated native image adoption still needs runtime evidence.
 
 ## Validation and remaining scope
 
@@ -1203,12 +1242,15 @@ Machine fixtures: [authority.spec.mix](authority.spec.mix). Rust tests cover
 precision, patches, projection round-trip, writer locking, changed/no-op receipts,
 lost replies, conflicts, digest reuse, eviction, backup restore and future schemas.
 `tests/settings/authority_test.mix` runs real ABP publication, unrelated operator
-mutation, forged publish/clear refusal and authority restart against an isolated
-noded. OS process lifecycle here belongs to the test fixture; application calls
+mutation, forged publish/clear refusal, authority restart and cold broker restart
+against isolated noded instances. Broker loss keeps the authority alive and its
+writer exclusive; the shared consumer reconnects through the same client and
+the authority repopulates the empty retained broker without a semantic edit.
+OS process lifecycle here belongs to the test fixture; application calls
 and observations remain native ABP.
 
 This slice does not claim GUI propagation, renderer acknowledgements, presentation,
-offline async client bootstrap, candidate import/watch, immutable artifacts,
+persistent offline cache/fallback presentation, candidate import/watch, immutable artifacts,
 full field provenance, named-profile management, compatibility, scheduled policy,
 preview, routed observation or replication. Every deferred feature must extend
 the same authority and shared contracts, with appropriate contract versions and

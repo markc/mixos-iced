@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 -- Run on a build worker at the exact runtime checkpoint.
 $forbidden = []
-for each $package in ["compd", "term", "ced", "dopus", "cap", "scene-editor", "busviewer", "mix-shell", "noded", "editd"]
+for each $package in ["compd", "term", "ced", "dopus", "cap", "scene-editor", "busviewer", "mix-shell", "noded", "editd", "settingsd"]
   $argv = ["cargo", "tree", "--locked", "-p", $package, "--prefix", "none", "--format", "{p}"]
   if $package == "compd" then
     $argv = concat($argv, ["--no-default-features", "--features", "backend-all"])

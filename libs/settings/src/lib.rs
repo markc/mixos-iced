@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Shared headless settings contract. No renderer, files or transport lifetime.
+//! Shared headless settings contract and consumer. No renderer or owned transport.
+pub mod consumer;
+pub mod domains;
 pub mod model;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod reducer;
 pub mod resolve;
 pub use design::EMBEDDED_DEFAULT_SOURCE;

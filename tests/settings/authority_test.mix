@@ -4,6 +4,7 @@
 $root = dirname(dirname(dirname(realpath($0))))
 $host = require($root .. "/tests/desktop/nested_host_lib.mix")
 $noded = env("MIXOS_TEST_NODED", $root .. "/target/release-fast/noded")
+export MIXOS_TEST_NODED=$noded
 export MIXOS_TEST_MIX=env("MIXOS_TEST_MIX", "/opt/cosmix/bin/mix")
 if not is_file($noded) then raise("BINARY", "Build the exact-revision noded first") end
 $dir = "/var/tmp/settings-native-" .. uuid()
@@ -15,4 +16,4 @@ try
 finally
   $host.stop_bus($broker)
 end
-print("SET-PUBLISH / SET-OPS / authority lifecycle slice passed on real noded")
+print("SET-PUBLISH / SET-OPS / authority and broker lifecycle slices passed on real noded")

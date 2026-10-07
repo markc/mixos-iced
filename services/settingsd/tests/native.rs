@@ -29,6 +29,144 @@ fn spawn(root: &std::path::Path) -> Daemon {
             .unwrap(),
     ))
 }
+
+struct BrokerFixture {
+    directory: tempfile::TempDir,
+    daemon: Daemon,
+    config: std::path::PathBuf,
+    address: String,
+    url: String,
+}
+impl BrokerFixture {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let config = directory.path().join("node.conf.mix");
+        std::fs::write(&config, serde_json::to_vec(&json!({"node":"settings-reconnect-gate","wg_ip":"","mesh":"settings-gate.invalid","noded":{"port":port,"admission":"off","unix_socket":directory.path().join("run/noded/bus.sock")}})).unwrap()).unwrap();
+        let mut fixture = Self { directory, daemon:Daemon(None), config, address:format!("127.0.0.1:{port}"), url:format!("ws://127.0.0.1:{port}/ws") };
+        fixture.restart();
+        fixture
+    }
+    fn stop(&mut self) {
+        if let Some(mut child) = self.daemon.0.take() { child.kill().unwrap(); child.wait().unwrap(); }
+    }
+    fn restart(&mut self) {
+        assert!(self.daemon.0.is_none());
+        let root = self.directory.path();
+        let log = std::fs::File::create(root.join("broker.log")).unwrap();
+        self.daemon = Daemon(Some(Command::new(std::env::var("MIXOS_TEST_NODED").unwrap())
+            .args(["serve","--listen",&self.address,"--node","settings-reconnect-gate","--no-monitor","--no-log"])
+            .env("MIXOS_NODE_CONFIG",&self.config).env("MIXOS_ETC",root.join("etc"))
+            .env("MIXOS_RUN",root.join("run")).env("MIXOS_VAR",root.join("var"))
+            .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap()));
+    }
+    fn authority(&self, root: &std::path::Path) -> Daemon {
+        let log = std::fs::File::create(root.join("settingsd.log")).unwrap();
+        Daemon(Some(Command::new(env!("CARGO_BIN_EXE_settingsd"))
+            .args(["serve","--instance","fixture","--root"]).arg(root)
+            .env("MIXOS_NODED_URL",&self.url).env("MIXOS_NODE_CONFIG",&self.config)
+            .env("COSMIX_NODED_URL",&self.url).env("COSMIX_NODE_CONFIG",&self.config)
+            .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap()))
+    }
+}
+
+#[test]
+#[ignore = "requires exact-revision noded from authority_test.mix"]
+fn broker_restart_republishes_without_authority_restart_and_shared_consumer_recovers() {
+    use bus::native_client::{BoundedIncomingEvent, ConnState, SupervisedClient};
+    use settings::{consumer::{Consumer, Work}, native};
+    async fn drive(state: &mut Consumer, client: &SupervisedClient, mut work: Option<Work>) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(current) = work.take() {
+                let reply = native::execute(client,&current).await;
+                work = state.complete(&current,reply);
+            } else if let Some(delay) = state.retry_delay() {
+                assert!(tokio::time::Instant::now() + delay < deadline,"consumer never recovered: {:?}",state.fault());
+                tokio::time::sleep(delay).await;
+                work = state.retry();
+            } else { break; }
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let mut broker = BrokerFixture::new();
+        let root = tempfile::tempdir().unwrap();
+        assert!(Command::new(env!("CARGO_BIN_EXE_settingsd")).args(["seed","--instance","fixture","--root"]).arg(root.path()).status().unwrap().success());
+        let mut authority = broker.authority(root.path());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let client = loop {
+            match SupervisedClient::connect_options("shared-consumer-gate",&broker.url).bounded_incoming(32).connect().await {
+                Ok(client) => break client,
+                Err(_) => { assert!(tokio::time::Instant::now() < deadline); tokio::time::sleep(Duration::from_millis(25)).await; }
+            }
+        };
+        let mut incoming = client.incoming_bounded().unwrap();
+        let mut connection = client.subscribe_state();
+        let mut consumer = Consumer::new(settings::Binding { instance:"fixture".into(), profile:"default".into() },"ced",false).unwrap();
+        let work = consumer.connected(client.connection_generation());
+        drive(&mut consumer,&client,work).await;
+        let original = consumer.current().unwrap().clone();
+        assert!(consumer.applied().is_none(),"readback is not renderer application");
+        assert!(consumer.acknowledge(&consumer.pending().unwrap().clone()));
+        let changed = client.call("settingsd","settings.apply",json!({"binding":original.binding,"expected_incarnation":original.incarnation,"expected_revision":"1","operation_id":"before-broker-loss","changes":{"ui.text_scale":1.2}})).await.unwrap();
+        assert_eq!(changed["status"],"changed");
+        tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                if let Some(BoundedIncomingEvent::Command(command)) = incoming.recv().await {
+                    let work = consumer.native_delivery(&command);
+                    drive(&mut consumer,&client,work).await;
+                    if consumer.current().is_some_and(|s| s.revision == settings::Revision(2)) { break; }
+                }
+            }
+        }).await.unwrap();
+        let update = consumer.pending().unwrap().clone();
+        assert!(update.changes().text && update.changes().layout);
+        assert!(consumer.acknowledge(&update));
+        let generation = client.connection_generation();
+        broker.stop();
+        tokio::time::timeout(Duration::from_secs(10),async {
+            while *connection.borrow_and_update() == ConnState::Connected { connection.changed().await.unwrap(); }
+        }).await.unwrap();
+        consumer.disconnected();
+        assert_eq!(consumer.applied().unwrap().revision,settings::Revision(2));
+        assert!(authority.0.as_mut().unwrap().try_wait().unwrap().is_none(),"authority survives broker loss");
+        assert!(!Command::new(env!("CARGO_BIN_EXE_settingsd")).args(["seed","--instance","fixture","--root"]).arg(root.path()).status().unwrap().success(),"live authority keeps exclusive writer while offline");
+        broker.restart();
+        tokio::time::timeout(Duration::from_secs(20),async {
+            loop {
+                if client.is_connected() && client.connection_generation() > generation { break; }
+                connection.changed().await.unwrap();
+                connection.borrow_and_update();
+            }
+        }).await.unwrap();
+        let work = consumer.connected(client.connection_generation());
+        drive(&mut consumer,&client,work).await;
+        assert_eq!(consumer.current().unwrap().revision,settings::Revision(2));
+        assert_eq!(consumer.current().unwrap().incarnation,original.incarnation);
+        assert!(consumer.pending().is_none(),"same render data needs no redraw after reconnect");
+        // The restarted broker has no old retained state: fresh delivery proves
+        // authority reconnect/republication, even without a new mutation.
+        tokio::time::timeout(Duration::from_secs(10),async {
+            loop {
+                if let Some(BoundedIncomingEvent::Command(command)) = incoming.recv().await
+                    && command.generation == client.connection_generation()
+                    && command.topic() == Some(settings::topic("default").as_str()) {
+                    assert_eq!(command.header("broker_service"),Some("settingsd"));
+                    let snapshot: settings::Snapshot = serde_json::from_str(&command.body).unwrap();
+                    assert_eq!(snapshot.revision,settings::Revision(2));
+                    assert_eq!(snapshot.incarnation,original.incarnation);
+                    break;
+                }
+            }
+        }).await.unwrap();
+        let status = client.call("settingsd","settings.status",json!({"binding":original.binding,"operation_id":"before-broker-loss"})).await.unwrap();
+        assert_eq!(status["publication_pending"],false);
+        assert_eq!(status["receipt"]["revision"],"2");
+        assert!(authority.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        client.close().await;
+    });
+}
 async fn read(client: &NodedClient) -> Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {

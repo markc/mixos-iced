@@ -15,6 +15,16 @@ settingsd, applications and compd. The plain component names `settings` and
 the toolkit remains independent of settings transport. No COSMIC implementation
 or GPL/MPL code is incorporated.
 
+Settings behaviour has one shared implementation per concern: `settings`
+consumer ordering/recovery and render-domain comparison; `appearance`
+projection-to-toolkit/iced mapping; `toolkit` reusable controls and role/default
+builders; and `application` reusable event-loop activation/invalidation.
+Applications retain their service lifetime, content and deliberate overrides.
+Compd owns output geometry, work areas, Wayland configuration and presentation.
+Standard widgets inherit current defaults without copied app palettes, font
+captures or settings handlers. Extract repeated components during migrations;
+keep headless crates independent of renderers and toolkit independent of Bus.
+
 Each profile has one exclusive writer. Authored settings, revision and bounded
 operation receipts share a durable strict-data replacement. A no-op persists a
 receipt without changing semantic revision. The durable store incarnation fences
