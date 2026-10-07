@@ -638,8 +638,22 @@ pub struct ActiveEventLoop {
 #[cfg(test)]
 mod presentation_native_guards {
     use super::*;
-    use crate::platform_impl::wayland::types::wp_presentation::native_process_count;
+    use crate::platform_impl::wayland::types::wp_presentation::{NativeRequest, native_process_count};
     use crate::platform_impl::wayland::window::Window;
+
+    fn read_actual_terminal(connection: &Connection, observation: &NativeRequest) {
+        // A server may defer its remaining surface owners beyond a protocol
+        // sync. Drive native backend reads only; never dispatch the typed queue.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut roundtrips = 0;
+        while !observation.discarded() && std::time::Instant::now() < deadline {
+            connection.roundtrip().expect("native server progress");
+            roundtrips += 1;
+        }
+        assert!(observation.discarded(), "no real Discarded after {roundtrips} native roundtrips; object_alive={}",
+            connection.backend().info(observation.object_id()).is_ok());
+        println!("WINIT_CHARGE native_roundtrips={roundtrips} terminal=discarded");
+    }
 
     #[test]
     #[ignore = "requires an owned native compositor with wp_presentation"]
@@ -671,7 +685,7 @@ mod presentation_native_guards {
                 observation
             };
             if schedule == 0 {
-                connection.roundtrip().expect("surface destruction and real terminal read");
+                read_actual_terminal(&connection, &observation);
                 assert!(observation.discarded(), "real Discarded before typed dispatch");
                 assert!(connection.backend().info(observation.object_id()).is_err());
                 assert!(observation.charge_alive(), "undrained queue owns actual charge");
@@ -686,7 +700,7 @@ mod presentation_native_guards {
                 assert!(observation.charge_alive(), "backend still owns unread feedback");
                 assert_eq!(native_process_count(), baseline + 1);
                 if schedule == 1 {
-                    connection.roundtrip().expect("real terminal arrives after queue closure");
+                    read_actual_terminal(&connection, &observation);
                     assert!(observation.discarded(), "actual late Discarded");
                     assert!(!observation.charge_alive());
                     assert_eq!(native_process_count(), baseline);
