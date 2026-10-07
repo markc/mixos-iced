@@ -383,7 +383,6 @@ async fn worker(
             lifecycle = Some(now);
             // EVERY lifecycle transition publishes into the settings lane:
             // edge-triggered consumers and the UI reconcile on one signal.
-            wake_ui(&wake, lane.publish(SettingsEvent::Wake));
             {
                 // The shared provenance the chrome labels, kept alongside the
                 // log lines — not instead of them.
@@ -397,6 +396,8 @@ async fn worker(
                     _ => {}
                 }
             }
+            // Publish after the provenance is visible to the awakened UI.
+            wake_ui(&wake, lane.publish(SettingsEvent::Wake));
             match now {
                 ConnState::Connected => {
                     if !served {
@@ -975,12 +976,16 @@ mod tests {
             );
             let before = wakes.load(Ordering::Relaxed);
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            // Await the actual adapter's registration, driven by its wake.
-            while started.handle.connection().state != ConnState::Connected {
-                tokio::time::timeout_at(deadline, wake_rx.recv())
+            // Observe the actual supervised client's registration watch.
+            // This silent frontend deliberately does not drain the settings
+            // mailbox, whose notifications are coalesced until UI consumption.
+            let mut connection = started.handle.shared.read().unwrap().client.as_ref()
+                .expect("actual supervised client").subscribe_state();
+            while *connection.borrow_and_update() != ConnState::Connected {
+                tokio::time::timeout_at(deadline, connection.changed())
                     .await
                     .expect("adapter registers before the deadline")
-                    .expect("wake lane remains open");
+                    .expect("connection watch remains open");
             }
             // Fill the frontend admission map one accepted request at a time.
             // A simultaneous transport flood can overflow the incoming lane
