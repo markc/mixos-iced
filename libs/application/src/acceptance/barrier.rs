@@ -143,6 +143,14 @@ pub struct Arm {
     pub token: Token,
 }
 
+/// The exact identity returned by arm, required by native control requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub fence: Fence,
+    pub token: Token,
+    pub sequence: u64,
+}
+
 /// A bounded observation captured from the actual operation when it reaches
 /// the point.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +175,10 @@ impl Observation {
 /// The retained receipt of the last hold transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
+    /// Fixture run of this receipt.
+    pub run: String,
+    /// Process-local monotonic identity of this hold.
+    pub sequence: u64,
     /// The hold token.
     pub token: Token,
     /// The hold state at the time of the receipt.
@@ -210,6 +222,8 @@ pub enum Error {
     NotReached,
     /// The hold ended without a release.
     Cancelled { reason: ClosedReason },
+    /// The process exhausted its monotonic hold identity space.
+    Exhausted,
 }
 
 struct Hold {
@@ -229,7 +243,7 @@ struct Core {
     points: &'static [&'static str],
     hold: Option<Hold>,
     retained: Option<Receipt>,
-    wait_slot_taken: bool,
+    wait_slot: Option<u64>,
     closed: Option<ClosedReason>,
     next_hold_generation: u64,
 }
@@ -242,9 +256,11 @@ struct Shared {
 }
 
 impl Shared {
-    fn receipt(&self, guard: &MutexGuard<'_, Core>) -> Option<Receipt> {
+    fn receipt(&self, guard: &Core) -> Option<Receipt> {
         let hold = guard.hold.as_ref()?;
         Some(Receipt {
+            run: guard.run.id.clone(),
+            sequence: hold.hold_generation,
             token: hold.token.clone(),
             state: hold.state,
             point: Some(hold.point.clone()),
@@ -257,6 +273,18 @@ impl Shared {
     fn wake(&self) {
         self.condvar.notify_all();
         self.notify.notify_waiters();
+    }
+
+    fn expire_due(&self, core: &mut Core, now: Instant) {
+        if let Some(hold) = core.hold.as_mut()
+            && matches!(hold.state, State::Armed | State::Reached)
+            && now >= hold.armed_at + self.lifetime
+        {
+            hold.state = State::Expired;
+            hold.reason = Some(ClosedReason::Expired);
+            core.retained = self.receipt(core);
+            self.wake();
+        }
     }
 
     /// Cancels the matching hold; a no-op when it does not exist or has
@@ -285,12 +313,6 @@ impl Shared {
         self.wake();
     }
 
-    fn deadline(&self, guard: &MutexGuard<'_, Core>) -> Option<Instant> {
-        guard
-            .hold
-            .as_ref()
-            .map(|hold| hold.armed_at + self.lifetime)
-    }
 }
 
 /// The fixture side of the barrier: arms, waits for, releases and closes the
@@ -298,7 +320,7 @@ impl Shared {
 #[derive(Clone)]
 pub struct Controller {
     shared: Arc<Shared>,
-    liveness: Arc<Liveness>,
+    _liveness: Arc<Liveness>,
 }
 
 struct Liveness {
@@ -326,6 +348,7 @@ impl Controller {
     /// refused, and a new arm never inherits a previous release.
     pub fn arm(&self, request: Arm) -> Result<Receipt, Error> {
         let mut guard = self.shared.core.lock().unwrap();
+        self.shared.expire_due(&mut guard, Instant::now());
 
         if let Some(reason) = guard.closed {
             return Err(Error::Closed { reason });
@@ -342,7 +365,9 @@ impl Controller {
             return Err(Error::Busy);
         }
 
-        guard.next_hold_generation += 1;
+        guard.next_hold_generation = guard.next_hold_generation.checked_add(1)
+            .ok_or(Error::Exhausted)?;
+        guard.wait_slot = None;
         guard.hold = Some(Hold {
             state: State::Armed,
             token: request.token,
@@ -366,10 +391,21 @@ impl Controller {
     /// reached receipt with the captured observation, or the terminal
     /// failure. One waiter is allowed at a time.
     pub async fn wait_reached(&self, token: &Token) -> Result<Receipt, Error> {
+        self.wait_owned(token, None).await
+    }
+
+    /// Wait for one exact run, connection and monotonic hold identity.
+    pub async fn wait_fenced(&self, reference: &Reference) -> Result<Receipt, Error> {
+        self.wait_owned(&reference.token, Some(reference)).await
+    }
+
+    async fn wait_owned(&self, token: &Token, reference: Option<&Reference>) -> Result<Receipt, Error> {
         // Reserve the single waiter slot; released when this future ends,
         // even if it is cancelled.
-        let _slot = {
+        let slot = {
             let mut guard = self.shared.core.lock().unwrap();
+            self.shared.expire_due(&mut guard, Instant::now());
+            if let Some(reference) = reference { check_reference(&guard, reference)?; }
             let Some(hold) = guard.hold.as_mut() else {
                 return Err(Error::UnknownToken);
             };
@@ -381,29 +417,44 @@ impl Controller {
                 State::Reached => return Ok(guard.retained.clone().unwrap()),
                 terminal => return Err(terminal_error(&hold, terminal)),
             }
-            if guard.wait_slot_taken {
+            let generation = hold.hold_generation;
+            let deadline = hold.armed_at + self.shared.lifetime;
+            if guard.wait_slot.is_some() {
                 return Err(Error::WaitBusy);
             }
-            guard.wait_slot_taken = true;
+            guard.wait_slot = Some(generation);
             WaitSlot {
                 shared: Arc::clone(&self.shared),
+                generation,
+                deadline,
             }
         };
 
         loop {
             let notified = self.shared.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             {
-                let guard = self.shared.core.lock().unwrap();
+                let mut guard = self.shared.core.lock().unwrap();
+                self.shared.expire_due(&mut guard, Instant::now());
                 let Some(hold) = guard.hold.as_ref() else {
                     return Err(Error::UnknownToken);
                 };
+                if hold.hold_generation != slot.generation {
+                    return Err(Error::UnknownToken);
+                }
                 match hold.state {
                     State::Reached => return Ok(guard.retained.clone().unwrap()),
                     State::Armed => {}
                     terminal => return Err(terminal_error(&hold, terminal)),
                 }
             }
-            notified.await;
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(slot.deadline)) => {
+                    self.shared.cancel_hold(slot.generation, ClosedReason::Expired);
+                }
+            }
         }
     }
 
@@ -411,7 +462,18 @@ impl Controller {
     /// release of the same retained terminal token is idempotent; a wrong or
     /// stale token fails.
     pub fn release(&self, token: &Token) -> Result<Receipt, Error> {
+        self.release_owned(token, None)
+    }
+
+    /// Release only the exact hold returned by arm on this connection.
+    pub fn release_fenced(&self, reference: &Reference) -> Result<Receipt, Error> {
+        self.release_owned(&reference.token, Some(reference))
+    }
+
+    fn release_owned(&self, token: &Token, reference: Option<&Reference>) -> Result<Receipt, Error> {
         let mut guard = self.shared.core.lock().unwrap();
+        self.shared.expire_due(&mut guard, Instant::now());
+        if let Some(reference) = reference { check_reference(&guard, reference)?; }
         let Some(hold) = guard.hold.as_mut() else {
             return Err(Error::UnknownToken);
         };
@@ -437,7 +499,18 @@ impl Controller {
 
     /// The retained last receipt of the hold matching `token`.
     pub fn snapshot(&self, token: &Token) -> Result<Receipt, Error> {
-        let guard = self.shared.core.lock().unwrap();
+        self.snapshot_owned(token, None)
+    }
+
+    /// Read the retained transition of one exact hold.
+    pub fn snapshot_fenced(&self, reference: &Reference) -> Result<Receipt, Error> {
+        self.snapshot_owned(&reference.token, Some(reference))
+    }
+
+    fn snapshot_owned(&self, token: &Token, reference: Option<&Reference>) -> Result<Receipt, Error> {
+        let mut guard = self.shared.core.lock().unwrap();
+        self.shared.expire_due(&mut guard, Instant::now());
+        if let Some(reference) = reference { check_reference(&guard, reference)?; }
         let Some(hold) = guard.hold.as_ref() else {
             return Err(Error::UnknownToken);
         };
@@ -450,40 +523,28 @@ impl Controller {
     /// The existing Bus worker select arm: watches the active hold's state
     /// changes and its one absolute lifetime deadline. Polling or cancelling
     /// and re-polling this future never extends the deadline. It closes the
-    /// hold as expired when the deadline passes.
+    /// hold as expired when the deadline passes. Idle waits stay asleep until
+    /// a transition; they never spin or permanently close the controller.
     pub async fn drive(&mut self) {
-        let deadline = {
-            let guard = self.shared.core.lock().unwrap();
-            self.shared.deadline(&guard).filter(|_| {
-                guard
-                    .hold
-                    .as_ref()
-                    .is_some_and(|hold| matches!(hold.state, State::Armed | State::Reached))
-            })
+        let notified = self.shared.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let active = {
+            let mut guard = self.shared.core.lock().unwrap();
+            self.shared.expire_due(&mut guard, Instant::now());
+            guard.hold.as_ref()
+                .filter(|hold| matches!(hold.state, State::Armed | State::Reached))
+                .map(|hold| (hold.hold_generation, hold.armed_at + self.shared.lifetime))
         };
-        let Some(deadline) = deadline else {
-            return;
-        };
-
-        tokio::select! {
-            _ = self.changed() => {}
-            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                self.close(ClosedReason::Expired);
-            }
-        }
-    }
-
-    async fn changed(&self) {
-        loop {
-            let notified = self.shared.notify.notified();
-            {
-                let guard = self.shared.core.lock().unwrap();
-                if guard.hold.is_none() {
-                    return;
+        if let Some((generation, deadline)) = active {
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                    self.shared.cancel_hold(generation, ClosedReason::Expired);
                 }
             }
+        } else {
             notified.await;
-            return;
         }
     }
 
@@ -491,7 +552,9 @@ impl Controller {
     /// as cancellation, never as an automatic pass.
     pub fn close(&self, reason: ClosedReason) {
         let mut guard = self.shared.core.lock().unwrap();
-        guard.closed = Some(reason);
+        if matches!(reason, ClosedReason::Closed | ClosedReason::Shutdown) {
+            guard.closed = Some(reason);
+        }
         let generation = guard
             .hold
             .as_ref()
@@ -500,6 +563,20 @@ impl Controller {
         drop(guard);
         self.shared.cancel_hold(generation, reason);
     }
+}
+
+fn check_reference(core: &Core, reference: &Reference) -> Result<(), Error> {
+    if reference.fence.run != core.run.id || reference.fence.instance != core.run.instance {
+        return Err(Error::WrongFence);
+    }
+    let hold = core.hold.as_ref().ok_or(Error::UnknownToken)?;
+    if reference.fence.generation != hold.generation {
+        return Err(Error::StaleGeneration);
+    }
+    if reference.sequence != hold.hold_generation || reference.token != hold.token {
+        return Err(Error::UnknownToken);
+    }
+    Ok(())
 }
 
 /// The operation side of the barrier: called by the actual operation worker
@@ -521,6 +598,7 @@ impl Hook {
         observation: Observation,
     ) -> Result<Option<Permit>, Error> {
         let mut guard = self.shared.core.lock().unwrap();
+        self.shared.expire_due(&mut guard, Instant::now());
         let Some(hold) = guard.hold.as_mut() else {
             return Ok(None);
         };
@@ -529,16 +607,22 @@ impl Hook {
             State::Armed if hold.point == point => {
                 hold.state = State::Reached;
                 hold.observation = Some(observation);
+                let hold_generation = hold.hold_generation;
+                let deadline = hold.armed_at + self.shared.lifetime;
                 guard.retained = self.shared.receipt(&guard);
                 let permit = Permit {
                     shared: Arc::clone(&self.shared),
-                    hold_generation: hold.hold_generation,
+                    hold_generation,
+                    deadline,
                 };
                 drop(guard);
                 self.shared.wake();
                 Ok(Some(permit))
             }
             State::Reached if hold.point == point => Err(Error::AlreadyReached),
+            State::Expired | State::Cancelled | State::Closed if hold.point == point => {
+                Err(terminal_error(hold, hold.state))
+            }
             _ => Ok(None),
         }
     }
@@ -548,6 +632,7 @@ impl Hook {
 pub struct Permit {
     shared: Arc<Shared>,
     hold_generation: u64,
+    deadline: Instant,
 }
 
 impl Permit {
@@ -555,15 +640,11 @@ impl Permit {
     /// released, using a condition variable with the hold's absolute
     /// deadline. A hold that ends without a release returns cancellation.
     pub fn wait_blocking(self) -> Result<(), Cancelled> {
-        let deadline = {
-            let guard = self.shared.core.lock().unwrap();
-            self.shared
-                .deadline(&guard)
-                .expect("a permit exists only while its hold is active")
-        };
+        let deadline = self.deadline;
 
         let mut guard = self.shared.core.lock().unwrap();
         loop {
+            self.shared.expire_due(&mut guard, Instant::now());
             match self.state(&guard) {
                 Wait::Continue => {
                     let now = Instant::now();
@@ -592,17 +673,14 @@ impl Permit {
     pub async fn wait(self) -> Result<(), Cancelled> {
         let shared = Arc::clone(&self.shared);
         let hold_generation = self.hold_generation;
-        let deadline = {
-            let guard = shared.core.lock().unwrap();
-            shared
-                .deadline(&guard)
-                .expect("a permit exists only while its hold is active")
-        };
+        let deadline = self.deadline;
 
         tokio::select! {
             result = async {
                 loop {
                     let notified = shared.notify.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
                     match state_of(&shared, hold_generation) {
                         Wait::Continue => {}
                         Wait::Released => return Ok(()),
@@ -640,7 +718,8 @@ enum Wait {
 }
 
 fn state_of(shared: &Shared, hold_generation: u64) -> Wait {
-    let guard = shared.core.lock().unwrap();
+    let mut guard = shared.core.lock().unwrap();
+    shared.expire_due(&mut guard, Instant::now());
     guard
         .hold
         .as_ref()
@@ -685,11 +764,16 @@ fn terminal_error(hold: &Hold, state: State) -> Error {
 
 struct WaitSlot {
     shared: Arc<Shared>,
+    generation: u64,
+    deadline: Instant,
 }
 
 impl Drop for WaitSlot {
     fn drop(&mut self) {
-        self.shared.core.lock().unwrap().wait_slot_taken = false;
+        let mut guard = self.shared.core.lock().unwrap();
+        if guard.wait_slot == Some(self.generation) {
+            guard.wait_slot = None;
+        }
     }
 }
 
@@ -712,7 +796,7 @@ pub fn barrier_with(
             points,
             hold: None,
             retained: None,
-            wait_slot_taken: false,
+            wait_slot: None,
             closed: None,
             next_hold_generation: 0,
         }),
@@ -726,7 +810,7 @@ pub fn barrier_with(
     (
         Controller {
             shared: Arc::clone(&shared),
-            liveness,
+            _liveness: liveness,
         },
         Hook { shared },
     )
@@ -735,6 +819,7 @@ pub fn barrier_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::iced::futures;
 
     fn pair() -> (Controller, Hook, Run) {
         let run = Run::new("fixture-run", 7).unwrap();
@@ -762,13 +847,96 @@ mod tests {
         Observation::try_new("copy a -> b").unwrap()
     }
 
+    fn make_due(controller: &Controller) {
+        controller.shared.core.lock().unwrap().hold.as_mut().unwrap().armed_at =
+            Instant::now() - controller.shared.lifetime;
+    }
+
+    #[test]
+    fn expiry_is_enforced_without_drive_and_allows_a_fresh_arm() {
+        let (controller, hook, run) = pair();
+        let first = controller.arm(arm(&run, "dopus.before_execute", "first")).unwrap();
+        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        make_due(&controller);
+        assert_eq!(controller.release(&first.token), Err(Error::UnknownToken));
+        assert_eq!(controller.snapshot(&first.token).unwrap().state, State::Expired);
+        assert!(matches!(hook.reach("dopus.before_execute", observation()),
+            Err(Error::Cancelled { reason: ClosedReason::Expired })));
+        assert_eq!(permit.wait_blocking(), Err(Cancelled { reason: ClosedReason::Expired }));
+        let second = controller.arm(arm(&run, "dopus.before_execute", "second")).unwrap();
+        assert!(second.sequence > first.sequence);
+        controller.shared.cancel_hold(first.sequence, ClosedReason::Expired);
+        assert_eq!(controller.snapshot(&second.token).unwrap().state, State::Armed);
+    }
+
+    #[tokio::test]
+    async fn stale_waiter_and_permit_cannot_observe_a_rearmed_hold() {
+        let (controller, hook, run) = pair();
+        let first = controller.arm(arm(&run, "dopus.before_execute", "same-token")).unwrap();
+        let waiting = controller.wait_reached(&first.token);
+        tokio::pin!(waiting);
+        assert!(matches!(futures::poll!(&mut waiting), std::task::Poll::Pending));
+        let old_generation = first.sequence;
+        make_due(&controller);
+        let second = controller.arm(arm(&run, "dopus.before_execute", "same-token")).unwrap();
+        let fresh = controller.wait_reached(&second.token);
+        tokio::pin!(fresh);
+        assert!(matches!(futures::poll!(&mut fresh), std::task::Poll::Pending));
+        assert_eq!(waiting.await, Err(Error::UnknownToken));
+        assert_eq!(controller.shared.core.lock().unwrap().wait_slot, Some(second.sequence));
+        controller.shared.cancel_hold(old_generation, ClosedReason::Expired);
+        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        assert_eq!(fresh.await.unwrap().sequence, second.sequence);
+        controller.release(&second.token).unwrap();
+        assert_eq!(permit.wait().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn idle_driver_does_not_spin_and_shutdown_cancels_async_waits() {
+        let (mut controller, hook, run) = pair();
+        assert!(tokio::time::timeout(Duration::from_millis(10), controller.drive()).await.is_err());
+        let receipt = controller.arm(arm(&run, "dopus.before_execute", "first")).unwrap();
+        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        controller.close(ClosedReason::Shutdown);
+        assert_eq!(permit.wait().await, Err(Cancelled { reason: ClosedReason::Shutdown }));
+        assert!(matches!(controller.wait_reached(&receipt.token).await,
+            Err(Error::Cancelled { reason: ClosedReason::Shutdown })));
+    }
+
+    #[test]
+    fn identity_exhaustion_refuses_without_replacing_the_retained_hold() {
+        let (controller, _, run) = pair();
+        controller.shared.core.lock().unwrap().next_hold_generation = u64::MAX;
+        assert_eq!(controller.arm(arm(&run, "dopus.before_execute", "first")), Err(Error::Exhausted));
+        assert!(controller.shared.core.lock().unwrap().hold.is_none());
+    }
+
+    #[tokio::test]
+    async fn native_reference_rejects_reused_token_and_stale_connection() {
+        let (controller, hook, run) = pair();
+        let first = controller.arm(arm(&run, "dopus.before_execute", "token")).unwrap();
+        let reference = Reference {
+            fence: Fence { run: first.run.clone(), instance: first.instance, generation: first.generation },
+            token: first.token.clone(), sequence: first.sequence,
+        };
+        make_due(&controller);
+        let second = controller.arm(arm(&run, "dopus.before_execute", "token")).unwrap();
+        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        assert_eq!(controller.release_fenced(&reference), Err(Error::UnknownToken));
+        assert_eq!(controller.wait_fenced(&reference).await, Err(Error::UnknownToken));
+        assert_eq!(controller.snapshot_fenced(&reference), Err(Error::UnknownToken));
+        let mut current = Reference { sequence: second.sequence, ..reference };
+        current.fence.generation += 1;
+        assert_eq!(controller.release_fenced(&current), Err(Error::StaleGeneration));
+        current.fence.generation = second.generation;
+        controller.release_fenced(&current).unwrap();
+        assert_eq!(permit.wait().await, Ok(()));
+    }
+
     #[test]
     fn reach_without_an_arm_proceeds_immediately() {
         let (controller, hook, run) = pair();
-        assert_eq!(
-            hook.reach("dopus.before_execute", observation()).unwrap(),
-            None
-        );
+        assert!(hook.reach("dopus.before_execute", observation()).unwrap().is_none());
         assert!(controller.snapshot(&Token::try_new("t").unwrap()).is_err());
         let _ = run;
     }
@@ -804,10 +972,7 @@ mod tests {
             .reach("dopus.before_execute", observation())
             .unwrap()
             .expect("a matching arm holds the operation");
-        assert_eq!(
-            hook.reach("dopus.before_execute", observation()),
-            Err(Error::AlreadyReached)
-        );
+        assert!(matches!(hook.reach("dopus.before_execute", observation()), Err(Error::AlreadyReached)));
         assert_eq!(controller.snapshot(&token).unwrap().state, State::Reached);
 
         let released = controller.release(&token).unwrap();
@@ -831,7 +996,7 @@ mod tests {
             .arm(arm(&run, "dopus.before_execute", "hold-1"))
             .unwrap();
         // A different point proceeds; the armed point still holds later.
-        assert_eq!(hook.reach("other.point", observation()).unwrap(), None);
+        assert!(hook.reach("other.point", observation()).unwrap().is_none());
         assert_eq!(controller.snapshot(&token).unwrap().state, State::Armed);
         controller.release(&token).unwrap_err();
     }

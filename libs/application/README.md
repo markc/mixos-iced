@@ -36,6 +36,13 @@ tracked reply future for the same client. Diagnostic verbs exist only when a
 fixture launch configuration registers them; default launches register none,
 and ordinary product mutation policy is unchanged.
 
+`barrier.arm` returns `run`, `instance`, `generation`, `sequence` and `token`.
+Supply that identity to `barrier.wait`, `barrier.release` and `barrier.state`;
+the generation must match the actual incoming Bus registration. An expired
+hold cancels its operation and allows a fresh arm. A reused token cannot make
+an old native request address its replacement. These are operation holds;
+their receipts do not prove frame presentation.
+
 The host does not own Bus connections, editor buffers, filesystem operations,
 PTYs or their shutdown. Applications retain those lifetimes. Portable compound
 widgets live in toolkit and receive neutral models and typed actions.

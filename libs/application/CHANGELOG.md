@@ -2,6 +2,13 @@
 
 ## 0.1.10
 
+- Operation holds enforce expiry at each transition, permit rearming after
+  expiry and cancel stale waiters independently of replacement holds. Native
+  wait, release and state requests require the returned run, instance and
+  monotonic sequence; connection generation comes from the incoming Bus
+  command. Idle driving waits for notification, and permits retain their own
+  immutable deadline. Hold-identity exhaustion refuses new work.
+
 Paired cache evidence explicitly reports an unconfigured persistent root,
 separately from write faults, saved identities and usable fallback state.
 

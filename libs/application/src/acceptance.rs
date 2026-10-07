@@ -131,8 +131,11 @@ pub fn track(
 }
 
 fn parse_body(body: &str) -> Result<Value, String> {
-    serde_json::from_str(if body.trim().is_empty() { "{}" } else { body })
-        .map_err(|error| format!("bad request body: {error}"))
+    if body.len() > 16_384 { return Err("request body exceeds 16384 bytes".into()); }
+    let value: Value = serde_json::from_str(if body.trim().is_empty() { "{}" } else { body })
+        .map_err(|error| format!("bad request body: {error}"))?;
+    if !value.is_object() { return Err("request body must be an object".into()); }
+    Ok(value)
 }
 
 fn error_json(error: String) -> String {
@@ -249,6 +252,8 @@ fn barrier_arm_verb(
     incoming: &IncomingCommand,
 ) -> Result<String, String> {
     let body = parse_body(&incoming.body)?;
+    check_barrier_fields(&body, &["run", "instance", "generation", "point", "token"])?;
+    check_request_generation(&body, incoming.generation)?;
     let token = barrier::Token::try_new(
         body.get("token")
             .and_then(Value::as_str)
@@ -262,20 +267,19 @@ fn barrier_arm_verb(
                 run: body
                     .get("run")
                     .and_then(Value::as_str)
+                    .filter(|run| !run.is_empty() && run.len() <= barrier::MAX_STRING)
                     .ok_or_else(|| "missing run".to_owned())?
                     .to_owned(),
                 instance: body
                     .get("instance")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| "missing instance".to_owned())?,
-                generation: body
-                    .get("generation")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| "missing generation".to_owned())?,
+                generation: incoming.generation,
             },
             point: body
                 .get("point")
                 .and_then(Value::as_str)
+                .filter(|point| !point.is_empty() && point.len() <= barrier::MAX_STRING)
                 .ok_or_else(|| "missing point".to_owned())?
                 .to_owned(),
             token,
@@ -289,9 +293,9 @@ async fn barrier_wait_verb(
     controller: &barrier::Controller,
     incoming: &IncomingCommand,
 ) -> Result<String, String> {
-    let token = parse_token(&incoming.body)?;
+    let reference = parse_reference(incoming)?;
     let receipt = controller
-        .wait_reached(&token)
+        .wait_fenced(&reference)
         .await
         .map_err(|error| format!("{error:?}"))?;
     Ok(receipt_json(&receipt))
@@ -301,9 +305,9 @@ fn barrier_release_verb(
     controller: &barrier::Controller,
     incoming: &IncomingCommand,
 ) -> Result<String, String> {
-    let token = parse_token(&incoming.body)?;
+    let reference = parse_reference(incoming)?;
     let receipt = controller
-        .release(&token)
+        .release_fenced(&reference)
         .map_err(|error| format!("{error:?}"))?;
     Ok(receipt_json(&receipt))
 }
@@ -312,26 +316,55 @@ fn barrier_state_verb(
     controller: &barrier::Controller,
     incoming: &IncomingCommand,
 ) -> Result<String, String> {
-    let token = parse_token(&incoming.body)?;
+    let reference = parse_reference(incoming)?;
     let receipt = controller
-        .snapshot(&token)
+        .snapshot_fenced(&reference)
         .map_err(|error| format!("{error:?}"))?;
     Ok(receipt_json(&receipt))
 }
 
-fn parse_token(body: &str) -> Result<barrier::Token, String> {
-    let body = parse_body(body)?;
-    barrier::Token::try_new(
+fn parse_reference(incoming: &IncomingCommand) -> Result<barrier::Reference, String> {
+    let body = parse_body(&incoming.body)?;
+    check_barrier_fields(&body, &["run", "instance", "generation", "sequence", "token"])?;
+    check_request_generation(&body, incoming.generation)?;
+    let token = barrier::Token::try_new(
         body.get("token")
             .and_then(Value::as_str)
             .ok_or_else(|| "missing token".to_owned())?,
     )
-    .map_err(|error| format!("{error:?}"))
+    .map_err(|error| format!("{error:?}"))?;
+    Ok(barrier::Reference {
+        fence: barrier::Fence {
+            run: body.get("run").and_then(Value::as_str)
+                .filter(|run| !run.is_empty() && run.len() <= barrier::MAX_STRING)
+                .ok_or_else(|| "missing or oversized run".to_owned())?.to_owned(),
+            instance: body.get("instance").and_then(Value::as_u64).ok_or_else(|| "missing instance".to_owned())?,
+            generation: incoming.generation,
+        },
+        sequence: body.get("sequence").and_then(Value::as_u64).ok_or_else(|| "missing sequence".to_owned())?,
+        token,
+    })
+}
+
+fn check_request_generation(body: &Value, generation: u64) -> Result<(), String> {
+    if let Some(requested) = body.get("generation")
+        && requested.as_u64() != Some(generation)
+    { return Err("stale or invalid connection generation".into()); }
+    Ok(())
+}
+
+fn check_barrier_fields(body: &Value, allowed: &[&str]) -> Result<(), String> {
+    if body.as_object().expect("validated object").keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("unknown barrier request field".into());
+    }
+    Ok(())
 }
 
 fn receipt_json(receipt: &barrier::Receipt) -> String {
     serde_json::to_string(&json!({
         "ok": true,
+        "run": receipt.run,
+        "sequence": receipt.sequence,
         "token": receipt.token.as_str(),
         "state": state_name(receipt.state),
         "point": receipt.point,
