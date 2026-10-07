@@ -35,6 +35,7 @@ discovery-failed = Discovery failed
 descriptions-failed = Unavailable descriptions
 calling = Calling verb…
 invalid-json = Invalid JSON; no call sent
+body-too-large = JSON body exceeds 65,536 bytes; edit refused
 invalid-target = Select an advertised verb before calling
 busy = An operation is already running
 transport-error = Transport error; the call was not retried and its outcome may be unknown

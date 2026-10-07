@@ -12,7 +12,7 @@ Enter an optional JSON body in the multiline editor. Choose **Bus → Call verb*
 
 Replies show the actual return code and body. JSON is formatted; plain-text errors remain readable. A transport failure reports an unknown outcome and **never retries the call**. The request body is limited to 65,536 bytes; the displayed reply is limited to 1,000,000 bytes. The underlying Bus framing limits still apply.
 
-**Edit** provides JSON formatting, body clearing and reply copying. **File → Refresh services** performs discovery again. Registrations, disconnections and reconnects also refresh through native Bus events, without a poller. Failed descriptions remain visible under their services; one failed probe does not stop the others. The Mesh nodes branch shows membership, as in the original app; remote service browsing is a later extension.
+**Edit** provides JSON formatting, body clearing and reply copying. **File → Refresh services** performs discovery again. Registrations and reconnects also refresh through native Bus events, without a poller. Failed descriptions remain visible under their services; select an error row to read both probe failures in the details pane. One failed probe does not stop the others, and a failed broker lookup preserves the last known selection. The Mesh nodes branch shows membership, as in the original app; remote service browsing is a later extension. Membership is refetched with discovery. The current noded profile has no membership-change topic, so an authority-only change requires Refresh.
 
 ## Keyboard
 

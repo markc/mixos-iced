@@ -78,6 +78,7 @@ pub struct App {
     tree: Nodes<String, Row>,
     expanded: BTreeSet<String>,
     selected: Option<Selection>,
+    row_key: Option<String>,
     filter: String,
     body: text_editor::Content,
     reply: text_editor::Content,
@@ -104,6 +105,7 @@ fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     iced::futures::stream::unfold(rx, |mut rx| async move {
         rx.next().await.map(|event| (event, rx))
     })
+    .chain(iced::futures::stream::once(async{Delivery::Disconnected}))
 }
 pub fn run(settings: Settings) -> Result<(), String> {
     let (bus, rx) = bus::start(&settings.service, &settings.url)?;
@@ -143,6 +145,7 @@ impl App {
             tree: Nodes::new(),
             expanded: BTreeSet::new(),
             selected: None,
+            row_key: None,
             filter: String::new(),
             body: text_editor::Content::new(),
             reply: text_editor::Content::new(),
@@ -166,7 +169,7 @@ impl App {
         self.next_ticket
     }
     fn info(&self) -> Value {
-        json!({"schema":"busviewer.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.connected,"busy":self.busy(),"discovering":self.discovery.is_some(),"calling":self.call.is_some(),"selection":self.selected,"body":self.body.text(),"reply":self.last_reply,"status":self.status,"snapshot":self.snapshot,"ui":{"menu_bar":true,"dialog":self.dialog.as_ref().map(|a|format!("{a:?}"))}})
+        json!({"schema":"busviewer.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.connected,"busy":self.busy(),"discovering":self.discovery.is_some(),"calling":self.call.is_some(),"selection":self.selected,"body":self.body.text(),"reply":self.last_reply,"status":self.status,"snapshot":self.snapshot,"ui":{"menu_bar":true,"dialog":self.dialog.as_ref().map(|a|format!("{a:?}")),"row_key":self.row_key}})
     }
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
@@ -187,7 +190,7 @@ impl App {
     fn refresh(&mut self, reply: Option<u64>) -> Task<Message> {
         if self.busy() || !self.connected || self.quitting {
             if let Some(id) = reply {
-                self.error(id, "BUSY", &label("busy"));
+                self.error(id, if self.connected{"BUSY"}else{"DISCONNECTED"}, &label(if self.connected{"busy"}else{"disconnected"}));
             } else if self.connected && !self.quitting {
                 self.refetch = true;
             }
@@ -223,7 +226,7 @@ impl App {
         };
         if let Some(error) = error {
             if let Some(id) = reply {
-                self.error(id, "ARGUMENT", &error);
+                self.error(id,if !self.connected{"DISCONNECTED"}else if self.busy()||self.dialog.is_some()||self.quitting{"BUSY"}else{"ARGUMENT"}, &error);
             } else {
                 self.status = error;
             }
@@ -446,6 +449,7 @@ impl App {
                 match self.target(&args) {
                     Ok(target) if self.snapshot.verb(&target).is_some() => {
                         self.selected = Some(target);
+                        self.row_key=self.selected.as_ref().map(|s|format!("verb:{}:{}",s.service,s.verb));
                         self.rebuild();
                         self.bus.reply(id, 0, self.info());
                     }
@@ -526,12 +530,9 @@ impl App {
                 Task::none()
             }
             Message::Select(selection) if self.dialog.is_none() => {
-                if let Some(Row::Verb(target)) = selection
-                    .cursor()
-                    .and_then(|row| self.tree.visible(row))
-                    .map(|row| row.data)
-                {
-                    self.selected = Some(target.clone());
+                if let Some(row) = selection.cursor().and_then(|row| self.tree.visible(row)) {
+                    self.row_key=Some(row.key.clone());
+                    self.selected=match row.data{Row::Verb(target)=>Some(target.clone()),_=>None};
                 }
                 Task::none()
             }
@@ -540,7 +541,7 @@ impl App {
                 self.body.perform(action);
                 if self.body.text().len() > model::BODY_LIMIT {
                     self.body = text_editor::Content::with_text(&before);
-                    self.status = label("invalid-json");
+                    self.status = label("body-too-large");
                 }
                 Task::none()
             }
@@ -560,13 +561,14 @@ impl App {
                     return Task::none();
                 }
                 self.discovery = None;
-                self.snapshot = snapshot;
+                if snapshot.error.is_some(){self.snapshot.error=snapshot.error;}else{self.snapshot=snapshot;}
                 if self
                     .selected
                     .as_ref()
-                    .is_some_and(|target| self.snapshot.verb(target).is_none())
+                    .is_some_and(|target| self.snapshot.error.is_none() && !matches!(self.snapshot.services.get(&target.service),Some(Err(_))) && self.snapshot.verb(target).is_none())
                 {
                     self.selected = None;
+                    self.row_key=None;
                 }
                 self.rebuild();
                 self.status = if !self.connected {
@@ -701,17 +703,13 @@ impl App {
         let t = self.look.tokens;
         let gap = t.metrics.spacing.md;
         let selected = self
-            .selected
-            .as_ref()
-            .and_then(|s| {
-                self.tree
-                    .position(&format!("verb:{}:{}", s.service, s.verb))
-            })
+            .row_key.as_ref().and_then(|key|self.tree.position(key))
             .map(toolkit::Selection::single)
             .unwrap_or_default();
         let tree = toolkit::TreeView::new(&self.tree, |row| {
             text(match row.data {
-                Row::Service(name) | Row::Peer(name) | Row::Error(name) => name.clone(),
+                Row::Service(name) | Row::Peer(name) => name.clone(),
+                Row::Error(_)=>label("descriptions-failed"),
                 Row::Verb(target) => target.verb.clone(),
                 Row::Peers => label("peers"),
             })
@@ -755,7 +753,7 @@ impl App {
                     verb.description.clone()
                 }
             ),
-            None => label("select"),
+            None => self.row_key.as_ref().and_then(|key|self.tree.get(key)).map(|row|match row{Row::Error(error)=>error.clone(),Row::Service(name)=>name.clone(),Row::Peer(name)=>format!("{}: {name}",label("peer-membership")),_=>label("select")}).unwrap_or_else(||label("select")),
         };
         let body = text_editor(&self.body)
             .on_action(Message::Body)
@@ -777,7 +775,7 @@ impl App {
         let split = toolkit::Split::new(self.split, left, right).on_drag(Message::Split);
         let bar: Element<'_, Action, Theme> = toolkit::Menu::bar(menu::bar(
             self.busy() || !self.connected,
-            self.selected.is_some(),
+                self.selected.as_ref().is_some_and(|target|self.snapshot.verb(target).is_some()),
             self.dialog.is_some(),
         ))
         .id(menu::BAR_ID)
@@ -835,11 +833,12 @@ impl App {
 mod tests {
     use super::*;
     fn app() -> App {
-        let look = appearance::install_with(
+        static LOOK:OnceLock<appearance::Appearance>=OnceLock::new();
+        let look = LOOK.get_or_init(||appearance::install_with(
             &appearance::Theme::embedded(),
             appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
         )
-        .unwrap();
+        .unwrap()).clone();
         let mut app = App::new(Settings::default(), Handle::sink(), look);
         app.snapshot.services.insert(
             "example".into(),
@@ -974,5 +973,71 @@ mod tests {
         );
         sim.click("Done").unwrap();
         assert!(sim.into_messages().any(|m| matches!(m, Message::Cancel)));
+    }
+    #[test]
+    fn command_replies_expose_identity_and_distinguish_refusals() {
+        let mut app=app();
+        for (id,verb) in [(1,"busviewer.ping"),(2,"busviewer.info"),(3,"HELP"),(4,"app.describe")] {
+            let _=app.command(id,verb,"{}");
+        }
+        let replies=app.bus.responses();
+        assert_eq!(replies.len(),4);assert!(replies.iter().all(|(_,rc,_)|*rc==0));
+        assert_eq!(replies[0].2["schema"],"busviewer.v1");
+        assert_eq!(replies[1].2["app_id"],APP_ID);
+        assert!(replies[2].2.as_array().unwrap().iter().any(|v|v["name"]=="busviewer.call"));
+        let _=app.command(5,"busviewer.select",r#"{"service":"example","verb":"echo"}"#);
+        assert_eq!(app.selected,Some(target()));assert_eq!(app.bus.responses().last().unwrap().1,0);
+        let _=app.command(6,"busviewer.call",r#"{"body":"{"}"#);
+        assert_eq!(app.bus.responses().last().unwrap().2["error_code"],"ARGUMENT");assert!(!app.busy());
+        let _=app.action(Action::About);
+        let _=app.command(7,"busviewer.call","{}");
+        assert_eq!(app.bus.responses().last().unwrap().2["error_code"],"BUSY");
+        let _=app.command(8,"no-such-verb","{}");assert_eq!(app.bus.responses().last().unwrap().2["error_code"],"UNKNOWN_VERB");
+        let _=app.command(9,"busviewer.info","[]");assert_eq!(app.bus.responses().last().unwrap().2["error_code"],"ARGUMENT");
+    }
+    #[test]
+    fn failed_discovery_retains_last_snapshot_and_registry_events_coalesce() {
+        let mut app=app();app.selected=Some(target());
+        let _=app.refresh(None);let ticket=app.discovery.unwrap().0;
+        let _=app.update(Message::Bus(Delivery::Changed));assert!(app.refetch);
+        let _=app.update(Message::Bus(Delivery::Disconnected));assert!(!app.connected);
+        let _=app.update(Message::Discovered(ticket,Snapshot{error:Some("noded unavailable".into()),..Snapshot::default()}));
+        assert_eq!(app.selected,Some(target()));assert!(app.snapshot.verb(&target()).is_some());
+        assert_eq!(app.status,label("disconnected"));assert!(!app.busy());
+        let _=app.update(Message::Bus(Delivery::Connected));assert!(app.connected);assert!(app.discovery.is_some());
+    }
+    #[test]
+    fn keyboard_respects_modal_and_quit_completes_after_call() {
+        use iced::keyboard::{Key,Modifiers,key::Named};
+        let mut app=app();app.selected=Some(target());
+        let _=app.action(Action::About);
+        let _=app.update(Message::Key(Key::Named(Named::Enter),Modifiers::CTRL));assert!(app.call.is_none());
+        let _=app.update(Message::Key(Key::Character("q".into()),Modifiers::CTRL));assert!(!app.quitting);
+        let _=app.update(Message::Key(Key::Named(Named::Escape),Modifiers::empty()));assert!(app.dialog.is_none());
+        let _=app.update(Message::Key(Key::Named(Named::Enter),Modifiers::CTRL));assert!(app.call.is_some());
+        let ticket=app.call.as_ref().unwrap().ticket;let _=app.quit();assert!(!app.bus.has_quit());
+        let _=app.update(Message::Completed(ticket,Err("lost response".into())));assert!(app.bus.has_quit());
+        assert!(app.reply.text().contains(&label("transport-error")));
+    }
+    #[test]
+    fn f10_navigates_shared_menu_in_actual_widget_tree() {
+        use iced::keyboard::key::Named;
+        let app=app();let mut ui=application::test::Simulator::with_size(iced::Settings::default(),iced::Size::new(760.0,500.0),app.view());
+        ui.tap_key(Named::F10);ui.tap_key(Named::ArrowLeft);ui.tap_key(Named::ArrowDown);ui.tap_key(Named::Enter);
+        assert!(ui.into_messages().any(|m|matches!(m,Message::Action(Action::Shortcuts))));
+    }
+    #[test]
+    fn editing_limits_reply_readonly_and_call_freeze_are_enforced() {
+        let mut app=app();
+        let _=app.update(Message::Body(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new("x".repeat(model::BODY_LIMIT+1))))));
+        assert!(app.body.text().is_empty());assert_eq!(app.status,label("body-too-large"));
+        app.reply=text_editor::Content::with_text("unchanged");
+        let _=app.update(Message::Reply(text_editor::Action::Edit(text_editor::Edit::Insert('x'))));
+        assert_eq!(app.reply.text(),"unchanged");
+        let _=app.update(Message::Reply(text_editor::Action::SelectAll));
+        let _=app.start_call(target(),String::new(),None);
+        let _=app.update(Message::Body(text_editor::Action::Edit(text_editor::Edit::Insert('x'))));
+        assert!(app.body.text().is_empty());
+        let _=app.update(Message::Split(0.9));assert_eq!(app.split,0.65);
     }
 }

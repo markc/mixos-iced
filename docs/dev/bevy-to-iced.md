@@ -40,7 +40,7 @@ Freeze a call's service, verb and body at acceptance. Store the reply against th
 
 Discovery uses non-fail-fast probes. `HELP` can fail or return an old schema; try documented `app.describe`, and preserve both failures if neither works. Bound concurrent descriptions and show failures per service. Unknown read-only status stays unknown. Preserve plain-text error bodies alongside return codes; JSON parsing is for content that is actually JSON.
 
-Coalesce native registry events into one pending refetch while busy. Filter props topics to the paths the app consumes; unrelated props must not trigger a discovery loop. Reseed on reconnect or topic gaps. Do not add a periodic timer to cover a missing event: extend the owning native service when an event is needed.
+Coalesce native registry events into one pending refetch while busy. Filter props topics to the paths the app consumes; unrelated props must not trigger a discovery loop. Reseed on reconnect or topic gaps. A failed broker lookup is not evidence a selected verb disappeared: retain the last successful snapshot and show the failure. Do not add a periodic timer to cover a missing event: extend the owning native service when an event is needed. BusViewer retains manual mesh refresh because noded currently exposes membership through `noded.peers` without a membership-change topic; automatic authority updates are an owning noded requirement for the later Tower port.
 
 ## Preserve input and widget state
 
