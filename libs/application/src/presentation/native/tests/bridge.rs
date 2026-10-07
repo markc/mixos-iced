@@ -112,10 +112,21 @@ fn bridge_coalesces_wakes_and_samples_generation_for_each_event() {
 fn bridge_delivery_storm_keeps_one_wake_and_requires_gap_readback() {
     let (mut ui, lane) = pair();
     assert!(lane.publish(Event::Delivery(decoded(1))));
-    for revision in 2..100 { assert!(!lane.publish(Event::Delivery(decoded(revision)))); }
+    for revision in 2..100 {
+        assert!(!lane.publish(Event::Delivery(decoded(revision))));
+    }
     assert!(!lane.publish(Event::Wake));
     let mut samples = 0;
-    assert!(ui.drain_with(|| { samples += 1; Some(1) }, |_| panic!("delivery cannot activate")).is_empty());
+    assert!(
+        ui.drain_with(
+            || {
+                samples += 1;
+                Some(1)
+            },
+            |_| panic!("delivery cannot activate")
+        )
+        .is_empty()
+    );
     assert_eq!(samples, 3);
     assert!(ui.session().host().consumer().current_work().is_some());
     assert!(lane.publish(Event::Wake));
