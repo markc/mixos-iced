@@ -27,10 +27,10 @@
 //! rect while `configure` speaks the full X rect including shadow.
 
 use smithay::desktop::Window;
-use smithay::xwayland::xwm::WmAllowedAction;
-use smithay::wayland::seat::WaylandFocus;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::wayland::seat::WaylandFocus;
+use smithay::xwayland::xwm::WmAllowedAction;
 use std::sync::Mutex;
 
 /// The size staged for an X11 window, awaiting the per-frame flush. The xdg
@@ -70,7 +70,9 @@ pub fn stage(window: &Window, size: Size<i32, Logical>, resizing: bool) -> bool 
         });
         return true;
     }
-    let Some(x11) = window.x11_surface() else { return false };
+    let Some(x11) = window.x11_surface() else {
+        return false;
+    };
     // `size` is the VISIBLE size the compositor decided; an X11 configure speaks the FULL
     // rect, so the client's own frame — its CSD drop shadow, `_GTK_FRAME_EXTENTS` — is
     // added back here.
@@ -254,9 +256,9 @@ struct FocusOnAssociate(std::sync::atomic::AtomicBool);
 /// Record that `window` was activated with no surface to focus yet.
 pub fn defer_focus_until_associated(window: &smithay::xwayland::X11Surface) {
     use std::sync::atomic::Ordering;
-    window
-        .user_data()
-        .insert_if_missing_threadsafe(|| FocusOnAssociate(std::sync::atomic::AtomicBool::new(false)));
+    window.user_data().insert_if_missing_threadsafe(|| {
+        FocusOnAssociate(std::sync::atomic::AtomicBool::new(false))
+    });
     if let Some(pending) = window.user_data().get::<FocusOnAssociate>() {
         pending.0.store(true, Ordering::Relaxed);
     }
@@ -299,7 +301,8 @@ pub fn mark_tearing_target(window: &Window, forced: bool) {
         return;
     }
     if let Some(x11) = window.x11_surface() {
-        x11.user_data().insert_if_missing_threadsafe(|| PendingTearingTarget(forced));
+        x11.user_data()
+            .insert_if_missing_threadsafe(|| PendingTearingTarget(forced));
     }
 }
 
@@ -354,7 +357,9 @@ pub fn can_stage(window: &Window) -> bool {
 /// Clear the `Resizing` state an interactive drag set. X11 has no such state — the
 /// resize is expressed entirely by the geometry the flush sends.
 pub fn unstage_resizing(window: &Window) {
-    let Some(toplevel) = window.toplevel() else { return };
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
     toplevel.with_pending_state(|state| {
         state.states.unset(xdg_toplevel::State::Resizing);
     });
@@ -425,7 +430,9 @@ const X11_ORIGIN: Point<i32, Logical> = Point::new(0, 0);
 /// 800x600 the compositor had sent before compared equal to the stale cell and was silently skipped —
 /// the client stayed at its size while the slot assumed the compositor's.
 pub fn flush_pending(window: &Window) -> bool {
-    let Some(x11) = window.x11_surface() else { return false };
+    let Some(x11) = window.x11_surface() else {
+        return false;
+    };
     let staged = window
         .user_data()
         .get::<PendingConfigure>()
@@ -473,7 +480,9 @@ pub fn close(window: &Window) -> bool {
         toplevel.send_close();
         return true;
     }
-    let Some(x11) = window.x11_surface() else { return false };
+    let Some(x11) = window.x11_surface() else {
+        return false;
+    };
     match x11.close() {
         Ok(()) => true,
         Err(err) => {
@@ -494,7 +503,9 @@ pub fn set_maximized(window: &Window, maximized: bool) {
         }
         return;
     }
-    let Some(toplevel) = window.toplevel() else { return };
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
     toplevel.with_pending_state(|state| match maximized {
         true => state.states.set(xdg_toplevel::State::Maximized),
         false => state.states.unset(xdg_toplevel::State::Maximized),
@@ -511,7 +522,9 @@ pub fn set_fullscreen(window: &Window, fullscreen: bool) {
         }
         return;
     }
-    let Some(toplevel) = window.toplevel() else { return };
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
     toplevel.with_pending_state(|state| match fullscreen {
         true => state.states.set(xdg_toplevel::State::Fullscreen),
         false => state.states.unset(xdg_toplevel::State::Fullscreen),
@@ -569,7 +582,9 @@ pub fn set_fullscreen(window: &Window, fullscreen: bool) {
 /// for it. (A client that IS asking still keeps it latched while the compositor maps and shows the
 /// window anyway — a pre-existing gap in not honouring iconic-at-map, not this arm's.)
 pub fn set_suspended(window: &Window, suspended: bool) {
-    let Some(toplevel) = window.toplevel() else { return };
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
     toplevel.with_pending_state(|state| match suspended {
         true => state.states.set(xdg_toplevel::State::Suspended),
         false => state.states.unset(xdg_toplevel::State::Suspended),
@@ -585,7 +600,9 @@ pub fn has_parent(window: &Window) -> bool {
     if let Some(toplevel) = window.toplevel() {
         return toplevel.parent().is_some();
     }
-    window.x11_surface().is_some_and(|x11| x11.is_transient_for().is_some())
+    window
+        .x11_surface()
+        .is_some_and(|x11| x11.is_transient_for().is_some())
 }
 
 /// The size to treat as this window's compositor-decided slot: the VISIBLE size, for

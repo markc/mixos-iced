@@ -450,11 +450,24 @@ fn unmaximise_without_a_restore_record_clears_intent_without_moving_the_slot() {
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
     bottom(&mut h, 80);
     let before = count(&h, &top);
-    assert_eq!(refresh(&mut h, id, &window), GeometryChange { usable: true, windows: false });
+    assert_eq!(
+        refresh(&mut h, id, &window),
+        GeometryChange {
+            usable: true,
+            windows: false
+        }
+    );
     h.roundtrip();
-    assert_eq!(count(&h, &top), before, "work-area changes cannot recreate cleared intent");
+    assert_eq!(
+        count(&h, &top),
+        before,
+        "work-area changes cannot recreate cleared intent"
+    );
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
-    assert_eq!(h.wire.inner.space.state.element_location(&window), Some((16, 24).into()));
+    assert_eq!(
+        h.wire.inner.space.state.element_location(&window),
+        Some((16, 24).into())
+    );
 }
 
 #[test]
