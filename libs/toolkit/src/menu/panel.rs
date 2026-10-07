@@ -371,7 +371,14 @@ fn panel_update<Message, Renderer: text::Renderer>(
     cursor: mouse::Cursor,
     shell: &mut Shell<'_, Message>,
 ) {
-    let PanelInput { items, selected, style, text, on_hover, on_press } = input;
+    let PanelInput {
+        items,
+        selected,
+        style,
+        text,
+        on_hover,
+        on_press,
+    } = input;
     let bounds = layout.bounds();
     let state = tree.state.downcast_mut::<PanelState>();
     let metrics = || style.unwrap_or_default();
