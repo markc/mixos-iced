@@ -263,6 +263,7 @@ impl App {
     }
     fn start(&mut self, verb: &str, args: Value, kind: Kind, reply: Option<u64>) -> Task<Message> {
         if !self.bus.connected() {
+            self.status = label("waiting");
             if let Some(id) = reply {
                 self.reply_error(id, "TRANSPORT", "Bus is disconnected");
             }
@@ -522,7 +523,12 @@ impl App {
                 Task::batch([refresh, self.show(Some(id))])
             }
             "scene-editor.action" => {
-                if self.dialog.is_some() || self.operation.is_some() || !self.bus.connected() {
+                if !self.bus.connected() {
+                    self.status = label("waiting");
+                    self.reply_error(id, "TRANSPORT", "Bus is disconnected");
+                    return Task::none();
+                }
+                if self.dialog.is_some() || self.operation.is_some() {
                     self.reply_error(id, "BUSY", "an action or dialogue is already pending");
                     return Task::none();
                 }

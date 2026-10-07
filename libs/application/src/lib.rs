@@ -10,6 +10,7 @@ use std::cell::RefCell;
 
 pub use iced;
 pub mod message;
+pub mod native_queue;
 pub use iced_runtime as runtime;
 /// Native app tests use the pinned simulator through their shared host.
 #[cfg(feature = "test-support")]

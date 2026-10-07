@@ -28,11 +28,13 @@ end
 fn wait_service($broker,$service,$verb)
   $directory=$R.run.path .. if $broker.node == $R.a.node then "/a" else "/b" end
   $deadline=time()+10
+  $last=nil
   while time() < $deadline
-    if $h.call($mix,$broker,$directory,$service,$verb,{}).rc == 0 then return end
+    $last=$h.call($mix,$broker,$directory,$service,$verb,{})
+    if $last.rc == 0 then return end
     sleep(0.1)
   end
-  raise("SERVICE","Service did not register: " .. $service)
+  raise("SERVICE","Service did not answer " .. $verb .. ": " .. $service .. " " .. json_encode($last))
 end
 fn authority()
   $child=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$R.run.path .. "/profile"],
@@ -201,7 +203,7 @@ try
   check(app("app.quit",{}).quitting,"Recovery quit reply lost")
   exit_clean($offline)
   -- A collision's existing compositor control path lives on broker A.
-  $first=launch($R.a,"scene-editor-collision",$root .. "/first-home","first","mixos-scene-editor:gallery")
+  $first=launch($R.a,"scene-editor-collision",$root .. "/first-home","first","mixos-scene-editor:gallery/")
   $first_window=presented($first,1000)
   wait_service($R.a,"scene-editor-collision","scene-editor.info")
   $second=launch($R.a,"scene-editor-collision",$root .. "/second-home","collision","mixos-scene-editor:installed/forwarded")
