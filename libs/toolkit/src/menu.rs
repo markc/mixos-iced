@@ -1713,7 +1713,7 @@ mod tests {
                 .push((paragraph.font, paragraph.size, paragraph.line_height));
         }
         fn fill_editor(&mut self, editor: &FaceEditor, _: Point, _: Color, _: Rectangle) {
-            self.editors.push((editor.font, editor.text_size));
+            self.editors.push((editor.font, editor.size));
         }
         fn fill_text(&mut self, text: text::Text<String, Face>, _: Point, _: Color, _: Rectangle) {
             self.texts.push((text.font, text.size, text.line_height));

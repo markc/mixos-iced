@@ -125,7 +125,6 @@ where
     fn options(&self) -> &'a [T];
     fn font(&self) -> Renderer::Font;
     fn text_size(&self) -> f32;
-    fn padding(&self) -> iced_core::Padding;
     fn row_height(&self) -> f32;
     fn text_line_height(&self) -> LineHeight;
     fn selected(&self) -> Option<usize>;
@@ -362,9 +361,6 @@ where
     fn text_size(&self) -> f32 {
         self.text_size
     }
-    fn padding(&self) -> iced_core::Padding {
-        self.padding
-    }
     // The legacy rows: the text size plus the vertical padding.
     fn row_height(&self) -> f32 {
         self.text_size + self.padding.y()
@@ -400,9 +396,6 @@ where
     }
     fn text_size(&self) -> f32 {
         self.list.text_size
-    }
-    fn padding(&self) -> iced_core::Padding {
-        self.list.padding
     }
     // The prepared rows: the content height (never less than the text size;
     // an absent line height is the 1.3 default factor) plus the vertical
@@ -631,9 +624,10 @@ mod tests {
 
     fn list<'a>(options: &'a [String]) -> TestList<'a> {
         // Leak the (capture-free) class and callback so the returned rows
-        // can borrow them for the caller's lifetime.
+        // can borrow them for the caller's lifetime. The class reference
+        // points at the leaked box itself, not its dyn target.
         let class: &'a <iced_core::Theme as Catalog>::Class<'a> =
-            Box::leak(<iced_core::Theme as Catalog>::default());
+            Box::leak(Box::new(<iced_core::Theme as Catalog>::default()));
         let on_selected: &'a dyn Fn(usize, String) -> String =
             Box::leak(Box::new(|_: usize, _: String| String::new())
                 as Box<dyn Fn(usize, String) -> String>);
