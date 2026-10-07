@@ -102,6 +102,23 @@ impl FontRegistry {
             .usage()
     }
 
+    /// Return the immutable allocation already retained for these exact
+    /// source bytes. This read-only lookup neither registers nor charges a
+    /// second source; compact hosts use it after a successful batch so their
+    /// reuse metadata shares the registry's actual allocation.
+    pub fn retained_source(&self, bytes: &[u8]) -> Option<Arc<[u8]>> {
+        let key = SourceKey {
+            digest: *blake3::hash(bytes).as_bytes(),
+            len: bytes.len() as u64,
+        };
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .sources
+            .get(&key)
+            .cloned()
+    }
+
     /// Snapshot the renderer IDs of every face the registry has pinned and
     /// run `action` with it while holding the registry lock. Callers that
     /// mutate the shared font system inside `action` keep the documented
