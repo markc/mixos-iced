@@ -1136,7 +1136,15 @@ mod tests {
             image::ImageFormat::Ico,
         ] {
             let mut encoded = Cursor::new(Vec::new());
-            bitmap.write_to(&mut encoded, format).unwrap();
+            // ICO embeds PNG as RGBA; the encoder otherwise accepts an RGB
+            // input that its decoder correctly rejects as an invalid ICO.
+            if format == image::ImageFormat::Ico {
+                image::DynamicImage::ImageRgba8(bitmap.to_rgba8())
+                    .write_to(&mut encoded, format)
+                    .unwrap();
+            } else {
+                bitmap.write_to(&mut encoded, format).unwrap();
+            }
             let decoded = decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None)
                 .unwrap_or_else(|error| panic!("{format:?}: {error}"));
             assert_eq!(decoded.dimensions(), (32, 16), "{format:?}");
@@ -1154,6 +1162,21 @@ mod tests {
             image_layout(&Handle::from_rgba(8, 32, vec![255; 8 * 32 * 4]), 24.0),
             (6.0, 24.0)
         );
+    }
+
+    #[test]
+    fn ico_rejects_embedded_rgb_png() {
+        let bitmap = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            32,
+            16,
+            image::Rgb([211, 79, 37]),
+        ));
+        let mut encoded = Cursor::new(Vec::new());
+        bitmap.write_to(&mut encoded, image::ImageFormat::Ico).unwrap();
+        assert!(matches!(
+            decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None),
+            Err(IconDecodeError::RasterDecode)
+        ));
     }
 
     #[test]
