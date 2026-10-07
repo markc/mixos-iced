@@ -928,13 +928,15 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Worker<T, C> {
                     let snapshot = request.update().snapshot();
                     let result = prepare(
                         snapshot,
-                        &request.context,
-                        &cancelled,
-                        &build,
                         host,
-                        &requirements,
                         None,
-                        local.value.as_ref(),
+                        &PreparationInputs {
+                            context: &request.context,
+                            cancel: &cancelled,
+                            build: &build,
+                            requirements: &requirements,
+                            local: local.value.as_ref(),
+                        },
                     );
                     ResourceOutcome::Prepared(Completion {
                         update: request.update,
@@ -955,13 +957,15 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Worker<T, C> {
                         |snapshot, context, _, expected| {
                             presentation = Some(prepare(
                                 snapshot,
-                                context,
-                                &cancelled,
-                                &build,
                                 Arc::clone(&host),
-                                &requirements,
                                 expected,
-                                local.value.as_ref(),
+                                &PreparationInputs {
+                                    context,
+                                    cancel: &cancelled,
+                                    build: &build,
+                                    requirements: &requirements,
+                                    local: local.value.as_ref(),
+                                },
                             )?);
                             // The typed binding the fallback ladder records: exactly
                             // what this preparation verified, so the later cache
@@ -981,26 +985,25 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Worker<T, C> {
                 }
                 ResourceKind::Reprepare(source) => {
                     let snapshot = source.request.update.snapshot();
+                    let inputs = PreparationInputs {
+                        context: &source.request.context,
+                        cancel: &cancelled,
+                        build: &build,
+                        requirements: &requirements,
+                        local: local.value.as_ref(),
+                    };
                     let result = if let Some(generic) = &source.generic {
                         build_generic(
                             generic,
                             snapshot,
-                            &source.request.context,
-                            &cancelled,
-                            &build,
-                            &requirements,
-                            local.value.as_ref(),
+                            &inputs,
                         )
                     } else {
                         prepare(
                             snapshot,
-                            &source.request.context,
-                            &cancelled,
-                            &build,
                             host,
-                            &requirements,
                             source.binding.as_ref(),
-                            local.value.as_ref(),
+                            &inputs,
                         )
                     };
                     ResourceOutcome::Reprepared(source, Box::new(result))
@@ -1114,18 +1117,17 @@ impl<T, C> Drop for Worker<T, C> {
 /// event returns; a poisoned lock is a diagnostic, never an unwrap. Cancellation
 /// is checked at the start, through every bounded host stage and again after
 /// the content builder, immediately before the candidate is returned.
-fn prepare<T, C>(
-    snapshot: &Snapshot,
-    context: &str,
-    cancel: &AtomicBool,
-    build: &Builder<T, C>,
-    host: Arc<Mutex<ResourceHost>>,
-    requirements: &Requirements<C>,
-    expected: Option<&settings::ResourceBinding>,
-    local: &C,
-) -> Result<Presentation<T>, Diagnostic> {
-    let check = || {
-        if cancel.load(Ordering::Acquire) {
+struct PreparationInputs<'a, T, C> {
+    context: &'a str,
+    cancel: &'a AtomicBool,
+    build: &'a Builder<T, C>,
+    requirements: &'a Requirements<C>,
+    local: &'a C,
+}
+
+impl<T, C> PreparationInputs<'_, T, C> {
+    fn check(&self) -> Result<(), Diagnostic> {
+        if self.cancel.load(Ordering::Acquire) {
             Err(Diagnostic::new(
                 "preparation_cancelled",
                 "worker",
@@ -1134,14 +1136,23 @@ fn prepare<T, C>(
         } else {
             Ok(())
         }
-    };
+    }
+}
+
+fn prepare<T, C>(
+    snapshot: &Snapshot,
+    host: Arc<Mutex<ResourceHost>>,
+    expected: Option<&settings::ResourceBinding>,
+    inputs: &PreparationInputs<'_, T, C>,
+) -> Result<Presentation<T>, Diagnostic> {
+    let mut check = || inputs.check();
     check()?;
     let effective = snapshot
         .effective
-        .get(context)
+        .get(inputs.context)
         .ok_or_else(|| Diagnostic::new("missing_context", "effective", "Context missing"))?;
     let projection = Projection::new(effective)?;
-    let required = requirements(&projection, snapshot, local)?;
+    let required = (inputs.requirements)(&projection, snapshot, inputs.local)?;
     let reference = snapshot.desktop.appearance.resources.as_ref();
     let appearance = host
         .lock()
@@ -1153,7 +1164,7 @@ fn prepare<T, C>(
             )
         })?
         .prepare(projection, reference, expected, required, &mut check)?;
-    let content = build(&appearance, snapshot, local)?;
+    let content = (inputs.build)(&appearance, snapshot, inputs.local)?;
     check()?;
     Ok(Presentation {
         appearance,
@@ -1172,30 +1183,16 @@ fn exhausted(field: &str) -> Diagnostic {
 fn build_generic<T, C>(
     appearance: &Prepared,
     snapshot: &Snapshot,
-    context: &str,
-    cancel: &AtomicBool,
-    build: &Builder<T, C>,
-    requirements: &Requirements<C>,
-    local: &C,
+    inputs: &PreparationInputs<'_, T, C>,
 ) -> Result<Presentation<T>, Diagnostic> {
-    let check = || {
-        if cancel.load(Ordering::Acquire) {
-            Err(Diagnostic::new(
-                "preparation_cancelled",
-                "worker",
-                "Preparation superseded",
-            ))
-        } else {
-            Ok(())
-        }
-    };
+    let check = || inputs.check();
     check()?;
     let effective = snapshot
         .effective
-        .get(context)
+        .get(inputs.context)
         .ok_or_else(|| Diagnostic::new("missing_context", "effective", "Context missing"))?;
-    requirements(&Projection::new(effective)?, snapshot, local)?;
-    let content = build(appearance, snapshot, local)?;
+    (inputs.requirements)(&Projection::new(effective)?, snapshot, inputs.local)?;
+    let content = (inputs.build)(appearance, snapshot, inputs.local)?;
     check()?;
     Ok(Presentation {
         appearance: appearance.clone(),
