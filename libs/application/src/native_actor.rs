@@ -83,7 +83,10 @@ impl<T: Send + 'static> TaskSet<T> {
         while let Some(result) = self.tasks.try_join_next() {
             ready.push(result);
         }
-        AbortReport { ready, unconfirmed: self.tasks.len() }
+        AbortReport {
+            ready,
+            unconfirmed: self.tasks.len(),
+        }
     }
 }
 
@@ -121,7 +124,12 @@ impl Accepted {
         self,
         make: impl FnOnce(Arc<SupervisedClient>, IncomingCommand, Instant) -> F,
     ) -> (Permit, F) {
-        let Self { client, command, permit, admitted_at } = self;
+        let Self {
+            client,
+            command,
+            permit,
+            admitted_at,
+        } = self;
         (permit, make(client, command, admitted_at))
     }
     /// Generation alone cannot identify distinct supervisor incarnations.
@@ -214,18 +222,25 @@ mod tests {
         let admission = Admission::new(1);
         let mut tasks = TaskSet::<()>::new(1);
         let (started, entered) = tokio::sync::oneshot::channel();
-        let (release, waiting) = tokio::sync::oneshot::channel::<()>();
-        assert!(tasks.try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async move {
-            started.send(()).unwrap();
-            let _ = waiting.await;
-        })).is_ok());
+        let (mut release, waiting) = tokio::sync::oneshot::channel::<()>();
+        assert!(
+            tasks
+                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                    permit,
+                    async move {
+                        started.send(()).unwrap();
+                        let _ = waiting.await;
+                    }
+                ))
+                .is_ok()
+        );
         entered.await.unwrap();
         let report = tasks.abort_and_report();
         assert!(report.ready.is_empty());
         assert_eq!(report.unconfirmed, 1);
         assert_eq!(admission.counts().active, 1);
         assert_eq!(admission.counts().abandoned, 0);
-        tokio::task::yield_now().await;
+        release.closed().await;
         assert_eq!(admission.counts().active, 0);
         assert_eq!(admission.counts().abandoned, 1);
         assert_eq!(admission.counts().finished, 0);
@@ -309,16 +324,21 @@ mod tests {
     async fn a_panicking_task_is_abandoned_and_never_reported_finished() {
         let admission = Admission::new(1);
         let mut tasks = TaskSet::<()>::new(1);
+        let (ended, destroyed) = tokio::sync::oneshot::channel::<()>();
         assert!(
             tasks
-                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async {
-                    panic!("owned task failure");
-                }))
+                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                    permit,
+                    async move {
+                        let _ended = ended;
+                        panic!("owned task failure");
+                    }
+                ))
                 .is_ok()
         );
-        // Tokio polls the spawned task before this task resumes. The panic
-        // releases admission, but its unreaped JoinError still owns a slot.
-        tokio::task::yield_now().await;
+        // The real panic destroys its captured sender. On this current-thread
+        // runtime the wrapper's unwind completes before this task resumes.
+        assert!(destroyed.await.is_err());
         assert!(tasks.is_full());
         assert_eq!(admission.counts().abandoned, 1);
         assert_eq!(admission.counts().finished, 0);

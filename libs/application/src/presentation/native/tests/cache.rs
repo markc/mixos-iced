@@ -252,9 +252,21 @@ async fn expired_shutdown_does_not_start_a_queued_cache_write() {
     let error = worker.flush_cache(Instant::now()).await.unwrap_err();
     assert_eq!(error.code, "cache_drain_timeout");
     assert!(worker.running.is_none(), "no physical cache task started");
-    assert!(!root.exists(), "expired shutdown cannot create the cache root");
-    worker.flush_cache(Instant::now() + Duration::from_secs(5)).await.unwrap();
-    assert_eq!(cache::load(&root, session.host.consumer()).unwrap().snapshot().revision, Revision(1));
+    assert!(
+        !root.exists(),
+        "expired shutdown cannot create the cache root"
+    );
+    worker
+        .flush_cache(Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        cache::load(&root, session.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(1)
+    );
 }
 
 #[tokio::test]

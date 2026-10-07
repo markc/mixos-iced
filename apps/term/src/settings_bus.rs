@@ -234,8 +234,9 @@ pub fn start(
                             seed,
                         },
                     ));
-                    // Bounded shutdown: the supervisor, serve task and flush
-                    // have finished; 100 ms is a ceiling, not a wait.
+                    // The bounded lane drain has ended; outstanding task
+                    // cancellation may remain unconfirmed. Runtime teardown
+                    // has a separate allowance capped at 100 ms.
                     runtime.shutdown_timeout(Duration::from_millis(100));
                 }
                 Err(error) => {
@@ -580,9 +581,7 @@ async fn worker(
             // evidence back to an old connection.
             let stale: Vec<_> = pending
                 .iter()
-                .filter_map(|(id, accepted)| {
-                    (!accepted.is_current(&client)).then_some(*id)
-                })
+                .filter_map(|(id, accepted)| (!accepted.is_current(&client)).then_some(*id))
                 .collect();
             for id in stale {
                 if let Some(accepted) = pending.remove(&id) {
@@ -819,7 +818,10 @@ async fn worker(
             break;
         }
         match tokio::time::timeout_at(deadline_at, fixture_waits.join_next()).await {
-            Ok(Some(Ok(Completed {permit,value:result}))) => {
+            Ok(Some(Ok(Completed {
+                permit,
+                value: result,
+            }))) => {
                 if let Err(error) = result {
                     faults.push(error);
                 }
@@ -864,13 +866,20 @@ async fn worker(
         if std::time::Instant::now() >= deadline {
             cancel_tasks("Bus reply", &mut operations, &mut faults);
             let unsent = retained_replies.len();
-            for reply in retained_replies.drain() { reply.retire().finish(); }
-            faults.push(format!("term Bus reply drain timed out with {unsent} retained unsent replies"));
+            for reply in retained_replies.drain() {
+                reply.retire().finish();
+            }
+            faults.push(format!(
+                "term Bus reply drain timed out with {unsent} retained unsent replies"
+            ));
             break;
         }
         submit_replies(&mut retained_replies, &mut operations);
         match tokio::time::timeout_at(deadline_at, operations.join_next()).await {
-            Ok(Some(Ok(Completed {permit,value:result}))) => {
+            Ok(Some(Ok(Completed {
+                permit,
+                value: result,
+            }))) => {
                 if let Err(error) = result {
                     faults.push(error);
                 }
@@ -935,8 +944,11 @@ fn try_spawn(
         return;
     };
     let admitted_at = std::time::Instant::now();
-    let reply = Accepted::new(client, command, permit, admitted_at)
-        .reply(rc, body, admitted_at + REPLY_BUDGET);
+    let reply = Accepted::new(client, command, permit, admitted_at).reply(
+        rc,
+        body,
+        admitted_at + REPLY_BUDGET,
+    );
     if let Err(reply) = operations.try_spawn_with(reply, Reply::into_task) {
         reply.retire().finish();
         eprintln!("{service} refusal task capacity invariant failed");
@@ -949,16 +961,21 @@ fn cancel_tasks(label: &str, tasks: &mut TaskSet<Result<(), String>>, faults: &m
     let report = std::mem::replace(tasks, TaskSet::new(0)).abort_and_report();
     for result in report.ready {
         match result {
-            Ok(Completed {permit,value}) => {
-                if let Err(error) = value { faults.push(error); }
+            Ok(Completed { permit, value }) => {
+                if let Err(error) = value {
+                    faults.push(error);
+                }
                 permit.finish();
             }
-            Err(error) if error.is_cancelled() => {},
+            Err(error) if error.is_cancelled() => {}
             Err(error) => faults.push(format!("{label}: {error}")),
         }
     }
     if report.unconfirmed > 0 {
-        faults.push(format!("{label} cancellation requested with {} unreaped tasks",report.unconfirmed));
+        faults.push(format!(
+            "{label} cancellation requested with {} unreaped tasks",
+            report.unconfirmed
+        ));
     }
 }
 
@@ -1010,19 +1027,28 @@ mod tests {
     }
 
     async fn connected(name: &str, url: &str) -> Arc<SupervisedClient> {
-        let client = Arc::new(SupervisedClient::connect_options(name,url)
-            .fatal_on_registration_rejection(true).bounded_incoming(4).start());
+        let client = Arc::new(
+            SupervisedClient::connect_options(name, url)
+                .fatal_on_registration_rejection(true)
+                .bounded_incoming(4)
+                .start(),
+        );
         let mut state = client.subscribe_state();
-        tokio::time::timeout(Duration::from_secs(5),async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while *state.borrow_and_update() != ConnState::Connected {
                 state.changed().await.unwrap();
             }
-        }).await.expect("actual broker registration");
+        })
+        .await
+        .expect("actual broker registration");
         client
     }
 
     async fn incoming_command(incoming: &mut BoundedIncomingReceiver) -> IncomingCommand {
-        match tokio::time::timeout(Duration::from_secs(5),incoming.recv()).await.unwrap() {
+        match tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+            .await
+            .unwrap()
+        {
             Some(BoundedIncomingEvent::Command(command)) => command,
             other => panic!("real command expected: {other:?}"),
         }
@@ -1032,48 +1058,88 @@ mod tests {
     fn retained_expired_reply_sends_nothing_and_holds_credit_until_reaped() {
         let broker = term_test_broker::Broker::start();
         runtime().block_on(async {
-            let client = connected("actor-reply",&broker.url).await;
+            let client = connected("actor-reply", &broker.url).await;
             let mut incoming = client.incoming_bounded().unwrap();
-            let caller = Arc::new(::bus::native_client::NodedClient::connect_anonymous(&broker.url).await.unwrap());
+            let caller = Arc::new(
+                ::bus::native_client::NodedClient::connect_anonymous(&broker.url)
+                    .await
+                    .unwrap(),
+            );
             let calling = caller.clone();
-            let call = tokio::spawn(async move { calling.call("actor-reply","app.describe",json!({})).await });
+            let call = tokio::spawn(async move {
+                calling.call("actor-reply", "app.describe", json!({})).await
+            });
             let command = incoming_command(&mut incoming).await;
-            let original = (command.generation,command.from.clone(),command.command.clone(),command.id.clone());
+            let original = (
+                command.generation,
+                command.from.clone(),
+                command.command.clone(),
+                command.id.clone(),
+            );
             let admission = Admission::new(2);
             let mut tasks = TaskSet::new(1);
             let (release, held) = tokio::sync::oneshot::channel();
-            assert!(tasks.try_spawn_with(admission.try_acquire().unwrap(),|permit| (permit,async move {
-                held.await.unwrap();
-                Ok(())
-            })).is_ok());
+            assert!(
+                tasks
+                    .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                        permit,
+                        async move {
+                            held.await.unwrap();
+                            Ok(())
+                        }
+                    ))
+                    .is_ok()
+            );
             let admitted_at = std::time::Instant::now();
             let deadline = admitted_at + Duration::from_millis(20);
-            let accepted = Accepted::new(client.clone(),command,admission.try_acquire().unwrap(),admitted_at);
-            let mut retained = Outbox::<Reply,0>::new(1);
-            assert!(retained.push(accepted.reply(0,json!({"expired":true}).to_string(),deadline)).is_ok());
-            submit_replies(&mut retained,&mut tasks);
-            assert_eq!(retained.len(),1);
+            let accepted = Accepted::new(
+                client.clone(),
+                command,
+                admission.try_acquire().unwrap(),
+                admitted_at,
+            );
+            let mut retained = Outbox::<Reply, 0>::new(1);
+            assert!(
+                retained
+                    .push(accepted.reply(0, json!({"expired":true}).to_string(), deadline))
+                    .is_ok()
+            );
+            submit_replies(&mut retained, &mut tasks);
+            assert_eq!(retained.len(), 1);
             tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
             release.send(()).unwrap();
             let blocker = tasks.join_next().await.unwrap().unwrap();
             blocker.value.unwrap();
             blocker.permit.finish();
-            submit_replies(&mut retained,&mut tasks);
+            submit_replies(&mut retained, &mut tasks);
             assert!(retained.is_empty());
             tokio::task::yield_now().await;
             assert!(tasks.is_full());
-            assert_eq!(admission.counts().active,1);
+            assert_eq!(admission.counts().active, 1);
             let completed = tasks.join_next().await.unwrap().unwrap();
-            assert_eq!(completed.value.unwrap_err(),"Bus reply timed out");
-            assert_eq!(admission.counts().active,1);
+            assert_eq!(completed.value.unwrap_err(), "Bus reply timed out");
+            assert_eq!(admission.counts().active, 1);
             completed.permit.finish();
             // If the expired helper sent anything, that first response would
             // have won. Reply now using the exact saved real wire identity.
-            client.respond_parts(original.0,&original.1,&original.2,original.3.as_deref(),0,
-                &json!({"sentinel":"after-expiry"}).to_string()).await.unwrap();
-            let response = tokio::time::timeout(Duration::from_secs(5),call).await.unwrap().unwrap().unwrap();
-            assert_eq!(response,json!({"sentinel":"after-expiry"}));
-            assert_eq!(admission.counts().finished,2);
+            client
+                .respond_parts(
+                    original.0,
+                    &original.1,
+                    &original.2,
+                    original.3.as_deref(),
+                    0,
+                    &json!({"sentinel":"after-expiry"}).to_string(),
+                )
+                .await
+                .unwrap();
+            let response = tokio::time::timeout(Duration::from_secs(5), call)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(response, json!({"sentinel":"after-expiry"}));
+            assert_eq!(admission.counts().finished, 2);
             client.close().await;
             caller.close().await;
         });
@@ -1083,41 +1149,106 @@ mod tests {
     fn reused_generation_never_substitutes_a_reply_supervisor() {
         let broker = term_test_broker::Broker::start();
         runtime().block_on(async {
-            let a = connected("actor-origin",&broker.url).await;
-            let b = connected("actor-other",&broker.url).await;
-            assert_eq!(a.connection_generation(),1);
-            assert_eq!(b.connection_generation(),1);
+            let a = connected("actor-origin", &broker.url).await;
+            let b = connected("actor-other", &broker.url).await;
+            assert_eq!(a.connection_generation(), 1);
+            assert_eq!(b.connection_generation(), 1);
             let mut incoming = a.incoming_bounded().unwrap();
-            let caller = Arc::new(::bus::native_client::NodedClient::connect_anonymous(&broker.url).await.unwrap());
+            let caller = Arc::new(
+                ::bus::native_client::NodedClient::connect_anonymous(&broker.url)
+                    .await
+                    .unwrap(),
+            );
             let calling = caller.clone();
-            let call = tokio::spawn(async move {calling.call("actor-origin","app.describe",json!({})).await});
+            let call = tokio::spawn(async move {
+                calling
+                    .call("actor-origin", "app.describe", json!({}))
+                    .await
+            });
             let command = incoming_command(&mut incoming).await;
             let admission = Admission::new(1);
-            let accepted = Accepted::new(a.clone(),command,admission.try_acquire().unwrap(),std::time::Instant::now());
+            let accepted = Accepted::new(
+                a.clone(),
+                command,
+                admission.try_acquire().unwrap(),
+                std::time::Instant::now(),
+            );
             assert!(accepted.is_current(&a));
-            assert!(!accepted.is_current(&b),"generation equality is insufficient");
-            let (permit,reply) = accepted.reply(0,json!({"origin":"a"}).to_string(),std::time::Instant::now()+Duration::from_secs(5)).into_task();
+            assert!(
+                !accepted.is_current(&b),
+                "generation equality is insufficient"
+            );
+            let (permit, reply) = accepted
+                .reply(
+                    0,
+                    json!({"origin":"a"}).to_string(),
+                    std::time::Instant::now() + Duration::from_secs(5),
+                )
+                .into_task();
             reply.await.unwrap();
             permit.finish();
-            assert_eq!(tokio::time::timeout(Duration::from_secs(5),call).await.unwrap().unwrap().unwrap(),json!({"origin":"a"}));
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), call)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                json!({"origin":"a"})
+            );
 
             let calling = caller.clone();
-            let old_call = tokio::spawn(async move {calling.call("actor-origin","app.describe",json!({})).await});
+            let old_call = tokio::spawn(async move {
+                calling
+                    .call("actor-origin", "app.describe", json!({}))
+                    .await
+            });
             let command = incoming_command(&mut incoming).await;
-            let old = Accepted::new(a.clone(),command,admission.try_acquire().unwrap(),std::time::Instant::now());
+            let old = Accepted::new(
+                a.clone(),
+                command,
+                admission.try_acquire().unwrap(),
+                std::time::Instant::now(),
+            );
             a.close().await;
-            let replacement = connected("actor-origin",&broker.url).await;
-            assert_eq!(replacement.connection_generation(),1);
+            let replacement = connected("actor-origin", &broker.url).await;
+            assert_eq!(replacement.connection_generation(), 1);
             assert!(!old.is_current(&replacement));
             let mut fresh_incoming = replacement.incoming_bounded().unwrap();
             let calling = caller.clone();
-            let fresh_call = tokio::spawn(async move {calling.call("actor-origin","app.describe",json!({})).await});
+            let fresh_call = tokio::spawn(async move {
+                calling
+                    .call("actor-origin", "app.describe", json!({}))
+                    .await
+            });
             let fresh_command = incoming_command(&mut fresh_incoming).await;
-            let (permit,reply) = old.reply(0,json!({"origin":"old"}).to_string(),std::time::Instant::now()+Duration::from_secs(5)).into_task();
-            assert!(reply.await.unwrap_err().starts_with("Bus reply:"),"old supervisor rejects the send");
+            let (permit, reply) = old
+                .reply(
+                    0,
+                    json!({"origin":"old"}).to_string(),
+                    std::time::Instant::now() + Duration::from_secs(5),
+                )
+                .into_task();
+            assert!(
+                reply.await.unwrap_err().starts_with("Bus reply:"),
+                "old supervisor rejects the send"
+            );
             permit.finish();
-            replacement.respond(&fresh_command,0,&json!({"origin":"replacement"}).to_string()).await.unwrap();
-            assert_eq!(tokio::time::timeout(Duration::from_secs(5),fresh_call).await.unwrap().unwrap().unwrap(),json!({"origin":"replacement"}));
+            replacement
+                .respond(
+                    &fresh_command,
+                    0,
+                    &json!({"origin":"replacement"}).to_string(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), fresh_call)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                json!({"origin":"replacement"})
+            );
             old_call.abort();
             let _ = old_call.await;
             replacement.close().await;

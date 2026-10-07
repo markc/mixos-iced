@@ -57,11 +57,16 @@ pub fn classify(verb: &str) -> Option<Class> {
     if !VERBS.contains(&verb) {
         return None;
     }
-    Some(if matches!(verb, "app.acceptance.frame.wait" | "app.acceptance.barrier.wait") {
-        Class::Wait
-    } else {
-        Class::Control
-    })
+    Some(
+        if matches!(
+            verb,
+            "app.acceptance.frame.wait" | "app.acceptance.barrier.wait"
+        ) {
+            Class::Wait
+        } else {
+            Class::Control
+        },
+    )
 }
 
 pub fn recognises(verb: &str) -> bool {
@@ -641,7 +646,10 @@ mod tests {
         assert!(!recognises("app.describe"));
         assert_eq!(classify("app.acceptance.frame.wait"), Some(Class::Wait));
         assert_eq!(classify("app.acceptance.barrier.wait"), Some(Class::Wait));
-        assert_eq!(classify("app.acceptance.barrier.release"), Some(Class::Control));
+        assert_eq!(
+            classify("app.acceptance.barrier.release"),
+            Some(Class::Control)
+        );
         assert_eq!(classify("app.acceptance.future"), None);
         let describe = Describe::new(1, "owned", 11).unwrap();
         for verb in VERBS {

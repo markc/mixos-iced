@@ -1105,7 +1105,11 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Worker<T, C> {
             // timeout_at polls its inner future first. next() may start a
             // queued save, so check before giving it any expired-budget poll.
             if Instant::now() >= deadline {
-                return Err(Diagnostic::new("cache_drain_timeout", "cache", "Shutdown budget expired"));
+                return Err(Diagnostic::new(
+                    "cache_drain_timeout",
+                    "cache",
+                    "Shutdown budget expired",
+                ));
             }
             let event =
                 tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.next())
