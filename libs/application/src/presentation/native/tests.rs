@@ -219,7 +219,7 @@ async fn superseded_blocking_jobs_are_physically_serial_and_keep_only_latest() {
             ),
             None,
         )
-        .unwrap()
+        .unwrap();
     });
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
