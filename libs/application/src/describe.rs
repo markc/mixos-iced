@@ -177,7 +177,11 @@ pub struct Identity<'a> {
 /// a partially completed response.
 pub fn complete(value: &mut Value, identity: Identity<'_>) -> Result<(), Violation> {
     let object = value.as_object().ok_or_else(|| {
-        Violation::new("", code::INVALID_ROOT, "describe value must be a JSON object")
+        Violation::new(
+            "",
+            code::INVALID_ROOT,
+            "describe value must be a JSON object",
+        )
     })?;
     reserved_agree(object, &identity)?;
     let mut completed = value.clone();
@@ -302,7 +306,9 @@ pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
         .get("pid")
         .and_then(Value::as_u64)
         .filter(|pid| (1..=u64::from(u32::MAX)).contains(pid))
-        .ok_or_else(|| Violation::new("pid", code::INVALID_IDENTITY, "pid must be a positive u32"))?;
+        .ok_or_else(|| {
+            Violation::new("pid", code::INVALID_IDENTITY, "pid must be a positive u32")
+        })?;
     required_nonempty_bounded(object, "service")?;
     match object.get("app_id") {
         None => {
@@ -340,9 +346,9 @@ pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
     let verbs = object.get("verbs").ok_or_else(|| {
         Violation::new("verbs", code::MISSING_FIELD, "verb inventory is required")
     })?;
-    let entries = verbs.as_array().ok_or_else(|| {
-        Violation::new("verbs", code::INVALID_VERBS, "verbs must be an array")
-    })?;
+    let entries = verbs
+        .as_array()
+        .ok_or_else(|| Violation::new("verbs", code::INVALID_VERBS, "verbs must be an array"))?;
     if entries.len() > MAX_VERBS {
         return Err(Violation::new(
             "verbs",
@@ -405,8 +411,9 @@ pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
                     "description must be a string",
                 ));
             }
-            let bytes = serde_json::to_vec(entry)
-                .map_err(|error| Violation::new(path.clone(), code::INVALID_VERB, error.to_string()))?;
+            let bytes = serde_json::to_vec(entry).map_err(|error| {
+                Violation::new(path.clone(), code::INVALID_VERB, error.to_string())
+            })?;
             if bytes.len() > MAX_DESCRIPTOR_BYTES {
                 return Err(Violation::new(
                     path,
@@ -487,9 +494,13 @@ fn required_nonempty_bounded<'a>(
     let value = object
         .get(key)
         .ok_or_else(|| Violation::new(key, code::MISSING_FIELD, format!("{key} is required")))?;
-    let text = value
-        .as_str()
-        .ok_or_else(|| Violation::new(key, code::INVALID_IDENTITY, format!("{key} must be a string")))?;
+    let text = value.as_str().ok_or_else(|| {
+        Violation::new(
+            key,
+            code::INVALID_IDENTITY,
+            format!("{key} must be a string"),
+        )
+    })?;
     if text.is_empty() {
         return Err(Violation::new(
             key,
@@ -712,9 +723,9 @@ pub fn read_legacy(value: &Value) -> Result<LegacyDescription<'_>, Violation> {
         ));
     }
     if let Some(verbs) = object.get("verbs") {
-        let entries = verbs
-            .as_array()
-            .ok_or_else(|| Violation::new("verbs", code::INVALID_VERBS, "verbs must be an array"))?;
+        let entries = verbs.as_array().ok_or_else(|| {
+            Violation::new("verbs", code::INVALID_VERBS, "verbs must be an array")
+        })?;
         for (index, entry) in entries.iter().enumerate() {
             let path = format!("verbs[{index}]");
             match entry {
@@ -933,9 +944,15 @@ mod tests {
         );
         let mut blank_version = json!({"version": "1.0.0", "verbs": ["app.describe"]});
         assert_eq!(
-            complete(&mut blank_version, Identity { version: "", ..identity })
-                .unwrap_err()
-                .code,
+            complete(
+                &mut blank_version,
+                Identity {
+                    version: "",
+                    ..identity
+                }
+            )
+            .unwrap_err()
+            .code,
             code::INVALID_IDENTITY
         );
         let mut duplicate = json!({"version": "1.0.0", "verbs": ["app.describe", "app.describe"]});
@@ -963,7 +980,10 @@ mod tests {
             .find(|verb| verb.name == "busviewer.select")
             .unwrap();
         assert_eq!(select.read_only, Some(false));
-        assert_eq!(select.args, Some(&json!({"service": "string", "verb": "string"})));
+        assert_eq!(
+            select.args,
+            Some(&json!({"service": "string", "verb": "string"}))
+        );
         assert_eq!(select.value["extension"], json!({"kept": true}));
 
         // Evidence with current != applied stays a valid transient state:
@@ -977,8 +997,14 @@ mod tests {
             ("v1-refusal-duplicate-verbs.json", code::DUPLICATE_VERB),
             ("v1-refusal-missing-marker.json", code::MISSING_MARKER),
             ("v1-refusal-unknown-marker.json", code::UNKNOWN_MARKER),
-            ("v1-refusal-app-describe-mutable.json", code::APP_DESCRIBE_MUTABLE),
-            ("v1-refusal-missing-app-describe.json", code::APP_DESCRIBE_MISSING),
+            (
+                "v1-refusal-app-describe-mutable.json",
+                code::APP_DESCRIBE_MUTABLE,
+            ),
+            (
+                "v1-refusal-missing-app-describe.json",
+                code::APP_DESCRIBE_MISSING,
+            ),
             ("v1-refusal-bad-identity.json", code::INVALID_IDENTITY),
             ("v1-refusal-pid-overflow.json", code::INVALID_IDENTITY),
             ("v1-refusal-bad-evidence.json", code::INVALID_EVIDENCE),
@@ -1011,9 +1037,12 @@ mod tests {
             code::INVALID_VERB
         );
         assert_eq!(
-            validate(&base(vec![Value::String(String::new()), Value::String(VERB.into())]))
-                .unwrap_err()
-                .code,
+            validate(&base(vec![
+                Value::String(String::new()),
+                Value::String(VERB.into())
+            ]))
+            .unwrap_err()
+            .code,
             code::INVALID_VERB
         );
         assert_eq!(
@@ -1061,9 +1090,11 @@ mod tests {
             );
         }
         // The full positive u32 range is accepted.
-        assert!(validate(&json!({"describe_contract": CONTRACT, "version": "v",
+        assert!(
+            validate(&json!({"describe_contract": CONTRACT, "version": "v",
             "pid": u32::MAX, "service": "s", "app_id": null, "verbs": [VERB]}))
-            .is_ok());
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1108,7 +1139,8 @@ mod tests {
     fn read_legacy_reads_product_objects_and_keeps_missing_fields_missing() {
         let ced = read_legacy(&fixture!("ced-legacy-describe.json")).unwrap();
         assert_eq!(
-            ced.value()["contract"], "ctk-app-control.v0",
+            ced.value()["contract"],
+            "ctk-app-control.v0",
             "the ctk contract field is not the v1 marker and survives"
         );
         assert_eq!(ced.version(), Some("0.1.8"));
@@ -1133,8 +1165,14 @@ mod tests {
             .find(|verb| verb.name == "busviewer.select")
             .unwrap();
         assert_eq!(select.read_only, Some(false));
-        assert_eq!(select.args, Some(&json!({"service": "string", "verb": "string"})));
-        assert!(!viewer.verbs().any(|verb| verb.name == VERB), "not yet advertised");
+        assert_eq!(
+            select.args,
+            Some(&json!({"service": "string", "verb": "string"}))
+        );
+        assert!(
+            !viewer.verbs().any(|verb| verb.name == VERB),
+            "not yet advertised"
+        );
 
         let dopus = read_legacy(&fixture!("dopus-legacy-describe.json")).unwrap();
         assert_eq!(dopus.version(), Some("0.4.4"));
@@ -1149,13 +1187,17 @@ mod tests {
         assert!(names.contains(&"props.get"));
         assert!(!names.contains(&"shell.props.get"));
         assert_eq!(
-            validate(&fixture!("shell-info-legacy.json")).unwrap_err().code,
+            validate(&fixture!("shell-info-legacy.json"))
+                .unwrap_err()
+                .code,
             code::MISSING_MARKER
         );
 
         // A bare HELP array is not a describe object.
         assert_eq!(
-            read_legacy(&json!(["ced.ping", "ced.info"])).unwrap_err().code,
+            read_legacy(&json!(["ced.ping", "ced.info"]))
+                .unwrap_err()
+                .code,
             code::INVALID_ROOT
         );
         // Legacy discovery keeps its duplicate compatibility.
