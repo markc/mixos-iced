@@ -517,7 +517,7 @@ fn required_nonempty_bounded<'a>(
 
 /// A validated v1 response. Borrows the object; it never clones a second
 /// source of truth.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Description<'a> {
     value: &'a Value,
     pid: u32,
@@ -664,7 +664,7 @@ impl ExactSizeIterator for VerbIter<'_> {}
 /// a verbs array plus whatever partial identity it carries. Missing fields
 /// stay missing; nothing is inferred or fabricated. Legacy discovery keeps
 /// its duplicate-name compatibility and is not held to the v1 limits.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct LegacyDescription<'a> {
     value: &'a Value,
 }
@@ -763,7 +763,7 @@ mod tests {
 
     macro_rules! fixture {
         ($name:expr) => {
-            serde_json::from_str(include_str!(concat!(
+            serde_json::from_str::<Value>(include_str!(concat!(
                 "../../../docs/spec/application/fixtures/",
                 $name
             )))
@@ -961,12 +961,14 @@ mod tests {
 
     #[test]
     fn validate_accepts_the_validator_fixtures() {
-        let minimal = validate(&fixture!("v1-minimal-strings.json")).unwrap();
+        let minimal_value = fixture!("v1-minimal-strings.json");
+        let minimal = validate(&minimal_value).unwrap();
         assert_eq!(minimal.app_id(), None, "explicit null app_id");
         assert_eq!(minimal.settings(), None, "null evidence stays absent");
         assert_eq!(minimal.value()["schema"], "dopus.v1");
 
-        let descriptors = validate(&fixture!("v1-descriptors.json")).unwrap();
+        let descriptors_value = fixture!("v1-descriptors.json");
+        let descriptors = validate(&descriptors_value).unwrap();
         let describe = descriptors
             .verbs()
             .find(|verb| verb.name == VERB)
@@ -1006,7 +1008,18 @@ mod tests {
             ("v1-refusal-pid-overflow.json", code::INVALID_IDENTITY),
             ("v1-refusal-bad-evidence.json", code::INVALID_EVIDENCE),
         ] {
-            let violation = validate(&fixture!(name)).unwrap_err();
+            let value = match name {
+                "v1-refusal-duplicate-verbs.json" => fixture!("v1-refusal-duplicate-verbs.json"),
+                "v1-refusal-missing-marker.json" => fixture!("v1-refusal-missing-marker.json"),
+                "v1-refusal-unknown-marker.json" => fixture!("v1-refusal-unknown-marker.json"),
+                "v1-refusal-app-describe-mutable.json" => fixture!("v1-refusal-app-describe-mutable.json"),
+                "v1-refusal-missing-app-describe.json" => fixture!("v1-refusal-missing-app-describe.json"),
+                "v1-refusal-bad-identity.json" => fixture!("v1-refusal-bad-identity.json"),
+                "v1-refusal-pid-overflow.json" => fixture!("v1-refusal-pid-overflow.json"),
+                "v1-refusal-bad-evidence.json" => fixture!("v1-refusal-bad-evidence.json"),
+                _ => panic!("unlisted refusal fixture: {name}"),
+            };
+            let violation = validate(&value).unwrap_err();
             assert_eq!(violation.code, expected, "{name}");
         }
     }
