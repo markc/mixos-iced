@@ -36,6 +36,13 @@ i18n = ["dep:fluent-bundle"]
 gallery = ["dep:iced", "i18n"]
 gallery-wgpu = ["gallery", "wgpu", "iced/wgpu-bare"]
 gallery-tiny-skia = ["gallery", "tiny-skia", "iced/tiny-skia"]
+# Test-only: mirrors cosmic-text's per-script monospace index feature so the
+# guard suite's path-included sources see the `monospace_fallback` cfg they
+# declare, and forwards it to the cosmic dev-dependency.
+monospace_fallback = ["cosmic-text/monospace_fallback"]
+# Test-only selection of the font registration guard suite
+# (`tests/font_registration.rs`); no production code branch.
+font-registration-guards = ["monospace_fallback"]
 
 [dependencies]
 iced_core = { workspace = true, features = ["advanced"] }
@@ -69,6 +76,9 @@ png = { version = "=0.18.1" }
 serde_json = { workspace = true }
 # The requester round-trips a temp directory.
 tempfile = { workspace = true }
+# The font registration guard suite compiles the seam test sources from the
+# patched cosmic-text package; the root patch resolves this to that package.
+cosmic-text = { version = "=0.19.0", default-features = false, features = ["std", "swash"] }
 
 [[example]]
 name = "gallery"
@@ -111,3 +121,9 @@ required-features = ["gallery-tiny-skia"]
 [[test]]
 name = "services"
 required-features = ["gallery-tiny-skia"]
+
+# The font registration guard suite: the cosmic seam guard sources plus the
+# iced wrapper assertions, against the toolkit's own resolved graph.
+[[test]]
+name = "font_registration"
+required-features = ["font-registration-guards"]

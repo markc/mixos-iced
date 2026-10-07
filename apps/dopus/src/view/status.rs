@@ -2,7 +2,8 @@
 //! Shared status and panel toggles. Directory summaries belong to each pane.
 
 use application::iced::widget::{button, container, row, text};
-use application::iced::{Element, Length};
+use application::Element;
+use application::iced::{Length};
 
 use crate::app::Msg;
 use crate::view::Look;

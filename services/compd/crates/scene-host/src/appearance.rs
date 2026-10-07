@@ -41,17 +41,7 @@ pub(crate) fn build(prepared: &Prepared, snapshot: &Snapshot) -> Result<Look, Di
             ));
         }
     };
-    let weight = match title.font.weight {
-        Weight::Thin => 100,
-        Weight::ExtraLight => 200,
-        Weight::Light => 300,
-        Weight::Normal => 400,
-        Weight::Medium => 500,
-        Weight::Semibold => 600,
-        Weight::Bold => 700,
-        Weight::ExtraBold => 800,
-        Weight::Black => 900,
-    };
+    let weight = title.font.weight.value();
     Ok(Look {
         prepared: Arc::new(prepared.clone()),
         preferences,

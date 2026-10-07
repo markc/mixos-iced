@@ -6,7 +6,8 @@ use actions::ActionId;
 use application::cpu::Renderer;
 use application::iced::advanced::{layout, widget::Tree};
 use application::iced::widget::{Space, text, tooltip};
-use application::iced::{Element, Rectangle, Size};
+use application::Element;
+use application::iced::{Rectangle, Size};
 
 pub fn action_label(actions: &[ActionRow], action: ActionId, label: &str) -> String {
     match actions.iter().find(|row| row.id == action.as_str()) {

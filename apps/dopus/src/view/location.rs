@@ -15,7 +15,8 @@
 //! The field owns Enter submission; KeyRouter cancels editing on Escape.
 
 use application::iced::widget::{button, container};
-use application::iced::{Border, Element, Length};
+use application::Element;
+use application::iced::{Border, Length};
 
 use dopus_core::{PaneId, PaneModel};
 use toolkit::TextField;

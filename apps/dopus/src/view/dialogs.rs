@@ -26,8 +26,9 @@
 
 use application::iced::widget::{button, column, container, row, text};
 use application::iced::{
-    Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector,
+    Alignment, Background, Border, Color, Length, Padding, Shadow, Vector,
 };
+use application::Element;
 
 use application::cpu::Renderer;
 use dopus_core::{PromptKind, validate_filename};

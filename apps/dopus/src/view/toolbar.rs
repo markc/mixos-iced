@@ -2,7 +2,8 @@
 //! One window-wide navigation strip, dispatched through the existing actions.
 use actions::{ActionId, filemgr};
 use application::iced::widget::{button, container, row};
-use application::iced::{Element, Length};
+use application::Element;
+use application::iced::{Length};
 use dopus_core::PaneModel;
 
 use super::Look;

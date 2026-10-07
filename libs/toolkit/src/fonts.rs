@@ -579,17 +579,7 @@ fn registered_font(
         .map(|(candidate, _)| candidate.clone())?;
     let has_light = family_has_light(raw, &name);
     let selected_weight = weight(effective_weight(requested_weight, has_light));
-    let database_weight = fontdb::Weight(match selected_weight {
-        font::Weight::Thin => 100,
-        font::Weight::ExtraLight => 200,
-        font::Weight::Light => 300,
-        font::Weight::Normal => 400,
-        font::Weight::Medium => 500,
-        font::Weight::Semibold => 600,
-        font::Weight::Bold => 700,
-        font::Weight::ExtraBold => 800,
-        font::Weight::Black => 900,
-    });
+    let database_weight = fontdb::Weight(selected_weight.value());
     let id = raw.db().query(&fontdb::Query {
         families: &[fontdb::Family::Name(&name)],
         weight: database_weight,
@@ -736,6 +726,8 @@ mod tests {
         assert_eq!(weight(400), font::Weight::Normal);
         assert_eq!(weight(600), font::Weight::Semibold);
         assert_eq!(weight(900), font::Weight::Black);
+        // Numeric weights keep their exact value through `value()`.
+        assert_eq!(font::Weight::Numeric(650).value(), 650);
     }
 
     #[test]
