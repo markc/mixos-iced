@@ -143,7 +143,7 @@ fn actual_theme_origin_is_never_promoted_to_local_and_clones_mutate_once() {
         handle.theme_apply(theme(Some(Request::new(999,state.generation)),"must-not-run")).unwrap();
         handle.theme_apply(theme(None,"local-allowed")).unwrap();
         tokio::time::timeout(Duration::from_secs(5),async {
-            loop { if let Some(Delivery::ThemeApplied(result))=events.next().await { result.unwrap(); break; } }
+            loop { if let Delivery::ThemeApplied(result)=events.next().await.expect("worker closed before local theme completion") { result.unwrap(); break; } }
         }).await.unwrap();
         observed(&mut observation,|state|state.themes==0).await;
         assert_eq!(handle.themes.counts().active,0);
@@ -151,7 +151,7 @@ fn actual_theme_origin_is_never_promoted_to_local_and_clones_mutate_once() {
         let calling=caller.clone();
         let call=tokio::spawn(async move { calling.call_with_headers_raw("dopus-theme-origin","dopus.theme.set",&BTreeMap::new(),"{}").await });
         let command=tokio::time::timeout(Duration::from_secs(5),async {
-            loop { if let Some(Delivery::Command(command))=events.next().await { break command; } }
+            loop { if let Delivery::Command(command)=events.next().await.expect("worker closed before Bus theme command") { break command; } }
         }).await.unwrap();
         handle.theme_apply(theme(Some(command.id.clone()),"bus-allowed")).unwrap();
         assert!(handle.theme_apply(theme(Some(command.id.clone()),"must-not-run")).is_err());
@@ -176,14 +176,25 @@ fn actual_old_generation_never_dispatches_a_theme_mutation_after_reconnect() {
         let _stop=Stop(handle.clone());
         let old=observed(&mut observation,|state|state.connected).await.generation;
         broker.bounce();
-        observed(&mut observation,|state|state.connected && state.generation>old).await;
+        let current=observed(&mut observation,|state|state.connected && state.generation>old).await.generation;
         let authority=Arc::new(SupervisedClient::connect_options("settingsd",&broker.url).bounded_incoming(16).connect().await.unwrap());
         let mut incoming=authority.incoming_bounded().unwrap();
         let result=theme_apply(handle.client.as_ref().unwrap(),Some(old),Instant::now()+Duration::from_secs(2),&theme(None,"must-not-run")).await;
         assert_eq!(result.0,10); assert!(result.2.unwrap_err().contains("no call sent"));
-        while let Ok(event)=incoming.try_recv() {
-            if let BoundedIncomingEvent::Command(command)=event { assert!(!matches!(command.command.as_str(),"settings.validate"|"settings.apply")); }
-        }
+        let server=authority.clone();
+        let sentinel=tokio::spawn(async move {
+            loop {
+                let Some(BoundedIncomingEvent::Command(command))=tokio::time::timeout(Duration::from_secs(5),incoming.recv()).await.expect("native sentinel deadline") else { panic!("native authority stream closed") };
+                if matches!(command.command.as_str(),"settings.validate"|"settings.apply") {
+                    assert_eq!(command.command,"settings.validate");
+                    assert_eq!(serde_json::from_str::<Value>(&command.body).unwrap()["operation_id"],"current-sentinel","retired mutation reached the current native authority");
+                    server.respond(&command,0,"{\"status\":\"valid\"}").await.unwrap(); break;
+                }
+                server.respond(&command,10,"{\"status\":\"fixture_read_unavailable\"}").await.unwrap();
+            }
+        });
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5),call_settings(handle.client.as_ref().unwrap(),current,"settings.validate",json!({"operation_id":"current-sentinel"}))).await.unwrap().unwrap()["status"],"valid");
+        sentinel.await.unwrap();
         handle.quit(); handle.wait_done(Duration::from_secs(5)).unwrap(); authority.close().await;
     });
 }
