@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,6 +26,7 @@ wgpu = ["iced/wgpu"]
 raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
 test-support = ["dep:iced_test"]
 settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit"]
+settings-native = ["settings", "settings/native", "dep:tokio"]
 
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }
@@ -37,6 +38,9 @@ settings = { workspace = true, optional = true }
 appearance = { workspace = true, optional = true }
 design = { workspace = true, optional = true }
 toolkit = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 png = "=0.18.1"
+bus = { workspace = true, features = ["native"] }
+serde_json.workspace = true

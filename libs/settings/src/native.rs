@@ -5,7 +5,9 @@ use crate::{
     consumer::{Consumer, Work, WorkKind},
     *,
 };
-use bus::native_client::{IncomingCommand, SupervisedClient};
+use bus::native_client::IncomingCommand;
+pub use bus::native_client::SupervisedClient as Client;
+use Client as SupervisedClient;
 use std::time::Duration;
 
 pub const BOOTSTRAP_BUDGET: Duration = Duration::from_secs(1);
@@ -132,26 +134,51 @@ impl Consumer {
     /// Unrelated commands are ignored. The broker-authenticated authority stamp,
     /// exact topic and connection generation are checked before decoding.
     pub fn native_delivery(&mut self, command: &IncomingCommand) -> Option<Work> {
-        if command.topic() != Some(topic(&self.binding().profile).as_str())
+        self.decoded_delivery(Decoded::from_command(&self.binding, command)?)
+    }
+
+    /// Complete decoding on the host's worker, then feed it on the UI loop.
+    /// A queued delivery still checks the current binding and connection here.
+    pub fn decoded_delivery(&mut self, delivery: Decoded) -> Option<Work> {
+        if delivery.binding != self.binding || self.generation() != Some(delivery.generation) {
+            return None;
+        }
+        match delivery.result {
+            Ok(snapshot) => self.observe(delivery.generation, snapshot),
+            Err(error) => self.rejected_delivery(error),
+        }
+    }
+}
+
+/// Broker-owner/topic admission and bounded decoding happen off the UI loop.
+/// This is a host-local value, never deserialisable caller evidence. The host
+/// must pass a command from its existing verified broker receiver.
+#[derive(Debug)]
+pub struct Decoded {
+    binding: Binding,
+    generation: u64,
+    result: Result<Snapshot, Diagnostic>,
+}
+impl Decoded {
+    pub fn from_command(binding: &Binding, command: &IncomingCommand) -> Option<Self> {
+        if command.topic() != Some(topic(&binding.profile).as_str())
             || command.header("broker_service") != Some("settingsd")
-            || self.generation() != Some(command.generation)
         {
             return None;
         }
-        if command.body.len() > MAX_SNAPSHOT_BYTES {
-            return self.rejected_delivery(Diagnostic::new(
+        let result = if command.body.len() > MAX_SNAPSHOT_BYTES {
+            Err(Diagnostic::new(
                 "invalid_delivery",
                 "snapshot",
                 "Canonical delivery exceeds inline budget",
-            ));
-        }
-        match serde_json::from_str::<Snapshot>(&command.body) {
-            Ok(snapshot) => self.observe(command.generation, snapshot),
-            Err(error) => self.rejected_delivery(Diagnostic::new(
+            ))
+        } else {
+            serde_json::from_str::<Snapshot>(&command.body).map_err(|error| Diagnostic::new(
                 "invalid_delivery",
                 "snapshot",
                 error.to_string(),
-            )),
-        }
+            ))
+        };
+        Some(Self { binding: binding.clone(), generation: command.generation, result })
     }
 }

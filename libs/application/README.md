@@ -32,3 +32,20 @@ application's existing Bus lifetime. The bridge creates no connection, receiver,
 runtime, timer or redraw loop. Its returned shared change plan lets the host
 request the required invalidation/redraw; unchanged revision evidence creates
 no new preparation. Applied evidence is separate from frame presentation.
+
+`settings-native` adds `presentation::native::Session<T>` and `Worker<T>`.
+The UI feeds events to the session together with the existing client's current
+connected generation and forwards its whole desired `Jobs` through a coalescing
+host command lane. The worker borrows that same client and its host runtime;
+multiplex `worker.next()` with the existing receiver. Only retry/bootstrap
+deadlines arm wakes. An offline worker can prepare fallback before the host
+attaches its connection. A cancelled blocking job must finish before the latest
+replacement starts; cancellation is checked between font records and around
+content preparation, and cannot interrupt a current OS font read or callback.
+
+`native::Mailbox` holds at most five event kinds behind one outstanding UI wake.
+Replacing a snapshot marks a gap so the consumer reconciles. `message::Once`
+lets cloneable GUI messages consume an opaque completion exactly once.
+The integration prepares embedded fallback; persisted host cache loading/writing
+and native first-map timing are separate work. Ced uses this shared path for
+live palette/token/font-size changes; Quoin adoption is still pending.

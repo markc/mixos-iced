@@ -26,12 +26,14 @@ use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSend
 use editor_model::types::{Incoming, ParsedBody};
 
 use crate::controller::{BusCommand, Effect};
+use application::presentation::native::{Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker};
 
 /// Everything the bus thread delivers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
     Incoming(Incoming),
     Command(BusCommand),
+    Settings(Mailbox<crate::theme::Theme>),
 }
 
 /// Why the Bus could not be started.
@@ -72,9 +74,15 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// own (chrome, clipboard, session) and are ignored here.
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
+    settings: tokio::sync::watch::Sender<Option<Jobs>>,
+    binding: settings::Binding,
+    client: Arc<SupervisedClient>,
 }
 
 impl BusHandle {
+    pub fn settings_binding(&self) -> settings::Binding { self.binding.clone() }
+    pub fn settings_generation(&self) -> Option<u64> { self.client.is_connected().then(|| self.client.connection_generation()) }
+    pub fn settings_jobs(&self, jobs: Jobs) { self.settings.send_replace(Some(jobs)); }
     pub fn perform(&self, effect: &Effect) {
         match effect {
             Effect::Send { .. }
@@ -110,6 +118,7 @@ pub fn spawn(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), 
     let (dtx, drx) = unbounded();
     let (etx, erx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (settings, settings_rx) = tokio::sync::watch::channel(None);
     let service = service.to_string();
     let url = ::bus::client_helpers::resolve_noded_url();
     std::thread::Builder::new()
@@ -126,11 +135,11 @@ pub fn spawn(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), 
                     return;
                 }
             };
-            runtime.block_on(run(service, url, dtx, erx, ready_tx));
+            runtime.block_on(run(service, url, dtx, erx, ready_tx, settings_rx));
         })
         .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok((BusHandle { tx: etx }, drx)),
+        Ok(Ok((binding, client))) => Ok((BusHandle { tx: etx, settings, binding, client }, drx)),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(StartError::Unreachable("the Bus thread exited".into())),
     }
@@ -141,8 +150,13 @@ async fn run(
     url: String,
     dtx: UnboundedSender<Delivery>,
     mut erx: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: std::sync::mpsc::Sender<Result<(), StartError>>,
+    ready: std::sync::mpsc::Sender<Result<(settings::Binding, Arc<SupervisedClient>), StartError>>,
+    mut settings_rx: tokio::sync::watch::Receiver<Option<Jobs>>,
 ) {
+    let binding = match settings::session::binding() {
+        Ok(binding) => binding,
+        Err(error) => { let _ = ready.send(Err(StartError::Rejected(error.message))); return; }
+    };
     let connect = SupervisedClient::connect_options(&service, &url)
         .fatal_on_registration_rejection(true)
         .connect();
@@ -167,14 +181,31 @@ async fn run(
         return;
     };
     let mut state = client.subscribe_state();
-    let _ = ready.send(Ok(()));
+    let _ = ready.send(Ok((binding.clone(), Arc::clone(&client))));
+    let mut settings_worker = SettingsWorker::new(Arc::clone(&client), crate::theme::from_settings);
+    let settings_mailbox = Mailbox::default();
+    let settings_send = |event| {
+        if settings_mailbox.publish(event) {
+            let _ = dtx.unbounded_send(Delivery::Settings(settings_mailbox.clone()));
+        }
+    };
 
     let mut commands: HashMap<u64, IncomingCommand> = HashMap::new();
     let mut next_command = 0u64;
     loop {
         tokio::select! {
+            changed = settings_rx.changed() => {
+                if changed.is_err() { break; }
+                let jobs = settings_rx.borrow_and_update().clone();
+                if let Some(jobs) = jobs { settings_worker.replace(jobs); }
+            }
+            event = settings_worker.next() => { if let Some(event) = event.take() { settings_send(event); } }
             cmd = incoming.recv() => {
                 let Some(cmd) = cmd else { break };
+                if let Some(decoded) = settings::native::Decoded::from_command(&binding, &cmd) {
+                    settings_send(SettingsEvent::Delivery(decoded));
+                    continue;
+                }
                 if let Some(topic) = cmd.topic() {
                     let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Topic { topic: topic.to_string(), body: cmd.body.clone() }));
                     continue;
@@ -238,6 +269,8 @@ async fn run(
                         });
                     }
                     Effect::Subscribe { topic } => {
+                        // The migrated GUI consumes compiled settings snapshots.
+                        if topic == "theme.changed" { continue; }
                         let (c, d) = (client.clone(), dtx.clone());
                         tokio::spawn(async move {
                             // The client replays only topics that once
@@ -278,9 +311,11 @@ async fn run(
                 let now = *state.borrow_and_update();
                 match now {
                     ConnState::Connected => {
+                        settings_send(SettingsEvent::Wake);
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
                     }
                     ConnState::Disconnected => {
+                        settings_send(SettingsEvent::Wake);
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
                     }
                     ConnState::ShuttingDown | ConnState::Fatal => break,

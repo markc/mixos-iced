@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Consume compiled settings snapshots through the existing Bus worker and shared
+application coordinator. Activate editor palette, chrome tokens and font sizes
+on the UI loop, preserving buffers and editor state. GUI theme reload requests
+authority reconciliation instead of rereading legacy theme files. Cold startup
+without a broker, host cache I/O and full chrome geometry migration remain open.
+
 Retain measured viewport rows and bounded text bytes across cursor redraws and
 overlapping scrolls. Borrow contiguous ASCII runs and use binary lookup for
 checkpoints/cells. Syntax and decorations continue updating independently;

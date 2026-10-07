@@ -60,6 +60,10 @@ pub struct Update {
     changes: ChangePlan,
 }
 impl Update {
+    /// Compare a stage capture without walking its potentially large snapshot.
+    pub fn same_stage(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.serial == other.serial && self.generation == other.generation
+    }
     pub fn kind(&self) -> PresentationKind {
         self.kind
     }
@@ -203,12 +207,7 @@ impl Consumer {
         request: &Request,
         result: Result<Prepared, Vec<Diagnostic>>,
     ) -> bool {
-        if request.owner != self.owner
-            || request.serial != self.fallback_serial
-            || request.generation != self.generation
-            || self.applied.is_some()
-            || self.pending.is_some()
-        {
+        if !self.is_fallback_current(request) {
             return false;
         }
         self.fallback_serial = 0;
@@ -241,6 +240,13 @@ impl Consumer {
             kind: prepared.kind,
         });
         true
+    }
+    pub fn is_fallback_current(&self, request: &Request) -> bool {
+        !(request.owner != self.owner
+            || request.serial != self.fallback_serial
+            || request.generation != self.generation
+            || self.applied.is_some()
+            || self.pending.is_some())
     }
     #[cfg(feature = "cache")]
     pub fn cache_save(&self) -> Option<crate::cache::Save> {

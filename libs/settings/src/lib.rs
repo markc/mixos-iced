@@ -10,6 +10,7 @@ pub mod model;
 pub mod native;
 pub mod reducer;
 pub mod resolve;
+pub mod session;
 pub use design::EMBEDDED_DEFAULT_SOURCE;
 pub use model::*;
 pub use resolve::{describe, resolve, resolve_with_embedded};

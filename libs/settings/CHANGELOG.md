@@ -1,5 +1,14 @@
 # settings contract changes
 
+## 0.3.1
+
+Split authenticated native delivery decoding from UI consumer handling, retaining
+binding/generation fences in the decoded value. Add shared session binding and
+capture identity predicates for coalesced resource scheduling. Authority wire
+contract/schema remain 0.1.0/1. The cache interpretation includes this crate's
+version, so older local presentation caches are rejected and embedded defaults
+remain available; authority persistence is unaffected.
+
 ## 0.3.0
 
 Add shared retained/cache/embedded fallback preparation with host resource

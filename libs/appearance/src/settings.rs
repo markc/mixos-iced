@@ -360,7 +360,12 @@ impl Projection {
     /// may use its installed role or an explicitly reported generic rescue;
     /// custom sources must find a family from their declared chain.
     pub fn prepare_registered(self, package_source: bool) -> Result<Prepared, Diagnostic> {
+        self.prepare_registered_checked(package_source, || Ok(()))
+    }
+    /// Host cancellation is checked between individual registered font probes.
+    pub fn prepare_registered_checked(self, package_source: bool, mut check: impl FnMut() -> Result<(), Diagnostic>) -> Result<Prepared, Diagnostic> {
         self.prepare(|name, t| {
+            check()?;
             let default = match name {
                 "ui" => Some(TypographyRole::Ui),
                 "ui_display" => Some(TypographyRole::UiDisplay),

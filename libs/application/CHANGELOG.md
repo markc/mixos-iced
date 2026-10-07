@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3
+
+- Opt-in `settings-native` centralises UI coordination and multiplexed jobs on
+  the host's existing Bus worker. Coalesce RPCs, use deadline wakeups, and bound
+  blocking resource work physically to one running job and one latest capture.
+  Check the live connection generation on the UI loop before activation.
+- Share take-once completion messages and a bounded settings mailbox. Snapshot
+  queue gaps trigger reconciliation. No connection or runtime is created.
+- Embedded fallback uses the same resource preparation and activation fence.
+  Host cache I/O, cold first-map timing and Quoin integration remain pending.
+
 ## 0.1.2
 
 - Opt-in `settings` shares captured worker preparation and synchronous fenced

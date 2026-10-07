@@ -9,6 +9,8 @@ use settings::{
     domains::ChangePlan,
     fallback::PresentationKind,
 };
+#[cfg(feature = "settings-native")]
+pub mod native;
 
 pub struct Host<T = ()> {
     consumer: Consumer,

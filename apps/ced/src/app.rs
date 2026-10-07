@@ -50,6 +50,7 @@ use crate::editor::{EditorMsg, EditorView, LayoutReport};
 use crate::keys::{self, Binding, Bindings, Routed};
 use crate::macros::{self, MacroDef, MacroEnv, MacroEvent};
 use crate::theme::{self, Theme};
+use application::presentation::native::{Event as SettingsEvent, Session as SettingsSession};
 use crate::verbs::{LayoutReply, Rect};
 
 pub const APP_ID: &str = "dev.mixos.ced";
@@ -127,6 +128,7 @@ pub struct App {
     session_writer: crate::session::SessionWriter,
     config: Config,
     theme: Theme,
+    settings: SettingsSession<Theme>,
     zoom_px: Option<u16>,
     whitespace: bool,
     line_numbers: bool,
@@ -203,7 +205,13 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         anyhow::bail!("app::run called twice in one process");
     }
     let dirs = AppDirs::resolve(COMPONENT);
-    let theme = theme::resolve(dirs.as_ref().map(|d| d.theme_override()).as_deref());
+    // Interim package presentation until native preparation activates. The
+    // migrated GUI never reads legacy theme configuration files.
+    let theme = theme::resolve_selection(&theme::Selection { scheme: Default::default(), mode: Default::default(), design_source: None }, Vec::new());
+    let mut settings = SettingsSession::new(settings::consumer::Consumer::for_app(bus.settings_binding(), "ced")
+        .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?);
+    let (_, jobs) = settings.handle(SettingsEvent::Wake, bus.settings_generation());
+    bus.settings_jobs(jobs);
     let ui_font = theme.ui_font;
     let run_id: u32 = rand::random();
     let controller = Controller::new(config.clone(), run_id, false);
@@ -219,6 +227,7 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         session_writer: crate::session::SessionWriter::spawn(),
         config,
         theme,
+        settings,
         panel: None,
         modal: None,
         modal_queue: Default::default(),
@@ -525,17 +534,24 @@ impl App {
     fn on_delivery(&mut self, delivery: Delivery) -> Task<Msg> {
         match delivery {
             Delivery::Incoming(incoming) => {
-                if let editor_model::types::Incoming::Topic { topic, .. } = &incoming
-                    && topic == "theme.changed"
-                {
-                    self.reload_theme();
-                }
                 let effects = self.controller.on_incoming(incoming);
                 self.perform(effects)
             }
             Delivery::Command(cmd) => {
                 let effects = self.controller.on_bus_command(cmd);
                 self.perform(effects)
+            }
+            Delivery::Settings(mailbox) => {
+                for event in mailbox.take() {
+                    let (changed, jobs) = self.settings.handle(event, self.bus.settings_generation());
+                    if changed.is_some() {
+                        // No await can interleave the activation and this
+                        // replacement of all theme data used by the view.
+                        self.theme = self.settings.host().presentation().expect("activated presentation").content().clone();
+                    }
+                    self.bus.settings_jobs(jobs);
+                }
+                Task::none()
             }
         }
     }
@@ -1414,10 +1430,8 @@ impl App {
     }
 
     fn reload_theme(&mut self) {
-        self.theme = theme::resolve(self.dirs.as_ref().map(|d| d.theme_override()).as_deref());
-        if let Some(note) = self.theme.notes.clone() {
-            self.post(None, Level::Warn, format!("Theme: {note}"));
-        }
+        let (_, jobs) = self.settings.handle(SettingsEvent::Refresh, self.bus.settings_generation());
+        self.bus.settings_jobs(jobs);
     }
 
     fn save_session(&mut self) {
@@ -1806,6 +1820,7 @@ fn msg_kind(msg: &Msg) -> &'static str {
         Msg::Bus(Delivery::Incoming(Incoming::Deadline { .. })) => "bus.deadline",
         Msg::Bus(Delivery::Incoming(Incoming::Connection { .. })) => "bus.connection",
         Msg::Bus(Delivery::Command(_)) => "bus.command",
+        Msg::Bus(Delivery::Settings(_)) => "bus.settings",
         Msg::Timer(_) => "timer",
         Msg::Action(_) => "action",
         Msg::Editor(..) => "editor",
