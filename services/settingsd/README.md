@@ -20,6 +20,8 @@ An effective interpretation digest fences compiler drift for explicit migration.
 Present corrupt primary data can restore a validated backup under a new
 incarnation. A missing primary fails visibly, including when a backup exists.
 I/O faults and intact unsupported documents fail without automatic rollback.
+The packaged unit binds the instance to its machine hostname; its session/VT
+number is a supervision attribute and never a second instance identity.
 
 See [the settings contract](../../docs/spec/settings/README.md). Worker tests:
 `cargo test -p settingsd`; real native gate:
