@@ -32,7 +32,6 @@ use std::{
 type Key = (PathBuf, u32, Option<[u8; 4]>);
 type Entry = (Option<SystemTime>, u64, Handle);
 const CAP: usize = 512;
-const MAX_SIDE: f32 = 2048.0;
 
 /// Decoder process limits (image policy, toolkit scope).
 /// The largest physical side a decoded variant may request or hold.
@@ -41,8 +40,17 @@ pub const MAX_PHYSICAL_SIDE: u32 = 2048;
 pub const MAX_ENCODED_BYTES: u64 = 8 * 1024 * 1024;
 /// The decoder's internal allocation cap (raster limits).
 pub const MAX_DECODER_ALLOC: u64 = 64 * 1024 * 1024;
-/// The largest retained decoded pixel charge (width × height × 4).
-pub const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
+/// The binding retained pixel charge: width × height × 4. Both paths cap
+/// each side at [`MAX_PHYSICAL_SIDE`], so 2048² × 4 = 16 MiB is the real
+/// ceiling; the value is derived, not a second knob.
+pub const MAX_DECODED_BYTES: u64 = MAX_PHYSICAL_SIDE as u64 * MAX_PHYSICAL_SIDE as u64 * 4;
+/// The largest number of XML nodes the SVG pre-scan lets usvg materialise.
+pub const MAX_SVG_NODES: usize = 65_536;
+/// The largest total of `d`-attribute bytes the SVG pre-scan accepts.
+/// usvg converts path data into segments with an input-proportional
+/// amplification, so path-dense payloads are capped well below the
+/// encoded-byte cap.
+pub const MAX_SVG_PATH_BYTES: usize = 512 * 1024;
 
 /// A glyph, decoded image or visible icon-name fallback. Owns everything it
 /// needs to render, so a worker can return it without keeping the cache alive.
@@ -65,12 +73,30 @@ impl Ready {
             Self::Image {
                 handle,
                 logical_size,
-            } => iced_widget::image::Image::new(handle)
-                .width(logical_size)
-                .height(logical_size)
-                .into(),
+            } => {
+                // Keep the decoded intrinsic aspect ratio inside the logical
+                // square instead of forcing a square layout that distorts
+                // non-square rasters.
+                let (width, height) = image_layout(&handle, logical_size);
+                iced_widget::image::Image::new(handle)
+                    .width(width)
+                    .height(height)
+                    .into()
+            }
         }
     }
+}
+
+/// The logical width and height that keep a decoded image's intrinsic
+/// aspect ratio inside the `logical_size` square.
+fn image_layout(handle: &Handle, logical_size: f32) -> (f32, f32) {
+    // Only decoded (Rgba) handles reach `Ready::Image`; the other variants
+    // have no intrinsic size yet and keep the square.
+    let Handle::Rgba { width, height, .. } = handle else {
+        return (logical_size, logical_size);
+    };
+    let scale = logical_size / u32::max(*width, *height).max(1) as f32;
+    (*width as f32 * scale, *height as f32 * scale)
 }
 
 /// How the owned bytes are decoded. The caller derives it from the verified
@@ -97,12 +123,25 @@ pub enum IconDecodeError {
     /// The SVG contains text, which needs a font provider this decoder does
     /// not have; a required asset must not render without its text.
     SvgTextDependency,
+    /// The SVG uses a filter (`filter` element or attribute), which is
+    /// outside the documented supported subset: resvg would render it into
+    /// an intermediate surface the decode budget cannot clamp.
+    SvgFilter,
+    /// CSS styles are outside the bounded SVG subset.
+    SvgStyleDependency,
+    /// The SVG `use` href is not a same-document fragment (`#id`).
+    SvgUseDependency,
+    /// The SVG exceeds the pre-scan complexity budget.
+    SvgComplexity { nodes: usize, path_bytes: usize },
     /// The SVG could not be rendered at the requested side.
     SvgRender,
     /// The raster bytes do not decode within the configured limits.
     RasterDecode,
     /// The decoded pixels have no visible coverage.
     Blank,
+    /// The requested tint has zero alpha, so the tinted icon would render
+    /// invisibly.
+    TintAlphaZero,
     /// The decoded pixel charge (width × height × 4) exceeds
     /// [`MAX_DECODED_BYTES`].
     DecodedTooLarge { bytes: u64 },
@@ -124,9 +163,20 @@ impl fmt::Display for IconDecodeError {
                 write!(f, "SVG references an external or data image href")
             }
             Self::SvgTextDependency => write!(f, "SVG contains text without a font provider"),
+            Self::SvgFilter => write!(f, "SVG uses a filter, which is outside the supported subset"),
+            Self::SvgStyleDependency => write!(f, "SVG uses CSS outside the supported subset"),
+            Self::SvgUseDependency => {
+                write!(f, "SVG `use` href is not a same-document fragment")
+            }
+            Self::SvgComplexity { nodes, path_bytes } => write!(
+                f,
+                "SVG exceeds the complexity budget: {nodes} XML nodes and {path_bytes} \
+                 path attribute bytes; the limits are {MAX_SVG_NODES} and {MAX_SVG_PATH_BYTES}"
+            ),
             Self::SvgRender => write!(f, "SVG could not be rendered at the requested side"),
             Self::RasterDecode => write!(f, "raster bytes do not decode within the limits"),
             Self::Blank => write!(f, "decoded icon has no visible pixel"),
+            Self::TintAlphaZero => write!(f, "tint alpha is zero; the tinted icon would be invisible"),
             Self::DecodedTooLarge { bytes } => write!(
                 f,
                 "decoded pixels are {bytes} bytes; the limit is {MAX_DECODED_BYTES}"
@@ -178,18 +228,23 @@ impl DecodedIcon {
 ///
 /// SVG is scaled into a `physical_side` × `physical_side` canvas and
 /// tiny-skia's premultiplied output is unpremultiplied for iced's eager RGBA
-/// handles. External and data image hrefs are refused outright, and any text
-/// element fails the decode: without a font provider a text-bearing required
-/// asset would silently render partially.
+/// handles. Only a documented subset is materialised: DOCTYPEs, filters, CSS,
+/// image and feImage nodes and non-fragment `use` hrefs are refused before
+/// the usvg tree exists, text elements fail (without a font provider they
+/// would render partially), and node and path-attribute complexity is
+/// budgeted ([`MAX_SVG_NODES`], [`MAX_SVG_PATH_BYTES`]).
 ///
 /// Raster is decoded over a [`Cursor`] on these bytes with bounded
-/// dimensions and allocation, EXIF orientation applied, at its intrinsic
-/// size; `physical_side` is not a raster resize.
+/// dimensions and allocation — the decoder's reported total bytes are
+/// reserved before the pixel buffer is materialised — and EXIF orientation
+/// applied, at its intrinsic size; `physical_side` is not a raster resize.
 ///
 /// A fully transparent result is [`IconDecodeError::Blank`], and the checked
 /// pixel charge (width × height × 4) must fit [`MAX_DECODED_BYTES`]. `tint`
 /// replaces the RGB and scales the alpha of symbolic assets; ordinary
-/// coloured assets pass `None`.
+/// coloured assets pass `None`. A tint with zero alpha is refused
+/// ([`IconDecodeError::TintAlphaZero`]) instead of decoding an icon that
+/// renders invisibly.
 pub fn decode_owned(
     bytes: Arc<[u8]>,
     format: ImageFormat,
@@ -208,6 +263,9 @@ pub fn decode_owned(
         return Err(IconDecodeError::SideOutOfRange {
             side: physical_side,
         });
+    }
+    if tint.is_some_and(|tint| tint[3] == 0) {
+        return Err(IconDecodeError::TintAlphaZero);
     }
     let (width, height, mut pixels) = match format {
         ImageFormat::Svg => decode_svg(&bytes, physical_side)?,
@@ -234,22 +292,25 @@ pub fn decode_owned(
 }
 
 fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
-    // Scan with the same XML parser family usvg uses. A usvg build without
-    // its `text` feature silently drops text elements before the tree exists,
-    // so the tree cannot witness them: refuse them at the document level.
+    // Scan with the same XML parser family usvg uses, before any usvg tree
+    // exists. A usvg build without its `text` feature silently drops text
+    // elements before the tree exists, so the tree cannot witness them:
+    // the scan refuses them at the document level along with every other
+    // construct outside the documented subset, and it budgets node and
+    // path-attribute complexity ahead of usvg's segment conversion.
+    //
+    // DOCTYPEs are deliberately refused (roxmltree's default): usvg accepts
+    // them and expands entities, and entity expansion is kept out of the
+    // decode path entirely. Do not enable `allow_dtd` merely to match usvg.
     let document = roxmltree::Document::parse(
         std::str::from_utf8(bytes).map_err(|_| IconDecodeError::SvgParse)?,
     )
     .map_err(|_| IconDecodeError::SvgParse)?;
-    if document.descendants().any(|node| {
-        node.is_element() && matches!(node.tag_name().name(), "text" | "tspan" | "textPath")
-    }) {
-        return Err(IconDecodeError::SvgTextDependency);
-    }
-    // Every image href — external files and data URLs alike — is refused,
-    // and the attempt recorded so a referencing asset is rejected instead of
-    // silently rendering without it (usvg drops refused image elements).
-    // feImage hrefs inside filters go through the same resolvers.
+    scan_svg(&document)?;
+    // Image and feImage nodes are refused by the scan, so usvg never sees an
+    // image href. The refusing resolvers stay as a backstop: should any
+    // reference slip past the scan, it is detected and refused instead of
+    // rendering partially.
     let referenced = Arc::new(AtomicBool::new(false));
     let data = referenced.clone();
     let external = referenced.clone();
@@ -298,6 +359,49 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
     Ok((side, side, pixels))
 }
 
+fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
+    let mut nodes = 0usize;
+    let mut path_bytes = 0usize;
+    for node in document.descendants() {
+        nodes += 1;
+        if nodes > MAX_SVG_NODES {
+            return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
+        }
+        if !node.is_element() {
+            continue;
+        }
+        match node.tag_name().name() {
+            "image" | "feImage" => return Err(IconDecodeError::SvgImageDependency),
+            "text" | "tspan" | "textPath" => return Err(IconDecodeError::SvgTextDependency),
+            "filter" => return Err(IconDecodeError::SvgFilter),
+            "style" => return Err(IconDecodeError::SvgStyleDependency),
+            _ => {}
+        }
+        for attribute in node.attributes() {
+            if attribute.name() == "style" {
+                // Do not interpret CSS escapes or cascades here. Explicit
+                // SVG presentation attributes remain supported.
+                return Err(IconDecodeError::SvgStyleDependency);
+            }
+            if attribute.name() == "filter" {
+                return Err(IconDecodeError::SvgFilter);
+            }
+            if node.tag_name().name() == "use" && attribute.name() == "href"
+                && (!attribute.value().starts_with('#') || attribute.value().len() == 1)
+            {
+                return Err(IconDecodeError::SvgUseDependency);
+            }
+            if attribute.name() == "d" {
+                path_bytes += attribute.value().len();
+                if path_bytes > MAX_SVG_PATH_BYTES {
+                    return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn decode_raster(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
     // Decode over a cursor on these exact bytes: no path, no reopen, no
     // metadata or mtime consultation. Limits bound dimensions and allocation;
@@ -309,13 +413,19 @@ fn decode_raster(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
     limits.max_image_width = Some(MAX_PHYSICAL_SIDE);
     limits.max_image_height = Some(MAX_PHYSICAL_SIDE);
     limits.max_alloc = Some(MAX_DECODER_ALLOC);
-    reader.limits(limits);
+    reader.limits(limits.clone());
     use image::ImageDecoder;
     let mut decoder = reader
         .into_decoder()
         .map_err(|_| IconDecodeError::RasterDecode)?;
     let orientation = decoder
         .orientation()
+        .map_err(|_| IconDecodeError::RasterDecode)?;
+    // Some codecs implement only the strict dimension limits. Reserve the
+    // reported source allocation ourselves, as ImageReader::decode does,
+    // while retaining access to the decoder's EXIF orientation.
+    limits
+        .reserve(decoder.total_bytes())
         .map_err(|_| IconDecodeError::RasterDecode)?;
     let mut bitmap =
         image::DynamicImage::from_decoder(decoder).map_err(|_| IconDecodeError::RasterDecode)?;
@@ -377,7 +487,7 @@ impl Assets {
             || logical_size <= 0.0
             || !scale.is_finite()
             || scale <= 0.0
-            || !(1.0..=MAX_SIDE).contains(&side)
+            || !(1.0..=MAX_PHYSICAL_SIDE as f32).contains(&side)
         {
             return fallback();
         }
@@ -826,6 +936,52 @@ mod tests {
                 Err(IconDecodeError::SideOutOfRange { side })
             );
         }
+    }
+
+    #[test]
+    fn svg_subset_refuses_unbounded_surfaces_entities_css_and_external_use() {
+        for (body, expected) in [
+            (r#"<defs><filter id="f" filterUnits="userSpaceOnUse" width="1000000" height="1000000"><feGaussianBlur stdDeviation="1000"/></filter></defs><rect width="1" height="1" filter="url(#f)"/>"#, IconDecodeError::SvgFilter),
+            (r#"<rect width="1" height="1" filter="url(#external)"/>"#, IconDecodeError::SvgFilter),
+            (r#"<style>rect { f\69 lter: url(#f); }</style><rect width="1" height="1"/>"#, IconDecodeError::SvgStyleDependency),
+            (r#"<rect width="1" height="1" style="fill:red"/>"#, IconDecodeError::SvgStyleDependency),
+            (r#"<use href="file:///missing.svg#icon"/>"#, IconDecodeError::SvgUseDependency),
+            (r#"<use href="data:image/svg+xml,ignored"/>"#, IconDecodeError::SvgUseDependency),
+            (r#"<use href="#"/>"#, IconDecodeError::SvgUseDependency),
+            (r#"<feImage href="data:malformed"/>"#, IconDecodeError::SvgImageDependency),
+        ] {
+            let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="0.01" height="0.01">{body}</svg>"#);
+            assert_eq!(decode_owned(svg.into_bytes().into(), ImageFormat::Svg, 2048, None), Err(expected));
+        }
+        let dtd = br#"<!DOCTYPE svg [<!ENTITY colour "red">]><svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="&colour;"/></svg>"#;
+        assert_eq!(decode_owned(dtd.to_vec().into(), ImageFormat::Svg, 16, None), Err(IconDecodeError::SvgParse));
+        let local = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs><rect id="icon" width="10" height="10" fill="red"/></defs><use href="#icon"/></svg>"##;
+        let visible = decode_owned(local.to_vec().into(), ImageFormat::Svg, 16, None).unwrap();
+        assert!(visible.pixels().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        assert_eq!(decode_owned(local.to_vec().into(), ImageFormat::Svg, 16, Some([255,0,0,0])), Err(IconDecodeError::TintAlphaZero));
+    }
+
+    #[test]
+    fn svg_complexity_is_refused_before_path_materialisation() {
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><path d="{}"/></svg>"#, "M0 0 ".repeat(MAX_SVG_PATH_BYTES / 5 + 1));
+        assert!(matches!(decode_owned(svg.into_bytes().into(), ImageFormat::Svg, 16, None), Err(IconDecodeError::SvgComplexity { path_bytes, .. }) if path_bytes > MAX_SVG_PATH_BYTES));
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}</svg>"#, "<g/>".repeat(MAX_SVG_NODES));
+        assert!(matches!(decode_owned(svg.into_bytes().into(), ImageFormat::Svg, 16, None), Err(IconDecodeError::SvgComplexity { nodes, .. }) if nodes > MAX_SVG_NODES));
+    }
+
+    #[test]
+    fn every_advertised_raster_codec_decodes_and_retains_intrinsic_layout() {
+        let bitmap = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(32, 16, image::Rgb([211, 79, 37])));
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg, image::ImageFormat::Gif, image::ImageFormat::WebP, image::ImageFormat::Bmp, image::ImageFormat::Ico] {
+            let mut encoded = Cursor::new(Vec::new());
+            bitmap.write_to(&mut encoded, format).unwrap();
+            let decoded = decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None).unwrap();
+            assert_eq!(decoded.dimensions(), (32, 16), "{format:?}");
+            assert_eq!(decoded.byte_charge(), 32 * 16 * 4);
+            assert!(decoded.pixels().chunks_exact(4).any(|pixel| pixel[0] > 100 && pixel[3] != 0), "{format:?}");
+            assert_eq!(image_layout(&decoded.into_handle(), 24.0), (24.0, 12.0));
+        }
+        assert_eq!(image_layout(&Handle::from_rgba(8, 32, vec![255;8 * 32 * 4]), 24.0), (6.0, 24.0));
     }
 
     #[test]

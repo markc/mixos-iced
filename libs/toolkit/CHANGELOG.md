@@ -50,6 +50,13 @@
 
 ## Unreleased
 
+- Owned icon decoding supports PNG, JPEG, GIF, WebP, BMP and ICO with strict
+  dimensions and checked source allocation before pixels are materialised.
+  Ready images retain their intrinsic aspect ratio. The bounded SVG subset
+  refuses DTDs, CSS, filters, image/text dependencies and external uses before
+  constructing the renderer tree, and caps XML nodes and path bytes.
+  Zero-alpha tints fail visibly.
+
 - Native drag areas carry the host's press token in the same widget message
   as the payload. `Session::start_with_gesture` avoids asynchronous subscription
   ordering races while retaining backend window, seat and liveness checks.

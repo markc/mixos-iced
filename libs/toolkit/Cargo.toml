@@ -27,7 +27,7 @@ default = []
 # Eager raster decoding (`images`). iced's workspace turns the `image`
 # crate on with no codecs, so the png codec is enabled here too: a
 # standalone `cargo test -p toolkit` must decode its fixtures.
-image = ["iced_graphics/image", "iced_widget/image", "dep:image", "image/png", "dep:resvg", "dep:roxmltree"]
+image = ["iced_graphics/image", "iced_widget/image", "dep:image", "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/ico", "dep:resvg", "dep:roxmltree"]
 # Styles iced's `svg` widget too (`iced_widget/svg`).
 svg = ["iced_widget/svg"]
 wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]
