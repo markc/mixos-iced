@@ -1055,6 +1055,7 @@ mod tests {
                 tokio::time::timeout(Duration::from_secs(5), rx)
                     .await
                     .unwrap()
+                    .expect("the actor must retain and complete the accepted reply channel")
                     .unwrap_err(),
                 "Bus worker busy",
                 "an exhausted operation pool rejects the call immediately"
@@ -1119,6 +1120,7 @@ mod tests {
                 tokio::time::timeout(Duration::from_secs(5), rx)
                     .await
                     .unwrap()
+                    .expect("the actor must retain and complete the accepted reply channel")
                     .unwrap_err(),
                 "Bus worker busy",
                 "the wave saturates the pool"

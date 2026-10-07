@@ -492,12 +492,13 @@ pub async fn take(
         }
         // The frame request races cancellation too: a cancel never leaves a
         // frame request outstanding, and no image is installed afterwards.
+        let frame_cancel = cancel.clone();
         let frame = async {
             let metadata = bus
                 .call(&comp, "comp.capture.frame", args, Duration::from_secs(8))
                 .await
                 .map_err(CaptureError::plain)?;
-            if *cancel.borrow() {
+            if *frame_cancel.borrow() {
                 return Err(CaptureError::cancelled(Some(cleanup_target.clone())));
             }
             let source = path.clone();
