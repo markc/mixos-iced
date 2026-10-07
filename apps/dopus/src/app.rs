@@ -43,9 +43,9 @@ use application::Element;
 use application::cpu::Renderer;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::{Size, Subscription, Task};
-use application::presentation::native::Ui as SettingsUi;
 #[cfg(test)]
 use application::presentation::native::Event as SettingsEvent;
+use application::presentation::native::Ui as SettingsUi;
 
 use actions::{ActionId, Keymap};
 use design::{Mode, Scheme};

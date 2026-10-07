@@ -51,7 +51,11 @@ async fn progress(lane: &mut Option<SettingsLane>) -> Progress {
         None => std::future::pending().await,
     }
 }
-fn publish(lane: &mut Option<SettingsLane>, gui: &mut Gui, event: SettingsEvent<crate::app::Content>) {
+fn publish(
+    lane: &mut Option<SettingsLane>,
+    gui: &mut Gui,
+    event: SettingsEvent<crate::app::Content>,
+) {
     if let Some(lane) = lane {
         wake(gui, lane.publish(event));
     }
