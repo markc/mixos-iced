@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Filename middle elision, ported from CTK's `text_elide` without Bevy.
+use application::Element;
 use application::cpu::Renderer;
 use application::iced::advanced::text::{self, Paragraph as _};
-use application::Element;
 use application::iced::{Length, Size};
 use unicode_segmentation::UnicodeSegmentation;
 

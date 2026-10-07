@@ -5,8 +5,8 @@
 //! browser.rs:1267-1284). A click navigates the active pane; the active
 //! pane's current directory highlights.
 
-use application::iced::widget::{Scrollable, Space, button, column, container, image, row};
 use application::Element;
+use application::iced::widget::{Scrollable, Space, button, column, container, image, row};
 use application::iced::{Border, Length, Padding};
 
 use dopus_core::{PaneId, PaneModel};

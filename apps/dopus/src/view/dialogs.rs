@@ -24,11 +24,9 @@
 //! None)` — nothing runs). Zero colour literals: every colour is a token or
 //! a mix of two.
 
-use application::iced::widget::{button, column, container, row, text};
-use application::iced::{
-    Alignment, Background, Border, Color, Length, Padding, Shadow, Vector,
-};
 use application::Element;
+use application::iced::widget::{button, column, container, row, text};
+use application::iced::{Alignment, Background, Border, Color, Length, Padding, Shadow, Vector};
 
 use application::cpu::Renderer;
 use dopus_core::{PromptKind, validate_filename};

@@ -45,10 +45,10 @@ impl FirstRow {
 mod tests {
     use super::*;
     use crate::{app::Msg, icons::Icons, theme};
-    use application::cpu::Renderer;
-    use application::iced::advanced::{Layout, graphics::text::Paragraph, layout, widget::Tree};
     use application::Element;
-use application::iced::{Size};
+    use application::cpu::Renderer;
+    use application::iced::Size;
+    use application::iced::advanced::{Layout, graphics::text::Paragraph, layout, widget::Tree};
     use design::{Mode, Scheme};
     use dopus_core::{DOpusConfig, DopusCore, PaneId, properties::Properties};
 

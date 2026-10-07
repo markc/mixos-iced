@@ -11,7 +11,7 @@
 //!   registration, version and paragraph APIs.
 //!
 //! Enable with
-//! `cargo test -p toolkit --features font-registration-guards --test font_registration`.
+//! `cargo test -p toolkit --features font-registration-guards,tiny-skia --test font_registration`.
 //! The feature selects no production code; this target is test-only.
 
 #[path = "../../../vendor/cosmic-text/tests/registration_seam.rs"]

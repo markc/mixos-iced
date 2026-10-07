@@ -79,7 +79,7 @@ fn shape(
 ) -> Vec<(fontdb::ID, Weight, u16, f32)> {
     let metrics = Metrics::new(16.0, 20.0);
     let mut buffer = Buffer::new(font_system, metrics);
-    let glyphs = {
+    {
         let mut buffer = buffer.borrow_with(font_system);
         buffer.set_size(Some(300.0), Some(100.0));
         buffer.set_text(text, attrs, shaping, None);
@@ -89,8 +89,7 @@ fn shape(
             .flat_map(|run| run.glyphs.iter())
             .map(|glyph| (glyph.font_id, glyph.font_weight, glyph.glyph_id, glyph.w))
             .collect::<Vec<_>>()
-    };
-    glyphs
+    }
 }
 
 fn face_id(font_system: &FontSystem, family: &str) -> fontdb::ID {
@@ -492,7 +491,7 @@ fn missing_existing_face_is_rejected() {
 
     // Remove a face through the legacy escape hatch, then reference it.
     let removed = face_id(&font_system, "Noto Sans Hebrew");
-    let _ = font_system.db_mut().remove_face(removed);
+    font_system.db_mut().remove_face(removed);
     font_system.refresh_database();
     let before = snapshot(&font_system);
 
@@ -1030,13 +1029,14 @@ fn ttc_collection_faces_register_and_malformed_ttc_is_rejected() {
         for table in 0..tables {
             let start = 12 + table * 16 + 8;
             let offset = u32::from_be_bytes(font[start..start + 4].try_into().unwrap());
-            font[start..start + 4].copy_from_slice(&offset.checked_add(base).unwrap().to_be_bytes());
+            font[start..start + 4]
+                .copy_from_slice(&offset.checked_add(base).unwrap().to_be_bytes());
         }
         font
     };
     let header_len = 12u32 + 2 * 4;
     let arabic = relocate(repo_font("NotoSansArabic.ttf"), header_len);
-    let hebrew_offset = header_len + (arabic.len() as u32 + 3) / 4 * 4;
+    let hebrew_offset = header_len + (arabic.len() as u32).div_ceil(4) * 4;
     let hebrew = relocate(repo_font("NotoSansHebrew.ttf"), hebrew_offset);
     let mut ttc = Vec::new();
     ttc.extend_from_slice(b"ttcf");

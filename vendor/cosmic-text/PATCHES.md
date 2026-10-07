@@ -119,7 +119,7 @@ targets above stay declared for upstream-style runs. Run from the
 repository root at the checked/updated lock SHA:
 
 ```
-cargo test --locked --profile release-fast -p toolkit --features font-registration-guards --test font_registration
+cargo test --locked --profile release-fast -p toolkit --features font-registration-guards,tiny-skia --test font_registration
 ```
 
 The suite is the 15 registration guards below, the retained
