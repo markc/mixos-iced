@@ -89,7 +89,7 @@ impl Request {
     pub fn prepare(
         &self,
         cached: Option<Candidate>,
-        mut resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
+        resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
     ) -> Result<Prepared, Vec<Diagnostic>> {
         self.prepare_with_cache(|| Ok(cached), resources)
     }
@@ -99,7 +99,7 @@ impl Request {
     pub fn prepare_with_cache(
         &self,
         cache: impl FnOnce() -> Result<Option<Candidate>, Diagnostic>,
-        resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
+        mut resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
     ) -> Result<Prepared, Vec<Diagnostic>> {
         self.prepare_resources_with_cache(cache, |snapshot, context, shell, _expected| {
             resources(snapshot, context, shell).map(|()| None)
