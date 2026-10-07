@@ -211,14 +211,14 @@ mod tests {
         let start = Instant::now();
         for _ in 0..1000 {
             crate::engine::adjust_clip_mask(&mut mask, black_box(bounds));
-            black_box(mask.data());
+            let _ = black_box(mask.data());
         }
         let fresh = start.elapsed();
         let mut cached = ClipMask::new(&mut mask);
         let start = Instant::now();
         for _ in 0..1000 {
             cached.set(black_box(bounds));
-            black_box(cached.mask().data());
+            let _ = black_box(cached.mask().data());
         }
         eprintln!(
             "1000 text clips: full-clear={fresh:?} reused={:?}",

@@ -553,7 +553,7 @@ mod tests {
                     clip,
                     Transformation::scale(2.5),
                 );
-                black_box(pixels.data());
+                let _ = black_box(pixels.data());
             }
             eprintln!(
                 "100 narrow text frames cull={cull}: {:?}, draw_pixmap calls={}",
