@@ -167,14 +167,28 @@ fn await_joint($accepted)
   raise("JOINT","Ced and Quoin did not apply the same accepted identity")
 end
 fn capture_joint($label,$accepted,$layout,$ced_window,$ced_width)
-  -- Alternate committed widths so an old buffer cannot satisfy the size fence.
+  -- Each stage has a distinct committed width. Verify the captured boundary
+  -- too: wait-until-presented only means a frame since mapping, not this commit.
   comp("comp.window.place",merge($ced_window,{x:0,y:0,width:$ced_width,height:600}))
   $row = comp("comp.window.wait",{match:$ced_window,until:"size",width:$ced_width,height:600,timeout_ms:5000}).window
   if $row == nil or $row.id != $ced_window.id or $row.generation != $ced_window.generation then raise("JOINT","Ced placement/identity changed") end
   if not joint_evidence($accepted) then raise("JOINT","Stale evidence before shared frame") end
   $path = $R.run.path .. "/" .. $label .. ".ppm"
-  print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})}))
-  $image = ppm($path)
+  $image = nil
+  $fresh = false
+  for $attempt = 1 to 40
+    run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})})
+    $image = ppm($path)
+    $inside = $capture.pixel($image,$ced_width-2,400)
+    $surface = $accepted.effective["app:ced"].design.pairs.base.rendered_surface
+    $fresh = client_pixel($image,$ced_width+2,400)
+    for $channel = 0 to 2
+      if abs($inside[$channel]-$capture.srgb($surface[$channel])) > 8 then $fresh=false end
+    end
+    if $fresh then break end
+    sleep(0.05)
+  end
+  if not $fresh then raise("JOINT","Captured frame never showed this stage's committed Ced boundary") end
   $app_pixel = $capture.pixel($image,200,400)
   $base = $accepted.effective["app:ced"].design.pairs.base.rendered_surface
   $cell = nil
@@ -244,10 +258,11 @@ try
   $output = $outputs[keys($outputs)[0]]
   $width = $output.width
   $height = $output.height
+  if $joint and ($width < 1007 or $height < 700) then raise("SETUP","Joint capture needs at least 1007x700 output") end
   $layout = await_layout(52)
   $probe_log = $root .. "/probe.log"
   $delayed_size = to_string($width) .. "x" .. to_string($height-64)
-  $probe = spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.SettingsGeometry","--size","320x240","--seconds","180","--colour","ff00ff","--delay-size-commit",$delayed_size .. ":3000"],
+  $probe = spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.SettingsGeometry","--size","320x240","--seconds","360","--colour","ff00ff","--delay-size-commit",$delayed_size .. ":3000"],
     {env:$n.client_env($R.session,{}),stdout:{file:$probe_log},stderr:"stdout",detach:true})
   $R.children = concat($R.children,[$probe])
   $mapped = comp("comp.window.wait",{match:{app_id:"dev.mixos.SettingsGeometry"},until:"presented",timeout_ms:15000})
@@ -311,7 +326,9 @@ try
     raise("INPUT","Unchanged frames repeatedly retargeted the stationary pointer")
   end
   if $joint then
-    $editd = spawn([$bin .. "/editd","serve"],{stdout:{file:$root .. "/editd.log"},stderr:"stdout",detach:true})
+    $editd = spawn([$bin .. "/editd","serve"],{env:{HOME:$root .. "/home",
+      XDG_STATE_HOME:$root .. "/edit-state",MIXOS_EDIT_RECOVERY_DIR:$root .. "/edit-recovery"},
+      stdout:{file:$root .. "/editd.log"},stderr:"stdout",detach:true})
     $R.children = concat($R.children,[$editd])
     $edit_ready = false
     for $attempt = 1 to 60
@@ -340,7 +357,8 @@ try
     comp("comp.input.pointer.move",{seat:"human",x:$width-1,y:1})
     capture_joint("joint-current-dark",$changed,$layout,$ced_window,1000)
     $heights = []
-    for each $stage in [{mode:"light",scale:1.1,thickness:80,width:1002},{mode:"dark",scale:1.25,thickness:96,width:1000}]
+    for each $stage in [{mode:"light",scale:1.1,thickness:80,width:1002},{mode:"dark",scale:1.25,thickness:96,width:1004}]
+      if not process_alive($probe) then raise("JOINT","Owned configure probe exited before joint phase finished") end
       $offset = len(read_file($probe_log))
       $accepted = apply({"appearance.mode":$stage.mode,"ui.text_scale":$stage.scale,
         "shell.panels.bottom":{edge:"bottom",mode:"dock",thickness:$stage.thickness}},"joint-" .. $stage.mode)
@@ -372,7 +390,7 @@ try
 catch $message
   print("FAIL " .. $message)
   if $R.run != nil then
-    for each $log in ["compositor.log","settingsd.log","citizen.log","probe.log","weston.log"]
+    for each $log in ["compositor.log","settingsd.log","citizen.log","probe.log","weston.log","editd.log","ced.log"]
       if is_file($R.run.path .. "/" .. $log) then print(run_argv(["tail","-n","20",$R.run.path .. "/" .. $log],{max_output:12000}).stdout) end
     end
   end
