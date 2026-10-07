@@ -212,14 +212,14 @@ fn spawn_inner(
     }
 }
 
+type Ready = Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>;
+
 async fn run(
     service: String,
     url: String,
     dtx: UnboundedSender<Delivery>,
     mut erx: tokio::sync::mpsc::UnboundedReceiver<WorkerCommand>,
-    ready: std::sync::mpsc::Sender<
-        Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>,
-    >,
+    ready: std::sync::mpsc::Sender<Ready>,
     mut settings_rx: tokio::sync::watch::Receiver<Option<Jobs>>,
     desktop_settings: bool,
 ) {

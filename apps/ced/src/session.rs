@@ -162,10 +162,10 @@ impl SessionWriter {
     pub fn flush_for(&mut self, budget: std::time::Duration) -> bool {
         self.tx = None;
         let completed = self.completion.recv_timeout(budget).unwrap_or(false);
-        if completed {
-            if let Some(thread) = self.thread.take() {
-                return thread.join().is_ok();
-            }
+        if completed
+            && let Some(thread) = self.thread.take()
+        {
+            return thread.join().is_ok();
         }
         self.thread.take();
         completed
