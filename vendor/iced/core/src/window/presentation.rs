@@ -2,6 +2,10 @@
 //! Immutable rendered-view identity and observation-only presentation receipts.
 
 use super::Id;
+
+#[cfg(feature = "native-frame-probe")]
+#[doc(hidden)]
+pub mod probe;
 use std::{fmt, sync::Arc};
 
 /// Identity supplied by the owner of the view being constructed.

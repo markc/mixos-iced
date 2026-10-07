@@ -479,6 +479,9 @@ use iced_winit::program;
 use iced_winit::runtime;
 
 pub use iced_futures::futures;
+
+#[cfg(feature = "native-frame-probe")]
+pub use iced_winit::native_frame_probe;
 pub use iced_futures::stream;
 
 #[cfg(not(any(

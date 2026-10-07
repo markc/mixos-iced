@@ -79,6 +79,8 @@ where
             id,
             Window {
                 presentation: crate::presentation::Ledger::new(id),
+                #[cfg(feature = "native-frame-probe")]
+                native_frame_probe: crate::native_frame_probe::Gate::new(),
                 raw: window,
                 waker,
                 state,
@@ -182,6 +184,8 @@ where
     P::Theme: theme::Base,
 {
     pub(crate) presentation: crate::presentation::Ledger,
+    #[cfg(feature = "native-frame-probe")]
+    pub(crate) native_frame_probe: crate::native_frame_probe::Gate,
     pub raw: Arc<winit::window::Window>,
     pub waker: shell::Waker,
     pub state: State<P>,

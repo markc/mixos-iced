@@ -14,6 +14,7 @@ keywords.workspace = true
 workspace = true
 
 [features]
+native-frame-probe = ["iced_graphics/native-frame-probe"]
 raster-probe = []
 reference-raster = []
 default = ["x11", "wayland"]

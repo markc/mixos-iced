@@ -68,6 +68,9 @@ use std::sync::Arc;
 
 mod presentation;
 
+#[cfg(feature = "native-frame-probe")]
+pub mod native_frame_probe;
+
 /// Runs a [`Program`] with the provided settings.
 pub fn run<P>(program: P) -> Result<(), Error>
 where
@@ -940,6 +943,9 @@ async fn run_instance<P>(
                         let binding = interface.frame_presentation().cloned();
                         window.presentation.drawn(binding.clone());
                         let binding = binding.filter(|binding| window.presentation.needs(binding));
+                        #[cfg(feature = "native-frame-probe")]
+                        let scope = window.native_frame_probe.begin(id,binding.as_ref())
+                            .then(|| core::window::presentation::probe::Scope::arm().expect("one native draw scope"));
                         let mut feedback = None;
                         let result = current_compositor.present(
                             &mut window.renderer,
@@ -953,8 +959,15 @@ async fn run_instance<P>(
                                 }
                             },
                         );
-                        if let (Some(binding), Some(feedback)) = (binding, feedback) {
+                        #[cfg(feature = "native-frame-probe")]
+                        let fault_consumed = scope.as_ref().map(|scope| scope.consumed());
+                        #[cfg(feature = "native-frame-probe")]
+                        drop(scope);
+                        if let Some(binding) = binding {
+                            #[cfg(feature = "native-frame-probe")]
+                            let request = feedback.as_ref().and_then(|result| result.as_ref().ok()).copied();
                             match feedback {
+                                Some(feedback) => match feedback {
                                 Ok(request_id) => {
                                     let successful = result.is_ok();
                                     window.presentation.submitted(
@@ -967,6 +980,12 @@ async fn run_instance<P>(
                                     }
                                 }
                                 Err(reason) => binding.observe(id, None, reason),
+                                },
+                                None => {},
+                            }
+                            #[cfg(feature = "native-frame-probe")]
+                            if let Some(held) = window.native_frame_probe.submitted(id,&binding,request,result.is_ok(),fault_consumed) {
+                                presentation::deliver(&mut window.presentation,id,held);
                             }
                         }
                         match result {
@@ -1023,38 +1042,12 @@ async fn run_instance<P>(
                         event: winit::event::WindowEvent::PresentationFeedback(feedback),
                         window_id,
                     } => {
-                        use core::window::presentation::FrameOutcome;
                         let Some((id, window)) = window_manager.get_mut_alias(window_id) else {
                             continue;
                         };
-                        let request_id = feedback.id.get();
-                        let outcome = match feedback.outcome {
-                            winit::presentation::PresentationOutcome::Presented {
-                                clock_id,
-                                seconds,
-                                nanoseconds,
-                                refresh_ns,
-                                output_sequence,
-                                flags,
-                            } => FrameOutcome::Presented {
-                                clock_id,
-                                seconds,
-                                nanoseconds,
-                                refresh_ns,
-                                output_sequence,
-                                flags,
-                            },
-                            winit::presentation::PresentationOutcome::Discarded => {
-                                FrameOutcome::Discarded
-                            }
-                        };
-                        let binding = window.presentation.resolve(request_id, outcome);
-                        // Release native event ownership before notifying the
-                        // metadata-only sink. No UI event, message or redraw.
-                        drop(feedback);
-                        if let Some(binding) = binding {
-                            binding.observe(id, Some(request_id), outcome);
-                        }
+                        #[cfg(feature = "native-frame-probe")]
+                        let Some(feedback) = window.native_frame_probe.intercept(id,&window.presentation,feedback) else { continue; };
+                        presentation::deliver(&mut window.presentation,id,feedback);
                     }
                     event::Event::WindowEvent {
                         event: window_event,

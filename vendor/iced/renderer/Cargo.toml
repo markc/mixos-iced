@@ -14,6 +14,7 @@ keywords.workspace = true
 workspace = true
 
 [features]
+native-frame-probe = ["iced_graphics/native-frame-probe", "iced_tiny_skia?/native-frame-probe"]
 wgpu = ["iced_wgpu/default"]
 wgpu-bare = ["iced_wgpu"]
 tiny-skia = ["iced_tiny_skia"]

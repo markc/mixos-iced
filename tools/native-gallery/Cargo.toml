@@ -22,6 +22,12 @@ wgpu = ["toolkit/wgpu"]
 gallery-wgpu = ["gallery", "wgpu", "toolkit/gallery-wgpu"]
 image = ["toolkit/image"]
 frame-probes = ["dep:winit", "dep:softbuffer"]
+native-frame-probe = ["gallery-tiny-skia", "iced/native-frame-probe"]
+
+[[bin]]
+name = "native-frame-iced-probe"
+path = "src/bin/native-frame-iced-probe.rs"
+required-features = ["native-frame-probe"]
 
 [[bin]]
 name = "native-frame-winit-probe"

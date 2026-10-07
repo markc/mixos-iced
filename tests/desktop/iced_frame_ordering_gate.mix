@@ -1,0 +1,8 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [pixman|gl]") end
+$renderer = len(args()) == 3 ? args()[2] : "pixman"
+$probe = require("native_probe_lib.mix")
+$probe.run_probe(args()[0],args()[1],"native-frame-iced-probe",
+  "ICED_FRAME PASS failed_native_presented_suppressed=true ordinary_retry=true old_stamp_after_new_submit=true exact_ids=true",$renderer)
+print("PASS actual Iced failed-submission, delayed feedback ordering and held-feedback retirement on owned Weston/compd: " .. $renderer)

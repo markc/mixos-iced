@@ -58,6 +58,10 @@ impl Ledger {
             "checked native request IDs must be unique"
         );
     }
+    #[cfg(feature = "native-frame-probe")]
+    pub(crate) fn pending_binding(&self, id: u64) -> Option<(&FrameBinding, bool)> {
+        self.pending.get(&id).map(|entry| (&entry.binding,entry.successful))
+    }
     /// Mutate the correlation table before returning its owned observer.
     pub fn resolve(&mut self, id: u64, outcome: FrameOutcome) -> Option<FrameBinding> {
         let entry = self.pending.remove(&id)?;
@@ -74,6 +78,25 @@ impl Ledger {
         }
         Some(entry.binding)
     }
+}
+
+pub(crate) fn outcome(feedback: &winit::presentation::PresentationFeedback) -> FrameOutcome {
+    match feedback.outcome {
+        winit::presentation::PresentationOutcome::Presented {
+            clock_id, seconds, nanoseconds, refresh_ns, output_sequence, flags,
+        } => FrameOutcome::Presented { clock_id, seconds, nanoseconds, refresh_ns, output_sequence, flags },
+        winit::presentation::PresentationOutcome::Discarded => FrameOutcome::Discarded,
+    }
+}
+
+/// Retire the actual native lease before notifying the metadata-only observer.
+/// Ordinary and acceptance-deferred feedback share this one delivery path.
+pub(crate) fn deliver(ledger: &mut Ledger, window: Id, feedback: winit::presentation::PresentationFeedback) {
+    let request = feedback.id.get();
+    let outcome = outcome(&feedback);
+    let binding = ledger.resolve(request, outcome);
+    drop(feedback);
+    if let Some(binding) = binding { binding.observe(window,Some(request),outcome); }
 }
 
 impl Drop for Ledger {

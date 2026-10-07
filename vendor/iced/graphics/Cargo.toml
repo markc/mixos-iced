@@ -18,6 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 all-features = true
 
 [features]
+native-frame-probe = ["iced_core/native-frame-probe"]
 geometry = ["lyon_path"]
 image = ["dep:image", "kamadak-exif"]
 svg = []

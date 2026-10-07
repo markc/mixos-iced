@@ -1,5 +1,33 @@
 # vendor/iced: local patches
 
+## Non-default native frame ordering acceptance
+
+`native-frame-probe` forwards through core, graphics, runtime, tiny-skia,
+renderer, winit and the umbrella crate. Ordinary builds omit the scope, runtime
+gate and holder. The separate native-gallery probe enables it explicitly.
+
+The core thread-local scope is bound to one synchronous draw and cannot move
+between threads. Tiny-skia consumes its one-shot failure only after the actual
+buffer commit succeeds. The runtime therefore exercises its existing failed
+submission and ordinary retry path while real native feedback still arrives.
+Failed submissions cannot reach the production observer as Presented.
+
+Each window gate can retain at most one actual successful old feedback lease.
+It releases that lease only after recording a successful replacement submission,
+using the same conversion/ledger-resolution/drop-before-observer delivery helper
+as ordinary feedback. Shared fixture control retains bounded copied metadata and
+two single-use notifications; no global native leases, observer-driven redraw,
+extra application transport or second runtime is introduced. Window retirement
+drops the holder and cancels unfinished waits. A separate close-held schedule
+checks that retirement instead of fabricating successful replacement evidence.
+The held notification waits for both the actual old successful lease and the
+failed request's actual terminal, so out-of-order native dispatch cannot close
+the window before the failed-ID terminal has been inspected.
+
+The after-commit fault does not establish recovery from a failed pre-commit draw
+after winit has requested its pacing callback. That separate native recovery
+case remains explicit implementation and acceptance work.
+
 iced 0.15.0-dev from git master. The code delta is a local port of
 `iced_wgpu` to the wgpu 30 snapshot in `vendor/wgpu`, plus the manifest
 re-wiring that makes iced build against `vendor/wgpu` and `vendor/cryoglyph`,
