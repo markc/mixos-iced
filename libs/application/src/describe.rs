@@ -485,10 +485,10 @@ pub fn parse_validate(raw: &str) -> Result<OwnedDescription, Violation> {
     }
     let value: Value = serde_json::from_str(raw)
         .map_err(|error| Violation::new("", code::MALFORMED_JSON, error.to_string()))?;
-    let description = validate(&value)?;
+    let pid = validate(&value)?.pid();
     Ok(OwnedDescription {
         value,
-        pid: description.pid(),
+        pid,
     })
 }
 
@@ -525,7 +525,7 @@ fn required_nonempty_bounded<'a>(
 
 /// A validated v1 response. Borrows the object; it never clones a second
 /// source of truth.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Description<'a> {
     value: &'a Value,
     pid: u32,
@@ -672,7 +672,7 @@ impl ExactSizeIterator for VerbIter<'_> {}
 /// a verbs array plus whatever partial identity it carries. Missing fields
 /// stay missing; nothing is inferred or fabricated. Legacy discovery keeps
 /// its duplicate-name compatibility and is not held to the v1 limits.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct LegacyDescription<'a> {
     value: &'a Value,
 }
@@ -769,15 +769,27 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    macro_rules! fixture {
-        ($name:expr) => {
-            serde_json::from_str(include_str!(concat!(
-                "../../../docs/spec/application/fixtures/",
-                $name
-            )))
-            .expect("valid fixture JSON")
+    macro_rules! fixtures {
+        ($($name:literal),* $(,)?) => {
+            fn fixture(name: &str) -> Value {
+                let text = match name {
+                    $($name => include_str!(concat!("../../../docs/spec/application/fixtures/",$name)),)*
+                    _ => panic!("unknown fixture: {name}"),
+                };
+                serde_json::from_str(text).expect("valid fixture JSON")
+            }
         };
     }
+    fixtures!(
+        "v1-refusal-unknown-marker.json", "v1-refusal-bad-identity.json",
+        "ced-legacy-describe.json", "v1-refusal-missing-marker.json",
+        "v1-refusal-missing-app-describe.json", "v1-minimal-strings.json",
+        "ced-legacy-describe-gui.json", "v1-descriptors.json", "dopus-legacy-describe.json",
+        "v1-refusal-app-describe-mutable.json", "scene-editor-legacy-describe.json",
+        "busviewer-legacy-describe.json", "v1-refusal-pid-overflow.json",
+        "v1-refusal-bad-evidence.json", "v1-evidence.json",
+        "v1-refusal-duplicate-verbs.json", "shell-info-legacy.json",
+    );
 
     #[test]
     fn request_accepts_only_the_canonical_no_argument_forms() {
@@ -841,7 +853,7 @@ mod tests {
 
     #[test]
     fn complete_is_idempotent_when_reserved_fields_already_agree() {
-        let mut strings = fixture!("v1-minimal-strings.json");
+        let mut strings = fixture("v1-minimal-strings.json");
         let snapshot = strings.clone();
         complete(
             &mut strings,
@@ -855,7 +867,7 @@ mod tests {
         .unwrap();
         assert_eq!(strings, snapshot, "nothing was missing");
 
-        let mut mixed = fixture!("v1-evidence.json");
+        let mut mixed = fixture("v1-evidence.json");
         complete(
             &mut mixed,
             Identity {
@@ -872,7 +884,7 @@ mod tests {
 
     #[test]
     fn complete_refuses_contradictions_without_mutation() {
-        let mut value = fixture!("v1-minimal-strings.json");
+        let mut value = fixture("v1-minimal-strings.json");
         let snapshot = value.clone();
         for identity in [
             Identity {
@@ -969,12 +981,14 @@ mod tests {
 
     #[test]
     fn validate_accepts_the_validator_fixtures() {
-        let minimal = validate(&fixture!("v1-minimal-strings.json")).unwrap();
+        let minimal_fixture = fixture("v1-minimal-strings.json");
+        let minimal = validate(&minimal_fixture).unwrap();
         assert_eq!(minimal.app_id(), None, "explicit null app_id");
         assert_eq!(minimal.settings(), None, "null evidence stays absent");
         assert_eq!(minimal.value()["schema"], "dopus.v1");
 
-        let descriptors = validate(&fixture!("v1-descriptors.json")).unwrap();
+        let descriptors_fixture = fixture("v1-descriptors.json");
+        let descriptors = validate(&descriptors_fixture).unwrap();
         let describe = descriptors
             .verbs()
             .find(|verb| verb.name == VERB)
@@ -993,7 +1007,7 @@ mod tests {
 
         // Evidence with current != applied stays a valid transient state:
         // the validator checks object-ness only, never convergence.
-        validate(&fixture!("v1-evidence.json")).unwrap();
+        validate(&fixture("v1-evidence.json")).unwrap();
     }
 
     #[test]
@@ -1014,7 +1028,7 @@ mod tests {
             ("v1-refusal-pid-overflow.json", code::INVALID_IDENTITY),
             ("v1-refusal-bad-evidence.json", code::INVALID_EVIDENCE),
         ] {
-            let violation = validate(&fixture!(name)).unwrap_err();
+            let violation = validate(&fixture(name)).unwrap_err();
             assert_eq!(violation.code, expected, "{name}");
         }
     }
@@ -1142,7 +1156,8 @@ mod tests {
 
     #[test]
     fn read_legacy_reads_product_objects_and_keeps_missing_fields_missing() {
-        let ced = read_legacy(&fixture!("ced-legacy-describe.json")).unwrap();
+        let ced_fixture = fixture("ced-legacy-describe.json");
+        let ced = read_legacy(&ced_fixture).unwrap();
         assert_eq!(
             ced.value()["contract"],
             "ctk-app-control.v0",
@@ -1154,17 +1169,20 @@ mod tests {
         assert_eq!(ced.app_id(), None);
         assert!(ced.verbs().any(|verb| verb.name == VERB));
 
-        let gui = read_legacy(&fixture!("ced-legacy-describe-gui.json")).unwrap();
+        let gui_fixture = fixture("ced-legacy-describe-gui.json");
+        let gui = read_legacy(&gui_fixture).unwrap();
         assert_eq!(gui.pid(), None);
         assert!(gui.value()["settings"].is_object());
         assert!(gui.value()["settings_cache"].is_object());
 
-        let editor = read_legacy(&fixture!("scene-editor-legacy-describe.json")).unwrap();
+        let editor_fixture = fixture("scene-editor-legacy-describe.json");
+        let editor = read_legacy(&editor_fixture).unwrap();
         assert_eq!(editor.app_id(), Some("dev.mixos.scene-editor"));
         assert_eq!(editor.version(), Some("0.1.1"));
         assert_eq!(editor.pid(), None);
 
-        let viewer = read_legacy(&fixture!("busviewer-legacy-describe.json")).unwrap();
+        let viewer_fixture = fixture("busviewer-legacy-describe.json");
+        let viewer = read_legacy(&viewer_fixture).unwrap();
         let select = viewer
             .verbs()
             .find(|verb| verb.name == "busviewer.select")
@@ -1179,20 +1197,22 @@ mod tests {
             "not yet advertised"
         );
 
-        let dopus = read_legacy(&fixture!("dopus-legacy-describe.json")).unwrap();
+        let dopus_fixture = fixture("dopus-legacy-describe.json");
+        let dopus = read_legacy(&dopus_fixture).unwrap();
         assert_eq!(dopus.version(), Some("0.4.4"));
         assert_eq!(dopus.pid(), None);
 
         // shell.info is a documented non-app.describe object: bare suffixes,
         // never converted into v1 names.
-        let shell = read_legacy(&fixture!("shell-info-legacy.json")).unwrap();
+        let shell_fixture = fixture("shell-info-legacy.json");
+        let shell = read_legacy(&shell_fixture).unwrap();
         assert_eq!(shell.service(), Some("shell"));
         assert_eq!(shell.value()["contract"], "shell.v1");
         let names: Vec<&str> = shell.verbs().map(|verb| verb.name).collect();
         assert!(names.contains(&"props.get"));
         assert!(!names.contains(&"shell.props.get"));
         assert_eq!(
-            validate(&fixture!("shell-info-legacy.json"))
+            validate(&fixture("shell-info-legacy.json"))
                 .unwrap_err()
                 .code,
             code::MISSING_MARKER
@@ -1210,13 +1230,13 @@ mod tests {
         // A migrated v1 object or a foreign marker is not legacy: validate
         // owns every marker-carrying object, never a silent demotion.
         assert_eq!(
-            read_legacy(&fixture!("v1-minimal-strings.json"))
+            read_legacy(&fixture("v1-minimal-strings.json"))
                 .unwrap_err()
                 .code,
             code::NOT_LEGACY
         );
         assert_eq!(
-            read_legacy(&fixture!("v1-refusal-unknown-marker.json"))
+            read_legacy(&fixture("v1-refusal-unknown-marker.json"))
                 .unwrap_err()
                 .code,
             code::NOT_LEGACY

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Serialize immutable resource, registry and image evidence from the existing
+  receipt. Keep renderer registry accounting independent of serialization and
+  expose no source payloads or operator paths.
+
 - `Prepared` exposes `ui_text()` and `small_text()` typed accessors for the
   validated required `ui` and `small` roles, replacing repeated string
   lookups in hosts. Buttons with an authored cell keep using

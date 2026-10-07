@@ -26,9 +26,10 @@ mod_module_files = "deny"
 # compact reuse, the one atomic toolkit batch, the owned image decoder and
 # the resource receipt attached to Prepared. Requires the assets `verified`
 # reader and toolkit's owned image decoding.
-resources = ["assets/verified", "dep:hex", "toolkit/image"]
+resources = ["assets/verified", "dep:hex", "dep:serde", "toolkit/image"]
 
 [dependencies]
+serde = { workspace = true, optional = true }
 # The pinned font, icon and emoji set (its MixOS search path).
 assets = { workspace = true }
 # The theme file's directory (`theme.conf.mix` under the etc dir).

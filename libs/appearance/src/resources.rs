@@ -120,7 +120,7 @@ impl ImageError {
 }
 
 /// The process-wide image ledger usage, always within the immutable caps.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ImageUsage {
     /// Distinct retained encoded image sources, charged once per exact digest.
     pub sources: usize,
@@ -454,7 +454,7 @@ impl ResourceRequirements {
 /// receipt was built from: actual iced font-system versions, added/reused
 /// counts and process usage, never a success boolean. The image usage is the
 /// process ledger after this preparation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct RegistryEvidence {
     pub renderer_version_before: u32,
     pub renderer_version_after: u32,
@@ -464,9 +464,23 @@ pub struct RegistryEvidence {
     pub faces_reused: usize,
     pub policies_added: usize,
     pub policies_reused: usize,
+    #[serde(serialize_with = "serialize_registry_usage")]
     pub usage_before: RegistryUsage,
+    #[serde(serialize_with = "serialize_registry_usage")]
     pub usage_after: RegistryUsage,
     pub image: ImageUsage,
+}
+
+fn serialize_registry_usage<S: serde::Serializer>(usage: &RegistryUsage, serializer: S) -> Result<S::Ok,S::Error> {
+    use serde::ser::SerializeStruct;
+    let mut record = serializer.serialize_struct("RegistryUsage",6)?;
+    record.serialize_field("retained_bytes",&usage.retained_bytes)?;
+    record.serialize_field("sources",&usage.sources)?;
+    record.serialize_field("faces",&usage.faces)?;
+    record.serialize_field("collections",&usage.collections)?;
+    record.serialize_field("aliases",&usage.aliases)?;
+    record.serialize_field("instantiated_pairs",&usage.instantiated_pairs)?;
+    record.end()
 }
 
 impl RegistryEvidence {
@@ -498,7 +512,7 @@ impl RegistryEvidence {
 /// The actual intrinsic selection evidence of one text record: the family,
 /// face index and source digest the renderer really resolved, and the
 /// requested versus effective numeric weight. No filesystem paths.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct TextEvidence {
     pub record: String,
     pub family: String,
@@ -512,7 +526,7 @@ pub struct TextEvidence {
 /// The evidence of one declared non-font icon asset: descriptor identity and
 /// source digest, without pretending the SVG or raster has a font family or
 /// weight.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct AssetEvidence {
     pub name: String,
     pub style: String,
@@ -523,7 +537,7 @@ pub struct AssetEvidence {
 /// The selection evidence of one required icon: the selected catalogue
 /// family/style for a glyph, the declared asset descriptor for an image, and
 /// the verified source digest either way. No filesystem paths.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct IconEvidence {
     pub key: String,
     pub name: String,
@@ -538,7 +552,7 @@ pub struct IconEvidence {
 
 /// Read-only resource evidence of one successful preparation, for acceptance
 /// diagnostics. Never a retained duplicate of source payload.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct ResourceEvidence {
     pub set_id: Option<String>,
     pub manifest_blake3: Option<String>,
