@@ -41,7 +41,10 @@ fn native_discovery_calls_topics_and_singleton_registration() {
                 }
             });clients.push(client);
         }
-        let (handle,mut events)=viewer::start("viewer-test",&url).unwrap();
+        // Nonblocking startup: registration completes in the supervisor and
+        // its edges arrive as deliveries. The settings UI endpoint stays
+        // alive so the worker's Lane keeps driving.
+        let (handle,_ui,_bootstrap,mut events)=viewer::start("viewer-test",&url).unwrap();
         let changed=Arc::new(tokio::sync::Notify::new());
         let disconnected=Arc::new(tokio::sync::Notify::new());
         let connected=Arc::new(tokio::sync::Notify::new());
@@ -59,7 +62,29 @@ fn native_discovery_calls_topics_and_singleton_registration() {
                 }
             }
         });
-        assert!(viewer::start("viewer-test",&url).is_err(),"duplicate identity must refuse registration");
+        tokio::time::timeout(Duration::from_secs(15),connected.notified()).await.unwrap();
+        assert!(handle.connected());
+        assert!(handle.ever_registered());
+        // Generation readback is sampled from the live client.
+        let generation=handle.settings_generation().expect("connected generation is sampled");
+
+        // A duplicate identity is refused by the supervisor, surfaced as a
+        // name-taken Refused delivery — startup itself stays nonblocking.
+        let (second,_second_ui,_second_bootstrap,mut second_events)=viewer::start("viewer-test",&url).unwrap();
+        let refused=tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                match second_events.next().await {
+                    Some(Delivery::Refused{name_taken:true,..})=>break true,
+                    Some(Delivery::Connected)=>break false,
+                    Some(_)=>{},
+                    None=>break false,
+                }
+            }
+        }).await.unwrap_or(false);
+        assert!(refused,"duplicate identity must refuse registration");
+        second.quit();
+        second.wait_done().unwrap();
+
         let snapshot=viewer::discover(handle.clone()).await;
         assert!(snapshot.error.is_none(),"{:?}",snapshot.error);
         assert!(snapshot.services.contains_key("noded"));
@@ -86,6 +111,9 @@ fn native_discovery_calls_topics_and_singleton_registration() {
         assert!(lost.outcome_unknown);
         tokio::time::timeout(Duration::from_secs(10),disconnected.notified()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(15),connected.notified()).await.unwrap();
+        // The sampled generation advances across the reconnect.
+        let restarted=handle.settings_generation().expect("reconnected generation is sampled");
+        assert!(restarted>generation,"generation readback must advance across reconnect");
         let reseeded=viewer::discover(handle.clone()).await;
         assert!(reseeded.error.is_none());
         assert!(reseeded.services.contains_key("viewer-test"));

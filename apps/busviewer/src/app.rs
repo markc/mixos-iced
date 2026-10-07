@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+//! Thin native frontend. Completion snapshots replace state; topics only
+//! request a refetch. The prepared appearance is borrowed from the settings
+//! session, and settings drains never disturb discovery, calls or edits.
 use crate::{
     bus::{self, CallError, Delivery, Handle, Reply},
     menu::{self, Action},
@@ -7,9 +10,10 @@ use crate::{
 };
 use application::iced::{
     self, Element, Subscription, Task,
-    widget::{self, column, container, row, text, text_editor},
+    widget::{self, column, container, row, text_editor},
     window,
 };
+use application::presentation::native::Ui;
 use iced::futures::{StreamExt, channel::mpsc::Receiver};
 use serde_json::{Value, json};
 use std::{
@@ -73,7 +77,8 @@ struct Call {
 pub struct App {
     settings: Settings,
     bus: Handle,
-    look: appearance::Appearance,
+    bootstrap: appearance::settings::Prepared,
+    settings_ui: Ui<()>,
     snapshot: Snapshot,
     tree: Nodes<String, Row>,
     expanded: BTreeSet<String>,
@@ -90,9 +95,13 @@ pub struct App {
     activations: BTreeSet<u64>,
     refetch: bool,
     connected: bool,
+    refused: bool,
+    handoff_pending: bool,
+    launched: std::time::Instant,
     dialog: Option<Action>,
     status: String,
     quitting: bool,
+    touched: bool,
 }
 static STREAM: OnceLock<Mutex<Option<Receiver<Delivery>>>> = OnceLock::new();
 fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
@@ -111,17 +120,23 @@ fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     }))
 }
 pub fn run(settings: Settings) -> Result<(), String> {
-    let (bus, rx) = bus::start(&settings.service, &settings.url)?;
+    let (bus, mut settings_ui, bootstrap, rx) = bus::start(&settings.service, &settings.url)?;
     let result = (|| {
         STREAM
             .set(Mutex::new(Some(rx)))
             .map_err(|_| "app already started")?;
-        let look = appearance::install(&appearance::Theme::load()).map_err(|e| e.to_string())?;
-        let font = look.ui_font();
-        let mut app = App::new(settings, bus.clone(), look);
-        let initial = app.refresh(None);
+        let font = bootstrap
+            .typography()
+            .get("ui")
+            .expect("UI typography")
+            .font;
+        settings_ui.reconcile(bus.settings_generation());
+        let app = App::new(settings, bus.clone(), bootstrap, settings_ui);
+        // The first refresh is deferred to the reliable registration edge:
+        // the worker's Connected delivery, which also arrives when the
+        // supervisor registered before this window subscribed.
         application::start(
-            (app, initial),
+            (app, Task::none()),
             App::update,
             App::view,
             application::Window::new(APP_ID, iced::Size::new(1100.0, 760.0), font)
@@ -129,7 +144,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
                 .defer_close(),
         )
         .title(|_: &App| label("title"))
-        .theme(|app: &App| app.look.theme())
+        .theme(|app: &App| app.look().theme())
         .subscription(App::subscription)
         .run()
         .map_err(|e| e.to_string())
@@ -139,11 +154,17 @@ pub fn run(settings: Settings) -> Result<(), String> {
     result.and(stopped)
 }
 impl App {
-    fn new(settings: Settings, bus: Handle, look: appearance::Appearance) -> Self {
+    fn new(
+        settings: Settings,
+        bus: Handle,
+        bootstrap: appearance::settings::Prepared,
+        settings_ui: Ui<()>,
+    ) -> Self {
         Self {
             settings,
             bus,
-            look,
+            bootstrap,
+            settings_ui,
             snapshot: Snapshot::default(),
             tree: Nodes::new(),
             expanded: BTreeSet::new(),
@@ -159,11 +180,58 @@ impl App {
             call: None,
             activations: BTreeSet::new(),
             refetch: false,
-            connected: true,
+            // The connection is sampled, never fabricated: the worker's
+            // registration edge flips this true. Local operations and the
+            // settings drain stay available either way.
+            connected: false,
+            refused: false,
+            handoff_pending: false,
+            launched: std::time::Instant::now(),
             dialog: None,
             status: label("connecting"),
             quitting: false,
+            touched: false,
         }
+    }
+    fn look(&self) -> &appearance::settings::Prepared {
+        self.settings_ui
+            .session()
+            .host()
+            .presentation()
+            .map_or(&self.bootstrap, |presentation| presentation.appearance())
+    }
+    fn typography(&self, role: &str) -> toolkit::typography::TextStyle {
+        self.look()
+            .typography()
+            .get(role)
+            .expect("prepared typography role")
+    }
+    fn text<'a>(
+        &self,
+        content: impl iced::advanced::text::IntoFragment<'a>,
+    ) -> widget::Text<'a, Theme> {
+        self.typography("ui").text(content)
+    }
+    fn persistent_status(&self) -> String {
+        use settings::fallback::PresentationKind;
+        let kind = match self.settings_ui.session().host().consumer().evidence().kind {
+            Some(PresentationKind::Current) => "settings-current",
+            Some(PresentationKind::Cached) => "settings-cached",
+            Some(PresentationKind::Embedded) => "settings-embedded",
+            Some(PresentationKind::Retained) => "settings-retained",
+            Some(PresentationKind::LastGood) => "settings-last-good",
+            None => "settings-bootstrap",
+        };
+        let connection = if self.bus.connected() {
+            "bus-connected"
+        } else if self.refused {
+            "bus-refused"
+        } else if self.bus.ever_registered() {
+            "bus-disconnected"
+        } else {
+            "bus-connecting"
+        };
+        format!("{} · {}", label(kind), label(connection))
     }
     fn busy(&self) -> bool {
         self.discovery.is_some() || self.call.is_some() || !self.activations.is_empty()
@@ -173,7 +241,7 @@ impl App {
         self.next_ticket
     }
     fn info(&self) -> Value {
-        json!({"schema":"busviewer.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.connected,"busy":self.busy(),"discovering":self.discovery.is_some(),"calling":self.call.is_some(),"selection":self.selected,"body":self.body.text(),"reply":self.last_reply,"status":self.status,"snapshot":self.snapshot,"ui":{"menu_bar":true,"dialog":self.dialog.as_ref().map(|a|format!("{a:?}")),"row_key":self.row_key}})
+        json!({"schema":"busviewer.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.bus.connected(),"busy":self.busy(),"discovering":self.discovery.is_some(),"calling":self.call.is_some(),"selection":self.selected,"body":self.body.text(),"reply":self.last_reply,"status":self.status,"snapshot":self.snapshot,"ui":{"menu_bar":true,"dialog":self.dialog.as_ref().map(|a|format!("{a:?}")),"row_key":self.row_key}})
     }
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
@@ -190,6 +258,28 @@ impl App {
     fn error(&self, id: u64, code: &str, message: &str) {
         self.bus
             .reply(id, 10, json!({"error_code":code,"message":message}));
+    }
+    /// Settings frames share the bounded GUI channel: every delivery drains
+    /// the mailbox against the client's actual sampled generation, so a
+    /// coalesced wake is never the only path to the pending events. Draining
+    /// never triggers discovery, a refetch or a replay of the pending call,
+    /// and local operations stay available offline.
+    fn drain_settings(&mut self) {
+        let bus = &self.bus;
+        if !self
+            .settings_ui
+            .drain_with(|| bus.settings_generation(), |_| {})
+            .is_empty()
+        {
+            eprintln!(
+                "BUSVIEWER_SETTINGS {}",
+                json!({
+                    "evidence": self.settings_ui.session().host().consumer().evidence(),
+                    "settings_cache": self.settings_ui.session().cache_evidence(),
+                    "elapsed_ms": self.launched.elapsed().as_millis(),
+                })
+            );
+        }
     }
     fn refresh(&mut self, reply: Option<u64>) -> Task<Message> {
         if self.busy() || !self.connected || self.quitting {
@@ -477,9 +567,23 @@ impl App {
                 0,
                 json!({"schema":"busviewer.v1","version":env!("CARGO_PKG_VERSION")}),
             ),
-            "busviewer.info" => self.bus.reply(id, 0, self.info()),
+            "busviewer.info" => {
+                self.settings_ui.reconcile(self.bus.settings_generation());
+                let mut info = self.info();
+                info["settings"] =
+                    json!(self.settings_ui.session().host().consumer().evidence());
+                info["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
+                self.bus.reply(id, 0, info);
+            }
             "HELP" => self.bus.reply(id, 0, model::describe()["verbs"].clone()),
-            "app.describe" => self.bus.reply(id, 0, model::describe()),
+            "app.describe" => {
+                self.settings_ui.reconcile(self.bus.settings_generation());
+                let mut describe = model::describe();
+                describe["settings"] =
+                    json!(self.settings_ui.session().host().consumer().evidence());
+                describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
+                self.bus.reply(id, 0, describe);
+            }
             "busviewer.show" if !self.quitting => return self.show(Some(id)),
             "busviewer.refresh" if self.dialog.is_none() => return self.refresh(Some(id)),
             "busviewer.select" if !self.busy() && self.dialog.is_none() && !self.quitting => {
@@ -526,6 +630,20 @@ impl App {
         Task::none()
     }
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(
+            &message,
+            Message::Action(_)
+                | Message::OpenMenu(_)
+                | Message::Filter(_)
+                | Message::Toggle(_)
+                | Message::Select(_)
+                | Message::Body(_)
+                | Message::Reply(_)
+                | Message::Split(_)
+                | Message::Key(..)
+        ) {
+            self.touched = true;
+        }
         match message {
             Message::Action(action) => self.action(action),
             Message::OpenMenu(index) if self.dialog.is_none() => {
@@ -697,29 +815,61 @@ impl App {
                 }
                 self.followup()
             }
-            Message::Bus(Delivery::Command { id, verb, body }) => self.command(id, &verb, &body),
-            Message::Bus(Delivery::Changed) => {
-                if self.busy() {
-                    self.refetch = true;
-                    Task::none()
-                } else {
-                    self.refresh(None)
+            Message::Bus(delivery) => {
+                self.drain_settings();
+                match delivery {
+                    Delivery::Command { id, verb, body } => self.command(id, &verb, &body),
+                    Delivery::Changed => {
+                        if self.busy() {
+                            self.refetch = true;
+                            Task::none()
+                        } else {
+                            self.refresh(None)
+                        }
+                    }
+                    Delivery::Settings => Task::none(),
+                    Delivery::Refused { name_taken, message } => {
+                        self.refused = true;
+                        self.connected = false;
+                        self.status = message;
+                        // An untouched initial collision keeps the pre-settings
+                        // handoff: one forward, and only before this process
+                        // ever registered. A later refusal never exits or
+                        // forwards; the window stays with its message.
+                        if name_taken
+                            && !self.bus.ever_registered()
+                            && !self.touched
+                            && !self.handoff_pending
+                        {
+                            self.handoff_pending = true;
+                            self.bus.forward();
+                        }
+                        Task::none()
+                    }
+                    Delivery::Forwarded(result) => {
+                        if !self.handoff_pending {
+                            return Task::none();
+                        }
+                        self.handoff_pending = false;
+                        match result {
+                            Ok(()) if !self.touched && !self.bus.ever_registered() => self.quit(),
+                            Ok(()) => Task::none(),
+                            Err(error) => {
+                                self.status = error;
+                                Task::none()
+                            }
+                        }
+                    }
+                    Delivery::Connected => {
+                        self.connected = true;
+                        self.refresh(None)
+                    }
+                    Delivery::Disconnected => {
+                        self.connected = false;
+                        self.status = label("disconnected");
+                        Task::none()
+                    }
                 }
-            }
-            Message::Bus(Delivery::Connected) => {
-                self.connected = true;
-                self.refresh(None)
-            }
-            Message::Bus(Delivery::Disconnected) => {
-                self.connected = false;
-                self.status = label("disconnected");
-                Task::none()
-            }
-            Message::Bus(Delivery::Theme) => {
-                if let Ok(look) = appearance::install(&appearance::Theme::load()) {
-                    self.look = look;
-                }
-                Task::none()
             }
             Message::Shown(ticket, id, result) => {
                 if !self.activations.remove(&ticket) {
@@ -750,7 +900,7 @@ impl App {
         }
     }
     pub fn view(&self) -> Element<'_, Message, Theme> {
-        let t = self.look.tokens;
+        let t = self.look().tokens();
         let gap = t.metrics.spacing.md;
         let selected = self
             .row_key
@@ -758,8 +908,9 @@ impl App {
             .and_then(|key| self.tree.position(key))
             .map(toolkit::Selection::single)
             .unwrap_or_default();
-        let tree = toolkit::TreeView::new(&self.tree, |row| {
-            text(match row.data {
+        let ui_style = self.typography("ui");
+        let tree = toolkit::TreeView::new(&self.tree, move |row| {
+            ui_style.text(match row.data {
                 Row::Service(name) | Row::Peer(name) => name.clone(),
                 Row::Error(_) => label("descriptions-failed"),
                 Row::Verb(target) => target.verb.clone(),
@@ -770,10 +921,11 @@ impl App {
         .on_select(Message::Select)
         .selection(&selected);
         let left = column![
-            text(label("services")).size(t.metrics.text.lg),
+            self.text(label("services")).size(t.metrics.text.lg),
             toolkit::TextField::new(&label("search"), &self.filter)
                 .on_input(Message::Filter)
-                .id("busviewer-search"),
+                .id("busviewer-search")
+                .size(ui_style.size),
             tree
         ]
         .spacing(gap)
@@ -817,20 +969,33 @@ impl App {
                 })
                 .unwrap_or_else(|| label("select")),
         };
-        let body = text_editor(&self.body)
+        let mono = self.typography("mono");
+        let mut body = text_editor(&self.body)
             .on_action(Message::Body)
             .placeholder(label("body"))
             .height(t.metrics.text.md * 7.0)
-            .font(self.look.mono_font());
+            .font(mono.font)
+            .size(mono.size);
+        if let Some(height) = mono.line_height {
+            body = body.line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(
+                height,
+            )));
+        }
+        let mut reply = text_editor(&self.reply)
+            .on_action(Message::Reply)
+            .height(iced::Fill)
+            .font(mono.font)
+            .size(mono.size);
+        if let Some(height) = mono.line_height {
+            reply =
+                reply.line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(height)));
+        }
         let right = column![
-            widget::scrollable(text(details)).height(t.metrics.text.md * 9.0),
-            text(label("body")),
+            widget::scrollable(self.text(details)).height(t.metrics.text.md * 9.0),
+            self.text(label("body")),
             body,
-            text(label("reply")),
-            text_editor(&self.reply)
-                .on_action(Message::Reply)
-                .height(iced::Fill)
-                .font(self.look.mono_font())
+            self.text(label("reply")),
+            reply
         ]
         .spacing(gap)
         .height(iced::Fill);
@@ -848,7 +1013,14 @@ impl App {
         let base: Element<'_, Message, Theme> = column![
             bar.map(Message::Action),
             container(split).padding(gap).height(iced::Fill),
-            container(text(&self.status).size(t.metrics.text.sm)).padding(t.metrics.spacing.sm)
+            container(
+                column![
+                    self.text(&self.status).size(t.metrics.text.sm),
+                    self.text(self.persistent_status()).size(t.metrics.text.sm)
+                ]
+                .spacing(t.metrics.spacing.sm)
+            )
+            .padding(t.metrics.spacing.sm)
         ]
         .height(iced::Fill)
         .into();
@@ -856,20 +1028,20 @@ impl App {
             return toolkit::dialog::Modal::host(base, None).into();
         };
         let contents = column![
-            text(label(if *dialog == Action::About {
+            self.text(label(if *dialog == Action::About {
                 "about"
             } else {
                 "shortcuts"
             }))
             .size(t.metrics.text.lg),
-            text(label(if *dialog == Action::About {
+            self.text(label(if *dialog == Action::About {
                 "about-body"
             } else {
                 "shortcut-body"
             })),
             row![
                 widget::space().width(iced::Fill),
-                toolkit::CenteredButton::new(text(label("done"))).on_press(Message::Cancel)
+                toolkit::CenteredButton::new(self.text(label("done"))).on_press(Message::Cancel)
             ]
         ]
         .spacing(gap);
@@ -897,17 +1069,25 @@ impl App {
 mod tests {
     use super::*;
     fn app() -> App {
-        static LOOK: OnceLock<appearance::Appearance> = OnceLock::new();
-        let look = LOOK
-            .get_or_init(|| {
-                appearance::install_with(
-                    &appearance::Theme::embedded(),
-                    appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
-                )
-                .unwrap()
-            })
-            .clone();
-        let mut app = App::new(Settings::default(), Handle::sink(), look);
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "busviewer",
+        )
+        .unwrap();
+        let (ui, _lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
+        let mut app = App::new(
+            Settings::default(),
+            Handle::sink(),
+            appearance::settings::bootstrap().unwrap(),
+            ui,
+        );
+        app.connected = true;
         app.snapshot.services.insert(
             "example".into(),
             Ok(vec![model::Verb {
@@ -1062,6 +1242,14 @@ mod tests {
         assert_eq!(replies[0].2["schema"], "busviewer.v1");
         assert_eq!(replies[1].2["app_id"], APP_ID);
         assert!(
+            replies[1].2["settings"]["kind"].is_string(),
+            "busviewer.info carries canonical consumer evidence"
+        );
+        assert!(
+            replies[1].2["settings_cache"].is_object(),
+            "busviewer.info carries cache evidence"
+        );
+        assert!(
             replies[2]
                 .2
                 .as_array()
@@ -1069,6 +1257,8 @@ mod tests {
                 .iter()
                 .any(|v| v["name"] == "busviewer.call")
         );
+        assert!(replies[3].2["settings"]["kind"].is_string(), "app.describe carries canonical consumer evidence");
+        assert!(replies[3].2["settings_cache"].is_object(), "app.describe carries cache evidence");
         let _ = app.command(
             5,
             "busviewer.select",
@@ -1265,5 +1455,79 @@ mod tests {
         assert_eq!(replies[0].2["transport_error"], "connection lost");
         assert_eq!(replies[0].2["outcome_unknown"], true);
         assert_eq!(replies[0].2["retried"], false);
+    }
+    /// Settings frames drain on every Bus delivery and must never disturb the
+    /// accepted call, the editor contents and cursors, the tree model or the
+    /// selection — and never trigger a refetch or a replay.
+    #[test]
+    fn settings_drain_preserves_pending_call_body_reply_cursor_and_model() {
+        let mut app = app();
+        app.selected = Some(target());
+        app.body = text_editor::Content::with_text("{\"value\":42}");
+        app.reply = text_editor::Content::with_text("first reply");
+        app.reply.perform(text_editor::Action::SelectAll);
+        let _ = app.start_call(target(), "{\"value\":42}".into(), None);
+        let ticket = app.call.as_ref().unwrap().ticket;
+        let body = app.body.text();
+        let reply_text = app.reply.text();
+        let reply_selection = app.reply.selection();
+        let reply_cursor = app.reply.cursor();
+        let rows = app.tree.len();
+        let _ = app.update(Message::Bus(Delivery::Settings));
+        assert_eq!(app.call.as_ref().unwrap().ticket, ticket);
+        assert_eq!(app.call.as_ref().unwrap().body, "{\"value\":42}");
+        assert_eq!(app.body.text(), body);
+        assert_eq!(app.reply.text(), reply_text);
+        assert_eq!(app.reply.selection(), reply_selection);
+        assert_eq!(app.reply.cursor(), reply_cursor);
+        assert_eq!(app.tree.len(), rows);
+        assert_eq!(app.selected, Some(target()));
+        assert!(app.last_reply.is_null());
+        assert!(!app.refetch, "settings must never refetch or replay a call");
+        assert!(app.discovery.is_none());
+    }
+    /// An untouched initial collision forwards exactly once and closes only on
+    /// the matching completion; a touched window never hands off, and a stale
+    /// completion never closes it.
+    #[test]
+    fn refused_collision_handoff_is_fenced_and_touch_blocks_it() {
+        let mut app = app();
+        let _ = app.update(Message::Bus(Delivery::Refused {
+            name_taken: true,
+            message: "already registered".into(),
+        }));
+        assert!(app.refused);
+        assert!(!app.connected);
+        assert!(app.handoff_pending);
+        assert!(!app.quitting);
+        assert_eq!(app.bus.forward_count(), 1);
+        let _ = app.update(Message::Bus(Delivery::Refused {
+            name_taken: true,
+            message: "again".into(),
+        }));
+        assert_eq!(app.bus.forward_count(), 1, "one forward per collision");
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Err(
+            "target disappeared".into(),
+        ))));
+        assert!(!app.quitting);
+        assert_eq!(app.status, "target disappeared");
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(!app.quitting, "a stale completion must not close the window");
+        let mut untouched = super::tests::app();
+        let _ = untouched.update(Message::Bus(Delivery::Refused {
+            name_taken: true,
+            message: "already registered".into(),
+        }));
+        let _ = untouched.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(untouched.quitting);
+        let mut touched = super::tests::app();
+        let _ = touched.update(Message::Filter("echo".into()));
+        let _ = touched.update(Message::Bus(Delivery::Refused {
+            name_taken: true,
+            message: "already registered".into(),
+        }));
+        assert!(!touched.handoff_pending, "a touched window never hands off");
+        assert!(!touched.quitting);
+        assert_eq!(touched.bus.forward_count(), 0);
     }
 }
