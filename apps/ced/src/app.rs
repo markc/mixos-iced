@@ -334,21 +334,31 @@ fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
 
 /// Channel closure must release a deferred-close window even if its worker
 /// failed before it could send the normal shutdown receipt.
-fn bus_messages(deliveries: UnboundedReceiver<Delivery>) -> impl application::iced::futures::Stream<Item = Msg> {
+fn bus_messages(
+    deliveries: UnboundedReceiver<Delivery>,
+) -> impl application::iced::futures::Stream<Item = Msg> {
     use application::iced::futures::{StreamExt, stream};
-    stream::unfold((deliveries, false, false), |(mut deliveries, stopped, closed)| async move {
-        if closed { return None; }
-        match deliveries.next().await {
-            Some(delivery) => {
-                let stopped = stopped || matches!(&delivery, Delivery::Stopped { .. });
-                Some((Msg::Bus(delivery), (deliveries, stopped, false)))
+    stream::unfold(
+        (deliveries, false, false),
+        |(mut deliveries, stopped, closed)| async move {
+            if closed {
+                return None;
             }
-            None if !stopped => Some((Msg::Bus(Delivery::Stopped {
-                faults: vec!["Bus worker delivery channel closed".into()],
-            }), (deliveries, true, true))),
-            None => None,
-        }
-    })
+            match deliveries.next().await {
+                Some(delivery) => {
+                    let stopped = stopped || matches!(&delivery, Delivery::Stopped { .. });
+                    Some((Msg::Bus(delivery), (deliveries, stopped, false)))
+                }
+                None if !stopped => Some((
+                    Msg::Bus(Delivery::Stopped {
+                        faults: vec!["Bus worker delivery channel closed".into()],
+                    }),
+                    (deliveries, true, true),
+                )),
+                None => None,
+            }
+        },
+    )
 }
 
 // ── update ──────────────────────────────────────────────────────────────────
@@ -2113,14 +2123,22 @@ mod tests {
             let (tx, rx) = unbounded();
             drop(tx);
             let mut messages = Box::pin(bus_messages(rx));
-            assert!(matches!(messages.next().await, Some(Msg::Bus(Delivery::Stopped { faults })) if !faults.is_empty()));
+            assert!(
+                matches!(messages.next().await, Some(Msg::Bus(Delivery::Stopped { faults })) if !faults.is_empty())
+            );
             assert!(messages.next().await.is_none());
             let (tx, rx) = unbounded();
-            tx.unbounded_send(Delivery::Stopped { faults: Vec::new() }).unwrap();
+            tx.unbounded_send(Delivery::Stopped { faults: Vec::new() })
+                .unwrap();
             drop(tx);
             let mut messages = Box::pin(bus_messages(rx));
-            assert!(matches!(messages.next().await, Some(Msg::Bus(Delivery::Stopped { faults })) if faults.is_empty()));
-            assert!(messages.next().await.is_none(), "a clean receipt must not acquire a second synthetic fault");
+            assert!(
+                matches!(messages.next().await, Some(Msg::Bus(Delivery::Stopped { faults })) if faults.is_empty())
+            );
+            assert!(
+                messages.next().await.is_none(),
+                "a clean receipt must not acquire a second synthetic fault"
+            );
         });
     }
 

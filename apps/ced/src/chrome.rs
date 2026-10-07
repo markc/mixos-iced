@@ -62,26 +62,17 @@ impl Look {
     }
 
     /// Chrome text.
-    pub fn text<'a>(
-        &self,
-        value: impl text::IntoFragment<'a>,
-    ) -> application::widget::Text<'a> {
+    pub fn text<'a>(&self, value: impl text::IntoFragment<'a>) -> application::widget::Text<'a> {
         text(value).font(self.ui).size(self.ui_px)
     }
 
     /// Small chrome text (status bar).
-    pub fn small<'a>(
-        &self,
-        value: impl text::IntoFragment<'a>,
-    ) -> application::widget::Text<'a> {
+    pub fn small<'a>(&self, value: impl text::IntoFragment<'a>) -> application::widget::Text<'a> {
         text(value).font(self.ui).size(self.small_px())
     }
 
     /// Monospace text at the chrome size (paths, code in panels).
-    pub fn code<'a>(
-        &self,
-        value: impl text::IntoFragment<'a>,
-    ) -> application::widget::Text<'a> {
+    pub fn code<'a>(&self, value: impl text::IntoFragment<'a>) -> application::widget::Text<'a> {
         text(value).font(self.mono).size(self.small_px())
     }
 
