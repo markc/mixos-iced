@@ -175,7 +175,7 @@ impl Consumer {
     /// Called after the shared bootstrap deadline. Preparation stays on the
     /// host's worker, with one pending fallback job and no extra connection.
     pub fn fallback_request(&mut self) -> Option<Request> {
-        if self.current().is_some() || self.applied.is_some() || self.pending.is_some() || self.fallback_serial != 0 {
+        if self.applied.is_some() || self.pending.is_some() || self.fallback_serial != 0 {
             return None;
         }
         self.fallback_serial = self.serial();
@@ -187,7 +187,7 @@ impl Consumer {
     }
     pub fn complete_fallback(&mut self, request: &Request, result: Result<Prepared, Vec<Diagnostic>>) -> bool {
         if request.owner != self.owner || request.serial != self.fallback_serial || request.generation != self.generation
-            || self.current().is_some() || self.applied.is_some() || self.pending.is_some() {
+            || self.applied.is_some() || self.pending.is_some() {
             return false;
         }
         self.fallback_serial = 0;

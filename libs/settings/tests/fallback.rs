@@ -99,3 +99,21 @@ fn resources_fail_over_from_retained_and_complete_failure_never_stages() {
     assert!(state.pending().is_none()); assert!(state.applied().is_none());
     assert!(state.current().is_none()); assert!(state.retry_deadline().is_some());
 }
+#[test]
+fn failed_first_live_resource_stage_allows_usable_fallback_without_losing_authority_readback() {
+    let mut state = Consumer::for_app(binding(), "ced").unwrap();
+    let subscribe = state.connected(1).unwrap();
+    let read = state.complete(&subscribe, Ok(None)).unwrap();
+    state.complete(&read, Ok(Some(snapshot(2, 1.4))));
+    assert!(state.fallback_request().is_none(), "fresh stage already awaits activation");
+    let failed = state.pending().unwrap().clone();
+    assert!(state.failed(&failed, Diagnostic::new("resource_failed", "font", "Live resources unusable")));
+    let request = state.fallback_request().unwrap();
+    let prepared = request.prepare(None, resources).unwrap();
+    assert!(state.complete_fallback(&request, Ok(prepared)));
+    assert!(!state.is_current(&failed));
+    assert!(state.acknowledge(&state.pending().unwrap().clone()));
+    assert_eq!(state.presentation_kind(), Some(PresentationKind::Embedded));
+    assert_eq!(state.current().unwrap().revision, Revision(2), "only real readback supplies mutation fences");
+    assert_eq!(state.applied().unwrap().revision, Revision(0));
+}
