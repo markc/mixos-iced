@@ -4449,7 +4449,9 @@ dependencies = [
  "iced_futures",
  "serde_json",
  "sha2 0.10.9",
+ "softbuffer",
  "toolkit",
+ "winit 0.30.8",
 ]
 
 [[package]]
