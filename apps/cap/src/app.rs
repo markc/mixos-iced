@@ -1785,7 +1785,9 @@ mod tests {
                 .unwrap();
             runtime.block_on(async move {
                 loop {
-                    if let application::presentation::native::Progress::UiClosed = lane.drive().await {
+                    if let application::presentation::native::Progress::UiClosed =
+                        lane.drive().await
+                    {
                         break;
                     }
                 }
