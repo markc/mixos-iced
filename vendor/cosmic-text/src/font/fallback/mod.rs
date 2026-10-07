@@ -383,10 +383,11 @@ impl<'a> FontFallbackIter<'a> {
                                 return Some(font);
                             }
                         } else {
-                            assert!(self
-                                .font_system
-                                .monospace_fallbacks_buffer
-                                .insert(fallback_info));
+                            assert!(
+                                self.font_system
+                                    .monospace_fallbacks_buffer
+                                    .insert(fallback_info)
+                            );
                         }
                     }
                 }
@@ -427,10 +428,11 @@ impl<'a> FontFallbackIter<'a> {
                                 font_weight: m_key.font_weight,
                                 id: m_key.id,
                             };
-                            assert!(self
-                                .font_system
-                                .monospace_fallbacks_buffer
-                                .insert(fallback_info));
+                            assert!(
+                                self.font_system
+                                    .monospace_fallbacks_buffer
+                                    .insert(fallback_info)
+                            );
                         }
                     }
                 }

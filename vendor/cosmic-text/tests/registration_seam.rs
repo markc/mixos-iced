@@ -530,9 +530,11 @@ fn old_paragraph_survives_same_named_registration() {
     }
     let before = laid_out(&buffer);
     assert!(!before.is_empty());
-    assert!(before
-        .iter()
-        .all(|glyph| glyph.font_id == added_id && glyph.glyph_id != 0));
+    assert!(
+        before
+            .iter()
+            .all(|glyph| glyph.font_id == added_id && glyph.glyph_id != 0)
+    );
 
     // A second collection with the SAME public family name but truly
     // different bytes: a controlled metadata clone of the live "Noto Sans"
@@ -559,13 +561,15 @@ fn old_paragraph_survives_same_named_registration() {
 
     // The two faces share the public family name but hold distinct bytes.
     for id in [added_id, impostor_id] {
-        assert!(font_system
-            .db()
-            .face(id)
-            .expect("face")
-            .families
-            .iter()
-            .any(|(name, _)| name == "Noto Sans"));
+        assert!(
+            font_system
+                .db()
+                .face(id)
+                .expect("face")
+                .families
+                .iter()
+                .any(|(name, _)| name == "Noto Sans")
+        );
     }
     assert_eq!(
         source_bytes(&font_system, added_id),
@@ -614,9 +618,11 @@ fn old_paragraph_survives_same_named_registration() {
     let new_attrs = Attrs::new().family(Family::Name("pinned-new"));
     let new_glyphs = shape(&mut font_system, "שלום", &new_attrs, Shaping::Advanced);
     assert!(!new_glyphs.is_empty());
-    assert!(new_glyphs
-        .iter()
-        .all(|(id, _, glyph_id, _)| *id == impostor_id && *glyph_id != 0));
+    assert!(
+        new_glyphs
+            .iter()
+            .all(|(id, _, glyph_id, _)| *id == impostor_id && *glyph_id != 0)
+    );
 }
 
 #[test]
@@ -686,12 +692,16 @@ fn variable_policy_weights_change_basic_advanced_and_raster() {
         let glyphs_650 = shape(&mut font_system, "Hello", &attrs_650, shaping);
 
         assert_eq!(glyphs_350.len(), glyphs_650.len());
-        assert!(glyphs_350
-            .iter()
-            .all(|(_, weight, _, _)| *weight == fontdb::Weight(350)));
-        assert!(glyphs_650
-            .iter()
-            .all(|(_, weight, _, _)| *weight == fontdb::Weight(650)));
+        assert!(
+            glyphs_350
+                .iter()
+                .all(|(_, weight, _, _)| *weight == fontdb::Weight(350))
+        );
+        assert!(
+            glyphs_650
+                .iter()
+                .all(|(_, weight, _, _)| *weight == fontdb::Weight(650))
+        );
 
         let width_350: f32 = glyphs_350.iter().map(|(_, _, _, w)| w).sum();
         let width_650: f32 = glyphs_650.iter().map(|(_, _, _, w)| w).sum();
@@ -756,14 +766,22 @@ fn registered_monospace_faces_reach_derived_indexes() {
         let bytes = repo_font("FiraMono-Medium.ttf");
         let font_ref = skrifa::FontRef::from_index(&bytes, 0).expect("parse");
         let mut expected = Vec::new();
-        if let Some(gpos) = font_ref.gpos().ok().and_then(|table| table.script_list().ok()) {
+        if let Some(gpos) = font_ref
+            .gpos()
+            .ok()
+            .and_then(|table| table.script_list().ok())
+        {
             expected.extend(
                 gpos.script_records()
                     .iter()
                     .map(|script| script.script_tag().into_bytes()),
             );
         }
-        if let Some(gsub) = font_ref.gsub().ok().and_then(|table| table.script_list().ok()) {
+        if let Some(gsub) = font_ref
+            .gsub()
+            .ok()
+            .and_then(|table| table.script_list().ok())
+        {
             expected.extend(
                 gsub.script_records()
                     .iter()
@@ -801,9 +819,11 @@ fn registered_bytes_survive_source_drop() {
 
     let attrs = Attrs::new().family(Family::Name("pinned-bytes"));
     let glyphs = shape(&mut font_system, "Hello", &attrs, Shaping::Advanced);
-    assert!(glyphs.iter().all(|(id, _, glyph_id, _)| {
-        *id == added_id && *glyph_id != 0
-    }));
+    assert!(
+        glyphs
+            .iter()
+            .all(|(id, _, glyph_id, _)| { *id == added_id && *glyph_id != 0 })
+    );
 }
 
 #[test]
@@ -823,7 +843,11 @@ fn unpinned_families_keep_legacy_behaviour() {
         })
         .expect("registration");
 
-    for family in [Family::Name("Noto Sans"), Family::SansSerif, Family::Monospace] {
+    for family in [
+        Family::Name("Noto Sans"),
+        Family::SansSerif,
+        Family::Monospace,
+    ] {
         let attrs = Attrs::new().family(family);
         for shaping in [Shaping::Basic, Shaping::Advanced] {
             let glyphs = shape(&mut font_system, "Hello", &attrs, shaping);
@@ -921,10 +945,7 @@ fn staged_family_capture_is_rejected() {
             }],
         })
         .expect_err("staged family capture must fail");
-    assert!(matches!(
-        error,
-        FontRegistrationError::ConflictingAlias(_)
-    ));
+    assert!(matches!(error, FontRegistrationError::ConflictingAlias(_)));
     assert_eq!(snapshot(&font_system), before);
 }
 
@@ -952,7 +973,11 @@ fn single_layout_table_still_reaches_per_script_indexes() {
         "GSUB must be unreadable after the rename"
     );
     let mut expected = Vec::new();
-    if let Some(gpos) = font_ref.gpos().ok().and_then(|table| table.script_list().ok()) {
+    if let Some(gpos) = font_ref
+        .gpos()
+        .ok()
+        .and_then(|table| table.script_list().ok())
+    {
         expected.extend(
             gpos.script_records()
                 .iter()
@@ -1025,9 +1050,11 @@ fn ttc_collection_faces_register_and_malformed_ttc_is_rejected() {
 
     let attrs = Attrs::new().family(Family::Name("pinned-ttc"));
     let glyphs = shape(&mut font_system, "שלום", &attrs, Shaping::Advanced);
-    assert!(glyphs
-        .iter()
-        .all(|(id, _, glyph_id, _)| *id == added_id && *glyph_id != 0));
+    assert!(
+        glyphs
+            .iter()
+            .all(|(id, _, glyph_id, _)| *id == added_id && *glyph_id != 0)
+    );
 
     let state = snapshot(&font_system);
 

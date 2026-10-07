@@ -641,9 +641,11 @@ mod tests {
         };
         let before = glyphs(&paragraph);
         assert!(!before.is_empty());
-        assert!(before
-            .iter()
-            .all(|(id, _, glyph_id, _)| *id == face_id && *glyph_id != 0));
+        assert!(
+            before
+                .iter()
+                .all(|(id, _, glyph_id, _)| *id == face_id && *glyph_id != 0)
+        );
 
         // A second registration bumps the version again; the retained
         // paragraph must report a Shape difference through iced's
