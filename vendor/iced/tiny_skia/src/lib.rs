@@ -2,6 +2,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 pub mod window;
 
+mod clip;
 mod engine;
 mod layer;
 mod primitive;
@@ -85,6 +86,8 @@ impl Renderer {
     ) {
         let scale_factor = viewport.scale_factor();
         self.layers.flush();
+        let mut cached_clip = clip::ClipMask::new(clip_mask);
+        let clip_mask = &mut cached_clip;
 
         for &damage_bounds in damage {
             let damage_bounds = damage_bounds * scale_factor;
@@ -118,7 +121,7 @@ impl Renderer {
                     continue;
                 };
 
-                engine::adjust_clip_mask(clip_mask, layer_bounds);
+                clip_mask.set(layer_bounds);
 
                 if !layer.quads.is_empty() {
                     let render_span = debug::render(debug::Primitive::Quad);
@@ -145,7 +148,7 @@ impl Renderer {
                             continue;
                         };
 
-                        engine::adjust_clip_mask(clip_mask, group_bounds);
+                        clip_mask.set(group_bounds);
 
                         for primitive in group.as_slice() {
                             self.engine.draw_primitive(
@@ -157,7 +160,7 @@ impl Renderer {
                             );
                         }
 
-                        engine::adjust_clip_mask(clip_mask, layer_bounds);
+                        clip_mask.set(layer_bounds);
                     }
 
                     render_span.finish();

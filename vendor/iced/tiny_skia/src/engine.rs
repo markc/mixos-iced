@@ -31,7 +31,7 @@ impl Engine {
         background: &Background,
         transformation: Transformation,
         pixels: &mut tiny_skia::PixmapMut<'_>,
-        clip_mask: &mut tiny_skia::Mask,
+        clip_mask: &mut crate::clip::ClipMask<'_>,
         clip_bounds: Rectangle,
     ) {
         let physical_bounds = quad.bounds * transformation;
@@ -39,6 +39,8 @@ impl Engine {
         if !clip_bounds.intersects(&physical_bounds) {
             return;
         }
+
+        clip_mask.set(clip_bounds);
 
         let transform = into_transform(transformation);
 
@@ -123,12 +125,12 @@ impl Engine {
                     pixmap.as_ref(),
                     &tiny_skia::PixmapPaint::default(),
                     tiny_skia::Transform::default(),
-                    Some(clip_mask),
+                    Some(clip_mask.mask()),
                 );
             }
         }
 
-        let clip_mask = (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+        let clip_mask = (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
 
         pixels.fill_path(
             &path,
@@ -287,9 +289,10 @@ impl Engine {
         text: &Text,
         transformation: Transformation,
         pixels: &mut tiny_skia::PixmapMut<'_>,
-        clip_mask: &mut tiny_skia::Mask,
+        clip_mask: &mut crate::clip::ClipMask<'_>,
         clip_bounds: Rectangle,
     ) {
+        clip_mask.set(clip_bounds);
         match text {
             Text::Paragraph {
                 paragraph,
@@ -315,8 +318,8 @@ impl Engine {
                 let clip_mask = match physical_bounds.is_within(&clip_bounds) {
                     true => None,
                     false => {
-                        adjust_clip_mask(clip_mask, clip_bounds);
-                        Some(clip_mask as &_)
+                        clip_mask.set(clip_bounds);
+                        Some(clip_mask.mask())
                     }
                 };
 
@@ -344,14 +347,14 @@ impl Engine {
                     return;
                 };
 
-                adjust_clip_mask(clip_mask, clip_bounds);
+                clip_mask.set(clip_bounds);
 
                 self.text_pipeline.draw_editor(
                     editor,
                     *position,
                     *color,
                     pixels,
-                    Some(clip_mask),
+                    Some(clip_mask.mask()),
                     transformation,
                 );
             }
@@ -378,8 +381,8 @@ impl Engine {
                 let clip_mask = match physical_bounds.is_within(&clip_bounds) {
                     true => None,
                     false => {
-                        adjust_clip_mask(clip_mask, clip_bounds);
-                        Some(clip_mask as &_)
+                        clip_mask.set(clip_bounds);
+                        Some(clip_mask.mask())
                     }
                 };
 
@@ -424,7 +427,7 @@ impl Engine {
                 }
 
                 let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
 
                 self.text_pipeline.draw_raw(
                     &buffer,
@@ -443,9 +446,10 @@ impl Engine {
         primitive: &Primitive,
         transformation: Transformation,
         pixels: &mut tiny_skia::PixmapMut<'_>,
-        clip_mask: &mut tiny_skia::Mask,
+        clip_mask: &mut crate::clip::ClipMask<'_>,
         clip_bounds: Rectangle,
     ) {
+        clip_mask.set(clip_bounds);
         match primitive {
             Primitive::Fill { path, paint, rule } => {
                 let physical_bounds = {
@@ -464,7 +468,7 @@ impl Engine {
                 }
 
                 let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
 
                 pixels.fill_path(
                     path,
@@ -495,7 +499,7 @@ impl Engine {
                 }
 
                 let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask as &_);
+                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
 
                 pixels.stroke_path(
                     path,
@@ -513,7 +517,7 @@ impl Engine {
         image: &crate::layer::Image,
         transformation: Transformation,
         pixels: &mut tiny_skia::PixmapMut<'_>,
-        clip_mask: &mut tiny_skia::Mask,
+        clip_mask: &mut crate::clip::ClipMask<'_>,
         clip_bounds: Rectangle,
     ) {
         match image {
@@ -540,16 +544,16 @@ impl Engine {
                 // fallback needs the intersection including the widget clip.
                 let masked = !physical.is_within(&clip);
                 if masked {
-                    adjust_clip_mask(clip_mask, clip);
+                    clip_mask.set(clip);
                 }
                 grid.draw_fallback(
                     *bounds,
                     pixels,
                     into_transform(transformation),
-                    masked.then_some(clip_mask as &_),
+                    masked.then_some(clip_mask.mask()),
                 );
                 if masked {
-                    adjust_clip_mask(clip_mask, clip_bounds);
+                    clip_mask.set(clip_bounds);
                 }
             }
         }
@@ -560,9 +564,10 @@ impl Engine {
         image: &Image,
         _transformation: Transformation,
         _pixels: &mut tiny_skia::PixmapMut<'_>,
-        _clip_mask: &mut tiny_skia::Mask,
+        _clip_mask: &mut crate::clip::ClipMask<'_>,
         _clip_bounds: Rectangle,
     ) {
+        _clip_mask.set(_clip_bounds);
         match image {
             #[cfg(feature = "image")]
             Image::Raster {
@@ -577,7 +582,7 @@ impl Engine {
                 };
 
                 // TODO: Border radius
-                adjust_clip_mask(_clip_mask, clip_bounds);
+                _clip_mask.set(clip_bounds);
 
                 let center = bounds.center();
                 let radians = f32::from(image.rotation);
@@ -595,7 +600,7 @@ impl Engine {
                     image.opacity,
                     _pixels,
                     transform,
-                    Some(_clip_mask),
+                    Some(_clip_mask.mask()),
                     clip_bounds,
                 );
             }
@@ -608,7 +613,7 @@ impl Engine {
                 }
 
                 let clip_mask =
-                    (!physical_bounds.is_within(&_clip_bounds)).then_some(_clip_mask as &_);
+                    (!physical_bounds.is_within(&_clip_bounds)).then_some(_clip_mask.mask());
 
                 let center = physical_bounds.center();
                 let radians = f32::from(svg.rotation);
@@ -821,6 +826,7 @@ fn rounded_box_sdf(to_center: Vector, size: tiny_skia::Size, radii: &[f32]) -> f
     (x.powf(2.0) + y.powf(2.0)).sqrt() - radius
 }
 
+#[cfg(test)]
 pub fn adjust_clip_mask(clip_mask: &mut tiny_skia::Mask, bounds: Rectangle) {
     clip_mask.clear();
 

@@ -116,6 +116,15 @@ integration manifest with the pinned native forks and `iced_winit/wayland`.
 
 ## Native CPU grid renderer
 
+The CPU renderer also retains identical rectangular clip masks within each
+draw and clears only the previous rectangle when the clip changes. Mask
+coverage still comes from tiny-skia, including fractional edges. Engine
+entry points restore their own clip before consuming the shared mask.
+Empty glyph rasters are cached alongside visible glyphs, so spaces do not
+repeatedly invoke Swash. Guards: `clip::tests` (fractional/offscreen mask
+equivalence and release benchmark) and `text::tests` (real shaped space,
+visible glyph and cache eviction).
+
 Ported from the frozen source e0297242305f3a3c3de09f1ca01e8faa771768da.
 The existing tiny-skia crate gains immutable native grid generations and cell
 revision damage, preserving draw order in the image sublayer. Opaque images
