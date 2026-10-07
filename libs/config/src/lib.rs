@@ -21,11 +21,13 @@
 //! # Ok::<(), config::Error>(())
 //! ```
 
+mod app_dirs;
 pub mod atomic;
 mod dir;
 pub mod node;
 pub mod store;
 
+pub use app_dirs::AppDirs;
 pub use dir::{Dir, Dirs, Environment, path};
 pub use strict::{Error, ErrorKind, Map, Value, parse, parse_file};
 pub use strict::{
