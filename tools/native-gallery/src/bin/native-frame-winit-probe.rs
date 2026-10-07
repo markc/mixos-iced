@@ -2,7 +2,7 @@
 //! Actual Winit surface submission, native receipts and leased credit bounds.
 use softbuffer::{Context, Surface};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     num::NonZeroU32,
     sync::Arc,
     time::{Duration, Instant},
@@ -61,6 +61,7 @@ enum Phase {
     Replacement,
     ChurnSetup,
     Churn,
+    ClosedHolding,
     Recovery,
     Done,
 }
@@ -69,6 +70,7 @@ struct Probe {
     slots: Vec<Option<Native>>,
     pending: HashMap<u64, WindowId>,
     held: Vec<PresentationFeedback>,
+    closing: HashSet<WindowId>,
     phase: Phase,
     deadline: Instant,
     fault: Option<String>,
@@ -81,6 +83,7 @@ impl Probe {
             slots: Vec::new(),
             pending: HashMap::new(),
             held: Vec::new(),
+            closing: HashSet::new(),
             phase: Phase::Basic,
             deadline: Instant::now() + Duration::from_secs(30),
             fault: None,
@@ -119,7 +122,7 @@ impl Probe {
             Phase::Basic | Phase::EmptyDamage => 1,
             Phase::Burst => 8,
             Phase::Replacement | Phase::ChurnSetup | Phase::Churn | Phase::Recovery => 0,
-            Phase::Done => return Ok(()),
+            Phase::ClosedHolding | Phase::Done => return Ok(()),
         };
         let native = self.slots[slot].as_mut().unwrap();
         native.surface.resize(width, height)?;
@@ -238,16 +241,12 @@ impl Probe {
                         return Err("process receipt count".into());
                     }
                     self.slots[16].as_ref().unwrap().capacity()?;
+                    self.phase = Phase::ClosedHolding;
                     for slot in 0..16 {
+                        self.closing
+                            .insert(self.slots[slot].as_ref().unwrap().window.id());
                         drop(self.slots[slot].take());
                     }
-                    self.slots[16].as_ref().unwrap().capacity()?;
-                    self.held.clear();
-                    self.phase = Phase::Recovery;
-                    self.reserve(16, 8)?;
-                    self.slots[16].as_ref().unwrap().capacity()?;
-                    self.slots[16].as_mut().unwrap().submitted = false;
-                    self.slots[16].as_ref().unwrap().window.request_redraw();
                 }
             }
             Phase::Recovery => {
@@ -257,9 +256,27 @@ impl Probe {
                     event_loop.exit();
                 }
             }
-            Phase::ChurnSetup | Phase::Done => {
+            Phase::ChurnSetup | Phase::ClosedHolding | Phase::Done => {
                 return Err("receipt outside a submitted fixture phase".into());
             }
+        }
+        Ok(())
+    }
+
+    fn destroyed(&mut self, window: WindowId) -> Result<(), Fault> {
+        if self.phase != Phase::ClosedHolding || !self.closing.remove(&window) {
+            return Err("unexpected native window destruction".into());
+        }
+        // Destroyed is delivered after the backend removes the native owner.
+        // All 128 leases must still hold credit after all 16 surfaces retire.
+        self.slots[16].as_ref().unwrap().capacity()?;
+        if self.closing.is_empty() {
+            self.held.clear();
+            self.phase = Phase::Recovery;
+            self.reserve(16, 8)?;
+            self.slots[16].as_ref().unwrap().capacity()?;
+            self.slots[16].as_mut().unwrap().submitted = false;
+            self.slots[16].as_ref().unwrap().window.request_redraw();
         }
         Ok(())
     }
@@ -287,6 +304,7 @@ impl ApplicationHandler for Probe {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window: WindowId, event: WindowEvent) {
         let result = match event {
             WindowEvent::PresentationFeedback(receipt) => self.receipt(event_loop, window, receipt),
+            WindowEvent::Destroyed => self.destroyed(window),
             WindowEvent::RedrawRequested => {
                 let slot = self.slots.iter().position(|native| {
                     native
@@ -346,7 +364,11 @@ fn main() -> Result<(), Fault> {
     if let Some(error) = probe.fault {
         return Err(error.into());
     }
-    if probe.phase != Phase::Done || !probe.pending.is_empty() || !probe.held.is_empty() {
+    if probe.phase != Phase::Done
+        || !probe.pending.is_empty()
+        || !probe.held.is_empty()
+        || !probe.closing.is_empty()
+    {
         return Err("incomplete native fixture".into());
     }
     println!(
