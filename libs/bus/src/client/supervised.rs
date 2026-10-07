@@ -1847,7 +1847,10 @@ mod tests {
             if let Some(id) = request.get("id") {
                 reply = reply.with_header("id", id);
             }
-            let send_ok = websocket.send(Message::Text(reply.to_wire().into())).await.is_ok();
+            let send_ok = websocket
+                .send(Message::Text(reply.to_wire().into()))
+                .await
+                .is_ok();
             if command == "noded.register" {
                 let _ = register_seen.send(());
             } else if command == "topic.subscribe" {

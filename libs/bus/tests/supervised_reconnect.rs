@@ -2088,7 +2088,9 @@ async fn ordinary_replay_warning_rc_is_a_success_not_a_refusal() {
     let stub = Arc::new(stub0);
     let (url, _acceptor) = start(&stub).await;
 
-    let client = SupervisedClient::connect("warn-replay", &url).await.unwrap();
+    let client = SupervisedClient::connect("warn-replay", &url)
+        .await
+        .unwrap();
     client
         .subscribe_topic("dyn.warn")
         .await
@@ -2128,7 +2130,10 @@ async fn readded_declared_name_keeps_its_exact_rc0_declared_classification() {
         .connect()
         .await
         .expect("initial establish");
-    client.unsubscribe_topic("decl.x").await.expect("unsubscribe");
+    client
+        .unsubscribe_topic("decl.x")
+        .await
+        .expect("unsubscribe");
     client
         .subscribe_topic("decl.x")
         .await
