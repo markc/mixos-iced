@@ -94,6 +94,13 @@
 
 ## Unreleased
 
+- Owned icon decoding supports PNG, JPEG, GIF, WebP, BMP and ICO with strict
+  dimensions and checked source allocation before pixels are materialised.
+  Ready images retain their intrinsic aspect ratio. The bounded SVG subset
+  refuses DTDs, CSS, filters, image/text dependencies and external uses before
+  constructing the renderer tree, and caps XML nodes and path bytes.
+  Zero-alpha tints fail visibly.
+
 - The opt-in `font-registration-guards` integration target owns the font
   registration seam guards: the cosmic guard sources compile from their
   single vendored owner and the iced wrapper assertions run through the
@@ -120,6 +127,12 @@
   Preview/Commit/Cancel lifecycle; scrollable tabs and middle-click close.
 - Icons: PNG/SVG fallback assets with symbolic tint, scale-aware bounded
   metadata cache and external SVG resources disabled (`image` feature).
+- Icons: one owned-byte decoder (`icons::decode_owned`, `ImageFormat`,
+  `DecodedIcon`, `IconDecodeError`) shared by prepared resources and the
+  legacy `Assets` path, with bounded encoded/side/decoded caps, refused
+  external/data image hrefs and text dependencies, EXIF orientation,
+  symbolic tint and blank rejection. `Icon::with_glyph` owns a resolved
+  glyph/font pair that never consults the installed icon font table.
 - Native DnD: portable `dnd::native::Session` and MIME codecs with explicit
   target acknowledgement and source completion; failed/cancelled transfers
   cannot remove a Move source. Native window adapters remain host-owned.

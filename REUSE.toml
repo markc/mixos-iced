@@ -10,6 +10,12 @@ SPDX-FileCopyrightText = "Google LLC (Material Symbols)"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
+path = "libs/toolkit/tests/fixtures/terminal.svg"
+precedence = "override"
+SPDX-FileCopyrightText = "Google LLC (Material Symbols)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 path = "vendor/msedit/**"
 precedence = "override"
 SPDX-FileCopyrightText = "Microsoft Corporation"
