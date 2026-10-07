@@ -26,6 +26,8 @@
     {name:"cap.show", owner:"cap", version:"0.1.0", status:"accepted"},
     {name:"cap.quit", owner:"cap", version:"0.1.0", status:"accepted"},
     {name:"comp.capture.frame", owner:"compd", version:"0.1.2", status:"accepted"},
+    {name:"comp.region.select", owner:"compd", version:"0.1.12", status:"accepted"},
+    {name:"comp.region.cancel", owner:"compd", version:"0.1.12", status:"accepted"},
     {name:"scenes.editor.snapshot", owner:"compd", version:"0.1.6", status:"accepted"},
     {name:"scenes.editor.action", owner:"compd", version:"0.1.6", status:"accepted"},
     {name:"busviewer.ping", owner:"busviewer", version:"0.1.0", status:"accepted"},

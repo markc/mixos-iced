@@ -41,6 +41,10 @@
 //! Region select: `comp.region.select` is policy-host
 //! `region`; the run holds the human seat, its reply waits here and is sent
 //! from `Bus::service` once decided; one timer waits at its deadline.
+//! `comp.region.cancel {selection}` is a short control: the engine fences
+//! the compositor instance here, policy-host cancels only the exact active
+//! run through the ordinary finish path, and the pending select reply
+//! completes from the existing `Bus::service` region section.
 //!
 //! Panel holders: `comp.panel.hold` / `mode` are
 //! policy-host `panel::request`; every pass runs `panel::service` (membership,
@@ -67,7 +71,7 @@ use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 
 use comp_model::observation::{ObservationRecord, PanelRequest, PointerPosition, PointerSample};
 use comp_model::reply::ControlReply;
-use comp_model::request::{InputOp, LongOp, WaitSpec, WindowOp};
+use comp_model::request::{InputOp, LongOp, SelectionIdentity, WaitSpec, WindowOp};
 use comp_model::snapshot::{CompSnapshot, ReadScopes, project_window_row, surface_key};
 use comp_service::{
     CompEngine, LongReply, ObservationProducer, PortContext, PortService, PortWorker,
@@ -769,6 +773,15 @@ impl CompEngine for Engine<'_> {
     fn panel(&mut self, request: &PanelRequest) -> ControlReply {
         policy_host::panel::request(self.lp, request)
     }
+    fn region_cancel(&mut self, selection: &SelectionIdentity) -> ControlReply {
+        // The instance fence: a selection sent to another compositor
+        // process (or before a restart) can never cancel this one, and the
+        // refusal changes no owner state.
+        if selection.instance != self.context.instance.as_ref() {
+            return ControlReply::refused("stale_instance", json!({}));
+        }
+        policy_host::region::cancel(self.lp, selection)
+    }
     fn start_long(&mut self, op: LongOp, reply: LongReply, admitted: Instant) {
         // `comp.input.sequence`.
         let Some((op, reply)) = self
@@ -783,7 +796,7 @@ impl CompEngine for Engine<'_> {
                     reply.send(answer)
                 });
             }
-            LongOp::RegionSelect { output, timeout } => {
+            LongOp::RegionSelect { output, timeout, selection } => {
                 if self.region_reply.is_some() {
                     reply.send(ControlReply::Busy);
                     return;
@@ -795,6 +808,7 @@ impl CompEngine for Engine<'_> {
                     timeout,
                     admitted,
                     busy,
+                    selection,
                 ) {
                     Ok(()) => *self.region_reply = Some(reply),
                     Err(answer) => reply.send(answer),

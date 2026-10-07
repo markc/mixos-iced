@@ -1,7 +1,8 @@
 #!/usr/bin/env mix
--- version: 0.2.0
--- comp_region_select_gate.mix — acceptance gate for comp.region.select: it
--- starts a PRIVATE nested compd on nested_host_lib's headless weston host.
+-- version: 0.3.0
+-- comp_region_select_gate.mix — acceptance gate for comp.region.select and
+-- comp.region.cancel: it starts a PRIVATE nested compd on nested_host_lib's
+-- headless weston host.
 --
 -- usage: mix tests/desktop/comp_region_select_gate.mix [--bin PATH]
 --        --config-file PATH [--env NAME=VALUE ...] [--software] [--keep-log]
@@ -12,6 +13,16 @@
 -- whole interaction can be driven over ABP with no human hand — which is the
 -- point: a verb a human must service is not agent-operable, and this gate is
 -- the proof that it is not one.
+--
+-- The cancellation arms prove the owner-scoped comp.region.cancel on the
+-- real instance path: an identified selection is cancelled through the
+-- ordinary finish (its original select reply answers cancelled and echoes
+-- the identity), a repeated cancel is already_finished, a delayed old
+-- cancel never stops a newer selection, a cancel-before-select retires the
+-- delayed select, a stale compositor instance is refused without mutating
+-- owner state, and an unrelated owner or a newer generation never cancels
+-- the active run. Legacy identity-less selections keep their old shape and
+-- are covered by the original arms.
 --
 -- HOW IT DRIVES A BLOCKING VERB. `send` is a blocking RPC, so the selection
 -- cannot be started and driven from one script. Each arm spawns a SELECTOR
@@ -229,6 +240,19 @@ mkdir($DIR, {parents: true})
 print("gate: comp.region.select (driven over ABP, no human hand)")
 print("  compd service: " .. $COMP)
 
+-- The ACTUAL compositor run instance, read from comp.info: the cancellation
+-- identity must name the process the selection went to, never a made-up
+-- test constant (a restart changes this value, which is exactly the fence
+-- the stale-instance arm exercises).
+$info = rpc("comp.info", {}, 10)
+if not $info.ok or $info.value == nil or $info.value.instance == nil then
+  print("  REFUSE: cannot read the compositor instance from comp.info (" .. $info.body .. ")")
+  $n.stop($SESSION)
+  exit(2)
+end
+$INSTANCE = $info.value.instance
+note("compositor instance: " .. $INSTANCE)
+
 -- ── arm 0: the verb exists ───────────────────────────────────────────────
 -- Asked FIRST and separately: every later arm's failure is ambiguous if the
 -- verb is simply absent, and "unknown verb" must never be reported as a
@@ -368,10 +392,137 @@ else
   note("arm 6 selection after timeout still works")
 end
 
+-- ── arm 7: an identified selection is cancelled natively, its original
+-- reply echoes the identity, and a repeat cancel is already_finished ─────
+settle(10)
+$OWN = "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f"
+$s7 = {instance: $INSTANCE, owner: $OWN, generation: 1}
+$p7 = start_selector("native-cancel", {timeout_ms: 20000, selection: $s7})
+sleep(1.0)
+$c7 = rpc("comp.region.cancel", {selection: $s7}, 10)
+if not $c7.ok then
+  push($FAILURES, "native-cancel")
+  fail("native-cancel", "cancel refused: " .. $c7.body)
+elif to_string($c7.value.status) != "cancelled" then
+  push($FAILURES, "native-cancel")
+  fail("native-cancel", "cancel status=" .. to_string($c7.value.status) .. " body=" .. $c7.body)
+else
+  note("arm 7 native cancel acknowledged: " .. to_string($c7.value.status))
+end
+-- The original long select then completes with the existing cancelled shape
+-- plus its selection identity — never silence, never a second shape.
+$r7 = await_selector($p7, 25)
+if $r7 == nil or $r7.value == nil then
+  push($FAILURES, "native-cancel")
+  fail("native-cancel", "the selector never answered after cancel")
+elif to_string($r7.value.status) != "cancelled" then
+  push($FAILURES, "native-cancel")
+  fail("native-cancel", "select status=" .. to_string($r7.value.status) .. " body=" .. $r7.body)
+elif to_string($r7.value.selection.owner) != $OWN or $r7.value.selection.generation != 1 then
+  push($FAILURES, "native-cancel")
+  fail("native-cancel", "select reply did not echo the identity: " .. $r7.body)
+else
+  note("arm 7 original select answered cancelled with its selection echoed")
+end
+$c7b = rpc("comp.region.cancel", {selection: $s7}, 10)
+if not $c7b.ok or to_string($c7b.value.status) != "already_finished" then
+  push($FAILURES, "native-cancel")
+  fail("native-cancel", "repeat cancel status=" .. to_string($c7b.value.status) .. " body=" .. $c7b.body)
+else
+  note("arm 7 repeat cancel answered already_finished")
+end
+
+-- ── arm 8: a delayed old cancel never stops a newer selection ───────────
+-- The same owner moves to generation 2 (the Cap rule: a new capture bumps
+-- the generation). A replayed cancel for generation 1 must not stop it.
+settle(10)
+$s8 = {instance: $INSTANCE, owner: $OWN, generation: 2}
+$p8 = start_selector("reorder", {timeout_ms: 20000, selection: $s8})
+sleep(1.0)
+$c8 = rpc("comp.region.cancel", {selection: {instance: $INSTANCE, owner: $OWN, generation: 1}}, 10)
+if not $c8.ok or to_string($c8.value.status) == "cancelled" then
+  push($FAILURES, "reorder")
+  fail("reorder", "the replayed old cancel answered: " .. $c8.body)
+end
+drag(300, 200, 500, 360)
+$r8 = await_selector($p8, 25)
+if $r8 == nil or $r8.value == nil or to_string($r8.value.status) != "selected" then
+  push($FAILURES, "reorder")
+  fail("reorder", "the newer selection did not complete: " .. to_string($r8.body))
+else
+  note("arm 8 delayed old cancel left the newer selection alone")
+end
+
+-- ── arm 9: a cancel that arrives before its select retires it ───────────
+-- A reordered mesh delivery must never resurrect: the delayed select is
+-- refused retired_selection, not started as an abandoned overlay.
+settle(10)
+$OWN9 = "7d2e8b4f-4a3c-4d9e-8c1a-6f5b9e2d7a4c"
+$s9 = {instance: $INSTANCE, owner: $OWN9, generation: 1}
+$c9 = rpc("comp.region.cancel", {selection: $s9}, 10)
+if not $c9.ok or to_string($c9.value.status) != "retired" then
+  push($FAILURES, "pre-cancel")
+  fail("pre-cancel", "cancel-before-select did not retire: " .. $c9.body)
+end
+$r9 = rpc("comp.region.select", {timeout_ms: 5000, selection: $s9}, 15)
+if $r9.ok then
+  push($FAILURES, "pre-cancel")
+  fail("pre-cancel", "the retired selection was ACCEPTED: " .. $r9.body)
+elif not contains($r9.body, "retired_selection") then
+  push($FAILURES, "pre-cancel")
+  fail("pre-cancel", "refused but not as retired_selection: " .. $r9.body)
+else
+  note("arm 9 cancel-before-select retired the delayed select")
+end
+
+-- ── arm 10: a stale compositor instance is refused and mutates nothing ──
+-- The refusal must not retire the generation: the same identity still
+-- admits on the real instance (it times out, which proves admission).
+settle(10)
+$OWN10 = "c5b7e3a1-4f2d-4b6e-9a8c-3d7f1a5b9e2c"
+$stale = rpc("comp.region.cancel", {selection: {instance: "not-this-compositor", owner: $OWN10, generation: 1}}, 10)
+if $stale.ok or not contains($stale.body, "stale_instance") then
+  push($FAILURES, "stale")
+  fail("stale", "a foreign instance was not refused stale_instance: " .. $stale.body)
+end
+$p10 = start_selector("stale", {timeout_ms: 2000, selection: {instance: $INSTANCE, owner: $OWN10, generation: 1}})
+$r10 = await_selector($p10, 25)
+if $r10 == nil or $r10.value == nil or to_string($r10.value.status) != "timeout" then
+  push($FAILURES, "stale")
+  fail("stale", "the stale refusal retired the generation anyway: " .. to_string($r10.body))
+else
+  note("arm 10 stale instance refused without mutating owner state")
+end
+
+-- ── arm 11: an unrelated owner or a newer generation never cancels the
+-- active selection ───────────────────────────────────────────────────────
+settle(10)
+$OWN11 = "1f4a9d2e-4b7c-4a3e-8d9b-6e2c7f5a8b3d"
+$p11 = start_selector("untouched", {timeout_ms: 20000, selection: {instance: $INSTANCE, owner: $OWN11, generation: 1}})
+sleep(1.0)
+$other = rpc("comp.region.cancel", {selection: {instance: $INSTANCE, owner: "2b5c8e3f-4d9a-4f1e-9c7d-8a3e6f2b4c5d", generation: 1}}, 10)
+$newer = rpc("comp.region.cancel", {selection: {instance: $INSTANCE, owner: $OWN11, generation: 2}}, 10)
+if not $other.ok or to_string($other.value.status) == "cancelled" then
+  push($FAILURES, "untouched")
+  fail("untouched", "an unrelated owner cancelled the run: " .. $other.body)
+end
+if not $newer.ok or to_string($newer.value.status) == "cancelled" then
+  push($FAILURES, "untouched")
+  fail("untouched", "a newer generation cancelled the older run: " .. $newer.body)
+end
+drag(400, 300, 700, 500)
+$r11 = await_selector($p11, 25)
+if $r11 == nil or $r11.value == nil or to_string($r11.value.status) != "selected" then
+  push($FAILURES, "untouched")
+  fail("untouched", "the active selection did not complete: " .. to_string($r11.body))
+else
+  note("arm 11 unrelated/newer cancels left the active selection running")
+end
+
 $n.stop($SESSION)
 print("")
 if len($FAILURES) == 0 then
-  print("=== REGION SELECT GATE [" .. $KIND .. "]: GREEN — 6 arms, every one answered ===")
+  print("=== REGION SELECT GATE [" .. $KIND .. "]: GREEN — 11 arms, every one answered ===")
   $CLEANUP.ok = true
   exit(0)
 end

@@ -13,8 +13,16 @@
 //! compd). The overlay is [`overlay`]: plain solids only, drawn only while a
 //! selection runs, plus the clean-frame record the selected reply waits for
 //! (a selection is never claimed without a frame free of its overlay).
+//!
+//! Cancellation state: an identified selection carries an [`Identity`]
+//! (compositor instance, owner capability, generation). The per-owner
+//! retirement map below is bounded ([`OWNER_LIMIT`]) and persistent for the
+//! compositor process lifetime, so a cancel-before-select or a reordered
+//! mesh delivery can never resurrect a retired generation. A cancel acts on
+//! a run only on exact identity equality; the policy host decides which
+//! outcome that yields.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use smithay::backend::input::{
@@ -49,6 +57,63 @@ pub enum Outcome {
     Locked,
 }
 
+/// One identified selection's caller identity: the compositor process
+/// instance it was sent to, the owner capability and the positive capture
+/// generation. `comp.region.cancel` matches on all three fields exactly;
+/// the terminal reply echoes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub instance: String,
+    pub owner: String,
+    pub generation: u64,
+}
+
+/// How many owner capabilities one compositor process remembers. At the
+/// limit an unknown owner is refused before anything starts or retires;
+/// known owners stay serviceable. Never silently evicted: an evicted owner
+/// could let an old delayed select resurrect.
+pub const OWNER_LIMIT: usize = 4096;
+
+/// One owner capability's retirement state, kept for the compositor
+/// process lifetime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Owner {
+    /// The highest generation ever seen from this owner. A select at or
+    /// below it is retired and can never start again; cancels and releases
+    /// only ever raise it.
+    pub watermark: u64,
+    /// The generation an accepted select reserved, while its run lives.
+    pub active: Option<u64>,
+    /// The last generation that ran and finished: a late cancel for it
+    /// answers `already_finished`.
+    pub finished: Option<u64>,
+}
+
+/// What a reservation attempt found (the policy host names the refusal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reserve {
+    Accepted,
+    /// The generation is at or below the owner's watermark: it cannot
+    /// start now or later.
+    Retired,
+    /// The owner is unknown and the map is at [`OWNER_LIMIT`]: nothing was
+    /// created or changed.
+    Capacity,
+}
+
+/// What a cancel that did not match the current run did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retire {
+    /// The identity is now retired: it cannot start later. The current
+    /// run, if any, is untouched.
+    Retired,
+    /// The identity already completed.
+    AlreadyFinished,
+    /// The owner is unknown and the map is at [`OWNER_LIMIT`]: nothing was
+    /// created or changed.
+    Capacity,
+}
+
 #[derive(Debug)]
 pub struct Run {
     pub id: u64,
@@ -72,6 +137,9 @@ pub struct Run {
     pub clean: bool,
     /// The keyboard focus the run displaced, restored when it finishes.
     prior_focus: Option<WlSurface>,
+    /// The caller's selection identity, for `comp.region.cancel` exact
+    /// matching and the terminal reply echo; a legacy select has none.
+    pub identity: Option<Identity>,
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +150,9 @@ pub struct Region {
     /// swallowed, even after it ends.
     keys: HashSet<u32>,
     buttons: HashSet<u32>,
+    /// Per-owner retirement state, bounded by [`OWNER_LIMIT`] and kept for
+    /// the process lifetime.
+    owners: BTreeMap<String, Owner>,
 }
 
 impl Region {
@@ -98,6 +169,82 @@ impl Region {
     /// Swallow the release of keys already down when the run started.
     pub fn hold_keys(&mut self, keys: impl IntoIterator<Item = u32>) {
         self.keys.extend(keys);
+    }
+
+    /// Reserve `generation` for `owner` before a run begins. The owner's
+    /// watermark then covers the generation, so a retried or reordered
+    /// select at or below it is retired instead of starting a second
+    /// operation. A new owner at the limit is refused without any change.
+    pub fn reserve(&mut self, owner: &str, generation: u64) -> Reserve {
+        let Some(state) = self.owners.get_mut(owner) else {
+            if self.owners.len() >= OWNER_LIMIT {
+                return Reserve::Capacity;
+            }
+            self.owners.insert(
+                owner.to_string(),
+                Owner {
+                    watermark: generation,
+                    active: Some(generation),
+                    finished: None,
+                },
+            );
+            return Reserve::Accepted;
+        };
+        if generation <= state.watermark {
+            return Reserve::Retired;
+        }
+        state.watermark = generation;
+        state.active = Some(generation);
+        Reserve::Accepted
+    }
+
+    /// The run for `owner`/`generation` ended: the reservation is spent and
+    /// the generation is recorded as finished (a late cancel answers
+    /// `already_finished`).
+    pub fn release(&mut self, owner: &str, generation: u64) {
+        let Some(state) = self.owners.get_mut(owner) else {
+            return;
+        };
+        if state.active == Some(generation) {
+            state.active = None;
+        }
+        state.finished = Some(generation);
+        state.watermark = state.watermark.max(generation);
+    }
+
+    /// Retire an identity that is not the current run: it can never start
+    /// later, and the current run is untouched. A newer generation retires
+    /// an older active run's generation without cancelling the run.
+    pub fn retire(&mut self, owner: &str, generation: u64) -> Retire {
+        let Some(state) = self.owners.get_mut(owner) else {
+            if self.owners.len() >= OWNER_LIMIT {
+                return Retire::Capacity;
+            }
+            self.owners.insert(
+                owner.to_string(),
+                Owner {
+                    watermark: generation,
+                    active: None,
+                    finished: None,
+                },
+            );
+            return Retire::Retired;
+        };
+        if state.finished == Some(generation) {
+            return Retire::AlreadyFinished;
+        }
+        state.watermark = state.watermark.max(generation);
+        Retire::Retired
+    }
+
+    /// Whether the current run belongs exactly to `owner`'s `generation`.
+    /// The compositor instance is fenced by the caller before this is
+    /// consulted, so only the two per-owner fields need to match.
+    pub fn run_is(&self, owner: &str, generation: u64) -> bool {
+        self.run
+            .as_ref()
+            .and_then(|run| run.identity.as_ref())
+            .is_some_and(|identity| identity.owner == owner && identity.generation == generation)
     }
 }
 
@@ -357,6 +504,7 @@ impl Run {
         pointer: (f64, f64),
         deadline: Instant,
         reply_deadline: Instant,
+        identity: Option<Identity>,
     ) -> Self {
         Self {
             id,
@@ -372,6 +520,102 @@ impl Run {
             result: None,
             clean: false,
             prior_focus: None,
+            identity,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OWNER: &str = "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f";
+
+    fn owner(region: &Region, owner: &str) -> Owner {
+        *region.owners.get(owner).expect("known owner")
+    }
+
+    #[test]
+    fn reserve_accepts_then_retires_the_same_generation_forever() {
+        let mut region = Region::default();
+        assert_eq!(region.reserve(OWNER, 1), Reserve::Accepted);
+        assert_eq!(owner(&region, OWNER).active, Some(1));
+        // The same select again, while reserved: never a second operation.
+        assert_eq!(region.reserve(OWNER, 1), Reserve::Retired);
+        region.release(OWNER, 1);
+        assert_eq!(owner(&region, OWNER).active, None);
+        // Even after the run ended, the generation stays retired.
+        assert_eq!(region.reserve(OWNER, 1), Reserve::Retired);
+        // The next generation is admitted.
+        assert_eq!(region.reserve(OWNER, 2), Reserve::Accepted);
+        assert_eq!(owner(&region, OWNER).watermark, 2);
+    }
+
+    #[test]
+    fn cancel_before_select_retires_the_delayed_select() {
+        let mut region = Region::default();
+        assert_eq!(region.retire(OWNER, 5), Retire::Retired);
+        // The delayed select at the retired generation never starts.
+        assert_eq!(region.reserve(OWNER, 5), Reserve::Retired);
+        assert_eq!(region.reserve(OWNER, 6), Reserve::Accepted);
+    }
+
+    #[test]
+    fn newer_cancel_retires_but_never_cancels_an_older_active_run() {
+        let mut region = Region::default();
+        assert_eq!(region.reserve(OWNER, 2), Reserve::Accepted);
+        // A newer-generation cancel: retired, and the active run is untouched.
+        assert_eq!(region.retire(OWNER, 3), Retire::Retired);
+        let state = owner(&region, OWNER);
+        assert_eq!(state.active, Some(2));
+        assert_eq!(state.watermark, 3);
+        // An older cancel does not lower the watermark either.
+        assert_eq!(region.retire(OWNER, 1), Retire::Retired);
+        assert_eq!(owner(&region, OWNER).watermark, 3);
+        region.release(OWNER, 2);
+    }
+
+    #[test]
+    fn late_cancels_answer_already_finished_and_never_touch_a_newer_run() {
+        let mut region = Region::default();
+        assert_eq!(region.reserve(OWNER, 1), Reserve::Accepted);
+        region.release(OWNER, 1);
+        assert_eq!(region.retire(OWNER, 1), Retire::AlreadyFinished);
+        // A newer run starts; the replayed old cancel must not stop it.
+        assert_eq!(region.reserve(OWNER, 2), Reserve::Accepted);
+        assert_eq!(region.retire(OWNER, 1), Retire::AlreadyFinished);
+        assert_eq!(owner(&region, OWNER).active, Some(2));
+        region.release(OWNER, 2);
+    }
+
+    #[test]
+    fn capacity_refuses_unknown_owners_and_keeps_known_ones_serviceable() {
+        let mut region = Region::default();
+        for index in 0..OWNER_LIMIT {
+            assert_eq!(
+                region.reserve(&format!("owner-{index}"), 1),
+                Reserve::Accepted
+            );
+        }
+        // An unknown owner is refused before anything starts or retires.
+        assert_eq!(region.reserve("new-owner", 1), Reserve::Capacity);
+        assert_eq!(region.retire("new-owner", 1), Retire::Capacity);
+        assert_eq!(region.owners.len(), OWNER_LIMIT, "nothing was created");
+        // Known owners and their cancellation stay serviceable at the limit.
+        assert_eq!(region.retire("owner-0", 9), Retire::Retired);
+        assert_eq!(region.reserve("owner-1", 2), Reserve::Accepted);
+    }
+
+    #[test]
+    fn watermarks_never_wrap_or_lower_at_the_maximum() {
+        let mut region = Region::default();
+        assert_eq!(region.reserve(OWNER, u64::MAX), Reserve::Accepted);
+        region.release(OWNER, u64::MAX);
+        // The maximum generation stays retired: nothing can be above it.
+        assert_eq!(region.reserve(OWNER, u64::MAX), Reserve::Retired);
+        assert_eq!(region.retire(OWNER, u64::MAX), Retire::AlreadyFinished);
+        // An old cancel after the maximum cannot wrap the watermark down.
+        assert_eq!(region.retire(OWNER, 1), Retire::Retired);
+        assert_eq!(owner(&region, OWNER).watermark, u64::MAX);
     }
 }

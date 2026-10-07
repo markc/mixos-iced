@@ -376,7 +376,7 @@ fn a_run_waits_each_delay_once_then_runs_the_step() {
     run.delay_elapsed();
     assert!(matches!(run.next_action(), SequenceNext::Run { index: 1, .. }));
     assert_eq!(run.next_action(), SequenceNext::Done);
-    assert!(SequenceRun::new(LongOp::RegionSelect { output: None, timeout: Duration::from_secs(1) }).is_none());
+    assert!(SequenceRun::new(LongOp::RegionSelect { output: None, timeout: Duration::from_secs(1), selection: None }).is_none());
 }
 
 /// An unseated sequence reports human or mixed, on success and on failure.

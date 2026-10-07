@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use comp_service::{CompEngine, LongReply, PortContext, PortIdentity, default_noded_url, prepare};
 use comp_model::observation::{CornerConfig, ObservationRecord, PanelRequest, PropValue};
 use comp_model::reply::ControlReply;
-use comp_model::request::{InputOp, LongOp, WindowOp};
+use comp_model::request::{InputOp, LongOp, SelectionIdentity, WindowOp};
 use comp_model::snapshot::{
     BindingsSnapshot, CompSnapshot, DecorationSnapshot, FocusSnapshot, FocusWindowSnapshot,
     FullTreeCache, InfoSnapshot, InputSnapshot, ReadScopes, WorkspacesSnapshot, XwaylandSnapshot,
@@ -101,6 +101,9 @@ impl CompEngine for Engine {
         ControlReply::refused("busy", Value::Null)
     }
     fn panel(&mut self, _request: &PanelRequest) -> ControlReply {
+        ControlReply::refused("busy", Value::Null)
+    }
+    fn region_cancel(&mut self, _selection: &SelectionIdentity) -> ControlReply {
         ControlReply::refused("busy", Value::Null)
     }
     fn start_long(&mut self, _op: LongOp, reply: LongReply, _admitted: Instant) {

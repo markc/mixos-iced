@@ -4,7 +4,7 @@
 use std::sync::atomic::AtomicUsize;
 
 use comp_model::observation::CornerConfig;
-use comp_model::request::{KeySpec, PressAction, SequenceStep};
+use comp_model::request::{KeySpec, PressAction, SelectionIdentity, SequenceStep};
 use comp_model::snapshot::{
     BindingsSnapshot, DecorationSnapshot, FocusSnapshot, FocusWindowSnapshot, FullTreeCache,
     InfoSnapshot, InputSnapshot, WorkspacesSnapshot, XwaylandSnapshot,
@@ -109,6 +109,12 @@ impl CompEngine for Engine {
         self.inner.calls.push(format!("panel {}", request.sender));
         ControlReply::Body(json!({"accepted": true}))
     }
+    fn region_cancel(&mut self, selection: &SelectionIdentity) -> ControlReply {
+        self.inner
+            .calls
+            .push(format!("region_cancel {} {}", selection.owner, selection.generation));
+        ControlReply::Body(json!({"cancelled": true}))
+    }
     fn start_long(&mut self, op: LongOp, reply: LongReply, _admitted: Instant) {
         self.inner.calls.push(format!("long {}", matches!(op, LongOp::Sequence(_))));
         self.inner.longs.push(reply);
@@ -193,6 +199,32 @@ fn agent_key() -> InputOp {
             modifiers: Vec::new(),
         }),
     }
+}
+
+/// A region cancel is a short control: the engine answers it in its own
+/// pass, in arrival order, without any long-verb permit.
+#[tokio::test]
+async fn region_cancel_reaches_the_engine_as_a_short_control() {
+    let (mut wiring, starter) = test_wiring("comp-nested");
+    let ingress = starter.ingress().clone();
+    let admission = ingress
+        .request_region_cancel(SelectionIdentity {
+            instance: "ab12".into(),
+            owner: "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f".into(),
+            generation: 3,
+        })
+        .unwrap();
+    let mut engine = engine(&wiring.context);
+    assert!(!wiring.service.service(&mut engine), "nothing left over");
+    assert_eq!(
+        engine.inner.calls,
+        ["region_cancel a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f 3".to_string()]
+    );
+    assert_eq!(
+        admission.receive().await.unwrap().wire_json(),
+        json!({"cancelled": true})
+    );
+    assert_eq!(ingress.depth(), 0, "every slot came back");
 }
 
 /// Mutations run in arrival order and every admission is answered exactly
