@@ -566,14 +566,14 @@ fn read_in_at(
     // same ID and a different manifest is not the requested set, so the
     // refusal comes before any locked payload — the stylesheet included —
     // is read or compared.
-    if let Some(expected) = expected {
-        if identity.manifest_blake3 != expected {
-            return Err(Error::Mismatch(format!(
-                "asset set {set_id} manifest digest {} does not match the requested {}",
-                hex::encode(identity.manifest_blake3),
-                hex::encode(expected)
-            )));
-        }
+    if let Some(expected) = expected
+        && identity.manifest_blake3 != expected
+    {
+        return Err(Error::Mismatch(format!(
+            "asset set {set_id} manifest digest {} does not match the requested {}",
+            hex::encode(identity.manifest_blake3),
+            hex::encode(expected)
+        )));
     }
 
     let stylesheet_path = display.join(STYLESHEET_FILE);
