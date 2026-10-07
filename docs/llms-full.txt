@@ -335,7 +335,7 @@ Expand a service in the left tree, then select a verb. Search matches service na
 
 Enter an optional JSON body in the multiline editor. Choose **Bus → Call verb** or press **Ctrl+Enter**. Invalid JSON is refused before sending. An empty body is sent empty, preserving the original BusViewer contract. Only one call runs at a time. Its original service, verb and request body remain attached to its reply even if the selection changes.
 
-Replies show the actual return code and body. JSON is formatted; plain-text errors remain readable. A transport failure reports an unknown outcome and **never retries the call**. The request body is limited to 65,536 bytes; the displayed reply is limited to 1,000,000 bytes. The underlying Bus framing limits still apply.
+Replies show the actual return code and body. JSON is formatted; plain-text errors remain readable. A lost response reports an unknown outcome and **never retries the call**. Local capacity or disconnected-client refusals report that nothing was sent. The request body is limited to 65,536 bytes; the displayed reply is limited to 1,000,000 bytes. The underlying Bus framing limits still apply.
 
 **Edit** provides JSON formatting, body clearing and reply copying. **File → Refresh services** performs discovery again. Registrations and reconnects also refresh through native Bus events, without a poller. Failed descriptions remain visible under their services; select an error row to read both probe failures in the details pane. One failed probe does not stop the others, and a failed broker lookup preserves the last known selection. The Mesh nodes branch shows membership, as in the original app; remote service browsing is a later extension. Membership is refetched with discovery. The current noded profile has no membership-change topic, so an authority-only change requires Refresh.
 
@@ -614,6 +614,8 @@ Use one supervised native Bus connection registered under the app's service iden
 Give every operation a monotonically increasing ticket. Check a completion's ticket before clearing busy state or applying its result. Where results are tied to navigation, also fence the selection epoch. BusViewer discovery describes all services, so it reconciles a stable selected `(service, verb)` against the completed snapshot instead.
 
 Freeze a call's service, verb and body at acceptance. Store the reply against that frozen request even if the user selects another row. Reject duplicate activation while a call runs. Never replay a mutation after timeout or disconnection: the receiver may already have applied it. Report an uncertain outcome and allow an explicit new user action.
+
+Distinguish known local refusals (capacity, stopped worker, disconnected supervisor) from a lost response after dispatch. Carry that distinction in a typed error; a plain string cannot reliably express whether the call might have taken effect. Keep reply/quit controls separate from bounded outgoing call traffic. Flush accepted replies in FIFO order before closing the connection, bound reply timeouts, and report an incomplete shutdown instead of silently timing out.
 
 Discovery uses non-fail-fast probes. `HELP` can fail or return an old schema; try documented `app.describe`, and preserve both failures if neither works. Bound concurrent descriptions and show failures per service. Unknown read-only status stays unknown. Preserve plain-text error bodies alongside return codes; JSON parsing is for content that is actually JSON.
 

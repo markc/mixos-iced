@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised native Bus connection. Topics drive refreshes; no poller.
 use ::bus::native_client::{
-    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient, SupervisedError,
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+    SupervisedError,
 };
 use application::iced::futures::SinkExt;
 use application::iced::futures::channel::{mpsc, oneshot};
@@ -40,21 +41,39 @@ pub struct CallError {
 }
 impl CallError {
     fn not_sent(message: impl Into<String>) -> Self {
-        Self { message: message.into(), outcome_unknown: false }
+        Self {
+            message: message.into(),
+            outcome_unknown: false,
+        }
     }
     fn transport(error: SupervisedError) -> Self {
-        let outcome_unknown = !matches!(error, SupervisedError::Disconnected | SupervisedError::ShuttingDown);
-        Self { message: error.to_string(), outcome_unknown }
+        let outcome_unknown = !matches!(
+            error,
+            SupervisedError::Disconnected | SupervisedError::ShuttingDown
+        );
+        Self {
+            message: error.to_string(),
+            outcome_unknown,
+        }
     }
 }
 impl From<String> for CallError {
-    fn from(message: String) -> Self { Self { message, outcome_unknown: true } }
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            outcome_unknown: true,
+        }
+    }
 }
 impl From<&str> for CallError {
-    fn from(message: &str) -> Self { message.to_owned().into() }
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
 }
 impl std::fmt::Display for CallError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.message.fmt(f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(f)
+    }
 }
 impl std::error::Error for CallError {}
 enum Control {
@@ -78,10 +97,13 @@ impl Handle {
             .send(Effect::Call(service.into(), verb.into(), body, tx))
             .await
             .map_err(|_| CallError::not_sent("Bus stopped; no call sent"))?;
-        rx.await.map_err(|_| CallError::from("Bus request abandoned"))?
+        rx.await
+            .map_err(|_| CallError::from("Bus request abandoned"))?
     }
     pub async fn call(&self, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
-        self.raw(service, verb, args.to_string()).await.map_err(|e|e.to_string())
+        self.raw(service, verb, args.to_string())
+            .await
+            .map_err(|e| e.to_string())
     }
     pub fn reply(&self, id: u64, rc: u8, body: Value) {
         #[cfg(test)]
@@ -107,7 +129,11 @@ impl Handle {
         let (state, _) = changed
             .wait_timeout_while(state, Duration::from_secs(70), |done| !*done)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *state { Ok(()) } else { Err("Bus shutdown did not complete".into()) }
+        if *state {
+            Ok(())
+        } else {
+            Err("Bus shutdown did not complete".into())
+        }
     }
     #[cfg(test)]
     pub fn sink() -> Self {
@@ -159,7 +185,9 @@ pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Deliver
                 .enable_all()
                 .build();
             match runtime {
-                Ok(runtime) => runtime.block_on(worker(service, url, send, rx, controls, ready_send)),
+                Ok(runtime) => {
+                    runtime.block_on(worker(service, url, send, rx, controls, ready_send))
+                }
                 Err(error) => {
                     let _ = ready_send.send(Err(format!("Bus runtime: {error}")));
                 }
@@ -340,7 +368,10 @@ pub fn forward(url: &str, service: &str) -> Result<(), String> {
 }
 
 async fn json_call(handle: &Handle, service: &str, verb: &str) -> Result<Value, String> {
-    let reply = handle.raw(service, verb, String::new()).await.map_err(|e|e.to_string())?;
+    let reply = handle
+        .raw(service, verb, String::new())
+        .await
+        .map_err(|e| e.to_string())?;
     if reply.rc >= 10 {
         return Err(format!("rc = {}: {}", reply.rc, reply.body));
     }
@@ -398,10 +429,24 @@ mod tests {
     fn replies_and_quit_survive_full_call_queue_in_order() {
         let (tx, _rx) = tokio::sync::mpsc::channel(64);
         let (control, mut controls) = tokio::sync::mpsc::unbounded_channel();
-        let handle = Handle { tx, control, ..Handle::sink() };
+        let handle = Handle {
+            tx,
+            control,
+            ..Handle::sink()
+        };
         for _ in 0..64 {
             let (reply, _rx) = oneshot::channel();
-            assert!(handle.tx.try_send(Effect::Call("example".into(), "echo".into(), String::new(), reply)).is_ok());
+            assert!(
+                handle
+                    .tx
+                    .try_send(Effect::Call(
+                        "example".into(),
+                        "echo".into(),
+                        String::new(),
+                        reply
+                    ))
+                    .is_ok()
+            );
         }
         handle.reply(42, 0, json!({"ok":true}));
         handle.quit();
@@ -411,8 +456,13 @@ mod tests {
     }
     #[test]
     fn unsent_calls_and_lost_replies_have_distinct_outcomes() {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let error = runtime.block_on(Handle::sink().raw("example", "echo", String::new())).unwrap_err();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(Handle::sink().raw("example", "echo", String::new()))
+            .unwrap_err();
         assert!(!error.outcome_unknown);
         assert!(!CallError::transport(SupervisedError::Disconnected).outcome_unknown);
         assert!(!CallError::transport(SupervisedError::ShuttingDown).outcome_unknown);
