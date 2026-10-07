@@ -179,7 +179,7 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
         node.children()[0].children()[0].children()[0].size().height
     };
     assert_eq!(rows(&legacy_node), 44.0);
-    let font = Font::with_name("Prepared list face");
+    let font = Font::with_family("Prepared list face");
     let styled: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
         SelectionList::new(options.as_slice(), |_, value: String| value).text_style(TextStyle {
             font,
@@ -205,7 +205,7 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
     styled.draw(
         &tree,
         &mut recorder,
-        &toolkit::core::Theme::default(),
+        &toolkit::core::Theme::Dark,
         &renderer::Style::default(),
         layout,
         mouse::Cursor::Unavailable,
@@ -219,7 +219,7 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
     }
     // y=31 belongs to the first prepared row, but would be in the second
     // legacy row. y=61 belongs to the second prepared row.
-    let mut messages = Vec::new();
+    let mut messages = toolkit::core::shell::Bus::new();
     for y in [31.0, 61.0] {
         styled.update(
             &mut tree,
@@ -227,9 +227,13 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
             layout,
             mouse::Cursor::Available(Point::new(10.0, y)),
             &renderer,
-            &mut Shell::new(&mut messages),
+            &mut Shell::new(
+                &toolkit::core::window::Headless,
+                toolkit::core::shell::Waker::noop(),
+                &mut messages,
+            ),
             &viewport,
         );
     }
-    assert_eq!(messages, ["a", "b"]);
+    assert_eq!(messages.drain().collect::<Vec<_>>(), ["a", "b"]);
 }
