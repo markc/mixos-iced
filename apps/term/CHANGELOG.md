@@ -13,6 +13,13 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.8
+
+Bind native frame feedback to the terminal's installed settings and local
+preparation stamp. Retain the last good stamp while a replacement prepares.
+The existing Bus worker fences waits on connection changes and closes the
+observation owner before shutdown drains. Observation requests no repaint.
+
 ## 0.3.7
 
 Prepare settings-owned terminal fonts, exact weights, scale and zoom on the

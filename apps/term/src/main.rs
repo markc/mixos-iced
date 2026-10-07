@@ -212,6 +212,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
     // A clone lives outside the State so teardown below can still quit the
     // adapter after the handle was moved in.
     let handle = started.handle.clone();
+    let frames = started.frames.clone();
 
     let state = State {
         painter,
@@ -222,6 +223,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         ui,
         chrome: layout::strip_height(1.0, ui),
         settings: started.ui,
+        frames: started.frames,
         local,
         baseline,
         applied_raster: None,
@@ -263,6 +265,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
     )
     .title(DISPLAY_NAME)
     .subscription(subscription)
+    .frame_presentation(frame_binding)
     .theme(application::iced::Theme::Dark)
     .style(|state: &State, _theme| application::iced::theme::Style {
         background_color: state.tokens.palette.surface,
@@ -276,6 +279,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
     // cleanup is released, then the cleanup worker and reaper join. The
     // settings Lane drops with the adapter thread, last.
     let removed = tabs.lock().expect("tabs").shutdown();
+    frames.close();
     cleanup.submit(removed);
     handle.quit();
     let mut shutdown = Ok(());
@@ -337,6 +341,8 @@ struct State {
     /// The settings session's UI half, reconciled on every wake against the
     /// generation sampled from the actual shared client.
     settings: Ui<Content, LocalContext>,
+    /// One bounded observer for this actual window incarnation.
+    frames: application::frames::Handle,
     local: LocalContext,
     baseline: f32,
     applied_raster: Option<RasterKey>,
@@ -420,6 +426,12 @@ fn subscription(_state: &State) -> Subscription<Message> {
             _ => None,
         }),
     ])
+}
+
+/// Sample only installed settings alongside the immutable view. A pending or
+/// failed preparation keeps the last good stamp; bootstrap remains unstamped.
+fn frame_binding(state: &State) -> Option<application::frames::FrameBinding> {
+    state.settings.session().frame_stamp().map(|stamp| state.frames.binding(stamp))
 }
 
 /// Publishes a [`Message::Wake`] whenever the core's eventfd fires.
@@ -664,7 +676,10 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
                 state.wheel = 0.0;
                 state.scroll_wheel = 0.0;
             }
-            application::iced::window::Event::CloseRequested => return application::iced::exit(),
+            application::iced::window::Event::CloseRequested => {
+                state.frames.close();
+                return application::iced::exit();
+            }
             _ => {}
         },
     }
@@ -1900,6 +1915,7 @@ mod tests {
             ui,
             chrome: layout::strip_height(1.0, ui),
             settings,
+            frames: application::frames::Handle::new(),
             local,
             baseline: 13.0,
             applied_raster: None,
@@ -2696,20 +2712,27 @@ mod tests {
     #[test]
     fn a_zoom_repaints_before_the_next_draw() {
         let (mut state, reaper) = test_state();
+        assert!(frame_binding(&state).is_none(), "bootstrap has no installed stamp");
         let _ = state.sync();
         finish_preparation(&mut state);
+        let installed = frame_binding(&state).expect("actual settings activation");
         let _ = state.act(Action::Split(SplitDir::Vertical));
         let _ = state.sync();
         assert_eq!(state.shape.visible().len(), 2);
 
         let before = state.painter.cell();
         state.zoom(|font| font.step_by(6));
+        let pending = frame_binding(&state).unwrap();
+        assert!(installed.same_presentation(&pending), "pending context retains the drawn stamp and owner");
         assert_eq!(
             state.painter.cell(),
             before,
             "pending zoom retains the applied raster"
         );
         finish_preparation(&mut state);
+        let replaced = frame_binding(&state).unwrap();
+        assert_ne!(replaced.stamp, installed.stamp);
+        assert!(replaced.observer.same_owner(&installed.observer));
         let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
         let cell = state.painter.cell();
         assert_ne!(cell, before, "six steps must change the cell");

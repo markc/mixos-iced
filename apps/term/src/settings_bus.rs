@@ -145,6 +145,7 @@ impl Handle {
 
 pub struct Started {
     pub handle: Handle,
+    pub frames: application::frames::Handle,
     pub ui: Ui<Content, LocalContext>,
     pub bootstrap: appearance::settings::Prepared,
     pub describes: tokio::sync::mpsc::Receiver<Describe>,
@@ -169,6 +170,7 @@ pub(crate) struct PreparationSeed {
 }
 
 struct WorkerChannels {
+    frames: application::frames::Handle,
     describes: tokio::sync::mpsc::Sender<Describe>,
     effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
@@ -184,6 +186,8 @@ pub fn start(
     wake: Wake,
     seed: PreparationSeed,
 ) -> Result<Started, String> {
+    let frames = application::frames::Handle::new();
+    let worker_frames = frames.clone();
     let (describe_tx, describe_rx) = tokio::sync::mpsc::channel(PENDING_CAP);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
@@ -205,6 +209,7 @@ pub fn start(
                         notify_rx,
                         wake,
                         WorkerChannels {
+                            frames: worker_frames,
                             describes: describe_tx,
                             effects: rx,
                             ready: ready_send,
@@ -231,6 +236,7 @@ pub fn start(
         .map_err(|e| format!("Bus startup: {e}"))??;
     Ok(Started {
         handle: Handle { tx, done, shared },
+        frames,
         ui,
         bootstrap,
         describes: describe_rx,
@@ -263,6 +269,7 @@ async fn worker(
     channels: WorkerChannels,
 ) {
     let WorkerChannels {
+        frames,
         describes,
         mut effects,
         ready,
@@ -396,6 +403,7 @@ async fn worker(
         let generation = client.connection_generation();
         if lifecycle != Some((now, generation)) {
             lifecycle = Some((now, generation));
+            frames.set_live_generation(settings::native::live_generation(&client));
             // EVERY lifecycle transition publishes into the settings lane:
             // edge-triggered consumers and the UI reconcile on one signal.
             {
@@ -693,6 +701,7 @@ async fn worker(
             }
         }
     }
+    frames.close();
     // tabs.close -> global Bus finish: the serve task has drained the final
     // reap's completion notes by the time the TabSet emptied; wait for it,
     // the tracked replies, the cache flush and the client close all under ONE
