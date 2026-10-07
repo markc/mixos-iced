@@ -728,9 +728,9 @@ mod tests {
     }
 }
 
-// iced provides a no-op text renderer in debug builds. These tests exercise the
-// real TextInput update path without creating a window, GPU or application shell.
-#[cfg(all(test, debug_assertions))]
+// Real embedded-font shaping exercises TextInput's retained state in release
+// builds without creating a window, GPU or application shell.
+#[cfg(test)]
 mod widget_tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
@@ -933,7 +933,7 @@ mod widget_tests {
             .state
             .downcast_mut::<raw::State<LayoutRenderer>>()
             .unfocus();
-        assert!(send(&mut field, &mut tree, enter).0.is_empty());
+        assert!(send(&mut field, &mut tree, enter.clone()).0.is_empty());
         // A prepared style swap through the retained tree changes the
         // presentation without changing the submission semantics: the
         // field is still unfocused, so Enter still submits nothing.

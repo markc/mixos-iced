@@ -3,8 +3,8 @@
 
 use std::sync::Once;
 
-use iced_core::text::Paragraph as _;
-use iced_core::{Background, Color, Font, Pixels, Point, Rectangle, Transformation};
+use iced_core::text::{Paragraph as _, Editor as _};
+use iced_core::{Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation};
 use iced_core::{image, renderer, text};
 
 pub(crate) struct LayoutRenderer {
@@ -130,6 +130,7 @@ pub(crate) struct FaceParagraph {
     size: Pixels,
     line_height: text::LineHeight,
     content: String,
+    metadata: Option<text::Text<(), Face>>,
 }
 
 impl Default for FaceParagraph {
@@ -139,6 +140,7 @@ impl Default for FaceParagraph {
             size: Pixels(0.0),
             line_height: text::LineHeight::default(),
             content: String::new(),
+            metadata: None,
         }
     }
 }
@@ -152,6 +154,7 @@ impl text::Paragraph for FaceParagraph {
             size: text.size,
             line_height: text.line_height,
             content: text.content.to_owned(),
+            metadata: Some(text.with_content(())),
         }
     }
 
@@ -159,10 +162,26 @@ impl text::Paragraph for FaceParagraph {
         Self::default()
     }
 
-    fn resize(&mut self, _new_bounds: Size) {}
+    fn resize(&mut self, new_bounds: Size) {
+        if let Some(metadata) = &mut self.metadata {
+            metadata.bounds = new_bounds;
+        }
+    }
 
-    fn compare(&self, _text: text::Text<(), Face>) -> text::Difference {
-        text::Difference::None
+    fn compare(&self, current: text::Text<(), Face>) -> text::Difference {
+        let Some(old) = &self.metadata else { return text::Difference::Shape; };
+        if old.font != current.font || old.size != current.size
+            || old.line_height != current.line_height || old.align_x != current.align_x
+            || old.align_y != current.align_y || old.shaping != current.shaping
+            || old.wrapping != current.wrapping || old.ellipsis != current.ellipsis
+            || old.hint_factor != current.hint_factor
+        {
+            text::Difference::Shape
+        } else if old.bounds != current.bounds {
+            text::Difference::Bounds
+        } else {
+            text::Difference::None
+        }
     }
 
     fn size(&self) -> Pixels {
@@ -170,7 +189,7 @@ impl text::Paragraph for FaceParagraph {
     }
 
     fn hint_factor(&self) -> Option<f32> {
-        None
+        self.metadata.as_ref().and_then(|text| text.hint_factor)
     }
 
     fn font(&self) -> Face {
@@ -182,27 +201,27 @@ impl text::Paragraph for FaceParagraph {
     }
 
     fn align_x(&self) -> text::Alignment {
-        text::Alignment::Left
+        self.metadata.as_ref().map_or(text::Alignment::Left, |text| text.align_x)
     }
 
     fn align_y(&self) -> iced_core::alignment::Vertical {
-        iced_core::alignment::Vertical::Top
+        self.metadata.as_ref().map_or(iced_core::alignment::Vertical::Top, |text| text.align_y)
     }
 
     fn wrapping(&self) -> text::Wrapping {
-        text::Wrapping::None
+        self.metadata.as_ref().map_or(text::Wrapping::None, |text| text.wrapping)
     }
 
     fn ellipsis(&self) -> text::Ellipsis {
-        text::Ellipsis::None
+        self.metadata.as_ref().map_or(text::Ellipsis::None, |text| text.ellipsis)
     }
 
     fn shaping(&self) -> text::Shaping {
-        text::Shaping::Advanced
+        self.metadata.as_ref().map_or(text::Shaping::Advanced, |text| text.shaping)
     }
 
     fn bounds(&self) -> Size {
-        Size::INFINITY
+        self.metadata.as_ref().map_or(Size::INFINITE, |text| text.bounds)
     }
 
     fn min_bounds(&self) -> Size {

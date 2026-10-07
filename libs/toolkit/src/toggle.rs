@@ -157,7 +157,7 @@ where
         // configured size is only a minimum on this opt-in path.
         let paragraph = Renderer::Paragraph::with_text(text::Text {
             content: self.toggle.label.as_str(),
-            bounds: Size::INFINITY,
+            bounds: Size::INFINITE,
             size: self.text.size.into(),
             line_height: self.text.line_height_or_default(),
             font: self.text.font,
@@ -186,7 +186,7 @@ where
     ) {
         // The shared engine: press callback, disabled behaviour and local
         // same-batch on/off state are the legacy toggle's own.
-        Widget::update(
+        Widget::<Message, Theme, Renderer>::update(
             &mut self.toggle,
             tree,
             event,

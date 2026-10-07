@@ -805,7 +805,7 @@ impl Strings {
 /// The message the requester's [`view`](Requester::view) produces; use
 /// it directly, or fold [`Event`] into the app's own enum with a
 /// `From` impl and pass that type instead.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewMessage(pub Event);
 
 impl From<Event> for ViewMessage {
@@ -1028,7 +1028,7 @@ mod tests {
             iced_core::Size::ZERO,
             iced_core::Size::new(420.0, 420.0),
         );
-        let legacy: Element<'_, ViewMessage, iced_core::Theme, FaceRenderer> =
+        let mut legacy: Element<'_, ViewMessage, iced_core::Theme, FaceRenderer> =
             model.view_for(Tokens::default(), &strings);
         let mut tree = iced_core::widget::Tree::new(legacy.as_widget());
         legacy.as_widget_mut().diff(&mut tree);
@@ -1053,7 +1053,7 @@ mod tests {
             size: 14.0,
             line_height: None,
         });
-        let styled: Element<'_, ViewMessage, iced_core::Theme, FaceRenderer> =
+        let mut styled: Element<'_, ViewMessage, iced_core::Theme, FaceRenderer> =
             model.view_styled_for(Tokens::default(), &strings, styles);
         let mut tree = iced_core::widget::Tree::new(styled.as_widget());
         styled.as_widget_mut().diff(&mut tree);
@@ -1097,7 +1097,7 @@ mod tests {
             size: 15.0,
             line_height: None,
         });
-        let legacy: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+        let mut legacy: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
             model.view_for(tokens, &strings);
         let mut tree = iced_core::widget::Tree::new(legacy.as_widget());
         legacy.as_widget_mut().diff(&mut tree);
@@ -1120,7 +1120,7 @@ mod tests {
         let legacy_paragraphs = draw.paragraphs.clone();
         // Rebuild the same model through the retained tree with the styled
         // view and locate the last list row.
-        let styled: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+        let mut styled: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
             model.view_styled_for(tokens, &strings, styles);
         styled.as_widget_mut().diff(&mut tree);
         let node = styled.as_widget_mut().layout(&mut tree, &renderer, &limits);
@@ -1181,7 +1181,7 @@ mod tests {
         );
         // Focus the retained path field and submit exactly once: the edited
         // input survives the styled rebuild.
-        let mut op = iced_core::widget::operation::focusable::focus::<ViewMessage>(
+        let mut op = iced_core::widget::operation::focusable::focus::<()>(
             iced_core::widget::Id::new(PATH_INPUT),
         );
         styled.as_widget_mut().operate(
@@ -1228,7 +1228,7 @@ mod tests {
     /// The height of the last listed row of a laid-out requester view: the
     /// body column's listing container, scrolled column, then its rows.
     fn last_row_height(
-        view: &Element<'_, ViewMessage, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+        view: &mut Element<'_, ViewMessage, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
     ) -> f32 {
         let mut tree = iced_core::widget::Tree::new(view.as_widget());
         view.as_widget_mut().diff(&mut tree);
@@ -1283,14 +1283,14 @@ mod tests {
             *spacing *= 1.5;
         }
         let legacy = |tokens| {
-            let view: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+            let mut view: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
                 model.view_for(tokens, &strings);
-            last_row_height(&view)
+            last_row_height(&mut view)
         };
         let styled = |tokens| {
-            let view: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+            let mut view: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
                 model.view_styled_for(tokens, &strings, styles);
-            last_row_height(&view)
+            last_row_height(&mut view)
         };
         // The legacy view does not follow the scaled spacing.
         assert_eq!(

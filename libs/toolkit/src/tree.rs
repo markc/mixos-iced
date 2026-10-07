@@ -837,7 +837,7 @@ where
                     );
                     return;
                 }
-                draw_box(renderer, style, expander, self.expanded);
+                draw_box(renderer, &style, expander, self.expanded);
             }
             // Supplied: an explicit glyph draws at its own resolved style
             // and must fit the allocated expander rectangle; an explicit
@@ -868,7 +868,7 @@ where
                         expander,
                     );
                 } else {
-                    draw_box(renderer, style, expander, self.expanded);
+                    draw_box(renderer, &style, expander, self.expanded);
                 }
             }
         }
@@ -1454,7 +1454,7 @@ mod tests {
             let mut tree = Tree::new(element.as_widget());
             element.as_widget_mut().diff(&mut tree);
             let renderer = crate::test_renderer::LayoutRenderer::new();
-            let mut node = element.as_widget_mut().layout(
+            let initial_node = element.as_widget_mut().layout(
                 &mut tree,
                 &renderer,
                 &layout::Limits::new(Size::ZERO, VIEW),
@@ -1462,15 +1462,17 @@ mod tests {
             // Expand another node through the model and rebuild the view in
             // the retained tree: the previous selection target and expander
             // keys still resolve.
+            assert!(initial_node.size().height > 0.0);
+            drop(element);
             nodes.set_expanded(&"a", false);
-            element = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
                 .expanders(expanders())
                 .on_toggle(Msg::Toggle)
                 .on_select(Msg::Select)
                 .selection(&selection)
                 .into();
             element.as_widget_mut().diff(&mut tree);
-            node = element.as_widget_mut().layout(
+            let node = element.as_widget_mut().layout(
                 &mut tree,
                 &renderer,
                 &layout::Limits::new(Size::ZERO, VIEW),

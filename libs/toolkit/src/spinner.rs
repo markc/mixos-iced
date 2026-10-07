@@ -264,7 +264,7 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
-    use iced_core::shell::{Bus, Waker};
+    use iced_core::mouse;
 
     fn frame<Message: 'static>(
         spinner: &mut Spinner,
@@ -280,13 +280,13 @@ mod tests {
             &Event::Window(window::Event::RedrawRequested(now)),
             layout,
             mouse::Cursor::Unavailable,
-            &LayoutRenderer::default(),
+            &LayoutRenderer::new(),
             shell,
             &Rectangle::with_size(Size::new(20.0, 20.0)),
         );
     }
 
-    fn spinner<Message: 'static>() -> (Spinner, Tree) {
+    fn make_spinner<Message: 'static>() -> (Spinner, Tree) {
         let mut spinner = Spinner::new();
         let mut tree =
             Tree::new(&spinner as &dyn Widget<Message, iced_core::Theme, LayoutRenderer>);
@@ -294,7 +294,7 @@ mod tests {
         (spinner, tree)
     }
 
-    fn shell<Message: 'static>() -> Shell<'static, Message> {
+    fn make_shell<Message: 'static>() -> Shell<'static, Message> {
         let bus: &'static mut iced_core::shell::Bus<Message> =
             Box::leak(Box::new(iced_core::shell::Bus::new()));
         Shell::new(
@@ -316,8 +316,8 @@ mod tests {
 
     #[test]
     fn the_first_active_frame_adopts_the_event_time_and_advances_zero() {
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         let origin = Instant::now();
         frame(&mut spinner, &mut tree, origin, &mut shell);
         assert_eq!(
@@ -341,12 +341,12 @@ mod tests {
     fn disabled_zero_rate_and_clipped_bounds_schedule_no_future_frame() {
         let now = Instant::now();
         // Disabled.
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         spinner = spinner.animated(false);
         Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, now, &mut shell);
-        assert!(matches!(shell.redraw_request(), RedrawRequest::None));
+        assert!(matches!(shell.redraw_request(), RedrawRequest::Wait));
         assert!(
             tree.state
                 .downcast_ref::<SpinnerState>()
@@ -354,15 +354,15 @@ mod tests {
                 .is_none()
         );
         // Zero rate.
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         spinner = spinner.rate(Duration::ZERO);
         Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, now, &mut shell);
-        assert!(matches!(shell.redraw_request(), RedrawRequest::None));
+        assert!(matches!(shell.redraw_request(), RedrawRequest::Wait));
         // Bounds clipped by the viewport.
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         let node = Node::new(Size::new(20.0, 20.0));
         Widget::<(), iced_core::Theme, LayoutRenderer>::update(
             &mut spinner,
@@ -370,18 +370,18 @@ mod tests {
             &Event::Window(window::Event::RedrawRequested(now)),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
-            &LayoutRenderer::default(),
+            &LayoutRenderer::new(),
             &mut shell,
             &Rectangle::new(iced_core::Point::new(100.0, 100.0), Size::new(20.0, 20.0)),
         );
-        assert!(matches!(shell.redraw_request(), RedrawRequest::None));
+        assert!(matches!(shell.redraw_request(), RedrawRequest::Wait));
     }
 
     #[test]
     fn an_inactive_update_clears_the_origin_and_keeps_an_earlier_deadline() {
         let now = Instant::now();
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         // An independent earlier deadline exists.
         let deadline = now + Duration::from_millis(250);
         shell.request_redraw_at(RedrawRequest::At(deadline));
@@ -413,8 +413,8 @@ mod tests {
 
     #[test]
     fn a_pause_never_integrates_and_resume_preserves_phase_on_its_first_frame() {
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         let origin = Instant::now();
         frame(&mut spinner, &mut tree, origin, &mut shell);
         let next = origin + Duration::from_millis(500);
@@ -453,8 +453,8 @@ mod tests {
 
     #[test]
     fn the_state_tag_survives_a_retained_rebuild() {
-        let (mut spinner, mut tree) = spinner::<()>();
-        let mut shell = shell::<()>();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
         let origin = Instant::now();
         frame(&mut spinner, &mut tree, origin, &mut shell);
         let phase = tree.state.downcast_ref::<SpinnerState>().t;
@@ -465,7 +465,7 @@ mod tests {
             Widget::<(), iced_core::Theme, LayoutRenderer>::tag(&rebuilt),
             Widget::<(), iced_core::Theme, LayoutRenderer>::tag(&spinner)
         );
-        rebuilt.diff(&mut tree);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut rebuilt, &mut tree);
         assert_eq!(tree.state.downcast_ref::<SpinnerState>().t, phase);
     }
 }

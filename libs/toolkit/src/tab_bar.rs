@@ -477,7 +477,8 @@ where
     /// exact resolved style; an unprepared role keeps its legacy allowances.
     /// Layout, drawing, hit testing and operations all consume this one
     /// hierarchy.
-    fn resolved_row<M>(&self, tab: &TabLabel, resolved: &Resolved) -> Row<'_, M, Theme, Renderer> {
+    fn resolved_row<'b, M: 'b>(&self, tab: &'b TabLabel, resolved: &Resolved) -> Row<'b, M, Theme, Renderer>
+    where Theme: 'b, Renderer: 'b {
         // Unprepared roles keep the legacy `+1.0` measurement allowance;
         // prepared roles measure their exact resolved styles.
         let measured_icon = TextStyle {
@@ -551,7 +552,7 @@ where
 }
 
 /// The prepared icon text of a tab label.
-fn styled_icon<'a, Theme, Renderer>(icon: char, text: TextStyle) -> Text<'a, Theme, Renderer>
+fn styled_icon<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(icon: char, text: TextStyle) -> Text<'a, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
 {
@@ -566,7 +567,7 @@ where
 }
 
 /// The prepared label text of a tab.
-fn styled_label<'a, Theme, Renderer>(label: &'a str, text: TextStyle) -> Text<'a, Theme, Renderer>
+fn styled_label<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(label: &'a str, text: TextStyle) -> Text<'a, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
 {
@@ -1265,6 +1266,7 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
+    use iced_core::layout;
     use crate::typography::TextStyle;
 
     type TestBar<'a> = TabBar<'a, u8, u8, iced_core::Theme, LayoutRenderer>;
@@ -1425,8 +1427,8 @@ mod tests {
 
     #[test]
     fn prepared_styles_resolve_regardless_of_builder_order() {
-        let mut layout_bar = prepared_bar::<LayoutRenderer>(true);
-        let (tree, node) = layout_bar(&mut layout_bar);
+        let mut prepared = prepared_bar::<LayoutRenderer>(true);
+        let (tree, node) = layout_bar(&mut prepared);
         let texts_of = |first: bool| {
             let bar = prepared_bar::<TextRecorder>(first);
             let mut recorder = TextRecorder::default();
