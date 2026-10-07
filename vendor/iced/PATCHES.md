@@ -38,7 +38,9 @@ Further out the curve climbs fast (2,176 lines at 08-29, 28,382 at 10-02).
 
 To re-check: `git diff 3de451447 <tree> -- . ':!Cargo.lock'` must list only the
 files below (plus compd's guard: `wgpu/src/compd_patch_guard.rs` and the
-`mod compd_patch_guard` line in `wgpu/src/lib.rs`).
+`mod compd_patch_guard` line in `wgpu/src/lib.rs`), plus `core/src/font.rs`
+and `graphics/src/text.rs` from the "Numeric weights and the pinned
+registration seam" section further down.
 
 ## Local delta (+152/−103 in 8 files)
 
@@ -90,6 +92,41 @@ and all seven fail on a pristine extract of upstream `3de451447` + cryoglyph
 Retire the API-port part of this delta (and the corresponding guards) when a
 re-vendor lands an upstream iced that already targets wgpu ≥ 30; keep the
 re-wiring guards for as long as the forks are vendored.
+
+## Numeric weights and the pinned registration seam
+
+`core/src/font.rs` adds `Weight::Numeric(u16)` and
+`const fn value(self) -> u16`, so exact CSS weights are representable without
+bucketing. The four exhaustive `Weight` matches in this tree now convert
+through `value()`: `graphics/src/text.rs` (`to_weight`),
+`libs/toolkit/src/fonts.rs` (`registered_font`),
+`services/compd/crates/scene-host/src/appearance.rs` and
+`apps/dopus/src/app.rs`. No other exhaustive match on `Weight` exists in the
+tree (audited 2026-10-08; `apps/dopus/src/icons.rs` only constructs weights).
+
+`graphics/src/text.rs::FontSystem::register_fonts` forwards the
+cosmic-text registration transaction (see `vendor/cosmic-text/PATCHES.md`)
+and bumps `Version` exactly once when faces or policies were actually added;
+identical transactions do not bump, and the hypothetical version overflow is
+checked before the cosmic commit. `load_font` now refreshes the derived
+database indexes after a successful mutation instead of relying on the match
+cache clear alone.
+
+Guards:
+
+```
+cargo test -p iced_graphics --lib register_
+cargo test -p iced_core --lib numeric_weight
+cargo test --manifest-path vendor/cosmic-text/Cargo.toml --test registration_seam
+```
+
+| test | fails when |
+|---|---|
+| `text::tests::register_bumps_version_once_and_duplicate_policy_does_not` | a registration bump is skipped, a duplicate policy bumps again, or a failed rebind changes the version |
+| `text::tests::one_transaction_with_many_faces_bumps_version_once` | one transaction with several faces and policies bumps more than once, or the no-op that follows it bumps again |
+| `text::tests::retained_paragraph_stays_pinned_across_registration_version` | a retained paragraph does not report a Shape difference through the comparison path after a version bump, its re-shape loses the original face/metrics, or it stops rasterising from the pinned face |
+| `font::tests::numeric_weight_round_trips` | numeric weights lose their exact value |
+
 
 ## Toolkit input accessors retired
 

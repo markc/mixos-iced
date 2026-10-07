@@ -167,6 +167,29 @@ pub enum Weight {
     Bold,
     ExtraBold,
     Black,
+    /// An exact numeric weight in the CSS 1..=1000 range.
+    ///
+    /// Distinct from the named variants even when the numeric values
+    /// coincide: `Numeric(400)` and `Normal` are not the same enum value.
+    Numeric(u16),
+}
+
+impl Weight {
+    /// The numeric CSS value of this weight.
+    pub const fn value(self) -> u16 {
+        match self {
+            Weight::Thin => 100,
+            Weight::ExtraLight => 200,
+            Weight::Light => 300,
+            Weight::Normal => 400,
+            Weight::Medium => 500,
+            Weight::Semibold => 600,
+            Weight::Bold => 700,
+            Weight::ExtraBold => 800,
+            Weight::Black => 900,
+            Weight::Numeric(value) => value,
+        }
+    }
 }
 
 /// The width of some text.
@@ -198,3 +221,29 @@ pub enum Style {
 /// A font error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::Weight;
+
+    #[test]
+    fn named_weights_keep_their_numeric_values() {
+        assert_eq!(Weight::Thin.value(), 100);
+        assert_eq!(Weight::ExtraLight.value(), 200);
+        assert_eq!(Weight::Light.value(), 300);
+        assert_eq!(Weight::Normal.value(), 400);
+        assert_eq!(Weight::Medium.value(), 500);
+        assert_eq!(Weight::Semibold.value(), 600);
+        assert_eq!(Weight::Bold.value(), 700);
+        assert_eq!(Weight::ExtraBold.value(), 800);
+        assert_eq!(Weight::Black.value(), 900);
+    }
+
+    #[test]
+    fn numeric_weight_round_trips() {
+        assert_eq!(Weight::Numeric(1).value(), 1);
+        assert_eq!(Weight::Numeric(350).value(), 350);
+        assert_eq!(Weight::Numeric(650).value(), 650);
+        assert_eq!(Weight::Numeric(1000).value(), 1000);
+    }
+}
