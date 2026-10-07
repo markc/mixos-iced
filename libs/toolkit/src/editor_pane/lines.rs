@@ -482,4 +482,49 @@ mod tests {
         assert!(cache.rows[&1].text.is_none());
         assert_eq!(text.reads.get(), 0);
     }
+
+    /// Measures row preparation alone, excluding shaping, rasterisation and
+    /// presentation. Run in an optimised test build with --ignored --nocapture.
+    #[test]
+    #[ignore = "manual CPU benchmark; timings are informational"]
+    fn viewport_preparation_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let text = Counted::new(
+            &format!("{}\t中 café e\u{301}\n", "let x = 123; ".repeat(12)).repeat(1200),
+        );
+        let mut ck = Checkpoints::default();
+        let mut buf = String::new();
+        let start = Instant::now();
+        for first in 1..=1000 {
+            for line in first..first + 40 {
+                let cells = walk(&text, &cfg(), &mut ck, line, 0, 120);
+                if let (Some(a), Some(b)) = (cells.placed.first(), cells.placed.last()) {
+                    buf.clear();
+                    text.read(a.range.start..b.range.end, &mut buf);
+                }
+                black_box(&cells);
+                black_box(&buf);
+            }
+        }
+        let baseline = start.elapsed();
+        assert_eq!((text.walks.get(), text.reads.get()), (40_000, 40_000));
+        text.walks.set(0);
+        text.reads.set(0);
+        let mut cached = ViewportCache::default();
+        let start = Instant::now();
+        for first in 1..=1000 {
+            cached.prepare(&text, &cfg(), &mut ck, first, first + 39, 0, 120);
+            black_box(&cached);
+        }
+        let retained = start.elapsed();
+        assert_eq!((text.walks.get(), text.reads.get()), (1039, 1039));
+        eprintln!(
+            "viewport preparation: 40 rows, 120 columns, 1000 one-row scroll frames; \
+             uncached={baseline:?}, retained={retained:?}, ratio={:.2}x; \
+             cluster walks/text reads 40000 -> 1039 (97.4% fewer)",
+            baseline.as_secs_f64() / retained.as_secs_f64(),
+        );
+    }
 }
