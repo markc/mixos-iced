@@ -21,7 +21,7 @@ use iced_core::{Border, Color, Font, Pixels, Point, Rectangle, Size};
 use iced_core::{mouse, renderer};
 
 use super::layout::{self as geo, Geometry, STRIP_W};
-use super::lines::{self, LineCells};
+use super::lines::LineCells;
 use super::widget::{Editor, State, TINT};
 
 /// Clusters longer than this draw only [`CLUSTER_DRAW_CAP`] bytes.
@@ -36,10 +36,11 @@ struct Ctx<'e, 'a> {
 }
 
 /// One visible row.
-struct Row {
+struct Row<'a> {
     line: usize,
     y: f32,
-    cells: LineCells,
+    cells: &'a LineCells,
+    text: Option<&'a str>,
 }
 
 pub(super) fn draw<R: atext::Renderer<Font = Font>>(
@@ -61,19 +62,24 @@ pub(super) fn draw<R: atext::Renderer<Font = Font>>(
     quad(r, g.bounds, p.background);
 
     let first = scroll.first_line;
-    let last = (first + g.drawn_rows()).min(text.line_count());
+    let last = first
+        .saturating_add(g.drawn_rows().saturating_sub(1))
+        .min(text.line_count());
     let (x0, x1) = (scroll.x_cells, scroll.x_cells + g.cols() + 1);
-    let rows: Vec<Row> = {
+    let mut cached = st.rows.borrow_mut();
+    {
         let mut ck = st.ck.borrow_mut();
-        (first..=last.max(first))
-            .filter(|&l| l <= text.line_count())
-            .map(|line| Row {
-                line,
-                y: g.row_y(line, scroll),
-                cells: lines::walk(text, &ed.view.measure, &mut ck, line, x0, x1),
-            })
-            .collect()
-    };
+        cached.prepare(text, &ed.view.measure, &mut ck, first, last, x0, x1);
+    }
+    let rows: Vec<Row<'_>> = cached
+        .rows()
+        .map(|(line, row)| Row {
+            line,
+            y: g.row_y(line, scroll),
+            cells: &row.cells,
+            text: row.text.as_deref(),
+        })
+        .collect();
     // The horizontal extent: the widest visible line, or beyond the window
     // when a visible line runs past it.
     let widest = rows
@@ -161,11 +167,15 @@ impl Ctx<'_, '_> {
         }
         // Highlight-all matches, under the selection. Ascending, so the scan
         // stops at the first match past the last visible row.
+        let visible_start = rows.first().map_or(0, |row| row.cells.content.start);
         let visible_end = rows.last().map_or(0, |row| row.cells.content.end + 1);
         let match_colour = with_alpha(p.caret, 0.22);
         for m in ed.view.matches.iter().filter(|m| !m.is_empty()) {
             if m.start > visible_end {
                 break;
+            }
+            if m.end <= visible_start {
+                continue;
             }
             for row in rows {
                 if let Some((a, b)) = self.span_on(row, m) {
@@ -223,8 +233,13 @@ impl Ctx<'_, '_> {
                 continue;
             };
             let base = first.range.start;
-            buf.clear();
-            text.read(base..last.range.end, &mut buf);
+            let bytes = if let Some(bytes) = row.text {
+                bytes
+            } else {
+                buf.clear();
+                text.read(base..last.range.end, &mut buf);
+                buf.as_str()
+            };
             let spans = text.highlight_spans(row.line, &mut budget);
             let mut si = 0;
             let mut run = Run::default();
@@ -236,7 +251,7 @@ impl Ctx<'_, '_> {
                     .get(si)
                     .filter(|(sr, _)| sr.start <= pc.range.start)
                     .map_or(HlClass::Plain, |s| s.1);
-                let slice = &buf[pc.range.start - base..pc.range.end - base];
+                let slice = &bytes[pc.range.start - base..pc.range.end - base];
                 if pc.is_tab || (pc.ascii && pc.cells == 0) {
                     self.flush(r, &mut run, row);
                     continue;
@@ -247,12 +262,15 @@ impl Ctx<'_, '_> {
                         run = Run {
                             start_cell: pc.cell,
                             end_cell: pc.cell,
+                            start_byte: pc.range.start - base,
                             class: Some(class),
                             ascii: true,
-                            text: String::new(),
+                            text: slice,
                         };
                     }
-                    run.text.push_str(slice);
+                    // ASCII clusters in a run are contiguous. Borrow their
+                    // combined byte slice and allocate only at fill_text.
+                    run.text = &bytes[run.start_byte..pc.range.end - base];
                     run.end_cell = pc.cell + pc.cells as usize;
                 } else {
                     self.flush(r, &mut run, row);
@@ -264,21 +282,22 @@ impl Ctx<'_, '_> {
                     run = Run {
                         start_cell: pc.cell,
                         end_cell: pc.cell + pc.cells as usize,
+                        start_byte: pc.range.start - base,
                         class: Some(class),
                         ascii: false,
-                        text: shown.to_string(),
+                        text: shown,
                     };
                     self.flush(r, &mut run, row);
                 }
             }
             self.flush(r, &mut run, row);
             if ed.view.whitespace {
-                self.whitespace(r, row);
+                self.whitespace(r, row, bytes);
             }
         }
     }
 
-    fn flush<R: atext::Renderer<Font = Font>>(&self, r: &mut R, run: &mut Run, row: &Row) {
+    fn flush<R: atext::Renderer<Font = Font>>(&self, r: &mut R, run: &mut Run<'_>, row: &Row<'_>) {
         let Some(class) = run.class else { return };
         if run.text.is_empty() {
             *run = Run::default();
@@ -298,7 +317,7 @@ impl Ctx<'_, '_> {
         let width = (run.end_cell - run.start_cell + 1) as f32 * self.g.metrics.cell_w;
         self.text(
             r,
-            std::mem::take(&mut run.text),
+            run.text.to_owned(),
             Point::new(self.x(run.start_cell), row.y),
             width,
             colour,
@@ -344,13 +363,12 @@ impl Ctx<'_, '_> {
     }
 
     /// Show whitespace: `·` per space, `→` per tab, one text call per row.
-    fn whitespace<R: atext::Renderer<Font = Font>>(&self, r: &mut R, row: &Row) {
+    fn whitespace<R: atext::Renderer<Font = Font>>(&self, r: &mut R, row: &Row, bytes: &str) {
         let Some(first) = row.cells.placed.first() else {
             return;
         };
         let mut s = String::new();
         let mut any = false;
-        let mut buf = String::new();
         for pc in &row.cells.placed {
             let blank = |n: usize, s: &mut String| s.extend(std::iter::repeat_n(' ', n));
             if pc.is_tab {
@@ -358,9 +376,9 @@ impl Ctx<'_, '_> {
                 blank((pc.cells as usize).saturating_sub(1), &mut s);
                 any = true;
             } else if pc.ascii && pc.range.len() == 1 {
-                buf.clear();
-                self.ed.text.read(pc.range.clone(), &mut buf);
-                if buf == " " {
+                if &bytes[pc.range.start - first.range.start..pc.range.end - first.range.start]
+                    == " "
+                {
                     s.push('·');
                     any = true;
                 } else {
@@ -806,12 +824,13 @@ impl Ctx<'_, '_> {
 }
 
 #[derive(Default)]
-struct Run {
+struct Run<'a> {
     start_cell: usize,
     end_cell: usize,
+    start_byte: usize,
     class: Option<HlClass>,
     ascii: bool,
-    text: String,
+    text: &'a str,
 }
 
 fn quad<R: iced_core::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
@@ -943,8 +962,9 @@ mod tests {
     };
 
     /// One `fill_text`: its own box, clip rectangle and the layer it is in.
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     struct Drawn {
+        content: String,
         own: Rectangle,
         clip: Rectangle,
         layer: Rectangle,
@@ -1022,6 +1042,7 @@ mod tests {
         fn fill_text(&mut self, text: atext::Text, position: Point, _: Color, clip: Rectangle) {
             let layer = *self.layers.last().expect("the window layer");
             self.texts.push(Drawn {
+                content: text.content,
                 own: Rectangle::new(position, text.bounds),
                 clip,
                 layer,
@@ -1160,6 +1181,59 @@ mod tests {
             partial * 5 < texts.len(),
             "{partial} of {} texts clear a window-sized mask for one damaged run",
             texts.len()
+        );
+    }
+
+    #[test]
+    fn cached_rows_preserve_ascii_tabs_unicode_and_partial_viewport_output() {
+        let text = Text::from_text("alpha beta\t中 e\u{301}\nnext\nlast").unwrap();
+        let palette = palette();
+        let ed = Editor {
+            text: Box::new(text.clone()),
+            model: EditorModel::default(),
+            palette: &palette,
+            view: EditorView {
+                line_numbers: false,
+                ..EditorView::default()
+            },
+        };
+        let metrics = Metrics {
+            cell_w: 10.0,
+            line_h: 20.0,
+        };
+        let st = State {
+            metrics: Some(metrics),
+            ..State::default()
+        };
+        let g = Geometry::new(
+            Rectangle {
+                x: 100.0,
+                y: 50.0,
+                width: 800.0,
+                height: 25.0,
+            },
+            metrics,
+            text.line_count(),
+            false,
+        );
+        let mut r = Rec {
+            layers: vec![WINDOW],
+            texts: Vec::new(),
+        };
+        draw(&ed, &st, &g, &mut r, mouse::Cursor::Unavailable);
+        assert_eq!(
+            r.texts
+                .iter()
+                .map(|t| t.content.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha beta", "中", " ", "e\u{301}", "next"],
+            "contiguous ASCII groups, skipped tabs, intact Unicode graphemes; only visible rows",
+        );
+        let first = std::mem::take(&mut r.texts);
+        draw(&ed, &st, &g, &mut r, mouse::Cursor::Unavailable);
+        assert_eq!(
+            r.texts, first,
+            "cached redraw preserves the exact text/clip trace"
         );
     }
 }
