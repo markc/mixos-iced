@@ -149,7 +149,7 @@ fn capture($label,$window,$snapshot)
   $image = $capture.ppm($path)
   $pixel = $capture.pixel($image,200,400)
   if $snapshot != nil then
-    $surface = $snapshot.effective["app:ced"].design.colours.pairs.base.rendered_surface
+    $surface = $snapshot.effective["app:ced"].design.pairs.base.rendered_surface
     for $channel = 0 to 2
       check(abs($pixel[$channel]-$capture.srgb($surface[$channel])) <= 8,"Ced palette pixel did not match applied authority")
     end
@@ -224,6 +224,8 @@ try
   fallback($offline,"cached")
   $cached_pixel = capture("offline-cached",$cached_window,nil)
   check(deep_eq($cached_pixel,$dark_pixel),"Cached GUI lost authority palette")
+  comp("comp.window.focus",$cached_window)
+  comp("comp.input.key",{seat:"human",key:"n",modifiers:["ctrl"]})
   -- Deliberately exceed broker retained-publisher expiry, without polling in
   -- the application. The same supervisor and same window must recover.
   $outage_until = time()+65
@@ -240,6 +242,25 @@ try
   $restarted = rpc($R.b,$root .. "/b","settingsd","settings.get",{binding:$binding}).snapshot
   await_current($restarted,$cached_window)
   capture("recovered-current",$cached_window,$restarted)
+  $recovered_tabs = app("ced.tabs",{}).tabs
+  check(len($recovered_tabs) == 2,"Offline new-file intent was not deferred and restored exactly once")
+  for each $row in $recovered_tabs
+    app("ced.wait",{tab:$row.tab,phase:"live",timeout_ms:5000})
+  end
+  -- An initial registration collision forwards argv on native ABP, exits,
+  -- and cannot write the second instance's unowned session file.
+  $collision_home = $root .. "/collision-home"
+  mkdir($collision_home .. "/state",{parents:true})
+  $collision_session = "{\"version\":1,\"active\":null,\"tabs\":[],\"recent\":[\"collision-preserve\"]}\n"
+  write_file($collision_home .. "/state/session.json",$collision_session)
+  $forwarded = $root .. "/forwarded.txt"
+  write_file($forwarded,"forwarded launch\n")
+  $collision = launch($collision_home,"collision",[$forwarded])
+  await_exit($collision.pid,$collision.log)
+  check(read_file($collision_home .. "/state/session.json") == $collision_session,"Initial collision overwrote its unowned session")
+  $forwarded_tabs = app("ced.tabs",{}).tabs
+  $matches = filter($forwarded_tabs,fn($row) = $row.path == $forwarded)
+  check(len($matches) == 1,"Initial collision did not forward launch path exactly once")
   check(app("app.quit",{}).quitting,"Recovery quit reply lost")
   await_exit($offline.pid,$offline.log)
   -- Missing and corrupt caches use embedded appearance and never acquire

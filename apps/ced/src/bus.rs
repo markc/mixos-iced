@@ -59,6 +59,8 @@ pub enum StartError {
     Rejected(String),
     /// No broker reachable.
     Unreachable(String),
+    /// Local desktop settings binding could not be resolved.
+    SettingsBinding(String),
 }
 
 impl std::fmt::Display for StartError {
@@ -67,6 +69,7 @@ impl std::fmt::Display for StartError {
             StartError::NameTaken => f.write_str("the service name is already registered"),
             StartError::Rejected(m) => write!(f, "registration refused: {m}"),
             StartError::Unreachable(m) => write!(f, "Bus unreachable: {m}"),
+            StartError::SettingsBinding(m) => write!(f, "settings session: {m}"),
         }
     }
 }
@@ -226,7 +229,7 @@ async fn run(
     {
         Ok(binding) => binding,
         Err(error) => {
-            let _ = ready.send(Err(StartError::Rejected(error.message)));
+            let _ = ready.send(Err(StartError::SettingsBinding(error.message)));
             return;
         }
     };
@@ -292,7 +295,11 @@ async fn run(
     }
     loop {
         tokio::select! {
-            _ = replies.join_next(), if !replies.is_empty() => {},
+            result = replies.join_next(), if !replies.is_empty() => {
+                if let Some(Ok(Err(error))) = result {
+                    tracing::warn!(%error, "Ced Bus reply or handoff failed");
+                }
+            },
             changed = settings_rx.changed() => {
                 if changed.is_err() { break; }
                 let jobs = settings_rx.borrow_and_update().clone();
@@ -345,9 +352,10 @@ async fn run(
                     WorkerCommand::ForwardOpen(paths) => {
                         let (url, service, d) = (url.clone(), service.clone(), dtx.clone());
                         if client.connection_generation() == 0 {
-                            tokio::spawn(async move {
+                            replies.spawn(async move {
                                 let result = forward_open_async(&url, &service, &paths).await;
-                                let _ = d.unbounded_send(Delivery::HandoffFinished(result));
+                                let _ = d.unbounded_send(Delivery::HandoffFinished(result.clone()));
+                                result
                             });
                         }
                         continue;
@@ -384,7 +392,9 @@ async fn run(
                         if let Some(cmd) = commands.remove(&id) {
                             let c = client.clone();
                             replies.spawn(async move {
-                                let _ = tokio::time::timeout(Duration::from_secs(2), c.respond(&cmd, rc, &body)).await;
+                                tokio::time::timeout(Duration::from_secs(2), c.respond(&cmd, rc, &body)).await
+                                    .map_err(|_| "Bus reply timed out".to_owned())?
+                                    .map_err(|error| format!("Bus reply: {error}"))
                             });
                         }
                     }
@@ -477,11 +487,12 @@ async fn run(
         )
         .await
         {
-            Ok(Some(Ok(()))) => {}
+            Ok(Some(Ok(Ok(())))) => {}
+            Ok(Some(Ok(Err(error)))) => faults.push(error),
             Ok(Some(Err(error))) => faults.push(format!("Bus reply: {error}")),
             Ok(None) => break,
             Err(_) => {
-                faults.push("Bus reply drain timed out".into());
+                faults.push("Bus reply or handoff drain timed out".into());
                 replies.abort_all();
                 break;
             }

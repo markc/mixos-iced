@@ -319,7 +319,7 @@ fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
     let taken = STREAMS.get().and_then(|m| m.lock().ok()?.take());
     match taken {
         Some(s) => application::iced::futures::stream::select(
-            s.deliveries.map(Msg::Bus),
+            bus_messages(s.deliveries),
             s.timers.map(Msg::Timer),
         )
         .boxed(),
@@ -330,6 +330,25 @@ fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
             application::iced::futures::stream::empty().boxed()
         }
     }
+}
+
+/// Channel closure must release a deferred-close window even if its worker
+/// failed before it could send the normal shutdown receipt.
+fn bus_messages(deliveries: UnboundedReceiver<Delivery>) -> impl application::iced::futures::Stream<Item = Msg> {
+    use application::iced::futures::{StreamExt, stream};
+    stream::unfold((deliveries, false, false), |(mut deliveries, stopped, closed)| async move {
+        if closed { return None; }
+        match deliveries.next().await {
+            Some(delivery) => {
+                let stopped = stopped || matches!(&delivery, Delivery::Stopped { .. });
+                Some((Msg::Bus(delivery), (deliveries, stopped, false)))
+            }
+            None if !stopped => Some((Msg::Bus(Delivery::Stopped {
+                faults: vec!["Bus worker delivery channel closed".into()],
+            }), (deliveries, true, true))),
+            None => None,
+        }
+    })
 }
 
 // ── update ──────────────────────────────────────────────────────────────────
@@ -2086,6 +2105,24 @@ pub fn line_col_offset(text: &edit::text::Text, line: usize, col: Option<usize>)
 mod tests {
     use super::*;
     use crate::actions::Menu as MenuName;
+
+    #[test]
+    fn bus_channel_death_releases_close_without_fabricating_a_clean_receipt() {
+        use application::iced::futures::{StreamExt, channel::mpsc::unbounded, executor::block_on};
+        block_on(async {
+            let (tx, rx) = unbounded();
+            drop(tx);
+            let mut messages = Box::pin(bus_messages(rx));
+            assert!(matches!(messages.next().await, Some(Msg::Bus(Delivery::Stopped { faults })) if !faults.is_empty()));
+            assert!(messages.next().await.is_none());
+            let (tx, rx) = unbounded();
+            tx.unbounded_send(Delivery::Stopped { faults: Vec::new() }).unwrap();
+            drop(tx);
+            let mut messages = Box::pin(bus_messages(rx));
+            assert!(matches!(messages.next().await, Some(Msg::Bus(Delivery::Stopped { faults })) if faults.is_empty()));
+            assert!(messages.next().await.is_none(), "a clean receipt must not acquire a second synthetic fault");
+        });
+    }
 
     #[test]
     fn goto_offsets_count_scalars() {
