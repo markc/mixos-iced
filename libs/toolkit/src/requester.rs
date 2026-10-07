@@ -1216,6 +1216,8 @@ mod tests {
             bus.drain().collect::<Vec<_>>(),
             [ViewMessage(Event::Submit)]
         );
+        drop(styled);
+        drop(legacy);
         match model.update(Event::Submit) {
             Some(Outcome::Open(paths)) => {
                 assert_eq!(paths.len(), 1);

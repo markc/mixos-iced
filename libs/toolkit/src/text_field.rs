@@ -1386,7 +1386,7 @@ mod widget_tests {
     #[test]
     fn text_style_and_property_builders_use_last_explicit_write() {
         let make = |style: TextStyle| -> (Field, widget::Tree) {
-            let field = TextField::new("placeholder", "")
+            let mut field = TextField::new("placeholder", "")
                 .on_input(std::convert::identity)
                 .padding(Padding::ZERO)
                 .text_style(style);

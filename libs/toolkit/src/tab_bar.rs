@@ -1672,7 +1672,7 @@ mod tests {
                 .into()
         };
         let mut renderer = LayoutRenderer::new();
-        let mut ui = iced_runtime::UserInterface::build(
+        let ui = iced_runtime::UserInterface::build(
             bar(small),
             Size::new(400.0, 100.0),
             iced_runtime::user_interface::Cache::new(),
