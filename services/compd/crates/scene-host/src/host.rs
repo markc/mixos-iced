@@ -696,7 +696,8 @@ impl SceneHost {
         self.service.as_deref()
     }
 
-    /// Why the host is off (the broker refused the name), if it is.
+    /// Why scene RPCs are unavailable (initial refusal or terminal connection
+    /// loss), while settings resources remain active.
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }

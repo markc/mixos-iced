@@ -81,7 +81,8 @@ pub struct Request {
 pub enum Inbound {
     /// Registered (or re-registered after the first) under this name.
     Registered(String),
-    /// The worker gave up registering (the broker refused the name); the host is off.
+    /// Initial registration was refused, or the established connection ended
+    /// terminally. Scene RPCs are unavailable; settings resources remain active.
     Refused(String),
     Request(Request),
     /// The broker's full set of registered services, from a registry diff.
@@ -1418,8 +1419,11 @@ mod tests {
                 "the existing shell owner must remain untouched"
             );
             owner.call("noded", "noded.ping", json!({})).await.unwrap();
-            assert_eq!(owner.connection_generation(), owner_generation,
-                "fallback must preserve the existing owner's actual connection");
+            assert_eq!(
+                owner.connection_generation(),
+                owner_generation,
+                "fallback must preserve the existing owner's actual connection"
+            );
         }
         owner.close().await;
     }
