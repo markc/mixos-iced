@@ -1219,6 +1219,13 @@ impl NodedClient {
         if let Some(h) = self.reader_handle.lock().await.take() {
             h.abort();
         }
+        // The reader's normal exit drains `pending`; on abort that
+        // never runs, so do it here — any parked caller gets a
+        // closed-channel error now instead of a 60s timeout. This MUST
+        // precede the sink awaits below: a bounded or cancelled close
+        // that abandons the graceful WS close still has to wake parked
+        // requests, so the clear cannot sit behind unbounded sink I/O.
+        self.pending.lock().expect("pending mutex poisoned").clear();
         // Best-effort graceful WS close so the broker observes the
         // disconnect and reaps the registered name immediately rather
         // than on a later TCP error/timeout.
@@ -1227,10 +1234,6 @@ impl NodedClient {
             let _ = sink.send(Message::Close(None)).await;
             let _ = sink.close().await;
         }
-        // The reader's normal exit drains `pending`; on abort that
-        // never runs, so do it here — any parked caller gets a
-        // closed-channel error now instead of a 60s timeout.
-        self.pending.lock().expect("pending mutex poisoned").clear();
     }
 
     /// Send a raw Bus message to the broker (no request/response framing).
@@ -1653,6 +1656,207 @@ mod connect_cancellation_tests {
             .expect("cancelled connect must not retain the reader/socket")
             .unwrap();
         broker.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod close_ordering_tests {
+    //! `close()` must clear the pending map BEFORE the unbounded sink I/O: a
+    //! bounded or cancelled close that abandons the graceful WS close frame
+    //! still has to wake parked callers (the reader that normally drains
+    //! `pending` on exit has already been aborted).
+    use super::*;
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio_tungstenite::accept_async;
+
+    fn broker_reply(req: &crate::BusMessage, rc: &str) -> String {
+        let mut reply = crate::BusMessage::new()
+            .with_header("type", "response")
+            .with_header("command", req.get("command").unwrap_or("?"))
+            .with_header("from", "noded")
+            .with_header("rc", rc);
+        if let Some(id) = req.get("id") {
+            reply = reply.with_header("id", id);
+        }
+        reply.to_wire()
+    }
+
+    #[tokio::test]
+    async fn close_clears_pending_before_waiting_for_sink() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (subscribe_seen_tx, subscribe_seen_rx) = oneshot::channel();
+        let broker = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(socket).await.unwrap();
+            let register = websocket.next().await.unwrap().unwrap();
+            let register = crate::parse(&register.into_text().unwrap()).unwrap();
+            websocket
+                .send(Message::Text(broker_reply(&register, "0").into()))
+                .await
+                .unwrap();
+            // A real in-flight request: signal that the subscribe arrived,
+            // then withhold its reply.
+            let _subscribe = websocket.next().await.unwrap().unwrap();
+            let _ = subscribe_seen_tx.send(());
+            let _ = websocket.next().await;
+        });
+
+        let client = Arc::new(
+            NodedClient::connect("close-order", &format!("ws://{address}"))
+                .await
+                .expect("registration ACKed"),
+        );
+        let headers = BTreeMap::from([("name".to_string(), "close.order".to_string())]);
+        let parked = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client
+                    .call_with_headers_raw("noded", "topic.subscribe", &headers, "")
+                    .await
+            })
+        };
+        // The request has been WRITTEN (the broker saw it), so the sink lock
+        // is free and the caller is parked on the withheld reply.
+        subscribe_seen_rx.await.unwrap();
+
+        // Hold the sink mutex so the graceful close frame write blocks. This
+        // wedges close() AFTER the request write, which is the path under
+        // test.
+        let _sink_guard = client.sink.lock().await;
+        let close = tokio::time::timeout(Duration::from_millis(200), client.close());
+        assert!(
+            close.await.is_err(),
+            "close must block on the held sink, not complete"
+        );
+
+        // The parked request resolves as a typed Closed BEFORE the guard is
+        // released: pending was cleared ahead of the blocked sink I/O. The
+        // original ordering left it parked for its full 60s timeout.
+        let resolved = tokio::time::timeout(Duration::from_secs(5), parked)
+            .await
+            .expect("the parked request must resolve promptly")
+            .expect("request task joined");
+        match resolved {
+            Ok(_) => panic!("a withheld reply must not resolve successfully"),
+            Err(error) => match error.downcast::<crate::ClientError>() {
+                Ok(crate::ClientError::Closed) => {}
+                Ok(other) => panic!("expected Closed, got {other:?}"),
+                Err(other) => panic!("expected a typed ClientError, got {other:?}"),
+            },
+        }
+        assert!(
+            client.pending.lock().expect("pending mutex poisoned").is_empty(),
+            "pending must be empty while the close frame is still blocked"
+        );
+        assert!(!client.is_connected());
+        assert!(
+            client.reader_handle.lock().await.is_none(),
+            "close must take and abort the reader before the sink wait"
+        );
+
+        // Complete cleanup and verify the peer observes the closure.
+        drop(_sink_guard);
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(60), broker)
+            .await
+            .expect("the broker must observe EOF once both halves are gone")
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod reply_timeout_tests {
+    //! The native per-request response deadline: on elapsed the request is a
+    //! typed `Timeout`, its pending entry is removed, and the socket itself
+    //! stays open (`is_connected` remains true) — only the supervisor's
+    //! attempt deadline decides to close and retry.
+    use super::*;
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use tokio_tungstenite::accept_async;
+
+    fn broker_reply(req: &crate::BusMessage, rc: &str) -> String {
+        let mut reply = crate::BusMessage::new()
+            .with_header("type", "response")
+            .with_header("command", req.get("command").unwrap_or("?"))
+            .with_header("from", "noded")
+            .with_header("rc", rc);
+        if let Some(id) = req.get("id") {
+            reply = reply.with_header("id", id);
+        }
+        reply.to_wire()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reply_timeout_removes_pending_and_leaves_the_socket_connected() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (subscribe_seen_tx, subscribe_seen_rx) = oneshot::channel();
+        let broker = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(socket).await.unwrap();
+            let register = websocket.next().await.unwrap().unwrap();
+            let register = crate::parse(&register.into_text().unwrap()).unwrap();
+            websocket
+                .send(Message::Text(broker_reply(&register, "0").into()))
+                .await
+                .unwrap();
+            let _subscribe = websocket.next().await.unwrap().unwrap();
+            let _ = subscribe_seen_tx.send(());
+            // Keep the socket open: withhold the subscribe reply forever.
+            let _ = websocket.next().await;
+        });
+
+        let client = Arc::new(
+            NodedClient::connect("reply-timeout", &format!("ws://{address}"))
+                .await
+                .expect("registration ACKed"),
+        );
+        let headers = BTreeMap::from([("name".to_string(), "reply.timeout".to_string())]);
+        let parked = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client
+                    .call_with_headers_raw("noded", "topic.subscribe", &headers, "")
+                    .await
+            })
+        };
+        subscribe_seen_rx.await.unwrap();
+        // Advance past the native 60-second response deadline on paused time.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let resolved = tokio::time::timeout(Duration::from_secs(5), parked)
+            .await
+            .expect("the timeout must resolve after the deadline")
+            .expect("request task joined");
+        match resolved {
+            Ok(_) => panic!("a withheld reply must not resolve successfully"),
+            Err(error) => match error.downcast::<crate::ClientError>() {
+                Ok(crate::ClientError::Timeout { to }) if to == "noded" => {}
+                Ok(other) => panic!("expected Timeout to noded, got {other:?}"),
+                Err(other) => panic!("expected a typed ClientError, got {other:?}"),
+            },
+        }
+        assert!(
+            client.pending.lock().expect("pending mutex poisoned").is_empty(),
+            "the elapsed request must remove its pending entry"
+        );
+        assert!(
+            client.is_connected(),
+            "the native response deadline alone must not mark the socket disconnected"
+        );
+        client.close().await;
+        tokio::time::timeout(Duration::from_secs(5), broker)
+            .await
+            .expect("the broker must observe the graceful close")
+            .unwrap();
     }
 }
 

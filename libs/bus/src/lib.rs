@@ -49,6 +49,6 @@ pub mod client;
 #[cfg(feature = "client")]
 pub use client::{
     ClientError, ConnState, Connection, DEFAULT_NODED_URL, IncomingCommand, MAX_INITIAL_ATTEMPTS,
-    RegistrationRejected, RegistrationRejectionKind, SubscriptionRegistry, SupervisedClient,
-    SupervisedConnectOptions, SupervisedError, noded_url,
+    RegistrationRejected, RegistrationRejectionKind, SubscriptionDeclarationError,
+    SubscriptionRegistry, SupervisedClient, SupervisedConnectOptions, SupervisedError, noded_url,
 };
