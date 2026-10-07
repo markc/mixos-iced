@@ -288,15 +288,69 @@ fn pixel_difference(
     })
 }
 
+/// The pinned tiny-skia version strength-reduces an unmasked opaque fill to
+/// Source, but keeps a masked fill in SourceOver. Fractional AA edges can
+/// therefore differ by one RGB value. Keep that separate from the retained
+/// editor oracle, which uses integer physical row boundaries.
+fn opaque_aa_rounding_reproducer() {
+    let path =
+        tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(0.0, 4.5, 12.0, 4.0).unwrap());
+    let mut mask = tiny_skia::Mask::new(16, 12).unwrap();
+    mask.fill_path(
+        &tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(2.0, 3.0, 4.0, 7.0).unwrap()),
+        tiny_skia::FillRule::EvenOdd,
+        false,
+        tiny_skia::Transform::identity(),
+    );
+    let mut examples = Vec::new();
+    for alpha in [255, 128] {
+        let mut full = tiny_skia::Pixmap::new(16, 12).unwrap();
+        full.fill(tiny_skia::Color::from_rgba8(35, 29, 27, 255));
+        let mut partial = full.clone();
+        let paint = tiny_skia::Paint {
+            shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(53, 43, 38, alpha)),
+            anti_alias: true,
+            ..Default::default()
+        };
+        for (target, clipping) in [(&mut full, None), (&mut partial, Some(&mask))] {
+            target.fill_path(
+                &path,
+                &paint,
+                tiny_skia::FillRule::EvenOdd,
+                tiny_skia::Transform::identity(),
+                clipping,
+            );
+        }
+        let index = (4 * 16 + 3) * 4;
+        let (a, b) = (
+            &full.data()[index..index + 4],
+            &partial.data()[index..index + 4],
+        );
+        examples.push(format!("alpha={alpha} full={a:?} partial={b:?}"));
+        if alpha == 255 {
+            assert_ne!(a, b, "pinned tiny-skia opaque AA rounding reproducer");
+        } else {
+            assert_eq!(a, b, "both translucent paths retain SourceOver");
+        }
+    }
+    eprintln!(
+        "tiny-skia fractional AA blend-path reproducer: {}",
+        examples.join("; ")
+    );
+}
+
 #[test]
 #[ignore = "manual real EditorPane/tiny-skia performance measurement"]
 fn editor_render_phases_benchmark() {
     use std::hint::black_box;
 
+    opaque_aa_rounding_reproducer();
     let fixture = Fixture::new();
     let view = pane::View {
         px: 14.0,
-        line_height: 1.3,
+        // Exactly 20 logical / 50 physical pixels per row isolates retained
+        // redraw correctness from the dependency rounding reproducer above.
+        line_height: 20.0 / 14.0,
         ..pane::View::default()
     };
     let mut palette = pane::Palette::from(toolkit::Tokens::default());
