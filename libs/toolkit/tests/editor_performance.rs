@@ -295,6 +295,7 @@ fn editor_render_phases_benchmark() {
             "warm full",
             "caret narrow",
             "caret full",
+            "caret then scroll",
             "vertical scroll",
             "horizontal scroll",
         ] {
@@ -304,6 +305,7 @@ fn editor_render_phases_benchmark() {
             let mut mask = tiny_skia::Mask::new(2750, 1900).unwrap();
             let mut caret = Rectangle::new(Point::ORIGIN, Size::new(2.0, 20.0));
             let mut samples = Vec::new();
+            let mut post_caret_scroll = Vec::new();
             let mut totals = [0_usize; 8];
             for frame in 0..60 {
                 if case == "cold full" {
@@ -324,6 +326,8 @@ fn editor_render_phases_benchmark() {
                 state.scroll = pane::Scroll {
                     first_line: if case == "vertical scroll" {
                         1 + frame % 8
+                    } else if case == "caret then scroll" {
+                        1 + (frame / 8) % 4
                     } else {
                         1
                     },
@@ -384,7 +388,9 @@ fn editor_render_phases_benchmark() {
                 cache = ui.into_cache();
                 let counts = fixture.counts.take();
                 let (runs, bytes, quads) = text_counts(&mut renderer);
-                let damage = if frame > 0 && case == "caret narrow" {
+                let damage = if frame > 0
+                    && (case == "caret narrow" || (case == "caret then scroll" && frame % 8 != 0))
+                {
                     union(previous_caret, caret).expand(1.0)
                 } else {
                     full
@@ -400,6 +406,9 @@ fn editor_render_phases_benchmark() {
                 let raster_ms = milliseconds(started);
                 black_box(pixels.data());
                 if frame >= 10 {
+                    if case == "caret then scroll" && frame % 8 == 0 {
+                        post_caret_scroll.push(raster_ms);
+                    }
                     samples.push([layout_ms, update_ms, prepare_ms, raster_ms]);
                     for (total, value) in totals
                         .iter_mut()
@@ -429,6 +438,12 @@ fn editor_render_phases_benchmark() {
             });
             let mut elapsed: Vec<_> = samples.iter().map(|s| s.iter().sum::<f64>()).collect();
             elapsed.sort_by(f64::total_cmp);
+            if !post_caret_scroll.is_empty() {
+                eprintln!(
+                    "editor syntax={syntax} full scroll after seven narrow caret frames: raster_mean={:.3} ms",
+                    post_caret_scroll.iter().sum::<f64>() / post_caret_scroll.len() as f64
+                );
+            }
             eprintln!(
                 "editor syntax={syntax} {case}: mean layout={:.3} update={:.3} prepare={:.3} raster={:.3} total={:.3} p50={:.3} p99={:.3} ms; per-frame walks={} clusters={} reads={} read_bytes={} checkpoints={} text_runs={} text_bytes={} quads={}",
                 means[0],
