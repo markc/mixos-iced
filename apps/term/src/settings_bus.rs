@@ -365,12 +365,11 @@ async fn worker(
         // Accepted replies retained while the task cap was exhausted start
         // the moment capacity frees; an unused permit returns immediately.
         submit_replies(&mut retained_replies, &mut operations);
-        if deliveries.flush_with(|describe| describes.try_send(describe).map_err(|error| {
-            match error {
-                tokio::sync::mpsc::error::TrySendError::Full(value) => SendError::Full(value),
-                tokio::sync::mpsc::error::TrySendError::Closed(value) => SendError::Closed(value),
-            }
-        })) == Flush::Closed {
+        if deliveries.flush_with(|describe| match describes.try_send(describe) {
+            Ok(()) => { wake_ui(&wake, true); Ok(()) }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(value)) => Err(SendError::Full(value)),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(value)) => Err(SendError::Closed(value)),
+        }) == Flush::Closed {
             eprintln!("{service} frontend closed with {} accepted requests", pending.len());
             break;
         }
@@ -501,6 +500,14 @@ async fn worker(
                     permit.finish();
                 }
             }
+            let queued: Vec<_> = deliveries.drain().collect();
+            for delivery in queued {
+                if pending.contains_key(&delivery.id) {
+                    assert!(deliveries.push(delivery).is_ok());
+                } else {
+                    let _ = delivery.ticket.take();
+                }
+            }
         }
         // Fairness under an incoming flood is ordered, not left to chance:
         // completed reply tasks (which free the operation cap), the settings
@@ -586,6 +593,11 @@ async fn worker(
                     continue;
                 }
                 if command.command == "app.describe" {
+                    if client.state() != ConnState::Connected
+                        || client.connection_generation() != command.generation {
+                        eprintln!("{service} rejected stale queued describe");
+                        continue;
+                    }
                     // The frontend answers: a UI request that reconciles live
                     // settings evidence first, tracked here by id, bounded so
                     // a slow UI cannot grow the map without limit. While the
