@@ -202,7 +202,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "appearance",
  "bus",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "ced"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "appearance",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "buildinfo",
  "comp-model",

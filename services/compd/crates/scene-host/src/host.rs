@@ -725,15 +725,18 @@ impl SceneHost {
         let mut serviced = Serviced::default();
         let panels = &mut self.host.panels;
         let port = &self.port;
-        for _changed in self.settings.drain_with(|| port.settings_generation(), |presentation| {
-                        let look = presentation.content();
-                        panels.set_preferences(look.preferences.clone());
-                        let style = decor::window::installed()
-                            .map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
-                        decor::window::install(look.chrome(style));
-                    }) {
-                self.appearance_generation = self.appearance_generation.wrapping_add(1);
-                serviced.changed = true;
+        for _changed in self.settings.drain_with(
+            || port.settings_generation(),
+            |presentation| {
+                let look = presentation.content();
+                panels.set_preferences(look.preferences.clone());
+                let style = decor::window::installed()
+                    .map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
+                decor::window::install(look.chrome(style));
+            },
+        ) {
+            self.appearance_generation = self.appearance_generation.wrapping_add(1);
+            serviced.changed = true;
         }
         let Some(monitor) =
             dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner)

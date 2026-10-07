@@ -2,9 +2,9 @@
 use super::*;
 use settings::{Binding, Desktop, Revision};
 use toolkit::fonts::{FontChoice, FontSelection, FontSet};
+mod bridge;
 #[cfg(feature = "settings-cache")]
 mod cache;
-mod bridge;
 
 fn install_fonts() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();

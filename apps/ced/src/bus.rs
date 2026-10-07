@@ -29,8 +29,7 @@ use editor_model::types::{Incoming, ParsedBody};
 
 use crate::controller::{BusCommand, Effect};
 use application::presentation::native::{
-    Event as SettingsEvent, Progress, Session, Ui as SettingsUi,
-    Worker as SettingsWorker, bridge,
+    Event as SettingsEvent, Progress, Session, Ui as SettingsUi, Worker as SettingsWorker, bridge,
 };
 
 /// Everything the bus thread delivers.
@@ -179,14 +178,7 @@ fn spawn_inner(
                     return;
                 }
             };
-            runtime.block_on(run(
-                service,
-                url,
-                dtx,
-                erx,
-                ready_tx,
-                desktop_settings,
-            ));
+            runtime.block_on(run(service, url, dtx, erx, ready_tx, desktop_settings));
             // A timed-out spawn_blocking cache operation cannot be aborted.
             // Do not turn bounded worker shutdown into unbounded runtime Drop.
             runtime.shutdown_timeout(Duration::from_millis(100));
@@ -206,10 +198,18 @@ fn spawn_inner(
     }
 }
 
-type Ready = Result<(Arc<SupervisedClient>, Option<SettingsUi<crate::theme::Theme>>), StartError>;
+type Ready = Result<
+    (
+        Arc<SupervisedClient>,
+        Option<SettingsUi<crate::theme::Theme>>,
+    ),
+    StartError,
+>;
 
 fn settings_wake(delivery: &UnboundedSender<Delivery>, needed: bool) {
-    if needed { let _ = delivery.unbounded_send(Delivery::Settings); }
+    if needed {
+        let _ = delivery.unbounded_send(Delivery::Settings);
+    }
 }
 
 async fn run(
@@ -268,14 +268,17 @@ async fn run(
         };
         let worker = match crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT) {
             Some(dirs) => SettingsWorker::offline_with_cache(
-                dirs.cache().join("settings"), crate::theme::from_settings,
+                dirs.cache().join("settings"),
+                crate::theme::from_settings,
             ),
             None => SettingsWorker::offline(crate::theme::from_settings),
         };
         let (ui, mut lane) = bridge(Session::new(consumer), worker);
         settings_wake(&dtx, lane.connect(Arc::clone(&client)));
         (Some(ui), Some(lane))
-    } else { (None, None) };
+    } else {
+        (None, None)
+    };
     let _ = ready.send(Ok((Arc::clone(&client), ui)));
 
     let mut commands: HashMap<u64, IncomingCommand> = HashMap::new();
@@ -494,7 +497,12 @@ async fn run(
         }
     }
     if desktop_settings {
-        if let Err(error) = lane.as_mut().expect("GUI settings lane").flush_cache(deadline).await {
+        if let Err(error) = lane
+            .as_mut()
+            .expect("GUI settings lane")
+            .flush_cache(deadline)
+            .await
+        {
             faults.push(format!("settings cache: {}: {}", error.code, error.message));
         }
         if let Some(mut writer) = shutdown_session {

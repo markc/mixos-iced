@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Paired endpoints on the host's existing UI and worker, with no own runtime.
-use super::{ChangePlan, Event, Jobs, Mailbox, Presentation, Session, Worker};
 #[cfg(feature = "settings-cache")]
 use super::Diagnostic;
+use super::{ChangePlan, Event, Jobs, Mailbox, Presentation, Session, Worker};
 use bus::native_client::IncomingCommand;
 use std::sync::Arc;
 #[cfg(feature = "settings-cache")]
@@ -15,8 +15,18 @@ pub fn bridge<T>(session: Session<T>, worker: Worker<T>) -> (Ui<T>, Lane<T>) {
     let (jobs, receiver) = watch::channel(None);
     let mailbox = Mailbox::default();
     (
-        Ui { session, jobs, mailbox: mailbox.clone() },
-        Lane { worker, jobs: receiver, mailbox, binding, jobs_open: true },
+        Ui {
+            session,
+            jobs,
+            mailbox: mailbox.clone(),
+        },
+        Lane {
+            worker,
+            jobs: receiver,
+            mailbox,
+            binding,
+            jobs_open: true,
+        },
     )
 }
 
@@ -27,7 +37,9 @@ pub struct Ui<T> {
     mailbox: Mailbox<T>,
 }
 impl<T> Ui<T> {
-    pub fn session(&self) -> &Session<T> { &self.session }
+    pub fn session(&self) -> &Session<T> {
+        &self.session
+    }
 
     pub fn handle_with(
         &mut self,
@@ -64,7 +76,11 @@ impl<T> Ui<T> {
 
 /// A host must deliver an eventual UI wake on `Wake` or a true publish result.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Progress { Updated, Wake, UiClosed }
+pub enum Progress {
+    Updated,
+    Wake,
+    UiClosed,
+}
 
 /// Owned by the host's existing worker; no connection or receiver escapes.
 pub struct Lane<T> {
@@ -77,14 +93,18 @@ pub struct Lane<T> {
 impl<T: Send + 'static> Lane<T> {
     fn replace_latest(&mut self) {
         let jobs = { self.jobs.borrow_and_update().clone() };
-        if let Some(jobs) = jobs { self.worker.replace(jobs); }
+        if let Some(jobs) = jobs {
+            self.worker.replace(jobs);
+        }
     }
     pub fn connect(&mut self, client: Arc<settings::native::Client>) -> bool {
         self.worker.connect(client);
         self.replace_latest();
         self.publish(Event::Wake)
     }
-    pub fn publish(&self, event: Event<T>) -> bool { self.mailbox.publish(event) }
+    pub fn publish(&self, event: Event<T>) -> bool {
+        self.mailbox.publish(event)
+    }
 
     /// `None` is ordinary host traffic; `Some` is a recognised settings frame.
     pub fn delivery(&self, command: &IncomingCommand) -> Option<bool> {

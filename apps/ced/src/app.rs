@@ -733,10 +733,15 @@ impl App {
             Delivery::Settings => {
                 let theme = &mut self.theme;
                 let bus = &self.bus;
-                let changed = self.settings.drain_with(|| bus.settings_generation(), |presentation| {
-                    *theme = presentation.content().clone();
-                });
-                if !changed.is_empty() { self.settings_changed(); }
+                let changed = self.settings.drain_with(
+                    || bus.settings_generation(),
+                    |presentation| {
+                        *theme = presentation.content().clone();
+                    },
+                );
+                if !changed.is_empty() {
+                    self.settings_changed();
+                }
                 Task::none()
             }
         }
@@ -749,18 +754,20 @@ impl App {
                 .handle_with(event, self.bus.settings_generation(), |presentation| {
                     *theme = presentation.content().clone();
                 });
-        if changed.is_some() { self.settings_changed(); }
+        if changed.is_some() {
+            self.settings_changed();
+        }
     }
 
     fn settings_changed(&self) {
-            eprintln!(
-                "CED_SETTINGS {}",
-                serde_json::json!({
-                    "elapsed_ms": self.launched.elapsed().as_millis(),
-                    "evidence": self.settings.session().host().consumer().evidence(),
-                    "fallback_diagnostics": self.settings.session().fallback_diagnostics(),
-                })
-            );
+        eprintln!(
+            "CED_SETTINGS {}",
+            serde_json::json!({
+                "elapsed_ms": self.launched.elapsed().as_millis(),
+                "evidence": self.settings.session().host().consumer().evidence(),
+                "fallback_diagnostics": self.settings.session().fallback_diagnostics(),
+            })
+        );
     }
 
     fn on_timer(&mut self, key: TimerKey) -> Task<Msg> {

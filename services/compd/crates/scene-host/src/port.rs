@@ -231,7 +231,9 @@ impl Port {
     }
 
     pub(crate) fn take_settings_ui(&mut self) -> SettingsUi<Look> {
-        self.settings_ui.take().expect("settings UI taken only once")
+        self.settings_ui
+            .take()
+            .expect("settings UI taken only once")
     }
     pub(crate) fn settings_generation(&self) -> Option<u64> {
         self.client
@@ -511,7 +513,11 @@ async fn worker(
     registry_mailbox: RegistryMailbox,
 ) {
     let waker = Arc::clone(&delivery.waker);
-    let notify = move |needed| { if needed { waker(); } };
+    let notify = move |needed| {
+        if needed {
+            waker();
+        }
+    };
     let mut connecting = Some(Box::pin(connect(config.clone(), shutdown.clone())));
     // The existing connection attempt must not stop the resource worker. A
     // refused service still receives offline presentation work until shutdown.
@@ -961,20 +967,28 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         let mut changes = 0;
         loop {
-            changes += session.drain_with(|| port.settings_generation(), |presentation| {
+            changes += session
+                .drain_with(
+                    || port.settings_generation(),
+                    |presentation| {
                         panels.set_preferences(presentation.content().preferences.clone());
-                    }).len();
-            let ready = match revision {
-                Some(revision) => {
-                    session.session().host().kind() == Some(settings::fallback::PresentationKind::Current)
-                        && session.session().host().consumer().applied().is_some_and(|snapshot| {
-                            snapshot.revision == settings::Revision(revision)
-                        })
-                }
-                None => {
-                    session.session().host().kind() == Some(settings::fallback::PresentationKind::Embedded)
-                }
-            };
+                    },
+                )
+                .len();
+            let ready =
+                match revision {
+                    Some(revision) => {
+                        session.session().host().kind()
+                            == Some(settings::fallback::PresentationKind::Current)
+                            && session.session().host().consumer().applied().is_some_and(
+                                |snapshot| snapshot.revision == settings::Revision(revision),
+                            )
+                    }
+                    None => {
+                        session.session().host().kind()
+                            == Some(settings::fallback::PresentationKind::Embedded)
+                    }
+                };
             if ready {
                 return changes;
             }
@@ -986,11 +1000,7 @@ mod tests {
     fn settings_port(
         url: String,
         cache_directory: std::path::PathBuf,
-    ) -> (
-        Port,
-        Receiver<()>,
-        SettingsUi<Look>,
-    ) {
+    ) -> (Port, Receiver<()>, SettingsUi<Look>) {
         install_settings_fonts();
         let (notify, wake) = mpsc::channel();
         let mut port = Port::start_at(
@@ -1034,7 +1044,8 @@ mod tests {
         assert_eq!(port.settings_generation(), None);
         assert_eq!(
             session
-                .session().host()
+                .session()
+                .host()
                 .presentation()
                 .unwrap()
                 .content()
@@ -1087,7 +1098,13 @@ mod tests {
             settings_drive(&port, &wake, &mut session, &mut panels, Some(1)),
             1
         );
-        let before = session.session().host().presentation().unwrap().content().clone();
+        let before = session
+            .session()
+            .host()
+            .presentation()
+            .unwrap()
+            .content()
+            .clone();
         let controller = SupervisedClient::connect_options("quoin-settings-controller", &url)
             .connect()
             .await
@@ -1130,7 +1147,13 @@ mod tests {
             160.0
         );
         assert!(panels.zones("future").is_empty());
-        let after = session.session().host().presentation().unwrap().content().clone();
+        let after = session
+            .session()
+            .host()
+            .presentation()
+            .unwrap()
+            .content()
+            .clone();
         assert_ne!(
             after.prepared.tokens().palette,
             before.prepared.tokens().palette
@@ -1169,20 +1192,29 @@ mod tests {
         assert_eq!(invalid["status"], "changed");
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while session.session().host().consumer().fault().is_none() {
-            let changes = session.drain_with(|| port.settings_generation(), |presentation| {
-                        panels.set_preferences(presentation.content().preferences.clone());
-                    });
-                assert!(
-                    changes.is_empty(),
-                    "failed whole preparation must not activate either resource"
-                );
+            let changes = session.drain_with(
+                || port.settings_generation(),
+                |presentation| {
+                    panels.set_preferences(presentation.content().preferences.clone());
+                },
+            );
+            assert!(
+                changes.is_empty(),
+                "failed whole preparation must not activate either resource"
+            );
             if session.session().host().consumer().fault().is_none() {
                 wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                     .expect("Quoin invalid-policy diagnostic did not arrive before deadline");
             }
         }
         assert_eq!(
-            session.session().host().consumer().applied().unwrap().revision,
+            session
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
             settings::Revision(3)
         );
         assert_eq!(
@@ -1191,7 +1223,8 @@ mod tests {
         );
         assert_eq!(
             session
-                .session().host()
+                .session()
+                .host()
                 .presentation()
                 .unwrap()
                 .content()
@@ -1210,7 +1243,13 @@ mod tests {
             Some(settings::fallback::PresentationKind::LastGood)
         );
         assert_eq!(
-            session.session().host().consumer().applied().unwrap().revision,
+            session
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
             settings::Revision(3)
         );
         controller.close().await;
@@ -1230,12 +1269,19 @@ mod tests {
             settings::fallback::PresentationKind::Cached,
         );
         assert_eq!(
-            cached.session().host().consumer().applied().unwrap().revision,
+            cached
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
             settings::Revision(3)
         );
         assert_eq!(
             cached
-                .session().host()
+                .session()
+                .host()
                 .presentation()
                 .unwrap()
                 .content()
@@ -1280,9 +1326,12 @@ mod tests {
     ) {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
-            session.drain_with(|| port.settings_generation(), |presentation| {
-                        panels.set_preferences(presentation.content().preferences.clone());
-                    });
+            session.drain_with(
+                || port.settings_generation(),
+                |presentation| {
+                    panels.set_preferences(presentation.content().preferences.clone());
+                },
+            );
             if session.session().host().kind() == Some(kind) {
                 return;
             }
