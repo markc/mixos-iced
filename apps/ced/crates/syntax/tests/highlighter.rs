@@ -4,6 +4,7 @@
 //! advancing, and `MAX_LINE_LEN`.
 
 use proptest::prelude::*;
+use std::cell::Cell;
 use syntax::LineSource;
 use syntax::cache::{Cache, INTERVAL};
 use syntax::highlighter::{Highlighter, MAX_LINE_LEN, Span};
@@ -27,6 +28,39 @@ impl LineSource for Chunked<'_> {
         }
         let end = ((offset / self.size) + 1) * self.size;
         &self.data[offset..end.min(self.data.len())]
+    }
+}
+
+struct Indexed<'a> {
+    source: Chunked<'a>,
+    ends: Vec<usize>,
+    reads: Cell<usize>,
+}
+
+impl<'a> Indexed<'a> {
+    fn new(data: &'a [u8], size: usize) -> Self {
+        let mut ends: Vec<_> = data
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &byte)| (byte == b'\n').then_some(i + 1))
+            .collect();
+        ends.push(data.len());
+        Self {
+            source: Chunked { data, size },
+            ends,
+            reads: Cell::new(0),
+        }
+    }
+}
+
+impl LineSource for Indexed<'_> {
+    fn read_forward(&self, offset: usize) -> &[u8] {
+        self.reads.set(self.reads.get() + 1);
+        self.source.read_forward(offset)
+    }
+
+    fn indexed_line_end(&self, line: usize) -> Option<usize> {
+        self.ends.get(line.checked_sub(1)?).copied()
     }
 }
 
@@ -146,6 +180,91 @@ fn over_long_lines_are_plain_and_keep_line_numbers() {
         h.parse_next_line(&mut out);
         assert_eq!(out.first().map(|s| s.start), Some(last));
         assert_eq!(h.line(), 6);
+    }
+}
+
+#[test]
+fn indexed_long_lines_skip_reads_and_preserve_runtime_and_offsets() {
+    for newline in ["\n", "\r\n"] {
+        for length in [MAX_LINE_LEN - newline.len(), MAX_LINE_LEN, 2 * 1024 * 1024] {
+            let text = format!(
+                "/* before{newline}{}{newline}*/ let after = 42;{newline}",
+                "x".repeat(length)
+            );
+            let source = Indexed::new(text.as_bytes(), 7);
+            let plain = Chunked {
+                data: text.as_bytes(),
+                size: 7,
+            };
+            let want = linear(&plain, 4);
+            let mut h = Highlighter::new(&source, rust());
+            let mut out = Vec::new();
+            h.parse_next_line(&mut out);
+            assert_eq!(out, want[0]);
+            let reads = source.reads.get();
+            h.parse_next_line(&mut out);
+            assert!(out.is_empty());
+            assert_eq!(source.reads.get(), reads, "no chunk reads for skipped line");
+            assert_eq!(h.line(), 3);
+            let state = h.snapshot();
+            h.parse_next_line(&mut out);
+            assert_eq!(out, want[2], "runtime carries across skipped line");
+            h.restore(&state);
+            h.parse_next_line(&mut out);
+            assert_eq!(out, want[2], "checkpoint preserves the true next offset");
+        }
+    }
+    let text = "x".repeat(2 * 1024 * 1024);
+    let source = Indexed::new(text.as_bytes(), 7);
+    let mut h = Highlighter::new(&source, rust());
+    let mut out = Vec::new();
+    h.parse_next_line(&mut out);
+    assert!(out.is_empty());
+    assert_eq!(
+        source.reads.get(),
+        0,
+        "unterminated long line skips reads too"
+    );
+    h.parse_next_line(&mut out);
+    assert!(out.is_empty());
+}
+
+#[test]
+fn indexed_short_lines_keep_cap_boundary_and_chunk_assembly() {
+    let text = format!("// {}\n// next\n", "x".repeat(MAX_LINE_LEN - 5));
+    for size in [1, 7, 4096] {
+        let source = Indexed::new(text.as_bytes(), size);
+        assert_eq!(linear(&source, 3), linear(&source.source, 3));
+        assert!(source.reads.get() > 0);
+    }
+}
+
+#[test]
+#[ignore = "release performance probe; run on a build node"]
+fn indexed_long_line_benchmark() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let text = format!("{}\n// after\n", "x".repeat(5 * 1024 * 1024));
+    let source = Indexed::new(text.as_bytes(), 4096);
+    let mut out = Vec::new();
+    for indexed in [false, true] {
+        let src: &dyn LineSource = if indexed { &source } else { &source.source };
+        let started = Instant::now();
+        for _ in 0..1000 {
+            let mut h = Highlighter::new(src, rust());
+            h.parse_next_line(&mut out);
+            h.parse_next_line(&mut out);
+            assert_eq!(
+                out.first().map(|span| span.start),
+                Some(5 * 1024 * 1024 + 1)
+            );
+            black_box(&out);
+        }
+        eprintln!(
+            "indexed={indexed} iterations=1000 elapsed_us={}",
+            started.elapsed().as_micros()
+        );
     }
 }
 

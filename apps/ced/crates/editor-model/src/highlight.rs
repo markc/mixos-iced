@@ -436,6 +436,11 @@ impl syntax::LineSource for Src<'_> {
     fn read_forward(&self, offset: usize) -> &[u8] {
         self.0.chunk_at(offset)
     }
+
+    fn indexed_line_end(&self, line: usize) -> Option<usize> {
+        self.0.line_start(line)?;
+        Some(self.0.line_start(line + 1).unwrap_or(self.0.len()))
+    }
 }
 
 fn lsh_line(

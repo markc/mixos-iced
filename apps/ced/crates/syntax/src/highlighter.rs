@@ -9,7 +9,8 @@
 //! vendored arena types.
 //!
 //! Adaptations from upstream, beyond the `LineSource` swap:
-//! - A line of `MAX_LINE_LEN` bytes or more is scanned to its real end even
+//! - A line of `MAX_LINE_LEN` bytes or more advances to its real indexed end,
+//!   or is scanned to its real end when the source has no line index, even
 //!   when it spans several chunks. Upstream stopped assembling at the cap and
 //!   left the read offset mid-line, so the tail was parsed as the next line and
 //!   every later line number was off by one.
@@ -146,6 +147,13 @@ impl<'a> Highlighter<'a> {
         self.line0 += 1;
 
         let line_beg = self.offset;
+        if let Some(end) = self.src.indexed_line_end(self.line0)
+            && end.saturating_sub(line_beg) >= MAX_LINE_LEN
+        {
+            self.offset = end;
+            // Long lines do not run the runtime, just like an empty read.
+            return (line_beg, &[]);
+        }
         let mut chunk = self.src.read_forward(self.offset);
         if chunk.is_empty() {
             return (line_beg, chunk);

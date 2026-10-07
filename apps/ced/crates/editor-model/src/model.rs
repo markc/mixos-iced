@@ -421,9 +421,14 @@ impl EditorModel {
     /// Move the head `delta` lines, keeping `preferred_cells`.
     fn vertical(&mut self, text: &Text, cfg: &EditCfg, delta: isize) -> usize {
         use edit::view;
-        let pos = view::visual_of(text, &cfg.measure, self.sel.head);
-        let cells = *self.preferred_cells.get_or_insert(pos.cells);
-        let line = pos.line as isize + delta;
+        let (current_line, cells) = if let Some(cells) = self.preferred_cells {
+            (line_of(text, self.sel.head), cells)
+        } else {
+            let pos = view::visual_of(text, &cfg.measure, self.sel.head);
+            self.preferred_cells = Some(pos.cells);
+            (pos.line, pos.cells)
+        };
+        let line = current_line as isize + delta;
         if line < 1 {
             return 0;
         }

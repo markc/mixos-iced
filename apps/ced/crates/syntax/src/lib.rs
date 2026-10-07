@@ -120,6 +120,13 @@ pub mod compiler {
 /// clusters — lsh works on bytes.
 pub trait LineSource {
     fn read_forward(&self, offset: usize) -> &[u8];
+
+    /// Indexed end of 1-based `line`, including its newline when present.
+    /// Sources without a line index may leave this unknown. The highlighter
+    /// uses it only to skip lines that exceed its highlighting limit.
+    fn indexed_line_end(&self, _line: usize) -> Option<usize> {
+        None
+    }
 }
 
 impl LineSource for &[u8] {

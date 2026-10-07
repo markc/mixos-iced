@@ -85,6 +85,7 @@ impl pane::Source for Source<'_> {
         editor_model::model::clamp_offset(self.text(), offset)
     }
     fn read(&self, range: Range<usize>, output: &mut String) {
+        let _profile = profile::Scope::new(profile::READ);
         self.text().read(range, output);
     }
     fn clusters(
@@ -93,7 +94,7 @@ impl pane::Source for Source<'_> {
         range: Range<usize>,
         cells: usize,
     ) -> Box<dyn Iterator<Item = pane::Cluster> + '_> {
-        Box::new(
+        let clusters =
             edit::view::clusters(self.text(), &measure(cfg), range, cells).map(|cluster| {
                 pane::Cluster {
                     range: cluster.range,
@@ -101,10 +102,15 @@ impl pane::Source for Source<'_> {
                     is_tab: cluster.is_tab,
                     ascii: cluster.ascii,
                 }
-            }),
-        )
+            });
+        if profile::enabled() {
+            Box::new(profile::Walk::new(clusters))
+        } else {
+            Box::new(clusters)
+        }
     }
     fn line_checkpoints(&self, cfg: &pane::MeasureCfg, line: usize) -> Vec<(usize, usize)> {
+        let _profile = profile::Scope::new(profile::CHECKPOINTS);
         edit::view::line_checkpoints(self.text(), &measure(cfg), line)
     }
     fn state(&self) -> pane::ViewState {
@@ -161,6 +167,7 @@ impl pane::Source for Source<'_> {
         line: usize,
         budget: &mut pane::SliceBudget,
     ) -> Vec<(Range<usize>, pane::Class)> {
+        let _profile = profile::Scope::new(profile::HIGHLIGHT);
         let mut engine = editor_model::highlight::SliceBudget {
             max_lines: budget.max_lines,
         };
@@ -175,6 +182,131 @@ impl pane::Source for Source<'_> {
             });
         budget.max_lines = engine.max_lines;
         spans
+    }
+}
+
+/// Opt-in UI-thread samples. One aggregate per second; no document content,
+/// paths or per-glyph logs. Cluster timing covers consumption of the iterator
+/// (including its caller's loop), rather than adding a clock read per cluster.
+mod profile {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    pub const READ: usize = 0;
+    pub const CHECKPOINTS: usize = 1;
+    pub const HIGHLIGHT: usize = 2;
+    const CLUSTERS: usize = 3;
+
+    pub fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var("CED_PROFILE").is_ok_and(|value| value == "1"))
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Metric {
+        calls: u64,
+        us: u64,
+        items: u64,
+    }
+
+    struct Samples {
+        since: Instant,
+        metrics: [Metric; 4],
+    }
+
+    thread_local! {
+        static SAMPLES: RefCell<Samples> = RefCell::new(Samples {
+            since: Instant::now(),
+            metrics: [Metric::default(); 4],
+        });
+    }
+
+    fn record(kind: usize, started: Instant, items: u64) {
+        let now = Instant::now();
+        SAMPLES.with(|samples| {
+            let mut samples = samples.borrow_mut();
+            let metric = &mut samples.metrics[kind];
+            metric.calls += 1;
+            metric.us += now.duration_since(started).as_micros() as u64;
+            metric.items += items;
+            if now.duration_since(samples.since) < Duration::from_secs(1) {
+                return;
+            }
+            let [read, checkpoints, highlight, clusters] = samples.metrics;
+            tracing::info!(
+                read_calls = read.calls,
+                read_us = read.us,
+                checkpoint_calls = checkpoints.calls,
+                checkpoint_us = checkpoints.us,
+                highlight_calls = highlight.calls,
+                highlight_us = highlight.us,
+                cluster_walks = clusters.calls,
+                cluster_us = clusters.us,
+                clusters = clusters.items,
+                "ced: source profile"
+            );
+            samples.metrics = [Metric::default(); 4];
+            samples.since = now;
+        });
+    }
+
+    pub struct Scope {
+        kind: usize,
+        started: Option<Instant>,
+    }
+
+    impl Scope {
+        pub fn new(kind: usize) -> Self {
+            Self {
+                kind,
+                started: enabled().then(Instant::now),
+            }
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            if let Some(started) = self.started {
+                record(self.kind, started, 0);
+            }
+        }
+    }
+
+    pub struct Walk<I> {
+        inner: I,
+        started: Instant,
+        items: u64,
+    }
+
+    impl<I> Walk<I> {
+        pub fn new(inner: I) -> Self {
+            Self {
+                inner,
+                started: Instant::now(),
+                items: 0,
+            }
+        }
+    }
+
+    impl<I: Iterator> Iterator for Walk<I> {
+        type Item = I::Item;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let item = self.inner.next();
+            self.items += u64::from(item.is_some());
+            item
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+    }
+
+    impl<I> Drop for Walk<I> {
+        fn drop(&mut self) {
+            record(CLUSTERS, self.started, self.items);
+        }
     }
 }
 

@@ -57,6 +57,75 @@ fn motion(s: &str, m: &mut EditorModel, to: Motion, extend: bool) {
 }
 
 #[test]
+fn repeated_vertical_motion_keeps_preferred_cells_across_short_and_unicode_lines() {
+    let mut m = model(6, 6);
+    let s = "abcdef\r\nx\r\n\t界e\u{301}z\r\nabcdef";
+    motion(s, &mut m, Motion::Down, false);
+    assert_eq!(m.sel.head, 9, "short line clamps before CRLF");
+    assert_eq!(m.preferred_cells, Some(6));
+    motion(s, &mut m, Motion::Down, true);
+    assert_eq!(m.sel.head, 11 + "\t界".len());
+    assert_eq!(m.sel.anchor, 9);
+    assert_eq!(m.preferred_cells, Some(6));
+    motion(s, &mut m, Motion::Down, true);
+    assert_eq!(m.sel.head, s.len());
+    motion(s, &mut m, Motion::Up, true);
+    assert_eq!(m.sel.head, 11 + "\t界".len());
+}
+
+#[test]
+#[ignore = "release performance probe; run on a build node"]
+fn repeated_vertical_benchmark() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for (width, iterations) in [(795, 10_000), (1024 * 1024, 100)] {
+        let row = "x".repeat(width);
+        let text = Text::from_text(&format!("{row}\n{row}\n{row}")).unwrap();
+        let cfg = cfg();
+        for retained in [false, true] {
+            let mut m = model(width, width);
+            m.preferred_cells = Some(width);
+            let started = Instant::now();
+            for iteration in 0..iterations {
+                let delta = if iteration % 2 == 0 { 1 } else { -1 };
+                let target = if retained {
+                    m.vertical(&text, &cfg, delta)
+                } else {
+                    // Previous implementation always measured the current
+                    // line even when the preferred column was already known.
+                    let pos = edit::view::visual_of(&text, &cfg.measure, m.sel.head);
+                    edit::view::offset_at(
+                        &text,
+                        &cfg.measure,
+                        (pos.line as isize + delta) as usize,
+                        width,
+                        edit::view::Round::Left,
+                    )
+                };
+                m.sel = Selection {
+                    anchor: target,
+                    head: target,
+                };
+                assert_eq!(
+                    target,
+                    if iteration % 2 == 0 {
+                        2 * width + 1
+                    } else {
+                        width
+                    }
+                );
+                black_box(&m);
+            }
+            eprintln!(
+                "width={width} retained={retained} iterations={iterations} elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
+    }
+}
+
+#[test]
 fn insert_replaces_selection_and_coalesces_single_chars() {
     let mut m = model(1, 3);
     let (s, e) = run("abcd", &mut m, EditCommand::Insert("X".into()));
