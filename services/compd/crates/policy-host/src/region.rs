@@ -13,8 +13,11 @@
 //! on. A run whose output changed generation is refused `output_changed`.
 //!
 //! An identified select reserves its owner generation (world
-//! `region::reserve`) before the run begins and echoes its identity on
-//! terminal replies. [`cancel`] cancels only the exact active selection
+//! `region::reserve`) before the run begins, and every terminal reply of an
+//! identified run carries its selection identity — `selected`, `cancelled`,
+//! `timeout`, and the refusal shapes (`output_changed`, `locked`, the
+//! cleanup-budget `busy`) alike; a legacy run keeps its legacy reply shape
+//! byte for byte. [`cancel`] cancels only the exact active selection
 //! through the ordinary finish path, so overlay removal, focus restore and
 //! the original select reply all happen on the existing path; any other
 //! identity is retired and can never start later. Legacy selections without
@@ -22,7 +25,7 @@
 
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use comp_model::reply::ControlReply;
 use comp_model::request::SelectionIdentity;
@@ -128,8 +131,8 @@ pub fn start(
 }
 
 /// The reply owed, once the run is decided (and the run is then dropped).
-/// An identified run echoes its selection identity on terminal replies; a
-/// legacy run keeps its legacy shape.
+/// Every terminal reply of an identified run carries its selection
+/// identity; a legacy run keeps its legacy shape byte for byte.
 pub fn service(lp: &mut Loop, now: Instant) -> Option<ControlReply> {
     let run = lp.inner.comp.region.run.as_ref()?;
     // The output selected on changed.
@@ -151,7 +154,7 @@ pub fn service(lp: &mut Loop, now: Instant) -> Option<ControlReply> {
     let reply = match run.result? {
         Outcome::Selected(_) if !run.clean && now < run.reply_deadline => return None,
         // Never claim a selection without a frame free of the overlay.
-        Outcome::Selected(_) if !run.clean => ControlReply::Busy,
+        Outcome::Selected(_) if !run.clean => terminal_refusal("busy", echo),
         Outcome::Selected([x, y, width, height]) => {
             let mut body = json!({
                 "version": 1,
@@ -180,9 +183,9 @@ pub fn service(lp: &mut Loop, now: Instant) -> Option<ControlReply> {
             }
             ControlReply::Body(body)
         }
-        Outcome::Busy => ControlReply::Busy,
-        Outcome::Refused(error) => ControlReply::refused(error, json!({})),
-        Outcome::Locked => ControlReply::Locked,
+        Outcome::Busy => terminal_refusal("busy", echo),
+        Outcome::Refused(error) => terminal_refusal(error, echo),
+        Outcome::Locked => terminal_refusal("locked", echo),
     };
     let identity = run
         .identity
@@ -193,6 +196,16 @@ pub fn service(lp: &mut Loop, now: Instant) -> Option<ControlReply> {
         lp.inner.comp.region.release(&owner, generation);
     }
     Some(reply)
+}
+
+/// A decided run's terminal refusal: a legacy run keeps its bare
+/// `{"error": ...}` shape byte for byte, an identified one carries its
+/// selection echo.
+fn terminal_refusal(error: &'static str, echo: Option<Value>) -> ControlReply {
+    match echo {
+        None => ControlReply::refused(error, json!({})),
+        Some(echo) => ControlReply::refused(error, json!({"selection": echo})),
+    }
 }
 
 /// `comp.region.cancel {selection}`: cancel the exact active run through

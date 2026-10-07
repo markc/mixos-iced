@@ -40,11 +40,15 @@
 //!
 //! Region select: `comp.region.select` is policy-host
 //! `region`; the run holds the human seat, its reply waits here and is sent
-//! from `Bus::service` once decided; one timer waits at its deadline.
-//! `comp.region.cancel {selection}` is a short control: the engine fences
-//! the compositor instance here, policy-host cancels only the exact active
-//! run through the ordinary finish path, and the pending select reply
-//! completes from the existing `Bus::service` region section.
+//! from `Bus::service` once decided; one timer waits at its deadline. Both
+//! region verbs fence the compositor instance here: a selection or cancel
+//! naming another process — one still in flight after a restart included —
+//! is refused `stale_instance` before any reservation, run or retirement,
+//! so a stale identity can never act here and never resurrect.
+//! `comp.region.cancel {selection}` is a short control: policy-host cancels
+//! only the exact active run through the ordinary finish path, and the
+//! pending select reply completes from the existing `Bus::service` region
+//! section.
 //!
 //! Panel holders: `comp.panel.hold` / `mode` are
 //! policy-host `panel::request`; every pass runs `panel::service` (membership,
@@ -797,6 +801,18 @@ impl CompEngine for Engine<'_> {
                 });
             }
             LongOp::RegionSelect { output, timeout, selection } => {
+                // The select side of the instance fence, mirroring
+                // `region_cancel`: a selection sent to another compositor
+                // process (or still in flight after a restart) is refused
+                // before policy-host `start`, so it can never reserve an
+                // owner generation or begin a run here — a stale identity
+                // cannot resurrect, and the live identity stays available.
+                if let Some(selection) = &selection
+                    && selection.instance != self.context.instance.as_ref()
+                {
+                    reply.send(ControlReply::refused("stale_instance", json!({})));
+                    return;
+                }
                 if self.region_reply.is_some() {
                     reply.send(ControlReply::Busy);
                     return;

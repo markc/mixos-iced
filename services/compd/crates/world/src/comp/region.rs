@@ -20,7 +20,10 @@
 //! compositor process lifetime, so a cancel-before-select or a reordered
 //! mesh delivery can never resurrect a retired generation. A cancel acts on
 //! a run only on exact identity equality; the policy host decides which
-//! outcome that yields.
+//! outcome that yields. At the limit an unknown owner is refused before any
+//! change and known owners stay serviceable; owners are never evicted (an
+//! evicted owner could let a delayed select resurrect) — accepted design,
+//! see the region owner retirement decision.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
@@ -200,7 +203,8 @@ impl Region {
 
     /// The run for `owner`/`generation` ended: the reservation is spent and
     /// the generation is recorded as finished (a late cancel answers
-    /// `already_finished`).
+    /// `already_finished`). Like the watermark, `finished` never moves
+    /// backwards, so a replay can never reopen a finished identity.
     pub fn release(&mut self, owner: &str, generation: u64) {
         let Some(state) = self.owners.get_mut(owner) else {
             return;
@@ -208,7 +212,7 @@ impl Region {
         if state.active == Some(generation) {
             state.active = None;
         }
-        state.finished = Some(generation);
+        state.finished = Some(state.finished.map_or(generation, |finished| finished.max(generation)));
         state.watermark = state.watermark.max(generation);
     }
 
@@ -586,6 +590,18 @@ mod tests {
         assert_eq!(region.retire(OWNER, 1), Retire::AlreadyFinished);
         assert_eq!(owner(&region, OWNER).active, Some(2));
         region.release(OWNER, 2);
+    }
+
+    #[test]
+    fn finished_never_moves_backwards() {
+        let mut region = Region::default();
+        assert_eq!(region.reserve(OWNER, 5), Reserve::Accepted);
+        region.release(OWNER, 5);
+        // A late release of an older generation must not lower the record:
+        // a replay would otherwise reopen a finished identity.
+        region.release(OWNER, 3);
+        assert_eq!(owner(&region, OWNER).finished, Some(5));
+        assert_eq!(region.retire(OWNER, 5), Retire::AlreadyFinished);
     }
 
     #[test]

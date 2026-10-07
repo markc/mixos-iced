@@ -514,16 +514,21 @@ impl SelectionIdentity {
 
 /// A random UUID v4, lowercase hyphenated: the owner capability shape
 /// (`xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`). The owner is a targeting
-/// capability, not an authentication claim.
+/// capability, not an authentication claim. Every hex position is
+/// validated (the version at 14 and the variant at 19 separately) and hex
+/// is strictly lowercase — owner equality is exact string equality, so a
+/// lenient reader would split one identity into two.
 pub fn valid_owner_capability(owner: &str) -> bool {
     let bytes = owner.as_bytes();
     if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|at| bytes[*at] != b'-') {
         return false;
     }
-    [0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 12, 16, 17, 21, 22]
-        .into_iter()
+    (0..8)
+        .chain(9..13)
+        .chain(15..18)
+        .chain(20..23)
         .chain(24..36)
-        .all(|at| bytes[at].is_ascii_hexdigit())
+        .all(|at| bytes[at].is_ascii_digit() || matches!(bytes[at], b'a'..=b'f'))
         && bytes[14] == b'4'
         && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
 }
@@ -582,7 +587,7 @@ fn selection_arg(
             return Err(invalid_argument(
                 "selection.owner",
                 "string",
-                "a random UUID v4",
+                "a lowercase random UUID v4",
             ));
         }
     };

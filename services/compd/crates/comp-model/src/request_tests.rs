@@ -115,6 +115,51 @@ fn region_selection_identity_is_strict_positive_and_echoed() {
 }
 
 #[test]
+fn owner_capability_is_a_strict_lowercase_uuid_v4() {
+    for valid in [
+        "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f",
+        "12345678-89ab-4cde-8f01-23456789abcd",
+        "12345678-89ab-4cde-ab01-23456789abcd",
+    ] {
+        assert!(valid_owner_capability(valid), "{valid}");
+    }
+    for invalid in [
+        // A non-hex byte at each of the positions the original list skipped.
+        "1234g567-89ab-4cde-8f01-23456789abcd",
+        "12345678-89ab-4gde-8f01-23456789abcd",
+        "12345678-89ab-4cde-8g01-23456789abcd",
+        // Uppercase hex contradicts the lowercase contract.
+        "A3F9C2D1-4E7B-4A1C-9D8E-5F6B7C8D9E0F",
+        "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0F",
+        // Wrong version and variant bytes.
+        "12345678-89ab-3cde-8f01-23456789abcd",
+        "12345678-89ab-5cde-8f01-23456789abcd",
+        "12345678-89ab-4cde-0f01-23456789abcd",
+        "12345678-89ab-4cde-ff01-23456789abcd",
+        // Wrong length and hyphens.
+        "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0",
+        "a3f9c2d14e7b-4a1c-9d8e-5f6b7c8d9e0f",
+    ] {
+        assert!(!valid_owner_capability(invalid), "{invalid}");
+    }
+    // The parser route refuses the same bytes by name.
+    for owner in [
+        "1234g567-89ab-4cde-8f01-23456789abcd",
+        "12345678-89ab-4gde-8f01-23456789abcd",
+        "12345678-89ab-4cde-8g01-23456789abcd",
+        "A3F9C2D1-4E7B-4A1C-9D8E-5F6B7C8D9E0F",
+    ] {
+        let body = refusal(
+            parse_region_select(&json!({"selection": {
+                "instance": "i", "owner": owner, "generation": 1,
+            }}))
+            .expect_err("a non-UUID owner is refused"),
+        );
+        assert_eq!(body["path"], "selection.owner", "{owner}");
+    }
+}
+
+#[test]
 fn region_cancel_is_a_discoverable_strict_short_verb() {
     let identity = json!({
         "instance": "ab12",
