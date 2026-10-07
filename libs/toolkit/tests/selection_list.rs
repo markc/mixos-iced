@@ -5,8 +5,8 @@
 use std::marker::PhantomData;
 
 use toolkit::core::{
-    Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation, Widget,
-    layout::Limits, renderer, text, widget::Tree,
+    Background, Color, Event, Font, Layout, Pixels, Point, Rectangle, Shell, Size, Transformation,
+    Widget, layout::Limits, mouse, renderer, text, widget::Tree,
 };
 use toolkit::menu::{Item, MenuStyle, Panel, panel_size_text};
 use toolkit::selection_list::{self, List, SelectionList};
@@ -167,28 +167,69 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
         Tree::new(&legacy as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut legacy = legacy;
     legacy.diff(&mut tree);
-    let legacy_height = toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
+    let legacy_node = toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
         &mut legacy,
         &mut tree,
         &renderer,
         &limits(),
-    )
-    .size()
-    .height;
-    // The prepared rows are taller than the legacy text-size rows.
+    );
+    // The outer list fills its viewport. Its container and scrollable own
+    // the row content, whose intrinsic height changes with the style.
+    let rows = |node: &toolkit::core::layout::Node| {
+        node.children()[0].children()[0].children()[0].size().height
+    };
+    assert_eq!(rows(&legacy_node), 44.0);
+    let font = Font::with_name("Prepared list face");
     let styled: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
-        SelectionList::new(options.as_slice(), |_, value: String| value).line_height(30.0_f32);
+        SelectionList::new(options.as_slice(), |_, value: String| value).text_style(TextStyle {
+            font,
+            size: 12.0,
+            line_height: Some(30.0),
+        });
     let mut tree =
         Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut styled = styled;
     styled.diff(&mut tree);
-    let styled_height = toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
+    let styled_node = toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
         &mut styled,
         &mut tree,
         &renderer,
         &limits(),
-    )
-    .size()
-    .height;
-    assert!(styled_height > legacy_height);
+    );
+    assert_eq!(rows(&styled_node), 80.0);
+    assert_eq!(styled_node.size(), legacy_node.size());
+
+    let layout = Layout::new(&styled_node);
+    let viewport = Rectangle::new(Point::ORIGIN, styled_node.size());
+    let mut recorder = Recorder::default();
+    styled.draw(
+        &tree,
+        &mut recorder,
+        &toolkit::core::Theme::default(),
+        &renderer::Style::default(),
+        layout,
+        mouse::Cursor::Unavailable,
+        &viewport,
+    );
+    assert_eq!(recorder.texts.len(), 2);
+    for label in &recorder.texts {
+        assert_eq!(label.font, font);
+        assert_eq!(label.line_height, text::LineHeight::Absolute(Pixels(30.0)));
+        assert_eq!(label.bounds.height, 40.0);
+    }
+    // y=31 belongs to the first prepared row, but would be in the second
+    // legacy row. y=61 belongs to the second prepared row.
+    let mut messages = Vec::new();
+    for y in [31.0, 61.0] {
+        styled.update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            layout,
+            mouse::Cursor::Available(Point::new(10.0, y)),
+            &renderer,
+            &mut Shell::new(&mut messages),
+            &viewport,
+        );
+    }
+    assert_eq!(messages, ["a", "b"]);
 }
