@@ -1371,7 +1371,13 @@ impl State {
 
     fn rescale(&mut self, scale: f32) {
         match self.painter.set_scale(scale) {
-            Ok(true) => self.reflow(),
+            Ok(true) => {
+                // The stored extent must follow the new scale BEFORE the
+                // reflow: `view` recomputes the strip live, but the pane
+                // area, the PTY grids and the IME cursor read `chrome`.
+                self.chrome = layout::strip_height(self.painter.scale(), self.ui);
+                self.reflow();
+            }
             Ok(false) => {}
             // Keep the old raster: a terminal at the wrong scale is legible,
             // and a terminal with no raster is not a terminal.
@@ -1984,9 +1990,12 @@ mod tests {
         reaper.join().unwrap();
     }
 
-    /// The design boundary, extent side: a chrome height change relayouts once
-    /// — every PTY grid shrinks with the taller strip — and an unchanged
-    /// extent relayouts nothing.
+    /// The design boundary, extent side. The window is first tuned so the pane
+    /// interior sits mid-bucket (rows·cell + cell/2), which makes every leg
+    /// exact whatever the cell metrics: a sub-cell growth moves the pixel
+    /// chrome without moving the integer rows (the PTY grid quantises into
+    /// cells), a growth crossing the cell boundary resizes each PTY and its
+    /// content follows, and repeating the same extent resizes nothing.
     #[test]
     fn extent_changes_relayout_once_and_unchanged_extents_stay_put() {
         use term_core::terminal::Terminal;
@@ -1996,28 +2005,55 @@ mod tests {
         let _ = state.sync();
         let visible = state.shape.visible();
         assert_eq!(visible.len(), 2);
+        // Quiet fixture content, so no PTY damage races the assertions.
         for pane in &visible {
             let terminal = state.tabs.lock().unwrap().pane_by_id(*pane).unwrap();
             *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
         }
+        // Mid-bucket window: interior = rows·cell + cell/2, so a growth of up
+        // to half a cell provably stays inside the same quantisation bucket.
+        let scale = state.painter.scale();
+        let ch = state.painter.logical_cell().1;
+        let rows = f32::from(state.grids[&visible[0]].1);
+        let interior = rows * ch + ch / 2.0;
+        state.resize(Size::new(
+            state.window.width,
+            state.chrome + 2.0 * layout::border(scale) + interior,
+        ));
+        assert_eq!(
+            state.grids[&visible[0]].1 as f32, rows,
+            "the tuned window stays in the same row bucket"
+        );
+        let base = state.ui.line_height.unwrap_or(state.ui.size * 1.4);
+        let mut grow = |ui: &mut toolkit::typography::TextStyle, delta: f32| {
+            ui.line_height = Some(base + delta);
+        };
+
+        // A sub-cell growth moves the pixel extent only: the chrome value
+        // changes while every pane's integer rows stay put.
         let grids = state.grids.clone();
         let chrome = state.chrome;
         let mut ui = state.ui;
-        ui.line_height = Some(ui.line_height.unwrap_or(ui.size * 1.4) + 4.0);
+        grow(&mut ui, ch / 4.0);
         state.apply_chrome(ui, state.tokens);
+        assert!(
+            state.chrome > chrome,
+            "a sub-cell extent change must move the pixel chrome"
+        );
         assert_eq!(
-            state.chrome,
-            chrome + 4.0,
-            "the strip grows by exactly the prepared line box"
-        );
-        assert_ne!(
             state.grids, grids,
-            "a chrome extent change must relayout the PTYs"
+            "a sub-cell extent change stays inside the row bucket"
         );
+
+        // Crossing the cell boundary resizes each PTY once, and the pane
+        // content follows the new grid.
+        let grids = state.grids.clone();
+        grow(&mut ui, 2.0 * ch);
+        state.apply_chrome(ui, state.tokens);
         for id in &visible {
             assert!(
                 state.grids[id].1 < grids[id].1,
-                "pane {id} must shrink with a taller strip"
+                "crossing the cell boundary must shrink pane {id}"
             );
             let terminal = state.tabs.lock().unwrap().pane_by_id(*id).unwrap();
             assert_eq!(
@@ -2026,12 +2062,47 @@ mod tests {
                 "pane {id} content must follow the relaid-out grid"
             );
         }
+
+        // The same extent again: no resize.
         let settled = state.grids.clone();
         state.apply_chrome(ui, state.tokens);
         assert_eq!(
             state.grids, settled,
             "an unchanged extent must not relayout"
         );
+        let removed = state.tabs.lock().unwrap().shutdown();
+        state.cleanup.submit(removed);
+        drop(state);
+        reaper.join().unwrap();
+    }
+
+    /// The stored chrome extent follows a rescale: after `set_scale` succeeds
+    /// the strip is recomputed at the new scale BEFORE the reflow, so the
+    /// pane area and the IME origin read the same extent the live view
+    /// computes. No settings wake is involved — nothing may hide a stale
+    /// extent behind a later reconcile.
+    #[test]
+    fn a_rescale_updates_the_stored_chrome_before_reflow() {
+        let (mut state, reaper) = test_state();
+        let _ = state.sync();
+        state.rescale(2.0);
+        let scale = state.painter.scale();
+        let live = layout::strip_height(scale, state.ui);
+        assert_eq!(
+            state.chrome, live,
+            "the stored extent follows the new scale"
+        );
+        let bounds = layout::content(state.window.width, state.window.height, state.chrome);
+        assert_eq!(
+            bounds.y, live,
+            "the pane and IME origin starts below the live strip extent"
+        );
+        for id in state.shape.visible() {
+            assert!(
+                state.grids.contains_key(&id),
+                "pane {id} was relaid out at the new scale"
+            );
+        }
         let removed = state.tabs.lock().unwrap().shutdown();
         state.cleanup.submit(removed);
         drop(state);

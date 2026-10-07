@@ -7,14 +7,15 @@
 //! connection. The PTY supervisor (`native_lane`) is untouched and stays
 //! distinct from this lane.
 use ::bus::native_client::{
-    BoundedIncomingEvent, BoundedIncomingReceiver, ConnState, IncomingCommand, SupervisedClient,
+    BoundedIncomingEvent, BoundedIncomingReceiver, ConnState, IncomingCommand,
+    RegistrationRejectionKind, SupervisedClient,
 };
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Condvar, Mutex, RwLock},
     time::Duration,
 };
@@ -217,6 +218,9 @@ fn wake_ui(wake: &Wake, needed: bool) {
 /// The number of pending `app.describe` requests the adapter tracks before
 /// answering BUSY.
 const PENDING_CAP: usize = 32;
+/// The total in-flight reply/refusal tasks. Bounded on its own account: the
+/// incoming lane's capacity never implies any bound on spawned tasks.
+const OPERATIONS_CAP: usize = 32;
 /// One shared shutdown budget for the whole lane, as everywhere else.
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
@@ -309,8 +313,28 @@ async fn worker(
     let mut incoming_open = true;
     let mut connection_open = true;
     let mut pending_overflow: Option<BoundedIncomingEvent> = None;
+    // Bounded reply tasks: the permit pool caps every in-flight respond, so a
+    // BUSY flood cannot allocate unbounded tasks. Accepted replies take
+    // priority — when the pool is exhausted they are RETAINED here and
+    // started as capacity frees; refusals are shed with a diagnostic instead.
+    let permits = Arc::new(tokio::sync::Semaphore::new(OPERATIONS_CAP));
+    let mut retained_replies: VecDeque<(Arc<SupervisedClient>, IncomingCommand, u8, String)> =
+        VecDeque::new();
     let mut operations = tokio::task::JoinSet::new();
     loop {
+        // Accepted replies retained while the task cap was exhausted start
+        // the moment capacity frees; an unused permit returns immediately.
+        while let Ok(permit) = permits.clone().try_acquire_owned() {
+            match retained_replies.pop_front() {
+                Some((client, command, rc, body)) => {
+                    operations.spawn(async move {
+                        let _permit = permit;
+                        respond(client, command, rc, body).await
+                    });
+                }
+                None => break, // the permit is returned unused
+            }
+        }
         // Retry a retained overflow into the verb queue the moment capacity
         // may have returned; the core serve loop consumes it and logs it.
         if let Retained::Closed = deliver_retained(&commands_tx, &mut pending_overflow) {
@@ -377,7 +401,7 @@ async fn worker(
                     let reason = client.registration_rejection();
                     let name_taken = reason
                         .as_ref()
-                        .is_some_and(|r| r.message.contains("already registered"));
+                        .is_some_and(|r| r.kind == RegistrationRejectionKind::NameTaken);
                     let fallback = term_core::bus::pid_fallback(
                         service,
                         &name,
@@ -386,8 +410,11 @@ async fn worker(
                     );
                     if let Some(fallback) = fallback {
                         let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
-                        // Replies from the old connection can never be sent.
+                        // Replies from the old connection can never be sent:
+                        // fence both the pending describes and any retained
+                        // accepted replies on the replaced generation.
                         pending.clear();
+                        retained_replies.clear();
                         name = fallback;
                         client = Arc::new(
                             SupervisedClient::connect_options(&name, &url)
@@ -423,7 +450,14 @@ async fn worker(
                 Arc::ptr_eq(stored, &client) && client.connection_generation() == command.generation
             });
         }
+        // Fairness under an incoming flood is ordered, not left to chance:
+        // completed reply tasks (which free the operation cap), the settings
+        // lane and UI effects — including Quit — are polled before the
+        // command lane, so accepted replies and quit progress however ready
+        // `incoming` is. Each earlier branch is only transiently ready, so
+        // the command lane cannot starve either.
         tokio::select! {
+            biased;
             result = operations.join_next(), if !operations.is_empty() => {
                 if let Some(Err(error)) = result {
                     eprintln!("{service} Bus reply: {error}");
@@ -434,6 +468,32 @@ async fn worker(
                 Progress::UiClosed => break,
                 Progress::Updated => {}
             },
+            effect = effects.recv() => {
+                let Some(effect) = effect else { break };
+                match effect {
+                    Effect::Reply(id, rc, value) => {
+                        // Tracked send on the client that received the
+                        // command; the lane is never blocked on a reply.
+                        // Accepted replies take priority over refusals: when
+                        // the task cap is exhausted they are retained, never
+                        // dropped, and start as capacity frees.
+                        if let Some((client, command)) = pending.remove(&id) {
+                            let body = value.to_string();
+                            match permits.clone().try_acquire_owned() {
+                                Ok(permit) => {
+                                    operations.spawn(async move {
+                                        let _permit = permit;
+                                        respond(client, command, rc, body).await
+                                    });
+                                }
+                                Err(_) => retained_replies
+                                    .push_back((client, command, rc, body)),
+                            }
+                        }
+                    }
+                    Effect::Quit => break,
+                }
+            }
             event = async { incoming.as_mut().expect("guarded incoming").recv().await },
                 if incoming.is_some() && incoming_open => {
                 let command = match event {
@@ -449,10 +509,12 @@ async fn worker(
                         continue;
                     }
                     None => {
-                        // The lane closes when the supervisor gives up. Retain
-                        // the settings lane and any offline preparation; the
-                        // loop ends only on Quit or a closed UI — no reconnect
-                        // loop of our own (the supervisor reconnects).
+                        // The lane ends when the supervised client stops for
+                        // good — a fatal registration or the shutdown close.
+                        // Transport bounces reconnect on the same lane without
+                        // closing it. The settings lane and any offline
+                        // preparation stay alive; only Quit or a closed UI
+                        // ends this loop.
                         incoming_open = false;
                         wake_ui(&wake, lane.publish(SettingsEvent::Wake));
                         continue;
@@ -465,11 +527,13 @@ async fn worker(
                 if command.command == "app.describe" {
                     // The frontend answers: a UI request that reconciles live
                     // settings evidence first, tracked here by id, bounded so
-                    // a slow UI cannot grow the map without limit.
-                    if pending.len() >= PENDING_CAP {
+                    // a slow UI cannot grow the map without limit. While the
+                    // reply path is saturated (retained accepted replies), new
+                    // describes are refused instead of queueing further.
+                    if pending.len() >= PENDING_CAP || !retained_replies.is_empty() {
                         let client = Arc::clone(&client);
-                        operations.spawn(respond(client, command, 10,
-                            "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".to_string()));
+                        try_spawn(service, &permits, &mut operations, client, command, 10,
+                            "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".to_string());
                         continue;
                     }
                     next_id += 1;
@@ -477,8 +541,8 @@ async fn worker(
                         // The UI is gone: no answer can ever come. Refuse once,
                         // tracked on the originating client.
                         let client = Arc::clone(&client);
-                        operations.spawn(respond(client, command, 10,
-                            "{\"error_code\":\"CLOSED\",\"message\":\"no frontend to answer app.describe\"}".to_string()));
+                        try_spawn(service, &permits, &mut operations, client, command, 10,
+                            "{\"error_code\":\"CLOSED\",\"message\":\"no frontend to answer app.describe\"}".to_string());
                         continue;
                     }
                     pending.insert(next_id, (Arc::clone(&client), command));
@@ -489,30 +553,20 @@ async fn worker(
                 // instead of an unbounded buffer.
                 match commands_tx.try_send(BoundedIncomingEvent::Command(command)) {
                     Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(
-                        BoundedIncomingEvent::Command(command),
-                    )) => {
-                        let client = Arc::clone(&client);
-                        operations.spawn(respond(client, command, 10,
-                            "{\"error_code\":\"BUSY\",\"message\":\"verb queue full\"}".to_string()));
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(
-                        BoundedIncomingEvent::Overflow { .. },
-                    )) => unreachable!(),
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
-                }
-            }
-            effect = effects.recv() => {
-                let Some(effect) = effect else { break };
-                match effect {
-                    Effect::Reply(id, rc, value) => {
-                        // Tracked send on the client that received the
-                        // command; the lane is never blocked on a reply.
-                        if let Some((client, command)) = pending.remove(&id) {
-                            operations.spawn(respond(client, command, rc, value.to_string()));
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => match event {
+                        BoundedIncomingEvent::Command(command) => {
+                            let client = Arc::clone(&client);
+                            try_spawn(service, &permits, &mut operations, client, command, 10,
+                                "{\"error_code\":\"BUSY\",\"message\":\"verb queue full\"}".to_string());
                         }
-                    }
-                    Effect::Quit => break,
+                        // A retained overflow marker can lose the same
+                        // capacity race: keep it instead of answering BUSY for
+                        // a command this arm never held.
+                        BoundedIncomingEvent::Overflow { dropped } => {
+                            retain_overflow(&mut pending_overflow, dropped);
+                        }
+                    },
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
                 }
             }
             changed = connection.changed(), if connection_open => {
@@ -537,6 +591,13 @@ async fn worker(
     let deadline = std::time::Instant::now() + SHUTDOWN_BUDGET;
     let deadline_at = tokio::time::Instant::from_std(deadline);
     let mut faults = Vec::new();
+    // Accepted replies retained while the task cap was exhausted stay fenced
+    // on their originating client and generation: they must be sent under the
+    // shared deadline or be counted as undelivered — never silently dropped.
+    // Retained + in-flight stays within 2 × OPERATIONS_CAP at shutdown.
+    for (client, command, rc, body) in retained_replies.drain(..) {
+        operations.spawn(respond(client, command, rc, body));
+    }
     if let Some(mut task) = serve_task.take() {
         tokio::select! {
             result = &mut task => {
@@ -557,8 +618,13 @@ async fn worker(
             Ok(Some(Err(error))) => faults.push(format!("term Bus reply: {error}")),
             Ok(None) => break,
             Err(_) => {
+                let undelivered = operations.len();
                 operations.abort_all();
-                faults.push("term Bus reply drain timed out".into());
+                if undelivered > 0 {
+                    faults.push(format!(
+                        "term Bus reply drain timed out with {undelivered} undelivered replies"
+                    ));
+                }
                 break;
             }
         }
@@ -592,6 +658,28 @@ fn respond(
         .map_err(|_| "Bus reply timed out".to_owned())?
         .map_err(|error| format!("Bus reply: {error}"))
     }
+}
+
+/// Start one bounded reply task if a permit remains. A refusal under
+/// saturation is shed with a diagnostic — the caller times out — while an
+/// accepted reply is retained by the caller instead, never dropped here.
+fn try_spawn(
+    service: &'static str,
+    permits: &Arc<tokio::sync::Semaphore>,
+    operations: &mut tokio::task::JoinSet<Result<(), String>>,
+    client: Arc<SupervisedClient>,
+    command: IncomingCommand,
+    rc: u8,
+    body: String,
+) {
+    let Ok(permit) = permits.clone().try_acquire_owned() else {
+        eprintln!("{service} Bus reply capacity exhausted; dropping a refusal (caller times out)");
+        return;
+    };
+    operations.spawn(async move {
+        let _permit = permit;
+        respond(client, command, rc, body).await
+    });
 }
 
 /// Successive overflow markers aggregate while the bounded verb queue is
@@ -764,5 +852,112 @@ mod tests {
             Retained::Closed
         ));
         assert!(pending.is_none());
+    }
+
+    /// The operations cap is a real permit bound: nothing starts beyond it,
+    /// and capacity returns with completed tasks. `try_acquire_owned` takes
+    /// the `Arc`, exactly as the worker holds it.
+    #[test]
+    fn operations_permits_bound_in_flight_reply_tasks() {
+        let permits = Arc::new(tokio::sync::Semaphore::new(OPERATIONS_CAP));
+        let held: Vec<_> = (0..OPERATIONS_CAP)
+            .map(|_| permits.clone().try_acquire_owned().expect("permit under the cap"))
+            .collect();
+        assert!(
+            permits.clone().try_acquire_owned().is_err(),
+            "no reply task may start beyond the operations cap"
+        );
+        drop(held);
+        assert!(
+            permits.clone().try_acquire_owned().is_ok(),
+            "capacity returns with the completed tasks"
+        );
+    }
+
+    /// A describe flood with a silent frontend is refused BUSY rather than
+    /// queued unboundedly; accepted describes keep waking the settings lane;
+    /// and quit still progresses while a stalled broker wedges every
+    /// in-flight reply under the shared shutdown deadline.
+    #[test]
+    fn a_describe_flood_with_slow_responses_stays_bounded_and_quit_progresses() {
+        use std::collections::BTreeMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let broker = term_test_broker::Broker::start();
+        let settings = term_core::config::Settings {
+            config: term_core::config::Config::default(),
+            term: "xterm-256color",
+        };
+        let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
+        let (cleanup, reaper) = term_core::tabs::Cleanup::start().unwrap();
+        let (_notes, notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake: Wake = {
+            let wakes = Arc::clone(&wakes);
+            Arc::new(move || {
+                wakes.fetch_add(1, Ordering::Relaxed);
+            })
+        };
+        let started = start(
+            "term",
+            broker.url.clone(),
+            tabs.clone(),
+            cleanup.clone(),
+            notify_rx,
+            wake,
+        )
+        .unwrap();
+        runtime().block_on(async {
+            let caller = Arc::new(
+                ::bus::native_client::NodedClient::connect_anonymous(&broker.url)
+                    .await
+                    .unwrap(),
+            );
+            let before = wakes.load(Ordering::Relaxed);
+            // The UI half answers nothing: accepted describes wedge, the
+            // rest must come back BUSY instead of queueing unboundedly.
+            let mut calls = tokio::task::JoinSet::new();
+            for _ in 0..80 {
+                let caller = Arc::clone(&caller);
+                calls.spawn(async move {
+                    caller
+                        .call_with_headers_raw("term", "app.describe", &BTreeMap::new(), "{}")
+                        .await
+                });
+            }
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            let mut refused = 0;
+            while !calls.is_empty() && tokio::time::Instant::now() < deadline {
+                match tokio::time::timeout_at(deadline, calls.join_next()).await {
+                    Ok(Some(Ok(Ok((rc, body, _))))) if rc == 10 && body.contains("BUSY") => {
+                        refused += 1;
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            calls.abort_all();
+            assert!(
+                refused > 0,
+                "the flood beyond the pending cap is refused BUSY, not queued"
+            );
+            assert!(
+                wakes.load(Ordering::Relaxed) > before,
+                "accepted describes keep publishing into the settings lane"
+            );
+            // Slow-response leg: a stalled broker wedges every in-flight
+            // send; quit must still progress under the shared deadline.
+            let paused = broker.pause();
+            started.handle.quit();
+            started
+                .handle
+                .wait_done()
+                .expect("quit progresses under wedged replies");
+            started.worker.join().unwrap();
+            drop(paused);
+        });
+        cleanup.submit(tabs.lock().unwrap().shutdown());
+        drop(cleanup);
+        reaper.join().unwrap();
     }
 }
