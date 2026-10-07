@@ -993,18 +993,9 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Worker<T, C> {
                         local: local.value.as_ref(),
                     };
                     let result = if let Some(generic) = &source.generic {
-                        build_generic(
-                            generic,
-                            snapshot,
-                            &inputs,
-                        )
+                        build_generic(generic, snapshot, &inputs)
                     } else {
-                        prepare(
-                            snapshot,
-                            host,
-                            source.binding.as_ref(),
-                            &inputs,
-                        )
+                        prepare(snapshot, host, source.binding.as_ref(), &inputs)
                     };
                     ResourceOutcome::Reprepared(source, Box::new(result))
                 }

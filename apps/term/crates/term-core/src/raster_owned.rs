@@ -323,7 +323,12 @@ impl PreparedRaster {
 
     /// Retain the exact selected bytes and coordinates while preparing a
     /// different local cursor. No font discovery or parsing takes place.
-    pub fn resized_with_cursor(&self, scale: f32, logical_px: f32, cursor: Cursor) -> Result<Self, String> {
+    pub fn resized_with_cursor(
+        &self,
+        scale: f32,
+        logical_px: f32,
+        cursor: Cursor,
+    ) -> Result<Self, String> {
         let mut prepared = self.resized(scale, logical_px)?;
         prepared.cursor = cursor;
         Ok(prepared)

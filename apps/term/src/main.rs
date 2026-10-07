@@ -197,7 +197,10 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         cleanup.clone(),
         notify_rx,
         waker.fd.waker(),
-        settings_bus::PreparationSeed { local, raster: bootstrap_raster },
+        settings_bus::PreparationSeed {
+            local,
+            raster: bootstrap_raster,
+        },
     )
     .map_err(|e| format!("Bus startup: {e}"))?;
     let ui = started
@@ -1132,14 +1135,23 @@ impl State {
         let generation = self.bus.settings_generation();
         self.settings.reconcile(generation);
         let mut target = presentation::ActivationTarget {
-            painter: &mut self.painter, tokens: &mut self.tokens, ui: &mut self.ui,
-            chrome: &mut self.chrome, baseline: &mut self.baseline,
+            painter: &mut self.painter,
+            tokens: &mut self.tokens,
+            ui: &mut self.ui,
+            chrome: &mut self.chrome,
+            baseline: &mut self.baseline,
             applied_context: &mut self.applied_context,
-            applied_key: &mut self.applied_raster, force_paint: &mut self.force_paint,
-            paint_requested: &mut self.paint_requested, tabs: &self.tabs,
-            shape: &mut self.shape, window: self.window, grids: &mut self.grids,
+            applied_key: &mut self.applied_raster,
+            force_paint: &mut self.force_paint,
+            paint_requested: &mut self.paint_requested,
+            tabs: &self.tabs,
+            shape: &mut self.shape,
+            window: self.window,
+            grids: &mut self.grids,
         };
-        let changes = self.settings.drain_with(|| self.bus.settings_generation(), |p| target.activate(p));
+        let changes = self
+            .settings
+            .drain_with(|| self.bus.settings_generation(), |p| target.activate(p));
         if !changes.is_empty() {
             // The settings activation receipt, same shape the other hosts
             // print: live evidence, cache state and fallback diagnostics.
@@ -1380,10 +1392,18 @@ impl State {
     fn zoom(&mut self, change: impl FnOnce(&mut FontSize) -> bool) {
         let mut font = match FontSize::from_steps(self.baseline, self.local.zoom_steps) {
             Ok(font) => font,
-            Err(error) => { eprintln!("term: font zoom: {error}"); return; }
+            Err(error) => {
+                eprintln!("term: font zoom: {error}");
+                return;
+            }
         };
-        if !change(&mut font) { return; }
-        let next = LocalContext { zoom_steps: font.steps(), ..self.local };
+        if !change(&mut font) {
+            return;
+        }
+        let next = LocalContext {
+            zoom_steps: font.steps(),
+            ..self.local
+        };
         self.publish_context(next);
     }
 
@@ -1408,7 +1428,10 @@ impl State {
     }
 
     fn publish_context(&mut self, next: LocalContext) {
-        match self.settings.set_context(next, self.bus.settings_generation()) {
+        match self
+            .settings
+            .set_context(next, self.bus.settings_generation())
+        {
             Ok(_) => self.local = next,
             Err(error) => eprintln!("term: local preparation: {}", error.message),
         }
@@ -1424,7 +1447,8 @@ impl State {
             chrome: self.chrome,
             grids: &mut self.grids,
             paint_requested: &mut self.paint_requested,
-        }.relayout();
+        }
+        .relayout();
     }
     fn sync_ime(&mut self) {
         if !self.ime.has_owner() {
@@ -1868,9 +1892,12 @@ mod tests {
         let local = LocalContext::new(1.0, core_config::Cursor::Underline).unwrap();
         let (settings, lane) = application::presentation::native::bridge(
             application::presentation::native::Session::with_context(consumer, local),
-            application::presentation::native::Worker::contextual_with_host(move |appearance, snapshot, local| {
-                presentation::prepare(appearance, snapshot, local, &raster)
-            }, appearance::resources::ResourceHost::new(assets::Lookup::new())),
+            application::presentation::native::Worker::contextual_with_host(
+                move |appearance, snapshot, local| {
+                    presentation::prepare(appearance, snapshot, local, &raster)
+                },
+                appearance::resources::ResourceHost::new(assets::Lookup::new()),
+            ),
         );
         let bootstrap = appearance::settings::bootstrap().unwrap();
         let ui = bootstrap.typography().get("ui").expect("UI typography");
@@ -1922,22 +1949,35 @@ mod tests {
         FONTS.call_once(|| {
             toolkit::fonts::install(
                 toolkit::fonts::FontSet::new().sans(
-                    include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").as_slice(),
+                    include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf")
+                        .as_slice(),
                 ),
                 None,
-            ).unwrap();
+            )
+            .unwrap();
         });
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let mut lane = state.fixture_lane.take().expect("real fixture lane");
         runtime.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 while !state.settings.preparation_evidence().current {
-                    assert_ne!(lane.drive().await, application::presentation::native::Progress::UiClosed);
+                    assert_ne!(
+                        lane.drive().await,
+                        application::presentation::native::Progress::UiClosed
+                    );
                     let _ = state.sync();
-                    assert!(state.settings.preparation_evidence().fault.is_none(),
-                        "{:?}", state.settings.preparation_evidence().fault);
+                    assert!(
+                        state.settings.preparation_evidence().fault.is_none(),
+                        "{:?}",
+                        state.settings.preparation_evidence().fault
+                    );
                 }
-            }).await.expect("contextual preparation did not finish");
+            })
+            .await
+            .expect("contextual preparation did not finish");
         });
         state.fixture_lane = Some(lane);
     }
@@ -2097,7 +2137,11 @@ mod tests {
         let _ = state.sync();
         finish_preparation(&mut state);
         state.rescale(2.0);
-        assert_eq!(state.painter.scale(), 1.0, "old complete raster remains active while preparing");
+        assert_eq!(
+            state.painter.scale(),
+            1.0,
+            "old complete raster remains active while preparing"
+        );
         finish_preparation(&mut state);
         let scale = state.painter.scale();
         assert_eq!(scale, 2.0);
@@ -2323,7 +2367,9 @@ mod tests {
         let id = state.shape.active_pane;
         let terminal = state.tabs.lock().unwrap().pane_by_id(id).unwrap();
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh\r\nijklmnop");
-        state.grids.insert(id, PtyExtent::new((8, 3), state.painter.cell()));
+        state
+            .grids
+            .insert(id, PtyExtent::new((8, 3), state.painter.cell()));
         let (cw, ch) = state.painter.logical_cell();
         let border = layout::border(state.painter.scale());
         let top = layout::strip_height(state.painter.scale(), state.ui) + border;
@@ -2400,7 +2446,9 @@ mod tests {
         let terminal = state.tabs.lock().unwrap().pane_by_id(original).unwrap();
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"\x1b[?1002;1006h");
         let input = terminal.lock().unwrap().listener.test_input_reader();
-        state.grids.insert(original, PtyExtent::new((8, 3), state.painter.cell()));
+        state
+            .grids
+            .insert(original, PtyExtent::new((8, 3), state.painter.cell()));
         let (cw, ch) = state.painter.logical_cell();
         let border = layout::border(state.painter.scale());
         let start = Point::new(
@@ -2512,7 +2560,9 @@ mod tests {
             .map(|id| {
                 let terminal = state.tabs.lock().unwrap().pane_by_id(id).unwrap();
                 *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
-                state.grids.insert(id, PtyExtent::new((8, 3), state.painter.cell()));
+                state
+                    .grids
+                    .insert(id, PtyExtent::new((8, 3), state.painter.cell()));
                 terminal
             })
             .collect();
@@ -2600,7 +2650,9 @@ mod tests {
         let terminal = state.tabs.lock().unwrap().pane_by_id(id).unwrap();
         // No PTY sender: a failed report must still NEVER fall back to paste.
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"\x1b[?9hword");
-        state.grids.insert(id, PtyExtent::new((8, 3), state.painter.cell()));
+        state
+            .grids
+            .insert(id, PtyExtent::new((8, 3), state.painter.cell()));
         let position = Point::new(
             4.0,
             layout::strip_height(state.painter.scale(), state.ui) + 4.0,
@@ -2665,7 +2717,11 @@ mod tests {
 
         let before = state.painter.cell();
         state.zoom(|font| font.step_by(6));
-        assert_eq!(state.painter.cell(), before, "pending zoom retains the applied raster");
+        assert_eq!(
+            state.painter.cell(),
+            before,
+            "pending zoom retains the applied raster"
+        );
         finish_preparation(&mut state);
         let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
         let cell = state.painter.cell();

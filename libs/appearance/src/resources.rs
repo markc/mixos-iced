@@ -41,9 +41,9 @@
 //! fixed-bound permit, acquired inside the worker and released on every exit.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use assets::{ExplicitRequest, IconDefault, Lookup, ReadLimits, VerifiedFile, VerifiedSet};
@@ -472,7 +472,10 @@ pub struct RegistryEvidence {
 impl RegistryEvidence {
     fn without_registration(mut self) -> Self {
         let version = toolkit::graphics::text::font_system()
-            .read().unwrap_or_else(|poisoned| poisoned.into_inner()).version().value();
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .version()
+            .value();
         let usage = process_registry().usage();
         self.renderer_version_before = version;
         self.renderer_version_after = version;
@@ -2368,10 +2371,7 @@ mod tests {
                 &mut check_ok(),
             )
             .unwrap_err();
-        assert!(
-            error.message.contains("no glyph in its face"),
-            "{error:?}"
-        );
+        assert!(error.message.contains("no glyph in its face"), "{error:?}");
         assert_eq!(process_registry().usage(), before);
         assert_eq!(
             toolkit::graphics::text::font_system()
@@ -2893,10 +2893,7 @@ mod tests {
         let error = host
             .prepare(changed, None, None, requirements, &mut check_ok())
             .unwrap_err();
-        assert!(
-            error.message.contains("no glyph in its face"),
-            "{error:?}"
-        );
+        assert!(error.message.contains("no glyph in its face"), "{error:?}");
         assert_eq!(process_registry().usage(), usage_before);
         assert_eq!(
             toolkit::graphics::text::font_system()

@@ -436,20 +436,33 @@ fn resize_retains_the_original_source_handles_and_coordinates() {
 
 #[test]
 fn prepared_snapshot_retains_actual_policy_and_worker_resize_never_rediscovers() {
-    let policy = OwnedFontPolicy { groups: vec![vec![fira_mono()], vec![inter_variable()]], weight: 500 };
+    let policy = OwnedFontPolicy {
+        groups: vec![vec![fira_mono()], vec![inter_variable()]],
+        weight: 500,
+    };
     let raster = Raster::from_owned(policy, 1.0, 13.0, Cursor::Block).unwrap();
     let snapshot = raster.prepared_snapshot();
     assert_eq!(snapshot.cell(), (raster.width, raster.height));
     assert_eq!(snapshot.baseline(), raster.baseline);
     assert_eq!(snapshot.weight(), raster.weight);
-    let changed = snapshot.resized_with_cursor(2.5, 17.0, Cursor::Underline).unwrap().activate();
+    let changed = snapshot
+        .resized_with_cursor(2.5, 17.0, Cursor::Underline)
+        .unwrap()
+        .activate();
     assert!(Arc::ptr_eq(&raster.unicode.fonts, &changed.unicode.fonts));
     assert!(Arc::ptr_eq(&raster.data, &changed.data));
     assert_eq!(changed.cursor, Cursor::Underline);
     assert_eq!(changed.weight, 500);
-    assert_ne!((changed.width, changed.height), (raster.width, raster.height));
+    assert_ne!(
+        (changed.width, changed.height),
+        (raster.width, raster.height)
+    );
     assert_eq!(snapshot.cursor(), Cursor::Block);
-    assert!(snapshot.resized_with_cursor(f32::NAN, 17.0, Cursor::Block).is_err());
+    assert!(
+        snapshot
+            .resized_with_cursor(f32::NAN, 17.0, Cursor::Block)
+            .is_err()
+    );
 }
 
 #[test]

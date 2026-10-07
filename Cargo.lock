@@ -7334,10 +7334,11 @@ dependencies = [
 
 [[package]]
 name = "term"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "appearance",
  "application",
+ "assets",
  "buildinfo",
  "bus",
  "bytes",

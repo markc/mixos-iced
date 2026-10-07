@@ -1171,7 +1171,9 @@ mod tests {
             image::Rgb([211, 79, 37]),
         ));
         let mut encoded = Cursor::new(Vec::new());
-        bitmap.write_to(&mut encoded, image::ImageFormat::Ico).unwrap();
+        bitmap
+            .write_to(&mut encoded, image::ImageFormat::Ico)
+            .unwrap();
         assert!(matches!(
             decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None),
             Err(IconDecodeError::RasterDecode)

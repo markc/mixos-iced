@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Immutable terminal painter preparation on the shared settings worker.
-use term_core::{config::Cursor, font::FontSize, raster::{OwnedFace, OwnedFontPolicy, PreparedRaster}};
+use term_core::{
+    config::Cursor,
+    font::FontSize,
+    raster::{OwnedFace, OwnedFontPolicy, PreparedRaster},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LocalContext {
@@ -13,10 +17,17 @@ impl LocalContext {
         if !scale.is_finite() || !(0.5..=8.0).contains(&scale) {
             return Err("terminal scale must be finite and in 0.5..8".into());
         }
-        Ok(Self { scale, zoom_steps: 0, cursor })
+        Ok(Self {
+            scale,
+            zoom_steps: 0,
+            cursor,
+        })
     }
     pub fn with_scale(self, scale: f32) -> Result<Self, String> {
-        Ok(Self { zoom_steps: self.zoom_steps, ..Self::new(scale, self.cursor)? })
+        Ok(Self {
+            zoom_steps: self.zoom_steps,
+            ..Self::new(scale, self.cursor)?
+        })
     }
 }
 
@@ -51,23 +62,83 @@ pub(crate) fn prepare(
     local: &LocalContext,
     bootstrap: &PreparedRaster,
 ) -> Result<Content, settings::Diagnostic> {
-    let fault = |message| settings::Diagnostic::new("terminal_resources", "typography.terminal", message);
+    let fault =
+        |message| settings::Diagnostic::new("terminal_resources", "typography.terminal", message);
     LocalContext::new(local.scale, local.cursor).map_err(fault)?;
-    let terminal = appearance.typography().get("terminal").ok_or_else(|| fault("Terminal typography is missing".into()))?;
+    let terminal = appearance
+        .typography()
+        .get("terminal")
+        .ok_or_else(|| fault("Terminal typography is missing".into()))?;
     let font = FontSize::from_steps(terminal.size, local.zoom_steps).map_err(fault)?;
     let resources = appearance.resources();
     let verified = resources.and_then(|r| r.binding()).is_some();
     let (raster, source) = if verified {
-        let owned = resources.and_then(|r| r.owned_text("terminal")).ok_or_else(|| fault("Verified terminal font policy is missing".into()))?;
-        let groups = owned.groups().iter().map(|group| group.iter().map(|face| OwnedFace { bytes: face.bytes(), index: face.index() }).collect()).collect();
-        let source = RasterSource::Verified(owned.groups().iter().map(|group| group.iter().map(|face| (face.evidence().source.clone(), face.bytes().len() as u64, face.index())).collect()).collect());
-        let raster = PreparedRaster::prepare(OwnedFontPolicy { groups, weight: owned.effective_weight() }, local.scale, font.current(), local.cursor).map_err(fault)?;
+        let owned = resources
+            .and_then(|r| r.owned_text("terminal"))
+            .ok_or_else(|| fault("Verified terminal font policy is missing".into()))?;
+        let groups = owned
+            .groups()
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|face| OwnedFace {
+                        bytes: face.bytes(),
+                        index: face.index(),
+                    })
+                    .collect()
+            })
+            .collect();
+        let source = RasterSource::Verified(
+            owned
+                .groups()
+                .iter()
+                .map(|group| {
+                    group
+                        .iter()
+                        .map(|face| {
+                            (
+                                face.evidence().source.clone(),
+                                face.bytes().len() as u64,
+                                face.index(),
+                            )
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
+        let raster = PreparedRaster::prepare(
+            OwnedFontPolicy {
+                groups,
+                weight: owned.effective_weight(),
+            },
+            local.scale,
+            font.current(),
+            local.cursor,
+        )
+        .map_err(fault)?;
         (raster, source)
     } else {
-        (bootstrap.resized_with_cursor(local.scale, font.current(), local.cursor).map_err(fault)?, RasterSource::Bootstrap)
+        (
+            bootstrap
+                .resized_with_cursor(local.scale, font.current(), local.cursor)
+                .map_err(fault)?,
+            RasterSource::Bootstrap,
+        )
     };
-    let key = RasterKey { source, weight: raster.weight(), scale: local.scale.to_bits(), logical_px: font.current().to_bits(), cursor: local.cursor };
-    Ok(Content { raster, key, font, context: *local })
+    let key = RasterKey {
+        source,
+        weight: raster.weight(),
+        scale: local.scale.to_bits(),
+        logical_px: font.current().to_bits(),
+        cursor: local.cursor,
+    };
+    Ok(Content {
+        raster,
+        key,
+        font,
+        context: *local,
+    })
 }
 
 /// Complete grid and physical extent last delivered to the real PTY lane.
@@ -80,9 +151,16 @@ impl PtyExtent {
             // the painter and terminal grid retain their complete geometry.
             u16::try_from(u64::from(count) * u64::from(size)).unwrap_or(u16::MAX)
         };
-        Self(grid.0, grid.1, pixels(grid.0, cell.0), pixels(grid.1, cell.1))
+        Self(
+            grid.0,
+            grid.1,
+            pixels(grid.0, cell.0),
+            pixels(grid.1, cell.1),
+        )
     }
-    pub fn grid(self) -> (u16, u16) { (self.0, self.1) }
+    pub fn grid(self) -> (u16, u16) {
+        (self.0, self.1)
+    }
 }
 
 pub(crate) struct LayoutTarget<'a> {
@@ -98,22 +176,34 @@ impl LayoutTarget<'_> {
     pub fn relayout(&mut self) {
         let scale = self.painter.scale();
         let cell = self.painter.cell();
-        if cell.0 == 0 || cell.1 == 0 { return; }
+        if cell.0 == 0 || cell.1 == 0 {
+            return;
+        }
         let bounds = crate::layout::content(self.window.width, self.window.height, self.chrome);
         let mut resize = Vec::new();
         {
             let mut tabs = self.tabs.lock().expect("tabs");
             *self.shape = crate::layout::Shape::of(&tabs);
-            if tabs.is_empty() { return; }
-            let Some(tree) = &self.shape.tree else { return; };
+            if tabs.is_empty() {
+                return;
+            }
+            let Some(tree) = &self.shape.tree else {
+                return;
+            };
             let placed = crate::layout::panes(tree, bounds, scale);
             for (id, geometry) in &placed {
-                tabs.geometry(*id, term_core::panes::Geometry {
-                    x: geometry.x - bounds.x, y: geometry.y - bounds.y, ..*geometry
-                });
+                tabs.geometry(
+                    *id,
+                    term_core::panes::Geometry {
+                        x: geometry.x - bounds.x,
+                        y: geometry.y - bounds.y,
+                        ..*geometry
+                    },
+                );
                 let extent = PtyExtent::new(crate::layout::grid(*geometry, cell, scale), cell);
                 if self.grids.get(id) != Some(&extent)
-                    && let Some(terminal) = tabs.pane_by_id(*id) {
+                    && let Some(terminal) = tabs.pane_by_id(*id)
+                {
                     resize.push((*id, extent, terminal));
                 }
             }
@@ -124,8 +214,14 @@ impl LayoutTarget<'_> {
         // model synchronously and enqueues the real asynchronous PTY ioctl.
         for (id, extent, terminal) in resize {
             *self.paint_requested = true;
-            terminal.lock().expect("terminal").resize(extent.0, extent.1, extent.2, extent.3);
-            self.tabs.lock().expect("tabs").resized(id, extent.0, extent.1);
+            terminal
+                .lock()
+                .expect("terminal")
+                .resize(extent.0, extent.1, extent.2, extent.3);
+            self.tabs
+                .lock()
+                .expect("tabs")
+                .resized(id, extent.0, extent.1);
             self.grids.insert(id, extent);
         }
     }
@@ -161,15 +257,24 @@ impl ActivationTarget<'_> {
         *self.baseline = content.font.configured();
         let prepared = presentation.appearance();
         *self.tokens = crate::theme::tokens(prepared);
-        *self.ui = prepared.typography().get("ui").expect("prepared UI typography");
+        *self.ui = prepared
+            .typography()
+            .get("ui")
+            .expect("prepared UI typography");
         let chrome = crate::layout::strip_height(self.painter.scale(), *self.ui);
         *self.chrome = chrome;
         // Model mutations may share this wake even when only colours changed.
         // Read the live tree under its lock before returning to the ACK seam.
-            LayoutTarget {
-                painter: self.painter, tabs: self.tabs, shape: self.shape, window: self.window,
-                chrome, grids: self.grids, paint_requested: self.paint_requested,
-            }.relayout();
+        LayoutTarget {
+            painter: self.painter,
+            tabs: self.tabs,
+            shape: self.shape,
+            window: self.window,
+            chrome,
+            grids: self.grids,
+            paint_requested: self.paint_requested,
+        }
+        .relayout();
         self.painter.retain(&self.shape.visible());
     }
 }
@@ -179,9 +284,18 @@ mod tests {
     use super::*;
     #[test]
     fn pty_extent_includes_pixel_only_changes_and_saturates_os_fields_without_overflow() {
-        assert_ne!(PtyExtent::new((80, 24), (8, 16)), PtyExtent::new((80, 24), (9, 17)));
-        assert_eq!(PtyExtent::new((80, 24), (8, 16)), PtyExtent(80, 24, 640, 384));
-        assert_eq!(PtyExtent::new((u16::MAX, u16::MAX), (512, 1024)), PtyExtent(u16::MAX, u16::MAX, u16::MAX, u16::MAX));
+        assert_ne!(
+            PtyExtent::new((80, 24), (8, 16)),
+            PtyExtent::new((80, 24), (9, 17))
+        );
+        assert_eq!(
+            PtyExtent::new((80, 24), (8, 16)),
+            PtyExtent(80, 24, 640, 384)
+        );
+        assert_eq!(
+            PtyExtent::new((u16::MAX, u16::MAX), (512, 1024)),
+            PtyExtent(u16::MAX, u16::MAX, u16::MAX, u16::MAX)
+        );
     }
     #[test]
     fn local_context_rejects_non_finite_or_unsupported_scale_and_keeps_zoom() {

@@ -6,6 +6,7 @@
 //! the settings lane's client IS the verb lane's client: never a second
 //! connection. The PTY supervisor (`native_lane`) is untouched and stays
 //! distinct from this lane.
+use crate::presentation::{Content, LocalContext};
 use ::bus::native_client::{
     BoundedIncomingEvent, BoundedIncomingReceiver, ConnState, IncomingCommand,
     RegistrationRejectionKind, SupervisedClient,
@@ -14,7 +15,6 @@ use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
 use serde_json::{Value, json};
-use crate::presentation::{Content, LocalContext};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Condvar, Mutex, RwLock},
@@ -148,7 +148,14 @@ pub struct Started {
 }
 
 type Ready = std::sync::mpsc::Sender<
-    Result<(Arc<RwLock<Shared>>, Ui<Content, LocalContext>, appearance::settings::Prepared), String>,
+    Result<
+        (
+            Arc<RwLock<Shared>>,
+            Ui<Content, LocalContext>,
+            appearance::settings::Prepared,
+        ),
+        String,
+    >,
 >;
 
 pub(crate) struct PreparationSeed {
@@ -250,8 +257,16 @@ async fn worker(
     wake: Wake,
     channels: WorkerChannels,
 ) {
-    let WorkerChannels { describes, mut effects, ready, seed } = channels;
-    let PreparationSeed { local: initial, raster } = seed;
+    let WorkerChannels {
+        describes,
+        mut effects,
+        ready,
+        seed,
+    } = channels;
+    let PreparationSeed {
+        local: initial,
+        raster,
+    } = seed;
     // The shared session binding, following the existing diagnostics: a
     // binding failure is reported and startup stops — a terminal never
     // fabricates an identity to keep settings alive.
@@ -771,7 +786,13 @@ mod tests {
             wake,
             PreparationSeed {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
-                raster: term_core::raster::Raster::for_test(1.0, 13.0, term_core::config::Cursor::Underline).unwrap().prepared_snapshot(),
+                raster: term_core::raster::Raster::for_test(
+                    1.0,
+                    13.0,
+                    term_core::config::Cursor::Underline,
+                )
+                .unwrap()
+                .prepared_snapshot(),
             },
         )
         .unwrap();
@@ -934,7 +955,13 @@ mod tests {
             wake,
             PreparationSeed {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
-                raster: term_core::raster::Raster::for_test(1.0, 13.0, term_core::config::Cursor::Underline).unwrap().prepared_snapshot(),
+                raster: term_core::raster::Raster::for_test(
+                    1.0,
+                    13.0,
+                    term_core::config::Cursor::Underline,
+                )
+                .unwrap()
+                .prepared_snapshot(),
             },
         )
         .unwrap();
