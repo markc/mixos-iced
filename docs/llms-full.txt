@@ -949,7 +949,7 @@ checked separately by the layering gate.
 | [dopus-core](https://github.com/markc/mixos/blob/main/apps/dopus/crates/dopus-core/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [files](https://github.com/markc/mixos/blob/main/apps/dopus/crates/files/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [scene-editor](https://github.com/markc/mixos/blob/main/apps/scene-editor/Cargo.toml) | scene-editor | app | desktop | public | 0.1.1 |
-| [term](https://github.com/markc/mixos/blob/main/apps/term/Cargo.toml) | term | app | desktop | public | 0.3.6 |
+| [term](https://github.com/markc/mixos/blob/main/apps/term/Cargo.toml) | term | app | desktop | public | 0.3.7 |
 | [term-core](https://github.com/markc/mixos/blob/main/apps/term/crates/term-core/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [term-test-broker](https://github.com/markc/mixos/blob/main/apps/term/crates/term-test-broker/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [mix-shell](https://github.com/markc/mixos/blob/main/cli/mix-shell/Cargo.toml) | mix-shell | cli | mix | public | 0.109.4 |
@@ -1600,6 +1600,18 @@ migration. Native VT/image presentation and latency gates remain outstanding.
 Term is the native Wayland terminal. Its toolkit-free core owns PTYs, the VT
 model and native session control; the graphical app uses the shared toolkit
 and the CPU renderer. It requires no D-Bus session.
+
+Desktop settings supply UI and terminal typography, exact font weight,
+colours and spacing. Font preparation runs on the shared worker; the previous
+complete painter stays active until its replacement is ready. A refused
+preparation preserves the terminal contents, selection and history.
+
+The configured startup font size supplies the initial raster. After settings
+activation, terminal typography supplies the baseline and local zoom steps
+apply to it. Output scale and zoom retain the activated font sources and asset
+binding. Unsupported geometry is refused rather than silently clamped.
+Colour changes reuse the terminal glyph raster. `app.describe` distinguishes
+desired preparation from the applied scale, zoom and actual font sources.
 
 Each tab contains one or more split panes. Ctrl+Shift+T opens a tab,
 Ctrl+Shift+W closes it, and Ctrl+PageUp/PageDown selects adjacent tabs.

@@ -13,6 +13,16 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.7
+
+Prepare settings-owned terminal fonts, exact weights, scale and zoom on the
+shared contextual worker. Install the complete painter and reconcile the
+current pane tree and window geometry before acknowledging activation. Local
+zoom and output scale reuse the activated source binding. Refused or stale
+preparations retain the applied raster and terminal state. Compare PTY pixel
+extents as well as rows and columns, and report desired and applied preparation
+separately through `app.describe`.
+
 ## 0.3.6
 
 Adopt the shared desktop settings on the existing supervised Bus connection.

@@ -14,6 +14,7 @@ use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
 use serde_json::{Value, json};
+use crate::presentation::{Content, LocalContext};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Condvar, Mutex, RwLock},
@@ -139,7 +140,7 @@ impl Handle {
 
 pub struct Started {
     pub handle: Handle,
-    pub ui: Ui<()>,
+    pub ui: Ui<Content, LocalContext>,
     pub bootstrap: appearance::settings::Prepared,
     pub describes: std::sync::mpsc::Receiver<Describe>,
     /// The worker thread, stored so shutdown joins it instead of detaching it.
@@ -147,8 +148,20 @@ pub struct Started {
 }
 
 type Ready = std::sync::mpsc::Sender<
-    Result<(Arc<RwLock<Shared>>, Ui<()>, appearance::settings::Prepared), String>,
+    Result<(Arc<RwLock<Shared>>, Ui<Content, LocalContext>, appearance::settings::Prepared), String>,
 >;
+
+pub(crate) struct PreparationSeed {
+    pub local: LocalContext,
+    pub raster: term_core::raster::PreparedRaster,
+}
+
+struct WorkerChannels {
+    describes: std::sync::mpsc::Sender<Describe>,
+    effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
+    ready: Ready,
+    seed: PreparationSeed,
+}
 
 pub fn start(
     service: &'static str,
@@ -157,6 +170,7 @@ pub fn start(
     cleanup: Cleanup,
     notify_rx: tokio::sync::mpsc::UnboundedReceiver<CompletionNote>,
     wake: Wake,
+    seed: PreparationSeed,
 ) -> Result<Started, String> {
     let (describe_tx, describe_rx) = std::sync::mpsc::channel();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -178,9 +192,12 @@ pub fn start(
                         cleanup,
                         notify_rx,
                         wake,
-                        describe_tx,
-                        rx,
-                        ready_send,
+                        WorkerChannels {
+                            describes: describe_tx,
+                            effects: rx,
+                            ready: ready_send,
+                            seed,
+                        },
                     ));
                     // Bounded shutdown: the supervisor, serve task and flush
                     // have finished; 100 ms is a ceiling, not a wait.
@@ -231,10 +248,10 @@ async fn worker(
     cleanup: Cleanup,
     notify_rx: tokio::sync::mpsc::UnboundedReceiver<CompletionNote>,
     wake: Wake,
-    describes: std::sync::mpsc::Sender<Describe>,
-    mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: Ready,
+    channels: WorkerChannels,
 ) {
+    let WorkerChannels { describes, mut effects, ready, seed } = channels;
+    let PreparationSeed { local: initial, raster } = seed;
     // The shared session binding, following the existing diagnostics: a
     // binding failure is reported and startup stops — a terminal never
     // fabricates an identity to keep settings alive.
@@ -278,12 +295,14 @@ async fn worker(
     // worker; the bridge records that missing cache configuration as a
     // diagnostic in the session's cache evidence, so it is visible rather
     // than silent.
-    let build = |_: &appearance::settings::Prepared, _: &settings::Snapshot| Ok(());
+    let settings_worker = Worker::contextual(move |appearance, snapshot, local: &LocalContext| {
+        crate::presentation::prepare(appearance, snapshot, local, &raster)
+    });
     let settings_worker = match config::AppDirs::resolve("term") {
-        Some(dirs) => Worker::offline_with_cache(dirs.cache().join("settings"), build),
-        None => Worker::offline(build),
+        Some(dirs) => settings_worker.with_cache_directory(dirs.cache().join("settings")),
+        None => settings_worker,
     };
-    let (ui, mut lane) = bridge(Session::new(consumer), settings_worker);
+    let (ui, mut lane) = bridge(Session::with_context(consumer, initial), settings_worker);
     wake_ui(&wake, lane.connect(Arc::clone(&client)));
     if ready
         .send(Ok((Arc::clone(&shared), ui, bootstrap)))
@@ -750,6 +769,10 @@ mod tests {
             cleanup.clone(),
             notify_rx,
             wake,
+            PreparationSeed {
+                local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
+                raster: term_core::raster::Raster::for_test(1.0, 13.0, term_core::config::Cursor::Underline).unwrap().prepared_snapshot(),
+            },
         )
         .unwrap();
         runtime().block_on(async {
@@ -909,6 +932,10 @@ mod tests {
             cleanup.clone(),
             notify_rx,
             wake,
+            PreparationSeed {
+                local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
+                raster: term_core::raster::Raster::for_test(1.0, 13.0, term_core::config::Cursor::Underline).unwrap().prepared_snapshot(),
+            },
         )
         .unwrap();
         runtime().block_on(async {

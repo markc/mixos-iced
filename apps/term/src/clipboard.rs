@@ -212,7 +212,7 @@ impl State {
         let cell = self.painter.logical_cell();
         let relative = Point::new(position.x - rect.x, position.y - rect.y);
         let border = layout::border(scale);
-        let (col, row) = input::pointer_cell(relative, border, cell, *self.grids.get(&pane)?);
+        let (col, row) = input::pointer_cell(relative, border, cell, self.grids.get(&pane)?.grid());
         let side = if relative.x - border - f32::from(col) * cell.0 < cell.0 / 2.0 {
             SelectionSide::Left
         } else {
