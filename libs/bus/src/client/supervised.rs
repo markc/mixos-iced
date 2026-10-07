@@ -287,8 +287,12 @@ impl SupervisedClient {
         let mut last_err: Option<ClientError> = None;
         let mut connection: Option<Connection> = None;
         for attempt in 0..MAX_INITIAL_ATTEMPTS {
-            match Connection::connect_with_options(&options.service_name, &options.noded_url, &options.connection)
-                .await
+            match Connection::connect_with_options(
+                &options.service_name,
+                &options.noded_url,
+                &options.connection,
+            )
+            .await
             {
                 Ok(c) => {
                     connection = Some(c);
@@ -302,7 +306,9 @@ impl SupervisedClient {
                         error = %e,
                         "initial broker connect attempt failed"
                     );
-                    if options.fatal_on_registration_rejection && e.registration_rejection().is_some() {
+                    if options.fatal_on_registration_rejection
+                        && e.registration_rejection().is_some()
+                    {
                         return Err(SupervisedError::InitialConnectFailed {
                             attempts: attempt + 1,
                             source: e,
@@ -348,7 +354,8 @@ impl SupervisedClient {
         // The supervisor forwards from the first connection's receiver, and
         // every later one, into the single outward channel.
         let first_rx = connection.as_ref().map(|connection| {
-            connection.take_native_incoming()
+            connection
+                .take_native_incoming()
                 .expect("a fresh connection has its incoming receiver")
         });
 
@@ -431,8 +438,10 @@ impl SupervisedClient {
     /// fatal. This non-consuming sample is published before the `Fatal` edge;
     /// ordinary dial failures never manufacture a registration refusal.
     pub fn registration_rejection(&self) -> Option<RegistrationRejected> {
-        self.registration_rejection.lock()
-            .unwrap_or_else(|error| error.into_inner()).clone()
+        self.registration_rejection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     /// Subscribe to connection-state transitions. The receiver starts at
@@ -470,7 +479,11 @@ impl SupervisedClient {
 
     /// The live connection, cloned out so no network await holds the lock.
     async fn connection(&self) -> Result<Arc<Connection>, SupervisedError> {
-        self.inner.read().await.clone().ok_or(SupervisedError::Disconnected)
+        self.inner
+            .read()
+            .await
+            .clone()
+            .ok_or(SupervisedError::Disconnected)
     }
 
     pub async fn call_typed(
@@ -851,13 +864,22 @@ fn publish_registration_rejection(ctx: &SupervisorCtx, error: &ClientError) {
     // One protocol-bounded diagnostic, never a history of failed attempts.
     // Use the same publication fence as terminal lifecycle transitions so
     // observing Fatal guarantees the diagnostic is already sampleable.
-    let _publish = ctx.state_publish.lock()
+    let _publish = ctx
+        .state_publish
+        .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if matches!(*ctx.state_tx.borrow(), ConnState::ShuttingDown | ConnState::Fatal) {
+    if matches!(
+        *ctx.state_tx.borrow(),
+        ConnState::ShuttingDown | ConnState::Fatal
+    ) {
         return;
     }
-    *ctx.registration_rejection.lock().unwrap_or_else(|error| error.into_inner()) =
-        Some(RegistrationRejected { rc, message: message.to_owned() });
+    *ctx.registration_rejection
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(RegistrationRejected {
+        rc,
+        message: message.to_owned(),
+    });
     ctx.state_tx.send_replace(ConnState::Fatal);
 }
 
@@ -911,7 +933,10 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: Option<NativeIn
         }
 
         if stop_requested(&ctx.shutdown_rx)
-            || matches!(*ctx.state_tx.borrow(), ConnState::ShuttingDown | ConnState::Fatal)
+            || matches!(
+                *ctx.state_tx.borrow(),
+                ConnState::ShuttingDown | ConnState::Fatal
+            )
         {
             return;
         }
@@ -930,7 +955,11 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: Option<NativeIn
 
         let mut attempt: u32 = 0;
         let new_rx = loop {
-            let delay = if initial && attempt == 0 { Duration::ZERO } else { backoff_delay(attempt) };
+            let delay = if initial && attempt == 0 {
+                Duration::ZERO
+            } else {
+                backoff_delay(attempt)
+            };
             tokio::select! {
                 _ = ctx.out_tx.closed() => return,
                 changed = ctx.shutdown_rx.changed() => {
@@ -941,7 +970,10 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: Option<NativeIn
                 _ = tokio::time::sleep(delay) => {}
             }
             if stop_requested(&ctx.shutdown_rx)
-                || matches!(*ctx.state_tx.borrow(), ConnState::ShuttingDown | ConnState::Fatal)
+                || matches!(
+                    *ctx.state_tx.borrow(),
+                    ConnState::ShuttingDown | ConnState::Fatal
+                )
             {
                 return;
             }
