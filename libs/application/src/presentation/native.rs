@@ -18,6 +18,8 @@ use std::{
     time::Instant,
 };
 mod mailbox;
+#[cfg(feature = "settings-cache")]
+mod cache;
 pub use mailbox::Mailbox;
 #[cfg(test)]
 mod tests;
@@ -34,6 +36,11 @@ pub enum Event<T> {
     Rpc(Work, Result<Option<Snapshot>, Diagnostic>),
     Prepared(Completion<T>),
     Fallback(settings::fallback::Request, Box<FallbackResult<T>>),
+    #[cfg(feature = "settings-cache")]
+    Saved(settings::cache::Save, Result<settings::cache::WriteOutcome, Diagnostic>),
+    /// Explicit retry of the latest activated cache capture; no retry timer.
+    #[cfg(feature = "settings-cache")]
+    RetryCache,
 }
 
 /// One desired job set, sent through the host's existing worker command lane.
@@ -47,6 +54,12 @@ pub struct Jobs {
     fallback: Option<settings::fallback::Request>,
     valid: Option<settings::consumer::Update>,
     valid_fallback: Option<settings::fallback::Request>,
+    #[cfg(feature = "settings-cache")]
+    target: settings::cache::Target,
+    #[cfg(feature = "settings-cache")]
+    save: Option<settings::cache::Save>,
+    #[cfg(feature = "settings-cache")]
+    retry_save: u64,
 }
 
 pub struct Session<T> {
@@ -55,6 +68,11 @@ pub struct Session<T> {
     fallback: Option<settings::fallback::Request>,
     fallback_attempted: bool,
     prepare: Option<Request>,
+    fallback_diagnostics: Vec<Diagnostic>,
+    #[cfg(feature = "settings-cache")]
+    cache_fault: Option<Diagnostic>,
+    #[cfg(feature = "settings-cache")]
+    retry_save: u64,
 }
 impl<T> Session<T> {
     pub fn new(consumer: Consumer) -> Self {
@@ -64,10 +82,24 @@ impl<T> Session<T> {
             fallback: None,
             fallback_attempted: false,
             prepare: None,
+            fallback_diagnostics: Vec::new(),
+            #[cfg(feature = "settings-cache")]
+            cache_fault: None,
+            #[cfg(feature = "settings-cache")]
+            retry_save: 0,
         }
     }
     pub fn host(&self) -> &Host<T> {
         &self.host
+    }
+
+    pub fn fallback_diagnostics(&self) -> &[Diagnostic] {
+        &self.fallback_diagnostics
+    }
+
+    #[cfg(feature = "settings-cache")]
+    pub fn cache_fault(&self) -> Option<&Diagnostic> {
+        self.cache_fault.as_ref()
     }
     /// `live` is the connection's current sampled state, read on the UI loop.
     /// Queued lifecycle notices cannot authorise an activation after real loss.
@@ -104,6 +136,9 @@ impl<T> Session<T> {
             }
             Event::Fallback(request, result) => match *result {
                 Ok((fallback, presentation)) => {
+                    if self.host.consumer().is_fallback_current(&request) {
+                        self.fallback_diagnostics = fallback.diagnostics().to_vec();
+                    }
                     if self
                         .host
                         .consumer_mut()
@@ -120,11 +155,24 @@ impl<T> Session<T> {
                     }
                 }
                 Err(faults) => {
+                    if self.host.consumer().is_fallback_current(&request) {
+                        self.fallback_diagnostics = faults.clone();
+                    }
                     self.host
                         .consumer_mut()
                         .complete_fallback(&request, Err(faults));
                 }
             },
+            #[cfg(feature = "settings-cache")]
+            Event::Saved(save, result) => {
+                if self.host.consumer().cache_save().as_ref()
+                    .is_some_and(|current| current.same_capture(&save))
+                {
+                    self.cache_fault = result.err();
+                }
+            }
+            #[cfg(feature = "settings-cache")]
+            Event::RetryCache => self.retry_save = self.retry_save.wrapping_add(1),
         }
         let now = Instant::now();
         if self
@@ -142,8 +190,7 @@ impl<T> Session<T> {
         {
             self.fallback = None;
         }
-        if now >= self.bootstrap
-            && !self.fallback_attempted
+        if !self.fallback_attempted
             && self.host.consumer().applied().is_none()
         {
             let request = self.host.consumer_mut().fallback_request();
@@ -169,7 +216,7 @@ impl<T> Session<T> {
             .retry_deadline()
             .into_iter()
             .chain(
-                (now < self.bootstrap && self.host.consumer().applied().is_none())
+                (now < self.bootstrap && !self.fallback_attempted && self.host.consumer().applied().is_none())
                     .then_some(self.bootstrap),
             )
             .min();
@@ -186,6 +233,12 @@ impl<T> Session<T> {
             fallback: self.fallback.clone(),
             valid: self.host.consumer().pending().cloned(),
             valid_fallback: self.fallback.clone(),
+            #[cfg(feature = "settings-cache")]
+            target: self.host.consumer().cache_target(),
+            #[cfg(feature = "settings-cache")]
+            save: self.host.consumer().cache_save(),
+            #[cfg(feature = "settings-cache")]
+            retry_save: self.retry_save,
         };
         (changed, jobs)
     }
@@ -219,10 +272,23 @@ impl Resource {
         }
     }
 }
-struct Running<T> {
-    capture: Resource,
-    task: tokio::task::JoinHandle<Event<T>>,
-    cancel: Arc<AtomicBool>,
+enum Running<T> {
+    Resource {
+        capture: Resource,
+        task: tokio::task::JoinHandle<Event<T>>,
+        cancel: Arc<AtomicBool>,
+    },
+    #[cfg(feature = "settings-cache")]
+    Save {
+        save: settings::cache::Save,
+        target: settings::cache::Target,
+        task: tokio::task::JoinHandle<cache::Result>,
+    },
+}
+enum Done<T> {
+    Resource(Result<Event<T>, tokio::task::JoinError>),
+    #[cfg(feature = "settings-cache")]
+    Save(Result<cache::Result, tokio::task::JoinError>),
 }
 fn valid(resource: &Resource, jobs: &Jobs) -> bool {
     match resource {
@@ -250,6 +316,8 @@ pub struct Worker<T> {
     running: Option<Running<T>>,
     build: Builder<T>,
     offered: Option<Resource>,
+    #[cfg(feature = "settings-cache")]
+    cache: Option<cache::Lane>,
 }
 impl<T: Send + 'static> Worker<T> {
     pub fn new(
@@ -274,6 +342,8 @@ impl<T: Send + 'static> Worker<T> {
             running: None,
             build: Arc::new(build),
             offered: None,
+            #[cfg(feature = "settings-cache")]
+            cache: None,
         }
     }
     /// Attach the host's already established connection, then resend its
@@ -282,6 +352,16 @@ impl<T: Send + 'static> Worker<T> {
         self.client = Some(client);
         self.work = None;
         self.rpc = None;
+    }
+    /// Construction-only cache root. All I/O shares the blocking resource lane.
+    #[cfg(feature = "settings-cache")]
+    pub fn offline_with_cache(
+        directory: std::path::PathBuf,
+        build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
+    ) -> Self {
+        let mut worker = Self::offline(build);
+        worker.cache = Some(cache::Lane::new(directory));
+        worker
     }
     pub fn replace(&mut self, jobs: Jobs) {
         if self
@@ -298,10 +378,14 @@ impl<T: Send + 'static> Worker<T> {
         {
             self.queued = None;
         }
-        if let Some(running) = &self.running
-            && !valid(&running.capture, &jobs)
+        if let Some(Running::Resource { capture, cancel, .. }) = &self.running
+            && !valid(capture, &jobs)
         {
-            running.cancel.store(true, Ordering::Release);
+            cancel.store(true, Ordering::Release);
+        }
+        #[cfg(feature = "settings-cache")]
+        if let Some(cache) = &mut self.cache {
+            cache.replace(&jobs.target, jobs.save.as_ref(), jobs.retry_save);
         }
         if self.work != jobs.work {
             self.rpc = None;
@@ -338,6 +422,10 @@ impl<T: Send + 'static> Worker<T> {
             return;
         }
         let Some(resource) = self.queued.take() else {
+            #[cfg(feature = "settings-cache")]
+            if let Some(cache) = &mut self.cache {
+                self.running = cache.start();
+            }
             return;
         };
         let capture = match &resource {
@@ -347,6 +435,8 @@ impl<T: Send + 'static> Worker<T> {
         let build = Arc::clone(&self.build);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::clone(&cancel);
+        #[cfg(feature = "settings-cache")]
+        let cache = self.cache.as_ref().and_then(cache::Lane::loader);
         let task = tokio::task::spawn_blocking(move || match resource {
             Resource::Prepare(request) => {
                 let snapshot = request.update().snapshot();
@@ -359,7 +449,13 @@ impl<T: Send + 'static> Worker<T> {
             Resource::Fallback(request) => {
                 let request = *request;
                 let mut presentation = None;
-                let prepared = request.prepare(None, |snapshot, context, _| {
+                let prepared = request.prepare_with_cache(|| {
+                    #[cfg(feature = "settings-cache")]
+                    if let Some((directory, target)) = cache {
+                        return settings::cache::load_for(&directory, &target).map(Some);
+                    }
+                    Ok(None)
+                }, |snapshot, context, _| {
                     presentation = Some(prepare(snapshot, context, &cancelled, &build)?);
                     Ok(())
                 });
@@ -372,7 +468,7 @@ impl<T: Send + 'static> Worker<T> {
                 )
             }
         });
-        self.running = Some(Running {
+        self.running = Some(Running::Resource {
             capture,
             task,
             cancel,
@@ -390,28 +486,75 @@ impl<T: Send + 'static> Worker<T> {
                 self.wake = None;
                 Once::new(Event::Wake)
             }
-            result = async { (&mut self.running.as_mut().expect("guarded resource").task).await }, if self.running.is_some() => {
+            result = async {
+                match self.running.as_mut().expect("guarded job") {
+                    Running::Resource { task, .. } => Done::Resource(task.await),
+                    #[cfg(feature = "settings-cache")]
+                    Running::Save { task, .. } => Done::Save(task.await),
+                }
+            }, if self.running.is_some() => {
                 let running = self.running.take().unwrap();
-                let event = match result {
+                let event = match (running, result) {
+                    (Running::Resource { capture, .. }, Done::Resource(result)) => match result {
                     Ok(event) => event,
                     Err(error) => {
                         let fault = Diagnostic::new("preparation_failed", "worker", error.to_string());
-                        match running.capture {
+                        match capture {
                             Resource::Prepare(request) => Event::Prepared(request.failed(fault)),
                             Resource::Fallback(request) => Event::Fallback(*request, Box::new(Err(vec![fault]))),
                         }
                     }
+                    },
+                    #[cfg(feature = "settings-cache")]
+                    (Running::Save { save, target, .. }, Done::Save(result)) => {
+                        let result = match result {
+                            Ok(result) => {
+                                if let Some(cache) = &mut self.cache {
+                                    cache.finish(&target, result.writer);
+                                }
+                                result.outcome
+                            }
+                            Err(error) => Err(Diagnostic::new("cache_write_failed", "cache", error.to_string())),
+                        };
+                        Event::Saved(save, result)
+                    },
+                    #[cfg(feature = "settings-cache")]
+                    _ => unreachable!("job and result agree"),
                 };
                 Once::new(event)
             }
             _ = std::future::pending::<()>() => unreachable!(),
         }
     }
+
+    /// Drain activated saves on the host's existing shutdown worker. Resources
+    /// are cancelled cooperatively; the UI never waits here. A timeout does
+    /// not cancel a filesystem operation that has already started. Persistence
+    /// is established only by a successful save/drain receipt.
+    #[cfg(feature = "settings-cache")]
+    pub async fn flush_cache(&mut self, deadline: Instant) -> Result<(), Diagnostic> {
+        self.rpc = None;
+        self.wake = None;
+        self.queued = None;
+        if let Some(Running::Resource { cancel, .. }) = &self.running {
+            cancel.store(true, Ordering::Release);
+        }
+        let mut fault = None;
+        while self.running.is_some() || self.cache.as_ref().is_some_and(cache::Lane::pending) {
+            let event = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.next())
+                .await.map_err(|_| Diagnostic::new("cache_drain_timeout", "cache", "Shutdown budget expired"))?
+                .take().expect("worker event");
+            if let Event::Saved(_, result) = event {
+                fault = result.err();
+            }
+        }
+        fault.map_or(Ok(()), Err)
+    }
 }
 impl<T> Drop for Worker<T> {
     fn drop(&mut self) {
-        if let Some(running) = &self.running {
-            running.cancel.store(true, Ordering::Release);
+        if let Some(Running::Resource { cancel, .. }) = &self.running {
+            cancel.store(true, Ordering::Release);
         }
     }
 }

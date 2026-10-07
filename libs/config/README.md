@@ -16,3 +16,8 @@ Where MixOS keeps its files, and how a `*.conf.mix` file is read.
   config reader needs one dependency. Typed loading is `strict::from_file`.
 
 No dependency on the Mix language. Test with `cargo test -p config`.
+
+`atomic::open_directory` refuses symlinks in every component.
+`atomic::create_directory` uses the same held-descriptor walk and provisions
+missing components with mode 0700. It validates the entire absolute path before
+creation, refuses parent traversal and leaves existing permissions unchanged.

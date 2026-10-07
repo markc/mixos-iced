@@ -12,29 +12,47 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Open an absolute directory without following a symlink in ANY component.
 /// The caller owns the returned inode; relative/parent traversal is refused.
 pub fn open_directory(path: &Path) -> io::Result<File> {
+    directory(path, false)
+}
+
+/// Provision an absolute directory through held parent descriptors. Missing
+/// components are private (0700); existing permissions are left unchanged.
+/// Validate the entire path before creating anything and never follow links.
+pub fn create_directory(path: &Path) -> io::Result<File> {
+    directory(path, true)
+}
+
+fn directory(path: &Path, create: bool) -> io::Result<File> {
     use std::os::unix::ffi::OsStrExt;
     use std::path::Component;
     if !path.is_absolute() {
         return Err(io::Error::other("expected an absolute directory"));
+    }
+    let mut names = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => names.push(std::ffi::CString::new(name.as_bytes())?),
+            _ => return Err(io::Error::other("parent/prefix traversal refused")),
+        }
     }
     let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     let mut directory = OpenOptions::new()
         .read(true)
         .custom_flags(flags)
         .open("/")?;
-    for component in path.components() {
-        match component {
-            Component::RootDir | Component::CurDir => {}
-            Component::Normal(name) => {
-                let name = std::ffi::CString::new(name.as_bytes())?;
-                let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-                if fd < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                directory = unsafe { File::from_raw_fd(fd) };
+    for name in names {
+        let mut fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 && create && io::Error::last_os_error().kind() == io::ErrorKind::NotFound {
+            if unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) } != 0
+                && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
+            {
+                return Err(io::Error::last_os_error());
             }
-            _ => return Err(io::Error::other("parent/prefix traversal refused")),
+            fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         }
+        if fd < 0 { return Err(io::Error::last_os_error()); }
+        directory = unsafe { File::from_raw_fd(fd) };
     }
     Ok(directory)
 }
@@ -233,6 +251,26 @@ fn replace_in_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provisioning_rejects_links_and_traversal_before_external_side_effects() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("settings-provision-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        assert!(create_directory(&root.join("link/escaped")).is_err());
+        assert!(!outside.join("escaped").exists());
+        assert!(create_directory(&root.join("uncreated/../escape")).is_err());
+        assert!(!root.join("uncreated").exists());
+        assert!(create_directory(Path::new("relative/cache")).is_err());
+        let target = root.join("owned/cache/settings");
+        let held = create_directory(&target).unwrap();
+        assert_eq!(held.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(create_directory(&target).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn failed_pre_rename_keeps_old_bytes_post_rename_is_ambiguous() {

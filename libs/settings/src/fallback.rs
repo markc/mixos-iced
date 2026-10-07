@@ -28,7 +28,7 @@ impl Candidate {
     }
 }
 
-/// Capture on the UI event loop after the bootstrap budget, prepare off-thread.
+/// Capture on the UI event loop while authority starts, prepare off-thread.
 /// The host owns the one preparation job and cancels it on connection/rebind.
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -68,6 +68,16 @@ impl Request {
     pub fn prepare(
         &self,
         cached: Option<Candidate>,
+        resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
+    ) -> Result<Prepared, Vec<Diagnostic>> {
+        self.prepare_with_cache(|| Ok(cached), resources)
+    }
+
+    /// Load persistent data only after retained data fails its resource check.
+    /// A load failure is retained as a diagnostic while embedded may succeed.
+    pub fn prepare_with_cache(
+        &self,
+        cache: impl FnOnce() -> Result<Option<Candidate>, Diagnostic>,
         mut resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
     ) -> Result<Prepared, Vec<Diagnostic>> {
         let mut diagnostics = Vec::new();
@@ -85,6 +95,10 @@ impl Request {
                 Err(error) => diagnostics.push(error),
             }
         }
+        let cached = match cache() {
+            Ok(candidate) => candidate,
+            Err(error) => { diagnostics.push(error); None }
+        };
         if let Some(candidate) = cached {
             let check = if candidate.snapshot.binding == self.binding
                 && candidate.context == self.context

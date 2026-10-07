@@ -43,9 +43,27 @@ attaches its connection. A cancelled blocking job must finish before the latest
 replacement starts; cancellation is checked between font records and around
 content preparation, and cannot interrupt a current OS font read or callback.
 
-`native::Mailbox` holds at most five event kinds behind one outstanding UI wake.
+`native::Mailbox` holds one event per kind behind one outstanding UI wake
+(five kinds, or seven with caching).
 Replacing a snapshot marks a gap so the consumer reconciles. `message::Once`
 lets cloneable GUI messages consume an opaque completion exactly once.
-The integration prepares embedded fallback; persisted host cache loading/writing
-and native first-map timing are separate work. Ced uses this shared path for
-live palette/token/font-size changes; Quoin adoption is still pending.
+Fallback resources start during authority bootstrap. `fallback_diagnostics()`
+retains current load/resource failures even if embedded presentation succeeds.
+Ced and Quoin share this coordinator for live presentation changes. Native
+first-map timing remains an independent acceptance check.
+
+`settings-cache` adds `Worker::offline_with_cache(directory, build)`. The app
+supplies its isolated absolute root; the same blocking lane provisions it via
+descriptor-relative no-follow `config::atomic` operations, reads only when
+retained resources cannot be used, and saves activated authority/retained data.
+Cache data never supplies authority confirmation. Resource work takes priority;
+one latest save is coalesced and survives connection loss. Save errors retain
+the writer lock and ordering fence. `Session::cache_fault()` reports only the
+current activation's completed save; `Event::RetryCache` explicitly retries it
+without a timer or failure loop. Replacing the producer retires the writer
+after in-flight work finishes; construction fixes the directory for its life.
+
+Call `Worker::flush_cache(deadline)` on the existing shutdown worker to drain
+pending saves within a budget. A timeout cannot interrupt already-running OS
+I/O. Dropping the worker may lose an unstarted save; persistence requires a
+successful save or drain receipt. No UI thread, transport or runtime is added.

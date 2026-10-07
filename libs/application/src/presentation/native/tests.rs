@@ -2,6 +2,19 @@
 use super::*;
 use settings::{Binding, Desktop, Revision};
 use toolkit::fonts::{FontChoice, FontSelection, FontSet};
+#[cfg(feature = "settings-cache")]
+mod cache;
+
+fn install_fonts() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        toolkit::fonts::install(
+            FontSet::new().sans(
+                include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").as_slice(),
+            ), None,
+        ).unwrap();
+    });
+}
 
 fn binding() -> Binding {
     Binding {
@@ -300,17 +313,7 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
 }
 #[tokio::test]
 async fn superseded_blocking_jobs_are_physically_serial_and_keep_only_latest() {
-    static INSTALLED: std::sync::Once = std::sync::Once::new();
-    INSTALLED.call_once(|| {
-        toolkit::fonts::install(
-            FontSet::new().sans(
-                include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf")
-                    .as_slice(),
-            ),
-            None,
-        )
-        .unwrap();
-    });
+    install_fonts();
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let release_rx = std::sync::Mutex::new(release_rx);

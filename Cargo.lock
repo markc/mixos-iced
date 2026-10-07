@@ -202,10 +202,11 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "appearance",
  "bus",
+ "config",
  "design",
  "iced",
  "iced_program",
@@ -215,6 +216,7 @@ dependencies = [
  "png 0.18.1",
  "serde_json",
  "settings",
+ "tempfile",
  "tokio",
  "toolkit",
 ]
@@ -6656,7 +6658,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "blake3",
  "bus",

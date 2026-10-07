@@ -238,7 +238,7 @@ impl Consumer {
             }
         })
     }
-    /// Called after the shared bootstrap deadline. Preparation stays on the
+    /// Capture fallback while authority is starting. Preparation stays on the
     /// host's worker, with one pending fallback job and no extra connection.
     pub fn fallback_request(&mut self) -> Option<Request> {
         if self.applied.is_some() || self.pending.is_some() || self.fallback_serial != 0 {
@@ -300,6 +300,12 @@ impl Consumer {
             || request.generation != self.generation
             || self.applied.is_some()
             || self.pending.is_some())
+    }
+    #[cfg(feature = "cache")]
+    pub fn cache_target(&self) -> crate::cache::Target {
+        crate::cache::Target::capture(
+            self.owner, self.binding.clone(), self.context.clone(), self.shell,
+        )
     }
     #[cfg(feature = "cache")]
     pub fn cache_save(&self) -> Option<crate::cache::Save> {

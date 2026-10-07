@@ -61,6 +61,10 @@ pub struct Save {
     shell: bool,
 }
 impl Save {
+    /// Compare private producer and activation fences without copying data.
+    pub fn same_capture(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.serial == other.serial
+    }
     pub(crate) fn capture(
         owner: u64,
         serial: u64,
@@ -76,6 +80,22 @@ impl Save {
             shell,
         }
     }
+}
+
+/// Immutable producer fence and persistent cache identity. The producer is
+/// local to this process and never contributes to the cache filename.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    owner: u64,
+    binding: Binding,
+    context: String,
+    shell: bool,
+}
+impl Target {
+    pub(crate) fn capture(owner: u64, binding: Binding, context: String, shell: bool) -> Self {
+        Self { owner, binding, context, shell }
+    }
+
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
@@ -100,13 +120,13 @@ pub struct Writer {
 }
 impl Writer {
     pub fn open(directory: &Path, consumer: &Consumer) -> Result<Self, Diagnostic> {
+        Self::open_for(directory, &consumer.cache_target())
+    }
+
+    pub fn open_for(directory: &Path, target: &Target) -> Result<Self, Diagnostic> {
         let directory =
             config::atomic::open_directory(directory).map_err(|e| fault("cache_open_failed", e))?;
-        let name = name(
-            consumer.binding(),
-            consumer.context(),
-            consumer.shell_consumer(),
-        );
+        let name = name(&target.binding, &target.context, target.shell);
         let lock_name = std::ffi::CString::new(format!("{name}.lock")).unwrap();
         let fd = unsafe {
             libc::openat(
@@ -139,10 +159,10 @@ impl Writer {
             _lock: lock,
             lock_name,
             name,
-            binding: consumer.binding().clone(),
-            context: consumer.context().into(),
-            shell: consumer.shell_consumer(),
-            owner: None,
+            binding: target.binding.clone(),
+            context: target.context.clone(),
+            shell: target.shell,
+            owner: Some(target.owner),
             latest: None,
         })
     }
@@ -241,13 +261,13 @@ impl Writer {
 /// Read-only bootstrap never creates a lock or any files. Missing/corrupt data
 /// is an explicit diagnostic; callers continue to the embedded candidate.
 pub fn load(directory: &Path, consumer: &Consumer) -> Result<Candidate, Diagnostic> {
+    load_for(directory, &consumer.cache_target())
+}
+
+pub fn load_for(directory: &Path, target: &Target) -> Result<Candidate, Diagnostic> {
     let directory =
         config::atomic::open_directory(directory).map_err(|e| fault("cache_open_failed", e))?;
-    let name = name(
-        consumer.binding(),
-        consumer.context(),
-        consumer.shell_consumer(),
-    );
+    let name = name(&target.binding, &target.context, target.shell);
     let bytes = config::atomic::read_in(&directory, name.as_ref(), MAX_CACHE_BYTES)
         .map_err(|e| fault("cache_read_failed", e))?;
     // Read compatibility evidence before strict body decoding, so a new
@@ -267,7 +287,7 @@ pub fn load(directory: &Path, consumer: &Consumer) -> Result<Candidate, Diagnost
             "Cache schema/interpretation differs",
         ));
     }
-    if envelope.context != consumer.context() || envelope.shell != consumer.shell_consumer() {
+    if envelope.context != target.context || envelope.shell != target.shell {
         return Err(fault("wrong_cache_target", "Context/capability differs"));
     }
     if envelope.digest
@@ -275,7 +295,7 @@ pub fn load(directory: &Path, consumer: &Consumer) -> Result<Candidate, Diagnost
     {
         return Err(fault("invalid_cache", "Digest differs"));
     }
-    validate_inline(&envelope.snapshot, consumer.binding(), consumer.context())?;
+    validate_inline(&envelope.snapshot, &target.binding, &target.context)?;
     Ok(Candidate {
         snapshot: Arc::new(envelope.snapshot),
         context: envelope.context,

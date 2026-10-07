@@ -1,5 +1,13 @@
 # settings contract changes
 
+## 0.3.3
+
+Add immutable cache targets for borrowed workers, capture deduplication and
+producer-fenced writer opening. Add lazy persistent fallback loading after
+retained resource validation, preserving load diagnostics when embedded works.
+Authority verbs/schema remain 0.1.0/1. Older presentation caches are rejected
+because the cache interpretation includes this library version.
+
 ## 0.3.2
 
 Expose shared consumer evidence with separate accepted and applied identities,

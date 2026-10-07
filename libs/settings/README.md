@@ -76,6 +76,12 @@ JSON parsing preserves floating-point round trips for exact projection checks.
 Digests detect corruption; they do not authenticate local files. Local cache
 never supplies authority evidence, even when its data is valid.
 
+`cache_target()` captures the immutable producer/binding/context/capability
+descriptor for `load_for` and `Writer::open_for`; the private producer fence
+does not enter the persistent filename. `Save::same_capture` allows bounded
+worker deduplication. `Request::prepare_with_cache` loads lazily after retained
+resource validation and preserves load failures in its prepared diagnostics.
+
 Capture `cache_save()` only after activation (or unchanged evidence advancement),
 then submit it to the host's one serial `cache::Writer` off the UI loop. Captures
 carry immutable applied data and an activation serial. A stable advisory lock

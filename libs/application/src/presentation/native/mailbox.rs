@@ -41,11 +41,15 @@ fn slot<T>(event: &Event<T>) -> u8 {
         Event::Rpc(..) => 2,
         Event::Prepared(_) => 3,
         Event::Fallback(..) => 4,
+        #[cfg(feature = "settings-cache")]
+        Event::Saved(..) => 5,
+        #[cfg(feature = "settings-cache")]
+        Event::RetryCache => 6,
     }
 }
 impl<T> Mailbox<T> {
-    /// True exactly when the host must enqueue/wake its UI. At most five
-    /// events and one notification exist. Superseded deliveries require a read.
+    /// True exactly when the host must enqueue/wake its UI. At most one event
+    /// per slot and one notification exist. Superseded deliveries require a read.
     pub fn publish(&self, event: Event<T>) -> bool {
         let mut pending = self
             .0
@@ -79,7 +83,7 @@ impl<T> Mailbox<T> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         pending.notified = false;
-        let mut events = Vec::with_capacity(6);
+        let mut events = Vec::with_capacity(8);
         if std::mem::take(&mut pending.lost) {
             events.push(Event::Lost);
         }

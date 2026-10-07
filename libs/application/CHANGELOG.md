@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.6
+
+- Opt-in `settings-cache` loads resource-checked persistent fallback and saves
+  activated captures on the existing single blocking worker lane. Coalesce
+  saves, retain writer locks after errors and through reconnect, fence reports,
+  and allow explicit retry and bounded worker shutdown drain.
+- Start fallback resource work during authority bootstrap, including builds
+  without caching. Preserve fallback diagnostics after a successful embedded
+  activation. This does not establish a GUI first-map timing guarantee.
+
 ## 0.1.5
 
 - Add synchronous `Host::complete_with` and `Session::handle_with` activation
