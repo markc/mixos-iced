@@ -258,10 +258,12 @@ async fn bridge_shutdown_flushes_newest_capture_without_consuming_watch_notifica
     let (mut ui, mut lane) = super::super::bridge(activated(), cache_worker(dir.path()));
     ui.reconcile(Some(1));
     assert_eq!(lane.drive().await, Progress::Updated);
-    // A no-op effective change still advances the applied durable identity.
-    ui.handle_with(Event::Delivery(decoded(2)), Some(1), |_| {
-        panic!("unchanged paint")
-    });
+    // Stage a real appearance change, then install its prepared presentation.
+    ui.handle_with(Event::Delivery(decoded_snapshot(snapshot(2, true))), Some(1), |_| {});
+    let completion = ready(ui.session().host().request().unwrap());
+    let mut activated = Vec::new();
+    assert!(ui.handle_with(Event::Prepared(completion), Some(1), |p| activated.push(*p.content())).is_some());
+    assert_eq!(activated, [2]);
     assert_eq!(
         ui.session().host().consumer().applied().unwrap().revision,
         Revision(2)
