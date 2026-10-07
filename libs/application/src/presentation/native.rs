@@ -188,7 +188,11 @@ impl<T> Session<T> {
                     .as_ref()
                     .is_some_and(|current| current.same_capture(&save))
                 {
-                    if matches!(result, Ok(settings::cache::WriteOutcome::Written | settings::cache::WriteOutcome::Unchanged)) {
+                    if matches!(
+                        result,
+                        Ok(settings::cache::WriteOutcome::Written
+                            | settings::cache::WriteOutcome::Unchanged)
+                    ) {
                         self.cache_persisted = Some(save.identity());
                     }
                     self.cache_fault = result.err();

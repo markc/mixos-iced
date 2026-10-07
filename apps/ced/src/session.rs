@@ -141,8 +141,11 @@ impl SessionWriter {
 
     /// GUI queueing never falls back to filesystem work on the event loop.
     pub fn queue(&self, path: std::path::PathBuf, session: Session) -> Result<(), String> {
-        self.tx.as_ref().ok_or("session writer unavailable")?
-            .send((path, session)).map_err(|_| "session writer stopped".to_owned())
+        self.tx
+            .as_ref()
+            .ok_or("session writer unavailable")?
+            .send((path, session))
+            .map_err(|_| "session writer stopped".to_owned())
     }
 
     /// Wait until every queued write is on disk; later saves write inline.
@@ -185,7 +188,9 @@ mod tests {
         let mut writer = SessionWriter::spawn();
         let obstruction = directory.path().join("file");
         std::fs::write(&obstruction, "obstruction").unwrap();
-        writer.queue(obstruction.join("session.json"), Session::default()).unwrap();
+        writer
+            .queue(obstruction.join("session.json"), Session::default())
+            .unwrap();
         assert!(!writer.flush_for(std::time::Duration::from_secs(2)));
         assert_eq!(std::fs::read_to_string(obstruction).unwrap(), "obstruction");
     }

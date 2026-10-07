@@ -177,11 +177,23 @@ fn stale_save_reports_cannot_set_or_clear_current_diagnostics() {
         Some(1),
     );
     assert_eq!(session.cache_fault().unwrap().code, "current_fault");
-    assert!(session.cache_persisted().is_none(), "a stale success is not a receipt");
+    assert!(
+        session.cache_persisted().is_none(),
+        "a stale success is not a receipt"
+    );
     let current = session.host.consumer().cache_save().unwrap();
-    session.handle(Event::Saved(current.clone(), Ok(WriteOutcome::Superseded)), Some(1));
-    assert!(session.cache_persisted().is_none(), "superseded work did not persist this capture");
-    session.handle(Event::Saved(current.clone(), Ok(WriteOutcome::Unchanged)), Some(1));
+    session.handle(
+        Event::Saved(current.clone(), Ok(WriteOutcome::Superseded)),
+        Some(1),
+    );
+    assert!(
+        session.cache_persisted().is_none(),
+        "superseded work did not persist this capture"
+    );
+    session.handle(
+        Event::Saved(current.clone(), Ok(WriteOutcome::Unchanged)),
+        Some(1),
+    );
     assert_eq!(session.cache_persisted(), Some(&current.identity()));
     let mut replacement = activated();
     replacement.handle(

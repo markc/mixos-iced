@@ -235,30 +235,38 @@ async fn run(
         .bounded_incoming(64);
     let client = if desktop_settings {
         Arc::new(options.start())
-    } else { match tokio::time::timeout(CONNECT_TIMEOUT, options.connect()).await {
-        Ok(Ok(c)) => Arc::new(c),
-        Ok(Err(e)) => {
-            let err = match e.registration_rejection() {
-                Some((_, msg)) if msg.contains("already registered") => StartError::NameTaken,
-                Some((rc, msg)) => StartError::Rejected(format!("rc {rc}: {msg}")),
-                None => StartError::Unreachable(e.to_string()),
-            };
-            let _ = ready.send(Err(err));
-            return;
+    } else {
+        match tokio::time::timeout(CONNECT_TIMEOUT, options.connect()).await {
+            Ok(Ok(c)) => Arc::new(c),
+            Ok(Err(e)) => {
+                let err = match e.registration_rejection() {
+                    Some((_, msg)) if msg.contains("already registered") => StartError::NameTaken,
+                    Some((rc, msg)) => StartError::Rejected(format!("rc {rc}: {msg}")),
+                    None => StartError::Unreachable(e.to_string()),
+                };
+                let _ = ready.send(Err(err));
+                return;
+            }
+            Err(_) => {
+                let _ = ready.send(Err(StartError::Unreachable("connect timed out".into())));
+                return;
+            }
         }
-        Err(_) => {
-            let _ = ready.send(Err(StartError::Unreachable("connect timed out".into())));
-            return;
-        }
-    }};
+    };
     let Some(mut incoming) = client.incoming_bounded() else {
         let _ = ready.send(Err(StartError::Unreachable("no incoming channel".into())));
         return;
     };
     let mut state = client.subscribe_state();
     let _ = ready.send(Ok((binding.clone(), Arc::clone(&client))));
-    let mut settings_worker = match desktop_settings.then(|| crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT)).flatten() {
-        Some(dirs) => SettingsWorker::offline_with_cache(dirs.cache().join("settings"), crate::theme::from_settings),
+    let mut settings_worker = match desktop_settings
+        .then(|| crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT))
+        .flatten()
+    {
+        Some(dirs) => SettingsWorker::offline_with_cache(
+            dirs.cache().join("settings"),
+            crate::theme::from_settings,
+        ),
         None => SettingsWorker::offline(crate::theme::from_settings),
     };
     settings_worker.connect(Arc::clone(&client));
@@ -463,8 +471,13 @@ async fn run(
     // A quit response is queued before Shutdown. Let the existing response
     // tasks send it before closing its generation's socket.
     while !replies.is_empty() {
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), replies.join_next()).await {
-            Ok(Some(Ok(()))) => {},
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            replies.join_next(),
+        )
+        .await
+        {
+            Ok(Some(Ok(()))) => {}
             Ok(Some(Err(error))) => faults.push(format!("Bus reply: {error}")),
             Ok(None) => break,
             Err(_) => {
@@ -482,12 +495,15 @@ async fn run(
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             let drained = tokio::task::spawn_blocking(move || writer.flush_for(remaining));
             match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), drained).await {
-                Ok(Ok(true)) => {},
+                Ok(Ok(true)) => {}
                 _ => faults.push("session drain timed out or failed".into()),
             }
         }
     }
-    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), client.close()).await.is_err() {
+    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), client.close())
+        .await
+        .is_err()
+    {
         faults.push("Bus close timed out".into());
     }
     let _ = dtx.unbounded_send(Delivery::Stopped { faults });
@@ -503,17 +519,37 @@ fn registration_error(client: &SupervisedClient) -> StartError {
 
 async fn forward_open_async(url: &str, service: &str, paths: &[String]) -> Result<(), String> {
     let client = tokio::time::timeout(Duration::from_secs(5), NodedClient::connect_anonymous(url))
-        .await.map_err(|_| "forward connection timed out".to_string())?
+        .await
+        .map_err(|_| "forward connection timed out".to_string())?
         .map_err(|error| error.to_string())?;
     let result = tokio::time::timeout(Duration::from_secs(5), async {
-        let ping = client.call_with_headers_raw(service, "ced.ping", &BTreeMap::new(), "{}").await
+        let ping = client
+            .call_with_headers_raw(service, "ced.ping", &BTreeMap::new(), "{}")
+            .await
             .map_err(|error| error.to_string())?;
-        if ping.0 != 0 { return Err(format!("ced.ping refused: rc {}", ping.0)); }
-        if paths.is_empty() { return Ok(()); }
-        let reply = client.call_with_headers_raw(service, "ced.open", &BTreeMap::new(),
-            &serde_json::json!({"paths": paths}).to_string()).await.map_err(|error| error.to_string())?;
-        if reply.0 == 0 { Ok(()) } else { Err(format!("ced.open refused: rc {}: {}", reply.0, reply.1)) }
-    }).await.unwrap_or_else(|_| Err("forward request timed out".into()));
+        if ping.0 != 0 {
+            return Err(format!("ced.ping refused: rc {}", ping.0));
+        }
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let reply = client
+            .call_with_headers_raw(
+                service,
+                "ced.open",
+                &BTreeMap::new(),
+                &serde_json::json!({"paths": paths}).to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if reply.0 == 0 {
+            Ok(())
+        } else {
+            Err(format!("ced.open refused: rc {}: {}", reply.0, reply.1))
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("forward request timed out".into()));
     let _ = tokio::time::timeout(Duration::from_millis(500), client.close()).await;
     result
 }

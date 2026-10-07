@@ -637,6 +637,9 @@ impl App {
             }
             Delivery::Command(cmd) => {
                 let describe = cmd.verb == "app.describe";
+                if describe {
+                    self.on_settings_event(SettingsEvent::Wake);
+                }
                 let id = cmd.id;
                 let mut effects = self.controller.on_bus_command(cmd);
                 if describe {
@@ -660,21 +663,26 @@ impl App {
             }
             Delivery::Settings(mailbox) => {
                 for event in mailbox.take() {
-                    let theme = &mut self.theme;
-                    let (changed, jobs) = self.settings.handle_with(event, self.bus.settings_generation(), |presentation| {
-                        *theme = presentation.content().clone();
-                    });
-                    if changed.is_some() {
-                        eprintln!("CED_SETTINGS {}", serde_json::json!({
-                            "elapsed_ms": self.launched.elapsed().as_millis(),
-                            "evidence": self.settings.host().consumer().evidence(),
-                        }));
-                    }
-                    self.bus.settings_jobs(jobs);
+                    self.on_settings_event(event);
                 }
                 Task::none()
             }
         }
+    }
+
+    fn on_settings_event(&mut self, event: SettingsEvent<Theme>) {
+        let theme = &mut self.theme;
+        let (changed, jobs) = self.settings.handle_with(event, self.bus.settings_generation(), |presentation| {
+            *theme = presentation.content().clone();
+        });
+        if changed.is_some() {
+            eprintln!("CED_SETTINGS {}", serde_json::json!({
+                "elapsed_ms": self.launched.elapsed().as_millis(),
+                "evidence": self.settings.host().consumer().evidence(),
+                "fallback_diagnostics": self.settings.fallback_diagnostics(),
+            }));
+        }
+        self.bus.settings_jobs(jobs);
     }
 
     fn on_timer(&mut self, key: TimerKey) -> Task<Msg> {

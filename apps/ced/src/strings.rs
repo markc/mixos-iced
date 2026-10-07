@@ -17,9 +17,18 @@ mod tests {
 
     #[test]
     fn persistent_settings_and_connection_labels_exist() {
-        for id in ["settings-current", "settings-cached", "settings-embedded",
-            "settings-retained", "settings-last-good", "settings-bootstrap",
-            "bus-connected", "bus-connecting", "bus-disconnected", "bus-refused"] {
+        for id in [
+            "settings-current",
+            "settings-cached",
+            "settings-embedded",
+            "settings-retained",
+            "settings-last-good",
+            "settings-bootstrap",
+            "bus-connected",
+            "bus-connecting",
+            "bus-disconnected",
+            "bus-refused",
+        ] {
             assert!(!label(id).is_empty());
         }
     }
