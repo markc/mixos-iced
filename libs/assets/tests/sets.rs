@@ -55,6 +55,15 @@ fn write_manifest(dir: &Path, json: &serde_json::Value) {
     fs::write(dir.join(MANIFEST_FILE), text).unwrap();
 }
 
+/// Write a JSON tree as compact strict data. The icon-asset boundary
+/// fixture declares thousands of entries, which pretty-printed exceed the
+/// manifest byte bound the reader enforces before the asset cap is ever
+/// checked; both layouts are strict data.
+fn write_manifest_compact(dir: &Path, json: &serde_json::Value) {
+    let text = strict::encode(&strict::from_json(json)).unwrap();
+    fs::write(dir.join(MANIFEST_FILE), text).unwrap();
+}
+
 /// One locked-file entry for the manifest, with the bytes written.
 fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> serde_json::Value {
     let path = dir.join(relative);
@@ -617,19 +626,20 @@ fn the_icon_asset_cap_accepts_its_bound_and_refuses_one_more() {
         (0..count)
             .map(|i| {
                 serde_json::json!({
-                    "name": format!("icon{i}"), "style": "rounded",
-                    "path": "icons/mark.svg", "symbolic": true
+                    "name": i.to_string(), "style": "r",
+                    "path": "icons/mark.svg"
                 })
             })
             .collect::<Vec<_>>()
     };
     let mut at_bound = original.clone();
     at_bound["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS));
-    write_manifest(&dir, &at_bound);
-    assert!(AssetSet::open(temp.path(), "two").is_ok());
+    write_manifest_compact(&dir, &at_bound);
+    let set = AssetSet::open(temp.path(), "two").expect("the count-bound fixture fits the byte cap");
+    assert_eq!(set.icon_assets().len(), assets::MAX_ICON_ASSETS);
     let mut over = original;
     over["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS + 1));
-    write_manifest(&dir, &over);
+    write_manifest_compact(&dir, &over);
     let error = AssetSet::open(temp.path(), "two").unwrap_err();
     assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
     assert!(error.to_string().contains("too many icon assets"), "{error}");
