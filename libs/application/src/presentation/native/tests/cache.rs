@@ -264,7 +264,10 @@ async fn bridge_shutdown_flushes_newest_capture_without_consuming_watch_notifica
         Some(1),
         |_| {},
     );
-    let completion = ready(ui.session().host().request().unwrap());
+    let completion = ready(Request {
+        update: ui.session().host().consumer().pending().unwrap().clone(),
+        context: ui.session().host().consumer().context().to_owned(),
+    });
     let mut activated = Vec::new();
     assert!(
         ui.handle_with(Event::Prepared(completion), Some(1), |p| activated
