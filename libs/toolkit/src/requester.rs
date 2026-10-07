@@ -1151,7 +1151,7 @@ mod tests {
             let mut shell = iced_core::Shell::new(&Headless, Waker::noop(), &mut bus);
             styled.as_widget_mut().update(
             &mut tree,
-            &iced_core::Event::Mouse(event.clone()),
+            &iced_core::Event::Mouse(event),
             iced_core::Layout::new(&node),
             iced_core::mouse::Cursor::Available(iced_core::Point::new(
                 row.bounds().center_x(),
