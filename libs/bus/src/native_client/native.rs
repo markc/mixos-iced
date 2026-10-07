@@ -1855,6 +1855,11 @@ mod reply_timeout_tests {
             client.is_connected(),
             "the native response deadline alone must not mark the socket disconnected"
         );
+        // The request deadline uses virtual time, but graceful teardown
+        // crosses a real TCP socket. Let the reactor observe the close before
+        // applying a wall-clock bound; paused-time auto-advance can otherwise
+        // expire that bound before the peer gets its next I/O readiness.
+        tokio::time::resume();
         client.close().await;
         tokio::time::timeout(Duration::from_secs(5), broker)
             .await
