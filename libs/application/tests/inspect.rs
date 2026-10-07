@@ -18,6 +18,7 @@ use std::task::{Context, Poll};
 
 use application::iced::futures::StreamExt;
 use application::iced::futures::executor::{ThreadPool, block_on};
+use application::iced::futures::future::{Either, select};
 use application::iced::futures::task::noop_waker_ref;
 use application::iced::{Element, Length, Rectangle, Size, Task, Theme, widget};
 use application::inspect::{
@@ -87,22 +88,27 @@ fn drive<F: Future<Output = Result<Snapshot, Error>>>(
     app: &App,
     receiver: &mut mpsc::Receiver<emulator::Event<App>>,
     query: &mut Pin<Box<F>>,
-    context: &mut Context<'_>,
+    _context: &mut Context<'_>,
 ) -> Result<Snapshot, Error> {
-    for _ in 0..64 {
-        if let Some(event) = block_on(receiver.next()) {
-            match event {
-                emulator::Event::Action(action) => emulator.perform(app, action),
-                emulator::Event::Failed(_) => panic!("no instruction should run"),
-                emulator::Event::Ready => {}
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            for _ in 0..64 {
+                // Completion produces no application message. Wait on the
+                // query as well as runtime actions, with its real waker.
+                match select(query.as_mut(), receiver.next()).await {
+                    Either::Left((result, _)) => return result,
+                    Either::Right((Some(event), _)) => match event {
+                        emulator::Event::Action(action) => emulator.perform(app, action),
+                        emulator::Event::Failed(_) => panic!("no instruction should run"),
+                        emulator::Event::Ready => {}
+                    },
+                    Either::Right((None, _)) => panic!("emulator closed before its query reply"),
+                }
             }
-        }
-        match query.as_mut().poll(context) {
-            Poll::Ready(result) => return result,
-            Poll::Pending => {}
-        }
-    }
-    panic!("the query did not complete");
+            panic!("the query did not complete");
+        }).await.expect("bounded native query completion")
+    })
 }
 
 fn harness() -> (App, Emulator<App>, mpsc::Receiver<emulator::Event<App>>) {

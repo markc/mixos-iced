@@ -712,7 +712,7 @@ mod tests {
     fn duplicate_records_report_ambiguous() {
         let inner = inner(vec![target("probe")]);
         let mut report = report();
-        report.records.push(report.records[0].clone());
+        report.records.push(report.records[0]);
         let snapshot = assemble(&inner, &[0], report).unwrap();
 
         assert_eq!(snapshot.records.len(), 2);
