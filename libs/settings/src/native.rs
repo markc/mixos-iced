@@ -134,13 +134,13 @@ impl Consumer {
     /// Unrelated commands are ignored. The broker-authenticated authority stamp,
     /// exact topic and connection generation are checked before decoding.
     pub fn native_delivery(&mut self, command: &IncomingCommand) -> Option<Work> {
-        self.decoded_delivery(Decoded::from_command(&self.binding, command)?)
+        self.decoded_delivery(Decoded::from_command(self.binding(), command)?)
     }
 
     /// Complete decoding on the host's worker, then feed it on the UI loop.
     /// A queued delivery still checks the current binding and connection here.
     pub fn decoded_delivery(&mut self, delivery: Decoded) -> Option<Work> {
-        if delivery.binding != self.binding || self.generation() != Some(delivery.generation) {
+        if &delivery.binding != self.binding() || self.generation() != Some(delivery.generation) {
             return None;
         }
         match delivery.result {

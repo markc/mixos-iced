@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ::bus::native_client::{ConnState, IncomingCommand, NodedClient, SupervisedClient};
+use ::bus::native_client::{BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient};
 use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use editor_model::types::{Incoming, ParsedBody};
 
@@ -77,12 +77,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
     settings: tokio::sync::watch::Sender<Option<Jobs>>,
-    binding: settings::Binding,
+    binding: Option<settings::Binding>,
     client: Arc<SupervisedClient>,
 }
 
 impl BusHandle {
-    pub fn settings_binding(&self) -> settings::Binding {
+    pub fn settings_binding(&self) -> Option<settings::Binding> {
         self.binding.clone()
     }
     pub fn settings_generation(&self) -> Option<u64> {
@@ -125,6 +125,14 @@ pub fn caller_key(cmd: &IncomingCommand) -> String {
 
 /// Start the bus thread registered as `service`.
 pub fn spawn(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
+    spawn_inner(service, false)
+}
+/// GUI bootstrap opts into settings; the headless controller keeps its existing
+/// subscriptions and does not require a desktop session binding.
+pub fn spawn_settings(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
+    spawn_inner(service, true)
+}
+fn spawn_inner(service: &str, desktop_settings: bool) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
     let (dtx, drx) = unbounded();
     let (etx, erx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -145,7 +153,7 @@ pub fn spawn(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), 
                     return;
                 }
             };
-            runtime.block_on(run(service, url, dtx, erx, ready_tx, settings_rx));
+            runtime.block_on(run(service, url, dtx, erx, ready_tx, settings_rx, desktop_settings));
         })
         .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
     match ready_rx.recv() {
@@ -168,10 +176,11 @@ async fn run(
     url: String,
     dtx: UnboundedSender<Delivery>,
     mut erx: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: std::sync::mpsc::Sender<Result<(settings::Binding, Arc<SupervisedClient>), StartError>>,
+    ready: std::sync::mpsc::Sender<Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>>,
     mut settings_rx: tokio::sync::watch::Receiver<Option<Jobs>>,
+    desktop_settings: bool,
 ) {
-    let binding = match settings::session::binding() {
+    let binding = match desktop_settings.then(settings::session::binding).transpose() {
         Ok(binding) => binding,
         Err(error) => {
             let _ = ready.send(Err(StartError::Rejected(error.message)));
@@ -180,6 +189,7 @@ async fn run(
     };
     let connect = SupervisedClient::connect_options(&service, &url)
         .fatal_on_registration_rejection(true)
+        .bounded_incoming(64)
         .connect();
     let client = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(Ok(c)) => Arc::new(c),
@@ -197,7 +207,7 @@ async fn run(
             return;
         }
     };
-    let Some(mut incoming) = client.incoming() else {
+    let Some(mut incoming) = client.incoming_bounded() else {
         let _ = ready.send(Err(StartError::Unreachable("no incoming channel".into())));
         return;
     };
@@ -222,8 +232,17 @@ async fn run(
             }
             event = settings_worker.next() => { if let Some(event) = event.take() { settings_send(event); } }
             cmd = incoming.recv() => {
-                let Some(cmd) = cmd else { break };
-                if let Some(decoded) = settings::native::Decoded::from_command(&binding, &cmd) {
+                let cmd = match cmd {
+                    Some(BoundedIncomingEvent::Command(cmd)) => cmd,
+                    Some(BoundedIncomingEvent::Overflow { .. }) => {
+                        if binding.is_some() { settings_send(SettingsEvent::Lost); }
+                        // Mirrors conservatively reconcile any lost editor topics.
+                        let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
+                        continue;
+                    }
+                    None => break,
+                };
+                if let Some(decoded) = binding.as_ref().and_then(|binding| settings::native::Decoded::from_command(binding, &cmd)) {
                     settings_send(SettingsEvent::Delivery(decoded));
                     continue;
                 }
@@ -291,7 +310,7 @@ async fn run(
                     }
                     Effect::Subscribe { topic } => {
                         // The migrated GUI consumes compiled settings snapshots.
-                        if topic == "theme.changed" { continue; }
+                        if binding.is_some() && topic == "theme.changed" { continue; }
                         let (c, d) = (client.clone(), dtx.clone());
                         tokio::spawn(async move {
                             // The client replays only topics that once
@@ -332,11 +351,11 @@ async fn run(
                 let now = *state.borrow_and_update();
                 match now {
                     ConnState::Connected => {
-                        settings_send(SettingsEvent::Wake);
+                        if binding.is_some() { settings_send(SettingsEvent::Wake); }
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
                     }
                     ConnState::Disconnected => {
-                        settings_send(SettingsEvent::Wake);
+                        if binding.is_some() { settings_send(SettingsEvent::Wake); }
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
                     }
                     ConnState::ShuttingDown | ConnState::Fatal => break,

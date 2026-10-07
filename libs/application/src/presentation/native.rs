@@ -68,7 +68,7 @@ impl<T> Session<T> {
     pub fn host(&self) -> &Host<T> {
         &self.host
     }
-    /// `live` is the connection's current atomic state, read on the UI loop.
+    /// `live` is the connection's current sampled state, read on the UI loop.
     /// Queued lifecycle notices cannot authorise an activation after real loss.
     pub fn handle(&mut self, event: Event<T>, live: Option<u64>) -> (Option<ChangePlan>, Jobs) {
         self.sync(live);
@@ -127,7 +127,7 @@ impl<T> Session<T> {
         {
             self.fallback = None;
         }
-        if now >= self.bootstrap && !self.fallback_attempted {
+        if now >= self.bootstrap && !self.fallback_attempted && self.host.consumer().applied().is_none() {
             let request = self.host.consumer_mut().fallback_request();
             if request.is_some() {
                 self.fallback_attempted = true;

@@ -63,20 +63,21 @@ pub fn from_settings(
     look: &appearance::settings::Prepared,
     snapshot: &settings::Snapshot,
 ) -> Result<Theme, settings::Diagnostic> {
-    let effective = &snapshot.effective["app:ced"];
+    let missing = |name| settings::Diagnostic::new("unsupported_content", name, "Required editor appearance input missing");
+    let effective = snapshot.effective.get("app:ced").ok_or_else(|| missing("app:ced"))?;
     let (palette, chrome) = build_palette(look.dictionary()).map_err(|name| {
         settings::Diagnostic::new("unsupported_content", name, "Editor colour missing")
     })?;
-    let ui = look.typography().get("ui").expect("validated UI role");
-    let mono = look.typography().get("mono").expect("validated mono role");
+    let ui = look.typography().get("ui").ok_or_else(|| missing("ui"))?;
+    let mono = look.typography().get("mono").ok_or_else(|| missing("mono"))?;
     Ok(Theme {
         palette,
         chrome,
         tokens: look.tokens(),
         mono: (family_name(&mono.font), mono.size),
         ui: (family_name(&ui.font), ui.size),
-        scheme: Scheme::from_name(&effective.scheme).expect("validated scheme"),
-        mode: Mode::from_name(&effective.mode).expect("validated mode"),
+        scheme: Scheme::from_name(&effective.scheme).ok_or_else(|| missing("scheme"))?,
+        mode: Mode::from_name(&effective.mode).ok_or_else(|| missing("mode"))?,
         mono_font: mono.font,
         ui_font: ui.font,
         notes: None,

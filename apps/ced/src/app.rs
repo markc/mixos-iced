@@ -180,7 +180,7 @@ static STREAMS: OnceLock<Mutex<Option<Streams>>> = OnceLock::new();
 
 /// Run the windowed app registered on the Bus as `service`, opening `paths`.
 pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<()> {
-    let (bus, deliveries) = match bus::spawn(service) {
+    let (bus, deliveries) = match bus::spawn_settings(service) {
         Ok(started) => started,
         Err(bus::StartError::NameTaken) => {
             // Lost the registration race to another ced (§4.8): hand it the
@@ -216,7 +216,7 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         Vec::new(),
     );
     let mut settings = SettingsSession::new(
-        settings::consumer::Consumer::for_app(bus.settings_binding(), "ced")
+        settings::consumer::Consumer::for_app(bus.settings_binding().expect("GUI settings binding"), "ced")
             .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?,
     );
     let (_, jobs) = settings.handle(SettingsEvent::Wake, bus.settings_generation());
