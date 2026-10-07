@@ -1022,18 +1022,30 @@ fn ttc_collection_faces_register_and_malformed_ttc_is_rejected() {
     let mut font_system = fonts();
     let before = snapshot(&font_system);
 
-    // A deterministic two-face TTC built from packaged bytes: the header
-    // declares two faces and each declared offset points at one font.
-    let arabic = repo_font("NotoSansArabic.ttf");
-    let hebrew = repo_font("NotoSansHebrew.ttf");
+    // TTC table directory offsets are absolute from the collection start,
+    // unlike the standalone fonts. Relocate every table and align the second
+    // face; concatenating unmodified TTF bytes produces an invalid collection.
+    let relocate = |mut font: Vec<u8>, base: u32| {
+        let tables = usize::from(u16::from_be_bytes([font[4], font[5]]));
+        for table in 0..tables {
+            let start = 12 + table * 16 + 8;
+            let offset = u32::from_be_bytes(font[start..start + 4].try_into().unwrap());
+            font[start..start + 4].copy_from_slice(&offset.checked_add(base).unwrap().to_be_bytes());
+        }
+        font
+    };
     let header_len = 12u32 + 2 * 4;
+    let arabic = relocate(repo_font("NotoSansArabic.ttf"), header_len);
+    let hebrew_offset = header_len + (arabic.len() as u32 + 3) / 4 * 4;
+    let hebrew = relocate(repo_font("NotoSansHebrew.ttf"), hebrew_offset);
     let mut ttc = Vec::new();
     ttc.extend_from_slice(b"ttcf");
     ttc.extend_from_slice(&0x0001_0000u32.to_be_bytes());
     ttc.extend_from_slice(&2u32.to_be_bytes());
     ttc.extend_from_slice(&header_len.to_be_bytes());
-    ttc.extend_from_slice(&(header_len + arabic.len() as u32).to_be_bytes());
+    ttc.extend_from_slice(&hebrew_offset.to_be_bytes());
     ttc.extend_from_slice(&arabic);
+    ttc.resize(hebrew_offset as usize, 0);
     ttc.extend_from_slice(&hebrew);
 
     // The declared collection parses into two faces; registering the second
