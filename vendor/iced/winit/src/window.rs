@@ -78,6 +78,7 @@ where
         let _ = self.entries.insert(
             id,
             Window {
+                presentation: crate::presentation::Ledger::new(id),
                 raw: window,
                 waker,
                 state,
@@ -180,6 +181,7 @@ where
     C: Compositor<Renderer = P::Renderer>,
     P::Theme: theme::Base,
 {
+    pub presentation: crate::presentation::Ledger,
     pub raw: Arc<winit::window::Window>,
     pub waker: shell::Waker,
     pub state: State<P>,

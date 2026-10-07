@@ -512,6 +512,11 @@ impl<P: Program + 'static> Emulator<P> {
         program.view(&self.state, self.window)
     }
 
+    /// Observation binding for the same state and internal window as the view.
+    pub fn frame_presentation(&self, program: &P) -> Option<window::presentation::FrameBinding> {
+        program.frame_presentation(&self.state, self.window)
+    }
+
     /// Returns the current theme of the [`Emulator`].
     pub fn theme(&self, program: &P) -> Option<P::Theme> {
         program.theme(&self.state, self.window)

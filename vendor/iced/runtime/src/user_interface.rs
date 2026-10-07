@@ -30,6 +30,7 @@ pub struct UserInterface<'a, Message, Theme, Renderer> {
     overlay: Option<Overlay>,
     bounds: Size,
     layout_sequence: u64,
+    frame_presentation: Option<crate::core::window::presentation::FrameBinding>,
 }
 
 struct Overlay {
@@ -120,6 +121,7 @@ where
             overlay: None,
             bounds,
             layout_sequence: 1,
+            frame_presentation: None,
         }
     }
 
@@ -672,11 +674,23 @@ where
         self.bounds
     }
 
+    /// Associate evidence with this constructed view, never with its cache.
+    pub fn with_frame_presentation(mut self, binding: Option<crate::core::window::presentation::FrameBinding>) -> Self {
+        self.frame_presentation = binding;
+        self
+    }
+
+    /// Identity and observer of the interface that will actually be drawn.
+    pub fn frame_presentation(&self) -> Option<&crate::core::window::presentation::FrameBinding> {
+        self.frame_presentation.as_ref()
+    }
+
     /// Relayouts and returns a new  [`UserInterface`] using the provided
     /// bounds.
     pub fn relayout(self, bounds: Size, renderer: &mut Renderer) -> Self {
         let mut interface = Self::build(self.root, bounds, Cache { state: self.state }, renderer);
         interface.layout_sequence = self.layout_sequence + 1;
+        interface.frame_presentation = self.frame_presentation;
         interface
     }
 

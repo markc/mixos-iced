@@ -244,3 +244,23 @@ starts; the real reset operation and drawn style are regression-tested.
 The Transition/Responsive relayout test also asserts that an active
 transition continues requesting frames. Run `cargo test -p ui --lib`.
 Retire this patch when upstream handles idle same-instant retries.
+# Rendered-view presentation binding
+
+`Program::frame_presentation` supplies an owned immutable stamp and metadata
+observer beside construction of each view. All standard decorators, application
+and daemon builders, devtools and the tester preserve that actual state/window
+binding. UserInterface retains it during relayout, never in a reusable Cache.
+
+The Winit runtime requests native feedback synchronously after painting just
+before its renderer commits the real surface. A bounded per-window ledger
+records success or abort of each requested submission. Only terminal feedback
+for a successful matching submission reaches the captured observer; an aborted
+request cannot attest a later buffer. Deduplication includes observer identity.
+Metadata observation goes directly to the sink after native event retirement,
+without an app message, UI event, redraw or view rebuild. Ordinary rendering
+continues on unsupported backends with explicit evidence unavailability.
+
+Ledger guards cover late/superseded feedback, same-stamp replacement observers,
+aborted submissions and duplicate feedback. Actual renderer/native and complete
+application adaptation gates remain required; these unit guards are not native
+presentation acceptance.

@@ -426,6 +426,19 @@ impl<P: Program> Application<P> {
         }
     }
 
+    /// Bind native presentation observations to the constructed view.
+    pub fn frame_presentation(
+        self,
+        f: impl Fn(&P::State) -> Option<window::presentation::FrameBinding>,
+    ) -> Application<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+        Application {
+            raw: program::with_frame_presentation(self.raw, move |state, _window| f(state)),
+            settings: self.settings,
+            window: self.window,
+            presets: self.presets,
+        }
+    }
+
     /// Sets the executor of the [`Application`].
     pub fn executor<E>(
         self,
@@ -509,6 +522,9 @@ impl<P: Program> Program for Application<P> {
         debug::hot(|| self.raw.scale_factor(state, window))
     }
 
+    fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        debug::hot(|| self.raw.frame_presentation(state, window))
+    }
     fn presets(&self) -> &[Preset<Self::State, Self::Message>] {
         &self.presets
     }

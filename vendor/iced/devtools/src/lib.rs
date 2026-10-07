@@ -108,6 +108,10 @@ where
     fn scale_factor(&self, state: &Self::State, window: window::Id) -> f32 {
         state.scale_factor(&self.program, window)
     }
+
+    fn frame_presentation(&self, state: &Self::State, window: window::Id) -> Option<window::presentation::FrameBinding> {
+        self.program.frame_presentation(state.state(), window)
+    }
 }
 
 /// The state of the devtools.

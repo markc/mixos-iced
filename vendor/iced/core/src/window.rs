@@ -3,6 +3,7 @@ pub mod icon;
 pub mod screenshot;
 pub mod settings;
 pub mod drag;
+pub mod presentation;
 
 mod direction;
 mod event;

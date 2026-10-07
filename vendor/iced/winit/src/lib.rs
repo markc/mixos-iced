@@ -66,6 +66,8 @@ use std::mem::ManuallyDrop;
 use std::slice;
 use std::sync::Arc;
 
+mod presentation;
+
 /// Runs a [`Program`] with the provided settings.
 pub fn run<P>(program: P) -> Result<(), Error>
 where
@@ -935,13 +937,34 @@ async fn run_instance<P>(
                         window.draw_preedit();
 
                         let present_span = debug::present(id);
-                        match current_compositor.present(
+                        let binding = interface.frame_presentation().cloned()
+                            .filter(|binding| window.presentation.needs(binding));
+                        let mut feedback = None;
+                        let result = current_compositor.present(
                             &mut window.renderer,
                             &mut window.surface,
                             window.state.viewport(),
                             window.state.background_color(),
-                            || window.raw.pre_present_notify(),
-                        ) {
+                            || {
+                                window.raw.pre_present_notify();
+                                if binding.is_some() {
+                                    feedback = Some(request_frame_feedback(&window.raw));
+                                }
+                            },
+                        );
+                        if let (Some(binding), Some(feedback)) = (binding, feedback) {
+                            match feedback {
+                                Ok(request_id) => {
+                                    let successful = result.is_ok();
+                                    window.presentation.submitted(request_id, binding.clone(), successful);
+                                    if !successful {
+                                        binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
+                                    }
+                                }
+                                Err(reason) => binding.observe(id, None, reason),
+                            }
+                        }
+                        match result {
                             Ok(()) => {
                                 present_span.finish();
                             }
@@ -990,6 +1013,24 @@ async fn run_instance<P>(
                                 }
                             },
                         }
+                    }
+                    event::Event::WindowEvent {
+                        event: winit::event::WindowEvent::PresentationFeedback(feedback),
+                        window_id,
+                    } => {
+                        use core::window::presentation::FrameOutcome;
+                        let Some((id, window)) = window_manager.get_mut_alias(window_id) else { continue; };
+                        let request_id = feedback.id.get();
+                        let outcome = match feedback.outcome {
+                            winit::presentation::PresentationOutcome::Presented {clock_id,seconds,nanoseconds,refresh_ns,output_sequence,flags} =>
+                                FrameOutcome::Presented {clock_id,seconds,nanoseconds,refresh_ns,output_sequence,flags},
+                            winit::presentation::PresentationOutcome::Discarded => FrameOutcome::Discarded,
+                        };
+                        let binding = window.presentation.resolve(request_id, outcome);
+                        // Release native event ownership before notifying the
+                        // metadata-only sink. No UI event, message or redraw.
+                        drop(feedback);
+                        if let Some(binding) = binding { binding.observe(id, Some(request_id), outcome); }
                     }
                     event::Event::WindowEvent {
                         event: window_event,
@@ -1208,6 +1249,26 @@ async fn run_instance<P>(
     let _ = ManuallyDrop::into_inner(user_interfaces);
 }
 
+/// Request feedback synchronously at the actual pre-commit boundary.
+fn request_frame_feedback(window: &winit::window::Window) -> Result<u64, core::window::presentation::FrameOutcome> {
+    use core::window::presentation::FrameOutcome;
+    #[cfg(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd")))]
+    {
+        use winit::platform::wayland::WindowExtWayland;
+        window.request_presentation_feedback().map(|id| id.get()).map_err(|error| match error {
+            winit::presentation::PresentationError::Unsupported => FrameOutcome::Unsupported,
+            winit::presentation::PresentationError::Capacity => FrameOutcome::Capacity,
+            winit::presentation::PresentationError::Exhausted => FrameOutcome::Exhausted,
+            winit::presentation::PresentationError::Closed => FrameOutcome::Closed,
+        })
+    }
+    #[cfg(not(all(feature = "wayland", any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))))]
+    {
+        let _ = window;
+        Err(FrameOutcome::Unsupported)
+    }
+}
+
 /// Builds a window's [`UserInterface`] for the [`Program`].
 fn build_user_interface<'a, P: Program>(
     program: &'a program::Instance<P>,
@@ -1221,10 +1282,11 @@ where
 {
     let view_span = debug::view(id);
     let view = program.view(id);
+    let binding = program.frame_presentation(id);
     view_span.finish();
 
     let layout_span = debug::layout(id);
-    let user_interface = UserInterface::build(view, size, cache, renderer);
+    let user_interface = UserInterface::build(view, size, cache, renderer).with_frame_presentation(binding);
     layout_span.finish();
 
     user_interface
