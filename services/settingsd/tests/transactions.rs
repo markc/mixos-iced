@@ -113,31 +113,59 @@ fn canonical_request_digest_ignores_object_key_order_but_binds_fences() {
 }
 #[test]
 fn public_machine_fixtures_exercise_dispatch_and_restartable_float_settings() {
-    let fixture: serde_json::Value = strict::from_str(include_str!("../../../docs/spec/settings/authority.spec.mix")).unwrap();
+    let fixture: serde_json::Value = strict::from_str(include_str!(
+        "../../../docs/spec/settings/authority.spec.mix"
+    ))
+    .unwrap();
     let binding: Binding = serde_json::from_value(fixture["binding"].clone()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (store, accepted) = Store::create(dir.path(), binding.clone(), Desktop::default()).unwrap();
     let mut state = Authority::new(store, accepted).unwrap();
-    assert_eq!(settingsd::service::dispatch(&mut state, "settings.describe", "").unwrap()["version"], fixture["version"]);
+    assert_eq!(
+        settingsd::service::dispatch(&mut state, "settings.describe", "").unwrap()["version"],
+        fixture["version"]
+    );
     for batch in fixture["batches"].as_array().unwrap() {
         let req = json!({"binding":binding,"expected_incarnation":state.accepted.incarnation,"expected_revision":state.accepted.revision,
             "operation_id":batch["name"],"changes":batch["changes"],"reset":batch.get("reset").cloned().unwrap_or(json!([]))});
         let body = serde_json::to_string(&req).unwrap();
         let before = std::fs::read(dir.path().join("desktop.conf.mix")).unwrap();
-        let validation = settingsd::service::dispatch(&mut state,"settings.validate",&body);
-        let result = settingsd::service::dispatch(&mut state, if batch["name"] == "reset_app" {"settings.reset"} else {"settings.apply"}, &body);
+        let validation = settingsd::service::dispatch(&mut state, "settings.validate", &body);
+        let result = settingsd::service::dispatch(
+            &mut state,
+            if batch["name"] == "reset_app" {
+                "settings.reset"
+            } else {
+                "settings.apply"
+            },
+            &body,
+        );
         if let Some(expected) = batch.get("expected") {
             assert_eq!(validation.unwrap_err()["status"], *expected);
             assert_eq!(result.unwrap_err()["status"], *expected);
-            assert_eq!(std::fs::read(dir.path().join("desktop.conf.mix")).unwrap(), before);
+            assert_eq!(
+                std::fs::read(dir.path().join("desktop.conf.mix")).unwrap(),
+                before
+            );
         } else {
             assert_eq!(validation.unwrap()["status"], "valid");
             let receipt = result.unwrap()["receipt"].clone();
-            let status = settingsd::service::dispatch(&mut state,"settings.status",&json!({"binding":binding,"operation_id":batch["name"]}).to_string()).unwrap();
+            let status = settingsd::service::dispatch(
+                &mut state,
+                "settings.status",
+                &json!({"binding":binding,"operation_id":batch["name"]}).to_string(),
+            )
+            .unwrap();
             assert_eq!(status["receipt"], receipt);
         }
     }
-    let snapshot = settingsd::service::dispatch(&mut state,"settings.get",&json!({"binding":binding}).to_string()).unwrap()["snapshot"].clone();
+    let snapshot = settingsd::service::dispatch(
+        &mut state,
+        "settings.get",
+        &json!({"binding":binding}).to_string(),
+    )
+    .unwrap()["snapshot"]
+        .clone();
     assert_eq!(snapshot["desktop"]["ui"]["text_scale"], 1.1);
     drop(state);
     let (store, accepted) = Store::open(dir.path(), &binding).unwrap();
@@ -284,7 +312,8 @@ fn intact_shape_or_compiler_changes_fail_without_automatic_backup_regression() {
     let mut accepted = state.accepted.clone();
     drop(state);
     let path = dir.path().join("desktop.conf.mix");
-    let mut value: serde_json::Value = strict::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut value: serde_json::Value =
+        strict::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     value["future_field"] = json!("requires-migration");
     let future = strict::to_string_pretty(&value).unwrap();
     std::fs::write(&path, &future).unwrap();

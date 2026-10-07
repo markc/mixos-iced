@@ -56,8 +56,7 @@ impl Authority {
             .map_err(diagnostics)?;
         let mut candidate = self.accepted.clone();
         candidate.desktop = next;
-        let candidate_snapshot = snapshot(&candidate, effective)
-            .map_err(snapshot_error)?;
+        let candidate_snapshot = snapshot(&candidate, effective).map_err(snapshot_error)?;
         Ok(
             json!({"status":"valid","incarnation":self.accepted.incarnation,"revision":self.accepted.revision,"source_digest":candidate_snapshot.source_digest,"effective":candidate_snapshot.effective}),
         )
@@ -144,8 +143,7 @@ impl Authority {
             settings::resolve_with_embedded(&next.desktop, &next.embedded_source)
                 .map_err(diagnostics)?
         };
-        let next_snapshot = snapshot(&next, effective)
-            .map_err(snapshot_error)?;
+        let next_snapshot = snapshot(&next, effective).map_err(snapshot_error)?;
         next.effective_digest = settings::digest(&next_snapshot.effective)
             .map_err(|e| json!({"status":"validation_failed","message":e.to_string()}))?;
         let receipt = Receipt {
@@ -184,17 +182,25 @@ fn diagnostics(errors: Vec<Diagnostic>) -> Value {
     json!({"status":"validation_failed","diagnostics":errors})
 }
 #[derive(Debug)]
-struct SnapshotTooLarge { bytes: usize }
+struct SnapshotTooLarge {
+    bytes: usize,
+}
 impl std::fmt::Display for SnapshotTooLarge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "snapshot {} bytes exceeds inline budget {}; native artifacts required", self.bytes, MAX_SNAPSHOT_BYTES)
+        write!(
+            f,
+            "snapshot {} bytes exceeds inline budget {}; native artifacts required",
+            self.bytes, MAX_SNAPSHOT_BYTES
+        )
     }
 }
 impl std::error::Error for SnapshotTooLarge {}
 fn snapshot_error(error: anyhow::Error) -> Value {
     if let Some(limit) = error.downcast_ref::<SnapshotTooLarge>() {
         json!({"status":"snapshot_too_large","bytes":limit.bytes,"maximum":MAX_SNAPSHOT_BYTES,"message":error.to_string()})
-    } else { json!({"status":"validation_failed","message":error.to_string()}) }
+    } else {
+        json!({"status":"validation_failed","message":error.to_string()})
+    }
 }
 pub(crate) fn snapshot(
     accepted: &Accepted,
@@ -217,6 +223,8 @@ pub(crate) fn snapshot(
         effective,
     };
     let bytes = result.encoded_len()?;
-    if bytes > MAX_SNAPSHOT_BYTES { return Err(SnapshotTooLarge { bytes }.into()); }
+    if bytes > MAX_SNAPSHOT_BYTES {
+        return Err(SnapshotTooLarge { bytes }.into());
+    }
     Ok(result)
 }

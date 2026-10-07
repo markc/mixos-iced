@@ -242,7 +242,8 @@ mod tests {
         }
         assert_eq!(
             strict::from_str::<BTreeMap<String, Revision>>("{revision: \"9007199254740993\"}")
-                .unwrap()["revision"].0,
+                .unwrap()["revision"]
+                .0,
             9007199254740993
         );
     }

@@ -45,7 +45,10 @@ impl Accepted {
     pub fn effective(&self) -> anyhow::Result<std::collections::BTreeMap<String, Effective>> {
         let effective = settings::resolve_with_embedded(&self.desktop, &self.embedded_source)
             .map_err(|e| anyhow::anyhow!("accepted interpretation unsupported: {e:?}"))?;
-        anyhow::ensure!(self.effective_digest == settings::digest(&effective)?, "accepted interpretation changed; explicit migration required");
+        anyhow::ensure!(
+            self.effective_digest == settings::digest(&effective)?,
+            "accepted interpretation changed; explicit migration required"
+        );
         Ok(effective)
     }
     pub fn check(&self, binding: &Binding) -> anyhow::Result<()> {
@@ -214,17 +217,25 @@ impl Store {
         let bytes = read_bytes(primary)?;
         let text = std::str::from_utf8(&bytes);
         #[derive(Deserialize)]
-        struct Header { schema: u32, binding: Binding }
-        if let Ok(text) = text && let Ok(header) = strict::from_str::<Header>(text)
-            && (header.schema != SCHEMA || &header.binding != binding) {
+        struct Header {
+            schema: u32,
+            binding: Binding,
+        }
+        if let Ok(text) = text
+            && let Ok(header) = strict::from_str::<Header>(text)
+            && (header.schema != SCHEMA || &header.binding != binding)
+        {
             anyhow::bail!("unsupported schema or wrong stored binding");
         }
         // Header and full record use the exact same bounded bytes. A second
         // read cannot miss a version fence after transient I/O.
-        match text.map_err(anyhow::Error::from).and_then(|text| Ok(strict::from_str::<Accepted>(text)?)).and_then(|data| {
-            data.check(binding)?;
-            Ok(data)
-        }) {
+        match text
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Ok(strict::from_str::<Accepted>(text)?))
+            .and_then(|data| {
+                data.check(binding)?;
+                Ok(data)
+            }) {
             Ok(data) => {
                 // An intact accepted document may require a newer compiler or
                 // migration. Semantic refusal must preserve it, not roll back.
@@ -233,7 +244,12 @@ impl Store {
             }
             Err(primary_error) => {
                 if primary_error.downcast_ref::<std::io::Error>().is_some()
-                    || primary_error.downcast_ref::<strict::Error>().is_some_and(|e| e.kind() == strict::ErrorKind::Deserialize || e.kind() == strict::ErrorKind::Io)
+                    || primary_error
+                        .downcast_ref::<strict::Error>()
+                        .is_some_and(|e| {
+                            e.kind() == strict::ErrorKind::Deserialize
+                                || e.kind() == strict::ErrorKind::Io
+                        })
                 {
                     // Shape/version changes and I/O faults require diagnosis;
                     // only malformed syntax/integrity enters automatic restore.
@@ -406,7 +422,10 @@ mod tests {
         let mut next = current.clone();
         next.revision = Revision(2);
         next.desktop.ui.density = 1.5;
-        next.effective_digest = settings::digest(&settings::resolve_with_embedded(&next.desktop, &next.embedded_source).unwrap()).unwrap();
+        next.effective_digest = settings::digest(
+            &settings::resolve_with_embedded(&next.desktop, &next.embedded_source).unwrap(),
+        )
+        .unwrap();
         next.receipts.push(Receipt {
             operation_id: "ambiguous".into(),
             request_digest: "a".repeat(64),
