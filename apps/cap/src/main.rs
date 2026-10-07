@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Cap's CLI starts a native window or a Bus-only agent service.
-use cap::{bus, capture, verbs};
+//! Cap's CLI starts a native window or a Bus-only agent service. No network
+//! probe runs at launch: a name collision is handed to the running instance
+//! asynchronously on Cap's existing worker, and the launcher never blocks.
+use cap::{capture, verbs};
 use std::path::PathBuf;
 const HELP: &str = "cap — native screenshots and editable annotations\nUsage: cap [OPTIONS] [IMAGE]\n  --headless        Bus service without a window\n  --service NAME    service name (default cap)\n  --comp NAME       compositor service (default comp)\n  --noded-url URL   native broker endpoint\n  --version         version and exact build provenance";
 struct Args {
@@ -76,25 +78,12 @@ fn main() {
         )
         .with_writer(std::io::stderr)
         .init();
-    let paths = args
-        .path
-        .as_ref()
-        .map(|p| vec![p.to_string_lossy().into_owned()])
-        .unwrap_or_default();
-    if !args.headless && bus::probe_running(&args.url, &args.service) {
-        finish(bus::forward_open(&args.url, &args.service, &paths));
-        return;
-    }
     let result = if args.headless {
         cap::headless::run(&args.service, &args.url, &args.comp, args.path)
     } else {
         cap::app::run(&args.service, &args.url, &args.comp, args.path)
     };
-    if result.is_err() && !args.headless && bus::probe_running(&args.url, &args.service) {
-        finish(bus::forward_open(&args.url, &args.service, &paths))
-    } else {
-        finish(result)
-    }
+    finish(result)
 }
 fn finish(result: Result<(), String>) {
     if let Err(error) = result {

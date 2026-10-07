@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2
+
+- Live settings over one nonblocking supervised connection with the shared
+  paired bridge: prepared UI and mono typography, tokens and spacing render
+  the chrome, and the settings lane drains before every Bus delivery against
+  the live connection generation. Startup opens while the supervisor
+  connects; an explicit typed name collision hands the launch paths to the
+  running instance on Cap's existing worker (fenced by an untouched window
+  that never registered), and a refused registration keeps the offline
+  window open. Settings and cache evidence are available in `app.describe`
+  and `cap.info`.
+- The legacy theme-file reload is retired, and canvas and preview drawing are
+  pinned to the explicit CPU renderer. Replies are tracked tasks fenced to
+  the connection they arrived on; shutdown uses one bounded deadline for
+  accepted replies, capture restoration calls, the settings cache and the
+  client close.
+
 ## 0.1.1
 
 - Ced-style shared File, Edit, Capture, Annotate, View and Help menus replace

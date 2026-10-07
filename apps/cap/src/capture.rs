@@ -171,21 +171,22 @@ pub struct Captured {
     pub metadata: Value,
 }
 
+/// The captures root through the shared directory resolver, preserving the
+/// exact legacy precedence: app override, apps parent, isolated Var, XDG
+/// state, then home state. The generic resolver's additional `MIXOS` fallback
+/// is deliberately filtered out here — existing captures are never relocated.
+/// Resolution performs no I/O; only the final capture directory is secured.
 pub fn media_directory() -> Result<PathBuf, String> {
-    let env = |name| {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    let base = env("MIXOS_APP_HOME")
-        .or_else(|| env("MIXOS_APPS_HOME").map(|p| p.join("cap")))
-        .or_else(|| env("MIXOS_VAR").map(|p| p.join("apps/cap")))
-        .or_else(|| env("XDG_STATE_HOME").map(|p| p.join("mixos/apps/cap")))
-        .or_else(|| env("HOME").map(|p| p.join(".local/state/mixos/apps/cap")))
+    let base = media_base(|key| std::env::var_os(key).map(PathBuf::from))
         .ok_or("no absolute application state directory")?;
     let directory = base.join("captures");
     secure_directory(&directory)?;
     Ok(directory)
+}
+
+fn media_base(get: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    config::AppDirs::resolve_with("cap", |key| if key == "MIXOS" { None } else { get(key) })
+        .map(|dirs| dirs.root().to_owned())
 }
 
 fn secure_directory(directory: &std::path::Path) -> Result<(), String> {
@@ -346,6 +347,45 @@ pub fn absolute(path: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_root_preserves_legacy_precedence_and_never_moves_existing_captures() {
+        let vars = [
+            ("MIXOS_APP_HOME", "/one"),
+            ("MIXOS_APPS_HOME", "/two"),
+            ("MIXOS_VAR", "/three"),
+            ("MIXOS", "/four"),
+            ("XDG_STATE_HOME", "/five"),
+            ("HOME", "/six"),
+        ];
+        let expected = [
+            "/one",
+            "/two/cap",
+            "/three/apps/cap",
+            "/five/mixos/apps/cap",
+            "/six/.local/state/mixos/apps/cap",
+        ];
+        for (offset, expected) in expected.into_iter().enumerate() {
+            let base = media_base(|key| {
+                vars[offset..]
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, path)| PathBuf::from(path))
+            })
+            .unwrap();
+            assert_eq!(base, PathBuf::from(expected));
+        }
+    }
+    #[test]
+    fn media_root_ignores_the_generic_mixos_var_and_requires_an_absolute_root() {
+        // Only MIXOS is set: the deliberate missing fallback must not invent
+        // a capture root under the package var.
+        assert!(media_base(|key| (key == "MIXOS").then_some(PathBuf::from("/four"))).is_none());
+        assert!(media_base(|_| None).is_none());
+        assert!(
+            media_base(|key| (key == "MIXOS_APP_HOME").then_some(PathBuf::from("relative")))
+                .is_none()
+        );
+    }
     #[test]
     fn existing_capture_directory_is_secured_and_symlinks_are_refused() {
         use std::os::unix::fs::PermissionsExt;

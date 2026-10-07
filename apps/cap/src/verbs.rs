@@ -7,6 +7,24 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 pub const SERVICE: &str = "cap";
+/// Every command the GUI and headless services answer, for `app.describe`.
+pub const VERBS: [&str; 15] = [
+    "cap.ping",
+    "cap.info",
+    "app.describe",
+    "cap.capture",
+    "cap.cancel",
+    "cap.open",
+    "cap.annotate",
+    "cap.move",
+    "cap.delete",
+    "cap.crop",
+    "cap.undo",
+    "cap.redo",
+    "cap.export",
+    "cap.show",
+    "cap.quit",
+];
 pub fn is_edit(verb: &str) -> bool {
     matches!(
         verb,
@@ -54,7 +72,14 @@ pub fn parse(verb: &str, body: &str) -> Result<Value, String> {
     }
     if matches!(
         verb,
-        "cap.ping" | "cap.info" | "cap.show" | "cap.quit" | "cap.cancel" | "cap.undo" | "cap.redo"
+        "cap.ping"
+            | "cap.info"
+            | "app.describe"
+            | "cap.show"
+            | "cap.quit"
+            | "cap.cancel"
+            | "cap.undo"
+            | "cap.redo"
     ) && !value.as_object().unwrap().is_empty()
     {
         return Err("this command takes an empty object".into());

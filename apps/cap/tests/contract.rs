@@ -36,4 +36,10 @@ fn every_cap_contract_is_registered_and_strict() {
         )
         .is_err()
     );
+    // app.describe answers an empty object on both services; its public
+    // registry entry is owned by the parent (the registry has no entry yet).
+    assert!(cap::verbs::parse("app.describe", "{}").is_ok());
+    assert!(cap::verbs::parse("app.describe", "{\"extra\":true}").is_err());
+    assert!(cap::verbs::parse("app.describe", "[]").is_err());
+    assert!(cap::verbs::VERBS.contains(&"app.describe"));
 }

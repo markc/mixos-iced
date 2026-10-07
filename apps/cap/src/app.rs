@@ -10,10 +10,12 @@ use crate::{
     verbs::{self, Operation},
     viewport::Viewport,
 };
+use application::presentation::native::Ui;
+use application::{Element, Renderer, iced};
 use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use iced::{
-    Element, Subscription, Task, mouse,
-    widget::{self, button, canvas, column, container, row, slider, text, text_input},
+    Subscription, Task, mouse,
+    widget::{self, button, canvas, column, container, row, slider, text_input},
     window,
 };
 use serde_json::{Value, json};
@@ -146,9 +148,10 @@ fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     })
 }
 pub struct App {
-    bus: Option<BusHandle>,
+    bus: BusHandle,
     comp: String,
-    look: appearance::Appearance,
+    bootstrap: appearance::settings::Prepared,
+    settings_ui: Ui<()>,
     directory: PathBuf,
     request: Request,
     delay: String,
@@ -181,89 +184,109 @@ pub struct App {
     pending: Option<Pending>,
     confirm: bool,
     dialog: Option<Dialog>,
+    refused: bool,
+    /// A user interacted with the window; fences a late successful handoff
+    /// from closing it under the user.
+    touched: bool,
+    launched: std::time::Instant,
 }
-fn initial(look: appearance::Appearance, directory: PathBuf) -> App {
-    let colour = look.tokens.palette.destructive;
-    App {
-        bus: None,
-        comp: "comp".into(),
-        look,
-        directory,
-        request: Request::default(),
-        delay: "0".into(),
-        outputs: vec![],
-        windows: vec![],
-        selected_window: None,
-        own: None,
-        window: None,
-        document: None,
-        preview: None,
-        revision: 0,
-        rendering: false,
-        repaint: false,
-        path: None,
-        metadata: Value::Null,
-        tool: Tool::Draw(Kind::Arrow),
-        selected: None,
-        colour,
-        width: 4.0,
-        annotation_text: String::new(),
-        text_size: "24".into(),
-        zoom: 1.0,
-        pan: Point { x: 0.0, y: 0.0 },
-        status: label("ready"),
-        busy: false,
-        cancel: None,
-        pending_reply: None,
-        picker: None,
-        picker_strings: requester::Strings {
-            placeholder: label("name"),
-            show_hidden: label("hidden"),
-            hide_hidden: label("hidden"),
-            truncated: label("files"),
-            recent: label("recent"),
-        },
-        pending: None,
-        confirm: false,
-        dialog: None,
+impl App {
+    fn new(
+        bus: BusHandle,
+        bootstrap: appearance::settings::Prepared,
+        settings_ui: Ui<()>,
+        comp: String,
+        directory: PathBuf,
+    ) -> App {
+        let colour = bootstrap.tokens().palette.destructive;
+        App {
+            bus,
+            comp,
+            bootstrap,
+            settings_ui,
+            directory,
+            request: Request::default(),
+            delay: "0".into(),
+            outputs: vec![],
+            windows: vec![],
+            selected_window: None,
+            own: None,
+            window: None,
+            document: None,
+            preview: None,
+            revision: 0,
+            rendering: false,
+            repaint: false,
+            path: None,
+            metadata: Value::Null,
+            tool: Tool::Draw(Kind::Arrow),
+            selected: None,
+            colour,
+            width: 4.0,
+            annotation_text: String::new(),
+            text_size: "24".into(),
+            zoom: 1.0,
+            pan: Point { x: 0.0, y: 0.0 },
+            status: label("ready"),
+            busy: false,
+            cancel: None,
+            pending_reply: None,
+            picker: None,
+            picker_strings: requester::Strings {
+                placeholder: label("name"),
+                show_hidden: label("hidden"),
+                hide_hidden: label("hidden"),
+                truncated: label("files"),
+                recent: label("recent"),
+            },
+            pending: None,
+            confirm: false,
+            dialog: None,
+            refused: false,
+            touched: false,
+            launched: std::time::Instant::now(),
+        }
     }
 }
 pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Result<(), String> {
-    let (handle, rx) = bus::spawn(service, url).map_err(|e| e.to_string())?;
-    let look = appearance::install(&appearance::Theme::load()).map_err(|e| e.to_string())?;
-    let font = look.ui_font();
-    DELIVERIES
-        .set(Mutex::new(Some(rx)))
-        .map_err(|_| "Cap already started in this process")?;
-    let mut app = initial(look, capture::media_directory()?);
-    app.bus = Some(handle);
-    app.comp = comp.into();
-    let mut startup = vec![app.refresh()];
-    if let Some(path) = path {
-        startup.push(app.open_path(path));
-    }
-    let state = std::cell::RefCell::new(Some((app, Task::batch(startup))));
-    iced::application(
-        move || state.borrow_mut().take().expect("one boot"),
-        App::update,
-        App::view,
-    )
-    .title(|_: &App| label("title"))
-    .theme(|app: &App| app.look.theme())
-    .default_font(font)
-    .subscription(App::subscription)
-    .window(window::Settings {
-        size: iced::Size::new(1040.0, 720.0),
-        min_size: Some(iced::Size::new(760.0, 450.0)),
-        exit_on_close_request: false,
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: APP_ID.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .run()
-    .map_err(|e| e.to_string())
+    let directory = capture::media_directory()?;
+    let handoff = path
+        .as_ref()
+        .map(|p| vec![p.to_string_lossy().into_owned()]);
+    let (bus, mut settings_ui, bootstrap, rx) = bus::start(service, url, handoff)?;
+    let result = (|| {
+        DELIVERIES
+            .set(Mutex::new(Some(rx)))
+            .map_err(|_| "Cap already started in this process")?;
+        settings_ui.reconcile(bus.settings_generation());
+        let mut app = App::new(bus.clone(), bootstrap, settings_ui, comp.into(), directory);
+        let mut startup = vec![app.refresh()];
+        if let Some(path) = path {
+            startup.push(app.open_path(path));
+        }
+        let font = app
+            .bootstrap
+            .typography()
+            .get("ui")
+            .expect("UI typography")
+            .font;
+        application::start(
+            (app, Task::batch(startup)),
+            App::update,
+            App::view,
+            application::Window::new(APP_ID, iced::Size::new(1040.0, 720.0), font)
+                .minimum(iced::Size::new(760.0, 450.0))
+                .defer_close(),
+        )
+        .title(|_: &App| label("title"))
+        .theme(|app: &App| app.look().theme())
+        .subscription(App::subscription)
+        .run()
+        .map_err(|e| e.to_string())
+    })();
+    bus.quit();
+    bus.wait_done(Duration::from_secs(3));
+    result
 }
 async fn work<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -271,6 +294,48 @@ async fn work<T: Send + 'static>(
     crate::worker::run(f).await
 }
 impl App {
+    fn look(&self) -> &appearance::settings::Prepared {
+        self.settings_ui
+            .session()
+            .host()
+            .presentation()
+            .map_or(&self.bootstrap, |presentation| presentation.appearance())
+    }
+    fn typography(&self, role: &str) -> toolkit::typography::TextStyle {
+        self.look()
+            .typography()
+            .get(role)
+            .expect("prepared typography role")
+    }
+    fn text<'a>(
+        &self,
+        content: impl iced::advanced::text::IntoFragment<'a>,
+    ) -> application::widget::Text<'a, Theme> {
+        self.typography("ui").text(content)
+    }
+    /// Persistent provenance: the applied settings source and the sampled
+    /// connection state, never a queued boolean.
+    fn persistent_status(&self) -> String {
+        use settings::fallback::PresentationKind;
+        let kind = match self.settings_ui.session().host().consumer().evidence().kind {
+            Some(PresentationKind::Current) => "settings-current",
+            Some(PresentationKind::Cached) => "settings-cached",
+            Some(PresentationKind::Embedded) => "settings-embedded",
+            Some(PresentationKind::Retained) => "settings-retained",
+            Some(PresentationKind::LastGood) => "settings-last-good",
+            None => "settings-bootstrap",
+        };
+        let connection = if self.bus.connected() {
+            "bus-connected"
+        } else if self.refused {
+            "bus-refused"
+        } else if self.bus.ever_registered() {
+            "bus-disconnected"
+        } else {
+            "bus-connecting"
+        };
+        format!("{} · {}", label(kind), label(connection))
+    }
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             Subscription::run(deliveries).map(Message::Bus),
@@ -287,9 +352,7 @@ impl App {
         self.status = format!("{}: {error}", label("error"));
     }
     fn refresh(&self) -> Task<Message> {
-        let Some(bus) = self.bus.clone() else {
-            return Task::none();
-        };
+        let bus = self.bus.clone();
         let comp = self.comp.clone();
         Task::perform(
             async move {
@@ -323,8 +386,35 @@ impl App {
             Message::Preview(revision, result)
         })
     }
-    fn info(&self) -> Value {
-        json!({"schema":"cap.v1","busy":self.busy,"status":self.status,"document":self.document.as_ref().map(Document::info),"path":self.path,"capture":self.metadata,"mode":self.request.mode,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"ui":{"menu_bar":true,"tool":self.tool.key(),"zoom":self.zoom,"dialog":self.dialog.map(Dialog::key)}})
+    /// Drain queued settings events and reconcile the live generation, on
+    /// every Bus delivery before dispatch. Returns how many activations
+    /// landed, for the shared receipt.
+    fn sync_settings(&mut self) -> usize {
+        let changes = self
+            .settings_ui
+            .drain_with(|| self.bus.settings_generation(), |_| {});
+        self.settings_ui.reconcile(self.bus.settings_generation());
+        changes.len()
+    }
+    fn info(&mut self) -> Value {
+        self.settings_ui.reconcile(self.bus.settings_generation());
+        let mut info = json!({"schema":"cap.v1","busy":self.busy,"status":self.status,"connected":self.bus.connected(),"document":self.document.as_ref().map(Document::info),"path":self.path,"capture":self.metadata,"mode":self.request.mode,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"ui":{"menu_bar":true,"tool":self.tool.key(),"zoom":self.zoom,"dialog":self.dialog.map(Dialog::key)}});
+        info["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
+        info["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
+        info
+    }
+    fn describe(&mut self) -> Value {
+        self.settings_ui.reconcile(self.bus.settings_generation());
+        let mut describe = json!({
+            "schema":"cap.v1",
+            "app_id":APP_ID,
+            "version":env!("CARGO_PKG_VERSION"),
+            "transport":"native",
+            "verbs":verbs::VERBS
+        });
+        describe["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
+        describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
+        describe
     }
     fn modal(&self) -> bool {
         self.confirm || self.picker.is_some() || self.dialog.is_some()
@@ -344,11 +434,9 @@ impl App {
         }
     }
     fn reply(&self, id: u64, result: Result<Value, String>) {
-        if let Some(bus) = &self.bus {
-            match result {
-                Ok(v) => bus.respond(id, 0, v.to_string()),
-                Err(e) => bus.respond(id, 10, json!({"error":e}).to_string()),
-            }
+        match result {
+            Ok(v) => self.bus.respond(id, 0, v.to_string()),
+            Err(e) => self.bus.respond(id, 10, json!({"error":e}).to_string()),
         }
     }
     fn request_pending(&mut self, action: Pending) -> Task<Message> {
@@ -378,10 +466,8 @@ impl App {
                 Task::none()
             }
             Pending::Quit => {
-                if let Some(bus) = &self.bus {
-                    bus.quit();
-                    bus.wait_done(Duration::from_secs(3));
-                }
+                self.bus.quit();
+                self.bus.wait_done(Duration::from_secs(3));
                 iced::exit()
             }
         }
@@ -391,10 +477,7 @@ impl App {
             self.error(label("busy"));
             return Task::none();
         }
-        let Some(bus) = self.bus.clone() else {
-            self.error("Bus unavailable");
-            return Task::none();
-        };
+        let bus = self.bus.clone();
         self.request.delay = match self.delay.parse::<u32>() {
             Ok(n) if n <= 10 => n,
             _ => {
@@ -462,6 +545,41 @@ impl App {
         )
     }
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(
+            &message,
+            Message::Menu(_)
+                | Message::OpenMenu(_)
+                | Message::Mode(_)
+                | Message::Output(_)
+                | Message::Choose(_)
+                | Message::Delay(_)
+                | Message::Pointer(_)
+                | Message::Take
+                | Message::Cancel
+                | Message::Tool(_)
+                | Message::Gesture(_)
+                | Message::Colour(_)
+                | Message::Width(_)
+                | Message::Text(_)
+                | Message::TextSize(_)
+                | Message::Zoom(_)
+                | Message::Fit
+                | Message::Undo
+                | Message::Redo
+                | Message::Delete
+                | Message::Uncrop
+                | Message::Save
+                | Message::Open
+                | Message::Refresh
+                | Message::Request(_)
+                | Message::Copy
+                | Message::Quit
+                | Message::Discard
+                | Message::Keep
+                | Message::Key(..)
+        ) {
+            self.touched = true;
+        }
         match message {
             Message::OpenMenu(index) => {
                 if self.modal() {
@@ -628,14 +746,14 @@ impl App {
                     Err(error) => self.error(error),
                 }
                 if let Some(id) = self.pending_reply.take() {
-                    self.reply(
-                        id,
-                        if self.document.is_some() && self.status == label("capture-complete") {
-                            Ok(self.info())
-                        } else {
-                            Err(self.status.clone())
-                        },
-                    );
+                    let value = if self.document.is_some()
+                        && self.status == label("capture-complete")
+                    {
+                        Ok(self.info())
+                    } else {
+                        Err(self.status.clone())
+                    };
+                    self.reply(id, value);
                 }
                 let task = self.preview();
                 if let Some(action) = self.pending.take() {
@@ -814,7 +932,8 @@ impl App {
                         self.pan = Point { x: 0.0, y: 0.0 };
                         self.status = label("ready");
                         if let Some(id) = self.pending_reply.take() {
-                            self.reply(id, Ok(self.info()));
+                            let value = self.info();
+                            self.reply(id, Ok(value));
                         }
                         self.preview()
                     }
@@ -842,7 +961,8 @@ impl App {
                         self.path = Some(path);
                         self.status = label("saved");
                         if let Some(id) = self.pending_reply.take() {
-                            self.reply(id, Ok(self.info()));
+                            let value = self.info();
+                            self.reply(id, Ok(value));
                         }
                         if let Some(action) = self.pending.take() {
                             return self.perform_pending(action);
@@ -943,134 +1063,167 @@ impl App {
                     _ => Task::none(),
                 }
             }
-            Message::Bus(Delivery::Command(command)) => {
-                let id = command.id;
-                let verb = command.verb.as_str();
-                let value = match verbs::parse(verb, &command.body) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.reply(id, Err(e));
-                        return Task::none();
-                    }
-                };
-                if verb == "cap.ping" || verb == "cap.info" {
-                    self.reply(id, Ok(self.info()));
-                    return Task::none();
-                }
-                if self.modal() && verb != "cap.show" {
-                    self.reply(id, Err("dialog active".into()));
-                    return Task::none();
-                }
-                if verb == "cap.cancel" {
-                    if let Some(cancel) = &self.cancel {
-                        let _ = cancel.send(true);
-                    }
-                    self.reply(id, Ok(json!({"cancelling":self.cancel.is_some()})));
-                    return Task::none();
-                }
-                if self.busy {
-                    self.reply(id, Err(label("busy")));
-                    return Task::none();
-                }
-                if matches!(verb, "cap.open" | "cap.capture" | "cap.quit")
-                    && self.document.as_ref().is_some_and(Document::dirty)
-                {
-                    self.reply(id, Err(label("save-before-capture")));
-                    return Task::none();
-                }
-                match verbs::operation(verb, value.clone()) {
-                    Ok(Operation::Show) => {
-                        if let Some(bus) = self.bus.clone() {
-                            let comp = self.comp.clone();
-                            self.busy = true;
-                            return Task::perform(
-                                async move {
-                                    let target = capture::own_window(&bus, &comp).await?;
-                                    capture::show(&bus, &comp, target).await
-                                },
-                                move |result| Message::Shown(id, result),
-                            );
-                        }
-                        self.reply(id, Err("Cap window is not yet known to compd".into()));
-                        Task::none()
-                    }
-                    Ok(Operation::Quit) => {
-                        self.reply(id, Ok(json!({"quitting":true})));
-                        self.request_pending(Pending::Quit)
-                    }
-                    Ok(Operation::Capture(request)) => {
-                        self.delay = request.delay.to_string();
-                        self.request = request;
-                        self.selected_window = self
-                            .windows
-                            .iter()
-                            .find(|w| Some(&w.target) == self.request.window.as_ref())
-                            .cloned();
-                        self.pending_reply = Some(id);
-                        let task = self.take();
-                        if !self.busy {
-                            self.pending_reply = None;
-                            self.reply(id, Err(self.status.clone()));
-                        }
-                        task
-                    }
-                    Ok(Operation::Open(path)) => {
-                        self.pending_reply = Some(id);
-                        match capture::absolute(&path) {
-                            Ok(p) => self.open_path(p),
-                            Err(e) => {
-                                self.pending_reply = None;
-                                self.reply(id, Err(e));
-                                Task::none()
-                            }
-                        }
-                    }
-                    Ok(Operation::Export(path)) => {
-                        if self.document.is_none() {
-                            self.reply(id, Err("no image".into()));
-                            return Task::none();
-                        };
-                        self.pending_reply = Some(id);
-                        match capture::absolute(&path) {
-                            Ok(p) => self.save_path(p),
-                            Err(e) => {
-                                self.pending_reply = None;
-                                self.reply(id, Err(e));
-                                Task::none()
-                            }
-                        }
-                    }
-                    Err(_) if verbs::is_edit(verb) => {
-                        let result = self
-                            .document
-                            .as_mut()
-                            .ok_or_else(|| "no image".into())
-                            .and_then(|doc| verbs::edit(doc, verb, value));
-                        self.reply(id, result);
-                        self.preview()
-                    }
-                    Err(error) => {
-                        self.reply(id, Err(error));
-                        Task::none()
-                    }
-                }
-            }
-            Message::Bus(Delivery::ThemeChanged) => {
-                self.look.retheme(&appearance::Theme::load());
-                Task::none()
-            }
-            Message::Bus(Delivery::Disconnected) => {
+            Message::Bus(delivery) => self.bus_delivery(delivery),
+            Message::Noop => Task::none(),
+        }
+    }
+    fn bus_delivery(&mut self, delivery: Delivery) -> Task<Message> {
+        if self.sync_settings() > 0 {
+            eprintln!(
+                "CAP_SETTINGS {}",
+                json!({
+                    "evidence": self.settings_ui.session().host().consumer().evidence(),
+                    "settings_cache": self.settings_ui.session().cache_evidence(),
+                    "elapsed_ms": self.launched.elapsed().as_millis(),
+                })
+            );
+        }
+        match delivery {
+            Delivery::Command(command) => self.command(command),
+            Delivery::Settings => Task::none(),
+            Delivery::Changed | Delivery::Connected => self.refresh(),
+            Delivery::Disconnected => {
                 self.error("Bus disconnected");
                 Task::none()
             }
-            Message::Bus(_) | Message::Noop => Task::none(),
+            Delivery::Refused { message } => {
+                self.refused = true;
+                self.status = message;
+                Task::none()
+            }
+            Delivery::Forwarded(result) => match result {
+                Ok(()) if !self.touched && !self.bus.ever_registered() => {
+                    self.request_pending(Pending::Quit)
+                }
+                Ok(()) => Task::none(),
+                Err(error) => {
+                    self.status = error;
+                    Task::none()
+                }
+            },
+        }
+    }
+    fn command(&mut self, command: crate::bus::Command) -> Task<Message> {
+        let id = command.id;
+        let verb = command.verb.as_str();
+        let value = match verbs::parse(verb, &command.body) {
+            Ok(v) => v,
+            Err(e) => {
+                self.reply(id, Err(e));
+                return Task::none();
+            }
+        };
+        if verb == "cap.ping" || verb == "cap.info" || verb == "app.describe" {
+            // The existing modal bypass: information commands answer with
+            // real work state while a dialogue is open.
+            let value = if verb == "app.describe" {
+                self.describe()
+            } else {
+                self.info()
+            };
+            self.reply(id, Ok(value));
+            return Task::none();
+        }
+        if self.modal() && verb != "cap.show" {
+            self.reply(id, Err("dialog active".into()));
+            return Task::none();
+        }
+        if verb == "cap.cancel" {
+            if let Some(cancel) = &self.cancel {
+                let _ = cancel.send(true);
+            }
+            self.reply(id, Ok(json!({"cancelling":self.cancel.is_some()})));
+            return Task::none();
+        }
+        if self.busy {
+            self.reply(id, Err(label("busy")));
+            return Task::none();
+        }
+        if matches!(verb, "cap.open" | "cap.capture" | "cap.quit")
+            && self.document.as_ref().is_some_and(Document::dirty)
+        {
+            self.reply(id, Err(label("save-before-capture")));
+            return Task::none();
+        }
+        match verbs::operation(verb, value.clone()) {
+            Ok(Operation::Show) => {
+                let bus = self.bus.clone();
+                let comp = self.comp.clone();
+                self.busy = true;
+                Task::perform(
+                    async move {
+                        let target = capture::own_window(&bus, &comp).await?;
+                        capture::show(&bus, &comp, target).await
+                    },
+                    move |result| Message::Shown(id, result),
+                )
+            }
+            Ok(Operation::Quit) => {
+                self.reply(id, Ok(json!({"quitting":true})));
+                self.request_pending(Pending::Quit)
+            }
+            Ok(Operation::Capture(request)) => {
+                self.delay = request.delay.to_string();
+                self.request = request;
+                self.selected_window = self
+                    .windows
+                    .iter()
+                    .find(|w| Some(&w.target) == self.request.window.as_ref())
+                    .cloned();
+                self.pending_reply = Some(id);
+                let task = self.take();
+                if !self.busy {
+                    self.pending_reply = None;
+                    self.reply(id, Err(self.status.clone()));
+                }
+                task
+            }
+            Ok(Operation::Open(path)) => {
+                self.pending_reply = Some(id);
+                match capture::absolute(&path) {
+                    Ok(p) => self.open_path(p),
+                    Err(e) => {
+                        self.pending_reply = None;
+                        self.reply(id, Err(e));
+                        Task::none()
+                    }
+                }
+            }
+            Ok(Operation::Export(path)) => {
+                if self.document.is_none() {
+                    self.reply(id, Err("no image".into()));
+                    return Task::none();
+                };
+                self.pending_reply = Some(id);
+                match capture::absolute(&path) {
+                    Ok(p) => self.save_path(p),
+                    Err(e) => {
+                        self.pending_reply = None;
+                        self.reply(id, Err(e));
+                        Task::none()
+                    }
+                }
+            }
+            Err(_) if verbs::is_edit(verb) => {
+                let result = self
+                    .document
+                    .as_mut()
+                    .ok_or_else(|| "no image".into())
+                    .and_then(|doc| verbs::edit(doc, verb, value));
+                self.reply(id, result);
+                self.preview()
+            }
+            Err(error) => {
+                self.reply(id, Err(error));
+                Task::none()
+            }
         }
     }
     fn view(&self) -> Element<'_, Message, Theme> {
-        let tokens = self.look.tokens;
+        let tokens = self.look().tokens();
         let gap = tokens.metrics.spacing.sm;
         let action = |key: &str, message: Message, enabled: bool| {
-            let b = button(text(label(key)));
+            let b = button(self.text(label(key)));
             if enabled { b.on_press(message) } else { b }
         };
         let menubar: Element<'_, menu::Action, Theme> =
@@ -1096,33 +1249,37 @@ impl App {
                 .into();
                 crate::preview::plane(canvas, image, doc.output_dimensions(), self.zoom, self.pan)
             } else {
-                container(text(label("empty"))).center(iced::Fill).into()
+                container(self.text(label("empty"))).center(iced::Fill).into()
             };
-        let status = row![
-            text(&self.status),
-            widget::space().width(iced::Fill),
-            text(format!(
-                "{} · {} · {:.0}%",
-                label(self.request.mode.key()),
-                label(self.tool.key()),
-                self.zoom * 100.0
-            )),
-            text(
-                self.document
-                    .as_ref()
-                    .map(|d| {
-                        let (w, h) = d.output_dimensions();
-                        format!(
-                            "{w} × {h}{}",
-                            if d.dirty() {
-                                format!(" · {}", label("not-saved"))
-                            } else {
-                                String::new()
-                            }
-                        )
-                    })
-                    .unwrap_or_default()
-            )
+        let status = column![
+            row![
+                self.text(&self.status),
+                widget::space().width(iced::Fill),
+                self.text(format!(
+                    "{} · {} · {:.0}%",
+                    label(self.request.mode.key()),
+                    label(self.tool.key()),
+                    self.zoom * 100.0
+                )),
+                self.typography("mono").text(
+                    self.document
+                        .as_ref()
+                        .map(|d| {
+                            let (w, h) = d.output_dimensions();
+                            format!(
+                                "{w} × {h}{}",
+                                if d.dirty() {
+                                    format!(" · {}", label("not-saved"))
+                                } else {
+                                    String::new()
+                                }
+                            )
+                        })
+                        .unwrap_or_default()
+                )
+            ]
+            .spacing(gap),
+            self.text(self.persistent_status())
         ]
         .spacing(gap);
         let base: Element<'_, Message, Theme> = column![
@@ -1135,8 +1292,8 @@ impl App {
         .into();
         if self.confirm {
             let dialog = column![
-                text(label("discard-title")),
-                text(label("discard-body")),
+                self.text(label("discard-title")),
+                self.text(label("discard-body")),
                 row![
                     action("keep", Message::Keep, true),
                     action("save", Message::Save, true),
@@ -1164,7 +1321,10 @@ impl App {
                 widget::opaque(
                     container(
                         container(column![
-                            picker.view::<Message>(tokens, &self.picker_strings),
+                            picker.view_for::<Message, Theme, Renderer>(
+                                tokens,
+                                &self.picker_strings
+                            ),
                             action("keep", Message::Keep, true)
                         ])
                         .padding(tokens.metrics.spacing.lg)
@@ -1180,19 +1340,19 @@ impl App {
         } else if let Some(dialog) = self.dialog {
             let body = match dialog {
                 Dialog::Properties => column![
-                    text(label("annotation-properties")),
+                    self.text(label("annotation-properties")),
                     row![
-                        text(label("width")),
+                        self.text(label("width")),
                         slider(0.5..=40.0, self.width, Message::Width).width(iced::Fill),
-                        text(format!("{:.1}", self.width)),
+                        self.text(format!("{:.1}", self.width)),
                     ]
                     .spacing(gap)
                     .align_y(iced::Center),
-                    text(label("colour")),
+                    self.text(label("colour")),
                     toolkit::ColorPicker::new(self.colour, Message::Colour)
                         .width(iced::Fill)
                         .height(tokens.metrics.spacing.xl * 4.0),
-                    text(label("annotation-text")),
+                    self.text(label("annotation-text")),
                     text_input(
                         crate::strings::label_ref("text-placeholder"),
                         &self.annotation_text
@@ -1200,7 +1360,7 @@ impl App {
                     .on_input(Message::Text)
                     .width(iced::Fill),
                     row![
-                        text(label("text-size")),
+                        self.text(label("text-size")),
                         text_input(
                             crate::strings::label_ref("text-size-range"),
                             &self.text_size
@@ -1212,12 +1372,15 @@ impl App {
                     .align_y(iced::Center),
                 ],
                 Dialog::Shortcuts => {
-                    column![text(label("shortcuts")), text(label("shortcuts-body"))]
+                    column![
+                        self.text(label("shortcuts")),
+                        self.text(label("shortcuts-body"))
+                    ]
                 }
                 Dialog::About => column![
-                    text(label("about")),
-                    text(format!("{} {}", label("title"), env!("CARGO_PKG_VERSION"))),
-                    text(label("about-body"))
+                    self.text(label("about")),
+                    self.text(format!("{} {}", label("title"), env!("CARGO_PKG_VERSION"))),
+                    self.text(label("about-body"))
                 ],
             }
             .spacing(tokens.metrics.spacing.md);
@@ -1273,18 +1436,26 @@ mod tests {
     use super::*;
     use crate::bus::Effect;
     fn test_app() -> App {
-        static LOOK: OnceLock<appearance::Appearance> = OnceLock::new();
-        let look = LOOK
-            .get_or_init(|| {
-                let theme = appearance::Theme::from_source("cap-test", "mode: \"dark\"\n").unwrap();
-                appearance::install_with(
-                    &theme,
-                    appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
-                )
-                .unwrap()
-            })
-            .clone();
-        initial(look, PathBuf::from("/tmp"))
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "cap",
+        )
+        .unwrap();
+        let (ui, _lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
+        let (bus, _effects) = BusHandle::response_sink();
+        App::new(
+            bus,
+            appearance::settings::bootstrap().unwrap(),
+            ui,
+            "comp".into(),
+            PathBuf::from("/tmp"),
+        )
     }
     #[test]
     fn keyboard_menus_dispatch_real_actions_at_the_minimum_window_size() {
@@ -1342,7 +1513,7 @@ mod tests {
         let _ = app.update(Message::Menu(menu::Action::Open));
         assert!(app.picker.is_none());
         let (bus, mut effects) = BusHandle::response_sink();
-        app.bus = Some(bus);
+        app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
             id: 1,
             verb: "cap.open".into(),
@@ -1429,7 +1600,7 @@ mod tests {
     fn activation_holds_the_job_slot_until_compositor_confirmation() {
         let mut app = test_app();
         let (bus, mut effects) = BusHandle::response_sink();
-        app.bus = Some(bus);
+        app.bus = bus;
         let command = |id, verb: &str| {
             Message::Bus(Delivery::Command(crate::bus::Command {
                 id,
@@ -1455,6 +1626,147 @@ mod tests {
         assert_ne!(rc, 0);
         assert!(body.contains("exclusive_layer"));
     }
+    fn install_fonts() {
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            toolkit::fonts::install(
+                toolkit::fonts::FontSet::new().sans(
+                    include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf")
+                        .as_slice(),
+                ),
+                None,
+            )
+            .unwrap();
+        });
+    }
+    #[test]
+    fn settings_activation_changes_the_appearance_and_keeps_editor_state() {
+        install_fonts();
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "cap",
+        )
+        .unwrap();
+        let (ui, mut lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
+        let (bus, _effects) = BusHandle::response_sink();
+        let mut app = App::new(
+            bus,
+            appearance::settings::bootstrap().unwrap(),
+            ui,
+            "comp".into(),
+            PathBuf::from("/tmp"),
+        );
+        let mut doc = Document::new(image::RgbaImage::new(40, 30)).unwrap();
+        doc.add(Shape {
+            kind: Kind::Rectangle,
+            points: vec![Point { x: 2.0, y: 2.0 }, Point { x: 20.0, y: 20.0 }],
+            colour: app.colour.into_rgba8(),
+            width: 2.0,
+            text: None,
+            size: None,
+            number: None,
+        })
+        .unwrap();
+        app.document = Some(doc);
+        app.selected = Some(1);
+        app.zoom = 2.5;
+        app.pan = Point { x: 7.0, y: 9.0 };
+        app.revision = 4;
+        app.preview = Some(iced::advanced::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]));
+        app.pending_reply = Some(3);
+        let undo = app.document.as_ref().unwrap().can_undo();
+        assert!(app.settings_ui.session().host().presentation().is_none());
+        app.settings_ui.reconcile(None);
+        // Drive the real lane on its own bounded runtime; the UI loop drains.
+        let driver = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                loop {
+                    match lane.drive().await {
+                        application::presentation::native::Progress::UiClosed => break,
+                        _ => {}
+                    }
+                }
+            });
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.settings_ui.session().host().presentation().is_none()
+            && std::time::Instant::now() < deadline
+        {
+            app.sync_settings();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            app.settings_ui.session().host().presentation().is_some(),
+            "an embedded fallback presentation activates through the real bridge"
+        );
+        assert!(
+            std::ptr::eq(
+                app.look(),
+                app.settings_ui
+                    .session()
+                    .host()
+                    .presentation()
+                    .unwrap()
+                    .appearance()
+            ),
+            "the app renders the activated appearance, not bootstrap"
+        );
+        assert_eq!(
+            app.settings_ui
+                .session()
+                .host()
+                .consumer()
+                .evidence()
+                .kind,
+            Some(settings::fallback::PresentationKind::Embedded)
+        );
+        assert!(!app.busy);
+        assert_eq!(app.document.as_ref().unwrap().dimensions(), (40, 30));
+        assert_eq!(app.document.as_ref().unwrap().objects().len(), 1);
+        assert_eq!(app.document.as_ref().unwrap().can_undo(), undo);
+        assert!(app.document.as_ref().unwrap().dirty());
+        assert_eq!(app.selected, Some(1));
+        assert_eq!(app.zoom, 2.5);
+        assert_eq!(app.pan, Point { x: 7.0, y: 9.0 });
+        assert_eq!(app.revision, 4);
+        assert_eq!(app.pending_reply, Some(3));
+        assert!(app.preview.is_some());
+        drop(app);
+        driver.join().unwrap();
+    }
+    #[test]
+    fn describe_bypasses_an_open_dialog_and_carries_canonical_settings_evidence() {
+        let mut app = test_app();
+        app.dialog = Some(Dialog::About);
+        let (bus, mut effects) = BusHandle::response_sink();
+        app.bus = bus;
+        let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
+            id: 1,
+            verb: "app.describe".into(),
+            body: "{}".into(),
+            caller_key: "local:test".into(),
+        })));
+        let Effect::Respond { id, rc, body } = effects.try_recv().unwrap() else {
+            panic!("app.describe must answer while a dialog is open")
+        };
+        assert_eq!(id, 1);
+        assert_eq!(rc, 0);
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["app_id"], APP_ID);
+        assert_eq!(value["settings"]["context"], "app:cap");
+        assert!(value["settings_cache"].is_object());
+        assert!(matches!(app.dialog, Some(Dialog::About)));
+    }
     #[test]
     fn activation_preserves_save_as_for_pending_dirty_close() {
         let directory = tempfile::tempdir().unwrap();
@@ -1477,7 +1789,7 @@ mod tests {
             "chosen.png".into(),
         )));
         let (bus, _) = BusHandle::response_sink();
-        app.bus = Some(bus);
+        app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
             id: 1,
             verb: "cap.show".into(),
@@ -1508,7 +1820,7 @@ mod tests {
             "fresh.png".into(),
         )));
         let (bus, _) = BusHandle::response_sink();
-        app.bus = Some(bus);
+        app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
             id: 1,
             verb: "cap.show".into(),
@@ -1534,7 +1846,7 @@ mod tests {
     fn explicit_agent_window_target_survives_a_different_gui_selection() {
         let mut app = test_app();
         let (bus, _) = BusHandle::response_sink();
-        app.bus = Some(bus);
+        app.bus = bus;
         app.windows = capture::windows(
             &json!({"windows":[{"id":9,"generation":2,"title":"Cached selection"}]}),
         );
@@ -1560,7 +1872,7 @@ mod tests {
         app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());
         app.confirm = true;
         let (bus, mut effects) = BusHandle::response_sink();
-        app.bus = Some(bus);
+        app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
             id: 1,
             verb: "cap.open".into(),
@@ -1799,7 +2111,7 @@ impl Picture<'_> {
         }
     }
 }
-impl canvas::Program<Message, Theme> for Picture<'_> {
+impl canvas::Program<Message, Theme, Renderer> for Picture<'_> {
     type State = DragState;
     fn update(
         &self,
@@ -1916,7 +2228,7 @@ impl canvas::Program<Message, Theme> for Picture<'_> {
     fn draw(
         &self,
         state: &DragState,
-        renderer: &iced::Renderer,
+        renderer: &Renderer,
         theme: &Theme,
         bounds: iced::Rectangle,
         _: mouse::Cursor,

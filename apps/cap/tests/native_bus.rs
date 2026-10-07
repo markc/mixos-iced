@@ -84,32 +84,32 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
     );
     let client = ready(&url).await;
     assert!(broker_process.0.try_wait().unwrap().is_none());
-    let (theme_handle, mut themes) = cap::bus::spawn("cap-theme-test", &url).unwrap();
-    let theme = bus::BusMessage::new()
-        .with_header("command", "theme.changed")
-        .with_header("type", "event")
-        .with_body("{}");
-    let (rc, _, _) = client
-        .call_with_headers_raw(
-            "noded",
-            "topic.publish",
-            &std::collections::BTreeMap::from([("name".into(), "theme.changed".into())]),
-            &theme.to_wire(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(rc, 0);
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while let Some(event) = themes.next().await {
-            if event == cap::bus::Delivery::ThemeChanged {
-                return;
+    // One nonblocking start, one round trip through the shared worker: the
+    // supervised client registers and a cap.* command is delivered to the
+    // app stream and answered through the returned handle.
+    let (reply_handle, _settings_ui, _bootstrap, mut deliveries) =
+        cap::bus::start("cap-reply-test", &url, None).unwrap();
+    let responder = tokio::spawn(async move {
+        while let Some(delivery) = deliveries.next().await {
+            if let cap::bus::Delivery::Command(command) = delivery
+                && command.verb == "cap.ping"
+            {
+                reply_handle.respond(command.id, 0, json!({"schema":"cap.v1"}).to_string());
             }
         }
-        panic!("theme subscription closed");
+    });
+    let reply = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.call("cap-reply-test", "cap.ping", json!({})).await {
+                Ok(value) => break value,
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
     })
     .await
-    .expect("theme update delivered through native Bus");
-    theme_handle.quit();
+    .expect("reply test registered");
+    assert_eq!(reply["schema"], "cap.v1");
+    responder.abort();
     let comp = Arc::new(
         SupervisedClient::connect_options("comp-cap-test", &url)
             .connect()
@@ -243,6 +243,13 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
             .contains("cancelled")
     );
     assert_eq!(info(&client, "cap-test").await["document"]["width"], 120);
+    let described = client
+        .call("cap-test", "app.describe", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(described["headless"], true);
+    assert_eq!(described["settings"]["context"], "app:cap");
+    assert!(described["settings_cache"].is_object());
     client
         .call("cap-test", "cap.quit", json!({}))
         .await

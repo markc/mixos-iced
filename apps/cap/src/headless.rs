@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The same document and capture commands without a Wayland window.
+//! The same document and capture commands without a Wayland window. The paired
+//! settings UI stays owned (never drained) so the shared worker's lane keeps
+//! running; a refused registration ends the service with an error.
 use crate::{
     bus::{self, Delivery},
     capture,
     document::Document,
     verbs::{self, Operation},
 };
+use application::presentation::native::Ui;
 use iced::futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -21,7 +24,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         Some(p) => (Some(Document::open(&p)?), Some(p)),
         None => (None, None),
     };
-    let (handle, mut deliveries) = bus::spawn(service, url).map_err(|e| e.to_string())?;
+    let (handle, mut settings_ui, _bootstrap, mut deliveries) = bus::start(service, url, None)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -42,10 +45,18 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
             },
             delivery=deliveries.next()=>{
                 let Some(delivery)=delivery else{return Err("Bus worker stopped".into())};
-                let Delivery::Command(command)=delivery else {continue};
+                settings_ui.drain_with(|| handle.settings_generation(), |_| {});
+                settings_ui.reconcile(handle.settings_generation());
+                let command=match delivery {
+                    Delivery::Command(command)=>command,
+                    Delivery::Refused{message}=>return Err(format!("registration refused: {message}")),
+                    Delivery::Forwarded(_)=>continue,
+                    Delivery::Connected|Delivery::Disconnected|Delivery::Changed|Delivery::Settings=>continue,
+                };
                 let id=command.id;let verb=command.verb.as_str();
                 let value=match verbs::parse(verb,&command.body){Ok(v)=>v,Err(e)=>{respond(&handle,id,Err(e));continue}};
                 if matches!(verb,"cap.ping"|"cap.info"){respond(&handle,id,Ok(info(&document,&current_path,&metadata,!jobs.is_empty())));continue}
+                if verb=="app.describe"{respond(&handle,id,Ok(describe(&mut settings_ui,&handle)));continue}
                 if verb=="cap.cancel"{if let Some(tx)=&cancellation{let _=tx.send(true);}respond(&handle,id,Ok(json!({"cancelling":cancellation.is_some()})));continue}
                 if !jobs.is_empty(){respond(&handle,id,Err("busy".into()));continue}
                 if matches!(verb,"cap.open"|"cap.capture"|"cap.quit")&&document.as_ref().is_some_and(Document::dirty){respond(&handle,id,Err("export or undo unsaved annotations first".into()));continue}
@@ -78,4 +89,17 @@ fn respond(handle: &bus::BusHandle, id: u64, result: Result<Value, String>) {
 }
 fn info(document: &Option<Document>, path: &Option<PathBuf>, capture: &Value, busy: bool) -> Value {
     json!({"schema":"cap.v1","headless":true,"busy":busy,"document":document.as_ref().map(Document::info),"path":path,"capture":capture,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()})
+}
+fn describe(settings_ui: &mut Ui<()>, handle: &bus::BusHandle) -> Value {
+    settings_ui.reconcile(handle.settings_generation());
+    let mut describe = json!({
+        "schema":"cap.v1",
+        "headless":true,
+        "version":env!("CARGO_PKG_VERSION"),
+        "transport":"native",
+        "verbs":verbs::VERBS
+    });
+    describe["settings"] = json!(settings_ui.session().host().consumer().evidence());
+    describe["settings_cache"] = json!(settings_ui.session().cache_evidence());
+    describe
 }
