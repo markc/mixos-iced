@@ -175,7 +175,7 @@ fn fallback($launch,$kind)
   raise("FALLBACK","Missing " .. $kind .. " appearance: " .. read_file($launch.log))
 end
 try
-  $R.run = $n.new_run("/tmp/ced-settings")
+  $R.run = $n.new_run("/var/tmp/ced-settings")
   $root = $R.run.path
   $R.a = $n.private_bus({dir:$root .. "/a",name:"ced-desktop",noded:$bin .. "/noded"})
   mkdir($root .. "/cfg",{parents:true})

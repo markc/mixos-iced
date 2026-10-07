@@ -196,7 +196,7 @@ fn capture_joint($label,$accepted,$layout,$ced_window,$ced_width)
   print("captured joint " .. $label .. " revision " .. $accepted.revision .. " Ced " .. json_encode($app_pixel) .. " Quoin " .. json_encode($shell_pixel))
 end
 try
-  $R.run = $n.new_run("/tmp/settings-geometry")
+  $R.run = $n.new_run("/var/tmp/settings-geometry")
   $root = $R.run.path
   $R.bus = $n.private_bus({dir:$root,name:"settings-geometry",noded:$bin .. "/noded"})
   $binding = {instance:"fixture",profile:"default"}
