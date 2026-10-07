@@ -50,10 +50,12 @@ pub const CURRENT_WORKSPACE: u32 = 1;
 
 /// Where a maximised window goes back to (its pre-maximise location and window
 /// geometry size, in the host Space).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MaximizeRestore {
     pub location: Point<i32, Logical>,
     pub size: Size<i32, Logical>,
+    /// Output owning the requested maximised slot, independent of old buffers.
+    pub output: String,
 }
 
 /// An interactive move/resize in progress: what
@@ -651,7 +653,7 @@ impl CompState {
     }
 
     pub fn maximize_restore(&self, id: SurfaceId) -> Option<MaximizeRestore> {
-        self.maximized.get(&id).copied()
+        self.maximized.get(&id).cloned()
     }
 
     /// Record (or clear) a window's requested-maximised state.

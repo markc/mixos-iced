@@ -16,10 +16,12 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub(crate) struct Look {
     pub prepared: Arc<Prepared>,
+    pub preferences: crate::preferences::Preferences,
     chrome: Vec<ChromeTheme>,
 }
 
-pub(crate) fn build(prepared: &Prepared, _: &Snapshot) -> Result<Look, Diagnostic> {
+pub(crate) fn build(prepared: &Prepared, snapshot: &Snapshot) -> Result<Look, Diagnostic> {
+    let preferences = crate::preferences::Preferences::prepare(&snapshot.desktop.shell)?;
     let title = prepared.typography().get("ui_display").ok_or_else(|| {
         Diagnostic::new(
             "unsupported_presentation",
@@ -52,6 +54,7 @@ pub(crate) fn build(prepared: &Prepared, _: &Snapshot) -> Result<Look, Diagnosti
     };
     Ok(Look {
         prepared: Arc::new(prepared.clone()),
+        preferences,
         chrome: ChromeStyle::ALL
             .into_iter()
             .map(|style| {

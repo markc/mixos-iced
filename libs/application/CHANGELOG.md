@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Add synchronous `Host::complete_with` and `Session::handle_with` activation
+  hooks after the existing stale/live fence and before applied acknowledgement.
+  Hosts install total, prepared UI state in the same turn; previous methods
+  remain supported and use a no-op hook.
+
 ## 0.1.4
 
 - Box the private preparation result so queued events stay small when prepared

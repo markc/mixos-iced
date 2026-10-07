@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7
+
+- Activate global panel modes and requested thickness with prepared shell
+  appearance. Settings-owned edges report requested, fitted, presented and
+  reserved dimensions; conflicting legacy writes refuse `SETTINGS_MANAGED`.
+  Local saved modes and settled sizes survive profile removal and page saves.
+- Requested maximised windows retain their output and only follow changes to
+  that output's work area. Removing the output selects an available output
+  while preserving the original unmaximise geometry.
+
 ## 0.1.6
 
 - Scene loader adds versioned native editor snapshots and guarded actions,

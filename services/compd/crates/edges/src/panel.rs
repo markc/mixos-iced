@@ -1001,6 +1001,7 @@ impl PanelStateMachine {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PanelConfigError {
     InvalidThickness(f32),
+    SettingsManaged(super::Edge),
     ThicknessBudget {
         edge: super::Edge,
         requested: f32,
@@ -1019,6 +1020,7 @@ pub enum PanelConfigError {
 impl Display for PanelConfigError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::SettingsManaged(edge) => write!(formatter, "panel {edge:?} is managed by settings"),
             Self::ThicknessBudget {
                 edge,
                 requested,

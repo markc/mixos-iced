@@ -56,6 +56,33 @@ fn whole_presentation_and_content_activate_then_acknowledge() {
     assert_eq!(host.consumer().applied().unwrap().revision, Revision(1));
     assert!(host.request().is_none());
 }
+
+#[test]
+fn activation_hook_receives_only_current_successful_resources() {
+    let mut host = host();
+    let stale = prepare(host.request().unwrap(), "stale");
+    host.consumer_mut().observe(1, snapshot(2, true));
+    let current = prepare(host.request().unwrap(), "current");
+    let mut activated = Vec::new();
+    assert!(host.complete_with(stale, |p| activated.push(p.content().clone())).is_none());
+    assert!(activated.is_empty());
+    assert!(host.complete_with(current, |p| activated.push(p.content().clone())).is_some());
+    assert_eq!(activated, ["current"]);
+    assert_eq!(host.consumer().applied().unwrap().revision, Revision(2));
+
+    host.consumer_mut().observe(1, snapshot(3, false));
+    let failed = host.request().unwrap().failed(Diagnostic::new("test", "panel", "invalid"));
+    assert!(host.complete_with(failed, |p| activated.push(p.content().clone())).is_none());
+    assert_eq!(activated, ["current"]);
+    assert_eq!(host.consumer().applied().unwrap().revision, Revision(2));
+
+    let work = host.consumer_mut().refresh().unwrap();
+    host.consumer_mut().complete(&work, Ok(Some(snapshot(3, false))));
+    let lost = prepare(host.request().unwrap(), "lost");
+    host.consumer_mut().disconnected();
+    assert!(host.complete_with(lost, |p| activated.push(p.content().clone())).is_none());
+    assert_eq!(activated, ["current"]);
+}
 #[test]
 fn superseded_worker_completion_cannot_swap_or_acknowledge() {
     let mut host = host();

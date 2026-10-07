@@ -150,12 +150,13 @@ pub enum Choice {
 pub struct Item {
     pub label: String,
     pub checked: bool,
+    pub disabled: bool,
     pub choice: Choice,
 }
 
 impl Item {
     pub fn enabled(&self) -> bool {
-        !self.checked && self.choice != Choice::Inert
+        !self.checked && !self.disabled && self.choice != Choice::Inert
     }
 }
 
@@ -189,12 +190,14 @@ impl Menu {
         .map(|(label, item)| Item {
             label: label.into(),
             checked: item == mode,
+            disabled: false,
             choice: Choice::Mode(item),
         })
         .collect();
         items.extend(extras.into_iter().map(|extra| Item {
             label: extra.label.clone(),
             checked: false,
+            disabled: false,
             choice: Choice::Extra(extra),
         }));
         let mut menu = Self {

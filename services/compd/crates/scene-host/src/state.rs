@@ -280,7 +280,7 @@ impl StateStore {
             return;
         };
         let edges = Edge::ALL.map(|edge| {
-            let panel = model.panel(edge);
+            let panel = model.persistent_panel(edge);
             let carousel = model.carousel(edge);
             SavedEdge {
                 mode: panel.mode,
@@ -289,9 +289,7 @@ impl StateStore {
                     .or_else(|| carousel.active_id())
                     .unwrap_or_default()
                     .into(),
-                thickness: model
-                    .has_remembered_thickness(edge)
-                    .then_some(panel.settled_thickness_px),
+                thickness: panel.remembered.then_some(panel.thickness),
             }
         });
         if self.saved.outputs.get(&key) == Some(&edges) {
@@ -337,6 +335,26 @@ mod tests {
         assert_eq!(queued.len(), 2);
         assert_eq!(queued[1].outputs["connector:DP-1"][Edge::Right.index()].page, "scene-notes");
         assert_eq!(store.saved, queued[1]);
+    }
+
+    #[test]
+    fn saving_page_selection_during_settings_ownership_keeps_local_mode_and_size() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut store = StateStore { path: Some(PathBuf::from("/nonexistent/scene-state.mix")), saved: Saved::default(), writer: Some(sender) };
+        let mut current = model("DP-1");
+        current.restore_mode(Edge::Left, Duration::ZERO, PanelMode::Pinned).unwrap();
+        current.restore_thickness(Edge::Left, 180.0).unwrap();
+        let mut values = [None; 4];
+        values[Edge::Left.index()] = Some(edges::PanelPreference::new(PanelMode::Docked, 256.0).unwrap());
+        current.set_preferences(values, Duration::ZERO);
+        current.carousel_mut(Edge::Left).restore_saved_selection("scene-new");
+        store.save(&current);
+        let saved = receiver.recv().unwrap();
+        let edge = &saved.outputs["connector:DP-1"][Edge::Left.index()];
+        assert_eq!(edge.mode, PanelMode::Pinned);
+        assert_eq!(edge.thickness, Some(180.0));
+        assert_eq!(edge.page, "scene-new");
+        assert_eq!(current.panel(Edge::Left).mode, PanelMode::Docked);
     }
 
     fn model(name: &str) -> ShellModel {

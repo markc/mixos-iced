@@ -15,6 +15,32 @@ use super::{
     PanelTimeError, PanelUpdate, PanelWake, next_focus_stop, seed_panel_thickness,
 };
 
+/// Validated output-independent settings request, fitted by the existing model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelPreference {
+    mode: PanelMode,
+    thickness: f32,
+}
+
+impl PanelPreference {
+    pub fn new(mode: PanelMode, thickness: f32) -> Result<Self, PanelConfigError> {
+        if !thickness.is_finite() || thickness <= 0.0 {
+            return Err(PanelConfigError::InvalidThickness(thickness));
+        }
+        Ok(Self { mode, thickness })
+    }
+    pub const fn mode(self) -> PanelMode { self.mode }
+    pub const fn thickness(self) -> f32 { self.thickness }
+}
+
+/// Local baseline for persistence, including while settings owns an edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PersistentPanel {
+    pub mode: PanelMode,
+    pub thickness: f32,
+    pub remembered: bool,
+}
+
 /// Complete pure shell state for one output.
 #[derive(Clone, Debug)]
 pub struct ShellModel {
@@ -26,6 +52,8 @@ pub struct ShellModel {
     /// scene-only host suppresses them; other hosts can choose their policy.
     suppress_empty_edges: bool,
     thickness_set: [bool; 4],
+    preferences: [Option<PanelPreference>; 4],
+    local_baselines: [Option<PersistentPanel>; 4],
     /// Authored page extents: while a listed page is its edge's active page,
     /// that edge is at least this thick. Never written into the remembered
     /// thickness, so the edge returns to it when another page is shown.
@@ -79,6 +107,8 @@ impl ShellModel {
             carousels: std::array::from_fn(|_| Carousel::empty()),
             suppress_empty_edges: false,
             thickness_set: [false; 4],
+            preferences: [None; 4],
+            local_baselines: [None; 4],
             page_minimums: std::array::from_fn(|_| BTreeMap::new()),
             keyboard_focus: None,
             focus_reported: false,
@@ -101,10 +131,65 @@ impl ShellModel {
         self.last_update
     }
 
+    pub fn preference(&self, edge: Edge) -> Option<PanelPreference> {
+        self.preferences[edge.index()]
+    }
+
+    pub fn persistent_panel(&self, edge: Edge) -> PersistentPanel {
+        self.local_baselines[edge.index()].unwrap_or_else(|| {
+            let panel = self.panels[edge.index()].snapshot();
+            PersistentPanel { mode: panel.mode, thickness: panel.settled_thickness_px,
+                remembered: self.thickness_set[edge.index()] }
+        })
+    }
+
+    /// Install a whole prepared policy synchronously. Return actual transitions
+    /// to Hidden so the host can retire invalid interaction holders. No saved
+    /// page selection is replayed, no persistence effects escape this ingress.
+    pub fn set_preferences(&mut self, preferences: [Option<PanelPreference>; 4], at: Duration) -> [bool; 4] {
+        let at = at.max(self.last_update);
+        let mut concealed = [false; 4];
+        for edge in Edge::ALL {
+            let index = edge.index();
+            let before = self.panels[index].snapshot();
+            let target = match (self.preferences[index], preferences[index]) {
+                (None, Some(preference)) => {
+                    self.local_baselines[index] = Some(self.persistent_panel(edge));
+                    if before.resize_active {
+                        let _ = self.panels[index].apply(at, PanelInput::ResizeCancelled);
+                    }
+                    Some(preference.mode)
+                }
+                (Some(_), Some(preference)) => Some(preference.mode),
+                (Some(_), None) => {
+                    let baseline = self.local_baselines[index].take().expect("managed edge has baseline");
+                    let _ = self.panels[index].restore_thickness(baseline.thickness);
+                    self.thickness_set[index] = baseline.remembered;
+                    Some(baseline.mode)
+                }
+                (None, None) => None,
+            };
+            if let Some(mode) = target && before.mode != mode {
+                let _ = self.panels[index].apply(at, PanelInput::SetMode(mode));
+                concealed[index] = mode == PanelMode::Hidden;
+            }
+        }
+        self.preferences = preferences;
+        self.last_update = at;
+        self.fit_output_budget();
+        concealed
+    }
+
     /// Update current host geometry and fit panels within its exclusive budget.
     pub fn set_geometry(&mut self, geometry: LogicalSize) {
         self.geometry = geometry;
         self.fit_output_budget();
+    }
+
+    /// Refit after carousel content changes. Empty edges reserve nothing;
+    /// registering or removing a page can change the opposite-edge budget.
+    pub fn reconcile_preferences(&mut self) {
+        if self.preferences.iter().any(Option::is_some) { self.fit_output_budget(); }
     }
 
     /// The edge as presented. While the active page declares an authored
@@ -248,6 +333,14 @@ impl ShellModel {
         edge: Edge,
         thickness: f32,
     ) -> Result<(), PanelConfigError> {
+        if self.preference(edge).is_some() {
+            return if thickness == self.panel(edge).settled_thickness_px { Ok(()) }
+                else { Err(PanelConfigError::SettingsManaged(edge)) };
+        }
+        self.restore_local_thickness(edge, thickness)
+    }
+
+    fn restore_local_thickness(&mut self, edge: Edge, thickness: f32) -> Result<(), PanelConfigError> {
         let thickness = if thickness.is_finite() && thickness > 0.0 {
             // Remembered values budget against remembered values: an opposite
             // page's minimum must not shrink what this edge remembers.
@@ -319,6 +412,16 @@ impl ShellModel {
     }
 
     fn fit_output_budget(&mut self) {
+        // Start from the request each time: a reduced output must not erase the
+        // preference that should be recovered when its geometry grows again.
+        for edge in Edge::ALL {
+            if let Some(preference) = self.preference(edge) {
+                let range = super::resize_thickness_range(edge);
+                let _ = self.panels[edge.index()].restore_thickness(
+                    preference.thickness.clamp(*range.start(), *range.end()));
+                self.thickness_set[edge.index()] = true;
+            }
+        }
         let thickness_set = self.thickness_set;
         for (a, b, extent) in [
             (Edge::Left, Edge::Right, self.geometry.width()),
@@ -334,13 +437,17 @@ impl ShellModel {
                 }
             }
             for edge in [a, b] {
-                let _ = self.restore_thickness(edge, self.remembered_panel(edge).thickness_px);
+                let _ = self.restore_local_thickness(edge, self.remembered_panel(edge).thickness_px);
             }
         }
         self.thickness_set = thickness_set;
     }
 
     pub fn resize_thickness(&mut self, edge: Edge, thickness: f32) -> Result<(), PanelConfigError> {
+        if self.preference(edge).is_some() {
+            return if thickness == self.panel(edge).settled_thickness_px { Ok(()) }
+                else { Err(PanelConfigError::SettingsManaged(edge)) };
+        }
         let max = self.max_thickness(edge);
         // Below the shown page's authored extent a resize would be invisible
         // yet saved. Refuse it without writing the extent over a smaller
@@ -423,6 +530,8 @@ impl ShellModel {
         }
         self.carousels = outgoing.carousels.clone();
         self.thickness_set = outgoing.thickness_set;
+        self.preferences = outgoing.preferences;
+        self.local_baselines = outgoing.local_baselines;
         self.page_minimums = outgoing.page_minimums.clone();
         self.last_update = outgoing.last_update;
         self.fit_output_budget();
@@ -435,6 +544,21 @@ impl ShellModel {
         input: PanelInput,
     ) -> Result<PanelUpdate, PanelTimeError> {
         self.ensure_monotonic(at)?;
+        let input = if self.preference(edge).is_some() {
+            if matches!(input, PanelInput::Pin | PanelInput::Unpin | PanelInput::PinToggle
+                | PanelInput::Dock | PanelInput::Undock | PanelInput::DockToggle
+                | PanelInput::Release | PanelInput::SetMode(_) | PanelInput::ResizeStarted
+                | PanelInput::ResizeCompleted | PanelInput::ResizeCancelled)
+            {
+                return Ok(PanelUpdate { changed: false, snapshot: self.panel(edge), effect: None });
+            }
+            if input == PanelInput::ToggleShown {
+                if self.panel(edge).mode != PanelMode::Hidden {
+                    return Ok(PanelUpdate { changed: false, snapshot: self.panel(edge), effect: None });
+                }
+                PanelInput::Toggle
+            } else { input }
+        } else { input };
         if self.edge_is_empty(edge) && input.requires_content() {
             self.last_update = at;
             return Ok(PanelUpdate {
@@ -456,6 +580,9 @@ impl ShellModel {
         mode: PanelMode,
     ) -> Result<PanelUpdate, PanelTimeError> {
         self.ensure_monotonic(at)?;
+        if self.preference(edge).is_some() {
+            return Ok(PanelUpdate { changed: false, snapshot: self.panel(edge), effect: None });
+        }
         self.apply_panel_input(edge, at, PanelInput::SetMode(mode))
     }
 

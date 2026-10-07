@@ -23,6 +23,7 @@ use smithay::utils::{Physical, Point, Size};
 use world::state::Loop;
 
 mod appearance;
+mod preferences;
 pub mod conf;
 pub mod host;
 mod icons;

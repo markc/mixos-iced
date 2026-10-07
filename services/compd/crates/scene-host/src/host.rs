@@ -695,30 +695,28 @@ impl SceneHost {
     /// Drain everything the worker and the surfaces delivered. Called from
     /// the loop's post-dispatch hook after the waker fired.
     pub fn service_port(&mut self, lp: &mut world::state::Loop) -> Serviced {
-        let output = lp.inner.active_output().clone();
-        let name = output.name();
-        let output = name.as_str();
         let mut serviced = Serviced::default();
         for event in self.port.take_settings() {
-            let (changed, jobs) = self.settings.handle(event, self.port.settings_generation());
+            let panels = &mut self.host.panels;
+            let (changed, jobs) = self.settings.handle_with(event, self.port.settings_generation(), |presentation| {
+                let look = presentation.content();
+                panels.set_preferences(look.preferences.clone());
+                let style = decor::window::installed().map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
+                decor::window::install(look.chrome(style));
+            });
             self.port.settings_jobs(jobs);
             if changed.is_some() {
-                let look = self
-                    .settings
-                    .host()
-                    .presentation()
-                    .expect("activated presentation")
-                    .content();
-                let style = decor::window::installed()
-                    .map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
-                decor::window::install(look.chrome(style));
                 self.appearance_generation = self.appearance_generation.wrapping_add(1);
                 serviced.changed = true;
             }
         }
+        let Some(monitor) = dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner) else {
+            return serviced;
+        };
+        let name = monitor.name();
+        let output = name.as_str();
         // The panel model for this output, at its logical size.
         {
-            let monitor = lp.inner.active_output();
             if let Some(mode) = monitor.current_mode() {
                 let size = monitor.current_transform().transform_size(mode.size);
                 let scale = monitor.current_scale().fractional_scale().max(0.1);

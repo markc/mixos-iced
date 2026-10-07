@@ -105,10 +105,14 @@ pub fn refresh_usable(lp: &mut Loop) {
     if usable == lp.inner.comp.usable {
         return;
     }
-    lp.inner.comp.usable = usable;
+    let previous = std::mem::replace(&mut lp.inner.comp.usable, usable);
     lp.inner.comp.outputs_changed();
     for id in lp.inner.comp.maximized_ids() {
-        maximize(lp, id, true);
+        if let Some(restore) = lp.inner.comp.maximize_restore(id)
+            && (previous.get(&restore.output) != lp.inner.comp.usable.get(&restore.output)
+                || !lp.inner.comp.usable.contains_key(&restore.output)) {
+            maximize(lp, id, true);
+        }
     }
 }
 
@@ -1220,7 +1224,7 @@ fn bring_into_view(lp: &mut Loop, id: SurfaceId) {
     }
 }
 
-/// Maximise on the engine's window: the window takes the default
+/// Maximise on the engine's window: the window takes its owning
 /// output's usable area (what layer exclusive zones leave) and
 /// goes back to where it was on unmaximise. One configure either way. Called
 /// again for a maximised window when the usable area moves. A window with
@@ -1229,16 +1233,25 @@ fn bring_into_view(lp: &mut Loop, id: SurfaceId) {
 pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
     let Some(window) = window_of(lp, id) else { return };
     let target = if enabled {
+        let restore = lp.inner.comp.maximize_restore(id);
         let space = &lp.inner.host_space().state;
-        let Some(output) = space.outputs().next().cloned() else { return };
+        let Some(output) = restore.as_ref()
+            .and_then(|restore| space.outputs().find(|output| output.name() == restore.output).cloned())
+            .or_else(|| space.outputs_for_element(&window).first().cloned())
+            .or_else(|| space.outputs().next().cloned()) else { return };
         let Some(geometry) = space.output_geometry(&output) else { return };
         let area = decor::window::content_area(&window, usable_area(&output, geometry, reserved_for(lp, &output)));
-        if lp.inner.comp.maximize_restore(id).is_none() {
+        if let Some(mut restore) = restore {
+            if restore.output != output.name() {
+                restore.output = output.name();
+                lp.inner.comp.set_maximize_restore(id, Some(restore));
+            }
+        } else {
             let location = space.element_location(&window).unwrap_or(area.loc);
             let size = window.geometry().size;
             lp.inner
                 .comp
-                .set_maximize_restore(id, Some(MaximizeRestore { location, size }));
+                .set_maximize_restore(id, Some(MaximizeRestore { location, size, output: output.name() }));
         }
         area
     } else {

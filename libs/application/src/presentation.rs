@@ -75,6 +75,17 @@ impl<T> Host<T> {
     /// final fence, whole presentation replacement and applied acknowledgement.
     /// Returns the shared change plan only for a current successful activation.
     pub fn complete(&mut self, completion: Completion<T>) -> Option<ChangePlan> {
+        self.complete_with(completion, |_| {})
+    }
+
+    /// Activate caller-owned, already prepared UI state after the final fence
+    /// and before acknowledgement. The callback is synchronous and total: it
+    /// must not perform I/O, await, or discover unsupported resources.
+    pub fn complete_with(
+        &mut self,
+        completion: Completion<T>,
+        activate: impl FnOnce(&Presentation<T>),
+    ) -> Option<ChangePlan> {
         if !self.consumer.is_current(&completion.update) {
             return None;
         }
@@ -82,6 +93,7 @@ impl<T> Host<T> {
         match *completion.result {
             Ok(presentation) => {
                 let changes = completion.update.changes();
+                activate(&presentation);
                 self.presentation = Some(presentation);
                 assert!(
                     self.consumer.acknowledge(&completion.update),

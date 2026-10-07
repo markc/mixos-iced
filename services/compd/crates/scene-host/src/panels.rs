@@ -101,6 +101,7 @@ pub struct Refusal {
 pub struct Panels {
     epoch: Instant,
     models: BTreeMap<String, ShellModel>,
+    preferences: crate::preferences::Preferences,
     /// Each model's logical size as last set.
     sizes: BTreeMap<String, (f32, f32)>,
     /// Page id → the (output, edge) its carousel page was registered on.
@@ -150,6 +151,7 @@ impl Default for Panels {
         Self {
             epoch: Instant::now(),
             models: BTreeMap::new(),
+            preferences: Default::default(),
             sizes: BTreeMap::new(),
             registered: BTreeMap::new(),
             applied: BTreeMap::new(),
@@ -198,6 +200,41 @@ impl PanelVerb {
 }
 
 impl Panels {
+    /// Total activation of an already validated whole profile, before ACK.
+    pub(crate) fn set_preferences(&mut self, preferences: crate::preferences::Preferences) {
+        let now = self.now();
+        let values = preferences.values();
+        let mut concealed = Vec::new();
+        for (output, model) in &mut self.models {
+            let before = ShellEdge::ALL.map(|edge| model.panel(edge));
+            let changed = model.set_preferences(values, now);
+            for edge in ShellEdge::ALL {
+                if changed[edge.index()] {
+                    concealed.push((output.clone(), edge));
+                    if let Some(pointer) = self.pointer.as_mut().filter(|pointer| &pointer.output == output) {
+                        let panel = before[edge.index()];
+                        let corner = pointer.detector.diagnostics(now);
+                        if panel.pointer_inside || panel.corner_inside
+                            || corner.candidate.or(corner.engaged).is_some_and(|corner| corner.summoned_edge() == edge) {
+                            pointer.reveal_latched[edge.index()] = Some(panel.thickness_px * panel.visible_fraction.clamp(0.0, 1.0));
+                        }
+                    }
+                }
+            }
+        }
+        self.preferences = preferences;
+        for (output, edge) in concealed {
+            if self.pending_focus.get(&output) == Some(&seat_edge(edge)) { self.pending_focus.remove(&output); }
+            if self.keyboard.get(&output) == Some(&seat_edge(edge)) {
+                self.focus_at(&output, None, now);
+            }
+            if self.menu.as_ref().is_some_and(|menu| menu.output == output && menu.corner.summoned_edge() == edge) {
+                self.close_menu_at(now);
+            }
+        }
+        self.refresh_menu_mode();
+    }
+
     /// Enable shared state once, before the host creates any output model.
     pub(crate) fn load_state(&mut self) {
         self.state = crate::state::StateStore::startup();
@@ -215,6 +252,7 @@ impl Panels {
             let mode = model.panel(menu.corner.summoned_edge()).mode;
             for item in &mut menu.items {
                 if let crate::menu::Choice::Mode(item_mode) = item.choice {
+                    item.disabled = model.preference(menu.corner.summoned_edge()).is_some();
                     item.checked = mode == item_mode
                         && !(item_mode == PanelMode::Hidden && model.panel(menu.corner.summoned_edge()).transient_revealed);
                 }
@@ -249,6 +287,7 @@ impl Panels {
                     let _ = model.carousel_mut(edge).redeclare(self.declared[edge.index()].iter().cloned());
                 }
                 self.state.restore(&mut model);
+                model.set_preferences(self.preferences.values(), now);
                 self.models.insert(output.to_owned(), model);
                 self.sizes.insert(output.to_owned(), wanted);
             }
@@ -310,6 +349,7 @@ impl Panels {
         }
         // A menu can precede its edge's first page. Empty-edge suppression
         // ignored MenuHold at open time; acquire it as soon as content lands.
+        for model in self.models.values_mut() { model.reconcile_preferences(); }
         if let Some(menu) = &self.menu
             && let Some(model) = self.models.get_mut(&menu.output)
         {
@@ -639,6 +679,7 @@ impl Panels {
             extras, (size.width(), size.height()), inset);
         if model.panel(edge).transient_revealed { menu.items[2].checked = false; }
         self.menu = Some(menu);
+        self.refresh_menu_mode();
         Ok(())
     }
 
@@ -674,6 +715,9 @@ impl Panels {
         let (output, edge) = (menu.output.clone(), menu.corner.summoned_edge());
         let extra = match item.choice {
             Choice::Mode(mode) => {
+                if self.models[&output].preference(edge).is_some() {
+                    return Err(settings_managed());
+                }
                 if mode == PanelMode::Hidden {
                     // Dismiss the popup first: Hide is intentionally ignored
                     // while MenuHold is acquired. Keep the old visible bounds
@@ -710,9 +754,9 @@ impl Panels {
                     self.menu_serial = self.menu_serial.checked_add(1).expect("menu serial exhausted");
                     menu.serial = self.menu_serial;
                     menu.items = vec![
-                        Item { label: question, checked: false, choice: Choice::Inert },
-                        Item { label: extra.label.clone(), checked: false, choice: Choice::Extra(extra) },
-                        Item { label: "Cancel".into(), checked: false, choice: Choice::Cancel },
+                        Item { label: question, checked: false, disabled: false, choice: Choice::Inert },
+                        Item { label: extra.label.clone(), checked: false, disabled: false, choice: Choice::Extra(extra) },
+                        Item { label: "Cancel".into(), checked: false, disabled: false, choice: Choice::Cancel },
                     ];
                     menu.selected = 1;
                     let size = self.sizes[&output];
@@ -766,6 +810,19 @@ impl Panels {
     fn row(&self, output: &str, model: &ShellModel, edge: Edge) -> Value {
         let panel: PanelSnapshot = model.panel(shell_edge(edge));
         let carousel = model.carousel(shell_edge(edge));
+        let managed = self.preferences.record(shell_edge(edge)).map(|record| {
+            let requested = record.preference.thickness();
+            let range = resize_thickness_range(shell_edge(edge));
+            let range_fitted = requested.clamp(*range.start(), *range.end());
+            let mut constraints = Vec::new();
+            if range_fitted != requested { constraints.push("edge_range"); }
+            if panel.settled_thickness_px < range_fitted { constraints.push("output_budget"); }
+            if panel.thickness_px > panel.settled_thickness_px { constraints.push("page_minimum"); }
+            if carousel.page_ids().is_empty() { constraints.push("no_pages"); }
+            json!({"record":record.id, "requested_px":requested,
+                "fitted_px":panel.settled_thickness_px, "presented_px":panel.thickness_px,
+                "reserved_px":panel.exclusive_zone_px, "constraints":constraints})
+        });
         json!({
             "visible": panel.mapped,
             "pinned": panel.mode != PanelMode::Hidden,
@@ -775,6 +832,7 @@ impl Panels {
             "pages": carousel.page_ids(),
             "declared": self.declared[shell_edge(edge).index()],
             "output": output,
+            "settings": managed,
         })
     }
 
@@ -804,6 +862,10 @@ impl Panels {
     /// reserves). Refusals leave the model untouched, in Quoin's shapes.
     pub fn resize(&mut self, output: &str, edge: Edge, thickness_px: f32) -> Result<(), Value> {
         let shell = shell_edge(edge);
+        if let Some(model) = self.models.get(output) && model.preference(shell).is_some() {
+            return if model.panel(shell).settled_thickness_px == thickness_px { Ok(()) }
+                else { let refusal = settings_managed(); Err(json!({"error_code":refusal.code,"message":refusal.message})) };
+        }
         let range = resize_thickness_range(shell);
         if !range.contains(&thickness_px) {
             return Err(resize_range_refusal(edge));
@@ -840,6 +902,16 @@ impl Panels {
     }
 
     fn input_at(&mut self, output: &str, edge: Edge, verb: PanelVerb, now: Duration) -> Result<(), Refusal> {
+        if let Some(model) = self.models.get(output) && model.preference(shell_edge(edge)).is_some() {
+            let mode = model.panel(shell_edge(edge)).mode;
+            match verb {
+                PanelVerb::Pin => return if mode == PanelMode::Pinned { Ok(()) } else { Err(settings_managed()) },
+                PanelVerb::Dock => return if mode == PanelMode::Docked { Ok(()) } else { Err(settings_managed()) },
+                PanelVerb::Unpin => return if mode == PanelMode::Hidden { Ok(()) } else { Err(settings_managed()) },
+                PanelVerb::Toggle if mode != PanelMode::Hidden => return Ok(()),
+                _ => {}
+            }
+        }
         // A toggle decides against the actual reveal, including pointer and
         // keyboard holders. Release focus before asking the core to conceal.
         let closing = verb == PanelVerb::Hide || (verb == PanelVerb::Toggle && !self.hidden(output, edge));
@@ -977,6 +1049,9 @@ impl Panels {
     }
 
     fn set_mode_at(&mut self, output: &str, edge: Edge, mode: PanelMode, now: Duration) -> Result<(), Refusal> {
+        if let Some(model) = self.models.get(output) && model.preference(shell_edge(edge)).is_some() {
+            return if model.panel(shell_edge(edge)).mode == mode { Ok(()) } else { Err(settings_managed()) };
+        }
         // Validate before cancelling anything: a refused write has no effects.
         let model = self.model_with_pages(output, edge)?;
         let shell = shell_edge(edge);
@@ -1086,6 +1161,10 @@ impl Panels {
     }
 }
 
+fn settings_managed() -> Refusal {
+    Refusal { code: "SETTINGS_MANAGED", message: "panel mode and thickness are owned by the settings profile".into() }
+}
+
 pub fn resize_range_refusal(edge: Edge) -> Value {
     let range = resize_thickness_range(shell_edge(edge));
     json!({
@@ -1131,7 +1210,55 @@ mod tests {
         let model = panels.models.get_mut(output).unwrap();
         model.set_page_minimum_thickness(shell_edge(edge), page, Some(extent));
         model.carousel_mut(shell_edge(edge)).register(page).unwrap();
+        model.reconcile_preferences();
         panels.registered.insert(page.into(), (output.into(), edge));
+    }
+
+    #[test]
+    fn settings_policy_fans_out_and_reports_requested_and_presented_sizes() {
+        let mut panels = panels_with("DP-1");
+        panels.set_preferences(crate::preferences::Preferences::prepare(&settings::Shell::default()).unwrap());
+        panels.ensure("DP-2", (1920.0, 1080.0));
+        for output in ["DP-1", "DP-2"] {
+            assert_eq!(panels.mode(output, Edge::Bottom), "docked");
+            assert!(panels.zones(output).is_empty());
+            register(&mut panels, output, Edge::Bottom, &format!("page-{output}"), 52.0);
+            let row = panels.state(output, Edge::Bottom);
+            assert_eq!(row["settings"]["requested_px"], 40.0);
+            assert_eq!(row["settings"]["fitted_px"], 40.0);
+            assert_eq!(row["settings"]["presented_px"], 52.0);
+            assert_eq!(panels.zones(output), vec![(Edge::Bottom, 52.0)]);
+        }
+    }
+
+    #[test]
+    fn managed_refusals_and_idempotent_writes_preserve_menu_and_keyboard() {
+        let mut panels = panels_with("DP-1");
+        register(&mut panels, "DP-1", Edge::Bottom, "page", 52.0);
+        let mut shell = settings::Shell::default();
+        panels.set_preferences(crate::preferences::Preferences::prepare(&shell).unwrap());
+        let now = panels.now();
+        panels.focus_at("DP-1", Some(Edge::Bottom), now);
+        panels.open_menu_at("DP-1", Corner::BottomLeft, now).unwrap();
+        let menu = panels.menu.clone();
+        let row = panels.state("DP-1", Edge::Bottom);
+        assert_eq!(panels.set_mode("DP-1", Edge::Bottom, "pinned").unwrap_err().code, "SETTINGS_MANAGED");
+        panels.set_mode("DP-1", Edge::Bottom, "docked").unwrap();
+        panels.input("DP-1", Edge::Bottom, PanelVerb::Toggle).unwrap();
+        panels.resize("DP-1", Edge::Bottom, 40.0).unwrap();
+        assert_eq!(panels.resize("DP-1", Edge::Bottom, 80.0).unwrap_err()["error_code"], "SETTINGS_MANAGED");
+        assert_eq!(panels.menu, menu);
+        assert_eq!(panels.focused("DP-1"), Some(Edge::Bottom));
+        assert_eq!(panels.state("DP-1", Edge::Bottom), row);
+        assert!(panels.menu.as_ref().unwrap().items.iter().filter(|item| matches!(item.choice, crate::menu::Choice::Mode(_))).all(|item| !item.enabled()));
+        shell.panels.get_mut("bottom").unwrap().thickness = 80;
+        panels.set_preferences(crate::preferences::Preferences::prepare(&shell).unwrap());
+        assert_eq!(panels.focused("DP-1"), Some(Edge::Bottom));
+        assert_eq!(panels.menu.as_ref().unwrap().serial, menu.as_ref().unwrap().serial);
+        shell.panels.get_mut("bottom").unwrap().mode = "hidden".into();
+        panels.set_preferences(crate::preferences::Preferences::prepare(&shell).unwrap());
+        assert_eq!(panels.focused("DP-1"), None);
+        assert!(panels.menu.is_none());
     }
 
     #[test]

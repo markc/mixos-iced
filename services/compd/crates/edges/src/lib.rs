@@ -34,7 +34,7 @@ pub use panel::{
     PanelInput, PanelMode, PanelSnapshot, PanelStateMachine, PanelTimeError, PanelUpdate,
     PanelWake, RevealTrigger, VERTICAL_RESIZE_RANGE, resize_thickness_range,
 };
-pub use shell::{FOCUS_GRANT_TIMEOUT, ShellError, ShellModel};
+pub use shell::{FOCUS_GRANT_TIMEOUT, PanelPreference, PersistentPanel, ShellError, ShellModel};
 pub use types::{
     Corner, Edge, GeometryError, LogicalPoint, LogicalSize, LogicalVector, Orientation, OutputKey,
     OutputKeyError, seed_panel_thickness,

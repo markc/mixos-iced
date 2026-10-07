@@ -72,6 +72,17 @@ impl<T> Session<T> {
     /// `live` is the connection's current sampled state, read on the UI loop.
     /// Queued lifecycle notices cannot authorise an activation after real loss.
     pub fn handle(&mut self, event: Event<T>, live: Option<u64>) -> (Option<ChangePlan>, Jobs) {
+        self.handle_with(event, live, |_| {})
+    }
+
+    /// Borrow a host activation hook; no host state is stored in this session.
+    /// It runs only for a current successful preparation, before applied ACK.
+    pub fn handle_with(
+        &mut self,
+        event: Event<T>,
+        live: Option<u64>,
+        mut activate: impl FnMut(&Presentation<T>),
+    ) -> (Option<ChangePlan>, Jobs) {
         self.sync(live);
         let mut changed = None;
         match event {
@@ -89,7 +100,7 @@ impl<T> Session<T> {
                 self.host.consumer_mut().complete(&work, result);
             }
             Event::Prepared(ready) => {
-                changed = self.host.complete(ready);
+                changed = self.host.complete_with(ready, &mut activate);
             }
             Event::Fallback(request, result) => match *result {
                 Ok((fallback, presentation)) => {
@@ -99,10 +110,10 @@ impl<T> Session<T> {
                         .complete_fallback(&request, Ok(fallback))
                     {
                         let capture = self.host.request().expect("staged fallback");
-                        changed = self.host.complete(Completion {
+                        changed = self.host.complete_with(Completion {
                             update: capture.update,
                             result: Box::new(Ok(presentation)),
-                        });
+                        }, &mut activate);
                     }
                 }
                 Err(faults) => {
