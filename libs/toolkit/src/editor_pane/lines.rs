@@ -55,7 +55,9 @@ impl Checkpoints {
             .lines
             .entry(r.start)
             .or_insert_with(|| text.line_checkpoints(cfg, line));
-        ck.get(ck.partition_point(before).saturating_sub(1))
+        ck.partition_point(before)
+            .checked_sub(1)
+            .and_then(|index| ck.get(index))
             .copied()
             .unwrap_or((r.start, 0))
     }
