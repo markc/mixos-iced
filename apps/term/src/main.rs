@@ -864,9 +864,8 @@ fn pointer_message(
 }
 
 /// One button per tab and a `+`, as bterm. Every colour is a design token;
-/// the text carries the prepared UI font and size. (toolkit's `TabBar` has no
-/// `line_height`/`text_style` today, so the prepared line box feeds the strip
-/// geometry but not the label itself — a remaining shared-API need.)
+/// the labels carry the complete prepared UI font, size and line height through
+/// the shared TabBar style and its single layout path.
 fn tab_strip(
     state: &State,
     scale: f32,
@@ -882,8 +881,7 @@ fn tab_strip(
             .collect(),
         Message::SelectTab,
     )
-    .text_font(ui.font)
-    .text_size(ui.size)
+    .text_style(ui)
     .tab_width(Length::Shrink)
     .padding([layout::TAB_V_PADDING, 12.0])
     .spacing(4.0)

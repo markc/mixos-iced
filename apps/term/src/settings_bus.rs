@@ -359,7 +359,7 @@ async fn worker(
     // started as capacity frees; refusals are shed with a diagnostic instead.
     let admitted = Admission::new(PENDING_CAP);
     let refusals = Admission::new(4);
-    let mut retained_replies = Outbox::<Reply, 0>::new(PENDING_CAP);
+    let mut retained_replies = Outbox::<Box<Reply>, 0>::new(PENDING_CAP);
     let mut deliveries = Outbox::<Describe, 0>::new(PENDING_CAP);
     let mut operations = tokio::task::JoinSet::new();
     loop {
@@ -569,7 +569,7 @@ async fn worker(
                         // dropped, and start as capacity frees.
                         if let Some((client, command, permit)) = pending.remove(&id) {
                             let body = value.to_string();
-                            if let Err(reply) = retained_replies.push(Reply {client, command, permit, rc, body}) {
+                            if let Err(reply) = retained_replies.push(Box::new(Reply {client, command, permit, rc, body})) {
                                 // One credit covers pending + retained + tasks, so
                                 // this cannot be full after removing that pending.
                                 eprintln!("{service} accepted reply retention invariant failed");
@@ -721,6 +721,7 @@ async fn worker(
             _ = tokio::time::sleep_until(deadline_at) => {
                 task.abort();
                 faults.push("term Bus serve drain timed out".into());
+                let _ = task.await;
             }
         }
     }
@@ -829,7 +830,7 @@ struct Reply {
 }
 
 fn submit_replies(
-    retained: &mut Outbox<Reply, 0>,
+    retained: &mut Outbox<Box<Reply>, 0>,
     operations: &mut tokio::task::JoinSet<(Permit, Result<(), String>)>,
 ) {
     retained.flush_with(|reply| {
