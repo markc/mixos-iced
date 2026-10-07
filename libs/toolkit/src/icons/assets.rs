@@ -934,7 +934,7 @@ mod tests {
             decode_owned(text.as_bytes().to_vec().into(), ImageFormat::Svg, 10, None),
             Err(IconDecodeError::SvgTextDependency)
         );
-        // Text hidden inside a clip path is a text dependency all the same.
+        // Clip paths are refused before conversion, even when they hide text.
         let clipped = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs><clipPath id="c"><text>label</text></clipPath></defs><rect width="10" height="10" fill="red" clip-path="url(#c)"/></svg>"#;
         assert_eq!(
             decode_owned(
@@ -943,7 +943,7 @@ mod tests {
                 10,
                 None
             ),
-            Err(IconDecodeError::SvgTextDependency)
+            Err(IconDecodeError::SvgUnsupported)
         );
         assert_eq!(
             decode_owned(
@@ -1138,7 +1138,8 @@ mod tests {
             let mut encoded = Cursor::new(Vec::new());
             bitmap.write_to(&mut encoded, format).unwrap();
             let decoded =
-                decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None).unwrap();
+                decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None)
+                    .unwrap_or_else(|error| panic!("{format:?}: {error}"));
             assert_eq!(decoded.dimensions(), (32, 16), "{format:?}");
             assert_eq!(decoded.byte_charge(), 32 * 16 * 4);
             assert!(

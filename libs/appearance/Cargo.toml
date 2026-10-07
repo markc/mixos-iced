@@ -44,6 +44,9 @@ toolkit = { workspace = true }
 settings = { workspace = true }
 
 [dev-dependencies]
+# Standalone software-renderer guards need the native presentation backend,
+# without changing the portable production toolkit feature policy.
+iced_tiny_skia = { workspace = true, features = ["wayland"] }
 # Fixture asset sets are written the way the installer writes them: a
 # strict-data manifest locking each file's size and both hashes.
 blake3 = { version = "=1.8.6" }

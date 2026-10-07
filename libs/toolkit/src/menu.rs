@@ -2454,10 +2454,28 @@ mod tests {
         (statuses, messages)
     }
 
-    // With the null renderer text has no width: bar titles are 20 px
-    // (padding only) and panels take the minimum width.
+    // Independent text-engine measurement of the fixed host labels, plus
+    // the documented 10px padding on each side. State tests keep exact
+    // anchors without assuming a zero-width null paragraph.
     fn title(index: usize) -> Rectangle {
-        Rectangle::new(Point::new(20.0 * index as f32, 0.0), Size::new(20.0, 28.0))
+        use text::Paragraph as _;
+        let widths: Vec<f32> = ["file", "go"].into_iter().map(|label| {
+            iced_graphics::text::Paragraph::with_text(text::Text {
+                content: label,
+                bounds: Size::INFINITE,
+                size: 14.0.into(),
+                line_height: text::LineHeight::Relative(1.3),
+                font: iced_core::Font::DEFAULT,
+                align_x: text::Alignment::Left,
+                align_y: iced_core::alignment::Vertical::Top,
+                shaping: text::Shaping::Advanced,
+                wrapping: text::Wrapping::None,
+                ellipsis: text::Ellipsis::None,
+                hint_factor: None,
+            }).min_width() + 20.0
+        }).collect();
+        assert!(widths[0] > 20.0 && widths[0] < 80.0);
+        Rectangle::new(Point::new(widths[..index].iter().sum(), 0.0), Size::new(widths[index], 28.0))
     }
 
     #[test]
@@ -2575,7 +2593,7 @@ mod tests {
             &[Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Left,
             ))],
-            mouse::Cursor::Available(Point::new(25.0, 5.0)),
+            mouse::Cursor::Available(Point::new(title(1).x + 5.0, 5.0)),
             &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
@@ -2730,14 +2748,13 @@ mod tests {
             &[key_event(Named::F10, keyboard::Modifiers::empty())],
         );
         assert_eq!(statuses, [iced_core::event::Status::Captured]);
-        // The bar row grew to the line box (the null renderer measures no
-        // text, so titles are padding-only).
+        // The bar row grew to the line box while preserving measured width.
         assert_eq!(
             messages,
             [Host::State(MenuState {
                 root: Some(0),
                 path: vec![Some(0)],
-                anchors: vec![Rectangle::new(Point::ORIGIN, Size::new(20.0, 40.0))],
+                anchors: vec![Rectangle { height: 40.0, ..title(0) }],
             })]
         );
         // ArrowDown selects the submenu, ArrowRight opens it; the submenu
@@ -2755,7 +2772,7 @@ mod tests {
                 root: Some(0),
                 path: vec![Some(1), Some(0)],
                 anchors: vec![
-                    Rectangle::new(Point::ORIGIN, Size::new(20.0, 40.0)),
+                    Rectangle { height: 40.0, ..title(0) },
                     Rectangle::new(Point::new(0.0, 40.0), Size::new(MIN_PANEL_WIDTH, 40.0)),
                 ],
             }))
@@ -3119,7 +3136,7 @@ mod tests {
             [Host::State(MenuState {
                 root: Some(0),
                 path: vec![Some(0)],
-                anchors: vec![Rectangle::new(Point::ORIGIN, Size::new(20.0, 28.0))],
+                anchors: vec![title(0)],
             })]
         );
         let cache = ui.into_cache();
@@ -3147,7 +3164,7 @@ mod tests {
             [Host::State(MenuState {
                 root: Some(0),
                 path: vec![Some(0)],
-                anchors: vec![Rectangle::new(Point::ORIGIN, Size::new(20.0, 40.0))],
+                anchors: vec![Rectangle { height: 40.0, ..title(0) }],
             })]
         );
         // The host rebuilds its popup surface with the same prepared text:
