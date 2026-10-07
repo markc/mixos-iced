@@ -401,7 +401,7 @@ async fn worker(
                     let reason = client.registration_rejection();
                     let name_taken = reason
                         .as_ref()
-                        .is_some_and(|r| r.kind == RegistrationRejectionKind::NameTaken);
+                        .is_some_and(|r| r.kind() == RegistrationRejectionKind::NameTaken);
                     let fallback = term_core::bus::pid_fallback(
                         service,
                         &name,

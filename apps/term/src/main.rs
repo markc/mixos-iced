@@ -2025,7 +2025,7 @@ mod tests {
             "the tuned window stays in the same row bucket"
         );
         let base = state.ui.line_height.unwrap_or(state.ui.size * 1.4);
-        let mut grow = |ui: &mut toolkit::typography::TextStyle, delta: f32| {
+        let grow = |ui: &mut toolkit::typography::TextStyle, delta: f32| {
             ui.line_height = Some(base + delta);
         };
 
