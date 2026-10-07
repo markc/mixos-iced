@@ -69,7 +69,10 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        Command::Seed { profile, allow_create } => {
+        Command::Seed {
+            profile,
+            allow_create,
+        } => {
             let (root, binding) = profile.resolve()?;
             let (_store, accepted) = settingsd::store::Store::seed(&root, binding, allow_create)?;
             println!(

@@ -79,7 +79,10 @@ fn session_seed_is_idempotent_and_never_recreates_lost_or_foreign_state() {
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("profile");
     assert!(Store::seed(&root, binding(), false).is_err());
-    assert!(!root.exists(), "automatic startup cannot create a missing profile");
+    assert!(
+        !root.exists(),
+        "automatic startup cannot create a missing profile"
+    );
     let (store, accepted) = Store::seed(&root, binding(), true).unwrap();
     let initial = std::fs::read(root.join("desktop.conf.mix")).unwrap();
     assert!(
@@ -105,11 +108,17 @@ fn session_seed_is_idempotent_and_never_recreates_lost_or_foreign_state() {
     );
     std::fs::remove_file(root.join("desktop.conf.mix")).unwrap();
     assert!(Store::seed(&root, binding(), false).is_err());
-    assert!(Store::seed(&root, binding(), true).is_err(), "a retained lock forbids recreating an established missing primary even with the creation flag");
+    assert!(
+        Store::seed(&root, binding(), true).is_err(),
+        "a retained lock forbids recreating an established missing primary even with the creation flag"
+    );
     assert!(!root.join("desktop.conf.mix").exists());
     std::fs::rename(&root, parent.path().join("detached")).unwrap();
     assert!(Store::seed(&root, binding(), false).is_err());
-    assert!(!root.exists(), "a whole missing directory must remain visibly missing");
+    assert!(
+        !root.exists(),
+        "a whole missing directory must remain visibly missing"
+    );
 }
 #[test]
 fn directory_or_lock_replacement_fences_the_existing_writer() {
