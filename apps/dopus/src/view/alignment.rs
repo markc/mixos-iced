@@ -20,8 +20,19 @@ fn baseline(paragraph: &application::iced::advanced::graphics::text::Paragraph) 
 
 impl FirstRow {
     pub fn new(look: Look) -> Self {
-        let sidebar = elide::shape_with_line_height("Ag", look.ui_font, look.sidebar_px(),look.sidebar_line_height());
-        let location = elide::shape_with_line_height("Ag", look.mono_font, location::text_px(look),look.mono_line_height.map(|height|height * location::text_px(look) / look.mono_px));
+        let sidebar = elide::shape_with_line_height(
+            "Ag",
+            look.ui_font,
+            look.sidebar_px(),
+            look.sidebar_line_height(),
+        );
+        let location = elide::shape_with_line_height(
+            "Ag",
+            look.mono_font,
+            location::text_px(look),
+            look.mono_line_height
+                .map(|height| height * location::text_px(look) / look.mono_px),
+        );
         let sidebar_baseline = baseline(&sidebar);
         let location_baseline = baseline(&location);
         // Home's label is centred beside an icon inside a padded button.

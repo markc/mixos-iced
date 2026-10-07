@@ -3,11 +3,12 @@
 use super::*;
 
 type Gui = Outbox<Delivery, 4>;
-type SettingsLane = application::presentation::native::Lane<crate::app::Content,crate::app::PreparationContext>;
+type SettingsLane =
+    application::presentation::native::Lane<crate::app::Content, crate::app::PreparationContext>;
 type Ready = Result<
     (
         Arc<SupervisedClient>,
-        Option<SettingsUi<crate::app::Content,crate::app::PreparationContext>>,
+        Option<SettingsUi<crate::app::Content, crate::app::PreparationContext>>,
         Option<appearance::settings::Prepared>,
     ),
     StartError,
@@ -354,7 +355,10 @@ async fn worker(
         Some(dirs) => worker.with_cache_directory(dirs.settings_cache_dir()),
         None => worker,
     };
-    let (ui, lane) = bridge(Session::with_context(consumer,crate::app::PreparationContext::default()),worker);
+    let (ui, lane) = bridge(
+        Session::with_context(consumer, crate::app::PreparationContext::default()),
+        worker,
+    );
     if ready
         .send(Ok((client.clone(), Some(ui), Some(bootstrap))))
         .is_err()

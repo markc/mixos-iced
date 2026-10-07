@@ -156,7 +156,8 @@ impl<P> RowState<P> {
     fn new(look: Presentation) -> Self {
         Self {
             offset: 0.0,
-            row_h: (look.px.max(look.small_px) * 1.4).max(look.chrome.icon) + 2.0 * look.chrome.small,
+            row_h: (look.px.max(look.small_px) * 1.4).max(look.chrome.icon)
+                + 2.0 * look.chrome.small,
             metrics_key: None,
             tint: String::new(),
             last_selected: None,
@@ -214,7 +215,7 @@ where
             source: Box::new(source),
             selected_paths: None,
             look,
-            line_heights: (None,None),
+            line_heights: (None, None),
             columns,
             tint: "",
             tips: Vec::new(),
@@ -232,12 +233,14 @@ where
     /// Absolute prepared UI and secondary-column line heights. Absent or
     /// invalid heights keep the existing size-derived default.
     pub fn line_heights(mut self, ui: Option<f32>, secondary: Option<f32>) -> Self {
-        self.line_heights = (ui,secondary);
+        self.line_heights = (ui, secondary);
         self
     }
 
     fn line_height(px: f32, height: Option<f32>) -> f32 {
-        height.filter(|height|height.is_finite() && *height > 0.0).unwrap_or(px * 1.4)
+        height
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(px * 1.4)
     }
     pub fn busy(mut self, busy: bool) -> Self {
         self.busy = busy;
@@ -279,13 +282,17 @@ where
     /// Row height from the theme's font metrics (ced's `ensure_metrics`
     /// trick): shape a sample line once per `(font, px)` and pad it.
     fn ensure_metrics(&self, st: &mut RowState<Renderer::Paragraph>) {
-        let line_h = Self::line_height(self.look.px,self.line_heights.0);
-        let mono_h = Self::line_height(self.look.small_px,self.line_heights.1);
+        let line_h = Self::line_height(self.look.px, self.line_heights.0);
+        let mono_h = Self::line_height(self.look.small_px, self.line_heights.1);
         let key = MetricsKey {
-            ui_font:self.look.ui_font, mono_font:self.look.mono_font,
-            ui_px:self.look.px.to_bits(), mono_px:self.look.small_px.to_bits(),
-            ui_height:line_h.to_bits(), mono_height:mono_h.to_bits(),
-            padding:self.look.chrome.small.to_bits(), icon:self.look.chrome.icon.to_bits(),
+            ui_font: self.look.ui_font,
+            mono_font: self.look.mono_font,
+            ui_px: self.look.px.to_bits(),
+            mono_px: self.look.small_px.to_bits(),
+            ui_height: line_h.to_bits(),
+            mono_height: mono_h.to_bits(),
+            padding: self.look.chrome.small.to_bits(),
+            icon: self.look.chrome.icon.to_bits(),
         };
         if st.metrics_key == Some(key) {
             return;
@@ -314,7 +321,16 @@ where
             .min_bounds()
             .height
             .max(line_h)
-            .max(Self::shape_with_line_height("Ag",self.look.mono_font,self.look.small_px,Some(mono_h)).min_bounds().height)
+            .max(
+                Self::shape_with_line_height(
+                    "Ag",
+                    self.look.mono_font,
+                    self.look.small_px,
+                    Some(mono_h),
+                )
+                .min_bounds()
+                .height,
+            )
             .max(mono_h)
             .max(self.look.chrome.icon)
             + 2.0 * self.look.chrome.small;
@@ -322,16 +338,23 @@ where
     }
 
     pub fn shape(content: &str, font: iced_core::Font, px: f32) -> Renderer::Paragraph {
-        Self::shape_with_line_height(content,font,px,None)
+        Self::shape_with_line_height(content, font, px, None)
     }
 
     /// Shape with the same absolute line height used for row geometry.
-    pub fn shape_with_line_height(content: &str, font: iced_core::Font, px: f32, height: Option<f32>) -> Renderer::Paragraph {
+    pub fn shape_with_line_height(
+        content: &str,
+        font: iced_core::Font,
+        px: f32,
+        height: Option<f32>,
+    ) -> Renderer::Paragraph {
         Renderer::Paragraph::with_text(atext::Text {
             content,
             bounds: Size::INFINITE,
             size: iced_core::Pixels(px),
-            line_height: atext::LineHeight::Absolute(iced_core::Pixels(Self::line_height(px,height))),
+            line_height: atext::LineHeight::Absolute(iced_core::Pixels(Self::line_height(
+                px, height,
+            ))),
             font,
             align_x: atext::Alignment::Left,
             align_y: alignment::Vertical::Top,
@@ -375,17 +398,32 @@ where
             return;
         }
         let elided = crate::elide::middle(&name, name_width, |s| {
-            Self::shape_with_line_height(s, self.look.ui_font, self.look.px,self.line_heights.0)
+            Self::shape_with_line_height(s, self.look.ui_font, self.look.px, self.line_heights.0)
                 .min_bounds()
                 .width
         });
         let shaped = Cached {
-            name: Self::shape_with_line_height(&elided, self.look.ui_font, self.look.px,self.line_heights.0),
+            name: Self::shape_with_line_height(
+                &elided,
+                self.look.ui_font,
+                self.look.px,
+                self.line_heights.0,
+            ),
             name_of: name,
             name_width: name_width.to_bits(),
-            size: Self::shape_with_line_height(&size_text, self.look.mono_font, self.look.small_px,self.line_heights.1),
+            size: Self::shape_with_line_height(
+                &size_text,
+                self.look.mono_font,
+                self.look.small_px,
+                self.line_heights.1,
+            ),
             size_of: size_text,
-            modified: Self::shape_with_line_height(&modified_text, self.look.mono_font, self.look.small_px,self.line_heights.1),
+            modified: Self::shape_with_line_height(
+                &modified_text,
+                self.look.mono_font,
+                self.look.small_px,
+                self.line_heights.1,
+            ),
             modified_of: modified_text,
         };
         st.cache.insert(row.path.to_path_buf(), shaped);
@@ -1092,31 +1130,39 @@ mod tests {
 
     #[test]
     fn prepared_heights_and_density_change_hit_geometry_without_losing_selection_or_scroll() {
-        let entries = vec![(PathBuf::from("/listing/one"),"one".to_owned())];
+        let entries = vec![(PathBuf::from("/listing/one"), "one".to_owned())];
         let reads = Cell::new(0);
         let look = Presentation::default();
-        let mut list: FilePane<'_,crate::Theme,LayoutRenderer> = FilePane::new(Listing {entries:&entries,reads:&reads},look,columns()).line_heights(Some(30.0),Some(24.0));
+        let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
+            Listing {
+                entries: &entries,
+                reads: &reads,
+            },
+            look,
+            columns(),
+        )
+        .line_heights(Some(30.0), Some(24.0));
         let mut state = RowState::new(look);
         list.ensure_metrics(&mut state);
         assert!(state.row_h >= 30.0 + 2.0 * look.chrome.small);
         state.offset = 7.0;
         state.last_selected = Some(entries[0].0.clone());
-        state.press = Some((Point::new(0.0,0.0),0,entries[0].0.clone()));
-        state.last_click = Some((Instant::now(),0,entries[0].0.clone()));
+        state.press = Some((Point::new(0.0, 0.0), 0, entries[0].0.clone()));
+        state.last_click = Some((Instant::now(), 0, entries[0].0.clone()));
         let old_height = state.row_h;
         let point = old_height * 1.5;
-        assert_eq!(state.row_at(point,4),Some(1));
+        assert_eq!(state.row_at(point, 4), Some(1));
         list.look.chrome.small += old_height;
         list.ensure_metrics(&mut state);
-        assert_eq!(state.row_at(point,4),Some(0));
-        assert_eq!(state.offset,7.0);
-        assert_eq!(state.last_selected,Some(entries[0].0.clone()));
+        assert_eq!(state.row_at(point, 4), Some(0));
+        assert_eq!(state.offset, 7.0);
+        assert_eq!(state.last_selected, Some(entries[0].0.clone()));
         assert!(state.press.is_none() && state.last_click.is_none());
         let dense_height = state.row_h;
-        list.line_heights = (Some(60.0),Some(24.0));
+        list.line_heights = (Some(60.0), Some(24.0));
         list.ensure_metrics(&mut state);
         assert!(state.row_h > dense_height);
-        assert_eq!(state.offset,7.0);
+        assert_eq!(state.offset, 7.0);
     }
 
     #[test]

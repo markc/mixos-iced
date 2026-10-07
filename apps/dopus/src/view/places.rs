@@ -125,10 +125,13 @@ fn place_look(
 
 /// A Material text glyph, or the cached Lucide fallback, at the same icon size.
 pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Element<'static, Msg> {
-    if let Some(ready) = icons.ready(icon,tint) {
+    if let Some(ready) = icons.ready(icon, tint) {
         return match ready {
-            toolkit::icons::Ready::Text(icon) => icon.size(look.chrome.icon).color(icons::tint_color(tint)).into(),
-            image @ toolkit::icons::Ready::Image {..} => image.view(),
+            toolkit::icons::Ready::Text(icon) => icon
+                .size(look.chrome.icon)
+                .color(icons::tint_color(tint))
+                .into(),
+            image @ toolkit::icons::Ready::Image { .. } => image.view(),
         };
     }
     if let Some((glyph, font)) = icons.glyph(icon) {

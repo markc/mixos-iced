@@ -289,7 +289,7 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
         mode: selection.mode,
         mono_font,
         ui_font,
-        small_font: font_for(&small,false,selection.design_source.is_none()),
+        small_font: font_for(&small, false, selection.design_source.is_none()),
         density: 1.0,
         ui_line_height: ui.line_height.map(|v| v as f32),
         mono_line_height: mono.line_height.map(|v| v as f32),
@@ -675,7 +675,10 @@ mod tests {
         let look = appearance::settings::bootstrap().expect("generic bootstrap");
         let plain = from_prepared(&look).unwrap();
         let snapshot = snapshot(desktop);
-        let prepared = appearance::settings::Projection::new(&snapshot.effective["app:dopus"]).unwrap().prepare_registered(true).unwrap();
+        let prepared = appearance::settings::Projection::new(&snapshot.effective["app:dopus"])
+            .unwrap()
+            .prepare_registered(true)
+            .unwrap();
         let theme = from_settings(&prepared, &snapshot).unwrap();
         assert_eq!((theme.scheme, theme.mode), (Scheme::Crimson, Mode::Dark));
         assert!(theme.density > 1.0);

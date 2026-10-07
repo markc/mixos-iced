@@ -67,18 +67,28 @@ pub const APP_ID: &str = "dev.mixos.dopus";
 
 /// Validated output scale, captured with each settings preparation.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PreparationContext { scale: f32 }
+pub struct PreparationContext {
+    scale: f32,
+}
 impl Default for PreparationContext {
-    fn default() -> Self { Self {scale:1.0} }
+    fn default() -> Self {
+        Self { scale: 1.0 }
+    }
 }
 impl PreparationContext {
-    pub fn new(scale: f32) -> Result<Self,Diagnostic> {
+    pub fn new(scale: f32) -> Result<Self, Diagnostic> {
         if !scale.is_finite() || !(0.125..=16.0).contains(&scale) {
-            return Err(Diagnostic::new("unsupported_content","output.scale","invalid output scale"));
+            return Err(Diagnostic::new(
+                "unsupported_content",
+                "output.scale",
+                "invalid output scale",
+            ));
         }
-        Ok(Self {scale})
+        Ok(Self { scale })
     }
-    pub fn scale(self) -> f32 { self.scale }
+    pub fn scale(self) -> f32 {
+        self.scale
+    }
 }
 
 /// Everything the app reacts to.
@@ -111,7 +121,10 @@ pub enum Msg {
     /// A raw core event, back from the pumper (law 2's feed).
     Core(CoreEvent),
     /// Window edges (focus reloads the keymap; close quits).
-    Window(application::iced::window::Id, application::iced::window::Event),
+    Window(
+        application::iced::window::Id,
+        application::iced::window::Event,
+    ),
     /// A pending maintenance deadline expired.
     Tick(Instant),
     /// The open dialog's buttons (Yes/No, OK/Cancel, field input).
@@ -165,7 +178,7 @@ impl Content {
         look: &appearance::settings::Prepared,
         snapshot: &settings::Snapshot,
     ) -> Result<Self, Diagnostic> {
-        Self::build_contextual(look,snapshot,&PreparationContext::default())
+        Self::build_contextual(look, snapshot, &PreparationContext::default())
     }
     pub fn build_contextual(
         look: &appearance::settings::Prepared,
@@ -178,7 +191,7 @@ impl Content {
             icons::hex(theme.tokens.palette.muted_text),
             icons::hex(theme.tokens.palette.selection_text),
         ];
-        let icons = Icons::from_prepared(look,&tints,theme.chrome.icon,context.scale())?;
+        let icons = Icons::from_prepared(look, &tints, theme.chrome.icon, context.scale())?;
         Ok(Self { theme, icons })
     }
 
@@ -196,8 +209,8 @@ impl Content {
 /// The model, drafts, selection and operations remain with the application.
 fn view_activation<'a>(
     core: &'a DopusCore,
-    rows: &'a [Vec<VisibleRow>;2],
-    columns: &'a mut [rows::ColumnCache;2],
+    rows: &'a [Vec<VisibleRow>; 2],
+    columns: &'a mut [rows::ColumnCache; 2],
     measurements: &'a std::cell::RefCell<view::Measurements>,
     drag: &'a view::drag::Shared,
     tint: &'a mut String,
@@ -208,9 +221,11 @@ fn view_activation<'a>(
         let after = Look::from_theme(&content.theme);
         *tint = icons::hex(after.tokens.palette.text);
         *measurements.borrow_mut() = Default::default();
-        if after != before { view::drag::lock(drag).cancel(); }
-        for (index,pane) in [PaneId::Left,PaneId::Right].into_iter().enumerate() {
-            columns[index].refresh(after,core.pane(pane),&rows[index]);
+        if after != before {
+            view::drag::lock(drag).cancel();
+        }
+        for (index, pane) in [PaneId::Left, PaneId::Right].into_iter().enumerate() {
+            columns[index].refresh(after, core.pane(pane), &rows[index]);
         }
     }
 }
@@ -626,7 +641,7 @@ impl Dopus {
                 let derived = self.core.on_event(event);
                 self.on_derived(derived)
             }
-            Msg::Window(id,event) => self.on_window(id,event),
+            Msg::Window(id, event) => self.on_window(id, event),
             Msg::Tick(_now) => {
                 let actions = keys::poll_timeout(&self.router);
                 self.on_actions(&actions)
@@ -934,7 +949,15 @@ impl Dopus {
         let before = self.look();
         let changed = self.settings.drain_with(
             || self.bus.as_ref().and_then(|bus| bus.settings_generation()),
-            view_activation(&self.core,&self.rows,&mut self.column_cache,&self.measurements,&self.drag,&mut self.tint,before),
+            view_activation(
+                &self.core,
+                &self.rows,
+                &mut self.column_cache,
+                &self.measurements,
+                &self.drag,
+                &mut self.tint,
+                before,
+            ),
         );
         if !changed.is_empty() {
             tracing::info!(
@@ -1338,15 +1361,23 @@ impl Dopus {
         Task::batch(tasks)
     }
 
-    fn on_window(&mut self, id: application::iced::window::Id, event: application::iced::window::Event) -> Task<Msg> {
-        if self.window.is_some_and(|window|window != id) { return Task::none(); }
+    fn on_window(
+        &mut self,
+        id: application::iced::window::Id,
+        event: application::iced::window::Event,
+    ) -> Task<Msg> {
+        if self.window.is_some_and(|window| window != id) {
+            return Task::none();
+        }
         match event {
-            application::iced::window::Event::Opened {scale_factor,..} => {
+            application::iced::window::Event::Opened { scale_factor, .. } => {
                 self.window = Some(id);
                 self.output_scale(scale_factor);
             }
             application::iced::window::Event::Rescaled(scale) => {
-                if self.window == Some(id) { self.output_scale(scale); }
+                if self.window == Some(id) {
+                    self.output_scale(scale);
+                }
             }
             application::iced::window::Event::Focused => {
                 // filemgr's `reload_keymap_on_focus` rule: pick up keymap
@@ -1374,10 +1405,16 @@ impl Dopus {
 
     fn output_scale(&mut self, scale: f32) {
         let result = PreparationContext::new(scale).and_then(|context| {
-            self.settings.set_context(context,self.bus.as_ref().and_then(BusHandle::settings_generation))
-                .map(|_|())
+            self.settings
+                .set_context(
+                    context,
+                    self.bus.as_ref().and_then(BusHandle::settings_generation),
+                )
+                .map(|_| ())
         });
-        if let Err(error) = result { self.status = Some(error.message); }
+        if let Err(error) = result {
+            self.status = Some(error.message);
+        }
     }
 
     fn quit(&mut self) -> Task<Msg> {
@@ -1417,13 +1454,13 @@ impl Dopus {
             Subscription::run(streams),
             application::iced::event::listen_with(|event, _status, window| match event {
                 application::iced::Event::Window(
-                    e @ (application::iced::window::Event::Opened {..}
+                    e @ (application::iced::window::Event::Opened { .. }
                     | application::iced::window::Event::Rescaled(_)
                     | application::iced::window::Event::Resized(_)
                     | application::iced::window::Event::Focused
                     | application::iced::window::Event::Unfocused
                     | application::iced::window::Event::CloseRequested),
-                ) => Some(Msg::Window(window,e)),
+                ) => Some(Msg::Window(window, e)),
                 _ => None,
             }),
         ])
@@ -1681,8 +1718,14 @@ mod tests {
         };
         let consumer = settings::consumer::Consumer::for_app(binding, "dopus").unwrap();
         let (settings, lane) = application::presentation::native::bridge(
-            application::presentation::native::Session::with_context(consumer,PreparationContext::default()),
-            application::presentation::native::Worker::contextual(move |look,snapshot,_: &PreparationContext| build(look,snapshot)).with_contextual_resource_requirements(icons::requirements),
+            application::presentation::native::Session::with_context(
+                consumer,
+                PreparationContext::default(),
+            ),
+            application::presentation::native::Worker::contextual(
+                move |look, snapshot, _: &PreparationContext| build(look, snapshot),
+            )
+            .with_contextual_resource_requirements(icons::requirements),
         );
         let bootstrap = Content::bootstrap(&appearance::settings::bootstrap().unwrap()).unwrap();
         let tint = icons::hex(bootstrap.theme.tokens.palette.text);
@@ -1697,7 +1740,7 @@ mod tests {
             editing: None,
             router: keys::initial(None).unwrap(),
             settings,
-        window: None,
+            window: None,
             bootstrap,
             tint,
             status: None,
@@ -1749,14 +1792,20 @@ mod tests {
     /// Drive the settings lane through at most `steps` progress transitions
     /// (a resource preparation needs two: the jobs replacement, then the
     /// completed preparation). Runs the lane's own worker on a test runtime.
-    fn drive(lane: &mut application::presentation::native::Lane<Content, PreparationContext>, steps: usize) {
+    fn drive(
+        lane: &mut application::presentation::native::Lane<Content, PreparationContext>,
+        steps: usize,
+    ) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         runtime.block_on(async {
             for _ in 0..steps {
-                match tokio::time::timeout(std::time::Duration::from_secs(5),lane.drive()).await.expect("bounded fixture progress") {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), lane.drive())
+                    .await
+                    .expect("bounded fixture progress")
+                {
                     application::presentation::native::Progress::Wake
                     | application::presentation::native::Progress::Updated => {}
                     application::presentation::native::Progress::UiClosed => {
@@ -1774,7 +1823,15 @@ mod tests {
         let before = app.look();
         app.settings.drain_with(
             || Some(1),
-            view_activation(&app.core,&app.rows,&mut app.column_cache,&app.measurements,&app.drag,&mut app.tint,before),
+            view_activation(
+                &app.core,
+                &app.rows,
+                &mut app.column_cache,
+                &app.measurements,
+                &app.drag,
+                &mut app.tint,
+                before,
+            ),
         )
     }
 
@@ -1836,18 +1893,30 @@ mod tests {
             |_| {},
         );
         let mut changes: Vec<_> = changed.into_iter().collect();
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop {
                     let consumer = app.settings.session().host().consumer();
-                    if consumer.applied().is_some_and(|applied|applied.revision == settings::Revision(1) && applied.incarnation == "fixture") || consumer.fault().is_some() {
+                    if consumer.applied().is_some_and(|applied| {
+                        applied.revision == settings::Revision(1)
+                            && applied.incarnation == "fixture"
+                    }) || consumer.fault().is_some()
+                    {
                         break;
                     }
-                    assert!(!matches!(lane.drive().await,application::presentation::native::Progress::UiClosed));
+                    assert!(!matches!(
+                        lane.drive().await,
+                        application::presentation::native::Progress::UiClosed
+                    ));
                     changes.extend(drain(app));
                 }
-            }).await.expect("confirmed activation or explicit preparation fault");
+            })
+            .await
+            .expect("confirmed activation or explicit preparation fault");
         });
         changes.into_iter().next()
     }
@@ -2455,7 +2524,16 @@ mod tests {
     fn theme_request_forwards_a_fenced_validated_apply_with_the_current_read() {
         let (_dir, mut app, mut lane) = fixture();
         let _ = activate(&mut app, &mut lane, settings::Desktop::default());
-        assert_eq!(app.settings.session().host().consumer().applied().unwrap().revision,settings::Revision(1));
+        assert_eq!(
+            app.settings
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
+            settings::Revision(1)
+        );
         let (handle, mut responses) = BusHandle::response_sink();
         app.bus = Some(handle);
         let _ = app.theme_request(Some(42.into()), Some("crimson"), Some("dark"));
@@ -2507,7 +2585,16 @@ mod tests {
     fn state_and_describe_carry_reconciled_settings_evidence() {
         let (_dir, mut app, mut lane) = fixture();
         let _ = activate(&mut app, &mut lane, settings::Desktop::default());
-        assert_eq!(app.settings.session().host().consumer().applied().unwrap().revision,settings::Revision(1));
+        assert_eq!(
+            app.settings
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
+            settings::Revision(1)
+        );
         let (handle, mut responses) = BusHandle::response_sink();
         app.bus = Some(handle);
         for verb in ["dopus.state", "app.describe"] {

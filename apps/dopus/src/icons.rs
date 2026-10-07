@@ -375,7 +375,12 @@ impl Icons {
     pub fn weight(&self) -> Option<u16> {
         if let Some(resources) = &self.pinned {
             let weight = resources.evidence().icons.first()?.weight?;
-            return resources.evidence().icons.iter().all(|icon|icon.weight == Some(weight)).then_some(weight);
+            return resources
+                .evidence()
+                .icons
+                .iter()
+                .all(|icon| icon.weight == Some(weight))
+                .then_some(weight);
         }
         self.material.as_ref().map(|_| 200)
     }
@@ -419,11 +424,16 @@ impl Icons {
             );
         } else if let Some(handle) = self.get(icon, tint, RASTER_PX) {
             let bounds = match &handle {
-                application::iced::widget::image::Handle::Rgba {width,height,..} => {
+                application::iced::widget::image::Handle::Rgba { width, height, .. } => {
                     let scale = (bounds.width / *width as f32).min(bounds.height / *height as f32);
                     let width = *width as f32 * scale;
                     let height = *height as f32 * scale;
-                    application::iced::Rectangle {x:bounds.center_x()-width/2.0,y:bounds.center_y()-height/2.0,width,height}
+                    application::iced::Rectangle {
+                        x: bounds.center_x() - width / 2.0,
+                        y: bounds.center_y() - height / 2.0,
+                        width,
+                        height,
+                    }
                 }
                 _ => bounds,
             };
@@ -487,8 +497,8 @@ impl Icons {
         px: u32,
     ) -> Option<application::iced::widget::image::Handle> {
         if let Some(resources) = &self.pinned {
-            return match resources.icon(&pinned::key(icon,tint))? {
-                toolkit::icons::Ready::Image {handle,..} => Some(handle.clone()),
+            return match resources.icon(&pinned::key(icon, tint))? {
+                toolkit::icons::Ready::Image { handle, .. } => Some(handle.clone()),
                 toolkit::icons::Ready::Text(_) => None,
             };
         }
@@ -496,7 +506,10 @@ impl Icons {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cache.get(&(icon, tint.to_owned(), self.prepared_side.unwrap_or(px))).cloned()
+        state
+            .cache
+            .get(&(icon, tint.to_owned(), self.prepared_side.unwrap_or(px)))
+            .cloned()
     }
 }
 
