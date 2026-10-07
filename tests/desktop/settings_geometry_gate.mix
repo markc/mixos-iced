@@ -95,18 +95,33 @@ fn client_pixel($ppm,$x,$y)
   $at = $ppm.off + ($y*$ppm.w + $x)*3
   return $ppm.bytes[$at] >= 247 and $ppm.bytes[$at+1] <= 8 and $ppm.bytes[$at+2] >= 247
 end
-fn capture($label,$layout,$client_y,$vacated_y)
+fn capture($label,$layout,$client_y,$vacated_y,$accepted,$interaction)
   $before = shell("shell.props.get",{path:"settings"})
   $path = $R.run.path .. "/" .. $label .. ".ppm"
   print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})}))
   $image = ppm($path)
   if $image.w != $width or $image.h != $height then raise("CAPTURE","Unexpected capture scale") end
   $button = $layout.nodes.go
+  $cell = nil
+  for each $candidate in $accepted.effective.desktop.design.buttons
+    if ($candidate.variant == "primary" and $candidate.size == "md" and
+      $candidate.interaction == $interaction and not $candidate.focus_visible) then $cell=$candidate; break end
+  end
+  if $cell == nil or $cell.pair.surface[3] != 1 then raise("SETUP","Expected an opaque canonical primary button cell") end
   if not client_pixel($image,$width/2,100) or not client_pixel($image,$width/2,$client_y) then
     raise("CAPTURE","Client missing above the work-area boundary in " .. $label)
   end
   if client_pixel($image,$layout.surface.x+$button.x+8,$layout.surface.y+$button.y+8) then
     raise("CAPTURE","Expected rendered scene button in " .. $label)
+  end
+  $button_at = $image.off + (floor($layout.surface.y+$button.y+8)*$image.w + floor($layout.surface.x+$button.x+8))*3
+  for $channel = 0 to 2
+    $linear = $cell.pair.surface[$channel]
+    $srgb = if $linear <= 0.0031308 then $linear*12.92 else 1.055*pow($linear,1/2.4)-0.055 end
+    $expected = round($srgb*255)
+    if abs($image.bytes[$button_at+$channel]-$expected) > 8 then
+      raise("APPEARANCE","Canonical " .. $interaction .. " button channel " .. to_string($channel) .. " expected " .. to_string($expected) .. " actual " .. to_string($image.bytes[$button_at+$channel]) .. " in " .. $label)
+    end
   end
   $page_at = $image.off + (floor($layout.surface.y+10)*$image.w + $image.w-20)*3
   for $channel = 0 to 2
@@ -131,6 +146,15 @@ fn await_new($path,$offset,$needle)
   end
   raise("INPUT","Missing fresh " .. $needle .. " in " .. $path)
 end
+fn await_point($path,$offset,$x,$y)
+  for $attempt = 1 to 50
+    for each $event in re_find(tail_after($path,$offset),"PROBE (?:enter|motion) ([0-9.-]+) ([0-9.-]+)")
+      if abs(to_number($event.groups[0])-$x) < 0.01 and abs(to_number($event.groups[1])-$y) < 0.01 then return end
+    end
+    sleep(0.1)
+  end
+  raise("INPUT","No fresh client point within Wayland fixed-point tolerance")
+end
 try
   $R.run = $n.new_run("/tmp/settings-geometry")
   $root = $R.run.path
@@ -148,7 +172,7 @@ try
     sleep(0.1)
   end
   if not $ready then raise("SETUP","Authority never registered on owned broker") end
-  $initial = apply({"shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:52}},"overlay-52")
+  $initial = apply({"appearance.mode":"light","shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:52}},"light-overlay-52")
   $incarnation = $initial.incarnation
   mkdir($root .. "/cfg",{parents:true})
   write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
@@ -189,14 +213,14 @@ try
   $window = {id:$mapped.window.id,generation:$mapped.window.generation}
   comp("comp.window.maximize",$window)
   wait_size($width,$height)
-  capture("overlay-52",$layout,$height-55,nil)
+  capture("overlay-52",$layout,$height-55,nil,$initial,"resting")
   comp("comp.props.set",{path:"input.host.passthrough",value:false})
   $x = $layout.surface.x+$layout.nodes.go.x+$layout.nodes.go.w/2
   $y = $layout.surface.y+$layout.nodes.go.y+$layout.nodes.go.h/2-(96-52)
   $offset = len(read_file($probe_log))
   $move = comp("comp.input.pointer.move",{seat:"human",x:$x,y:$y})
   if $move.target == nil or $move.target.id != $window.id then raise("INPUT","Future panel point is not currently on client") end
-  await_new($probe_log,$offset,"PROBE motion " .. to_string($x) .. " " .. to_string($y))
+  await_point($probe_log,$offset,$x,$y)
   $offset = len(read_file($probe_log))
   $changed = apply({"appearance.mode":"dark","shell.panels.bottom":{edge:"bottom",mode:"dock",thickness:96}},"dark-dock-96")
   await_panel("docked",96,96,$changed.revision)
@@ -204,7 +228,7 @@ try
   $truth = wait_size($width,$height-96)
   $area = $truth.outputs[keys($truth.outputs)[0]].usable
   if $area.height != $height-96 or $area.y != 0 then raise("WORK_AREA",json_encode($area)) end
-  capture("dark-dock-96",$layout,$height-99,nil)
+  capture("dark-dock-96",$layout,$height-99,nil,$changed,"hovered")
   await_new($probe_log,$offset,"PROBE leave")
   $event_offset = len(read_file($events))
   comp("comp.input.pointer.button",{seat:"human",button:"left",action:"click"})
@@ -215,7 +239,7 @@ try
   $layout = await_layout(64)
   $truth = wait_size($width,$height-64)
   if $truth.outputs[keys($truth.outputs)[0]].usable.height != $height-64 then raise("WORK_AREA","Regrowth did not update usable area") end
-  capture("dock-64",$layout,$height-67,$height-80)
+  capture("dock-64",$layout,$height-67,$height-80,$changed,"resting")
   await_new($probe_log,$offset,"PROBE enter")
   $after = comp("comp.window.wait",{match:$window,until:"presented",timeout_ms:5000}).window
   if $after.id != $window.id or $after.generation != $window.generation then raise("IDENTITY","Window replaced during activation") end
