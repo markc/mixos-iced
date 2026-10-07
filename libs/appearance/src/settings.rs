@@ -37,6 +37,28 @@ pub struct Prepared {
     choices: BTreeMap<String, FontChoice>,
 }
 
+/// Immediate generic appearance until the host activates checked resources.
+/// This performs no font discovery, installation or I/O and claims no settings
+/// identity, cache receipt or acknowledgement. Hosts label it Bootstrap.
+pub fn bootstrap() -> Result<Prepared, Diagnostic> {
+    let effective = settings::resolve(&settings::Desktop::default())
+        .map_err(|errors| errors.into_iter().next().expect("resolution diagnostic"))?;
+    let projection = Projection::new(&effective["desktop"])?;
+    projection.prepare(|_, record| {
+        Ok(FontSelection {
+            font: iced_core::Font {
+                family: match record.generic {
+                    TypographyGeneric::SansSerif => iced_core::font::Family::SansSerif,
+                    TypographyGeneric::Monospace => iced_core::font::Family::Monospace,
+                },
+                weight: toolkit::fonts::weight(record.weight),
+                ..iced_core::Font::DEFAULT
+            },
+            choice: FontChoice::Generic,
+        })
+    })
+}
+
 fn fault(path: &str, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new("unsupported_presentation", path, message)
 }

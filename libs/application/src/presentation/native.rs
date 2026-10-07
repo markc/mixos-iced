@@ -79,6 +79,8 @@ pub struct Session<T> {
     #[cfg(feature = "settings-cache")]
     cache_persisted: Option<settings::consumer::SnapshotIdentity>,
     #[cfg(feature = "settings-cache")]
+    cache_configuration: Option<Diagnostic>,
+    #[cfg(feature = "settings-cache")]
     retry_save: u64,
 }
 
@@ -88,6 +90,8 @@ pub struct Session<T> {
 #[cfg(feature = "settings-cache")]
 #[derive(serde::Serialize)]
 pub struct CacheEvidence<'a> {
+    /// Construction policy, distinct from write faults and historical receipts.
+    pub configuration: Option<&'a Diagnostic>,
     pub persisted: Option<&'a settings::consumer::SnapshotIdentity>,
     pub fault: Option<&'a Diagnostic>,
     pub fallback_diagnostics: &'a [Diagnostic],
@@ -105,6 +109,8 @@ impl<T> Session<T> {
             cache_fault: None,
             #[cfg(feature = "settings-cache")]
             cache_persisted: None,
+            #[cfg(feature = "settings-cache")]
+            cache_configuration: None,
             #[cfg(feature = "settings-cache")]
             retry_save: 0,
         }
@@ -128,6 +134,7 @@ impl<T> Session<T> {
     #[cfg(feature = "settings-cache")]
     pub fn cache_evidence(&self) -> CacheEvidence<'_> {
         CacheEvidence {
+            configuration: self.cache_configuration.as_ref(),
             persisted: self.cache_persisted(),
             fault: self.cache_fault(),
             fallback_diagnostics: self.fallback_diagnostics(),

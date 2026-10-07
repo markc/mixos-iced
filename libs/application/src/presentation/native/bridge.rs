@@ -11,6 +11,16 @@ use tokio::sync::watch;
 
 /// Pair existing authorities. Construction starts no connection, task or I/O.
 pub fn bridge<T>(session: Session<T>, worker: Worker<T>) -> (Ui<T>, Lane<T>) {
+    #[cfg(feature = "settings-cache")]
+    let session = {
+        let mut session = session;
+        if worker.cache.is_none() {
+            session.cache_configuration = Some(Diagnostic::new(
+                "cache_unconfigured", "cache", "The host supplied no persistent cache root",
+            ));
+        }
+        session
+    };
     let binding = session.host().consumer().binding().clone();
     let (jobs, receiver) = watch::channel(None);
     let mailbox = Mailbox::default();

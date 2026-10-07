@@ -8,10 +8,12 @@ use crate::{
     strings::label,
 };
 use application::iced::{
-    self, Element, Subscription, Task,
-    widget::{self, column, container, row, text},
+    self, Subscription, Task,
+    widget::{column, container, row},
     window,
 };
+use application::{Element, widget};
+use application::presentation::native::Ui;
 use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use serde_json::{Value, json};
 use std::sync::{Mutex, OnceLock};
@@ -86,7 +88,8 @@ struct Operation {
 pub struct App {
     settings: Settings,
     bus: Handle,
-    look: appearance::Appearance,
+    bootstrap: appearance::settings::Prepared,
+    settings_ui: Ui<()>,
     selection: Selection,
     snapshot: Snapshot,
     edge: &'static str,
@@ -98,6 +101,11 @@ pub struct App {
     status: String,
     notice: Option<String>,
     connected: bool,
+    touched: bool,
+    refused: bool,
+    handoff_pending: bool,
+    launch_selection: Selection,
+    launched: std::time::Instant,
     quitting: bool,
 }
 static STREAM: OnceLock<Mutex<Option<UnboundedReceiver<Delivery>>>> = OnceLock::new();
@@ -124,17 +132,16 @@ fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     })
 }
 pub fn run(settings: Settings, selection: Selection) -> Result<(), String> {
-    let (bus, rx) = bus::start(&settings.service, &settings.url, &settings.host)?;
+    let (bus, mut settings_ui, bootstrap, rx) = bus::start(&settings.service, &settings.url, &settings.host)?;
     let result = (|| {
         STREAM
             .set(Mutex::new(Some(rx)))
             .map_err(|_| "app already started")?;
-        let look = appearance::install(&appearance::Theme::load()).map_err(|e| e.to_string())?;
-        let font = look.ui_font();
-        let mut app = App::new(settings, bus.clone(), look, selection);
-        let initial = app.refresh();
+        let font = bootstrap.typography().get("ui").expect("UI typography").font;
+        settings_ui.reconcile(bus.settings_generation());
+        let app = App::new(settings, bus.clone(), bootstrap, settings_ui, selection);
         application::start(
-            (app, initial),
+            (app, Task::none()),
             App::update,
             App::view,
             application::Window::new(APP_ID, iced::Size::new(1040.0, 720.0), font)
@@ -142,7 +149,7 @@ pub fn run(settings: Settings, selection: Selection) -> Result<(), String> {
                 .defer_close(),
         )
         .title(|_: &App| label("title"))
-        .theme(|app: &App| app.look.theme())
+        .theme(|app: &App| app.look().theme())
         .subscription(App::subscription)
         .run()
         .map_err(|e| e.to_string())
@@ -155,13 +162,16 @@ impl App {
     fn new(
         settings: Settings,
         bus: Handle,
-        look: appearance::Appearance,
+        bootstrap: appearance::settings::Prepared,
+        settings_ui: Ui<()>,
         selection: Selection,
     ) -> Self {
         Self {
             settings,
             bus,
-            look,
+            bootstrap,
+            settings_ui,
+            launch_selection: selection.clone(),
             selection,
             snapshot: Snapshot::default(),
             edge: "bottom",
@@ -172,16 +182,46 @@ impl App {
             dialog: None,
             status: label("waiting"),
             notice: None,
-            connected: true,
+            connected: false,
+            touched: false,
+            refused: false,
+            handoff_pending: false,
+            launched: std::time::Instant::now(),
             quitting: false,
         }
+    }
+    fn look(&self) -> &appearance::settings::Prepared {
+        self.settings_ui.session().host().presentation()
+            .map_or(&self.bootstrap, |presentation| presentation.appearance())
+    }
+    fn typography(&self, role: &str) -> toolkit::typography::TextStyle {
+        self.look().typography().get(role).expect("prepared typography role")
+    }
+    fn text<'a>(&self, content: impl iced::advanced::text::IntoFragment<'a>) -> widget::Text<'a, Theme> {
+        self.typography("ui").text(content)
+    }
+    fn persistent_status(&self) -> String {
+        use settings::fallback::PresentationKind;
+        let kind = match self.settings_ui.session().host().consumer().evidence().kind {
+            Some(PresentationKind::Current) => "settings-current",
+            Some(PresentationKind::Cached) => "settings-cached",
+            Some(PresentationKind::Embedded) => "settings-embedded",
+            Some(PresentationKind::Retained) => "settings-retained",
+            Some(PresentationKind::LastGood) => "settings-last-good",
+            None => "settings-bootstrap",
+        };
+        let connection = if self.bus.connected() { "bus-connected" }
+            else if self.refused { "bus-refused" }
+            else if self.bus.ever_registered() { "bus-disconnected" }
+            else { "bus-connecting" };
+        format!("{} · {}", label(kind), label(connection))
     }
     fn context(&self) -> menu::Context<'_> {
         menu::Context {
             selection: &self.selection,
             snapshot: &self.snapshot,
             edge: self.edge,
-            busy: self.operation.is_some() || !self.connected,
+            busy: self.operation.is_some() || !self.bus.connected(),
             modal: self.dialog.is_some(),
         }
     }
@@ -205,6 +245,10 @@ impl App {
         json!({"schema":"scene-editor.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.connected,"busy":self.operation.is_some(),"selection":self.selection,"edge":self.edge,"status":self.status,"state_token":self.snapshot.0["state_token"],"ui":{"menu_bar":true,"dialog":match self.dialog{Some(Dialog::Confirm{..})=>Some("confirm"),Some(Dialog::Shortcuts)=>Some("shortcuts"),Some(Dialog::About)=>Some("about"),None=>None}},"snapshot":self.snapshot.0})
     }
     fn start(&mut self, verb: &str, args: Value, kind: Kind, reply: Option<u64>) -> Task<Message> {
+        if !self.bus.connected() {
+            if let Some(id) = reply { self.reply_error(id, "TRANSPORT", "Bus is disconnected"); }
+            return Task::none();
+        }
         if self.operation.is_some() {
             if let Some(id) = reply {
                 self.reply_error(id, "BUSY", "another operation is pending");
@@ -254,6 +298,7 @@ impl App {
         self.start("scenes.editor.action", body, Kind::Action, reply)
     }
     fn action(&mut self, action: Action) -> Task<Message> {
+        self.touched = true;
         if !menu::enabled(&action, &self.context()) {
             return Task::none();
         }
@@ -312,6 +357,7 @@ impl App {
         }
     }
     fn quit(&mut self) -> Task<Message> {
+        self.quitting = true;
         if self.operation.is_some() {
             self.quitting = true;
             return Task::none();
@@ -320,6 +366,7 @@ impl App {
         iced::exit()
     }
     fn select(&mut self, selection: Selection) -> Task<Message> {
+        self.touched = true;
         if self.dialog.is_some()
             || self
                 .operation
@@ -395,11 +442,16 @@ impl App {
                 Task::none()
             }
             "scene-editor.info" => {
+                self.settings_ui.reconcile(self.bus.settings_generation());
                 self.bus.reply(id, 0, self.info());
                 Task::none()
             }
             "app.describe" => {
-                self.bus.reply(id, 0, model::describe());
+                self.settings_ui.reconcile(self.bus.settings_generation());
+                let mut describe = model::describe();
+                describe["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
+                describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
+                self.bus.reply(id, 0, describe);
                 Task::none()
             }
             "scene-editor.show" => {
@@ -450,7 +502,7 @@ impl App {
                 Task::batch([refresh, self.show(Some(id))])
             }
             "scene-editor.action" => {
-                if self.dialog.is_some() || self.operation.is_some() || !self.connected {
+                if self.dialog.is_some() || self.operation.is_some() || !self.bus.connected() {
                     self.reply_error(id, "BUSY", "an action or dialogue is already pending");
                     return Task::none();
                 }
@@ -482,6 +534,11 @@ impl App {
         }
     }
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(&message, Message::Action(_) | Message::OpenMenu(_) | Message::SelectTemplate(_)
+            | Message::SelectScene(_) | Message::SelectPage(..) | Message::Key(..)
+            | Message::Confirm | Message::Cancel) {
+            self.touched = true;
+        }
         match message {
             Message::Action(action) => self.action(action),
             Message::OpenMenu(index) => {
@@ -632,12 +689,37 @@ impl App {
             }
             Message::Bus(Delivery::Command { id, verb, body }) => self.command(id, &verb, &body),
             Message::Bus(Delivery::Changed) => self.refresh(),
-            Message::Bus(Delivery::Theme) => {
-                self.look.retheme(&appearance::Theme::load());
+            Message::Bus(Delivery::Settings) => {
+                let bus = &self.bus;
+                if !self.settings_ui.drain_with(|| bus.settings_generation(), |_| {}).is_empty() {
+                    eprintln!("SCENE_EDITOR_SETTINGS {}", json!({
+                        "evidence": self.settings_ui.session().host().consumer().evidence(),
+                        "settings_cache": self.settings_ui.session().cache_evidence(),
+                        "elapsed_ms": self.launched.elapsed().as_millis(),
+                    }));
+                }
                 Task::none()
             }
+            Message::Bus(Delivery::Refused { name_taken, message }) => {
+                self.connected = false;
+                self.refused = true;
+                self.status = message;
+                if name_taken && !self.bus.ever_registered() && !self.touched && !self.handoff_pending {
+                    self.handoff_pending = true;
+                    self.bus.forward_selection(self.launch_selection.clone());
+                }
+                Task::none()
+            }
+            Message::Bus(Delivery::Forwarded(result)) => {
+                self.handoff_pending = false;
+                match result {
+                    Ok(()) if !self.touched && !self.bus.ever_registered() => self.quit(),
+                    Ok(()) => Task::none(),
+                    Err(error) => { self.status = error; Task::none() }
+                }
+            }
             Message::Bus(Delivery::Connected) => {
-                self.connected = true;
+                self.connected = self.bus.connected();
                 self.refresh()
             }
             Message::Bus(Delivery::Disconnected) => {
@@ -676,7 +758,7 @@ impl App {
             .collect()
     }
     fn scene_content(&self) -> Element<'_, Message, Theme> {
-        let t = self.look.tokens;
+        let t = self.look().tokens();
         let gap = t.metrics.spacing.md;
         let gallery = self.selection.view == View::Gallery;
         let options = self.choices(
@@ -692,7 +774,7 @@ impl App {
                 }
         });
         let list: Element<'_, Message, Theme> = if options.is_empty() {
-            container(text(label(if gallery {
+            container(self.text(label(if gallery {
                 "empty-gallery"
             } else {
                 "empty-installed"
@@ -708,13 +790,13 @@ impl App {
                 }
             })
             .selected(selected)
-            .font(self.look.ui_font())
-            .text_size(t.metrics.text.md)
+            .font(self.typography("ui").font)
+            .text_size(self.typography("ui").size)
             .padding(gap)
             .height(iced::Fill)
             .into()
         };
-        let mut details = column![text(label(if gallery {
+        let mut details = column![self.text(label(if gallery {
             "select-template"
         } else {
             "select-scene"
@@ -723,26 +805,26 @@ impl App {
         .width(iced::Fill);
         let selected = &self.snapshot.model()[if gallery { "tpl" } else { "selected" }];
         if selected["shown"] == true {
-            details = details.push(text(string(&selected["title"])));
+            details = details.push(self.text(string(&selected["title"])));
             if gallery {
                 for field in ["desc", "needs", "installed"] {
-                    details = details.push(text(string(&selected[field])));
+                    details = details.push(self.text(string(&selected[field])));
                 }
             } else {
-                details = details.push(text(string(&selected["status"])));
+                details = details.push(self.text(string(&selected["status"])));
                 if let Some(scene) = self.snapshot.scene(&self.selection) {
-                    details = details.push(text(label("files")));
+                    details = details.push(self.text(label("files")));
                     for field in ["scene", "behaviour", "metadata"] {
                         if let Some(path) = scene["files"][field].as_str() {
-                            details = details.push(text(path).font(self.look.mono_font()));
+                            details = details.push(self.typography("mono").text(path));
                         }
                     }
                 }
                 if !rows(&selected["problems"]).is_empty() {
-                    details = details.push(text(label("problems")));
+                    details = details.push(self.text(label("problems")));
                 }
                 for problem in rows(&selected["problems"]) {
-                    details = details.push(text(string(&problem["cells"][0])));
+                    details = details.push(self.text(string(&problem["cells"][0])));
                 }
             }
         }
@@ -759,7 +841,7 @@ impl App {
         .into()
     }
     fn arrange_content(&self) -> Element<'_, Message, Theme> {
-        let t = self.look.tokens;
+        let t = self.look().tokens();
         let gap = t.metrics.spacing.md;
         let options: Vec<Choice> = EDGES
             .into_iter()
@@ -783,8 +865,8 @@ impl App {
                 ))
             })
             .selected(EDGES.iter().position(|edge| *edge == self.edge))
-            .font(self.look.ui_font())
-            .text_size(t.metrics.text.md)
+            .font(self.typography("ui").font)
+            .text_size(self.typography("ui").size)
             .padding(gap)
             .into();
         let pages: Vec<Choice> = rows(&self.snapshot.model()["edges"][self.edge]["pages"])
@@ -806,13 +888,13 @@ impl App {
                 Message::SelectPage(edge.clone(), choice)
             })
             .selected(selected)
-            .font(self.look.ui_font())
-            .text_size(t.metrics.text.md)
+            .font(self.typography("ui").font)
+            .text_size(self.typography("ui").size)
             .padding(gap)
             .into();
         row![
-            column![text(label("edge")), edges].width(iced::FillPortion(2)),
-            column![text(label("select-page")), pages]
+            column![self.text(label("edge")), edges].width(iced::FillPortion(2)),
+            column![self.text(label("select-page")), pages]
                 .spacing(gap)
                 .width(iced::FillPortion(3))
         ]
@@ -821,7 +903,7 @@ impl App {
         .into()
     }
     pub fn view(&self) -> Element<'_, Message, Theme> {
-        let t = self.look.tokens;
+        let t = self.look().tokens();
         let gap = t.metrics.spacing.md;
         let menubar: Element<'_, Action, Theme> = toolkit::Menu::bar(menu::bar(&self.context()))
             .id(menu::BAR_ID)
@@ -835,7 +917,7 @@ impl App {
         let mut body = column![menubar.map(Message::Action)].spacing(t.metrics.spacing.sm);
         if self.snapshot.model()["banner"]["shown"] == true {
             body = body.push(
-                container(text(string(&self.snapshot.model()["banner"]["text"])))
+                container(self.text(string(&self.snapshot.model()["banner"]["text"])))
                     .padding(gap)
                     .style(toolkit::theme::container::card),
             );
@@ -845,9 +927,9 @@ impl App {
             .push(
                 container(
                     row![
-                        text(&self.status),
+                        column![self.text(&self.status), self.text(self.persistent_status())],
                         widget::space().width(iced::Fill),
-                        text(label(self.selection.view.key()))
+                        self.text(label(self.selection.view.key()))
                     ]
                     .spacing(gap),
                 )
@@ -865,12 +947,12 @@ impl App {
                 action, selection, ..
             } => {
                 contents = contents
-                    .push(text(label(action.confirmation().expect("confirm action"))))
-                    .push(text(selection.scene.as_deref().unwrap_or_default()));
+                    .push(self.text(label(action.confirmation().expect("confirm action"))))
+                    .push(self.text(selection.scene.as_deref().unwrap_or_default()));
                 controls = controls.push(
-                    toolkit::CenteredButton::new(text(label("cancel"))).on_press(Message::Cancel),
+                    toolkit::CenteredButton::new(self.text(label("cancel"))).on_press(Message::Cancel),
                 );
-                let button = toolkit::CenteredButton::new(text(label("confirm")));
+                let button = toolkit::CenteredButton::new(self.text(label("confirm")));
                 controls = controls.push(if self.operation.is_none() {
                     button.on_press(Message::Confirm)
                 } else {
@@ -879,22 +961,22 @@ impl App {
             }
             Dialog::Shortcuts => {
                 contents = contents
-                    .push(text(label("shortcuts")))
-                    .push(text(label("shortcut-body")));
+                    .push(self.text(label("shortcuts")))
+                    .push(self.text(label("shortcut-body")));
                 controls = controls.push(
-                    toolkit::CenteredButton::new(text(label("done"))).on_press(Message::Cancel),
+                    toolkit::CenteredButton::new(self.text(label("done"))).on_press(Message::Cancel),
                 );
             }
             Dialog::About => {
                 contents = contents
-                    .push(text(format!(
+                    .push(self.text(format!(
                         "{} {}",
                         label("title"),
                         env!("CARGO_PKG_VERSION")
                     )))
-                    .push(text(label("about-body")));
+                    .push(self.text(label("about-body")));
                 controls = controls.push(
-                    toolkit::CenteredButton::new(text(label("done"))).on_press(Message::Cancel),
+                    toolkit::CenteredButton::new(self.text(label("done"))).on_press(Message::Cancel),
                 );
             }
         }
@@ -929,20 +1011,18 @@ impl App {
 mod tests {
     use super::*;
     fn app() -> App {
-        static LOOK: OnceLock<appearance::Appearance> = OnceLock::new();
-        let look = LOOK
-            .get_or_init(|| {
-                appearance::install_with(
-                    &appearance::Theme::embedded(),
-                    appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
-                )
-                .unwrap()
-            })
-            .clone();
+        let consumer = settings::consumer::Consumer::for_app(settings::Binding {
+            instance: "fixture".into(), profile: "default".into(),
+        }, "scene-editor").unwrap();
+        let (ui, _lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
         App::new(
             Settings::default(),
             Handle::sink(),
-            look,
+            appearance::settings::bootstrap().unwrap(),
+            ui,
             Selection::default(),
         )
     }
@@ -1103,6 +1183,30 @@ mod tests {
             ui.into_messages().collect::<Vec<_>>().as_slice(),
             [Message::Cancel]
         ));
+    }
+    #[test]
+    fn delayed_handoff_cannot_close_a_touched_window_or_clear_its_dialogue() {
+        let mut app = app();
+        let _ = app.update(Message::Bus(Delivery::Refused { name_taken: true, message: "already registered".into() }));
+        assert!(app.handoff_pending);
+        let _ = app.update(Message::Action(Action::View(View::Installed)));
+        app.dialog = Some(Dialog::Shortcuts);
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(app.touched);
+        assert!(!app.quitting);
+        assert_eq!(app.selection.view, View::Installed);
+        assert!(matches!(app.dialog, Some(Dialog::Shortcuts)));
+    }
+    #[test]
+    fn untouched_initial_collision_closes_only_after_successful_handoff() {
+        let mut app = app();
+        let _ = app.update(Message::Bus(Delivery::Refused { name_taken: true, message: "already registered".into() }));
+        assert!(app.handoff_pending);
+        assert!(!app.quitting);
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Err("target disappeared".into()))));
+        assert!(!app.quitting);
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(app.quitting);
     }
     #[test]
     fn menus_navigate_and_modals_keep_done_reachable_at_minimum_size() {

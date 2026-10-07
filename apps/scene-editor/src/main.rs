@@ -49,19 +49,7 @@ fn main() {
         return;
     }
     let result = parse(std::env::args().skip(1)).and_then(|(settings, selection)| {
-        if scene_editor::bus::probe(&settings.url, &settings.service) {
-            return scene_editor::bus::forward(
-                &settings.url,
-                &settings.service,
-                selection.as_ref(),
-            );
-        }
-        match scene_editor::app::run(settings.clone(), selection.clone().unwrap_or_default()) {
-            Err(_) if scene_editor::bus::probe(&settings.url, &settings.service) => {
-                scene_editor::bus::forward(&settings.url, &settings.service, selection.as_ref())
-            }
-            result => result,
-        }
+        scene_editor::app::run(settings, selection.unwrap_or_default())
     });
     if let Err(error) = result {
         eprintln!("scene-editor: {error}");

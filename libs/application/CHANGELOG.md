@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.10
+
+Paired cache evidence explicitly reports an unconfigured persistent root,
+separately from write faults, saved identities and usable fallback state.
+
 ## 0.1.9
 
 - Pair existing settings Session/Worker through owned UI and worker endpoints.
