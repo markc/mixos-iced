@@ -1887,6 +1887,7 @@ mod tests {
     /// genuine bytes, so the registry parses intrinsic families and weights.
     const INTER: &[u8] = include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
     const NOTO: &[u8] = include_bytes!("../assets/test-fonts/NotoSans.ttf");
+    const MONO: &[u8] = include_bytes!("../assets/test-fonts/JetBrainsMono.ttf");
 
     fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> serde_json::Value {
         let path = dir.join(relative);
@@ -1930,14 +1931,15 @@ mod tests {
         let mut entries = vec![
             write_file(&dir, "fonts/Sans.ttf", INTER),
             write_file(&dir, "fonts/Noto.ttf", NOTO),
+            write_file(&dir, "fonts/Mono.ttf", MONO),
         ];
         let mut manifest = serde_json::json!({
             "fonts": {
                 "sans": "fonts/Sans.ttf", "display": "fonts/Sans.ttf",
-                "mono": "fonts/Sans.ttf", "extra": "fonts/Noto.ttf"
+                "mono": "fonts/Mono.ttf", "extra": "fonts/Noto.ttf"
             },
             "font_families": {
-                "sans": "Inter", "display": "Inter", "mono": "Inter", "extra": "Noto Sans"
+                "sans": "Inter", "display": "Inter", "mono": "JetBrains Mono", "extra": "Noto Sans"
             },
             "web_css": "/* fixture */\n"
         });
@@ -2635,7 +2637,7 @@ mod tests {
             .iter()
             .find(|text| text.record == "mono")
             .unwrap();
-        assert_eq!(mono.family, "Inter");
+        assert_eq!(mono.family, "JetBrains Mono");
         assert!(
             mono.reason.contains("packaged role compatibility"),
             "the remap must be reported: {}",
