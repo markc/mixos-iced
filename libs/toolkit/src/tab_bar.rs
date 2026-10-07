@@ -558,6 +558,7 @@ where
 {
     Text::<Theme, Renderer>::new(icon.to_string())
         .size(text.size)
+        .height(text.minimum_height())
         .font(text.font)
         .line_height(text.line_height_or_default())
         .align_x(alignment::Horizontal::Center)
@@ -573,6 +574,7 @@ where
 {
     Text::<Theme, Renderer>::new(label)
         .size(text.size)
+        .height(text.minimum_height())
         .font(text.font)
         .line_height(text.line_height_or_default())
         .align_x(alignment::Horizontal::Center)

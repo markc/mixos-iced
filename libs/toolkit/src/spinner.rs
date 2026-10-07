@@ -383,7 +383,7 @@ mod tests {
         let (mut spinner, mut tree) = make_spinner::<()>();
         let mut shell = make_shell::<()>();
         // An independent earlier deadline exists.
-        let deadline = now + Duration::from_millis(250);
+        let deadline = now + Duration::from_millis(5);
         shell.request_redraw_at(RedrawRequest::At(deadline));
         // Advance once, then disable.
         frame(&mut spinner, &mut tree, now, &mut shell);

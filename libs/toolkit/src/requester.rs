@@ -1133,8 +1133,7 @@ mod tests {
         let listing = listing.next().expect("container node");
         let mut listing = listing.children();
         let listing = listing.next().expect("scrollable node");
-        let mut listing = listing.children();
-        let rows: Vec<_> = listing.next().expect("row column").children().collect();
+        let rows: Vec<_> = listing.children().collect();
         let row = rows.last().expect("scene.mix row");
         let row_height = row.bounds().height;
         assert_eq!(
@@ -1247,8 +1246,7 @@ mod tests {
         let listing = listing.next().expect("container node");
         let mut listing = listing.children();
         let listing = listing.next().expect("scrollable node");
-        let mut listing = listing.children();
-        let rows: Vec<_> = listing.next().expect("row column").children().collect();
+        let rows: Vec<_> = listing.children().collect();
         rows.last().expect("entry row").bounds().height
     }
 

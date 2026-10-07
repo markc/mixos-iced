@@ -1472,7 +1472,7 @@ mod widget_tests {
         tree.children[0]
             .state
             .downcast_mut::<raw::State<LayoutRenderer>>()
-            .select_range(position(1), position(0));
+            .select_range(position("界".len()), position(0));
         let (_, ime_a) = send(
             &mut field,
             &mut tree,
