@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.14
+
+- Share fixture frame state, exact-stamp waits, native metadata encoding and
+  one actual window target. Expose frame observation with the acceptance
+  feature independently of settings. Queries never redraw or refresh settings.
+- Register the eight exact fixture verbs. Validate run, process instance and
+  optional receiving generation for every read and mutation. Unknown prefix
+  matches remain the caller's responsibility. Existing fixture callers must
+  include their run and instance in describe and layout requests.
+- Add result-bearing tracked replies with a bounded final send. The original
+  unit-returning wrapper remains for compatibility; actors should track the
+  result and retain admission through reply completion and task reaping.
+
 ## 0.1.13
 
 - Add a shared, bounded frame observation handle with a stable immutable view
