@@ -16,8 +16,44 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use serde::Serialize;
 
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
+
+/// Identity of accepted or installed data, without copying the full projection.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SnapshotIdentity {
+    pub incarnation: String,
+    pub revision: Revision,
+    pub design_revision: Revision,
+    pub source_digest: String,
+}
+impl From<&Snapshot> for SnapshotIdentity {
+    fn from(snapshot: &Snapshot) -> Self {
+        Self {
+            incarnation: snapshot.incarnation.clone(),
+            revision: snapshot.revision,
+            design_revision: snapshot.design_revision,
+            source_digest: snapshot.source_digest.clone(),
+        }
+    }
+}
+
+/// Read on the host event loop. `applied` means the host acknowledged activation;
+/// it does not claim a frame was presented or a broker participant registered.
+/// Fallback identities are never authority fences; consult `kind` and `confirmed`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Evidence {
+    pub binding: Binding,
+    pub context: String,
+    pub generation: Option<u64>,
+    pub confirmed: bool,
+    pub kind: Option<PresentationKind>,
+    pub current: Option<SnapshotIdentity>,
+    pub applied: Option<SnapshotIdentity>,
+    pub fault: Option<Diagnostic>,
+    pub fallback_fault: Option<Diagnostic>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkKind {
@@ -173,6 +209,21 @@ impl Consumer {
     }
     pub fn applied(&self) -> Option<&Snapshot> {
         self.applied.as_deref()
+    }
+    /// Shared readback for native hosts; freshness comes from this consumer,
+    /// never from a copied authority response or a host-specific revision cache.
+    pub fn evidence(&self) -> Evidence {
+        Evidence {
+            binding: self.binding.clone(),
+            context: self.context.clone(),
+            generation: self.generation,
+            confirmed: self.confirmed,
+            kind: self.presentation_kind(),
+            current: self.current().map(SnapshotIdentity::from),
+            applied: self.applied().map(SnapshotIdentity::from),
+            fault: self.fault.clone(),
+            fallback_fault: self.fallback_fault.clone(),
+        }
     }
     /// Current requires fresh authority evidence matching the installed data.
     /// Cached/retained/embedded values never become mutation/readback fences.

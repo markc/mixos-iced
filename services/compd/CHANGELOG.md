@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9
+
+- Expose shell settings activation evidence through existing `shell.props.get`
+  paths, preserving caller provenance and connection fences.
+- Expose owner-decided slot sizes independently of client ACKs in `compd.truth`.
+- Add a native rendered desktop gate covering settings-driven panel geometry,
+  real xdg client sizes, captured pixels and stationary pointer routing.
+
 ## 0.1.8
 
 - Share the renderer-free maximise/work-area executor with protocol fixtures;

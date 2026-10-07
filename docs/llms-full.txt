@@ -1374,7 +1374,7 @@ Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.
 
-The settings library API is now 0.3.1; authority verbs and snapshot schema remain
+The settings library API is now 0.3.2; authority verbs and snapshot schema remain
 0.1.0 and 1. The shared consumer performs subscribe-before-get over the host's
 existing supervised Bus connection through its optional native executor. It
 owns no transport/task/incoming receiver. Hosts feed connection generations,
@@ -1401,6 +1401,19 @@ the stage ticket immediately before synchronous activation and acknowledgement,
 without an intervening await. Old connection, consumer and stage completions
 cannot claim application. Hosts must fence the actual swap as well as its report.
 Identical render inputs need no swap; application never proves presentation.
+`Consumer::evidence()` reports binding, context, connection generation,
+confirmation, presentation kind, accepted (`current`) and UI-acknowledged
+(`applied`) identities, plus normal and fallback faults. Each identity carries
+incarnation, canonical string revision, design revision and source digest.
+Absent identities are null. Losing confirmation demotes installed current data
+to LastGood; an installed fallback is never an authority fence. The shell
+exposes this same evidence at `shell.props.get` path `settings`, including root
+and dotted reads such as `settings.applied.revision`, behind its existing caller
+and connection checks. Evidence does not assert a broker participant record or
+frame presentation. `compd.truth.slots.<id>.decided` independently reads the
+geometry owner's decided size, or null when absent, without falling back to
+committed client geometry. The native desktop geometry gate compares these
+readbacks with real client configures and captured pixels.
 DTO field additions require explicit classification in the shared comparison;
 source/provenance exclusions are deliberate rather than wildcard omissions.
 Shared fallback preparation tries validated retained bootstrap data, then local

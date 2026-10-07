@@ -1,5 +1,12 @@
 # settings contract changes
 
+## 0.3.2
+
+Expose shared consumer evidence with separate accepted and applied identities,
+connection generation, confirmation, presentation kind and faults. Readback
+never claims frame presentation or broker participant registration. Authority
+verbs and snapshot schema remain 0.1.0 and 1.
+
 ## 0.3.1
 
 Split authenticated native delivery decoding from UI consumer handling, retaining

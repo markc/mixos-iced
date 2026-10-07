@@ -19,6 +19,8 @@
 //!   "configured": {"<id>": [w, h]},   // the size the client last acked (xdg), else
 //!                             // its geometry: a maximise is told the output size
 //!                             // even when the client keeps drawing its own
+//!   "slots": {"<id>": {"decided": [w, h] | null}}, // owner-decided size,
+//!                             // independent of delayed client ACKs/buffers
 //!   "focus": {"keyboard": 1 | null, "window": {"id", "generation"} | null},
 //!   "corners": {             // CompState's corner state
 //!     "enabled", "deadzone_px", "dwell_ms", "velocity_max_px_s",
@@ -119,6 +121,19 @@ pub fn truth(lp: &Loop) -> Value {
         })
         .collect();
     let mut commits = BTreeMap::new();
+    let slots: BTreeMap<String, Value> = lp
+        .inner
+        .all_world_spaces()
+        .iter()
+        .flat_map(|space| space.state.elements())
+        .filter_map(|window| {
+            let id = SurfaceHandle::of_window(window)
+                .and_then(|handle| registry.id_for_handle(&handle))?;
+            let decided = world::camera::transform::translate::slot::decided_size(window)
+                .map(|size| [size.w, size.h]);
+            Some((id.0.to_string(), json!({"decided": decided})))
+        })
+        .collect();
     let configured: BTreeMap<String, [i32; 2]> = lp
         .inner
         .all_world_spaces()
@@ -238,6 +253,7 @@ pub fn truth(lp: &Loop) -> Value {
         },
         "commits": commits,
         "configured": configured,
+        "slots": slots,
         "focus": {
             "keyboard": comp.focused().map(|id| id.0),
             "window": focus_window,

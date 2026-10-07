@@ -20,6 +20,7 @@
 //! (`PROBE remapped`).
 //! `--translucent` uses premultiplied half-alpha ARGB with no opaque region;
 //! the default XRGB buffer is opaque. `--ssd` requests server decorations.
+//! `--colour RRGGBB` draws a fixed colour, premultiplied when translucent.
 //! `--seats` lists and labels every seat's keyboard/pointer events.
 //! `--idle-timeout-ms N` also enables this mode and subscribes to one
 //! ext-idle-notify notification per seat. Seat names are whatever the
@@ -194,6 +195,7 @@ struct Options {
     hide_on_close: bool,
     remap_once: Option<Duration>,
     translucent: bool,
+    colour: Option<[u8; 3]>,
     ssd: bool,
 }
 
@@ -213,6 +215,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         hide_on_close: false,
         remap_once: None,
         translucent: false,
+        colour: None,
         ssd: false,
     };
     while let Some(argument) = arguments.next() {
@@ -249,6 +252,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
             }
             "--hide-on-close" => options.hide_on_close = true,
             "--translucent" => options.translucent = true,
+            "--colour" => options.colour = Some(parse_colour(&value()?)?),
             "--ssd" => options.ssd = true,
             "--remap-once-ms" => {
                 options.remap_once = Some(Duration::from_millis(
@@ -264,6 +268,39 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         return Err("size must be positive".into());
     }
     Ok(options)
+}
+
+fn parse_colour(value: &str) -> Result<[u8; 3], String> {
+    if value.len() != 6 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("--colour expects RRGGBB, got {value:?}"));
+    }
+    let hex = u32::from_str_radix(value, 16).map_err(|error| error.to_string())?;
+    Ok([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8])
+}
+
+impl Options {
+    /// SHM's existing little-endian XRGB/ARGB byte order is BGRA.
+    fn pixel(&self, frame: u32) -> [u8; 4] {
+        if let Some([red, green, blue]) = self.colour {
+            if self.translucent {
+                [
+                    (u32::from(blue) * 128 / 255) as u8,
+                    (u32::from(green) * 128 / 255) as u8,
+                    (u32::from(red) * 128 / 255) as u8,
+                    0x80,
+                ]
+            } else {
+                [blue, green, red, 0xff]
+            }
+        } else {
+            let shade = (frame % 256) as u8;
+            if self.translucent {
+                [shade / 2, 0x40, (255 - shade) / 2, 0x80]
+            } else {
+                [shade, 0x80, 255 - shade, 0xff]
+            }
+        }
+    }
 }
 
 /// One shared-memory buffer of a given size.
@@ -475,12 +512,7 @@ fn run() -> Result<(), String> {
             && (dirty || (probe.frame_done && !awaiting_configure))
         {
             frame = frame.wrapping_add(1);
-            let shade = (frame % 256) as u8;
-            let pixel = if options.translucent {
-                [shade / 2, 0x40, (255 - shade) / 2, 0x80]
-            } else {
-                [shade, 0x80, 255 - shade, 0xff]
-            };
+            let pixel = options.pixel(frame);
             let pixels = pixel.repeat((canvas.width * canvas.height) as usize);
             canvas
                 .backing
@@ -970,6 +1002,25 @@ mod tests {
         assert_eq!(options.idle_timeout_ms, None);
         assert_eq!(options.duration, Duration::from_secs(30));
         assert_eq!(options.app_id, "dev.mixos.InputProbe");
+    }
+
+    #[test]
+    fn fixed_colour_validates_hex_and_preserves_animation_and_bgra() {
+        let parse = |args: &[&str]| parse_options(args.iter().map(|s| (*s).to_string()));
+        let mut options = parse(&[]).unwrap();
+        assert_eq!(options.pixel(0), [0, 128, 255, 255]);
+        options.translucent = true;
+        assert_eq!(options.pixel(0), [0, 64, 127, 128]);
+        assert_eq!(options.pixel(255), [127, 64, 0, 128]);
+        options = parse(&["--colour", "FF8000"]).unwrap();
+        assert_eq!(options.pixel(19), [0, 128, 255, 255]);
+        options.translucent = true;
+        assert_eq!(options.pixel(27), [0, 64, 128, 128]);
+        assert_eq!(parse(&["--colour", "12aBf0"]).unwrap().colour, Some([18, 171, 240]));
+        for value in ["", "fff", "fffffff", "12 456", "gggggg", "éabcd"] {
+            assert!(parse(&["--colour", value]).is_err(), "{value:?}");
+        }
+        assert!(parse(&["--colour"]).is_err());
     }
 
     #[test]

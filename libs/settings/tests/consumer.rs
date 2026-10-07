@@ -44,6 +44,30 @@ fn activate(state: &mut Consumer, snapshot: Snapshot) {
     assert!(state.acknowledge(&state.pending().unwrap().clone()));
 }
 #[test]
+fn evidence_distinguishes_acceptance_activation_and_lost_confirmation() {
+    let mut state = consumer();
+    assert!(state.evidence().applied.is_none());
+    let read = read_work(&mut state, 3);
+    state.complete(&read, Ok(Some(snapshot(9_007_199_254_740_993, "a"))));
+    let accepted = state.evidence();
+    assert!(accepted.confirmed);
+    assert_eq!(accepted.generation, Some(3));
+    assert!(accepted.applied.is_none());
+    assert!(accepted.kind.is_none());
+    let update = state.pending().unwrap().clone();
+    assert!(state.acknowledge(&update));
+    let applied = state.evidence();
+    assert_eq!(applied.current, applied.applied);
+    assert_eq!(applied.kind, Some(settings::fallback::PresentationKind::Current));
+    let wire = serde_json::to_value(&applied).unwrap();
+    assert_eq!(wire["applied"]["revision"], "9007199254740993");
+    state.disconnected();
+    let offline = state.evidence();
+    assert!(!offline.confirmed);
+    assert_eq!(offline.applied, applied.applied);
+    assert_eq!(offline.kind, Some(settings::fallback::PresentationKind::LastGood));
+}
+#[test]
 fn read_event_race_keeps_newest_and_fences_old_renderer_completion() {
     let mut state = consumer();
     activate(&mut state, snapshot(1, "a"));

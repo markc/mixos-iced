@@ -120,6 +120,19 @@ impl Host {
         live_generation: Option<u64>,
         layout: &mut Layout<'_>,
     ) -> Answer {
+        self.answer_with_settings(request, output, live_generation, None, layout)
+    }
+
+    /// The live shell contributes the shared consumer's event-loop readback.
+    /// Keep provenance, connection fencing and dotted property lookup common.
+    fn answer_with_settings(
+        &mut self,
+        request: &Request,
+        output: &str,
+        live_generation: Option<u64>,
+        settings: Option<&settings::consumer::Evidence>,
+        layout: &mut Layout<'_>,
+    ) -> Answer {
         if let Err(error) = verify_caller_provenance(request) {
             let body = json!({"error_code":"SCENE_PROVENANCE", "message":format!("scene caller provenance: {error}")});
             return Answer {
@@ -203,9 +216,12 @@ impl Host {
                 }
             }
             SceneVerb::PropsGet => {
-                let snapshot = self
+                let mut snapshot = self
                     .panels
                     .snapshot(output, dialog_notice(&self.store, self.dialog_fit.as_ref()));
+                if let Some(settings) = settings {
+                    snapshot["settings"] = json!(settings);
+                }
                 let path = argument(request, &args, "path").filter(|path| !path.is_empty());
                 let found = match path {
                     None => Some(snapshot),
@@ -848,7 +864,10 @@ impl SceneHost {
                     let mut layout = |store: &SceneStore, scene: &str, node: Option<&str>| {
                         crate::render::layout(store, surfaces, placed, &mut *lp, scene, node)
                     };
-                    let answer = self.host.answer(&request, output, generation, &mut layout);
+                    let evidence = self.settings.host().consumer().evidence();
+                    let answer = self.host.answer_with_settings(
+                        &request, output, generation, Some(&evidence), &mut layout,
+                    );
                     // A load or unload changes the pages the edges carry.
                     self.host.panels.sync(&self.host.store);
                     // A pre-empted owner hears before the reply's own caller.
@@ -1236,6 +1255,31 @@ mod tests {
     }
 
     const LOCAL: &[(&str, &str)] = &[("broker_origin", "local")];
+
+    #[test]
+    fn settings_props_share_root_dotted_reads_and_request_fences() {
+        let mut host = Host::default();
+        let evidence = settings::consumer::Consumer::for_shell(settings::Binding {
+            instance: "fixture".into(), profile: "default".into(),
+        }).unwrap().evidence();
+        for (path, expected) in [
+            (None, json!(evidence)),
+            (Some("settings"), json!(evidence)),
+            (Some("settings.binding.instance"), json!("fixture")),
+        ] {
+            let request = request(SceneVerb::PropsGet, "agent", LOCAL, json!({"path": path}));
+            let answer = host.answer_with_settings(&request, "DP-1", Some(1), Some(&evidence), &mut no_layout);
+            assert_eq!(answer.rc, 0);
+            let value: Value = serde_json::from_str(&answer.body).unwrap();
+            assert_eq!(if path.is_none() { &value["settings"] } else { &value }, &expected);
+        }
+        let receipt = host.receipt;
+        let bad = request(SceneVerb::PropsGet, "agent", &[], json!({"path":"settings"}));
+        assert_eq!(host.answer_with_settings(&bad, "DP-1", Some(1), Some(&evidence), &mut no_layout).rc, 10);
+        let stale = request(SceneVerb::PropsGet, "agent", LOCAL, json!({"path":"settings"}));
+        assert_eq!(host.answer_with_settings(&stale, "DP-1", Some(2), Some(&evidence), &mut no_layout).rc, 10);
+        assert_eq!(host.receipt, receipt);
+    }
 
     #[test]
     fn arguments_use_caller_headers_but_never_transport_headers() {

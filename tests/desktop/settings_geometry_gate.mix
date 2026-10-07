@@ -1,0 +1,231 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Native settings -> Quoin reservation -> real xdg configure -> captured pixels
+-- and stationary human pointer, wholly within an owned nested desktop.
+-- Usage: mix tests/desktop/settings_geometry_gate.mix REPO BUILD_BIN_DIR
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo = args()[0]
+$bin = args()[1]
+$n = require("nested_host_lib.mix")
+$mix = env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
+for each $name in ["compd","settingsd","noded","testkit-input-probe","testkit-screenshot"]
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing " .. $name) end
+end
+$R = {run:nil,bus:nil,session:nil,children:[],ok:false}
+fn require_ok($reply, $what)
+  if $reply.rc != 0 then raise("GATE",$what .. ": " .. json_encode($reply)) end
+  return $reply.result
+end
+fn comp($verb,$body)
+  return require_ok($n.call($R.session.service,$verb,$body),$verb)
+end
+fn shell($verb,$body)
+  return require_ok($n.call($shell,$verb,$body),$verb)
+end
+fn apply($changes,$operation)
+  $current = require_ok($n.call("settingsd","settings.get",{binding:$binding}),"settings.get").snapshot
+  $result = require_ok($n.call("settingsd","settings.apply",{binding:$binding,
+    expected_incarnation:$current.incarnation,expected_revision:$current.revision,
+    operation_id:$operation,changes:$changes,reset:[]}),"settings.apply")
+  $accepted = require_ok($n.call("settingsd","settings.get",{binding:$binding}),"settings.get").snapshot
+  if $accepted.incarnation != $current.incarnation or $accepted.revision == $current.revision then
+    raise("REVISION","Batch did not advance the bound authority")
+  end
+  print("accepted " .. $accepted.revision .. " " .. $operation)
+  return $accepted
+end
+fn await_panel($mode,$thickness,$reserved,$revision)
+  $last = nil
+  for $attempt = 1 to 100
+    $last = shell("shell.panel.state",{edge:"bottom"})
+    $evidence = shell("shell.props.get",{path:"settings"})
+    if ($last.mode == $mode and $last.settings != nil and
+      $last.settings.requested_px == $thickness and $last.settings.fitted_px == $thickness and
+      $last.settings.presented_px == $thickness and $last.settings.reserved_px == $reserved and
+      $evidence.applied != nil and $evidence.applied.revision == $revision and
+      $evidence.applied.incarnation == $incarnation and $evidence.kind == "current") then
+      return $last
+    end
+    sleep(0.1)
+  end
+  raise("PANEL","Panel/settings activation did not settle: " .. json_encode($last))
+end
+fn await_layout($thickness)
+  $last = nil
+  for $attempt = 1 to 60
+    $last = shell("shell.scene.layout",{scene:"settings-geometry"})
+    if ($last.visible and abs($last.surface.h - $thickness) < 0.1 and
+      abs($last.surface.y - ($height - $thickness)) < 0.1) then return $last end
+    sleep(0.1)
+  end
+  raise("LAYOUT","Scene placement did not settle: " .. json_encode($last))
+end
+fn wait_size($w,$h)
+  comp("comp.window.wait",{match:$window,until:"size",width:$w,height:$h,timeout_ms:5000})
+  if not $n.await_log($probe_log,"PROBE configure " .. to_string($w) .. " " .. to_string($h),3) then
+    raise("CONFIGURE","No actual client configure for " .. to_string($w) .. "x" .. to_string($h))
+  end
+  $truth = comp("compd.truth",{})
+  $slot = $truth.slots[to_string($window.id)]
+  if not deep_eq($slot.decided,[$w,$h]) then raise("SLOT",json_encode($slot)) end
+  return $truth
+end
+fn ppm($path)
+  $bytes = read_file_bytes($path)
+  $match = re_find(bytes_to_string(slice($bytes,0,40)),"^P6\\s+(\\d+)\\s+(\\d+)\\s+255\\s")
+  if len($match) != 1 then raise("CAPTURE","Not a P6 screenshot") end
+  $w = to_number($match[0].groups[0])
+  $h = to_number($match[0].groups[1])
+  if len($bytes) != $match[0].end + $w*$h*3 then raise("CAPTURE","Truncated P6") end
+  return {bytes:$bytes,w:$w,h:$h,off:$match[0].end}
+end
+fn client_pixel($ppm,$x,$y)
+  $x = floor($x)
+  $y = floor($y)
+  if $x < 0 or $y < 0 or $x >= $ppm.w or $y >= $ppm.h then raise("CAPTURE","Pixel outside screenshot") end
+  $at = $ppm.off + ($y*$ppm.w + $x)*3
+  return $ppm.bytes[$at] >= 247 and $ppm.bytes[$at+1] <= 8 and $ppm.bytes[$at+2] >= 247
+end
+fn capture($label,$layout,$client_y,$vacated_y)
+  $before = shell("shell.props.get",{path:"settings"})
+  $path = $R.run.path .. "/" .. $label .. ".ppm"
+  print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})}))
+  $image = ppm($path)
+  if $image.w != $width or $image.h != $height then raise("CAPTURE","Unexpected capture scale") end
+  $button = $layout.nodes.go
+  if not client_pixel($image,$width/2,100) or not client_pixel($image,$width/2,$client_y) then
+    raise("CAPTURE","Client missing above the work-area boundary in " .. $label)
+  end
+  if client_pixel($image,$layout.surface.x+$button.x+8,$layout.surface.y+$button.y+8) then
+    raise("CAPTURE","Expected rendered scene button in " .. $label)
+  end
+  $page_at = $image.off + (floor($layout.surface.y+10)*$image.w + $image.w-20)*3
+  for $channel = 0 to 2
+    if abs($image.bytes[$page_at+$channel]-[18,52,86][$channel]) > 8 then
+      raise("CAPTURE","Owned scene background absent in " .. $label)
+    end
+  end
+  if $vacated_y != nil and not client_pixel($image,$width/2,$vacated_y) then
+    raise("DAMAGE","Vacated panel strip retained stale pixels")
+  end
+  $after = shell("shell.props.get",{path:"settings"})
+  if not deep_eq($before.applied,$after.applied) then raise("CAPTURE","Settings changed during capture") end
+  print("captured " .. $label .. " at applied revision " .. $after.applied.revision)
+end
+fn tail_after($path,$offset)
+  return slice(read_file($path),$offset)
+end
+fn await_new($path,$offset,$needle)
+  for $attempt = 1 to 50
+    if contains(tail_after($path,$offset),$needle) then return end
+    sleep(0.1)
+  end
+  raise("INPUT","Missing fresh " .. $needle .. " in " .. $path)
+end
+try
+  $R.run = $n.new_run("/tmp/settings-geometry")
+  $root = $R.run.path
+  $R.bus = $n.private_bus({dir:$root,name:"settings-geometry",noded:$bin .. "/noded"})
+  $binding = {instance:"fixture",profile:"default"}
+  $store = $root .. "/profile"
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$store],{timeout:30}))
+  $authority = spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$store],
+    {stdout:{file:$root .. "/settingsd.log"},stderr:"stdout",detach:true})
+  $R.children = concat($R.children,[$authority])
+  $ready = false
+  for $attempt = 1 to 60
+    $reply = $n.call("settingsd","settings.get",{binding:$binding})
+    if $reply.rc == 0 then $ready=true; break end
+    sleep(0.1)
+  end
+  if not $ready then raise("SETUP","Authority never registered on owned broker") end
+  $initial = apply({"shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:52}},"overlay-52")
+  $incarnation = $initial.incarnation
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"settings-gate-fallback",decorations_ssd:false}))
+  $events = $root .. "/events.jsonl"
+  write_file($events,"")
+  $citizen_file = $root .. "/citizen.mix"
+  write_file($citizen_file,"-- owned test citizen\non go\n append_file(" .. json_encode($events) .. ", json_encode($event.args) .. \"\\n\")\n reply(\"ok\")\nend\n")
+  $citizen = spawn([$mix,"--serve",$citizen_file,"--name","settings-gate-citizen"],
+    {stdout:{file:$root .. "/citizen.log"},stderr:"stdout",detach:true})
+  $R.children = concat($R.children,[$citizen])
+  $R.session = $n.start({bin:$bin .. "/compd",tag:"settings",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,
+    env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
+  if not $n.wait_ready($R.session,30) then raise("SETUP","Compositor never became ready") end
+  $shell = nil
+  for $attempt = 1 to 60
+    $found = re_find(read_file($R.session.log),"scene host: registered as `([^`]+)`")
+    if len($found) > 0 then $shell=$found[0].groups[0]; break end
+    sleep(0.1)
+  end
+  if $shell != "shell" and $shell != "settings-gate-fallback" then raise("SETUP","No owned scene service") end
+  require_ok($n.call("settings-gate-citizen","HELP",{}),"citizen readiness")
+  $document = "---\nscene: 1\nname: settings-geometry\ncitizen: settings-gate-citizen\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":40}\n---\n```mix\nroot: {widget: \"column\", padding: 4, width: \"fill\", height: \"fill\", background: \"#123456\", children: [\"go\"]}\ngo: {widget: \"button\", label: \"Go\", tone: \"primary\", width: 160, on_click: \"go\"}\n```\n"
+  shell("shell.scene.load",{source:$document})
+  $panel = await_panel("pinned",52,0,$initial.revision)
+  $outputs = comp("comp.props.get",{path:"outputs"})
+  if len(keys($outputs)) != 1 then raise("SETUP","Expected exactly one output") end
+  $output = $outputs[keys($outputs)[0]]
+  $width = $output.width
+  $height = $output.height
+  $layout = await_layout(52)
+  $probe_log = $root .. "/probe.log"
+  $probe = spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.SettingsGeometry","--size","320x240","--seconds","180","--colour","ff00ff"],
+    {env:$n.client_env($R.session,{}),stdout:{file:$probe_log},stderr:"stdout",detach:true})
+  $R.children = concat($R.children,[$probe])
+  $mapped = comp("comp.window.wait",{match:{app_id:"dev.mixos.SettingsGeometry"},until:"presented",timeout_ms:15000})
+  $window = {id:$mapped.window.id,generation:$mapped.window.generation}
+  comp("comp.window.maximize",$window)
+  wait_size($width,$height)
+  capture("overlay-52",$layout,$height-55,nil)
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  $x = $layout.surface.x+$layout.nodes.go.x+$layout.nodes.go.w/2
+  $y = $layout.surface.y+$layout.nodes.go.y+$layout.nodes.go.h/2-(96-52)
+  $offset = len(read_file($probe_log))
+  $move = comp("comp.input.pointer.move",{seat:"human",x:$x,y:$y})
+  if $move.target == nil or $move.target.id != $window.id then raise("INPUT","Future panel point is not currently on client") end
+  await_new($probe_log,$offset,"PROBE motion " .. to_string($x) .. " " .. to_string($y))
+  $offset = len(read_file($probe_log))
+  $changed = apply({"appearance.mode":"dark","shell.panels.bottom":{edge:"bottom",mode:"dock",thickness:96}},"dark-dock-96")
+  await_panel("docked",96,96,$changed.revision)
+  $layout = await_layout(96)
+  $truth = wait_size($width,$height-96)
+  $area = $truth.outputs[keys($truth.outputs)[0]].usable
+  if $area.height != $height-96 or $area.y != 0 then raise("WORK_AREA",json_encode($area)) end
+  capture("dark-dock-96",$layout,$height-99,nil)
+  await_new($probe_log,$offset,"PROBE leave")
+  $event_offset = len(read_file($events))
+  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"click"})
+  await_new($events,$event_offset,"\n")
+  $offset = len(read_file($probe_log))
+  $changed = apply({"shell.panels.bottom.thickness":64},"dock-64")
+  await_panel("docked",64,64,$changed.revision)
+  $layout = await_layout(64)
+  $truth = wait_size($width,$height-64)
+  if $truth.outputs[keys($truth.outputs)[0]].usable.height != $height-64 then raise("WORK_AREA","Regrowth did not update usable area") end
+  capture("dock-64",$layout,$height-67,$height-80)
+  await_new($probe_log,$offset,"PROBE enter")
+  $after = comp("comp.window.wait",{match:$window,until:"presented",timeout_ms:5000}).window
+  if $after.id != $window.id or $after.generation != $window.generation then raise("IDENTITY","Window replaced during activation") end
+  if shell("shell.panel.state",{edge:"bottom"}).page != $panel.page then raise("IDENTITY","Scene page replaced during activation") end
+  print("PASS native settings geometry: matching applied revisions, occupied panel reservation, real configure/slot, captured pixels and stationary pointer leave/click/re-entry")
+  $R.ok = true
+catch $message
+  print("FAIL " .. $message)
+  if $R.run != nil then
+    for each $log in ["compositor.log","settingsd.log","citizen.log","probe.log","weston.log"]
+      if is_file($R.run.path .. "/" .. $log) then print(run_argv(["tail","-n","20",$R.run.path .. "/" .. $log],{max_output:12000}).stdout) end
+    end
+  end
+finally
+  for each $child in $R.children
+    if exists("/proc/" .. to_string($child)) then kill($child,15) end
+  end
+  if $R.session != nil then $n.stop($R.session) end
+  if $R.bus != nil then $n.stop_bus($R.bus) end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
