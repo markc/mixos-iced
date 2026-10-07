@@ -320,9 +320,8 @@ async fn worker(
                 if changed.is_err() { break; }
                 let event = match *connection.borrow_and_update() {
                     ConnState::Connected => Some(Delivery::Connected),
-                    ConnState::Disconnected => { pending.clear(); Some(Delivery::Disconnected) },
+                    ConnState::Disconnected | ConnState::Connecting => { pending.clear(); Some(Delivery::Disconnected) },
                     ConnState::Fatal | ConnState::ShuttingDown => break,
-                    ConnState::Connecting => None,
                 };
                 if let Some(event) = event { let _ = send.send(event).await; }
             }

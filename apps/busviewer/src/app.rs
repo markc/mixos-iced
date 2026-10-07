@@ -49,7 +49,7 @@ pub enum Message {
     Bus(Delivery),
     Discovered(u64, Snapshot),
     Completed(u64, Result<Reply, CallError>),
-    Shown(Option<u64>, Result<Value, String>),
+    Shown(u64, Option<u64>, Result<Value, String>),
     Window(window::Id, window::Event),
     Key(iced::keyboard::Key, iced::keyboard::Modifiers),
     Cancel,
@@ -87,6 +87,7 @@ pub struct App {
     next_ticket: u64,
     discovery: Option<(u64, Option<u64>)>,
     call: Option<Call>,
+    activations: BTreeSet<u64>,
     refetch: bool,
     connected: bool,
     dialog: Option<Action>,
@@ -156,6 +157,7 @@ impl App {
             next_ticket: 0,
             discovery: None,
             call: None,
+            activations: BTreeSet::new(),
             refetch: false,
             connected: true,
             dialog: None,
@@ -164,7 +166,7 @@ impl App {
         }
     }
     fn busy(&self) -> bool {
-        self.discovery.is_some() || self.call.is_some()
+        self.discovery.is_some() || self.call.is_some() || !self.activations.is_empty()
     }
     fn next(&mut self) -> u64 {
         self.next_ticket += 1;
@@ -233,6 +235,8 @@ impl App {
             Some(label("busy"))
         } else if self.snapshot.verb(&target).is_none() {
             Some(label("invalid-target"))
+        } else if body.len() > model::BODY_LIMIT {
+            Some(label("body-too-large"))
         } else {
             model::validate_body(&body)
                 .err()
@@ -383,7 +387,14 @@ impl App {
             Action::Format if !self.busy() => {
                 let body = self.body.text();
                 match model::validate_body(&body) {
-                    Ok(()) => self.body = text_editor::Content::with_text(&model::pretty(&body)),
+                    Ok(()) => {
+                        let formatted = model::pretty(&body);
+                        if formatted.len() > model::BODY_LIMIT {
+                            self.status = label("body-too-large");
+                        } else {
+                            self.body = text_editor::Content::with_text(&formatted);
+                        }
+                    }
                     Err(error) => self.status = format!("{}: {error}", label("invalid-json")),
                 };
                 Task::none()
@@ -400,7 +411,9 @@ impl App {
             _ => Task::none(),
         }
     }
-    fn show(&self, id: Option<u64>) -> Task<Message> {
+    fn show(&mut self, id: Option<u64>) -> Task<Message> {
+        let ticket = self.next();
+        self.activations.insert(ticket);
         let bus = self.bus.clone();
         let comp = self.settings.comp.clone();
         Task::perform(
@@ -447,7 +460,7 @@ impl App {
                 }
                 Ok(json!({"shown":true,"target":state}))
             },
-            move |result| Message::Shown(id, result),
+            move |result| Message::Shown(ticket, id, result),
         )
     }
     fn command(&mut self, id: u64, verb: &str, body: &str) -> Task<Message> {
@@ -708,14 +721,17 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Shown(id, result) => {
+            Message::Shown(ticket, id, result) => {
+                if !self.activations.remove(&ticket) {
+                    return Task::none();
+                }
                 if let Some(id) = id {
                     match result {
                         Ok(value) => self.bus.reply(id, 0, value),
                         Err(error) => self.error(id, "ACTIVATION", &error),
                     }
                 }
-                Task::none()
+                self.followup()
             }
             Message::Window(_, window::Event::CloseRequested) => {
                 self.dialog = None;
@@ -1193,5 +1209,54 @@ mod tests {
         assert!(app.bus.has_quit());
         let _ = app.command(82, "busviewer.show", "{}");
         assert_eq!(app.bus.responses().last().unwrap().2["error_code"], "BUSY");
+    }
+    #[test]
+    fn activation_is_fenced_and_shutdown_waits_for_its_reply() {
+        let mut app = app();
+        let _ = app.command(90, "busviewer.show", "{}");
+        let ticket = *app.activations.first().unwrap();
+        assert!(app.busy());
+        let _ = app.command(91, "busviewer.quit", "{}");
+        assert_eq!(app.bus.responses().last().unwrap().2["error_code"], "BUSY");
+        let _ = app.quit();
+        assert!(!app.bus.has_quit());
+        let _ = app.update(Message::Shown(ticket + 1, Some(90), Ok(json!({}))));
+        assert!(app.busy());
+        let _ = app.update(Message::Shown(ticket, Some(90), Err("compd disconnected".into())));
+        assert_eq!(app.bus.responses().last().unwrap().0, 90);
+        assert_eq!(app.bus.responses().last().unwrap().2["error_code"], "ACTIVATION");
+        assert!(app.bus.has_quit());
+        let replies = app.bus.responses().len();
+        let _ = app.update(Message::Shown(ticket, Some(90), Ok(json!({}))));
+        assert_eq!(app.bus.responses().len(), replies);
+    }
+    #[test]
+    fn formatting_never_expands_body_past_the_input_limit() {
+        let mut app = app();
+        let body = format!("[{}]", vec!["0"; 16_000].join(","));
+        assert!(body.len() < model::BODY_LIMIT);
+        assert!(model::pretty(&body).len() > model::BODY_LIMIT);
+        app.body = text_editor::Content::with_text(&body);
+        let _ = app.action(Action::Format);
+        assert_eq!(app.body.text(), body);
+        assert_eq!(app.status, label("body-too-large"));
+        app.body = text_editor::Content::with_text("{\"a\":1}");
+        let _ = app.action(Action::Format);
+        assert_eq!(app.body.text(), "{\n  \"a\": 1\n}");
+        let _ = app.action(Action::Clear);
+        assert!(app.body.text().is_empty());
+    }
+    #[test]
+    fn agent_lost_reply_is_an_uncertain_error_without_retry() {
+        let mut app = app();
+        app.selected = Some(target());
+        let _ = app.command(92, "busviewer.call", "{}");
+        let ticket = app.call.as_ref().unwrap().ticket;
+        let _ = app.update(Message::Completed(ticket, Err("connection lost".into())));
+        let replies = app.bus.responses();
+        assert_eq!((replies[0].0,replies[0].1),(92,10));
+        assert_eq!(replies[0].2["transport_error"], "connection lost");
+        assert_eq!(replies[0].2["outcome_unknown"], true);
+        assert_eq!(replies[0].2["retried"], false);
     }
 }
