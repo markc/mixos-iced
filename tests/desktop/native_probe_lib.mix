@@ -42,9 +42,15 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
         $x=0
         $y=0
         for each $window in $windows
+          if contains(read_file($log),$marker) then break end
           $placed=$n.call($owned.session.service,"comp.window.place",{id:$window.id,generation:$window.generation,
             x:$x,y:$y,width:120,height:96})
-          if $placed.rc != 0 then raise("NATIVE_PROBE","Owned grid placement failed: " .. json_encode($placed)) end
+          if $placed.rc != 0 then
+            -- Native receipts can finish churn and retire the remaining
+            -- windows between enumeration and the next placement call.
+            if contains(read_file($log),$marker) then break end
+            raise("NATIVE_PROBE","Owned grid placement failed: " .. json_encode($placed))
+          end
           $x=$x+150
           if $x >= 900 then $x=0; $y=$y+130 end
         end
@@ -68,10 +74,40 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
     end
     $owned.ok = true
   finally
-    if $owned.probe != nil then $h.stop($owned.probe) end
-    if $owned.session != nil then $n.stop($owned.session) end
-    if $owned.bus != nil then $n.stop_bus($owned.bus) end
+    if $owned.probe != nil then
+      try
+        $h.stop($owned.probe)
+      catch $error
+        $owned.ok=false
+        print("FAIL probe teardown: " .. $error)
+      end
+    end
+    if $owned.session != nil then
+      try
+        $n.stop($owned.session)
+      catch $error
+        $owned.ok=false
+        print("FAIL host signalling: " .. $error)
+      end
+      for each $child in $owned.session.pids
+        try
+          $h.stop($child)
+        catch $error
+          $owned.ok=false
+          print("FAIL host teardown: " .. $error)
+        end
+      end
+    end
+    if $owned.bus != nil then
+      try
+        $h.stop($owned.bus.pid)
+      catch $error
+        $owned.ok=false
+        print("FAIL broker teardown: " .. $error)
+      end
+    end
     $n.finish_run($owned.run,$owned.ok)
   end
+  if not $owned.ok then raise("NATIVE_PROBE","Owned native probe or teardown failed") end
   return $owned.run.path
 end
