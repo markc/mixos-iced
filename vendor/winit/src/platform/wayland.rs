@@ -118,7 +118,9 @@ pub trait WindowExtWayland {
 impl WindowExtWayland for Window {
     fn request_redraw_after_present_failure(&self) {
         match &self.window {
-            crate::platform_impl::Window::Wayland(window) => window.request_redraw_after_present_failure(),
+            crate::platform_impl::Window::Wayland(window) => {
+                window.request_redraw_after_present_failure()
+            },
             #[cfg(x11_platform)]
             _ => self.request_redraw(),
         }

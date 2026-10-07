@@ -1123,23 +1123,25 @@ struct FramePacing {
 
 impl FramePacing {
     fn request(&mut self) -> bool {
-        if self.callback==FrameCallbackState::Requested { return false; }
-        self.callback=FrameCallbackState::Requested;
+        if self.callback == FrameCallbackState::Requested {
+            return false;
+        }
+        self.callback = FrameCallbackState::Requested;
         true
     }
 
     fn grant_retry(&mut self) -> bool {
-        !std::mem::replace(&mut self.retry,true)
+        !std::mem::replace(&mut self.retry, true)
     }
 
     fn prepare_redraw(&mut self) -> bool {
-        if self.callback==FrameCallbackState::Requested {
+        if self.callback == FrameCallbackState::Requested {
             // Keep the original callback; resetting would allocate another
             // request without retiring the old native owner.
             return std::mem::take(&mut self.retry);
         }
-        self.retry=false;
-        self.callback=FrameCallbackState::None;
+        self.retry = false;
+        self.callback = FrameCallbackState::None;
         true
     }
 }
@@ -1150,28 +1152,28 @@ mod frame_pacing_guards {
 
     #[test]
     fn failed_retry_reuses_one_callback_and_permission_is_consumed_once() {
-        let mut pacing=FramePacing::default();
+        let mut pacing = FramePacing::default();
         assert!(pacing.request());
         assert!(!pacing.prepare_redraw());
         assert!(pacing.grant_retry());
         assert!(!pacing.grant_retry());
         assert!(pacing.prepare_redraw());
-        assert_eq!(pacing.callback,FrameCallbackState::Requested);
-        assert!(!pacing.request(),"retry must reuse the original native callback");
-        assert!(!pacing.prepare_redraw(),"success leaves no standing bypass");
-        assert!(pacing.grant_retry(),"another actual failure grants another retry");
+        assert_eq!(pacing.callback, FrameCallbackState::Requested);
+        assert!(!pacing.request(), "retry must reuse the original native callback");
+        assert!(!pacing.prepare_redraw(), "success leaves no standing bypass");
+        assert!(pacing.grant_retry(), "another actual failure grants another retry");
         assert!(pacing.prepare_redraw());
         assert!(!pacing.request());
     }
 
     #[test]
     fn received_callback_restores_normal_pacing_without_a_lingering_bypass() {
-        let mut pacing=FramePacing::default();
+        let mut pacing = FramePacing::default();
         assert!(pacing.request());
         assert!(pacing.grant_retry());
-        pacing.callback=FrameCallbackState::Received;
+        pacing.callback = FrameCallbackState::Received;
         assert!(pacing.prepare_redraw());
-        assert_eq!(pacing.callback,FrameCallbackState::None);
+        assert_eq!(pacing.callback, FrameCallbackState::None);
         assert!(!pacing.retry);
         assert!(pacing.request());
         assert!(!pacing.prepare_redraw());
