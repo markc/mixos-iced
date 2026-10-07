@@ -361,6 +361,27 @@ fn confirmed_read_rollback_is_distinct_from_valid_read_racing_newer_event() {
     assert!(state.fault().is_none());
 }
 #[test]
+fn invalid_fresh_read_cancels_staged_activation_and_preserves_applied_state() {
+    let mut state = consumer();
+    activate(&mut state, snapshot(1, "a"));
+    let read = state.refresh().unwrap();
+    let mut changed = snapshot(2, "a");
+    changed.effective.get_mut("app:ced").unwrap().ui.density = 1.5;
+    state.observe(1, changed);
+    let staged = state.pending().unwrap().clone();
+    let mut invalid = snapshot(2, "a");
+    invalid.schema += 1;
+    state.complete(&read, Ok(Some(invalid)));
+    assert_eq!(state.fault().unwrap().code, "unsupported_schema");
+    assert!(!state.is_confirmed());
+    assert!(state.retry_deadline().is_none());
+    assert!(state.pending().is_none());
+    assert!(!state.is_current(&staged));
+    assert!(!state.acknowledge(&staged));
+    assert_eq!(state.applied().unwrap().revision, Revision(1));
+    assert_eq!(state.current().unwrap().revision, Revision(2));
+}
+#[test]
 fn revert_cancels_unapplied_stage_and_unchanged_valid_update_clears_failure() {
     let mut state = consumer();
     activate(&mut state, snapshot(1, "a"));

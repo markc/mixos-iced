@@ -281,6 +281,10 @@ impl Consumer {
         None
     }
     fn fail(&mut self, fault: Diagnostic) {
+        // Every failed completion/refusal revokes staged activation, including
+        // a decoded but invalid read while a valid newer delivery was staged.
+        self.confirmed = false;
+        self.pending = None;
         let terminal = matches!(
             fault.code.as_str(),
             "wrong_target"
