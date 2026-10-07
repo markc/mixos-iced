@@ -49,12 +49,18 @@ pub(super) fn paint_emoji_reference(
             let fg = order(cell.fg);
             if cell.c.is_ascii() && cell.extra == 0 && cell.width == CellWidth::Narrow {
                 let glyph = ascii.entry(cell.c).or_insert_with(|| {
-                    // The raster's own primary face (keeps a collection's face index).
+                    // The raster's own primary face (keeps a collection's face
+                    // index) at its exact normalised coordinates.
                     let font = raster.unicode.fonts.primary.font();
                     Render::new(&[Source::Outline])
                         .format(Format::Alpha)
                         .render(
-                            &mut context.builder(font).size(raster.px).hint(true).build(),
+                            &mut context
+                                .builder(font)
+                                .size(raster.px)
+                                .hint(true)
+                                .normalized_coords(&raster.unicode.fonts.primary.variations)
+                                .build(),
                             font.charmap().map(cell.c),
                         )
                 });
