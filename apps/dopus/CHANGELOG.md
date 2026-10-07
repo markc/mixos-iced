@@ -1,5 +1,16 @@
 # DOpus Bus contract
 
+## 0.4.6
+
+- Share one native actor after headless or GUI startup, using retained
+  admission, origin-owning replies and bounded task sets. Reconnect retires
+  stale commands before new admission; cloned requests share one answer token.
+- Retain theme mutation credits through native response and outcome recording.
+  Missing Bus origins retire without becoming local mutations. Both validation
+  and apply use the captured connection generation and one absolute deadline.
+- Reserve bounded refusal and forward work independently, report bounded
+  shutdown diagnostics and allow the GUI to observe the worker's completion.
+
 ## 0.4.5
 
 - Adopt the shared desktop settings consumer: the windowed app presents

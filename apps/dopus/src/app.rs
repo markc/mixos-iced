@@ -1035,6 +1035,7 @@ impl Dopus {
             return Task::none();
         };
         let handle = bus.clone();
+        if !handle.is_current(&command.id) { return Task::none(); }
         // Reconcile the consumer with the ACTUAL live connection generation
         // before any command-native info is built: dopus.state/app.describe
         // report what the connection really carries, never a stale sample.
@@ -1123,7 +1124,7 @@ impl Dopus {
     }
 
     /// Window performer for Bus location.focus; keyboard uses the same editor.
-    fn serve_location_focus(&mut self, id: u64, pane: PaneId) -> Task<Msg> {
+    fn serve_location_focus(&mut self, id: bus::Request, pane: PaneId) -> Task<Msg> {
         // Repeated Bus focus must not replace the human's unfinished draft.
         // Switching panes still starts an editor seeded from the new path.
         let task = if self
@@ -1160,7 +1161,7 @@ impl Dopus {
     /// as unsupported — never faked as success, never an app-local override.
     fn theme_request(
         &mut self,
-        id: Option<u64>,
+        id: Option<bus::Request>,
         scheme: Option<&str>,
         mode: Option<&str>,
     ) -> Task<Msg> {
@@ -1168,9 +1169,9 @@ impl Dopus {
             return Task::none();
         };
         let refuse = |message: String| {
-            if let Some(id) = id {
+            if let Some(id) = &id {
                 bus.respond(
-                    id,
+                    id.clone(),
                     10,
                     serde_json::to_string(&verbs::Refusal {
                         error_code: verbs::code::UNAVAILABLE.to_owned(),
@@ -1213,8 +1214,8 @@ impl Dopus {
                 scheme: self.content().theme.scheme.name().to_owned(),
                 mode: self.content().theme.mode.name().to_owned(),
             };
-            if let Some(id) = id {
-                bus.respond(id, 0, serde_json::to_string(&reply).unwrap_or_default());
+            if let Some(id) = &id {
+                bus.respond(id.clone(), 0, serde_json::to_string(&reply).unwrap_or_default());
             }
             return Task::none();
         }
@@ -1238,7 +1239,7 @@ impl Dopus {
             scheme: scheme_name,
             mode: mode_name,
         };
-        bus.theme_apply(request);
+        if let Err(error) = bus.theme_apply(request) { self.status = Some(error); }
         Task::none()
     }
 
@@ -1338,7 +1339,7 @@ impl Dopus {
             // The worker drains accepted replies and the settings cache
             // within its single two-second budget; its done receipt is
             // authoritative (a silent timeout is reported, never hidden).
-            match bus.wait_done(std::time::Duration::from_secs(2)) {
+            match bus.wait_done(std::time::Duration::from_secs(3)) {
                 Ok(faults) => {
                     eprintln!("DOPUS_SHUTDOWN {}", serde_json::json!({ "faults": faults }));
                 }
@@ -1564,7 +1565,7 @@ mod tests {
             (actions::view::TOGGLE_PROPERTIES, Sidebar::Properties),
         ] {
             let command = bus::Command {
-                id: 43,
+                id: 43.into(),
                 verb: "dopus.action".into(),
                 body: format!(r#"{{"id":"{action}","pane":"right"}}"#),
                 caller_key: "mesh:caller@example".into(),
@@ -2013,7 +2014,7 @@ mod tests {
         use dopus_core::config::Sidebar;
         let command = |action: ActionId| {
             Msg::Bus(Delivery::Command(bus::Command {
-                id: 7,
+                id: 7.into(),
                 verb: "dopus.action".into(),
                 body: serde_json::json!({"id": action.as_str()}).to_string(),
                 caller_key: "mesh:caller@example".into(),
@@ -2184,7 +2185,7 @@ mod tests {
     fn bus_location_focus_reaches_the_window_editor_and_reports_availability() {
         let (_dir, mut app, mut _lane) = fixture();
         let command = bus::Command {
-            id: 42,
+            id: 42.into(),
             verb: "dopus.action".into(),
             body: r#"{"id":"location.focus","pane":1}"#.into(),
             caller_key: "mesh:caller@example".into(),
@@ -2195,9 +2196,9 @@ mod tests {
         let [Served::LocationFocus { id, pane }] = served.as_slice() else {
             panic!("windowed location.focus must reach its window performer");
         };
-        assert_eq!(*id, 42);
+        assert_eq!(id.id, 42);
         assert_eq!(*pane, PaneId::Right);
-        let _ = app.serve_location_focus(*id, *pane);
+        let _ = app.serve_location_focus(id.clone(), *pane);
         assert_eq!(
             app.editing,
             Some((PaneId::Right, pane_path_text(&app.core, PaneId::Right)))
@@ -2400,11 +2401,11 @@ mod tests {
         assert!(activate(&mut app, &mut lane, settings::Desktop::default()).is_some());
         let (handle, mut responses) = BusHandle::response_sink();
         app.bus = Some(handle);
-        let _ = app.theme_request(Some(42), Some("crimson"), Some("dark"));
-        let Ok(bus::Effect::ThemeApply(request)) = responses.try_recv() else {
+        let _ = app.theme_request(Some(42.into()), Some("crimson"), Some("dark"));
+        let Ok(bus::Effect::ThemeApply { request, .. }) = responses.try_recv() else {
             panic!("theme.request must forward a fenced apply")
         };
-        assert_eq!(request.reply_id, Some(42));
+        assert_eq!(request.reply_id.as_ref().map(|request|request.id), Some(42));
         assert_eq!(
             request.changes["appearance.scheme"],
             serde_json::json!("crimson")
@@ -2428,7 +2429,7 @@ mod tests {
         let (_dir, mut app, mut _lane) = fixture();
         let (handle, mut responses) = BusHandle::response_sink();
         app.bus = Some(handle);
-        let _ = app.theme_request(Some(7), Some("crimson"), None);
+        let _ = app.theme_request(Some(7.into()), Some("crimson"), None);
         let Ok(bus::Effect::Respond {
             id: 7,
             rc: 10,
@@ -2450,7 +2451,7 @@ mod tests {
         app.bus = Some(handle);
         for verb in ["dopus.state", "app.describe"] {
             let command = bus::Command {
-                id: 9,
+                id: 9.into(),
                 verb: verb.into(),
                 body: "{}".into(),
                 caller_key: "mesh:caller@example".into(),
