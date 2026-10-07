@@ -77,43 +77,43 @@ fn common_preferences_change_only_their_shared_defaults() {
 }
 #[test]
 fn partial_wrong_unit_nonfinite_and_future_projection_fail_visibly() {
-    let cases: Vec<Box<dyn Fn(&mut settings::Effective)>> = vec![
-        Box::new(|e| e.design.schema = 2),
-        Box::new(|e| {
+    let cases: Vec<fn(&mut settings::Effective)> = vec![
+        |e| e.design.schema = 2,
+        |e| {
             e.design.pairs.remove("base");
-        }),
-        Box::new(|e| e.design.pairs.get_mut("base").unwrap().rendered_surface[0] = f64::NAN),
-        Box::new(|e| e.design.metrics.get_mut("radius").unwrap().kind = "ratio".into()),
-        Box::new(|e| {
+        },
+        |e| e.design.pairs.get_mut("base").unwrap().rendered_surface[0] = f64::NAN,
+        |e| e.design.metrics.get_mut("radius").unwrap().kind = "ratio".into(),
+        |e| {
             e.design.typography.remove("ui");
-        }),
-        Box::new(|e| e.design.typography.get_mut("mono").unwrap().generic = "unknown".into()),
-        Box::new(|e| e.design.typography.get_mut("ui").unwrap().font_size = f64::MAX),
-        Box::new(|e| {
+        },
+        |e| e.design.typography.get_mut("mono").unwrap().generic = "unknown".into(),
+        |e| e.design.typography.get_mut("ui").unwrap().font_size = f64::MAX,
+        |e| {
             e.design.scales.get_mut("spacing").unwrap().truncate(9);
-        }),
-        Box::new(|e| e.ui.density = 0.0),
-        Box::new(|e| e.ui.text_scale = f64::INFINITY),
-        Box::new(|e| e.design.metrics.get_mut("type.compact").unwrap().value = 0.0),
-        Box::new(|e| {
+        },
+        |e| e.ui.density = 0.0,
+        |e| e.ui.text_scale = f64::INFINITY,
+        |e| e.design.metrics.get_mut("type.compact").unwrap().value = 0.0,
+        |e| {
             e.ui.text_scale = 3.0;
             e.design.metrics.get_mut("type.compact").unwrap().value = 4096.0;
-        }),
-        Box::new(|e| {
+        },
+        |e| {
             e.design.buttons[0]
                 .typography
                 .insert("label".into(), "missing".into());
-        }),
-        Box::new(|e| {
+        },
+        |e| {
             e.design.buttons[1] = e.design.buttons[0].clone();
-        }),
-        Box::new(|e| e.design.buttons[0].interaction = "unknown".into()),
-        Box::new(|e| {
+        },
+        |e| e.design.buttons[0].interaction = "unknown".into(),
+        |e| {
             e.design.buttons[0].typography.remove("label");
-        }),
-        Box::new(|e| {
+        },
+        |e| {
             e.design.buttons.pop();
-        }),
+        },
     ];
     for mutate in cases {
         let mut e = effective();
