@@ -1,0 +1,154 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- settings_peer_gate.mix — the native peer-routing fixture gate: pair
+-- bootstrap, exact-PID ownership, honest Unverified etc-roster-fallback
+-- posture, qualified bidirectional noded.info over the native mesh,
+-- fixed-port bind-collision ownership, an independent B outage, and a
+-- same-endpoint B restart with a new B PID and stable A PID, then full
+-- owned-child retirement before the verdict. No GUI and no app client:
+-- the later apps runner adds the Cap target on top of this helper.
+-- Usage: mix tests/desktop/settings_peer_gate.mix [--noded PATH] [--mix PATH]
+
+$NODED = ""
+$MIX = env("MIXOS_TEST_MIX", "")
+$argv = args()
+$i = 0
+while $i < len($argv)
+  $a = $argv[$i]
+  $v = nil
+  if $i + 1 < len($argv) then $v = $argv[$i + 1] end
+  if $a == "--noded" and $v != nil then
+    $NODED = $v
+    $i = $i + 2
+  elif $a == "--mix" and $v != nil then
+    $MIX = $v
+    $i = $i + 2
+  else
+    print("usage: settings_peer_gate.mix [--noded PATH] [--mix PATH]")
+    exit(2)
+  end
+end
+$n = require("nested_host_lib.mix")
+$p = require("settings_peer_lib.mix")
+$mix = $MIX != "" ? $MIX : "/opt/mixos/bin/mix"
+if not is_file($mix) then
+  print("  ERROR: no mix runtime (pass --mix PATH, or install it into /opt/mixos/bin)")
+  exit(2)
+end
+
+$R = {run:nil, children:[], ok:false}
+fn check($cond, $msg)
+  if not $cond then raise("GATE", $msg) end
+end
+try
+  $R.run = $n.new_run("/var/tmp/settings-peer")
+  $root = $R.run.path
+  $token = to_string(pid()) .. "-" .. to_string(random(1000, 9999))
+  $pair = $n.private_bus_pair({dir:$root, noded:$NODED, run_token:$token})
+  $a = $pair.a
+  $b = $pair.b
+  $R.children = [$a.pid, $b.pid]
+  print("pair: " .. $a.node .. " " .. $a.url .. " pid " .. to_string($a.pid) .. " ; " ..
+    $b.node .. " " .. $b.url .. " pid " .. to_string($b.pid))
+
+  -- Exact ownership and honest Unverified roster posture, per broker.
+  $info_a = $p.verify_owner($mix, $a)
+  $info_b = $p.verify_owner($mix, $b)
+  $peers_a = $p.verify_peers($mix, $a, $b)
+  $peers_b = $p.verify_peers($mix, $b, $a)
+  $inv_a = $p.verify_unverified($mix, $a)
+  $inv_b = $p.verify_unverified($mix, $b)
+  print("owner: " .. $a.node .. " pid " .. to_string($info_a.noded.pid) .. " started " ..
+    ($info_a.noded.started_at ?? "?") .. " build " .. ($info_a.noded.git_sha ?? "?") .. " ; " ..
+    $b.node .. " pid " .. to_string($info_b.noded.pid) .. " started " ..
+    ($info_b.noded.started_at ?? "?") .. " build " .. ($info_b.noded.git_sha ?? "?"))
+  print("roster: " .. $a.node .. " source " .. $peers_a.source .. " sees [" ..
+    $b.node .. " " .. $b.listen_ip .. " " .. to_string($b.port) .. "]; " .. $b.node ..
+    " source " .. $peers_b.source .. " sees [" .. $a.node .. " " .. $a.listen_ip ..
+    " " .. to_string($a.port) .. "]")
+  print("posture: unverified (a: " .. json_encode($inv_a.reason) .. ", b: " .. json_encode($inv_b.reason) .. ")")
+  print("receipt: conf-a " .. hash_file($a.conf, "sha256") .. " mesh-a " .. hash_file($a.mesh_conf, "sha256"))
+  print("receipt: conf-b " .. hash_file($b.conf, "sha256") .. " mesh-b " .. hash_file($b.mesh_conf, "sha256"))
+
+  -- Qualified bidirectional noded.info through the native mesh: the
+  -- qualified address changes, the verb stays noded.info.
+  $via_b = $p.qualified_owner($mix, $b, $a, 10)
+  $via_a = $p.qualified_owner($mix, $a, $b, 10)
+  print("route: b->a pid " .. to_string($via_b.noded.pid) .. " ; a->b pid " .. to_string($via_a.noded.pid))
+
+  -- Fixed-port bind collision: a start at an occupied endpoint must FAIL
+  -- that start, and must never touch the unrelated broker that owns it.
+  $collided = false
+  try
+    $n.private_bus({dir:$root .. "/collider", name:"peer-collider", noded:$NODED, fixed_port:$a.port})
+  catch $message
+    $collided = true
+  end
+  check($collided, "fixed_port start at an occupied endpoint did not fail")
+  check(process_alive($a.pid), "collision attempt disturbed the unrelated broker A")
+  $still = $p.verify_owner($mix, $a)
+  print("collision: fixed_port refused, broker A pid " .. to_string($still.noded.pid) .. " untouched")
+
+  -- Independent B outage: stop B only; A and its identity stay up; a route
+  -- from A to the absent B fails truthfully (it is not re-routed anywhere).
+  $b_old = {pid: $b.pid, port: $b.port, url: $b.url, conf: $b.conf, node: $b.node}
+  $n.stop_bus($b)
+  for $wait = 1 to 40
+    if not process_alive($b.pid) then break end
+    sleep(0.05)
+  end
+  check(not process_alive($b.pid), "owned broker B did not retire for the outage")
+  $stable = $p.verify_owner($mix, $a)
+  check($stable.noded.pid == $a.pid, "A PID changed during the B outage")
+  $absent = $p.qualified($mix, $a, $b.node, "noded", "noded.info", {}, 8)
+  check($absent.rc != 0, "route to the absent B did not fail honestly: " .. json_encode($absent))
+  print("outage: B " .. to_string($b_old.pid) .. " retired; A pid " .. to_string($stable.noded.pid) ..
+    " stable; a->b rc " .. to_string($absent.rc))
+
+  -- Same-endpoint B restart: a fresh B PID, the identical endpoint/roster,
+  -- a stable A PID, and native routes re-established in both directions.
+  $b = $n.restart_private_bus($b)
+  $R.children = [$a.pid, $b.pid]
+  check($b.pid != $b_old.pid and process_alive($b.pid), "restarted B has no fresh owned PID")
+  check($b.port == $b_old.port and $b.url == $b_old.url and $b.conf == $b_old.conf and $b.node == $b_old.node,
+    "restarted B did not keep its exact endpoint")
+  $p.verify_owner($mix, $b)
+  $p.verify_peers($mix, $b, $a)
+  $p.verify_unverified($mix, $b)
+  $after = $p.verify_owner($mix, $a)
+  check($after.noded.pid == $a.pid, "A PID changed across the B restart")
+  $p.qualified_owner($mix, $b, $a, 10)
+  $via_a2 = $p.qualified_owner($mix, $a, $b, 10)
+  check($via_a2.noded.pid == $b.pid, "qualified a->b did not see the new B PID")
+  print("restart: B " .. $b.node .. " " .. $b.url .. " pid " .. to_string($b_old.pid) .. " -> " ..
+    to_string($b.pid) .. "; A pid " .. to_string($after.noded.pid) .. " stable")
+
+  -- Every owned child retires before the verdict is recorded.
+  for each $child in $R.children
+    $p.stop($child)
+  end
+  $R.children = []
+  print("PASS settings peer native routing: pair bootstrap, honest Unverified roster posture, qualified bidirectional noded.info, fixed-port collision refusal, independent B outage and same-endpoint restart with stable A PID")
+  $R.ok = true
+catch $message
+  print("FAIL " .. $message)
+  if $R.run != nil then
+    for each $log in ["a/noded.log", "b/noded.log", "collider/noded.log", "collider/noded-2.log"]
+      if is_file($R.run.path .. "/" .. $log) then
+        print(run_argv(["tail", "-n", "20", $R.run.path .. "/" .. $log], {max_output: 12000}).stdout)
+      end
+    end
+  end
+finally
+  for each $child in $R.children
+    if $child != nil then
+      try
+        $p.stop($child)
+      catch $message
+        print("teardown: " .. $message)
+      end
+    end
+  end
+  $n.finish_run($R.run, $R.ok)
+end
+if not $R.ok then exit(1) end
