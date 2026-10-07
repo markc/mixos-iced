@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.2.7
+
+- `typography::TextStyle` gains `minimum_height()` (the text size grown to the
+  requested line box), the allocation floor of one control row; the renderer
+  still receives the requested line height. New `typography::Glyph` carries an
+  explicit character and its resolved `TextStyle` for prepared icon text.
+- New `controls::Metrics` centralises the repeated spacing arithmetic:
+  `from_tokens`, `padding` (vertical 6, horizontal 10 at the default scale),
+  `row_padding` (vertical 2, horizontal 8), `gap`, `inset`, `row_height` and
+  `indent`. Prepared spacing is never multiplied a second time, and
+  `Metrics::default()` freezes the default-token geometry the legacy views
+  keep.
+- `TextField` gains `font`, `line_height` and `text_style` builders (last
+  explicit write wins; `text_style` resets the line height to the default
+  when the supplied style has none). Undo reconstruction replays the new
+  typography, so a presentation change cannot silently lose it.
+- `suspended_ime`'s contract is documented: clearing a suspended composition
+  needs the runtime's `InputMethod(Closed)` acknowledgement; without it the
+  field keeps dropping later input-method events.
+- The requester gains `requester::TextStyles` and `view_styled`/
+  `view_styled_for`: ui for the path field, small for path/list/recent/error
+  labels, a button style for action labels, and padding, row height, gaps
+  and list inset from the shared control metrics. The legacy `view`/
+  `view_for` geometry is frozen at `Metrics::default()`: it keeps its exact
+  default-scale geometry and no longer follows a custom token's spacing.
+- `TabBar` gains prepared `icon_style`, `text_style` and `close_text_style`.
+  One resolved label-then-close row hierarchy serves measurement, layout,
+  drawing, hit testing and operations. Prepared text tabs keep the legacy
+  5-pixel label padding, and a role without a prepared style keeps its
+  legacy geometry (the `+1.0` measurement allowance and the
+  `close_size * 1.3 + 1.0` close slot), so a partially prepared bar never
+  silently tightens an unset role. Prepared roles measure their exact
+  resolved font/size/line height; the prepared close glyph keeps stable
+  geometry with colour-only hover and never grows past its allocated hit
+  region.
+- `Toggle::text_style` returns the new `StyledToggle` wrapper for
+  `Renderer<Font = F>` hosts, sharing the existing toggle engine. The label
+  is measured with the supplied paragraph style; intrinsic text bounds plus
+  padding (`.size` a minimum, parent limits authoritative) drive both drawing
+  and click routing. The legacy `Toggle` stays any-font compatible.
+- `TreeView` gains `.expanders(Expanders)` with explicit collapsed/expanded
+  `Glyph`s. A supplied value draws each glyph at its own resolved style
+  inside the allocated expander rectangle (the same rectangle used for
+  clicking), and an explicit `None` glyph selects the geometric fallback with
+  no global icon-font lookup.
+- `TreeView` gains `.metrics(Metrics, TextStyle)`: the per-depth indent
+  derives from the shared control metrics (`Metrics::indent` of the caller's
+  row text style — at least `lg + sm` and at least the row height, so the
+  expander and a guide always fit). The legacy default indent and the
+  explicit `.indent` builder are unchanged. Right on an expanded node now
+  verifies the target row is actually its child, so an expanded node with
+  zero loaded children no longer jumps onto its sibling.
+- `Spinner` gains `animated(bool)`. Effective animation requires animation, a
+  nonzero rate, nonempty bounds and viewport intersection; disable or rate
+  change clears the time origin without clearing phase, inactive updates
+  schedule no future frame, the first active frame after resume advances
+  zero from its event timestamp, and no paused or clipped time is integrated.
+  Wiring `animated` from `Prepared::reduced_motion` is the host's
+  responsibility, not the widget's.
+
 ## 0.2.6
 
 - `typography::TextStyle` is generic over the font (`TextStyle<F = Font>`), so

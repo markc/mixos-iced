@@ -8,7 +8,8 @@
 //! expander, and expanding it is the caller's cue ([`Nodes::needs_children`])
 //! to load them and call [`Nodes::set_children`]. Expand and collapse by
 //! the expander, a double-click, Right and Left; Right on an expanded node
-//! moves to its first child, Left on a collapsed one to its parent.
+//! moves to its first child (a childless expanded node stays put), Left on
+//! a collapsed one to its parent.
 //! Selection and activation are the list's, by visible row index; map a row
 //! back to its node with [`Nodes::visible`].
 //!
@@ -29,7 +30,30 @@ use iced_core::{
     Widget, alignment, layout, mouse, renderer, text,
 };
 
+use crate::controls;
+use crate::typography::{Glyph, TextStyle};
 use crate::virtual_list::{self, KeyPress, Selection, VirtualList};
+
+/// The explicit expander glyphs of a [`TreeView`]: one for the collapsed
+/// state, one for the expanded state. A `None` glyph selects the geometric
+/// fallback (a drawn plus or minus box) for that state, without consulting
+/// the global icon font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Expanders<F = Font> {
+    collapsed: Option<Glyph<F>>,
+    expanded: Option<Glyph<F>>,
+}
+
+impl<F> Expanders<F> {
+    /// The collapsed and expanded glyphs. `None` for either state draws the
+    /// geometric fallback there.
+    pub fn new(collapsed: Option<Glyph<F>>, expanded: Option<Glyph<F>>) -> Self {
+        Self {
+            collapsed,
+            expanded,
+        }
+    }
+}
 
 /// Whether a node has children, and whether they are loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -380,6 +404,7 @@ where
     selection: Selection,
     list: VirtualList<'a, Message, Theme, Renderer>,
     indent: f32,
+    expanders: Option<Expanders<Font>>,
 }
 
 impl<'a, K, T, Message, Theme, Renderer> TreeView<'a, K, T, Message, Theme, Renderer>
@@ -407,6 +432,7 @@ where
             selection: Selection::default(),
             list,
             indent: 20.0,
+            expanders: None,
         }
     }
 
@@ -433,6 +459,27 @@ where
         self
     }
 
+    /// Derives the prepared per-depth indent from the shared control
+    /// metrics: [`controls::Metrics::indent`] of the caller's row `text`
+    /// style — at least `lg + sm` and at least the row height, so the
+    /// expander square and a guide always fit. The expander square follows
+    /// the indent (0.6 × indent, clamped 8–16). Applied after
+    /// [`TreeView::indent`] it wins; without either builder the legacy
+    /// 20-pixel default is unchanged.
+    pub fn metrics(mut self, metrics: controls::Metrics, text: TextStyle) -> Self {
+        self.indent = metrics.indent(&text);
+        self
+    }
+
+    /// Explicit expander glyphs. Without a supplied value the installed
+    /// icon font is looked up as before; with one, a `None` glyph draws
+    /// the geometric fallback for that state instead of consulting the
+    /// global icon font.
+    pub fn expanders(mut self, expanders: Expanders<Font>) -> Self {
+        self.expanders = Some(expanders);
+        self
+    }
+
     /// Settings of the underlying list (`id`, `row_height`, `mode`,
     /// `on_activate`, `on_context`, `type_ahead`, `reveal`, `style`...).
     pub fn list(
@@ -450,6 +497,7 @@ where
         let build = self.build;
         let on_toggle = self.on_toggle.clone();
         let indent = self.indent;
+        let expanders = self.expanders;
         let selection = self.selection.clone();
         let on_select = self.on_select.clone();
         let toggle_keys = self.on_toggle.clone();
@@ -465,7 +513,15 @@ where
                     keyboard::Key::Named(Named::ArrowRight) => {
                         if row.has_children() && !row.expanded {
                             toggle_keys.as_ref().map(|toggle| toggle(row.key.clone()))
-                        } else if row.expanded && nodes.visible_len() > cursor + 1 {
+                        } else if row.expanded
+                            // The next row must actually be a child: an
+                            // expanded node with zero loaded children is
+                            // followed by its sibling, which Right must not
+                            // jump onto.
+                            && nodes
+                                .visible(cursor + 1)
+                                .is_some_and(|next| nodes.parent(next.key) == Some(row.key))
+                        {
                             on_select
                                 .as_ref()
                                 .map(|select| select(Selection::single(cursor + 1)))
@@ -504,6 +560,7 @@ where
                 expanded: row.expanded,
                 children: row.children,
                 indent,
+                expanders,
                 on_toggle: toggle.map(|toggle| Box::new(move || toggle(key.clone())) as Box<dyn Fn() -> Message + 'a>),
             };
             iced_widget::Row::with_children([Element::new(guides), build(row)])
@@ -536,6 +593,7 @@ struct Guides<'a, Message> {
     expanded: bool,
     children: Children,
     indent: f32,
+    expanders: Option<Expanders<Font>>,
     on_toggle: Option<Box<dyn Fn() -> Message + 'a>>,
 }
 
@@ -553,6 +611,70 @@ impl<Message> Guides<'_, Message> {
             width: size,
             height: size,
         }
+    }
+
+    /// The clickable expander rectangle: with prepared glyphs the exact
+    /// allocated rectangle (the same one the glyph draws into); the legacy
+    /// path keeps its padded hit region around it.
+    fn hit_region(&self, bounds: Rectangle) -> Rectangle {
+        let expander = self.expander(bounds);
+        if self.expanders.is_some() {
+            expander
+        } else {
+            expander.expand(4.0)
+        }
+    }
+}
+
+/// The geometric expander fallback: a plus or minus in a box, with no
+/// global font lookup.
+fn draw_box<Renderer: text::Renderer>(
+    renderer: &mut Renderer,
+    style: &Style,
+    expander: Rectangle,
+    expanded: bool,
+) {
+    renderer.fill_quad(
+        renderer::Quad {
+            bounds: expander,
+            border: Border {
+                color: style.expander,
+                width: 1.0,
+                radius: 2.0.into(),
+            },
+            ..renderer::Quad::default()
+        },
+        style.expander_fill,
+    );
+    let inset = 3.0;
+    let mark = |renderer: &mut Renderer, rect: Rectangle| {
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: rect,
+                ..renderer::Quad::default()
+            },
+            style.expander,
+        );
+    };
+    mark(
+        renderer,
+        Rectangle {
+            x: expander.x + inset,
+            y: (expander.center_y() - 0.5).round(),
+            width: expander.width - 2.0 * inset,
+            height: 1.0,
+        },
+    );
+    if !expanded {
+        mark(
+            renderer,
+            Rectangle {
+                x: (expander.center_x() - 0.5).round(),
+                y: expander.y + inset,
+                width: 1.0,
+                height: expander.height - 2.0 * inset,
+            },
+        );
     }
 }
 
@@ -592,7 +714,7 @@ where
             && let Some(on_toggle) = &self.on_toggle
             && self.children != Children::None
             && !shell.is_event_captured()
-            && cursor.is_over(self.expander(layout.bounds()).expand(4.0))
+            && cursor.is_over(self.hit_region(layout.bounds()))
         {
             shell.publish(on_toggle());
             shell.capture_event();
@@ -667,74 +789,70 @@ where
             return;
         }
         let expander = self.expander(bounds);
-        let name = if self.expanded {
-            "expand_more"
-        } else {
-            "chevron_right"
-        };
-        if let Some((glyph, font)) = crate::fonts::icon(name) {
-            renderer.fill_text(
-                text::Text {
-                    content: glyph.to_string(),
-                    bounds: Size::new(expander.width * 1.5, expander.height * 1.5),
-                    size: Pixels(expander.height * 1.4),
-                    line_height: text::LineHeight::Relative(1.0),
-                    font,
-                    align_x: text::Alignment::Center,
-                    align_y: alignment::Vertical::Center,
-                    shaping: text::Shaping::Advanced,
-                    wrapping: text::Wrapping::None,
-                    ellipsis: text::Ellipsis::None,
-                    hint_factor: None,
-                },
-                Point::new(expander.center_x(), expander.center_y()),
-                style.expander,
-                bounds,
-            );
-            return;
-        }
-        // No icon font: a plus or minus in a box.
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds: expander,
-                border: Border {
-                    color: style.expander,
-                    width: 1.0,
-                    radius: 2.0.into(),
-                },
-                ..renderer::Quad::default()
-            },
-            style.expander_fill,
-        );
-        let inset = 3.0;
-        let mark = |renderer: &mut Renderer, rect: Rectangle| {
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: rect,
-                    ..renderer::Quad::default()
-                },
-                style.expander,
-            );
-        };
-        mark(
-            renderer,
-            Rectangle {
-                x: expander.x + inset,
-                y: (expander.center_y() - 0.5).round(),
-                width: expander.width - 2.0 * inset,
-                height: 1.0,
-            },
-        );
-        if !self.expanded {
-            mark(
-                renderer,
-                Rectangle {
-                    x: (expander.center_x() - 0.5).round(),
-                    y: expander.y + inset,
-                    width: 1.0,
-                    height: expander.height - 2.0 * inset,
-                },
-            );
+        match self.expanders {
+            // No supplied value: the installed icon font's chevron, with
+            // its historical oversized geometry, else the drawn box.
+            None => {
+                let name = if self.expanded {
+                    "expand_more"
+                } else {
+                    "chevron_right"
+                };
+                if let Some((glyph, font)) = crate::fonts::icon(name) {
+                    renderer.fill_text(
+                        text::Text {
+                            content: glyph.to_string(),
+                            bounds: Size::new(expander.width * 1.5, expander.height * 1.5),
+                            size: Pixels(expander.height * 1.4),
+                            line_height: text::LineHeight::Relative(1.0),
+                            font,
+                            align_x: text::Alignment::Center,
+                            align_y: alignment::Vertical::Center,
+                            shaping: text::Shaping::Advanced,
+                            wrapping: text::Wrapping::None,
+                            ellipsis: text::Ellipsis::None,
+                            hint_factor: None,
+                        },
+                        Point::new(expander.center_x(), expander.center_y()),
+                        style.expander,
+                        bounds,
+                    );
+                    return;
+                }
+                draw_box(renderer, style, expander, self.expanded);
+            }
+            // Supplied: an explicit glyph draws at its own resolved style
+            // and must fit the allocated expander rectangle; an explicit
+            // None is the geometric fallback with no global font escape.
+            Some(expanders) => {
+                let glyph = if self.expanded {
+                    expanders.expanded
+                } else {
+                    expanders.collapsed
+                };
+                if let Some(glyph) = glyph {
+                    renderer.fill_text(
+                        text::Text {
+                            content: glyph.character.to_string(),
+                            bounds: expander.size(),
+                            size: glyph.text.size.into(),
+                            line_height: glyph.text.line_height_or_default(),
+                            font: glyph.text.font,
+                            align_x: text::Alignment::Center,
+                            align_y: alignment::Vertical::Center,
+                            shaping: text::Shaping::Advanced,
+                            wrapping: text::Wrapping::None,
+                            ellipsis: text::Ellipsis::None,
+                            hint_factor: None,
+                        },
+                        Point::new(expander.center_x(), expander.center_y()),
+                        style.expander,
+                        expander,
+                    );
+                } else {
+                    draw_box(renderer, style, expander, self.expanded);
+                }
+            }
         }
     }
 
@@ -748,7 +866,7 @@ where
     ) -> mouse::Interaction {
         if self.on_toggle.is_some()
             && self.children != Children::None
-            && cursor.is_over(self.expander(layout.bounds()).expand(4.0))
+            && cursor.is_over(self.hit_region(layout.bounds()))
         {
             mouse::Interaction::Pointer
         } else {
@@ -890,6 +1008,387 @@ mod tests {
         assert_eq!(row_key(nodes.visible(3).unwrap().key), before);
     }
 
+    mod prepared {
+        use iced_core::shell::{Bus, Waker};
+        use iced_core::text::Paragraph as _;
+        use iced_core::window::Headless;
+
+        use super::*;
+        use crate::tokens::Tokens;
+        use crate::typography::TextStyle;
+
+        #[derive(Debug, Clone, PartialEq)]
+        enum Msg {
+            Toggle(&'static str),
+            Select(Selection),
+        }
+
+        const VIEW: Size = Size::new(300.0, 240.0);
+
+        fn nodes() -> Nodes<&'static str, &'static str> {
+            let mut nodes = Nodes::new();
+            assert!(nodes.push(None, "a", "root", Children::Loaded));
+            assert!(nodes.push(Some(&"a"), "a1", "leaf", Children::None));
+            nodes
+        }
+
+        fn expanders() -> Expanders {
+            Expanders::new(
+                Some(Glyph {
+                    character: '▶',
+                    text: TextStyle {
+                        font: Font::MONOSPACE,
+                        size: 12.0,
+                        line_height: Some(16.0),
+                    },
+                }),
+                Some(Glyph {
+                    character: '▼',
+                    text: TextStyle {
+                        font: Font::DEFAULT,
+                        size: 10.0,
+                        line_height: None,
+                    },
+                }),
+            )
+        }
+
+        /// Records every drawn text and paragraph with its resolved font,
+        /// size and line height, so caller rows and expanders are told apart.
+        #[derive(Default)]
+        struct Recorder {
+            texts: Vec<(String, Font, Pixels, text::LineHeight)>,
+            paragraphs: Vec<(Font, Pixels, text::LineHeight)>,
+            quads: Vec<Rectangle>,
+        }
+
+        impl renderer::Renderer for Recorder {
+            fn start_layer(&mut self, _: Rectangle) {}
+            fn end_layer(&mut self) {}
+            fn start_transformation(&mut self, _: iced_core::Transformation) {}
+            fn end_transformation(&mut self) {}
+            fn hint(&mut self, _: renderer::Scale) {}
+            fn scale(&self) -> Option<renderer::Scale> {
+                None
+            }
+            fn reset(&mut self, _: Rectangle) {}
+            fn settings(&self) -> renderer::Settings {
+                renderer::Settings::default()
+            }
+            fn fill_quad(&mut self, quad: renderer::Quad, _: impl Into<iced_core::Background>) {
+                self.quads.push(quad.bounds);
+            }
+            fn allocate_image(
+                &mut self,
+                handle: &iced_core::image::Handle,
+                callback: impl FnOnce(
+                        Result<iced_core::image::Allocation, iced_core::image::Error>,
+                    ) + Send
+                    + 'static,
+            ) {
+                renderer::Renderer::allocate_image(&mut (), handle, callback);
+            }
+        }
+
+        impl text::Renderer for Recorder {
+            type Font = Font;
+            type Paragraph = iced_graphics::text::Paragraph;
+            type Editor = ();
+
+            const ICON_FONT: Font = Font::new("Iced-Icons");
+            const CHECKMARK_ICON: char = '\u{f00c}';
+            const ARROW_DOWN_ICON: char = '\u{e800}';
+            const SCROLL_UP_ICON: char = '\u{e802}';
+            const SCROLL_DOWN_ICON: char = '\u{e803}';
+            const SCROLL_LEFT_ICON: char = '\u{e804}';
+            const SCROLL_RIGHT_ICON: char = '\u{e805}';
+            const ICED_LOGO: char = '\u{e801}';
+
+            fn default_font(&self) -> Font {
+                Font::DEFAULT
+            }
+            fn default_size(&self) -> Pixels {
+                Pixels(16.0)
+            }
+
+            fn fill_paragraph(
+                &mut self,
+                paragraph: &Self::Paragraph,
+                _: Point,
+                _: Color,
+                _: Rectangle,
+            ) {
+                self.paragraphs
+                    .push((paragraph.font(), paragraph.size(), paragraph.line_height()));
+            }
+
+            fn fill_editor(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
+
+            fn fill_text(&mut self, text: text::Text, _: Point, _: Color, _: Rectangle) {
+                self.texts.push((text.content, text.font, text.size, text.line_height));
+            }
+        }
+
+        fn draw<'a>(
+            element: &mut Element<'a, Msg, iced_core::Theme, Recorder>,
+            tree: &mut Tree,
+        ) -> Recorder {
+            let mut renderer = Recorder::default();
+            element.as_widget_mut().diff(tree);
+            let node = element.as_widget_mut().layout(
+                tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, VIEW),
+            );
+            element.as_widget().draw(
+                tree,
+                &mut renderer,
+                &iced_core::Theme::Dark,
+                &renderer::Style::default(),
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &Rectangle::with_size(VIEW),
+            );
+            renderer
+        }
+
+        #[test]
+        fn explicit_expanders_draw_their_own_resolved_styles() {
+            // Bind the test monospace family before real paragraphs are
+            // shaped with Font::MONOSPACE.
+            crate::test_renderer::LayoutRenderer::new();
+            let mut nodes = nodes();
+            nodes.set_expanded(&"a", true);
+            let mut element: Element<'_, Msg, iced_core::Theme, Recorder> = TreeView::new(
+                &nodes,
+                |row| {
+                    iced_widget::text(*row.data)
+                        .font(Font::MONOSPACE)
+                        .size(13.0)
+                        .line_height(text::LineHeight::Absolute(Pixels(20.0)))
+                },
+            )
+            .expanders(expanders())
+            .on_toggle(Msg::Toggle)
+            .on_select(Msg::Select)
+            .into();
+            let mut tree = Tree::new(element.as_widget());
+            let recorder = draw(&mut element, &mut tree);
+            // The expanded root draws the ▼ glyph at its own resolved style.
+            assert!(
+                recorder.texts.iter().any(|(content, font, size, _)| {
+                    content == "▼" && *font == Font::DEFAULT && size.0 == 10.0
+                }),
+                "expanded glyph style missing: {:#?}",
+                recorder.texts
+            );
+            // Caller rows draw through their own supplied style, separately.
+            assert!(
+                recorder
+                    .paragraphs
+                    .iter()
+                    .any(|(font, size, line)| *font == Font::MONOSPACE
+                        && size.0 == 13.0
+                        && *line == text::LineHeight::Absolute(Pixels(20.0))),
+                "caller row style missing: {:#?}",
+                recorder.paragraphs
+            );
+        }
+
+        #[test]
+        fn the_collapsed_glyph_and_the_geometric_fallback_draw_without_global_escape() {
+            crate::test_renderer::LayoutRenderer::new();
+            let nodes = nodes();
+            // Collapsed root: the ▶ glyph at its own style.
+            let mut element: Element<'_, Msg, iced_core::Theme, Recorder> =
+                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                    .expanders(expanders())
+                    .into();
+            let mut tree = Tree::new(element.as_widget());
+            let recorder = draw(&mut element, &mut tree);
+            assert!(
+                recorder
+                    .texts
+                    .iter()
+                    .any(|(content, font, size, line)| content == "▶"
+                        && *font == Font::MONOSPACE
+                        && size.0 == 12.0
+                        && *line == text::LineHeight::Absolute(Pixels(16.0))),
+                "collapsed glyph style missing: {:#?}",
+                recorder.texts
+            );
+            // An explicit None glyph for each state draws the geometric box
+            // and records no glyph text at all.
+            let mut element: Element<'_, Msg, iced_core::Theme, Recorder> =
+                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                    .expanders(Expanders::new(None, None))
+                    .into();
+            let mut tree = Tree::new(element.as_widget());
+            let recorder = draw(&mut element, &mut tree);
+            assert!(
+                recorder.texts.is_empty(),
+                "the geometric fallback must not draw glyph text: {:#?}",
+                recorder.texts
+            );
+            // The box outline itself is drawn: a small quad inside the
+            // first row's expander slot.
+            assert!(
+                recorder
+                    .quads
+                    .iter()
+                    .any(|rect| rect.height == 12.0 && rect.width == 12.0),
+                "the fallback box quad is missing: {:#?}",
+                recorder.quads
+            );
+        }
+
+        #[test]
+        fn prepared_expander_clicks_are_confined_to_the_expander_rectangle() {
+            let mut nodes = nodes();
+            nodes.set_expanded(&"a", true);
+            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
+                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                    .expanders(expanders())
+                    .on_toggle(Msg::Toggle)
+                    .on_select(Msg::Select)
+                    .into();
+            let mut tree = Tree::new(element.as_widget());
+            element.as_widget_mut().diff(&mut tree);
+            let renderer = crate::test_renderer::LayoutRenderer::new();
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, VIEW),
+            );
+            let mut send = |event: Event, at: Point| {
+                let mut bus = Bus::new();
+                let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(at),
+                    &renderer,
+                    &mut shell,
+                    &Rectangle::with_size(VIEW),
+                );
+                bus.drain().collect::<Vec<_>>()
+            };
+            let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            // The expander rectangle of the first row (indent 20, box 12:
+            // x 4..16, y 8..20). A click inside toggles and selects nothing.
+            assert_eq!(send(press.clone(), Point::new(10.0, 14.0)), [Msg::Toggle("a")]);
+            // The prepared hit region does not pad the rectangle: a click
+            // beside it (still in the guides area) selects the row instead.
+            assert_eq!(send(press.clone(), Point::new(1.0, 14.0)), [Msg::Select(Selection::single(0))]);
+            // A neighbouring row's content selects that row only.
+            assert_eq!(send(press.clone(), Point::new(150.0, 42.0)), [Msg::Select(Selection::single(1))]);
+        }
+
+        #[test]
+        fn prepared_metrics_indent_grows_the_expander_slot() {
+            // A row text style whose line box exceeds the default indent
+            // floor: 20 * 1.3 + 4 = 30, so the indent derives from the row
+            // height rather than the lg + sm floor (20).
+            let text = TextStyle {
+                font: Font::DEFAULT,
+                size: 20.0,
+                line_height: None,
+            };
+            let metrics = controls::Metrics::from_tokens(Tokens::default());
+            assert_eq!(metrics.indent(&text), 30.0);
+            let mut nodes = nodes();
+            nodes.set_expanded(&"a", true);
+            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
+                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                    .metrics(metrics, text)
+                    .expanders(expanders())
+                    .on_toggle(Msg::Toggle)
+                    .on_select(Msg::Select)
+                    .into();
+            let mut tree = Tree::new(element.as_widget());
+            element.as_widget_mut().diff(&mut tree);
+            let renderer = crate::test_renderer::LayoutRenderer::new();
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, VIEW),
+            );
+            let mut send = |event: Event, at: Point| {
+                let mut bus = Bus::new();
+                let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(at),
+                    &renderer,
+                    &mut shell,
+                    &Rectangle::with_size(VIEW),
+                );
+                bus.drain().collect::<Vec<_>>()
+            };
+            let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            // The expander rectangle of the first row: indent 30, box 16
+            // (0.6 × 30 clamped), x 7..23, y 6..22. A click inside toggles.
+            assert_eq!(send(press.clone(), Point::new(15.0, 14.0)), [Msg::Toggle("a")]);
+            // A click at x 4 is inside the legacy indent-20 rectangle
+            // (x 4..16) but outside the metrics-derived one, so it selects
+            // the row instead of toggling.
+            assert_eq!(send(press.clone(), Point::new(4.0, 14.0)), [Msg::Select(Selection::single(0))]);
+        }
+
+        #[test]
+        fn expanded_and_selected_keys_survive_a_retained_rebuild() {
+            let mut nodes = nodes();
+            nodes.set_expanded(&"a", true);
+            let selection = Selection::single(1);
+            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
+                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                    .expanders(expanders())
+                    .on_toggle(Msg::Toggle)
+                    .on_select(Msg::Select)
+                    .selection(&selection)
+                    .into();
+            let mut tree = Tree::new(element.as_widget());
+            element.as_widget_mut().diff(&mut tree);
+            let renderer = crate::test_renderer::LayoutRenderer::new();
+            let mut node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, VIEW),
+            );
+            // Expand another node through the model and rebuild the view in
+            // the retained tree: the previous selection target and expander
+            // keys still resolve.
+            nodes.set_expanded(&"a", false);
+            element = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                .expanders(expanders())
+                .on_toggle(Msg::Toggle)
+                .on_select(Msg::Select)
+                .selection(&selection)
+                .into();
+            element.as_widget_mut().diff(&mut tree);
+            node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, VIEW),
+            );
+            let mut bus = Bus::new();
+            let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
+            element.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Layout::new(&node),
+                mouse::Cursor::Available(Point::new(10.0, 14.0)),
+                &renderer,
+                &mut shell,
+                &Rectangle::with_size(VIEW),
+            );
+            assert_eq!(bus.drain().collect::<Vec<_>>(), [Msg::Toggle("a")]);
+        }
+    }
+
     mod keys {
         use iced_core::shell::{Bus, Waker};
         use iced_core::window::Headless;
@@ -1026,6 +1525,30 @@ mod tests {
             assert_eq!(
                 send(&mut element, &mut tree, &node, press(), leaf_expander),
                 [Msg::Select(Selection::single(1))]
+            );
+        }
+
+        #[test]
+        fn right_on_an_expanded_node_without_children_does_not_jump_to_a_sibling() {
+            // "a" is expanded with loaded-but-empty children: the next
+            // visible row is its sibling "b", not a child, so Right must
+            // produce nothing instead of selecting the sibling.
+            let mut nodes = Nodes::new();
+            assert!(nodes.push(None, "a", 1, Children::Lazy));
+            assert!(nodes.push(None, "b", 2, Children::None));
+            nodes.set_expanded(&"a", true);
+            assert!(nodes.set_children(&"a", Vec::new()));
+            assert_eq!(nodes.visible_len(), 2);
+            assert_eq!(nodes.children_state(&"a"), Children::Loaded);
+            assert_eq!(nodes.parent(&"b"), None);
+            let selection = Selection::single(0);
+            let mut element = view(&nodes, &selection);
+            let mut tree = Tree::new(element.as_widget());
+            let node = layout(&mut element, &mut tree);
+            assert_eq!(
+                send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
+                Vec::<Msg>::new(),
+                "Right on an expanded childless node must not select its sibling"
             );
         }
     }

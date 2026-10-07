@@ -12,6 +12,8 @@ mod raw;
 use iced_widget::text_input;
 use raw::TextInput;
 
+use crate::typography::TextStyle;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Selection {
     Index(usize),
@@ -63,6 +65,12 @@ struct History {
     window_blurred: bool,
 }
 
+/// Probes whether any field in the subtree has its input suspended by a
+/// modal that unfocused it mid-composition. Clearing the suspension is the
+/// runtime's step, not the widget's: it requires the runtime's
+/// `Event::InputMethod(Closed)` acknowledgement, the same contract the
+/// dialog mirrors. A runtime that never acknowledges the disabled state
+/// keeps the field dropping every later `InputMethod` event until it does.
 pub(crate) fn suspended_ime() -> impl widget::Operation<bool> {
     struct Probe(bool);
     impl widget::Operation<bool> for Probe {
@@ -138,22 +146,24 @@ where
     value: String,
     on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
     on_submit: Option<Box<dyn Fn() -> Message + 'a>>,
-    config: Config<'a, Theme>,
+    config: Config<'a, Theme, Renderer::Font>,
 }
 
 type InputStyle<'a, Theme> = dyn Fn(&Theme, text_input::Status) -> text_input::Style + 'a;
 
-struct Config<'a, Theme> {
+struct Config<'a, Theme, F> {
     placeholder: String,
     secure: bool,
     id: Option<widget::Id>,
     width: Option<Length>,
     padding: Option<Padding>,
     size: Option<Pixels>,
+    font: Option<F>,
+    line_height: Option<text::LineHeight>,
     style: Option<Rc<InputStyle<'a, Theme>>>,
 }
 
-impl<Theme> Default for Config<'_, Theme> {
+impl<Theme, F> Default for Config<'_, Theme, F> {
     fn default() -> Self {
         Self {
             placeholder: String::new(),
@@ -162,6 +172,8 @@ impl<Theme> Default for Config<'_, Theme> {
             width: None,
             padding: None,
             size: None,
+            font: None,
+            line_height: None,
             style: None,
         }
     }
@@ -243,6 +255,38 @@ where
         self
     }
 
+    /// Sets the text font.
+    pub fn font(mut self, font: Renderer::Font) -> Self {
+        self.config.font = Some(font);
+        self.input = self.input.font(font);
+        self
+    }
+
+    /// Sets the text line height.
+    pub fn line_height(mut self, height: impl Into<text::LineHeight>) -> Self {
+        let height = height.into();
+        self.config.line_height = Some(height);
+        self.input = self.input.line_height(height);
+        self
+    }
+
+    /// Sets the font, size and line height together from a prepared style.
+    /// Ordinary property builders use last explicit write wins: this resets
+    /// the line height to the renderer's default when the supplied style has
+    /// none, and later `.font`/`.size`/`.line_height` calls override it.
+    pub fn text_style(mut self, text: TextStyle<Renderer::Font>) -> Self {
+        let line_height = text.line_height_or_default();
+        self.config.size = Some(Pixels(text.size));
+        self.config.font = Some(text.font);
+        self.config.line_height = Some(line_height);
+        self.input = self
+            .input
+            .size(Pixels(text.size))
+            .font(text.font)
+            .line_height(line_height);
+        self
+    }
+
     /// A style closure over the theme. Without one the theme's default
     /// text-input class applies (for `toolkit::Theme`, `Tokens::text_input`).
     pub fn style(
@@ -280,6 +324,12 @@ where
         }
         if let Some(size) = config.size {
             input = input.size(size);
+        }
+        if let Some(font) = config.font {
+            input = input.font(font);
+        }
+        if let Some(line_height) = config.line_height {
+            input = input.line_height(line_height);
         }
         if let Some(style) = &config.style {
             let style = style.clone();
@@ -884,6 +934,20 @@ mod widget_tests {
             .downcast_mut::<raw::State<LayoutRenderer>>()
             .unfocus();
         assert!(send(&mut field, &mut tree, enter).0.is_empty());
+        // A prepared style swap through the retained tree changes the
+        // presentation without changing the submission semantics: the
+        // field is still unfocused, so Enter still submits nothing.
+        let mut styled = TextField::new("placeholder", "path")
+            .on_input(std::convert::identity)
+            .on_submit("submitted".to_owned())
+            .text_style(TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 16.0,
+                line_height: None,
+            });
+        styled.diff(&mut tree);
+        assert!(send(&mut styled, &mut tree, enter).0.is_empty());
+        assert_eq!(styled.value, "path");
     }
 
     #[test]
@@ -1155,6 +1219,29 @@ mod widget_tests {
             .0,
             ["a界d"]
         );
+        // A prepared style swap through the retained tree keeps the same
+        // document and the same undo-selection restore.
+        let mut styled = TextField::new("placeholder", "a界d")
+            .on_input(std::convert::identity)
+            .text_style(TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 18.0,
+                line_height: Some(24.0),
+            });
+        styled.diff(&mut tree);
+        assert_eq!(
+            send(&mut styled, &mut tree, key("z", keyboard::Modifiers::CTRL)).0,
+            ["abcd"]
+        );
+        assert_eq!(
+            Selection::from(
+                tree.children[0]
+                    .state
+                    .downcast_ref::<raw::State<LayoutRenderer>>()
+                    .cursor()
+            ),
+            Selection::Selection { start: 3, end: 1 }
+        );
     }
 
     #[test]
@@ -1248,6 +1335,196 @@ mod widget_tests {
         assert_eq!(
             send(&mut field, &mut tree, key("z", keyboard::Modifiers::CTRL)).0,
             [""]
+        );
+    }
+
+    fn field_height(field: &mut Field, tree: &mut widget::Tree) -> f32 {
+        let node = Widget::layout(
+            field,
+            tree,
+            &LayoutRenderer::new(),
+            &layout::Limits::new(Size::ZERO, Size::new(300.0, 120.0)),
+        );
+        node.size().height
+    }
+
+    fn send_batch(
+        field: &mut Field,
+        tree: &mut widget::Tree,
+        events: &[Event],
+    ) -> Vec<String> {
+        let bounds = Size::new(300.0, 120.0);
+        let node = Widget::layout(
+            field,
+            tree,
+            &LayoutRenderer::new(),
+            &layout::Limits::new(bounds, bounds),
+        );
+        let mut messages = iced_core::shell::Bus::new();
+        let mut shell = Shell::new(
+            &iced_core::window::Headless,
+            iced_core::shell::Waker::noop(),
+            &mut messages,
+        );
+        for event in events {
+            field.update(
+                tree,
+                event,
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &LayoutRenderer::new(),
+                &mut shell,
+                &Rectangle::with_size(bounds),
+            );
+        }
+        messages.into_iter().collect()
+    }
+
+    fn ime_cursor(ime: &input_method::InputMethod) -> Rectangle {
+        match ime {
+            input_method::InputMethod::Enabled { cursor, .. } => *cursor,
+            other => panic!("expected an enabled input method, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_style_and_property_builders_use_last_explicit_write() {
+        let make = |style: TextStyle| -> (Field, widget::Tree) {
+            let field = TextField::new("placeholder", "")
+                .on_input(std::convert::identity)
+                .padding(Padding::ZERO)
+                .text_style(style);
+            let mut tree =
+                widget::Tree::new(&field as &dyn Widget<String, Theme, LayoutRenderer>);
+            field.diff(&mut tree);
+            (field, tree)
+        };
+        // A later absolute line height overrides the prepared one.
+        let (mut field, mut tree) = make(TextStyle {
+            font: iced_core::Font::MONOSPACE,
+            size: 18.0,
+            line_height: Some(26.0),
+        });
+        let prepared = field_height(&mut field, &mut tree);
+        let mut field = field.line_height(text::LineHeight::Absolute(Pixels(40.0)));
+        field.diff(&mut tree);
+        let overridden = field_height(&mut field, &mut tree);
+        assert!(
+            overridden > prepared,
+            "{overridden} should exceed the prepared {prepared}"
+        );
+        // A prepared style without a line height resets the property
+        // builder: the allocation is the default 1.3 factor, not 40.
+        let (_, mut tree) = make(TextStyle {
+            font: iced_core::Font::MONOSPACE,
+            size: 18.0,
+            line_height: None,
+        });
+        let mut reset = TextField::new("placeholder", "")
+            .on_input(std::convert::identity)
+            .padding(Padding::ZERO)
+            .line_height(text::LineHeight::Absolute(Pixels(40.0)))
+            .text_style(TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 18.0,
+                line_height: None,
+            });
+        reset.diff(&mut tree);
+        let reset_height = field_height(&mut reset, &mut tree);
+        assert!(
+            reset_height < overridden,
+            "{reset_height} should drop below the explicit {overridden}"
+        );
+    }
+
+    #[test]
+    fn a_style_swap_through_the_retained_tree_keeps_text_selection_focus_and_typography() {
+        let id = widget::Id::new("field");
+        let style_a = TextStyle {
+            font: iced_core::Font::MONOSPACE,
+            size: 16.0,
+            line_height: None,
+        };
+        let style_b = TextStyle {
+            font: iced_core::Font::DEFAULT,
+            size: 24.0,
+            line_height: Some(40.0),
+        };
+        let make = |value: &str, style: TextStyle, padding: Padding| -> Field {
+            TextField::new("placeholder", value)
+                .on_input(std::convert::identity)
+                .id(id.clone())
+                .text_style(style)
+                .padding(padding)
+        };
+        let (_, mut tree) = field("");
+        let mut field = make("", style_a, Padding::from([2.0, 6.0]));
+        field.diff(&mut tree);
+        tree.children[0]
+            .state
+            .downcast_mut::<raw::State<LayoutRenderer>>()
+            .focus();
+        // Edit and select everything under style A.
+        assert_eq!(
+            send(
+                &mut field,
+                &mut tree,
+                key("界", keyboard::Modifiers::empty())
+            )
+            .0,
+            ["界"]
+        );
+        tree.children[0]
+            .state
+            .downcast_mut::<raw::State<LayoutRenderer>>()
+            .select_range(position(1), position(0));
+        let (_, ime_a) = send(
+            &mut field,
+            &mut tree,
+            Event::Window(iced_core::window::Event::RedrawRequested(Instant::now())),
+        );
+        let height_a = field_height(&mut field, &mut tree);
+        // Swap to a different font, an absolute line height and more
+        // padding through the same id and retained tree.
+        let mut rebuilt = make("界", style_b, Padding::from([10.0, 20.0]));
+        rebuilt.diff(&mut tree);
+        assert!(
+            field_height(&mut rebuilt, &mut tree) > height_a,
+            "the changed typography and padding must change the allocation"
+        );
+        // The retained selection replaces on typing; the retained focus
+        // accepts input without being focused again.
+        assert_eq!(
+            send(
+                &mut rebuilt,
+                &mut tree,
+                key("c", keyboard::Modifiers::empty())
+            )
+            .0,
+            ["c"]
+        );
+        // The IME anchor moved with the new padding.
+        let (_, ime_b) = send(
+            &mut rebuilt,
+            &mut tree,
+            Event::Window(iced_core::window::Event::RedrawRequested(Instant::now())),
+        );
+        assert_ne!(ime_cursor(&ime_b).position(), ime_cursor(&ime_a).position());
+        // Undo then type in the same event batch: restore_value must replay
+        // the new typography, so the allocation keeps the swapped geometry.
+        let height_b = field_height(&mut rebuilt, &mut tree);
+        assert_eq!(
+            send_batch(
+                &mut rebuilt,
+                &mut tree,
+                &[key("z", keyboard::Modifiers::CTRL), key("d", keyboard::Modifiers::empty())],
+            ),
+            ["界", "d"]
+        );
+        assert_eq!(
+            field_height(&mut rebuilt, &mut tree),
+            height_b,
+            "undo reconstruction must keep the prepared typography"
         );
     }
 }

@@ -209,3 +209,24 @@ fn app_and_shell_use_the_same_mapper_for_matching_inputs() {
     assert_eq!(app.typography(), shell.typography());
     assert_eq!(app.theme(), shell.theme());
 }
+#[test]
+fn ui_and_small_roles_have_typed_accessors() {
+    let e = effective();
+    let prepared = Projection::new(&e).unwrap().prepare(checked_font).unwrap();
+    assert_eq!(
+        prepared.ui_text(),
+        prepared.typography().get("ui").expect("prepared ui role")
+    );
+    assert_eq!(
+        prepared.small_text(),
+        prepared.typography().get("small").expect("prepared small role")
+    );
+    assert_eq!(
+        prepared.ui_text().size,
+        e.design.typography["ui"].font_size as f32
+    );
+    assert_eq!(
+        prepared.small_text().size,
+        e.design.typography["small"].font_size as f32
+    );
+}

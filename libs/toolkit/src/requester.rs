@@ -17,12 +17,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced_core::{Element, Length, Padding};
+use iced_core::{Element, Length};
 use iced_widget::text_input;
 use iced_widget::{button, column, container, row, scrollable, text};
 
+use crate::controls;
 use crate::theme::{self, Theme};
 use crate::tokens::Tokens;
+use crate::typography::TextStyle;
 
 /// The widget id of the requester's path field, so the app can focus it
 /// on open.
@@ -30,6 +32,50 @@ pub const PATH_INPUT: &str = "toolkit-requester-path";
 
 /// Directory entries listed at most (a huge directory stays responsive).
 pub const MAX_ENTRIES: usize = 2000;
+
+/// Prepared text roles for a styled requester view (see
+/// [`Requester::view_styled`]). The ui role drives the path field, the
+/// small role the path, list, recent and error labels; the button style
+/// starts as the ui role.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextStyles<F = iced_core::Font> {
+    ui: TextStyle<F>,
+    small: TextStyle<F>,
+    button: TextStyle<F>,
+}
+
+impl<F> TextStyles<F> {
+    /// The prepared roles: `ui` for the path field, `small` for path,
+    /// list, recent and error labels.
+    pub fn new(ui: TextStyle<F>, small: TextStyle<F>) -> Self {
+        Self {
+            ui,
+            small,
+            button: ui,
+        }
+    }
+
+    /// The style of action labels (parent, hidden and recent buttons).
+    pub fn button_text(mut self, text: TextStyle<F>) -> Self {
+        self.button = text;
+        self
+    }
+}
+
+/// A label with a prepared text style: font, size and line height from
+/// one source.
+fn label<'a, Theme, Renderer>(
+    content: impl iced_core::text::IntoFragment<'a>,
+    text: TextStyle<Renderer::Font>,
+) -> iced_widget::Text<'a, Theme, Renderer>
+where
+    Renderer: iced_core::text::Renderer,
+{
+    iced_widget::text(content)
+        .font(text.font)
+        .size(text.size)
+        .line_height(text.line_height_or_default())
+}
 
 /// What the requester reads from and writes to. `std::fs` by default;
 /// tests and sandboxes substitute their own.
@@ -442,43 +488,150 @@ impl Requester {
         <Theme as iced_core::widget::text::Catalog>::Class<'a>:
             From<iced_core::widget::text::StyleFn<'a, Theme>>,
     {
+        self.render(tokens, strings, None)
+    }
+
+    /// The same body with prepared text roles (see [`TextStyles`]): ui for
+    /// the path field, small for the path, list, recent and error labels,
+    /// and the button style for action labels. Padding, row height, gaps
+    /// and the list inset derive from the shared control metrics.
+    pub fn view_styled<'a, Message>(
+        &'a self,
+        tokens: Tokens,
+        strings: &'a Strings,
+        text: TextStyles,
+    ) -> Element<'a, Message, Theme, iced_widget::Renderer>
+    where
+        Message: From<Event> + Clone + 'a,
+    {
+        self.view_styled_for::<Message, Theme, iced_widget::Renderer>(tokens, strings, text)
+    }
+
+    /// The styled view with the caller's theme and renderer catalogs.
+    pub fn view_styled_for<'a, Message, Theme, Renderer>(
+        &'a self,
+        tokens: Tokens,
+        strings: &'a Strings,
+        text: TextStyles<Renderer::Font>,
+    ) -> Element<'a, Message, Theme, Renderer>
+    where
+        Message: From<Event> + Clone + 'a,
+        Renderer: iced_core::text::Renderer + 'static,
+        Theme: text_input::Catalog
+            + iced_widget::button::Catalog
+            + iced_core::widget::text::Catalog
+            + iced_widget::scrollable::Catalog
+            + iced_widget::container::Catalog
+            + 'a,
+        <Theme as iced_widget::button::Catalog>::Class<'a>:
+            From<iced_widget::button::StyleFn<'a, Theme>>,
+        <Theme as iced_widget::container::Catalog>::Class<'a>:
+            From<iced_widget::container::StyleFn<'a, Theme>>,
+        <Theme as text_input::Catalog>::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
+        <Theme as iced_core::widget::text::Catalog>::Class<'a>:
+            From<iced_core::widget::text::StyleFn<'a, Theme>>,
+    {
+        self.render(tokens, strings, Some(text))
+    }
+
+    // The common renderer. Without prepared styles it reproduces the legacy
+    // defaults, frozen at the default control metrics; with them every text
+    // branch takes its supplied font and line height and the geometry
+    // derives from the host tokens' shared control metrics.
+    fn render<'a, Message, Theme, Renderer>(
+        &'a self,
+        tokens: Tokens,
+        strings: &'a Strings,
+        styles: Option<TextStyles<Renderer::Font>>,
+    ) -> Element<'a, Message, Theme, Renderer>
+    where
+        Message: From<Event> + Clone + 'a,
+        Renderer: iced_core::text::Renderer + 'static,
+        Theme: text_input::Catalog
+            + iced_widget::button::Catalog
+            + iced_core::widget::text::Catalog
+            + iced_widget::scrollable::Catalog
+            + iced_widget::container::Catalog
+            + 'a,
+        <Theme as iced_widget::button::Catalog>::Class<'a>:
+            From<iced_widget::button::StyleFn<'a, Theme>>,
+        <Theme as iced_widget::container::Catalog>::Class<'a>:
+            From<iced_widget::container::StyleFn<'a, Theme>>,
+        <Theme as text_input::Catalog>::Class<'a>: From<text_input::StyleFn<'a, Theme>>,
+        <Theme as iced_core::widget::text::Catalog>::Class<'a>:
+            From<iced_core::widget::text::StyleFn<'a, Theme>>,
+    {
         let t = tokens.palette;
         let m = tokens.metrics;
-        let gap = m.spacing.sm;
-        let pad = Padding::from([6.0, 10.0]);
+        let metrics = controls::Metrics::from_tokens(tokens);
+        // The legacy view's geometry is frozen at the default metrics: it
+        // never follows the host's prepared tokens.
+        let frozen = controls::Metrics::default();
+        let pad = frozen.padding();
 
-        let field = crate::TextField::new(strings.placeholder.as_str(), &self.input)
-            .id(iced_core::widget::Id::new(PATH_INPUT))
-            .on_input(|s| Message::from(Event::Input(s)))
-            .on_submit(Message::from(Event::Submit))
-            .size(m.text.md)
-            .padding(pad);
+        let field = match styles {
+            Some(style) => crate::TextField::new(strings.placeholder.as_str(), &self.input)
+                .id(iced_core::widget::Id::new(PATH_INPUT))
+                .on_input(|s| Message::from(Event::Input(s)))
+                .on_submit(Message::from(Event::Submit))
+                .text_style(style.ui)
+                .padding(metrics.padding()),
+            None => crate::TextField::new(strings.placeholder.as_str(), &self.input)
+                .id(iced_core::widget::Id::new(PATH_INPUT))
+                .on_input(|s| Message::from(Event::Input(s)))
+                .on_submit(Message::from(Event::Submit))
+                .size(m.text.md)
+                .padding(pad),
+        };
 
-        let location = row![
-            button(text("↑").size(m.text.md))
-                .on_press(Message::from(Event::Parent))
-                .style(move |_, status| theme::button::secondary(
-                    &crate::Theme::new(tokens),
-                    status
-                )),
-            text(self.dir.to_string_lossy().to_string())
-                .size(m.text.sm)
-                .width(Length::Fill),
-            button(text(if self.hidden {
-                strings.hide_hidden.clone()
-            } else {
-                strings.show_hidden.clone()
-            }))
-            .on_press(Message::from(Event::ToggleHidden))
-            .style(move |_, status| theme::button::text(&crate::Theme::new(tokens), status)),
-        ]
-        .spacing(gap)
-        .align_y(iced_core::alignment::Vertical::Center);
+        let location = match styles {
+            Some(style) => row![
+                button(label("↑", style.button))
+                    .on_press(Message::from(Event::Parent))
+                    .style(move |_, status| theme::button::secondary(
+                        &crate::Theme::new(tokens),
+                        status
+                    )),
+                label(self.dir.to_string_lossy().to_string(), style.small).width(Length::Fill),
+                button(label(
+                    if self.hidden {
+                        strings.hide_hidden.clone()
+                    } else {
+                        strings.show_hidden.clone()
+                    },
+                    style.button,
+                ))
+                .on_press(Message::from(Event::ToggleHidden))
+                .style(move |_, status| theme::button::text(&crate::Theme::new(tokens), status)),
+            ]
+            .spacing(metrics.gap())
+            .align_y(iced_core::alignment::Vertical::Center),
+            None => row![
+                button(text("↑").size(m.text.md))
+                    .on_press(Message::from(Event::Parent))
+                    .style(move |_, status| theme::button::secondary(
+                        &crate::Theme::new(tokens),
+                        status
+                    )),
+                text(self.dir.to_string_lossy().to_string())
+                    .size(m.text.sm)
+                    .width(Length::Fill),
+                button(text(if self.hidden {
+                    strings.hide_hidden.clone()
+                } else {
+                    strings.show_hidden.clone()
+                }))
+                .on_press(Message::from(Event::ToggleHidden))
+                .style(move |_, status| theme::button::text(&crate::Theme::new(tokens), status)),
+            ]
+            .spacing(frozen.gap())
+            .align_y(iced_core::alignment::Vertical::Center),
+        };
 
         let mut list = column![].spacing(0);
         for (i, e) in self.entries.iter().enumerate() {
             let selected = self.selected == Some(i);
-            let label = if e.dir {
+            let name = if e.dir {
                 format!("{}/", e.name)
             } else {
                 e.name.clone()
@@ -490,39 +643,51 @@ impl Requester {
             } else {
                 t.text
             };
-            let item = button(text(label).size(m.text.sm).color(fg))
-                .width(Length::Fill)
-                .padding(Padding::from([2.0, 8.0]))
-                .on_press(Message::from(Event::Select(i)))
-                .style(move |_, status| iced_widget::button::Style {
-                    background: if selected {
-                        Some(t.selection.into())
-                    } else if matches!(status, button::Status::Hovered) {
-                        Some(t.muted_surface.into())
-                    } else {
-                        None
-                    },
-                    text_color: fg,
-                    border: iced_core::Border {
-                        radius: m.radius.sm.into(),
-                        ..iced_core::Border::default()
-                    },
-                    ..iced_widget::button::Style::default()
-                });
+            let item = match styles {
+                Some(style) => button(label(name, style.small).color(fg))
+                    .width(Length::Fill)
+                    .padding(metrics.row_padding())
+                    .height(Length::Fixed(metrics.row_height(&style.small)))
+                    .on_press(Message::from(Event::Select(i))),
+                None => button(text(name).size(m.text.sm).color(fg))
+                    .width(Length::Fill)
+                    .padding(frozen.row_padding())
+                    .on_press(Message::from(Event::Select(i))),
+            };
+            let item = item.style(move |_, status| iced_widget::button::Style {
+                background: if selected {
+                    Some(t.selection.into())
+                } else if matches!(status, button::Status::Hovered) {
+                    Some(t.muted_surface.into())
+                } else {
+                    None
+                },
+                text_color: fg,
+                border: iced_core::Border {
+                    radius: m.radius.sm.into(),
+                    ..iced_core::Border::default()
+                },
+                ..iced_widget::button::Style::default()
+            });
             list = list.push(
                 iced_widget::mouse_area(item).on_double_click(Message::from(Event::Activate(i))),
             );
         }
         if self.truncated {
-            list = list.push(
-                text(strings.truncated.clone())
+            let notice = match styles {
+                Some(style) => label(strings.truncated.clone(), style.small).color(t.muted_text),
+                None => text(strings.truncated.clone())
                     .size(m.text.sm)
                     .color(t.muted_text),
-            );
+            };
+            list = list.push(notice);
         }
 
         let listing = container(scrollable(list).height(Length::Fixed(260.0)))
-            .padding(4)
+            .padding(match styles {
+                Some(_) => metrics.inset(),
+                None => frozen.inset(),
+            })
             .style(move |_| container::Style {
                 background: Some(t.surface.into()),
                 border: iced_core::Border {
@@ -533,25 +698,43 @@ impl Requester {
                 ..container::Style::default()
             });
 
-        let mut body = column![location, listing, field].spacing(gap);
+        let mut body = column![location, listing, field].spacing(match styles {
+            Some(_) => metrics.gap(),
+            None => frozen.gap(),
+        });
 
         if !self.recent.is_empty() && matches!(self.mode, Mode::Open) {
-            let mut recent = row![
-                text(strings.recent.clone())
+            let recent_label = match styles {
+                Some(style) => label(strings.recent.clone(), style.small).color(t.muted_text),
+                None => text(strings.recent.clone())
                     .size(m.text.sm)
-                    .color(t.muted_text)
-            ]
-            .spacing(gap)
-            .align_y(iced_core::alignment::Vertical::Center);
+                    .color(t.muted_text),
+            };
+            let mut recent = row![recent_label]
+                .spacing(match styles {
+                    Some(_) => metrics.gap(),
+                    None => frozen.gap(),
+                })
+                .align_y(iced_core::alignment::Vertical::Center);
             for path in self.recent.iter().take(6) {
                 let name = Path::new(path)
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.clone());
                 let msg = Message::from(Event::Recent(path.clone()));
-                recent = recent.push(button(text(name).size(m.text.sm)).on_press(msg).style(
-                    move |_, status| theme::button::text(&crate::Theme::new(tokens), status),
-                ));
+                let entry = match styles {
+                    Some(style) => button(label(name, style.button)).on_press(msg).style(
+                        move |_, status| {
+                            theme::button::text(&crate::Theme::new(tokens), status)
+                        },
+                    ),
+                    None => button(text(name).size(m.text.sm)).on_press(msg).style(
+                        move |_, status| {
+                            theme::button::text(&crate::Theme::new(tokens), status)
+                        },
+                    ),
+                };
+                recent = recent.push(entry);
             }
             body = body.push(
                 scrollable(recent).direction(scrollable::Direction::Horizontal(
@@ -560,7 +743,11 @@ impl Requester {
             );
         }
         if let Some(error) = &self.error {
-            body = body.push(text(error.as_str()).size(m.text.sm).color(t.destructive));
+            let line = match styles {
+                Some(style) => label(error.as_str(), style.small).color(t.destructive),
+                None => text(error.as_str()).size(m.text.sm).color(t.destructive),
+            };
+            body = body.push(line);
         }
 
         crate::keys::keys(body, |_| None)
@@ -589,9 +776,9 @@ impl Requester {
 pub struct Strings {
     /// The path field's placeholder.
     pub placeholder: String,
-    /// The parent-directory button's tooltip text.
+    /// The hidden-files toggle's label while hidden files are hidden.
     pub show_hidden: String,
-    /// The hidden-files toggle once hidden files show.
+    /// The hidden-files toggle's label once hidden files show.
     pub hide_hidden: String,
     /// The truncation notice.
     pub truncated: String,
@@ -823,5 +1010,295 @@ mod tests {
             "the fake never touches a real path: {:?}",
             fake.calls.lock().unwrap()
         );
+    }
+
+    /// The legacy and styled views both compile and lay out with a custom
+    /// associated-font renderer whose paragraph and editor are real.
+    #[test]
+    fn views_compile_with_a_custom_font_renderer() {
+        use crate::test_renderer::{Face, FaceRenderer};
+
+        let d = tempfile::tempdir().unwrap();
+        tree(d.path());
+        let model = Requester::new(Mode::Open, d.path().to_path_buf(), Vec::new(), std_fs());
+        let strings = Strings::english();
+        let limits = iced_core::layout::Limits::new(
+            iced_core::Size::ZERO,
+            iced_core::Size::new(420.0, 420.0),
+        );
+        let legacy: Element<'_, ViewMessage, iced_core::Theme, FaceRenderer> =
+            model.view_for(Tokens::default(), &strings);
+        let mut tree = iced_core::widget::Tree::new(legacy.as_widget());
+        legacy.as_widget_mut().diff(&mut tree);
+        let node = legacy.as_widget_mut().layout(
+            &mut tree,
+            &FaceRenderer::default(),
+            &limits,
+        );
+        assert!(node.size().width > 0.0 && node.size().height > 0.0);
+        let styles = TextStyles::new(
+            TextStyle {
+                font: Face(1),
+                size: 16.0,
+                line_height: None,
+            },
+            TextStyle {
+                font: Face(2),
+                size: 12.0,
+                line_height: None,
+            },
+        )
+        .button_text(TextStyle {
+            font: Face(3),
+            size: 14.0,
+            line_height: None,
+        });
+        let styled: Element<'_, ViewMessage, iced_core::Theme, FaceRenderer> =
+            model.view_styled_for(Tokens::default(), &strings, styles);
+        let mut tree = iced_core::widget::Tree::new(styled.as_widget());
+        styled.as_widget_mut().diff(&mut tree);
+        let node = styled.as_widget_mut().layout(&mut tree, &FaceRenderer::default(), &limits);
+        assert!(node.size().width > 0.0 && node.size().height > 0.0);
+    }
+
+    /// One model: select a real entry, edit the path, rebuild as a styled
+    /// view. The retained input submits once, the new row boundary click
+    /// selects the intended row only, and every recorded text role changes.
+    #[test]
+    fn a_styled_rebuild_keeps_the_model_and_relays_the_new_row_geometry() {
+        use crate::controls::Metrics;
+        use crate::test_renderer::LayoutRenderer;
+        use iced_core::shell::{Bus, Waker};
+        use iced_core::window::Headless;
+
+        let d = tempfile::tempdir().unwrap();
+        tree(d.path());
+        let mut model = Requester::new(Mode::Open, d.path().to_path_buf(), Vec::new(), std_fs());
+        model.update(Event::Down);
+        model.update(Event::Input("scene.mix".into()));
+        let strings = Strings::english();
+        let tokens = Tokens::default();
+        let styles = TextStyles::new(
+            TextStyle {
+                font: iced_core::Font::DEFAULT,
+                size: 18.0,
+                line_height: None,
+            },
+            TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 13.0,
+                line_height: None,
+            },
+        )
+        .button_text(TextStyle {
+            font: iced_core::Font::MONOSPACE,
+            size: 15.0,
+            line_height: None,
+        });
+        let legacy: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+            model.view_for(tokens, &strings);
+        let mut tree = iced_core::widget::Tree::new(legacy.as_widget());
+        legacy.as_widget_mut().diff(&mut tree);
+        let renderer = LayoutRenderer::new();
+        let limits = iced_core::layout::Limits::new(
+            iced_core::Size::ZERO,
+            iced_core::Size::new(420.0, 420.0),
+        );
+        let mut draw = LayoutRenderer::new();
+        let node = legacy.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        legacy.as_widget().draw(
+            &tree,
+            &mut draw,
+            &iced_core::Theme::Dark,
+            &iced_core::renderer::Style::default(),
+            iced_core::Layout::new(&node),
+            iced_core::mouse::Cursor::Unavailable,
+            &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
+        );
+        let legacy_paragraphs = draw.paragraphs.clone();
+        // Rebuild the same model through the retained tree with the styled
+        // view and locate the last list row.
+        let styled: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+            model.view_styled_for(tokens, &strings, styles);
+        styled.as_widget_mut().diff(&mut tree);
+        let node = styled.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        // body = column[location, listing, field]; listing = container
+        // (inset) > scrollable > column of rows.
+        let mut body = iced_core::Layout::new(&node).children();
+        let _location = body.next().expect("location row");
+        let listing = body.next().expect("listing");
+        let mut listing = listing.children();
+        let listing = listing.next().expect("container node");
+        let mut listing = listing.children();
+        let listing = listing.next().expect("scrollable node");
+        let mut listing = listing.children();
+        let rows: Vec<_> = listing.next().expect("row column").children().collect();
+        let row = rows.last().expect("scene.mix row");
+        let row_height = row.bounds().height;
+        assert_eq!(
+            row_height,
+            Metrics::from_tokens(tokens).row_height(&styles.small),
+            "the styled row uses the shared metric row height"
+        );
+        // Click the very bottom pixel of the row: still row 3, exactly one
+        // message.
+        let mut bus = Bus::new();
+        let mut shell = iced_core::Shell::new(&Headless, Waker::noop(), &mut bus);
+        styled.as_widget_mut().update(
+            &mut tree,
+            &iced_core::Event::Mouse(iced_core::mouse::Event::ButtonPressed(
+                iced_core::mouse::Button::Left,
+            )),
+            iced_core::Layout::new(&node),
+            iced_core::mouse::Cursor::Available(iced_core::Point::new(
+                row.bounds().center_x(),
+                row.bounds().y + row_height - 0.5,
+            )),
+            &renderer,
+            &mut shell,
+            &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
+        );
+        assert_eq!(bus.drain().collect::<Vec<_>>(), [ViewMessage(Event::Select(3))]);
+        // The styled draw changes every recorded text role.
+        let mut draw = LayoutRenderer::new();
+        styled.as_widget().draw(
+            &tree,
+            &mut draw,
+            &iced_core::Theme::Dark,
+            &iced_core::renderer::Style::default(),
+            iced_core::Layout::new(&node),
+            iced_core::mouse::Cursor::Unavailable,
+            &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
+        );
+        assert_ne!(
+            draw.paragraphs, legacy_paragraphs,
+            "the prepared roles must change the recorded text"
+        );
+        // Focus the retained path field and submit exactly once: the edited
+        // input survives the styled rebuild.
+        let mut op = iced_core::widget::operation::focusable::focus::<ViewMessage>(
+            iced_core::widget::Id::new(PATH_INPUT),
+        );
+        styled.as_widget_mut().operate(
+            &mut tree,
+            iced_core::Layout::new(&node),
+            &renderer,
+            &mut op,
+        );
+        let enter = iced_core::Event::Keyboard(iced_core::keyboard::Event::KeyPressed {
+            key: iced_core::keyboard::Key::Named(iced_core::keyboard::key::Named::Enter),
+            modified_key: iced_core::keyboard::Key::Named(iced_core::keyboard::key::Named::Enter),
+            physical_key: iced_core::keyboard::key::Physical::Unidentified(
+                iced_core::keyboard::key::NativeCode::Unidentified,
+            ),
+            location: iced_core::keyboard::Location::Standard,
+            modifiers: iced_core::keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        let mut bus = Bus::new();
+        let mut shell = iced_core::Shell::new(&Headless, Waker::noop(), &mut bus);
+        styled.as_widget_mut().update(
+            &mut tree,
+            &enter,
+            iced_core::Layout::new(&node),
+            iced_core::mouse::Cursor::Unavailable,
+            &renderer,
+            &mut shell,
+            &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
+        );
+        assert_eq!(bus.drain().collect::<Vec<_>>(), [ViewMessage(Event::Submit)]);
+        match model.update(Event::Submit) {
+            Some(Outcome::Open(paths)) => {
+                assert_eq!(paths.len(), 1);
+                assert!(paths[0].ends_with("scene.mix"));
+            }
+            other => panic!("expected an open outcome, got {other:?}"),
+        }
+    }
+
+    /// The height of the last listed row of a laid-out requester view: the
+    /// body column's listing container, scrolled column, then its rows.
+    fn last_row_height(
+        view: &Element<'_, ViewMessage, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+    ) -> f32 {
+        let mut tree = iced_core::widget::Tree::new(view.as_widget());
+        view.as_widget_mut().diff(&mut tree);
+        let renderer = crate::test_renderer::LayoutRenderer::new();
+        let limits = iced_core::layout::Limits::new(
+            iced_core::Size::ZERO,
+            iced_core::Size::new(420.0, 420.0),
+        );
+        let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut body = iced_core::Layout::new(&node).children();
+        let _location = body.next().expect("location row");
+        let listing = body.next().expect("listing");
+        let mut listing = listing.children();
+        let listing = listing.next().expect("container node");
+        let mut listing = listing.children();
+        let listing = listing.next().expect("scrollable node");
+        let mut listing = listing.children();
+        let rows: Vec<_> = listing.next().expect("row column").children().collect();
+        rows.last().expect("entry row").bounds().height
+    }
+
+    /// The legacy view's geometry is frozen at the default metrics while
+    /// the styled view scales with the prepared tokens.
+    #[test]
+    fn legacy_geometry_is_frozen_while_styled_geometry_scales() {
+        use crate::controls::Metrics;
+        use crate::test_renderer::LayoutRenderer;
+
+        let d = tempfile::tempdir().unwrap();
+        tree(d.path());
+        let model = Requester::new(Mode::Open, d.path().to_path_buf(), Vec::new(), std_fs());
+        let strings = Strings::english();
+        let styles = TextStyles::new(
+            TextStyle {
+                font: iced_core::Font::DEFAULT,
+                size: 18.0,
+                line_height: None,
+            },
+            TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 13.0,
+                line_height: None,
+            },
+        );
+        let mut scaled = Tokens::default();
+        for spacing in [
+            &mut scaled.metrics.spacing.xs,
+            &mut scaled.metrics.spacing.sm,
+            &mut scaled.metrics.spacing.md,
+            &mut scaled.metrics.spacing.lg,
+        ] {
+            *spacing *= 1.5;
+        }
+        let legacy = |tokens| {
+            let view: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+                model.view_for(tokens, &strings);
+            last_row_height(&view)
+        };
+        let styled = |tokens| {
+            let view: Element<'_, ViewMessage, iced_core::Theme, LayoutRenderer> =
+                model.view_styled_for(tokens, &strings, styles);
+            last_row_height(&view)
+        };
+        // The legacy view does not follow the scaled spacing.
+        assert_eq!(
+            legacy(scaled),
+            legacy(Tokens::default()),
+            "the legacy geometry is frozen at the default metrics"
+        );
+        // The styled view follows the shared metrics at both scales.
+        assert_eq!(
+            styled(Tokens::default()),
+            Metrics::from_tokens(Tokens::default()).row_height(&styles.small)
+        );
+        assert_eq!(
+            styled(scaled),
+            Metrics::from_tokens(scaled).row_height(&styles.small)
+        );
+        assert!(styled(scaled) > styled(Tokens::default()));
     }
 }
