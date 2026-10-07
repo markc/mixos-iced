@@ -14,9 +14,11 @@ use ::bus::native_client::{
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
+use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
+use application::message::Once;
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, Condvar, Mutex, RwLock},
     time::Duration,
 };
@@ -27,6 +29,7 @@ use term_core::terminal::Wake;
 #[derive(Debug, Clone)]
 pub struct Describe {
     pub id: u64,
+    ticket: Once<u64>,
 }
 
 enum Effect {
@@ -98,8 +101,10 @@ impl Handle {
         }
     }
 
-    pub fn reply(&self, id: u64, rc: u8, value: Value) {
-        let _ = self.tx.send(Effect::Reply(id, rc, value));
+    pub fn reply(&self, describe: &Describe, rc: u8, value: Value) {
+        if let Some(id) = describe.ticket.take() {
+            let _ = self.tx.send(Effect::Reply(id, rc, value));
+        }
     }
     pub fn quit(&self) {
         let _ = self.tx.send(Effect::Quit);
@@ -142,7 +147,7 @@ pub struct Started {
     pub handle: Handle,
     pub ui: Ui<Content, LocalContext>,
     pub bootstrap: appearance::settings::Prepared,
-    pub describes: std::sync::mpsc::Receiver<Describe>,
+    pub describes: tokio::sync::mpsc::Receiver<Describe>,
     /// The worker thread, stored so shutdown joins it instead of detaching it.
     pub worker: std::thread::JoinHandle<()>,
 }
@@ -164,7 +169,7 @@ pub(crate) struct PreparationSeed {
 }
 
 struct WorkerChannels {
-    describes: std::sync::mpsc::Sender<Describe>,
+    describes: tokio::sync::mpsc::Sender<Describe>,
     effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
     seed: PreparationSeed,
@@ -179,7 +184,7 @@ pub fn start(
     wake: Wake,
     seed: PreparationSeed,
 ) -> Result<Started, String> {
-    let (describe_tx, describe_rx) = std::sync::mpsc::channel();
+    let (describe_tx, describe_rx) = tokio::sync::mpsc::channel(PENDING_CAP);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
     let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -244,7 +249,7 @@ fn wake_ui(wake: &Wake, needed: bool) {
 const PENDING_CAP: usize = 32;
 /// The total in-flight reply/refusal tasks. Bounded on its own account: the
 /// incoming lane's capacity never implies any bound on spawned tasks.
-const OPERATIONS_CAP: usize = 32;
+const OPERATIONS_CAP: usize = 8;
 /// One shared shutdown budget for the whole lane, as everywhere else.
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
@@ -341,8 +346,8 @@ async fn worker(
     let mut served = false;
     // A tracked describe keeps the client that received it, so its reply is
     // sent on the SAME connection whatever happened to the shared handle.
-    let mut pending: HashMap<u64, (Arc<SupervisedClient>, IncomingCommand)> = HashMap::new();
-    let mut next_id = 0;
+    let mut pending: HashMap<u64, (Arc<SupervisedClient>, IncomingCommand, Permit)> = HashMap::new();
+    let mut next_id = 0u64;
     let mut lifecycle = None;
     let mut incoming_open = true;
     let mut connection_open = true;
@@ -351,23 +356,23 @@ async fn worker(
     // BUSY flood cannot allocate unbounded tasks. Accepted replies take
     // priority — when the pool is exhausted they are RETAINED here and
     // started as capacity frees; refusals are shed with a diagnostic instead.
-    let permits = Arc::new(tokio::sync::Semaphore::new(OPERATIONS_CAP));
-    let mut retained_replies: VecDeque<(Arc<SupervisedClient>, IncomingCommand, u8, String)> =
-        VecDeque::new();
+    let admitted = Admission::new(PENDING_CAP);
+    let refusals = Admission::new(4);
+    let mut retained_replies = Outbox::<Reply, 0>::new(PENDING_CAP);
+    let mut deliveries = Outbox::<Describe, 0>::new(PENDING_CAP);
     let mut operations = tokio::task::JoinSet::new();
     loop {
         // Accepted replies retained while the task cap was exhausted start
         // the moment capacity frees; an unused permit returns immediately.
-        while let Ok(permit) = permits.clone().try_acquire_owned() {
-            match retained_replies.pop_front() {
-                Some((client, command, rc, body)) => {
-                    operations.spawn(async move {
-                        let _permit = permit;
-                        respond(client, command, rc, body).await
-                    });
-                }
-                None => break, // the permit is returned unused
+        submit_replies(&mut retained_replies, &mut operations);
+        if deliveries.flush_with(|describe| describes.try_send(describe).map_err(|error| {
+            match error {
+                tokio::sync::mpsc::error::TrySendError::Full(value) => SendError::Full(value),
+                tokio::sync::mpsc::error::TrySendError::Closed(value) => SendError::Closed(value),
             }
+        })) == Flush::Closed {
+            eprintln!("{service} frontend closed with {} accepted requests", pending.len());
+            break;
         }
         // Retry a retained overflow into the verb queue the moment capacity
         // may have returned; the core serve loop consumes it and logs it.
@@ -379,8 +384,9 @@ async fn worker(
         }
         // Sample once before waiting: fast registration may already be done.
         let now = *connection.borrow_and_update();
-        if lifecycle != Some(now) {
-            lifecycle = Some(now);
+        let generation = client.connection_generation();
+        if lifecycle != Some((now, generation)) {
+            lifecycle = Some((now, generation));
             // EVERY lifecycle transition publishes into the settings lane:
             // edge-triggered consumers and the UI reconcile on one signal.
             {
@@ -444,12 +450,16 @@ async fn worker(
                         client.connection_generation(),
                     );
                     if let Some(fallback) = fallback {
-                        let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
+                        if tokio::time::timeout(Duration::from_secs(2), client.close()).await.is_err() {
+                            eprintln!("{service} old supervisor did not retire; refusing name fallback");
+                            break;
+                        }
                         // Replies from the old connection can never be sent:
                         // fence both the pending describes and any retained
                         // accepted replies on the replaced generation.
-                        pending.clear();
-                        retained_replies.clear();
+                        for (_, (_, _, permit)) in pending.drain() { permit.finish(); }
+                        for reply in retained_replies.drain() { reply.permit.finish(); }
+                        for delivery in deliveries.drain() { let _ = delivery.ticket.take(); }
                         name = fallback;
                         client = Arc::new(
                             SupervisedClient::connect_options(&name, &url)
@@ -481,9 +491,16 @@ async fn worker(
             // client is still THIS one, at the connection generation the
             // command arrived on. A reply may never ride current-generation
             // evidence back to an old connection.
-            pending.retain(|_, (stored, command)| {
-                Arc::ptr_eq(stored, &client) && client.connection_generation() == command.generation
-            });
+            let stale: Vec<_> = pending.iter().filter_map(|(id, (stored, command, _))| {
+                (!Arc::ptr_eq(stored, &client) || now != ConnState::Connected
+                    || generation != command.generation).then_some(*id)
+            }).collect();
+            for id in stale {
+                if let Some((_, _, permit)) = pending.remove(&id) {
+                    eprintln!("{service} retired stale describe {id}");
+                    permit.finish();
+                }
+            }
         }
         // Fairness under an incoming flood is ordered, not left to chance:
         // completed reply tasks (which free the operation cap), the settings
@@ -494,8 +511,13 @@ async fn worker(
         tokio::select! {
             biased;
             result = operations.join_next(), if !operations.is_empty() => {
-                if let Some(Err(error)) = result {
-                    eprintln!("{service} Bus reply: {error}");
+                match result {
+                    Some(Ok((permit, result))) => {
+                        if let Err(error) = result { eprintln!("{service} Bus reply: {error}"); }
+                        permit.finish();
+                    }
+                    Some(Err(error)) => eprintln!("{service} Bus reply: {error}"),
+                    None => {}
                 }
             }
             progress = lane.drive() => match progress {
@@ -512,22 +534,26 @@ async fn worker(
                         // Accepted replies take priority over refusals: when
                         // the task cap is exhausted they are retained, never
                         // dropped, and start as capacity frees.
-                        if let Some((client, command)) = pending.remove(&id) {
+                        if let Some((client, command, permit)) = pending.remove(&id) {
                             let body = value.to_string();
-                            match permits.clone().try_acquire_owned() {
-                                Ok(permit) => {
-                                    operations.spawn(async move {
-                                        let _permit = permit;
-                                        respond(client, command, rc, body).await
-                                    });
-                                }
-                                Err(_) => retained_replies
-                                    .push_back((client, command, rc, body)),
+                            if let Err(reply) = retained_replies.push(Reply {client, command, permit, rc, body}) {
+                                // One credit covers pending + retained + tasks, so
+                                // this cannot be full after removing that pending.
+                                eprintln!("{service} accepted reply retention invariant failed");
+                                reply.permit.finish();
                             }
                         }
                     }
                     Effect::Quit => break,
                 }
+            }
+            changed = connection.changed(), if connection_open => {
+                if changed.is_err() { connection_open = false; }
+            }
+            reserved = describes.reserve(), if !deliveries.is_empty() => {
+                if reserved.is_err() { break; }
+                // Capacity is only a wakeup. The value stays in the outbox
+                // until the synchronous flush at the next loop boundary.
             }
             event = async { incoming.as_mut().expect("guarded incoming").recv().await },
                 if incoming.is_some() && incoming_open => {
@@ -565,22 +591,36 @@ async fn worker(
                     // a slow UI cannot grow the map without limit. While the
                     // reply path is saturated (retained accepted replies), new
                     // describes are refused instead of queueing further.
-                    if pending.len() >= PENDING_CAP || !retained_replies.is_empty() {
+                    let Some(permit) = admitted.try_acquire() else {
                         let client = Arc::clone(&client);
-                        try_spawn(service, &permits, &mut operations, client, command, 10,
+                        try_spawn(service, &refusals, &mut operations, client, command, 10,
                             "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".to_string());
                         continue;
-                    }
-                    next_id += 1;
-                    if describes.send(Describe { id: next_id }).is_err() {
+                    };
+                    let Some(id) = next_id.checked_add(1) else {
+                        permit.finish();
+                        try_spawn(service, &refusals, &mut operations, Arc::clone(&client), command, 10,
+                            "{\"error_code\":\"EXHAUSTED\"}".into());
+                        continue;
+                    };
+                    next_id = id;
+                    if describes.is_closed() {
                         // The UI is gone: no answer can ever come. Refuse once,
                         // tracked on the originating client.
                         let client = Arc::clone(&client);
-                        try_spawn(service, &permits, &mut operations, client, command, 10,
+                        permit.finish();
+                        try_spawn(service, &refusals, &mut operations, client, command, 10,
                             "{\"error_code\":\"CLOSED\",\"message\":\"no frontend to answer app.describe\"}".to_string());
                         continue;
                     }
-                    pending.insert(next_id, (Arc::clone(&client), command));
+                    pending.insert(id, (Arc::clone(&client), command, permit));
+                    let delivery = Describe {id, ticket: Once::new(id)};
+                    if let Err(delivery) = deliveries.push(delivery) {
+                        let _ = delivery.ticket.take();
+                        if let Some((_, _, permit)) = pending.remove(&id) { permit.finish(); }
+                        eprintln!("{service} frontend retention invariant failed");
+                        break;
+                    }
                     wake_ui(&wake, true);
                     continue;
                 }
@@ -591,7 +631,7 @@ async fn worker(
                     Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => match event {
                         BoundedIncomingEvent::Command(command) => {
                             let client = Arc::clone(&client);
-                            try_spawn(service, &permits, &mut operations, client, command, 10,
+                            try_spawn(service, &refusals, &mut operations, client, command, 10,
                                 "{\"error_code\":\"BUSY\",\"message\":\"verb queue full\"}".to_string());
                         }
                         // A retained overflow marker can lose the same
@@ -603,9 +643,6 @@ async fn worker(
                     },
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
                 }
-            }
-            changed = connection.changed(), if connection_open => {
-                if changed.is_err() { connection_open = false; }
             }
             reserved = commands_tx.reserve(), if pending_overflow.is_some() => {
                 if reserved.is_err() {
@@ -629,10 +666,11 @@ async fn worker(
     // Accepted replies retained while the task cap was exhausted stay fenced
     // on their originating client and generation: they must be sent under the
     // shared deadline or be counted as undelivered — never silently dropped.
-    // Retained + in-flight stays within 2 × OPERATIONS_CAP at shutdown.
-    for (client, command, rc, body) in retained_replies.drain(..) {
-        operations.spawn(respond(client, command, rc, body));
+    for (_, (_, _, permit)) in pending.drain() {
+        faults.push("accepted describe retired without frontend reply".into());
+        permit.finish();
     }
+    for delivery in deliveries.drain() { let _ = delivery.ticket.take(); }
     if let Some(mut task) = serve_task.take() {
         tokio::select! {
             result = &mut task => {
@@ -646,15 +684,25 @@ async fn worker(
             }
         }
     }
-    while !operations.is_empty() {
+    while !operations.is_empty() || !retained_replies.is_empty() {
+        submit_replies(&mut retained_replies, &mut operations);
         match tokio::time::timeout_at(deadline_at, operations.join_next()).await {
-            Ok(Some(Ok(Ok(())))) => {}
-            Ok(Some(Ok(Err(error)))) => faults.push(error),
+            Ok(Some(Ok((permit, result)))) => {
+                if let Err(error) = result { faults.push(error); }
+                permit.finish();
+            }
             Ok(Some(Err(error))) => faults.push(format!("term Bus reply: {error}")),
             Ok(None) => break,
             Err(_) => {
-                let undelivered = operations.len();
+                let undelivered = operations.len() + retained_replies.len();
                 operations.abort_all();
+                while let Some(result) = operations.join_next().await {
+                    if let Ok((permit, result)) = result {
+                        if let Err(error) = result { faults.push(error); }
+                        permit.finish();
+                    }
+                }
+                for reply in retained_replies.drain() { reply.permit.finish(); }
                 if undelivered > 0 {
                     faults.push(format!(
                         "term Bus reply drain timed out with {undelivered} undelivered replies"
@@ -673,7 +721,11 @@ async fn worker(
     {
         faults.push("Bus close timed out".into());
     }
-    eprintln!("TERM_SHUTDOWN {}", json!({"faults": faults}));
+    let accepted = admitted.counts();
+    let refused = refusals.counts();
+    eprintln!("TERM_SHUTDOWN {}", json!({"faults": faults,
+        "describes": {"active":accepted.active,"finished":accepted.finished,"abandoned":accepted.abandoned},
+        "refusals": {"active":refused.active,"finished":refused.finished,"abandoned":refused.abandoned}}));
 }
 
 /// One bounded reply on the client that received the command. Spawned as a
@@ -698,20 +750,48 @@ async fn respond(
 /// accepted reply is retained by the caller instead, never dropped here.
 fn try_spawn(
     service: &'static str,
-    permits: &Arc<tokio::sync::Semaphore>,
-    operations: &mut tokio::task::JoinSet<Result<(), String>>,
+    permits: &Admission,
+    operations: &mut tokio::task::JoinSet<(Permit, Result<(), String>)>,
     client: Arc<SupervisedClient>,
     command: IncomingCommand,
     rc: u8,
     body: String,
 ) {
-    let Ok(permit) = permits.clone().try_acquire_owned() else {
+    if operations.len() >= OPERATIONS_CAP {
+        eprintln!("{service} Bus refusal send capacity exhausted (caller times out)");
+        return;
+    }
+    let Some(permit) = permits.try_acquire() else {
         eprintln!("{service} Bus reply capacity exhausted; dropping a refusal (caller times out)");
         return;
     };
     operations.spawn(async move {
-        let _permit = permit;
-        respond(client, command, rc, body).await
+        let result = respond(client, command, rc, body).await;
+        (permit, result)
+    });
+}
+
+struct Reply {
+    client: Arc<SupervisedClient>,
+    command: IncomingCommand,
+    permit: Permit,
+    rc: u8,
+    body: String,
+}
+
+fn submit_replies(
+    retained: &mut Outbox<Reply, 0>,
+    operations: &mut tokio::task::JoinSet<(Permit, Result<(), String>)>,
+) {
+    retained.flush_with(|reply| {
+        if operations.len() >= OPERATIONS_CAP {
+            return Err(SendError::Full(reply));
+        }
+        operations.spawn(async move {
+            let result = respond(reply.client, reply.command, reply.rc, reply.body).await;
+            (reply.permit, result)
+        });
+        Ok(())
     });
 }
 
@@ -776,7 +856,7 @@ mod tests {
         let (cleanup, reaper) = term_core::tabs::Cleanup::start().unwrap();
         let (_notes, notify_rx) = tokio::sync::mpsc::unbounded_channel();
         let wake: Wake = Arc::new(|| {});
-        let started = start(
+        let mut started = start(
             "term",
             broker.url.clone(),
             tabs.clone(),
@@ -804,8 +884,8 @@ mod tests {
             let handle = started.handle.clone();
             let answered = tokio::spawn(async move {
                 loop {
-                    for describe in started.describes.try_iter() {
-                        handle.reply(describe.id, 0, json!({"app": "term"}));
+                    while let Ok(describe) = started.describes.try_recv() {
+                        handle.reply(&describe, 0, json!({"app": "term"}));
                     }
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
@@ -897,29 +977,51 @@ mod tests {
         assert!(pending.is_none());
     }
 
-    /// The operations cap is a real permit bound: nothing starts beyond it,
-    /// and capacity returns with completed tasks. `try_acquire_owned` takes
-    /// the `Arc`, exactly as the worker holds it.
     #[test]
-    fn operations_permits_bound_in_flight_reply_tasks() {
-        let permits = Arc::new(tokio::sync::Semaphore::new(OPERATIONS_CAP));
-        let held: Vec<_> = (0..OPERATIONS_CAP)
-            .map(|_| {
-                permits
-                    .clone()
-                    .try_acquire_owned()
-                    .expect("permit under the cap")
-            })
-            .collect();
-        assert!(
-            permits.clone().try_acquire_owned().is_err(),
-            "no reply task may start beyond the operations cap"
-        );
-        drop(held);
-        assert!(
-            permits.clone().try_acquire_owned().is_ok(),
-            "capacity returns with the completed tasks"
-        );
+    fn describe_credit_stays_owned_by_completed_unreaped_output() {
+        runtime().block_on(async {
+            let admission = Admission::new(PENDING_CAP);
+            let mut tasks = tokio::task::JoinSet::new();
+            let (completed, mut completion) = tokio::sync::mpsc::channel(PENDING_CAP);
+            for _ in 0..PENDING_CAP {
+                let permit = admission.try_acquire().unwrap();
+                let completed = completed.clone();
+                tasks.spawn(async move {
+                    completed.send(()).await.unwrap();
+                    (permit, Ok::<(), String>(()))
+                });
+            }
+            for _ in 0..PENDING_CAP { completion.recv().await.unwrap(); }
+            tokio::task::yield_now().await;
+            assert!(admission.try_acquire().is_none(), "finished tasks retain accepted credit until reap");
+            assert_eq!(admission.counts().active, PENDING_CAP);
+            let (permit, result) = tasks.join_next().await.unwrap().unwrap();
+            result.unwrap();
+            permit.finish();
+            let one = admission.try_acquire().unwrap();
+            assert!(admission.try_acquire().is_none());
+            one.finish();
+            while let Some(result) = tasks.join_next().await {
+                let (permit, result) = result.unwrap();
+                result.unwrap();
+                permit.finish();
+            }
+            assert_eq!(admission.counts().active, 0);
+            assert_eq!(admission.counts().finished, PENDING_CAP as u64 + 1);
+            assert_eq!(admission.counts().abandoned, 0);
+        });
+    }
+
+    #[test]
+    fn cloned_frontend_request_queues_only_one_reply_effect() {
+        let mut handle = Handle::sink();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        handle.tx = tx;
+        let describe = Describe {id: 42, ticket: Once::new(42)};
+        handle.reply(&describe, 0, json!({"app":"term"}));
+        handle.reply(&describe.clone(), 0, json!({"app":"term"}));
+        assert!(matches!(rx.try_recv(), Ok(Effect::Reply(42, 0, _))));
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
     }
 
     /// A describe flood with a silent frontend is refused BUSY rather than
@@ -947,7 +1049,7 @@ mod tests {
                 let _ = wake_tx.send(());
             })
         };
-        let started = start(
+        let mut started = start(
             "term",
             broker.url.clone(),
             tabs.clone(),
@@ -1000,10 +1102,10 @@ mod tests {
                 loop {
                     match started.describes.try_recv() {
                         Ok(describe) => {
-                            accepted.push(describe.id);
+                            accepted.push(describe);
                             break;
                         }
-                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                             tokio::time::timeout_at(deadline, wake_rx.recv())
                                 .await
                                 .expect("each request reaches frontend admission")
@@ -1047,7 +1149,7 @@ mod tests {
             // send; quit must still progress under the shared deadline.
             let paused = broker.pause();
             for id in accepted {
-                started.handle.reply(id, 0, json!({"app": "term"}));
+                started.handle.reply(&id, 0, json!({"app": "term"}));
             }
             started.handle.quit();
             started

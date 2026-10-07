@@ -347,7 +347,7 @@ struct State {
     bus: Handle,
     /// Queued `app.describe` requests, answered on the UI thread after the
     /// settings reconcile; bounded upstream (the adapter refuses beyond 32).
-    describes: std::sync::mpsc::Receiver<Describe>,
+    describes: tokio::sync::mpsc::Receiver<Describe>,
     waker: Arc<Waker>,
     /// Logical inner size of the window, as the compositor last reported it.
     window: Size,
@@ -1210,7 +1210,7 @@ impl State {
     fn answer_describes(&mut self) {
         while let Ok(describe) = self.describes.try_recv() {
             let value = self.describe();
-            self.bus.reply(describe.id, 0, value);
+            self.bus.reply(&describe, 0, value);
         }
     }
 
