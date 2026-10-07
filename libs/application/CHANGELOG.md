@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.15
+
+- Share bounded native task sets that retain admission credit through completed
+  but unreaped outputs. Full task sets return retained work without invoking its
+  factory; cancellation and panic remain explicitly abandoned work.
+- Share origin-owning accepted commands and retained replies with absolute send
+  deadlines, so queued delay cannot extend the reply budget or change the
+  receiving supervisor. Hosts keep their existing actors and shutdown deadlines.
+
 ## 0.1.14
 
 - Share fixture frame state, exact-stamp waits, native metadata encoding and
