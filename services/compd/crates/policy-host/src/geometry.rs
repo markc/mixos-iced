@@ -54,11 +54,20 @@ fn target(
         .and_then(|restore| {
             space
                 .outputs()
-                .find(|output| output.name() == restore.output)
+                .find(|output| {
+                    output.name() == restore.output && space.output_geometry(output).is_some()
+                })
                 .cloned()
         })
-        .or_else(|| space.outputs_for_element(window).first().cloned())
-        .or_else(|| space.outputs().next().cloned())?;
+        // Overlap membership can still contain a just-unmapped output until
+        // Space refreshes. It must not prevent an available-output fallback.
+        .or_else(|| {
+            space.outputs_for_element(window).into_iter()
+                .find(|output| space.output_geometry(output).is_some())
+        })
+        .or_else(|| {
+            space.outputs().find(|output| space.output_geometry(output).is_some()).cloned()
+        })?;
     let name = output.name();
     let reserved = comp.reserved.get(&name).copied().unwrap_or_default();
     let outer = usable_area(&output, space.output_geometry(&output)?, reserved);

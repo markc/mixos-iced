@@ -155,18 +155,8 @@ fn delayed_ack_and_older_buffer_never_regress_the_decided_slot() {
         delayed_fit.fit_sx, delayed_fit.fit_sy,
         "no resize gesture stretch"
     );
-    let p = (96.0, 72.0);
-    let displayed = (
-        delayed_fit.fit_surf.0 + p.0 * delayed_fit.fit_sx,
-        delayed_fit.fit_surf.1 + p.1 * delayed_fit.fit_sy,
-    );
-    assert_eq!(
-        (
-            (displayed.0 - delayed_fit.fit_surf.0) / delayed_fit.fit_sx,
-            (displayed.1 - delayed_fit.fit_surf.1) / delayed_fit.fit_sy
-        ),
-        p
-    );
+    assert_eq!(delayed_fit.fit_sx, 1.0);
+    assert_eq!(delayed_fit.fit_surf, (0.0, -40.0), "old content centres in the smaller authoritative slot");
     xdg.ack_configure(older);
     h.roundtrip();
     assert_eq!(slot::decided_size(&window), Some((1920, 1000).into()));
