@@ -97,6 +97,7 @@ pub struct App {
     connected: bool,
     refused: bool,
     handoff_pending: bool,
+    subscription_fault: Option<String>,
     launched: std::time::Instant,
     dialog: Option<Action>,
     status: String,
@@ -186,6 +187,7 @@ impl App {
             connected: false,
             refused: false,
             handoff_pending: false,
+            subscription_fault: None,
             launched: std::time::Instant::now(),
             dialog: None,
             status: label("connecting"),
@@ -231,7 +233,16 @@ impl App {
         } else {
             "bus-connecting"
         };
-        format!("{} · {}", label(kind), label(connection))
+        let subscriptions = self
+            .subscription_fault
+            .as_deref()
+            .unwrap_or("subscriptions-ok");
+        format!(
+            "{} · {} · {}",
+            label(kind),
+            label(connection),
+            label(subscriptions)
+        )
     }
     fn busy(&self) -> bool {
         self.discovery.is_some() || self.call.is_some() || !self.activations.is_empty()
@@ -827,6 +838,10 @@ impl App {
                         }
                     }
                     Delivery::Settings => Task::none(),
+                    Delivery::Notice(message) => {
+                        self.subscription_fault = Some(message);
+                        Task::none()
+                    }
                     Delivery::Refused {
                         name_taken,
                         message,
@@ -1071,6 +1086,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use application::presentation::native::{Event as SettingsEvent, Progress};
     fn app() -> App {
         let consumer = settings::consumer::Consumer::for_app(
             settings::Binding {
@@ -1245,8 +1261,8 @@ mod tests {
         assert_eq!(replies[0].2["schema"], "busviewer.v1");
         assert_eq!(replies[1].2["app_id"], APP_ID);
         assert!(
-            replies[1].2["settings"]["kind"].is_string(),
-            "busviewer.info carries canonical consumer evidence"
+            replies[1].2["settings"]["kind"].is_null(),
+            "no presentation kind before any activation"
         );
         assert!(
             replies[1].2["settings_cache"].is_object(),
@@ -1261,8 +1277,8 @@ mod tests {
                 .any(|v| v["name"] == "busviewer.call")
         );
         assert!(
-            replies[3].2["settings"]["kind"].is_string(),
-            "app.describe carries canonical consumer evidence"
+            replies[3].2["settings"]["kind"].is_null(),
+            "no presentation kind before any activation"
         );
         assert!(
             replies[3].2["settings_cache"].is_object(),
@@ -1465,24 +1481,149 @@ mod tests {
         assert_eq!(replies[0].2["outcome_unknown"], true);
         assert_eq!(replies[0].2["retried"], false);
     }
-    /// Settings frames drain on every Bus delivery and must never disturb the
-    /// accepted call, the editor contents and cursors, the tree model or the
-    /// selection — and never trigger a refetch or a replay.
+    /// Install the built-in licensed Inter font into both the sans and mono
+    /// slots so the real prepare step resolves every typography role
+    /// deterministically, without relying on undocumented host fonts.
+    fn install_test_fonts() {
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            let inter =
+                include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").as_slice();
+            toolkit::fonts::install(
+                toolkit::fonts::FontSet::new()
+                    .sans(inter)
+                    .mono(inter),
+                None,
+            )
+            .expect("built-in licensed test font installs");
+        });
+    }
+    /// A real prepared-presentation activation: driving the shared lane/worker
+    /// pipeline through the app's own session rethemes the look (font, colour,
+    /// geometry) while the accepted call, editor contents, cursors, filter,
+    /// tree and split survive — and it never triggers a refetch or a replay.
     #[test]
-    fn settings_drain_preserves_pending_call_body_reply_cursor_and_model() {
-        let mut app = app();
+    fn settings_activation_rethemes_without_disturbing_editor_state() {
+        install_test_fonts();
+        let binding = settings::Binding {
+            instance: "fixture".into(),
+            profile: "default".into(),
+        };
+        let consumer =
+            settings::consumer::Consumer::for_app(binding.clone(), "busviewer").unwrap();
+        let (ui, mut lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
+        let mut app = App::new(
+            Settings::default(),
+            Handle::sink_with_generation(Some(1)),
+            appearance::settings::bootstrap().unwrap(),
+            ui,
+        );
+        app.connected = true;
+        app.snapshot.services.insert(
+            "example".into(),
+            Ok(vec![model::Verb {
+                name: "echo".into(),
+                args: "value: JSON".into(),
+                description: "Echo a value".into(),
+                read_only: Some(true),
+            }]),
+        );
+        app.rebuild();
         app.selected = Some(target());
         app.body = text_editor::Content::with_text("{\"value\":42}");
         app.reply = text_editor::Content::with_text("first reply");
         app.reply.perform(text_editor::Action::SelectAll);
         let _ = app.start_call(target(), "{\"value\":42}".into(), None);
         let ticket = app.call.as_ref().unwrap().ticket;
+        let _ = app.update(Message::Filter("echo".into()));
+        let _ = app.update(Message::Split(0.5));
+        let before_font = app.look().typography().get("ui").unwrap().font;
+        let before_surface = app.look().tokens().palette.surface;
+        let before_metrics = app.look().tokens().metrics.text.md;
         let body = app.body.text();
         let reply_text = app.reply.text();
         let reply_selection = app.reply.selection();
         let reply_cursor = app.reply.cursor();
         let rows = app.tree.len();
+
+        // Drive the real read pipeline through the app's own session, then run
+        // the shared worker until the prepared presentation is published.
+        let _ = app.settings_ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});
+        let subscribe = app
+            .settings_ui
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .expect("subscribe work")
+            .clone();
+        let _ = app
+            .settings_ui
+            .handle_with(SettingsEvent::Rpc(subscribe, Ok(None)), Some(1), |_| {});
+        let _ = app.settings_ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});
+        let read = app
+            .settings_ui
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .expect("read work")
+            .clone();
+        let _ = app.settings_ui.handle_with(
+            SettingsEvent::Rpc(
+                read,
+                Ok(Some(crate::bus::settings_snapshot(&binding, true, 1.5))),
+            ),
+            Some(1),
+            |_| {},
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            loop {
+                match lane.drive().await {
+                    Progress::Wake => break,
+                    Progress::Updated => {}
+                    Progress::UiClosed => panic!("test UI closed"),
+                }
+            }
+        });
+        // The app's own settings drain activates the prepared presentation.
         let _ = app.update(Message::Bus(Delivery::Settings));
+        assert!(
+            app.settings_ui.session().host().presentation().is_some(),
+            "activation occurred"
+        );
+        assert_eq!(
+            app.settings_ui.session().host().kind(),
+            Some(settings::fallback::PresentationKind::Current),
+            "the authority presentation is current"
+        );
+        assert_eq!(
+            serde_json::json!(app.settings_ui.session().host().consumer().evidence())["kind"],
+            "current",
+            "the canonical kind string after activation"
+        );
+        assert_ne!(
+            app.look().typography().get("ui").unwrap().font,
+            before_font,
+            "activated font"
+        );
+        assert_ne!(
+            app.look().tokens().palette.surface,
+            before_surface,
+            "activated colour"
+        );
+        assert_ne!(
+            app.look().tokens().metrics.text.md,
+            before_metrics,
+            "activated geometry"
+        );
         assert_eq!(app.call.as_ref().unwrap().ticket, ticket);
         assert_eq!(app.call.as_ref().unwrap().body, "{\"value\":42}");
         assert_eq!(app.body.text(), body);
@@ -1491,6 +1632,7 @@ mod tests {
         assert_eq!(app.reply.cursor(), reply_cursor);
         assert_eq!(app.tree.len(), rows);
         assert_eq!(app.selected, Some(target()));
+        assert_eq!(app.split, 0.5);
         assert!(app.last_reply.is_null());
         assert!(!app.refetch, "settings must never refetch or replay a call");
         assert!(app.discovery.is_none());

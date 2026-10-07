@@ -3,8 +3,8 @@
 //! same worker, runtime, client and receiver. Topics drive refreshes; no
 //! poller and no second transport exists here.
 use ::bus::native_client::{
-    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
-    SupervisedError,
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
+    SupervisedClient, SupervisedError,
 };
 use application::iced::futures::channel::{mpsc, oneshot};
 use application::presentation::native::{
@@ -12,7 +12,7 @@ use application::presentation::native::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
@@ -22,6 +22,7 @@ pub enum Delivery {
     Command { id: u64, verb: String, body: String },
     Changed,
     Settings,
+    Notice(String),
     Refused { name_taken: bool, message: String },
     Forwarded(Result<(), String>),
     Connected,
@@ -99,6 +100,8 @@ pub struct Handle {
     stopped: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     forwards: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    test_generation: Option<u64>,
 }
 impl Handle {
     pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, CallError> {
@@ -162,6 +165,10 @@ impl Handle {
             .is_none_or(|client| settings::native::live_generation(client).is_some())
     }
     pub fn settings_generation(&self) -> Option<u64> {
+        #[cfg(test)]
+        if self.client.is_none() {
+            return self.test_generation;
+        }
         self.client
             .as_ref()
             .and_then(|client| settings::native::live_generation(client))
@@ -183,7 +190,16 @@ impl Handle {
             records: Arc::new(Mutex::new(Vec::new())),
             stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             forwards: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            test_generation: None,
         }
+    }
+    /// A sink whose sampled generation is explicit, for settings drains that
+    /// fence on the live connection generation in tests.
+    #[cfg(test)]
+    pub fn sink_with_generation(generation: Option<u64>) -> Self {
+        let mut sink = Self::sink();
+        sink.test_generation = generation;
+        sink
     }
     #[cfg(test)]
     pub fn responses(&self) -> Vec<(u64, u8, Value)> {
@@ -256,6 +272,8 @@ pub fn start(
             stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(test)]
             forwards: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            test_generation: None,
         },
         ui,
         bootstrap,
@@ -283,6 +301,7 @@ struct Outbox {
     refused: Option<(bool, String)>,
     forwarded: Option<Result<(), String>>,
     connection: Option<Delivery>,
+    notice: Option<String>,
     changed: bool,
     settings: bool,
 }
@@ -291,6 +310,7 @@ impl Outbox {
         self.refused.is_none()
             && self.forwarded.is_none()
             && self.connection.is_none()
+            && self.notice.is_none()
             && !self.changed
             && !self.settings
     }
@@ -311,6 +331,7 @@ impl Outbox {
                     self.forwarded = Some(result);
                 }
             }
+            Delivery::Notice(message) => self.notice = Some(message),
             Delivery::Connected | Delivery::Disconnected => self.connection = Some(delivery),
             Delivery::Changed => self.changed = true,
             Delivery::Settings => self.settings = true,
@@ -325,6 +346,7 @@ impl Outbox {
                 message,
             } => self.refused = Some((name_taken, message)),
             Delivery::Forwarded(result) => self.forwarded = Some(result),
+            Delivery::Notice(message) => self.notice = Some(message),
             Delivery::Connected | Delivery::Disconnected => self.connection = Some(delivery),
             Delivery::Changed => self.changed = true,
             Delivery::Settings => self.settings = true,
@@ -332,7 +354,8 @@ impl Outbox {
         }
     }
     /// Deterministic order: the refusal precedes its handoff completion, then
-    /// the newest connection edge, then the coalesced refreshes.
+    /// the newest connection edge, the newest notice, then the coalesced
+    /// refreshes.
     fn next(&mut self) -> Option<Delivery> {
         if let Some((name_taken, message)) = self.refused.take() {
             return Some(Delivery::Refused {
@@ -345,6 +368,7 @@ impl Outbox {
         }
         self.connection
             .take()
+            .or_else(|| self.notice.take().map(Delivery::Notice))
             .or_else(|| {
                 self.changed.then(|| {
                     self.changed = false;
@@ -378,20 +402,69 @@ impl Outbox {
 }
 
 /// A bounded BUSY/ARGUMENT refusal, tracked like every other reply so one
-/// shared shutdown budget drains them all.
+/// shared shutdown budget drains them all. Refusals share a real concurrent
+/// task cap: under saturation the refusal is shed truthfully (logged; the
+/// caller's own deadline ends the exchange) rather than queued without bound.
 fn reply_refused(
     client: &Arc<SupervisedClient>,
     replies: &mut tokio::task::JoinSet<Result<(), String>>,
+    refusal_permits: &Arc<tokio::sync::Semaphore>,
     command: IncomingCommand,
     body: String,
 ) {
+    let Ok(permit) = refusal_permits.clone().try_acquire_owned() else {
+        eprintln!("busviewer: refusal shed under load");
+        return;
+    };
     let client = Arc::clone(client);
     replies.spawn(async move {
+        let _permit = permit;
         tokio::time::timeout(Duration::from_secs(2), client.respond(&command, 10, &body))
             .await
             .map_err(|_| "Bus reply timed out".to_owned())?
             .map_err(|error| format!("Bus reply: {error}"))
     });
+}
+
+/// One accepted reply's respond task, bounded by the running-task cap. The
+/// reply keeps its origin command (and therefore its generation and client
+/// identity) untouched.
+fn spawn_respond(
+    client: &Arc<SupervisedClient>,
+    replies: &mut tokio::task::JoinSet<Result<(), String>>,
+    reply_permits: &Arc<tokio::sync::Semaphore>,
+    command: IncomingCommand,
+    rc: u8,
+    body: String,
+) -> bool {
+    let Ok(permit) = reply_permits.clone().try_acquire_owned() else {
+        return false;
+    };
+    let client = Arc::clone(client);
+    replies.spawn(async move {
+        let _permit = permit;
+        tokio::time::timeout(Duration::from_secs(2), client.respond(&command, rc, &body))
+            .await
+            .map_err(|_| "Bus reply timed out".to_owned())?
+            .map_err(|error| format!("Bus reply: {error}"))
+    });
+    true
+}
+
+/// Spawn retained accepted replies while a running-task slot is free. Callers
+/// pause new-command admission while `accepted` is non-empty, so this queue
+/// can never overflow or drop an accepted reply.
+fn spawn_accepted(
+    accepted: &mut VecDeque<(IncomingCommand, u8, String)>,
+    mut spawn: impl FnMut(IncomingCommand, u8, String) -> bool,
+) {
+    while let Some((command, rc, body)) = accepted.pop_front() {
+        if spawn(command, rc, body) {
+            continue;
+        }
+        accepted.push_front((command, rc, body));
+        break;
+    }
 }
 
 /// Drain an aborted owned operation set under the shared shutdown budget.
@@ -476,8 +549,12 @@ async fn worker(
         eprintln!("busviewer: static assets: {error}");
     }
     let mut pending: HashMap<u64, IncomingCommand> = HashMap::new();
+    let mut accepted: VecDeque<(IncomingCommand, u8, String)> = VecDeque::new();
     let mut next_id = 0;
     let permits = Arc::new(tokio::sync::Semaphore::new(16));
+    let reply_permits = Arc::new(tokio::sync::Semaphore::new(32));
+    let refusal_permits = Arc::new(tokio::sync::Semaphore::new(32));
+    let mut faults = Vec::new();
     let mut incoming_open = true;
     let mut connection_open = true;
     let mut forward_gate = false;
@@ -489,6 +566,12 @@ async fn worker(
     loop {
         // Fast path: flush retained deliveries without blocking the Lane.
         outbox.flush(&mut send);
+        // Admit retained accepted replies as running slots free up; the
+        // queue stays bounded because admission below pauses while it is
+        // non-empty.
+        spawn_accepted(&mut accepted, |command, rc, body| {
+            spawn_respond(&client, &mut replies, &reply_permits, command, rc, body)
+        });
         // Sample once before waiting: fast registration may already have
         // completed, and every later edge wakes this loop again.
         let now = *connection.borrow_and_update();
@@ -509,10 +592,12 @@ async fn worker(
                     if lane.publish(SettingsEvent::Wake) {
                         outbox.push(Delivery::Settings);
                     }
+                    // Only a typed name-taken collision may ever hand off;
+                    // unknown or admission refusals never forward or exit.
                     outbox.push(Delivery::Refused {
                         name_taken: reason
                             .as_ref()
-                            .is_some_and(|reason| reason.message.contains("already registered")),
+                            .is_some_and(|reason| reason.kind() == RegistrationRejectionKind::NameTaken),
                         message: reason
                             .map_or_else(|| "connection stopped".into(), |reason| reason.message),
                     });
@@ -535,14 +620,11 @@ async fn worker(
                 match control {
                     Some(Control::Reply(id, rc, value)) => {
                         if let Some(command) = pending.remove(&id) {
-                            let client = client.clone();
-                            let body = value.to_string();
-                            replies.spawn(async move {
-                                tokio::time::timeout(Duration::from_secs(2), client.respond(&command, rc, &body))
-                                    .await
-                                    .map_err(|_| "Bus reply timed out".to_owned())?
-                                    .map_err(|error| format!("Bus reply: {error}"))
-                            });
+                            // Accepted replies are retained FIFO, never
+                            // dropped; spawning waits for a running-task
+                            // slot so a stalled broker cannot grow tasks
+                            // without bound.
+                            accepted.push_back((command, rc, value.to_string()));
                         }
                     }
                     Some(Control::Forward) => {
@@ -559,6 +641,31 @@ async fn worker(
                         }
                     }
                     Some(Control::Quit) | None => break,
+                }
+            }
+            // Effects (GUI calls) run ahead of incoming: a sustained inbound
+            // flood must never starve discovery, calls or their replies. The
+            // native call itself keeps its own 30s budget in the task below.
+            effect = effects.recv() => {
+                let Some(effect) = effect else { break; };
+                match effect {
+                    Effect::Call(service, verb, body, reply) => {
+                        let Ok(permit) = permits.clone().try_acquire_owned() else {
+                            let _ = reply.send(Err(CallError::not_sent("Bus call capacity exhausted; no call sent")));
+                            continue;
+                        };
+                        let client = client.clone();
+                        // Owned and drained like every other operation; the
+                        // permit and outcome semantics are unchanged.
+                        calls.spawn(async move {
+                            let _permit = permit;
+                            let result = tokio::time::timeout(Duration::from_secs(30), client.call_with_headers_raw(&service, &verb, &BTreeMap::new(), &body)).await
+                                .map_err(|_| CallError::from("Bus request timed out"))
+                                .and_then(|v| v.map_err(CallError::transport))
+                                .map(|(rc, body, _)| Reply { rc, body });
+                            let _ = reply.send(result);
+                        });
+                    }
                 }
             }
             progress = lane.drive() => {
@@ -583,23 +690,32 @@ async fn worker(
             result = calls.join_next(), if !calls.is_empty() => {
                 if let Some(Err(error)) = result {
                     eprintln!("busviewer: Bus call: {error}");
+                    faults.push(format!("Bus call: {error}"));
                 }
             }
             result = forwards.join_next(), if !forwards.is_empty() => {
                 match result {
                     Some(Ok(result)) => outbox.push(Delivery::Forwarded(result)),
-                    Some(Err(error)) => eprintln!("busviewer: Bus work: {error}"),
+                    Some(Err(error)) => {
+                        eprintln!("busviewer: Bus work: {error}");
+                        faults.push(format!("Bus work: {error}"));
+                    }
                     None => {}
                 }
             }
             result = replies.join_next(), if !replies.is_empty() => {
                 if let Some(Ok(Err(error))) = result {
                     eprintln!("busviewer: Bus reply: {error}");
+                    faults.push(format!("Bus reply: {error}"));
                 }
             }
             result = topics.join_next(), if !topics.is_empty() => {
                 if let Some(Ok(Err(error))) = result {
+                    // Truthfully degraded: the service list may be stale until
+                    // the next reconnect or a manual refresh.
                     eprintln!("busviewer: topic: {error}");
+                    faults.push(format!("topic: {error}"));
+                    outbox.push(Delivery::Notice(format!("Subscription failed: {error}")));
                 }
             }
             command = incoming.recv(), if incoming_open => {
@@ -630,6 +746,11 @@ async fn worker(
                     continue;
                 }
                 if let Some(topic) = command.topic() {
+                    // Settings frames the Lane did not swallow belong to
+                    // another profile; they are not bus inventory changes.
+                    if command.header("broker_service") == Some("settingsd") {
+                        continue;
+                    }
                     if topic == "noded.props.changed"
                         && command.headers.get("gap").is_none_or(|value| value != "true")
                         && serde_json::from_str::<Value>(&command.body).ok()
@@ -641,13 +762,13 @@ async fn worker(
                     continue;
                 }
                 if command.command.is_empty() {
-                    reply_refused(&client, &mut replies, command,
+                    reply_refused(&client, &mut replies, &refusal_permits, command,
                         "{\"error_code\":\"ARGUMENT\",\"message\":\"command verb is empty\"}".into());
                     continue;
                 }
-                if pending.len() >= 32 {
-                    reply_refused(&client, &mut replies, command,
-                        "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".into());
+                if pending.len() >= 32 || !accepted.is_empty() {
+                    reply_refused(&client, &mut replies, &refusal_permits, command,
+                        "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands or accepted replies still flushing\"}".into());
                     continue;
                 }
                 next_id += 1;
@@ -661,30 +782,8 @@ async fn worker(
                 // command instead of blocking the Lane or shutdown.
                 if send.try_send(delivery).is_err() {
                     let command = pending.remove(&next_id).expect("just inserted");
-                    reply_refused(&client, &mut replies, command,
+                    reply_refused(&client, &mut replies, &refusal_permits, command,
                         "{\"error_code\":\"BUSY\",\"message\":\"BusViewer window is busy; command not accepted\"}".into());
-                }
-            }
-            effect = effects.recv() => {
-                let Some(effect) = effect else { break; };
-                match effect {
-                    Effect::Call(service, verb, body, reply) => {
-                        let Ok(permit) = permits.clone().try_acquire_owned() else {
-                            let _ = reply.send(Err(CallError::not_sent("Bus call capacity exhausted; no call sent")));
-                            continue;
-                        };
-                        let client = client.clone();
-                        // Owned and drained like every other operation; the
-                        // permit and outcome semantics are unchanged.
-                        calls.spawn(async move {
-                            let _permit = permit;
-                            let result = tokio::time::timeout(Duration::from_secs(30), client.call_with_headers_raw(&service, &verb, &BTreeMap::new(), &body)).await
-                                .map_err(|_| CallError::from("Bus request timed out"))
-                                .and_then(|v| v.map_err(CallError::transport))
-                                .map(|(rc, body, _)| Reply { rc, body });
-                            let _ = reply.send(result);
-                        });
-                    }
                 }
             }
             changed = connection.changed(), if connection_open => {
@@ -696,13 +795,22 @@ async fn worker(
     }
     // One shared shutdown budget for every tracked reply, every owned
     // operation, the settings cache and the connection close — never a 2s
-    // wait per pending reply.
+    // wait per pending reply. Runtime faults accumulated above join the
+    // same report; none are silently lost.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    let mut faults = Vec::new();
     topics.abort_all();
     forwards.abort_all();
     calls.abort_all();
-    while !replies.is_empty() {
+    // Accepted replies flush before close: retained entries wait for a
+    // running slot, spawned completions drain under the one shared
+    // deadline, and any remainder is reported, never silently dropped.
+    spawn_accepted(&mut accepted, |command, rc, body| {
+        spawn_respond(&client, &mut replies, &reply_permits, command, rc, body)
+    });
+    while !replies.is_empty() || !accepted.is_empty() {
+        if replies.is_empty() {
+            break;
+        }
         match tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
             replies.join_next(),
@@ -719,6 +827,15 @@ async fn worker(
                 break;
             }
         }
+        spawn_accepted(&mut accepted, |command, rc, body| {
+            spawn_respond(&client, &mut replies, &reply_permits, command, rc, body)
+        });
+    }
+    let replies_remaining = accepted.len() + replies.len();
+    if replies_remaining > 0 {
+        faults.push(format!(
+            "shutdown: {replies_remaining} accepted replies not flushed"
+        ));
     }
     if let Some(fault) = drain_aborted(&mut calls, deadline).await {
         faults.push(format!("Bus call: {fault}"));
@@ -739,9 +856,17 @@ async fn worker(
         faults.push("Bus close timed out".into());
     }
     let _ = send.try_send(Delivery::Disconnected);
-    eprintln!("BUSVIEWER_SHUTDOWN {}", json!({"faults": faults}));
+    eprintln!(
+        "BUSVIEWER_SHUTDOWN {}",
+        json!({"faults": faults, "replies_remaining": replies_remaining})
+    );
 }
 
+/// Migration seam: subscriptions are best-effort per connect on the existing
+/// client until the tested declared-subscriptions API from the sibling
+/// settings-bus-subscriptions foundation lands (register declarations once,
+/// let the supervisor replay them). Failures surface truthfully through the
+/// outbox as a Notice; no retry loop is invented here.
 fn arm_topics(
     client: &Arc<SupervisedClient>,
     tasks: &mut tokio::task::JoinSet<Result<(), String>>,
@@ -779,41 +904,6 @@ async fn forward_async(url: &str, service: &str) -> Result<(), String> {
     })
     .await
     .map_err(|_| "activation timed out".to_owned())?
-}
-fn anonymous(url: &str, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    runtime.block_on(async {
-        // Activation may arrive after registration but before the first map.
-        let budget = if verb == "busviewer.show" { 20 } else { 5 };
-        tokio::time::timeout(Duration::from_secs(budget), async {
-            let client = NodedClient::connect_anonymous(url)
-                .await
-                .map_err(|e| e.to_string())?;
-            let result = client
-                .call_with_headers_raw(service, verb, &BTreeMap::new(), &args.to_string())
-                .await;
-            client.close().await;
-            let (rc, body, _) = result.map_err(|e| e.to_string())?;
-            Ok(Reply { rc, body })
-        })
-        .await
-        .map_err(|_| "activation timed out".to_owned())?
-    })
-}
-pub fn probe(url: &str, service: &str) -> bool {
-    anonymous(url, service, "busviewer.ping", json!({})).is_ok_and(|r| r.rc == 0)
-}
-pub fn forward(url: &str, service: &str) -> Result<(), String> {
-    let body = json!({});
-    let reply = anonymous(url, service, "busviewer.show", body)?;
-    if reply.rc != 0 {
-        Err(format!("activation refused: {}", reply.body))
-    } else {
-        Ok(())
-    }
 }
 
 async fn json_call(handle: &Handle, service: &str, verb: &str) -> Result<Value, String> {
@@ -869,6 +959,32 @@ pub async fn discover(handle: Handle) -> crate::model::Snapshot {
     .await;
     snapshot.services.extend(results);
     snapshot
+}
+
+/// A canonical authority snapshot fixture for settings pipeline tests: the
+/// consumer's own binding, the embedded design source, and an explicit
+/// appearance/text-scale selection.
+#[cfg(test)]
+pub(crate) fn settings_snapshot(
+    binding: &settings::Binding,
+    dark: bool,
+    text_scale: f64,
+) -> settings::Snapshot {
+    let mut desktop = settings::Desktop::default();
+    if dark {
+        desktop.appearance.mode = "dark".into();
+    }
+    desktop.ui.text_scale = text_scale;
+    settings::Snapshot {
+        schema: 1,
+        binding: binding.clone(),
+        incarnation: "fixture".into(),
+        revision: settings::Revision(2),
+        design_revision: settings::Revision(2),
+        source_digest: settings::source_digest(settings::EMBEDDED_DEFAULT_SOURCE),
+        effective: settings::resolve(&desktop).expect("fixture desktop resolves"),
+        desktop,
+    }
 }
 
 #[cfg(test)]
@@ -937,7 +1053,6 @@ mod tests {
     /// GUI capacity.
     #[test]
     fn stalled_full_channel_keeps_settings_wake_and_quit_fifo() {
-        use application::iced::futures::StreamExt;
         let (mut send, mut receive) = mpsc::channel(64);
         let mut filled = 0;
         while let Ok(()) = send.try_send(Delivery::Changed) {
@@ -956,7 +1071,7 @@ mod tests {
             !mailbox.publish(SettingsEvent::Wake),
             "notification coalesced"
         );
-        assert!(receive.try_next().unwrap().is_some());
+        assert!(receive.try_recv().unwrap().is_some());
         assert!(
             outbox.flush(&mut send),
             "the retained wake is delivered once capacity returns"
@@ -969,7 +1084,7 @@ mod tests {
         assert!(mailbox.take().is_empty(), "the mailbox drains exactly once");
         let mut settings = 0;
         for _ in 0..=filled {
-            match receive.try_next() {
+            match receive.try_recv() {
                 Ok(Some(Delivery::Settings)) => settings += 1,
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
@@ -1003,7 +1118,6 @@ mod tests {
     /// delivered, behind the queued deliveries.
     #[test]
     fn parked_worker_wake_waits_for_capacity_without_other_input() {
-        use application::iced::futures::StreamExt;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1020,7 +1134,7 @@ mod tests {
                 biased;
                 _ = tokio::time::sleep(Duration::from_millis(10)) => {
                     // The receiver frees capacity with no other worker input.
-                    assert!(receive.try_next().unwrap().is_some());
+                    assert!(receive.try_recv().unwrap().is_some());
                     // The same parked future completes after the drain.
                     assert!(ready.as_mut().await.is_ok());
                 }
@@ -1036,7 +1150,7 @@ mod tests {
             "the retained wake flushes once capacity returns"
         );
         let mut settings = 0;
-        while let Ok(Some(delivery)) = receive.try_next() {
+        while let Ok(Some(delivery)) = receive.try_recv() {
             if matches!(delivery, Delivery::Settings) {
                 settings += 1;
             }
@@ -1051,7 +1165,6 @@ mod tests {
     /// refusal or a handoff completion.
     #[test]
     fn lifecycle_edges_coalesce_and_handoff_completions_are_retained() {
-        use application::iced::futures::StreamExt;
         let (mut send, mut receive) = mpsc::channel(64);
         while let Ok(()) = send.try_send(Delivery::Changed) {}
         let mut outbox = Outbox::default();
@@ -1071,13 +1184,13 @@ mod tests {
             !outbox.flush(&mut send),
             "a full channel retains lifecycle and completions"
         );
-        assert!(receive.try_next().unwrap().is_some(), "one slot frees");
+        assert!(receive.try_recv().unwrap().is_some(), "one slot frees");
         assert!(
             !outbox.flush(&mut send),
             "one slot delivers one retained message"
         );
         let mut drained = Vec::new();
-        while let Ok(Some(delivery)) = receive.try_next() {
+        while let Ok(Some(delivery)) = receive.try_recv() {
             drained.push(delivery);
             if drained.len() > 256 {
                 break;
@@ -1098,7 +1211,7 @@ mod tests {
             "remaining retained deliveries flush"
         );
         let mut tail = Vec::new();
-        while let Ok(Some(delivery)) = receive.try_next() {
+        while let Ok(Some(delivery)) = receive.try_recv() {
             tail.push(delivery);
         }
         assert_eq!(
@@ -1107,16 +1220,144 @@ mod tests {
             "the completion precedes the newest coalesced edge"
         );
     }
+    /// Overflow loss through the real session: a queued Lost coalesces with
+    /// the outstanding notification, and the drain fences the confirmed
+    /// authority readback and restages the bound read.
     #[test]
-    fn overflow_accounts_settings_loss_before_other_events() {
-        let mailbox = application::presentation::native::Mailbox::<()>::default();
-        assert!(mailbox.publish(SettingsEvent::Wake));
-        assert!(mailbox.publish(SettingsEvent::Lost));
-        let events = mailbox.take();
-        assert!(
-            matches!(events.first(), Some(SettingsEvent::Lost)),
-            "Lost is accounted before other settings frames"
+    fn overflow_loss_fences_confirmed_readback_through_a_real_drain() {
+        let binding = settings::Binding {
+            instance: "fixture".into(),
+            profile: "default".into(),
+        };
+        let consumer =
+            settings::consumer::Consumer::for_app(binding.clone(), "busviewer").unwrap();
+        let (mut ui, lane) = bridge(Session::new(consumer), Worker::offline(|_, _| Ok(())));
+        // Establish a confirmed authority read through the real consumer.
+        let _ = ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});
+        let subscribe = ui
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .expect("subscribe work")
+            .clone();
+        let _ = ui.handle_with(SettingsEvent::Rpc(subscribe, Ok(None)), Some(1), |_| {});
+        let _ = ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});
+        let read = ui
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .expect("read work")
+            .clone();
+        let _ = ui.handle_with(
+            SettingsEvent::Rpc(read, Ok(Some(settings_snapshot(&binding, false, 1.0)))),
+            Some(1),
+            |_| {},
         );
+        assert!(
+            ui.session().host().consumer().is_confirmed(),
+            "authority read confirmed"
+        );
+        // The wake is the outstanding notification; the loss coalesces into
+        // it and is applied by the same drain.
+        assert!(lane.publish(SettingsEvent::Wake));
+        assert!(
+            !lane.publish(SettingsEvent::Lost),
+            "loss coalesces with the outstanding notification"
+        );
+        ui.drain_with(|| Some(1), |_| {});
+        assert!(
+            !ui.session().host().consumer().is_confirmed(),
+            "Lost fences the confirmed readback"
+        );
+        assert!(
+            ui.session().host().consumer().current_work().is_some(),
+            "Lost restages a bound read"
+        );
+    }
+    /// A stalled native response is aborted within the one shared shutdown
+    /// budget; quit progress never waits for it.
+    #[test]
+    fn stalled_operations_abort_within_the_shutdown_budget() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut calls = tokio::task::JoinSet::new();
+            calls.spawn(async {
+                std::future::pending::<()>().await;
+            });
+            calls.abort_all();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let start = std::time::Instant::now();
+            assert!(
+                drain_aborted(&mut calls, deadline).await.is_none(),
+                "aborted operations drain cleanly"
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "the drain honours the shared budget"
+            );
+            assert!(calls.is_empty());
+        });
+    }
+    /// Repeated answered waves under a stalled broker: the running task cap
+    /// bounds spawned replies, every accepted reply stays retained FIFO and
+    /// is never dropped, and a freed slot admits the oldest retained reply
+    /// first.
+    #[test]
+    fn repeated_answered_waves_retain_replies_without_dropping() {
+        fn command(id: u64) -> IncomingCommand {
+            IncomingCommand {
+                generation: 0,
+                from: "wave".into(),
+                command: format!("verb-{id}"),
+                id: None,
+                args: serde_json::Value::Null,
+                body: String::new(),
+                headers: BTreeMap::new(),
+            }
+        }
+        let mut accepted: VecDeque<(IncomingCommand, u8, String)> = VecDeque::new();
+        let mut running = 0;
+        let mut spawned_total = 0;
+        let mut spawn = |accepted: &mut VecDeque<(IncomingCommand, u8, String)>| {
+            spawn_accepted(accepted, |command, rc, body| {
+                if running < 4 {
+                    running += 1;
+                    spawned_total += 1;
+                    let _ = (command, rc, body);
+                    true
+                } else {
+                    false
+                }
+            });
+        };
+        for wave in 0..2 {
+            for i in 0..3 {
+                accepted.push_back((command(wave * 10 + i), 0, "{}".into()));
+            }
+            spawn(&mut accepted);
+        }
+        assert_eq!(spawned_total, 4, "the running cap bounds spawned tasks");
+        assert_eq!(
+            accepted.len(),
+            2,
+            "accepted replies are retained, never dropped"
+        );
+        assert_eq!(
+            accepted.front().unwrap().0.command,
+            "verb-4",
+            "retention is FIFO"
+        );
+        // One slot frees; the oldest retained reply is admitted next.
+        running -= 1;
+        spawn(&mut accepted);
+        assert_eq!(spawned_total, 5);
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted.front().unwrap().0.command, "verb-5");
     }
     /// One refusal and one handoff completion per lifetime: duplicates keep
     /// the first accepted value and never queue beyond the two slots.

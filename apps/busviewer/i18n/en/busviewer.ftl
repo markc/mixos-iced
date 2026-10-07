@@ -54,3 +54,4 @@ bus-connected = Connected
 bus-connecting = Connecting
 bus-disconnected = Disconnected
 bus-refused = Registration refused
+subscriptions-ok = Subscriptions OK
