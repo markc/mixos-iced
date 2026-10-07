@@ -12,6 +12,18 @@ corners, and strict idle discipline (no frames on a static screen).
 Bevy, when enabled, may render effects on the shared wgpu device. It never
 owns the frame loop, scheduling, compositing or protocol handling.
 
+Quoin prepares cached or embedded settings while its existing Bus supervisor
+registers. Its persistent cache is service-owned under the configured variable
+data directory at `compd/cache/settings`; all validation and filesystem work
+uses the shared application worker. `shell.props.get` exposes `settings` and
+`settings_cache` evidence. A cache persistence receipt must match the current
+applied identity before it describes that presentation. Transport outages and
+terminal registration refusal preserve usable appearance. Only explicit initial
+refusal permits the configured scene service override; an established shell
+identity never switches names. Shutdown drains the newest activated capture
+and closes the worker under one two-second budget with a bounded completion
+margin. Timeouts report failure without claiming persistence.
+
 ## Layout
 
 | Path | What |

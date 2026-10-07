@@ -243,7 +243,8 @@ pub fn focused_scene(state: &Loop) -> Option<String> {
     HOST.with_borrow(|slot| slot.as_ref()?.scene_of(handle).map(scene_surface_id))
 }
 
-/// Deregister and stop (bounded, about 300 ms).
+/// Drain settings and deregister under a two-second budget, with a small
+/// bounded runtime/completion margin.
 pub fn shutdown() {
     if let Some(host) = HOST.with_borrow_mut(Option::take) {
         host.finish();

@@ -72,6 +72,8 @@ current activation's completed save; `Event::RetryCache` explicitly retries it
 without a timer or failure loop. Replacing the producer retires the writer
 after in-flight work finishes; construction fixes the directory for its life.
 
+`Session::cache_evidence()` supplies the common serialisable persistence,
+fault and fallback diagnostics for app and shell property surfaces.
 `Session::cache_persisted()` exposes the identity from a successful write or
 unchanged receipt for the current capture. It stays empty for superseded saves
 and never implies authority confirmation or presentation.

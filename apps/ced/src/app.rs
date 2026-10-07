@@ -729,11 +729,7 @@ impl App {
                             );
                             object.insert(
                                 "settings_cache".into(),
-                                serde_json::json!({
-                                    "persisted": self.settings.cache_persisted(),
-                                    "fault": self.settings.cache_fault(),
-                                    "fallback_diagnostics": self.settings.fallback_diagnostics(),
-                                }),
+                                serde_json::json!(self.settings.cache_evidence()),
                             );
                             *body = serde_json::Value::Object(object).to_string();
                         }

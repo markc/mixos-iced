@@ -121,7 +121,7 @@ impl Host {
         live_generation: Option<u64>,
         layout: &mut Layout<'_>,
     ) -> Answer {
-        self.answer_with_settings(request, output, live_generation, None, layout)
+        self.answer_with_settings(request, output, live_generation, None, None, layout)
     }
 
     /// The live shell contributes the shared consumer's event-loop readback.
@@ -132,6 +132,7 @@ impl Host {
         output: &str,
         live_generation: Option<u64>,
         settings: Option<&settings::consumer::Evidence>,
+        cache: Option<application::presentation::native::CacheEvidence<'_>>,
         layout: &mut Layout<'_>,
     ) -> Answer {
         if let Err(error) = verify_caller_provenance(request) {
@@ -222,6 +223,9 @@ impl Host {
                     .snapshot(output, dialog_notice(&self.store, self.dialog_fit.as_ref()));
                 if let Some(settings) = settings {
                     snapshot["settings"] = json!(settings);
+                }
+                if let Some(cache) = cache {
+                    snapshot["settings_cache"] = json!(cache);
                 }
                 let path = argument(request, &args, "path").filter(|path| !path.is_empty());
                 let found = match path {
@@ -882,6 +886,7 @@ impl SceneHost {
                         output,
                         generation,
                         Some(&evidence),
+                        Some(self.settings.cache_evidence()),
                         &mut layout,
                     );
                     // A load or unload changes the pages the edges carry.
@@ -1309,6 +1314,7 @@ mod tests {
                 "DP-1",
                 Some(1),
                 Some(&evidence),
+                None,
                 &mut no_layout,
             );
             assert_eq!(answer.rc, 0);
@@ -1330,7 +1336,7 @@ mod tests {
             json!({"path":"settings"}),
         );
         assert_eq!(
-            host.answer_with_settings(&bad, "DP-1", Some(1), Some(&evidence), &mut no_layout)
+            host.answer_with_settings(&bad, "DP-1", Some(1), Some(&evidence), None, &mut no_layout)
                 .rc,
             10
         );
@@ -1341,7 +1347,7 @@ mod tests {
             json!({"path":"settings"}),
         );
         assert_eq!(
-            host.answer_with_settings(&stale, "DP-1", Some(2), Some(&evidence), &mut no_layout)
+            host.answer_with_settings(&stale, "DP-1", Some(2), Some(&evidence), None, &mut no_layout)
                 .rc,
             10
         );

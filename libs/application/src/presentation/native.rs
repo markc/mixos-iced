@@ -79,6 +79,17 @@ pub struct Session<T> {
     #[cfg(feature = "settings-cache")]
     retry_save: u64,
 }
+
+/// Shared cache readback for application and shell property surfaces. A
+/// persistence receipt is historical: compare it with current applied evidence
+/// before attributing it to the active presentation.
+#[cfg(feature = "settings-cache")]
+#[derive(serde::Serialize)]
+pub struct CacheEvidence<'a> {
+    pub persisted: Option<&'a settings::consumer::SnapshotIdentity>,
+    pub fault: Option<&'a Diagnostic>,
+    pub fallback_diagnostics: &'a [Diagnostic],
+}
 impl<T> Session<T> {
     pub fn new(consumer: Consumer) -> Self {
         Self {
@@ -111,6 +122,14 @@ impl<T> Session<T> {
     #[cfg(feature = "settings-cache")]
     pub fn cache_persisted(&self) -> Option<&settings::consumer::SnapshotIdentity> {
         self.cache_persisted.as_ref()
+    }
+    #[cfg(feature = "settings-cache")]
+    pub fn cache_evidence(&self) -> CacheEvidence<'_> {
+        CacheEvidence {
+            persisted: self.cache_persisted(),
+            fault: self.cache_fault(),
+            fallback_diagnostics: self.fallback_diagnostics(),
+        }
     }
     /// `live` is the connection's current sampled state, read on the UI loop.
     /// Queued lifecycle notices cannot authorise an activation after real loss.

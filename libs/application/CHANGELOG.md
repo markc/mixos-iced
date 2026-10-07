@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+- Share serialisable cache persistence, fault and fallback evidence between
+  native applications and the shell, preserving existing Ced readback fields.
+
 ## 0.1.7
 
 - Share explicit native `Renderer`/`Element` defaults so software apps retain

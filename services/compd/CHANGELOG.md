@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.10
+
+- Prepare validated persistent shell settings through the shared resource/cache
+  worker, including offline startup and terminal Bus refusal. Expose matching
+  cache evidence in shell properties.
+- Use the existing nonblocking Bus supervisor for cold startup. Advance to a
+  configured scene service override only after explicit initial rejection and
+  retirement; preserve an established identity through later failures.
+- Drain the latest activated settings capture and close the worker under one
+  two-second shutdown budget with bounded runtime completion.
+
 - Reconcile stationary pointer routing when an applied client shape changes
   after a scene resize. Same-sized buffer repaints remain quiet; the composed
   gate forces a delayed size commit and distinguishes ACK from new content.

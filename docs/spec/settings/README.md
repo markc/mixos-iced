@@ -142,7 +142,13 @@ to LastGood; an installed fallback is never an authority fence. The shell
 exposes this same evidence at `shell.props.get` path `settings`, including root
 and dotted reads such as `settings.applied.revision`, behind its existing caller
 and connection checks. Evidence does not assert a broker participant record or
-frame presentation. `compd.truth.slots.<id>.decided` independently reads the
+frame presentation. `settings_cache` supplies the shared host's persistence
+identity, cache fault and fallback diagnostics. The persistence identity is
+historical and must match current applied evidence to describe that capture.
+Quoin uses the shared worker's service-owned persistent cache while its existing
+Bus supervisor starts; terminal refusal preserves offline resources, and only
+explicit initial rejection permits a configured scene service override.
+`compd.truth.slots.<id>.decided` independently reads the
 geometry owner's decided size, or null when absent, without falling back to
 committed client geometry. The native desktop geometry gate compares these
 readbacks with real client configures and captured pixels.
