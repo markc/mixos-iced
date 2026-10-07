@@ -327,10 +327,13 @@ mod tests {
         let (ended, destroyed) = tokio::sync::oneshot::channel::<()>();
         assert!(
             tasks
-                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async move {
-                    let _ended = ended;
-                    panic!("owned task failure");
-                }))
+                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                    permit,
+                    async move {
+                        let _ended = ended;
+                        panic!("owned task failure");
+                    }
+                ))
                 .is_ok()
         );
         // The real panic destroys its captured sender. On this current-thread
