@@ -62,11 +62,16 @@ fn target(
         // Overlap membership can still contain a just-unmapped output until
         // Space refreshes. It must not prevent an available-output fallback.
         .or_else(|| {
-            space.outputs_for_element(window).into_iter()
+            space
+                .outputs_for_element(window)
+                .into_iter()
                 .find(|output| space.output_geometry(output).is_some())
         })
         .or_else(|| {
-            space.outputs().find(|output| space.output_geometry(output).is_some()).cloned()
+            space
+                .outputs()
+                .find(|output| space.output_geometry(output).is_some())
+                .cloned()
         })?;
     let name = output.name();
     let reserved = comp.reserved.get(&name).copied().unwrap_or_default();
