@@ -132,4 +132,17 @@ mod tests {
             "shell.page_order"
         );
     }
+
+    #[test]
+    fn unknown_edge_and_mode_report_the_record_path() {
+        for (edge, mode) in [("leftish", "dock"), ("bottom", "float")] {
+            let mut shell = Shell::default();
+            let record = shell.panels.get_mut("bottom").unwrap();
+            record.edge = edge.into();
+            record.mode = mode.into();
+            let fault = Preferences::prepare(&shell).unwrap_err();
+            assert_eq!(fault.code, "unsupported_presentation");
+            assert_eq!(fault.path, "shell.panels.bottom");
+        }
+    }
 }

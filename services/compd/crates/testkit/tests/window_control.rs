@@ -7,10 +7,10 @@
 
 use dispatcher::wire::trait_::surface_event::WindowRequest;
 use policy::workspaces::DefaultOutput;
+use smithay::utils::{Point, Size};
 use surfaces::SurfaceId;
 use testkit::Harness;
 use world::comp::MaximizeRestore;
-use smithay::utils::{Point, Size};
 
 fn harness() -> Harness {
     let mut h = Harness::new();
@@ -80,7 +80,10 @@ fn a_destroyed_window_takes_its_maximise_record_with_it() {
         size: Size::from((64, 48)),
         output: "test".into(),
     };
-    h.wire.inner.comp.set_maximize_restore(id, Some(restore.clone()));
+    h.wire
+        .inner
+        .comp
+        .set_maximize_restore(id, Some(restore.clone()));
     assert_eq!(h.comp().maximize_restore(id), Some(restore));
     toplevel.destroy();
     xdg.destroy();
@@ -101,19 +104,34 @@ fn interactive_grab_events_fold_into_one_record() {
     let handle = h.handle_of(&surface);
     let id = id_of(&h, &surface);
     let comp = &mut h.wire.inner.comp;
-    comp.apply(SurfaceEvent::Interactive { handle: handle.clone(), op: InteractiveOp::Begin { edges: 10 } });
+    comp.apply(SurfaceEvent::Interactive {
+        handle: handle.clone(),
+        op: InteractiveOp::Begin { edges: 10 },
+    });
     for (dx, dy) in [(5.0, 1.0), (12.0, -3.0)] {
-        comp.apply(SurfaceEvent::Interactive { handle: handle.clone(), op: InteractiveOp::Update { dx, dy } });
+        comp.apply(SurfaceEvent::Interactive {
+            handle: handle.clone(),
+            op: InteractiveOp::Update { dx, dy },
+        });
     }
     let grab = comp.interactive.expect("a grab in progress");
-    assert_eq!((grab.id, grab.edges, grab.delta, grab.updated, grab.ended), (id, 10, (12.0, -3.0), true, false));
-    comp.apply(SurfaceEvent::Interactive { handle: handle.clone(), op: InteractiveOp::End });
+    assert_eq!(
+        (grab.id, grab.edges, grab.delta, grab.updated, grab.ended),
+        (id, 10, (12.0, -3.0), true, false)
+    );
+    comp.apply(SurfaceEvent::Interactive {
+        handle: handle.clone(),
+        op: InteractiveOp::End,
+    });
     assert!(comp.interactive.unwrap().ended);
     toplevel.destroy();
     xdg.destroy();
     surface.destroy();
     h.roundtrip();
-    assert!(h.comp().interactive.is_none(), "the window's grab goes with it");
+    assert!(
+        h.comp().interactive.is_none(),
+        "the window's grab goes with it"
+    );
 }
 
 /// A corner configuration change moves both revisions, so the edge pass
@@ -126,7 +144,10 @@ fn a_corner_config_change_moves_both_revisions() {
     let (activity, content) = (comp.revision(), comp.content_revision());
     let mut config = comp.corners.config();
     comp.corners.set_config(config);
-    assert_eq!((comp.revision(), comp.content_revision()), (activity, content));
+    assert_eq!(
+        (comp.revision(), comp.content_revision()),
+        (activity, content)
+    );
     config.dwell_ms = 350;
     comp.corners.set_config(config);
     assert_eq!(

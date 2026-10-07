@@ -884,7 +884,11 @@ impl Panels {
                 return Ok(None);
             }
             Input::Activate => {
-                if menu.items.get(menu.selected).is_none_or(|item| !item.enabled()) {
+                if menu
+                    .items
+                    .get(menu.selected)
+                    .is_none_or(|item| !item.enabled())
+                {
                     return Ok(None);
                 }
                 menu.selected
@@ -1624,8 +1628,28 @@ mod tests {
             assert_eq!(row["settings"]["requested_px"], 40.0);
             assert_eq!(row["settings"]["fitted_px"], 40.0);
             assert_eq!(row["settings"]["presented_px"], 52.0);
+            assert_eq!(row["settings"]["record"], "bottom");
+            assert_eq!(row["settings"]["constraints"], json!(["page_minimum"]));
             assert_eq!(panels.zones(output), vec![(Edge::Bottom, 52.0)]);
         }
+    }
+
+    #[test]
+    fn settings_rows_distinguish_range_and_opposing_budget_constraints() {
+        let mut panels = panels_with("DP-1");
+        panels.ensure("DP-1", (300.0, 800.0));
+        let mut shell = settings::Shell::default();
+        for (id, edge, thickness) in [("left", "left", 256), ("right", "right", 256), ("top", "top", 16)] {
+            shell.panels.insert(id.into(), settings::Panel { edge: edge.into(), mode: "dock".into(), thickness });
+        }
+        panels.set_preferences(crate::preferences::Preferences::prepare(&shell).unwrap());
+        register(&mut panels, "DP-1", Edge::Left, "left-page", 120.0);
+        register(&mut panels, "DP-1", Edge::Right, "right-page", 120.0);
+        register(&mut panels, "DP-1", Edge::Top, "top-page", 24.0);
+        let left = panels.state("DP-1", Edge::Left);
+        assert_eq!(left["settings"]["constraints"], json!(["output_budget"]));
+        assert!(left["settings"]["fitted_px"].as_f64().unwrap() < 256.0);
+        assert_eq!(panels.state("DP-1", Edge::Top)["settings"]["constraints"], json!(["edge_range"]));
     }
 
     #[test]
@@ -1642,7 +1666,12 @@ mod tests {
         panels.menu.as_mut().unwrap().items.truncate(3);
         let menu = panels.menu.clone();
         let row = panels.state("DP-1", Edge::Bottom);
-        assert!(panels.menu_input(menu.as_ref().unwrap().serial, crate::menu::Input::Activate).unwrap().is_none());
+        assert!(
+            panels
+                .menu_input(menu.as_ref().unwrap().serial, crate::menu::Input::Activate)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             panels
                 .set_mode("DP-1", Edge::Bottom, "pinned")

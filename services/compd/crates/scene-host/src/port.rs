@@ -935,7 +935,8 @@ mod tests {
     #[test]
     #[ignore = "requires settings_test.mix isolated environment"]
     fn settings_offline_port_prepares_fallback_while_connecting() {
-        // Own a refused endpoint for the fixture, without selecting a port
+        // Own an unresponsive endpoint that never completes the WS upgrade,
+        // without selecting a port
         // somebody else can claim between binding and the connection attempt.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let (port, wake, mut session) =
@@ -1098,7 +1099,7 @@ mod tests {
             }
             if session.host().consumer().fault().is_none() {
                 wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                    .unwrap();
+                    .expect("Quoin invalid-policy diagnostic did not arrive before deadline");
             }
         }
         assert_eq!(

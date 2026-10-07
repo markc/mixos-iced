@@ -169,18 +169,50 @@ fn first_and_last_page_reconcile_opposite_managed_reservations() {
     let mut model = model();
     model.set_geometry(LogicalSize::new(300.0, 600.0).unwrap());
     model.suppress_empty_edges(true);
-    model.carousel_mut(Edge::Left).register("left-page").unwrap();
+    model
+        .carousel_mut(Edge::Left)
+        .register("left-page")
+        .unwrap();
     let mut values = policy(Edge::Left, PanelMode::Docked, 256.0);
     values[Edge::Right.index()] = values[Edge::Left.index()];
     model.set_preferences(values, Duration::ZERO);
     assert_eq!(model.panel(Edge::Right).exclusive_zone_px, 0.0);
-    model.carousel_mut(Edge::Right).register("right-page").unwrap();
+    model
+        .carousel_mut(Edge::Right)
+        .register("right-page")
+        .unwrap();
     model.reconcile_preferences();
-    assert!(model.panel(Edge::Left).exclusive_zone_px + model.panel(Edge::Right).exclusive_zone_px <= 299.01);
+    assert!(
+        model.panel(Edge::Left).exclusive_zone_px + model.panel(Edge::Right).exclusive_zone_px
+            <= 299.01
+    );
     assert_eq!(model.carousel(Edge::Left).active_id(), Some("left-page"));
     assert_eq!(model.carousel(Edge::Right).active_id(), Some("right-page"));
-    model.carousel_mut(Edge::Right).remove("right-page").unwrap();
+    model
+        .carousel_mut(Edge::Right)
+        .remove("right-page")
+        .unwrap();
     model.reconcile_preferences();
     assert_eq!(model.panel(Edge::Right).exclusive_zone_px, 0.0);
     assert_eq!(model.panel(Edge::Left).thickness_px, 256.0);
+}
+
+#[test]
+fn managed_hidden_toggle_and_release_keep_time_and_baseline_contracts() {
+    let mut model = model();
+    let baseline = model.persistent_panel(Edge::Bottom);
+    let at = Duration::from_secs(1);
+    model.set_preferences(policy(Edge::Bottom, PanelMode::Hidden, 40.0), at);
+    assert!(model.panel_input(Edge::Bottom, Duration::ZERO, PanelInput::ToggleShown).is_err());
+    let update = model.panel_input(Edge::Bottom, at, PanelInput::ToggleShown).unwrap();
+    assert_eq!(update.snapshot.mode, PanelMode::Hidden);
+    assert!(update.snapshot.transient_revealed);
+    assert_eq!(model.persistent_panel(Edge::Bottom), baseline);
+    model.restore_thickness(Edge::Bottom, 40.0).unwrap();
+    assert_eq!(model.restore_thickness(Edge::Bottom, 80.0), Err(PanelConfigError::SettingsManaged(Edge::Bottom)));
+    model.set_preferences(policy(Edge::Bottom, PanelMode::Docked, 80.0), at);
+    let concealed = model.set_preferences([None; 4], at);
+    assert!(concealed[Edge::Bottom.index()]);
+    assert_eq!(model.panel(Edge::Bottom).mode, PanelMode::Hidden);
+    assert_eq!(model.persistent_panel(Edge::Bottom), baseline);
 }

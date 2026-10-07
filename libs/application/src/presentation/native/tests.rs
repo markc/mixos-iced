@@ -99,16 +99,40 @@ fn session_activation_hook_fences_stale_and_failed_preparations() {
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     let current = ready(jobs.prepare.unwrap());
     let mut activated = Vec::new();
-    assert!(session.handle_with(Event::Prepared(stale), Some(1), |p| activated.push(*p.content())).0.is_none());
+    assert!(
+        session
+            .handle_with(Event::Prepared(stale), Some(1), |p| activated
+                .push(*p.content()))
+            .0
+            .is_none()
+    );
     assert!(activated.is_empty());
-    assert!(session.handle_with(Event::Prepared(current), Some(1), |p| activated.push(*p.content())).0.is_some());
+    assert!(
+        session
+            .handle_with(Event::Prepared(current), Some(1), |p| activated
+                .push(*p.content()))
+            .0
+            .is_some()
+    );
     assert_eq!(activated, [2]);
     session.host.consumer_mut().observe(1, snapshot(3, false));
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let failed = jobs.prepare.unwrap().failed(Diagnostic::new("fixture", "policy", "invalid"));
-    assert!(session.handle_with(Event::Prepared(failed), Some(1), |p| activated.push(*p.content())).0.is_none());
+    let failed = jobs
+        .prepare
+        .unwrap()
+        .failed(Diagnostic::new("fixture", "policy", "invalid"));
+    assert!(
+        session
+            .handle_with(Event::Prepared(failed), Some(1), |p| activated
+                .push(*p.content()))
+            .0
+            .is_none()
+    );
     assert_eq!(activated, [2]);
-    assert_eq!(session.host.consumer().applied().unwrap().revision, Revision(2));
+    assert_eq!(
+        session.host.consumer().applied().unwrap().revision,
+        Revision(2)
+    );
 }
 
 #[test]
@@ -118,20 +142,33 @@ fn current_embedded_fallback_runs_activation_hook_once() {
     let (_, jobs) = session.handle(Event::Wake, None);
     let request = jobs.fallback.unwrap();
     let mut presentation = None;
-    let fallback = request.prepare(None, |snapshot, context, _| {
-        let appearance = Projection::new(&snapshot.effective[context])?.prepare(|_, _| {
-            Ok(FontSelection { font: crate::iced::Font::DEFAULT, choice: FontChoice::Declared })
-        })?;
-        presentation = Some(Presentation { appearance, content: 77 });
-        Ok(())
-    }).unwrap();
+    let fallback = request
+        .prepare(None, |snapshot, context, _| {
+            let appearance = Projection::new(&snapshot.effective[context])?.prepare(|_, _| {
+                Ok(FontSelection {
+                    font: crate::iced::Font::DEFAULT,
+                    choice: FontChoice::Declared,
+                })
+            })?;
+            presentation = Some(Presentation {
+                appearance,
+                content: 77,
+            });
+            Ok(())
+        })
+        .unwrap();
     let mut activated = Vec::new();
     let (change, _) = session.handle_with(
-        Event::Fallback(request, Box::new(Ok((fallback, presentation.unwrap())))), None,
-        |p| activated.push(*p.content()));
+        Event::Fallback(request, Box::new(Ok((fallback, presentation.unwrap())))),
+        None,
+        |p| activated.push(*p.content()),
+    );
     assert!(change.is_some());
     assert_eq!(activated, [77]);
-    assert_eq!(session.host().kind(), Some(settings::fallback::PresentationKind::Embedded));
+    assert_eq!(
+        session.host().kind(),
+        Some(settings::fallback::PresentationKind::Embedded)
+    );
     let (change, _) = session.handle_with(Event::Wake, None, |p| activated.push(*p.content()));
     assert!(change.is_none());
     assert_eq!(activated, [77]);
