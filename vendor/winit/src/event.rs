@@ -166,6 +166,8 @@ pub enum StartCause {
 /// Describes an event from a [`Window`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
+    /// Terminal native evidence for a synchronously requested buffer commit.
+    PresentationFeedback(crate::presentation::PresentationFeedback),
     /// Native Wayland source and offer lifecycle, on the existing connection.
     DragDrop(crate::drag::Event),
     /// The activation token was delivered back and now could be used.

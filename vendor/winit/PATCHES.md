@@ -42,3 +42,19 @@ Queued native IME events retain an epoch ticket and revalidate it individually
 at delivery, including after sink append. A threaded disable therefore also
 retires batches already queued by Done. `epoch_delivery_tests` covers that
 ordering and a context change between two events of one queued batch.
+
+Presentation feedback uses the existing Wayland queue and actual window surface.
+`WindowExtWayland::request_presentation_feedback` sends the request immediately;
+renderers call it after painting immediately before the buffer commit. The
+neutral event preserves compositor timestamps/output sequence without treating
+them as application identity. Checked process-wide request IDs never wrap.
+
+Native feedback objects have no client destroy request. Surface destruction
+marks its incarnation closed, suppressing old observations, without freeing
+unresolved charges. Protocol userdata and queued/retained receipt copies share
+one Arc reservation, conservatively limiting their combined lifetime to eight
+per window and 128 per process. Cloning a receipt retains its slot; terminal
+object retirement plus receipt retirement frees it exactly once. Unsupported
+compositors render normally without invented presentation evidence. Unit guards
+cover ID exhaustion, cap rollback, window churn and shared receipt retirement;
+the renderer same-commit native guard is required separately.

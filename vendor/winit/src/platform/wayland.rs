@@ -73,6 +73,11 @@ impl<T> EventLoopBuilderExtWayland for EventLoopBuilder<T> {
 
 /// Additional methods on [`Window`] that are specific to Wayland.
 pub trait WindowExtWayland {
+    /// Request feedback for the immediately following commit on this window's
+    /// real surface. Call synchronously after painting and before buffer commit.
+    /// Outstanding native objects and retained receipt copies share a bounded
+    /// budget of eight per window and 128 per process.
+    fn request_presentation_feedback(&self) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError>;
     /// Queue a native drag from a still-held press on this window. The event
     /// loop validates the token again before sending wl_data_device.start_drag.
     fn start_drag(
@@ -105,6 +110,13 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn request_presentation_feedback(&self) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {
+        match &self.window {
+            crate::platform_impl::Window::Wayland(window) => window.request_presentation_feedback(),
+            #[cfg(x11_platform)]
+            _ => Err(crate::presentation::PresentationError::Unsupported),
+        }
+    }
     fn start_drag(
         &self,
         gesture: crate::drag::Gesture,

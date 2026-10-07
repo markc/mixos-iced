@@ -30,6 +30,7 @@ use super::event_loop::sink::EventSink;
 use super::output::MonitorHandle;
 use super::state::WinitState;
 use super::types::xdg_activation::XdgActivationTokenData;
+use super::types::wp_presentation::{PresentationState, WindowPresentation};
 use super::{ActiveEventLoop, WaylandError, WindowId};
 
 pub(crate) mod state;
@@ -38,6 +39,8 @@ pub use state::WindowState;
 
 /// The Wayland window.
 pub struct Window {
+    presentation: Option<PresentationState>,
+    presentation_liveness: Arc<WindowPresentation>,
     /// Reference to the underlying SCTK window.
     window: SctkWindow,
 
@@ -210,6 +213,8 @@ impl Window {
         event_loop_awakener.ping();
 
         Ok(Self {
+            presentation: state.presentation.clone(),
+            presentation_liveness: Arc::new(WindowPresentation::default()),
             window,
             display,
             monitors,
@@ -699,12 +704,19 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        // Feedback has no client destroy request. Closed surfaces keep their
+        // outstanding charges until native terminal/object retirement.
+        self.presentation_liveness.closed.store(true, Ordering::Release);
         self.window_requests.closed.store(true, Ordering::Relaxed);
         self.event_loop_awakener.ping();
     }
 }
 
 impl Window {
+    pub fn request_presentation_feedback(&self) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {
+        self.presentation.as_ref().ok_or(crate::presentation::PresentationError::Unsupported)?
+            .request(self.surface(), &self.queue_handle, self.window_id, self.presentation_liveness.clone())
+    }
     pub fn queue_drag(&self, request: super::data_device::Request) -> Result<(), crate::drag::Error> {
         let mut requests = self.window_requests.drag.lock().unwrap();
         if requests.len() >= 256 { return Err(crate::drag::Error::Invalid); }

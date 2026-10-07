@@ -32,6 +32,7 @@ use crate::platform_impl::wayland::seat::{
 use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
 use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
+use crate::platform_impl::wayland::types::wp_presentation::PresentationState;
 use crate::platform_impl::wayland::types::xdg_activation::XdgActivationState;
 use crate::platform_impl::wayland::window::{WindowRequests, WindowState};
 use crate::platform_impl::wayland::{WaylandError, WindowId};
@@ -39,6 +40,8 @@ use crate::platform_impl::OsError;
 
 /// Winit's Wayland state.
 pub struct WinitState {
+    /// Presentation protocol on the existing display and event queue.
+    pub presentation: Option<PresentationState>,
     /// Data devices share the existing seat, connection and dispatch queue.
     pub drag: super::data_device::State,
     /// The WlRegistry.
@@ -165,6 +168,7 @@ impl WinitState {
         let custom_cursor_pool = Arc::new(Mutex::new(SlotPool::new(2, &shm).unwrap()));
 
         Ok(Self {
+            presentation: PresentationState::new(globals, queue_handle).ok(),
             drag,
             registry_state,
             compositor_state: Arc::new(compositor_state),
