@@ -441,7 +441,12 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
             if n % 41 == 0 {
                 screen.display_offset = if screen.display_offset == 0 { 2 } else { 0 };
             }
-            let row = seed as usize % screen.rows;
+            let scrolled = n % 29 == 11;
+            let row = if scrolled {
+                screen.rows - 1
+            } else {
+                seed as usize % screen.rows
+            };
             let col = (seed >> 16) as usize % screen.cols;
             if n % 17 == 6 {
                 // Publish an intermediate generation that never reaches a
@@ -453,6 +458,11 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
                 surface.paint(&mut raster, &screen, &pending);
                 surface.cache_handle(n as u64);
             }
+            if scrolled {
+                // Exercise pixel relocation through production damage/age
+                // repair, including a pending generation and a partial band.
+                screen.cells.rotate_left(screen.cols);
+            }
             if n % 5 != 0 {
                 let cell = &mut screen.cells[row * screen.cols + col];
                 cell.bg = [(seed >> 24) as u8, 3, 201];
@@ -462,7 +472,7 @@ fn native_history_matches_rgba_with_clip_overlay_resize_and_age_loss() {
             }
             screen.cursor = (col, row);
             screen.cursor_visible = n % 4 != 0;
-            let mut dirty = vec![false; screen.rows];
+            let mut dirty = vec![scrolled; screen.rows];
             dirty[row] = true;
             surface.paint(&mut raster, &screen, &dirty);
             surface.cache_handle(n as u64);
