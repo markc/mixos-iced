@@ -50,7 +50,8 @@ impl ProcessBudget {
     fn subscribe(&self, ping: sctk::reexports::calloop::ping::Ping) -> Arc<CapacityWake> {
         let wake = Arc::new(CapacityWake { ping, pending: AtomicBool::new(false) });
         let mut registry = self.wakes.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut live: Vec<_> = registry.iter().filter(|entry| entry.strong_count() != 0).cloned().collect();
+        let mut live: Vec<_> =
+            registry.iter().filter(|entry| entry.strong_count() != 0).cloned().collect();
         live.push(Arc::downgrade(&wake));
         *registry = live.into();
         wake
@@ -365,12 +366,15 @@ mod tests {
         let (ping, source) = calloop::ping::make_ping().unwrap();
         let wake = process.subscribe(ping);
         let weak = Arc::downgrade(&wake);
-        event_loop.handle().insert_source(source, move |_, _, delivered: &mut usize| {
-            if let Some(wake) = weak.upgrade() {
-                wake.acknowledge();
-            }
-            *delivered += 1;
-        }).unwrap();
+        event_loop
+            .handle()
+            .insert_source(source, move |_, _, delivered: &mut usize| {
+                if let Some(wake) = weak.upgrade() {
+                    wake.acknowledge();
+                }
+                *delivered += 1;
+            })
+            .unwrap();
         (event_loop, wake)
     }
 
@@ -379,12 +383,14 @@ mod tests {
         let process = Arc::new(ProcessBudget::default());
         let (mut first, first_wake) = listener(&process);
         let (mut second, second_wake) = listener(&process);
-        let held: Vec<_> = (0..PROCESS_CAP).map(|_| {
-            let window = Arc::new(WindowPresentation::default());
-            let charge = Charge::acquire(process.clone(), window.clone()).unwrap();
-            window.closed.store(true, Ordering::Release);
-            charge
-        }).collect();
+        let held: Vec<_> = (0..PROCESS_CAP)
+            .map(|_| {
+                let window = Arc::new(WindowPresentation::default());
+                let charge = Charge::acquire(process.clone(), window.clone()).unwrap();
+                window.closed.store(true, Ordering::Release);
+                charge
+            })
+            .collect();
         let waiting = WindowPresentation::default();
         assert!(!process.capacity(&waiting).available);
         let clone = held[0].clone();
@@ -434,21 +440,27 @@ mod tests {
             drop(second);
             released.send(()).unwrap();
         });
-        event_loop.handle().insert_source(source, move |_, _, delivered: &mut usize| {
-            weak.upgrade().unwrap().acknowledge();
-            if *delivered == 0 {
-                acknowledged.send(()).unwrap();
-                receive_release.recv_timeout(Duration::from_secs(2)).unwrap();
-            }
-            *delivered += 1;
-        }).unwrap();
+        event_loop
+            .handle()
+            .insert_source(source, move |_, _, delivered: &mut usize| {
+                weak.upgrade().unwrap().acknowledge();
+                if *delivered == 0 {
+                    acknowledged.send(()).unwrap();
+                    receive_release.recv_timeout(Duration::from_secs(2)).unwrap();
+                }
+                *delivered += 1;
+            })
+            .unwrap();
         drop(first);
         let mut count = 0;
         event_loop.dispatch(Duration::ZERO, &mut count).unwrap();
         assert_eq!(count, 1);
         foreign.join().unwrap();
         event_loop.dispatch(Duration::ZERO, &mut count).unwrap();
-        assert_eq!(count, 2, "foreign release after acknowledgement must write a fresh actual ping");
+        assert_eq!(
+            count, 2,
+            "foreign release after acknowledgement must write a fresh actual ping"
+        );
         assert_eq!(process.capacity(&WindowPresentation::default()).release_epoch, 2);
         assert_eq!(process.count.load(Ordering::Acquire), 0);
     }
@@ -459,8 +471,12 @@ mod tests {
         let (mut event_loop, _wake) = listener(&process);
         let window = Arc::new(WindowPresentation::default());
         let mut held: Vec<_> = (0..WINDOW_CAP)
-            .map(|_| Charge::acquire(process.clone(), window.clone()).unwrap()).collect();
-        assert!(matches!(Charge::acquire(process.clone(), window.clone()), Err(PresentationError::Capacity)));
+            .map(|_| Charge::acquire(process.clone(), window.clone()).unwrap())
+            .collect();
+        assert!(matches!(
+            Charge::acquire(process.clone(), window.clone()),
+            Err(PresentationError::Capacity)
+        ));
         assert!(!process.capacity(&window).available);
         assert_eq!(process.capacity(&window).release_epoch, 1);
         let mut count = 0;

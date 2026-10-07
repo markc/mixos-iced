@@ -138,7 +138,9 @@ impl<T: 'static> EventLoop<T> {
             WaylandError::Calloop
         )?;
 
-        let presentation_capacity_wake = winit_state.presentation.as_ref()
+        let presentation_capacity_wake = winit_state
+            .presentation
+            .as_ref()
             .map(|presentation| presentation.subscribe_capacity(event_loop_awakener.clone()));
         let capacity_wake = presentation_capacity_wake.as_ref().map(Arc::downgrade);
         let result = event_loop

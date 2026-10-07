@@ -123,7 +123,8 @@ pub trait WindowExtWayland {
 impl WindowExtWayland for Window {
     fn presentation_capacity(
         &self,
-    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError> {
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError>
+    {
         match &self.window {
             crate::platform_impl::Window::Wayland(window) => window.presentation_capacity(),
             #[cfg(x11_platform)]

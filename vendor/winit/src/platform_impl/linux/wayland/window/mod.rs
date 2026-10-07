@@ -735,8 +735,10 @@ impl Window {
 
     pub fn presentation_capacity(
         &self,
-    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError> {
-        self.presentation.as_ref()
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError>
+    {
+        self.presentation
+            .as_ref()
             .ok_or(crate::presentation::PresentationError::Unsupported)?
             .capacity(self.surface(), &self.presentation_liveness)
     }
