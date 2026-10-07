@@ -301,10 +301,10 @@ impl<T: Send + 'static> Worker<T> {
             }
         }
         self.wake = jobs.wake;
-        let offered = jobs
-            .prepare
-            .map(Resource::Prepare)
-            .or_else(|| jobs.fallback.map(|request| Resource::Fallback(Box::new(request))));
+        let offered = jobs.prepare.map(Resource::Prepare).or_else(|| {
+            jobs.fallback
+                .map(|request| Resource::Fallback(Box::new(request)))
+        });
         if let Some(resource) = offered
             && self
                 .offered
@@ -350,7 +350,10 @@ impl<T: Send + 'static> Worker<T> {
                 });
                 Event::Fallback(
                     request,
-                    Box::new(prepared.map(|fallback| (fallback, presentation.expect("validated resources")))),
+                    Box::new(
+                        prepared
+                            .map(|fallback| (fallback, presentation.expect("validated resources"))),
+                    ),
                 )
             }
         });
