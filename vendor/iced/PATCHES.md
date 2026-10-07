@@ -95,6 +95,10 @@ re-wiring guards for as long as the forks are vendored.
 
 ## Numeric weights and the pinned registration seam
 
+`graphics/src/text.rs::Version::value()` exposes a read-only numeric revision
+for bounded registry accounting and exact registration-delta guards. The
+counter remains private; callers cannot construct or advance a Version.
+
 `core/src/font.rs` adds `Weight::Numeric(u16)` and
 `const fn value(self) -> u16`, so exact CSS weights are representable without
 bucketing. The four exhaustive `Weight` matches in this tree now convert
@@ -112,20 +116,31 @@ checked before the cosmic commit. `load_font` now refreshes the derived
 database indexes after a successful mutation instead of relying on the match
 cache clear alone.
 
-Guards:
+The guard tests live in the root-owned toolkit integration target
+(`libs/toolkit/tests/font_registration.rs`, feature
+`font-registration-guards`), which path-includes the cosmic seam sources
+(see `vendor/cosmic-text/PATCHES.md`) and ports the wrapper scenarios below
+through the public font system, registration, version and paragraph APIs.
+The exact-delta assertions use the read-only `Version::value()` accessor.
+The private `cfg(test)` duplicates previously carried in this file and in
+`core/src/font.rs` were removed so the patch documentation names one
+executable owner; no upstream unit test was touched. The ported scenarios
+use the packaged Noto Sans fixture for their text (an icon-only face does
+not establish Latin paragraph coverage) and assert non-empty raster ink,
+not just a returned image.
+
+Run from the repository root at the checked/updated lock SHA:
 
 ```
-cargo test -p iced_graphics --lib register_
-cargo test -p iced_core --lib numeric_weight
-cargo test --manifest-path vendor/cosmic-text/Cargo.toml --test registration_seam
+cargo test --locked --profile release-fast -p toolkit --features font-registration-guards --test font_registration
 ```
 
 | test | fails when |
 |---|---|
-| `text::tests::register_bumps_version_once_and_duplicate_policy_does_not` | a registration bump is skipped, a duplicate policy bumps again, or a failed rebind changes the version |
-| `text::tests::one_transaction_with_many_faces_bumps_version_once` | one transaction with several faces and policies bumps more than once, or the no-op that follows it bumps again |
-| `text::tests::retained_paragraph_stays_pinned_across_registration_version` | a retained paragraph does not report a Shape difference through the comparison path after a version bump, its re-shape loses the original face/metrics, or it stops rasterising from the pinned face |
-| `font::tests::numeric_weight_round_trips` | numeric weights lose their exact value |
+| `named_and_numeric_weights_keep_their_exact_values` | a named weight loses its 100..=900 value, or a numeric weight loses its exact value (1, 350, 650, 1000) |
+| `registration_changes_version_and_noops_stay_stable` | a successful registration does not advance the version by exactly one, an identical or empty transaction advances it, or a failed registration changes the version or the live database/policy facts |
+| `one_transaction_with_many_faces_activates_once` | one transaction with several faces and policies advances the version by more than one, or the no-op that follows it advances it again |
+| `retained_paragraph_stays_pinned_across_registration_version` | a retained paragraph does not report a Shape difference through the comparison path after a version bump, its re-shape loses the original face/metrics, or it stops rasterising non-empty ink from the pinned face |
 
 
 ## Toolkit input accessors retired

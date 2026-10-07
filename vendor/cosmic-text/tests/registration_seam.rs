@@ -21,9 +21,21 @@ use cosmic_text::{
     PinnedFaceRef, PinnedFontPolicy, Shaping, SwashCache, Weight,
 };
 
+/// The packaged font bytes, compiled in from the archived `fonts/` fixture
+/// files beside this test. The paths are source-relative, so the file builds
+/// unchanged from its own test target or when the root-owned guard target
+/// path-includes it; there is no manifest-directory lookup, no host-font
+/// path and no environment override. Unknown names fail loudly.
 fn repo_font(name: &str) -> Vec<u8> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fonts");
-    std::fs::read(dir.join(name)).expect("packaged font")
+    match name {
+        "NotoSans-Regular.ttf" => include_bytes!("../fonts/NotoSans-Regular.ttf").to_vec(),
+        "NotoSansArabic.ttf" => include_bytes!("../fonts/NotoSansArabic.ttf").to_vec(),
+        "NotoSansHebrew.ttf" => include_bytes!("../fonts/NotoSansHebrew.ttf").to_vec(),
+        "InterVariable-Italic.ttf" => include_bytes!("../fonts/InterVariable-Italic.ttf").to_vec(),
+        "FiraMono-Medium.ttf" => include_bytes!("../fonts/FiraMono-Medium.ttf").to_vec(),
+        "Inter-Regular.ttf" => include_bytes!("../fonts/Inter-Regular.ttf").to_vec(),
+        unknown => panic!("unknown packaged font: {unknown}"),
+    }
 }
 
 /// Parse the packaged font bytes into a binary `FaceInfo`: a scratch database

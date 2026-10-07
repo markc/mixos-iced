@@ -1,37 +1,45 @@
-use std::path::PathBuf;
+//! Legacy guard: variable-font weight matching.
+//!
+//! Uses the retained `InterVariable-Italic.ttf` fixture: the upstream
+//! archive's `InterVariable.ttf` is deliberately not carried in this tree
+//! (see `PATCHES.md`). The fixture bytes are compiled in source-relatively,
+//! so the file builds unchanged from its own test target or when the
+//! root-owned guard target path-includes it; no host font participates.
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, fontdb};
+use std::sync::Arc;
+
+use cosmic_text::fontdb::{self, Database, Source};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 
 /// Variable fonts must be matched at all weights within their `wght` axis
 /// range, not just the default weight they register at in fontdb, otherwise
 /// they will fall back to a system font despite being able to provide the
 /// requested weight.
 ///
-/// Uses the retained `InterVariable-Italic.ttf` fixture: the upstream
-/// archive's `InterVariable.ttf` is deliberately not carried in this tree
-/// (see `PATCHES.md`). The variable face's family name and style are
-/// discovered from the parsed bytes, never assumed from a fixed string.
+/// The database is an explicit empty one holding only the fixture, so the
+/// face's family, style and ID are discovered from the parsed bytes and no
+/// host font can supply a same-named family.
 #[test]
 fn variable_font_all_weights_match() {
-    let repo_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let fonts_path = PathBuf::from(&repo_dir).join("fonts");
+    let bytes: &'static [u8] = include_bytes!("../fonts/InterVariable-Italic.ttf");
 
-    let mut font_system = FontSystem::new();
-    font_system
-        .db_mut()
-        .load_font_data(std::fs::read(fonts_path.join("InterVariable-Italic.ttf")).unwrap());
+    let mut db = Database::new();
+    let loaded = db.load_font_source(Source::Binary(Arc::new(bytes.to_vec())));
+    assert!(loaded.is_some(), "the variable fixture must parse");
 
-    // The fixture is loaded after the system fonts, so the last face whose
-    // family mentions Inter is the one this test owns; its family name is
-    // whatever the parsed bytes declare.
-    let variable_family = font_system
+    let mut font_system = FontSystem::new_with_locale_and_db("en-US".into(), db);
+    let face = font_system
         .db()
         .faces()
-        .filter(|face| face.families.iter().any(|(name, _)| name.contains("Inter")))
-        .last()
-        .and_then(|face| face.families.first())
+        .next()
+        .expect("the database holds only the fixture")
+        .clone();
+    let variable_family = face
+        .families
+        .first()
         .map(|(name, _)| name.clone())
-        .expect("variable face family");
+        .expect("variable fixture family");
+    let face_id = face.id;
 
     for w in [100, 200, 300, 400, 500, 600, 700, 800, 900] {
         let metrics = Metrics::new(16.0, 20.0);
@@ -42,6 +50,7 @@ fn variable_font_all_weights_match() {
             let mut buffer = buffer.borrow_with(&mut font_system);
             let attrs = Attrs::new()
                 .family(Family::Name(&variable_family))
+                .style(face.style)
                 .weight(Weight(w));
             buffer.set_size(Some(300.0), Some(100.0));
             buffer.set_text("Hello world", &attrs, Shaping::Advanced, None);
@@ -56,11 +65,9 @@ fn variable_font_all_weights_match() {
         assert!(!glyph_font_ids.is_empty(), "Weight {w}: no glyphs produced");
 
         for id in &glyph_font_ids {
-            let face = font_system.db().face(*id).unwrap();
-            let family = &face.families[0].0;
-            assert!(
-                family.contains("Inter"),
-                "Weight {w}: expected Inter, got \"{family}\""
+            assert_eq!(
+                *id, face_id,
+                "Weight {w}: expected the fixture face ID, got {id:?}"
             );
         }
     }

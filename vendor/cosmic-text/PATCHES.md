@@ -31,12 +31,12 @@ The published archive's `fonts/InterVariable.ttf` is deliberately not
 carried in this tree: the public hygiene gate rejects the raw bytes (an
 accidental binary mesh-node-name match), and the allowlist stays closed.
 The retained `fonts/InterVariable-Italic.ttf` covers the variable-weight
-guards instead, and the legacy `variable_font_weight` test was pointed at
-it; both tests discover the face's family and style from the parsed bytes
-rather than assuming a family string. The archive base checksum above stays
-the recorded upstream identity; this one omission is an explicit local
-difference on top of the delta below, and the privately preserved boxed
-binary is unaffected.
+guards instead; the legacy `variable_font_weight` test loads those bytes
+into an explicit empty database, so the face's family, style and ID are
+discovered from the parsed bytes and no host font can supply a same-named
+family. The archive base checksum above stays the recorded upstream
+identity; this one omission is an explicit local difference on top of the
+delta below, and the privately preserved boxed binary is unaffected.
 
 ## Local delta
 
@@ -47,7 +47,8 @@ binary is unaffected.
 | `src/font/system.rs` | `PinnedFaceRef`, `PinnedFontPolicy`, `FontRegistration`, `FontRegistrationResult`, `FontRegistrationError`; `FontSystem::register_fonts` (atomic transaction), `refresh_database` (legacy post-mutation rebuild), `pinned_aliases`; `derive_monospace_indexes` helper shared with the constructor; pinned branch in `get_font_matches` |
 | `src/font/fallback/mod.rs` | `FontFallbackIter` pinned branch: declared candidates only, at the sealed policy weight, before any global fallback table |
 | `src/shape.rs` | `ShapeGlyph.font_weight` comes from the instantiated `Font`, not the attributes; Basic swash metrics use the actual variation coords; pinned `shape_skip` branch and shared `shape_skip_replace_missing` helper |
-| `tests/registration_seam.rs` | guard tests (see below) |
+| `tests/registration_seam.rs` | guard tests; the packaged fixtures are compiled in with source-relative `include_bytes!` instead of a `CARGO_MANIFEST_DIR` read, so the file builds unchanged from its own test target or from the root-owned guard target (see Guards) |
+| `tests/variable_font_weight.rs` | legacy variable-weight guard: loads the retained italic fixture into an explicit empty database and asserts the parsed face ID at every weight; the fixture bytes are compiled in source-relatively |
 
 ## The seam
 
@@ -111,11 +112,20 @@ the tables still contributes its scripts.
 
 ## Guards
 
-Run:
+The executable owner is the root workspace's opt-in toolkit target, which
+path-includes the two guard sources below unchanged and compiles them
+against the same patched package the root patch resolves. The vendor test
+targets above stay declared for upstream-style runs. Run from the
+repository root at the checked/updated lock SHA:
 
 ```
-cargo test --manifest-path vendor/cosmic-text/Cargo.toml --test registration_seam
+cargo test --locked --profile release-fast -p toolkit --features font-registration-guards --test font_registration
 ```
+
+The suite is the 15 registration guards below, the retained
+`variable_font_all_weights_match` legacy guard and the ported iced wrapper
+guards (see `vendor/iced/PATCHES.md`); a run that matches none of these
+names is a failure.
 
 | test | fails when |
 |---|---|
@@ -134,6 +144,7 @@ cargo test --manifest-path vendor/cosmic-text/Cargo.toml --test registration_sea
 | `staged_family_capture_is_rejected` | an alias captures a public family name declared by a face added in the same transaction |
 | `registered_bytes_survive_source_drop` | registered faces do not own their bytes |
 | `unpinned_families_keep_legacy_behaviour` | pinned policies change fallback for ordinary named or generic families |
+| `variable_font_all_weights_match` | a variable face is not matched at a weight inside its `wght` axis (100..=900), or any laid out glyph resolves to a face other than the fixture's own ID |
 
 ## Iced owner
 
@@ -142,7 +153,9 @@ cargo test --manifest-path vendor/cosmic-text/Cargo.toml --test registration_sea
 faces or policies were actually added; identical transactions do not bump,
 and the (hypothetical) version overflow is checked before the cosmic commit.
 Its `load_font` path now calls `refresh_database` after a successful
-mutation. See `vendor/iced/PATCHES.md`.
+mutation. The wrapper's guard tests are owned by the root toolkit target
+above, not by private test modules in the vendored tree. See
+`vendor/iced/PATCHES.md`.
 # Archive fixture storage
 
 The upstream `.gitattributes` LFS filters are disabled in this vendored copy.
