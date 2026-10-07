@@ -95,7 +95,7 @@ fn shape(
     let metrics = cosmic_text::Metrics::new(16.0, 20.0);
     let mut buffer = cosmic_text::Buffer::new(raw, metrics);
     let attrs = cosmic_text::Attrs::new().family(cosmic_text::Family::Name(alias));
-    let glyphs = {
+    {
         let mut buffer = buffer.borrow_with(raw);
         buffer.set_size(Some(300.0), Some(100.0));
         buffer.set_text(text, &attrs, shaping, None);
@@ -105,8 +105,7 @@ fn shape(
             .flat_map(|run| run.glyphs.iter())
             .map(|glyph| (glyph.font_id, glyph.glyph_id, glyph.w))
             .collect::<Vec<_>>()
-    };
-    glyphs
+    }
 }
 
 fn face_digest(id: cosmic_text::fontdb::ID) -> blake3::Hash {

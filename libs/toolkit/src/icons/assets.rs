@@ -1120,6 +1120,37 @@ mod tests {
     }
 
     #[test]
+    fn svg_gradient_paints_real_pixels_and_expansion_is_refused_before_conversion() {
+        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><linearGradient id="g"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="16" height="16" fill="url(#g)"/></svg>"##;
+        let decoded = decode_owned(gradient.as_bytes().into(), ImageFormat::Svg, 16, None).unwrap();
+        assert_eq!(decoded.dimensions(), (16, 16));
+        let left = &decoded.pixels()[(8 * 16 + 1) * 4..(8 * 16 + 1) * 4 + 4];
+        let right = &decoded.pixels()[(8 * 16 + 14) * 4..(8 * 16 + 14) * 4 + 4];
+        assert!(left[0] > left[2] && left[3] > 0);
+        assert!(right[2] > right[0] && right[3] > 0);
+        let expensive = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><linearGradient id="g">{}</linearGradient></defs>{}</svg>"##,
+            r##"<stop offset="0" stop-color="#ff0000"/>"##.repeat(256),
+            r##"<rect width="16" height="16" fill="url(#g)"/>"##.repeat(257),
+        );
+        assert!(matches!(decode_owned(expensive.into_bytes().into(), ImageFormat::Svg, 16, None),
+            Err(IconDecodeError::SvgComplexity { .. })));
+    }
+
+    #[test]
+    fn svg_nested_viewports_and_excessive_group_depth_are_refused() {
+        let nested = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><svg width="1000000000" height="1000000000"><rect width="16" height="16"/></svg></svg>"#;
+        assert!(matches!(decode_owned(nested.as_bytes().into(), ImageFormat::Svg, 16, None),
+            Err(IconDecodeError::SvgUnsupported)));
+        let deep = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">{}<rect width="16" height="16"/>{}</svg>"#,
+            "<g>".repeat(65), "</g>".repeat(65),
+        );
+        assert!(matches!(decode_owned(deep.into_bytes().into(), ImageFormat::Svg, 16, None),
+            Err(IconDecodeError::SvgUnsupported)));
+    }
+
+    #[test]
     fn every_advertised_raster_codec_decodes_and_retains_intrinsic_layout() {
         let bitmap = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
             32,
