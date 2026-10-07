@@ -41,7 +41,9 @@
 //! fixed-bound permit, acquired inside the worker and released on every exit.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use assets::{ExplicitRequest, IconDefault, Lookup, ReadLimits, VerifiedFile, VerifiedSet};
@@ -58,7 +60,6 @@ use toolkit::{
             WeightPolicy, registry as process_registry,
         },
     },
-    graphics::text::Version,
     icons::{
         Ready,
         assets::{ImageFormat, decode_owned},
@@ -455,8 +456,8 @@ impl ResourceRequirements {
 /// process ledger after this preparation.
 #[derive(Clone, Debug, Default)]
 pub struct RegistryEvidence {
-    pub renderer_version_before: Version,
-    pub renderer_version_after: Version,
+    pub renderer_version_before: u32,
+    pub renderer_version_after: u32,
     pub sources_added: usize,
     pub sources_reused: usize,
     pub faces_added: usize,
@@ -469,6 +470,22 @@ pub struct RegistryEvidence {
 }
 
 impl RegistryEvidence {
+    fn without_registration(mut self) -> Self {
+        let version = toolkit::graphics::text::font_system()
+            .read().unwrap_or_else(|poisoned| poisoned.into_inner()).version().value();
+        let usage = process_registry().usage();
+        self.renderer_version_before = version;
+        self.renderer_version_after = version;
+        self.sources_added = 0;
+        self.sources_reused = 0;
+        self.faces_added = 0;
+        self.faces_reused = 0;
+        self.policies_added = 0;
+        self.policies_reused = 0;
+        self.usage_before = usage;
+        self.usage_after = usage;
+        self
+    }
     fn with_image_usage(mut self) -> Self {
         self.image = image_store().usage();
         self
@@ -1573,7 +1590,7 @@ fn reuse(
         icons.insert(key, ready);
         icon_evidence.push(evidence);
     }
-    let mut registry = compact.registry.clone();
+    let mut registry = compact.registry.clone().without_registration();
     registry.image = admission.usage_after;
     let evidence = ResourceEvidence {
         set_id: Some(compact.set_id.clone()),
@@ -1896,7 +1913,7 @@ mod tests {
             total.wrapping_mul(31).wrapping_add(u32::from(byte))
         });
         format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#{:06x}"/></svg>"#,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#{:06x}"/></svg>"##,
             value & 0xFF_FFFF
         )
     }
@@ -2350,8 +2367,8 @@ mod tests {
             )
             .unwrap_err();
         assert!(
-            error.to_string().contains("no glyph in its face"),
-            "{error}"
+            error.message.contains("no glyph in its face"),
+            "{error:?}"
         );
         assert_eq!(process_registry().usage(), before);
         assert_eq!(
@@ -2875,8 +2892,8 @@ mod tests {
             .prepare(changed, None, None, requirements, &mut check_ok())
             .unwrap_err();
         assert!(
-            error.to_string().contains("no glyph in its face"),
-            "{error}"
+            error.message.contains("no glyph in its face"),
+            "{error:?}"
         );
         assert_eq!(process_registry().usage(), usage_before);
         assert_eq!(
