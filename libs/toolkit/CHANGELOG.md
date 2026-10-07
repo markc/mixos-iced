@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.8
+
+- Add `fonts::registry`: one `FontRegistry` per process registers caller-supplied
+  font collections and immutable role/icon selections against iced's shared font
+  system in single atomic batches. Sources are re-digested, faces parsed in
+  scratch databases, every selection resolved — all eligible declared fallback
+  groups reach the renderer in declaration order, weights are sealed exact or
+  explicitly substituted, styles and stretches are validated against the faces,
+  and icon catalogue family claims must match the parsed intrinsic family —
+  with all process-wide capacities checked in checked arithmetic before one
+  renderer transaction commits. Every error is produced before that call, so
+  registry and renderer are left exactly as they were. Selections render
+  through private digest aliases; two roles making the same selection share
+  one alias; identical or collection-only batches leave the numeric
+  font-system version in the evidence unchanged; and `Selection::owned()`
+  hands back the selected policy's source bytes, face indices, intrinsic
+  evidence and exact effective weight without re-registering anything.
+  Legacy `fonts::install` never replaces faces pinned by the registry;
+  `font_for` and `try_font_for` behaviour is unchanged.
+
 ## 0.2.6
 
 - `typography::TextStyle` is generic over the font (`TextStyle<F = Font>`), so
