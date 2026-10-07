@@ -413,7 +413,11 @@ fn unmaximise_without_a_restore_record_clears_intent_without_moving_the_slot() {
     let mut h = Harness::new();
     let (surface, _, top) = h.mapped_toplevel(640, 480);
     let (id, window) = window(&h, &surface);
-    h.wire.inner.space.state.map_element(window.clone(), (16, 24), false);
+    h.wire
+        .inner
+        .space
+        .state
+        .map_element(window.clone(), (16, 24), false);
     slot::set_expected_size(&window, (800, 600).into());
     shell::stage(&window, (800, 600).into(), false);
     window.toplevel().unwrap().with_pending_state(|state| {
@@ -424,16 +428,26 @@ fn unmaximise_without_a_restore_record_clears_intent_without_moving_the_slot() {
     configured(&h, &top, (800, 600), true);
     assert!(h.comp().maximize_restore(id).is_none());
 
-    assert_eq!(maximize(&mut h, id, &window, false), GeometryChange::default());
+    assert_eq!(
+        maximize(&mut h, id, &window, false),
+        GeometryChange::default()
+    );
     h.roundtrip();
     configured(&h, &top, (800, 600), false);
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
-    assert_eq!(h.wire.inner.space.state.element_location(&window), Some((16, 24).into()));
+    assert_eq!(
+        h.wire.inner.space.state.element_location(&window),
+        Some((16, 24).into())
+    );
     assert!(h.comp().maximize_restore(id).is_none());
     let before = count(&h, &top);
     maximize(&mut h, id, &window, false);
     h.roundtrip();
-    assert_eq!(count(&h, &top), before + 1, "explicit requests retain their configure response");
+    assert_eq!(
+        count(&h, &top),
+        before + 1,
+        "explicit requests retain their configure response"
+    );
     configured(&h, &top, (800, 600), false);
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
 }

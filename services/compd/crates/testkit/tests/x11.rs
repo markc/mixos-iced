@@ -46,7 +46,10 @@ fn window(xid: u32) -> X11Surface {
 fn the_desktop_mirror_holds_what_was_written() {
     let window = window(7);
     assert_eq!(window.desktop(), None);
-    assert!(window.set_desktop(2).is_err(), "no server: the write itself fails");
+    assert!(
+        window.set_desktop(2).is_err(),
+        "no server: the write itself fails"
+    );
     assert_eq!(window.desktop(), Some(2));
 }
 
@@ -78,34 +81,58 @@ fn maximised_geometry_uses_the_offline_mirror_without_repeated_reflow() {
     let mut h = testkit::Harness::new();
     let surface = window(0x500001);
     assert!(surface.set_maximized(true).is_err());
-    assert!(surface.is_maximized(), "failed write preserves the desired mirror");
+    assert!(
+        surface.is_maximized(),
+        "failed write preserves the desired mirror"
+    );
     assert!(surface.set_maximized(false).is_err());
     let window = Window::new_x11_window(surface.clone());
     let host = &mut h.wire.inner;
     let handle = SurfaceHandle::x11(&surface);
     host.comp.apply(SurfaceEvent::RoleTaken {
         handle: handle.clone(),
-        role: SurfaceRole::X11 { override_redirect: false },
+        role: SurfaceRole::X11 {
+            override_redirect: false,
+        },
         parent: None,
     });
     let id = host.comp.registry.id_for_handle(&handle).unwrap();
     host.comp.registry.set_mapped(id, true).unwrap();
-    host.space.state.map_element(window.clone(), (16, 24), false);
+    host.space
+        .state
+        .map_element(window.clone(), (16, 24), false);
     slot::set_expected_size(&window, (800, 600).into());
-    assert!(geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, true).windows);
+    assert!(
+        geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, true).windows
+    );
     assert!(surface.is_maximized());
-    host.comp.reserved.insert(host.output.name(), Reserved { bottom: 80, ..Reserved::default() });
+    host.comp.reserved.insert(
+        host.output.name(),
+        Reserved {
+            bottom: 80,
+            ..Reserved::default()
+        },
+    );
     let candidates = [(id, window.clone())];
     assert!(geometry::refresh_usable(&mut host.comp, &mut host.space.state, &candidates).windows);
     assert_eq!(slot::decided_size(&window), Some((1920, 1000).into()));
-    assert_eq!(geometry::refresh_usable(&mut host.comp, &mut host.space.state, &candidates), GeometryChange::default());
+    assert_eq!(
+        geometry::refresh_usable(&mut host.comp, &mut host.space.state, &candidates),
+        GeometryChange::default()
+    );
     geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, false);
     assert!(!surface.is_maximized());
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
-    assert_eq!(host.space.state.element_location(&window), Some((16, 24).into()));
+    assert_eq!(
+        host.space.state.element_location(&window),
+        Some((16, 24).into())
+    );
     // An unmatched unmaximise must clear the mirror without inventing a restore.
     assert!(surface.set_maximized(true).is_err());
-    assert_eq!(geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, false), GeometryChange::default());
+    assert_eq!(
+        geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, false),
+        GeometryChange::default()
+    );
     assert!(!surface.is_maximized());
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
     assert!(host.comp.maximize_restore(id).is_none());
@@ -125,20 +152,36 @@ fn x11_requests_queue_for_the_policy() {
     let handle = SurfaceHandle::X11(0x200001);
     comp.apply(SurfaceEvent::RoleTaken {
         handle: handle.clone(),
-        role: SurfaceRole::X11 { override_redirect: false },
+        role: SurfaceRole::X11 {
+            override_redirect: false,
+        },
         parent: None,
     });
-    for request in [WindowRequest::Desktop(1), WindowRequest::Activate, WindowRequest::Unminimize, WindowRequest::Raise] {
+    for request in [
+        WindowRequest::Desktop(1),
+        WindowRequest::Activate,
+        WindowRequest::Unminimize,
+        WindowRequest::Raise,
+    ] {
         comp.apply(SurfaceEvent::Request {
             handle: handle.clone(),
             request,
         });
     }
     comp.apply(SurfaceEvent::CurrentDesktop(2));
-    let queued: Vec<WindowRequest> = comp.take_requests().into_iter().map(|(_, request)| request).collect();
+    let queued: Vec<WindowRequest> = comp
+        .take_requests()
+        .into_iter()
+        .map(|(_, request)| request)
+        .collect();
     assert_eq!(
         queued,
-        [WindowRequest::Desktop(1), WindowRequest::Activate, WindowRequest::Unminimize, WindowRequest::Raise]
+        [
+            WindowRequest::Desktop(1),
+            WindowRequest::Activate,
+            WindowRequest::Unminimize,
+            WindowRequest::Raise
+        ]
     );
     assert_eq!(comp.take_desktop_requests(), [2]);
     assert!(comp.take_desktop_requests().is_empty(), "taken once");
@@ -154,9 +197,18 @@ fn smithay_reads_motif_hints_as_policy_does() {
     use policy::x11::{DecorationMode, decoration_mode, motif_refuses_server_decorations};
 
     let window = window(9);
-    assert!(!window.is_decorated(), "no hints: the client accepts WM decorations");
+    assert!(
+        !window.is_decorated(),
+        "no hints: the client accepts WM decorations"
+    );
     // `_MOTIF_WM_HINTS` = [flags, functions, decorations, input_mode, status].
-    for (flags, decorations) in [(1 << 1, 0), (1 << 1, 1), (0, 0), (1 << 0, 0), (1 << 1, u32::MAX)] {
+    for (flags, decorations) in [
+        (1 << 1, 0),
+        (1 << 1, 1),
+        (0, 0),
+        (1 << 0, 0),
+        (1 << 1, u32::MAX),
+    ] {
         window.set_motif_hints_offline([flags, 0, decorations, 0, 0]);
         assert_eq!(
             window.is_decorated(),
@@ -195,26 +247,58 @@ fn an_owner_move_takes_its_override_redirect_menu() {
             parent: None,
         });
         comp.apply(SurfaceEvent::x11_transient_for(surface));
-        let id = comp.registry.id_for_handle(&SurfaceHandle::x11(surface)).unwrap();
+        let id = comp
+            .registry
+            .id_for_handle(&SurfaceHandle::x11(surface))
+            .unwrap();
         comp.registry.set_mapped(id, true).unwrap();
-        assert!(policy::workspaces::stamp_workspace_at_map(&mut comp.registry, id, false, 1));
+        assert!(policy::workspaces::stamp_workspace_at_map(
+            &mut comp.registry,
+            id,
+            false,
+            1
+        ));
         ids.push(id);
     }
     let (owner_id, menu_id) = (ids[0], ids[1]);
-    assert_eq!(comp.registry.get(menu_id).unwrap().parent(), None, "no parent for an X11 record");
+    assert_eq!(
+        comp.registry.get(menu_id).unwrap().parent(),
+        None,
+        "no parent for an X11 record"
+    );
     assert_eq!(
         comp.registry.get(menu_id).unwrap().transient_for(),
         Some(&SurfaceHandle::X11(0x400001))
     );
     comp.workspaces
-        .move_window(&mut comp.registry, None, owner_id, WorkspaceTarget::Index(2), None)
+        .move_window(
+            &mut comp.registry,
+            None,
+            owner_id,
+            WorkspaceTarget::Index(2),
+            None,
+        )
         .unwrap();
-    assert_eq!(comp.registry.get(menu_id).unwrap().workspace(), Some(2), "the menu followed");
+    assert_eq!(
+        comp.registry.get(menu_id).unwrap().workspace(),
+        Some(2),
+        "the menu followed"
+    );
     // The client clears WM_TRANSIENT_FOR: the next move leaves the menu.
     menu.set_transient_for_offline(None);
     comp.apply(SurfaceEvent::x11_transient_for(&menu));
     comp.workspaces
-        .move_window(&mut comp.registry, None, owner_id, WorkspaceTarget::Index(3), None)
+        .move_window(
+            &mut comp.registry,
+            None,
+            owner_id,
+            WorkspaceTarget::Index(3),
+            None,
+        )
         .unwrap();
-    assert_eq!(comp.registry.get(menu_id).unwrap().workspace(), Some(2), "released");
+    assert_eq!(
+        comp.registry.get(menu_id).unwrap().workspace(),
+        Some(2),
+        "released"
+    );
 }
