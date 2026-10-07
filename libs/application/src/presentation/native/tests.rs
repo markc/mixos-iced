@@ -119,7 +119,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
     );
     let ready = ready(jobs.prepare.unwrap());
     let (change, jobs) = session.handle(
-        Event::Fallback(request, Ok((fallback, presentation.unwrap()))),
+        Event::Fallback(request, Box::new(Ok((fallback, presentation.unwrap())))),
         Some(1),
     );
     assert!(change.is_none());
@@ -195,11 +195,11 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
     session.handle(
         Event::Fallback(
             request,
-            Err(vec![Diagnostic::new(
+            Box::new(Err(vec![Diagnostic::new(
                 "font_unavailable",
                 "fixture",
                 "missing",
-            )]),
+            )])),
         ),
         None,
     );

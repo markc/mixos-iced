@@ -56,10 +56,9 @@ impl<T> Mailbox<T> {
         if let Some(index) = pending.events.iter().position(|old| slot(old) == key) {
             if let (Event::Delivery(previous), Event::Delivery(next)) =
                 (&pending.events[index], &event)
+                && previous.same_message(next)
             {
-                if previous.same_message(next) {
-                    return false;
-                }
+                return false;
             }
             if matches!(&event, Event::Wake) && matches!(&pending.events[index], Event::Refresh) {
                 return false;

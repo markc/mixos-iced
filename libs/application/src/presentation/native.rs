@@ -31,7 +31,7 @@ pub enum Event<T> {
     Prepared(Completion<T>),
     Fallback(
         settings::fallback::Request,
-        Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>,
+        Box<Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>>,
     ),
 }
 
@@ -90,7 +90,7 @@ impl<T> Session<T> {
             Event::Prepared(ready) => {
                 changed = self.host.complete(ready);
             }
-            Event::Fallback(request, result) => match result {
+            Event::Fallback(request, result) => match *result {
                 Ok((fallback, presentation)) => {
                     if self
                         .host
@@ -193,7 +193,7 @@ type Builder<T> = Arc<dyn Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Se
 
 enum Resource {
     Prepare(Request),
-    Fallback(settings::fallback::Request),
+    Fallback(Box<settings::fallback::Request>),
 }
 impl Resource {
     fn same(&self, other: &Self) -> bool {
@@ -283,10 +283,10 @@ impl<T: Send + 'static> Worker<T> {
         {
             self.queued = None;
         }
-        if let Some(running) = &self.running {
-            if !valid(&running.capture, &jobs) {
-                running.cancel.store(true, Ordering::Release);
-            }
+        if let Some(running) = &self.running
+            && !valid(&running.capture, &jobs)
+        {
+            running.cancel.store(true, Ordering::Release);
         }
         if self.work != jobs.work {
             self.rpc = None;
@@ -304,19 +304,18 @@ impl<T: Send + 'static> Worker<T> {
         let offered = jobs
             .prepare
             .map(Resource::Prepare)
-            .or_else(|| jobs.fallback.map(Resource::Fallback));
-        if let Some(resource) = offered {
-            if self
+            .or_else(|| jobs.fallback.map(|request| Resource::Fallback(Box::new(request))));
+        if let Some(resource) = offered
+            && self
                 .offered
                 .as_ref()
                 .is_none_or(|previous| !previous.same(&resource))
-            {
-                self.offered = Some(match &resource {
-                    Resource::Prepare(request) => Resource::Prepare(request.clone()),
-                    Resource::Fallback(request) => Resource::Fallback(request.clone()),
-                });
-                self.queued = Some(resource);
-            }
+        {
+            self.offered = Some(match &resource {
+                Resource::Prepare(request) => Resource::Prepare(request.clone()),
+                Resource::Fallback(request) => Resource::Fallback(request.clone()),
+            });
+            self.queued = Some(resource);
         }
     }
     fn start(&mut self) {
@@ -343,6 +342,7 @@ impl<T: Send + 'static> Worker<T> {
                 })
             }
             Resource::Fallback(request) => {
+                let request = *request;
                 let mut presentation = None;
                 let prepared = request.prepare(None, |snapshot, context, _| {
                     presentation = Some(prepare(snapshot, context, &cancelled, &build)?);
@@ -350,7 +350,7 @@ impl<T: Send + 'static> Worker<T> {
                 });
                 Event::Fallback(
                     request,
-                    prepared.map(|fallback| (fallback, presentation.expect("validated resources"))),
+                    Box::new(prepared.map(|fallback| (fallback, presentation.expect("validated resources")))),
                 )
             }
         });
@@ -380,7 +380,7 @@ impl<T: Send + 'static> Worker<T> {
                         let fault = Diagnostic::new("preparation_failed", "worker", error.to_string());
                         match running.capture {
                             Resource::Prepare(request) => Event::Prepared(request.failed(fault)),
-                            Resource::Fallback(request) => Event::Fallback(request, Err(vec![fault])),
+                            Resource::Fallback(request) => Event::Fallback(*request, Box::new(Err(vec![fault]))),
                         }
                     }
                 };

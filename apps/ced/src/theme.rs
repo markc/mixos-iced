@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Theme (ced E1 plan D17): the effective ctk theme selection — shared
-//! `::config::store::config_dir()/theme.conf.mix` layered with the
-//! per-app `<AppDirs ced>/config/theme.conf.mix` (`ctk/src/theme.rs:3121-3137`
-//! rule) — compiled with mixos-design in the user's mode, re-resolved on the
-//! `theme.changed` topic. Produces the chrome `Tokens`, the editor
-//! [`Palette`](crate::editor::Palette) (every `HlClass` ≥ 3:1 against the
-//! background, else pulled toward the text colour) and fonts from the `Mono` /
-//! `Ui` typography roles.
+//! Ced's deliberate editor appearance extends the shared prepared settings
+//! projection. The GUI borrows its existing Bus lifetime to receive compiled
+//! authority snapshots; [`from_settings`] builds syntax/chrome colours and
+//! checked font handles off the UI thread. It does not compile authored files.
+//! The editor [`Palette`](crate::editor::Palette) keeps every `HlClass` at least
+//! 3:1 against the background, pulling colours towards text when needed.
 //!
-//! Desktop-wide theming is mandatory: there is no colour literal here. Every
-//! colour is a compiled design token or a mix of two of them. A design that
-//! fails to compile falls back to the shared preview palette of
-//! `mixos-iced-widgets` and says so, once, in [`Theme::notes`].
+//! Legacy selection/compilation helpers remain for standalone callers and
+//! fixtures. GUI bootstrap uses a package-only interim selection, then replaces
+//! it through fenced shared settings activation. GUI `theme.changed` file
+//! reloading is retired.
 //!
 //! Highlight classes map onto the tokens the design already has (`syntax.*`
 //! tokens are out of E1, plan §10): keywords take the accent, strings the
