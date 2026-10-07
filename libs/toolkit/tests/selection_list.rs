@@ -33,19 +33,19 @@ impl renderer::Renderer for Recorder {
     fn reset(&mut self, _: Rectangle) {}
     fn allocate_image(
         &mut self,
-        handle: &toolkit::core::image::Handle,
+        _: &toolkit::core::image::Handle,
         callback: impl FnOnce(Result<toolkit::core::image::Allocation, toolkit::core::image::Error>)
         + Send
         + 'static,
     ) {
-        renderer::Renderer::allocate_image(&mut (), handle, callback);
+        callback(Err(toolkit::core::image::Error::Unsupported));
     }
 }
 
 impl text::Renderer for Recorder {
     type Font = Font;
-    type Paragraph = ();
-    type Editor = ();
+    type Paragraph = toolkit::iced_graphics::text::Paragraph;
+    type Editor = toolkit::iced_graphics::text::Editor;
     const ICON_FONT: Font = Font::DEFAULT;
     const CHECKMARK_ICON: char = 'x';
     const ARROW_DOWN_ICON: char = 'v';
@@ -60,8 +60,8 @@ impl text::Renderer for Recorder {
     fn default_size(&self) -> Pixels {
         Pixels(14.0)
     }
-    fn fill_paragraph(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
-    fn fill_editor(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
+    fn fill_paragraph(&mut self, _: &Self::Paragraph, _: Point, _: Color, _: Rectangle) {}
+    fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
     fn fill_text(&mut self, text: text::Text<String>, _: Point, _: Color, _: Rectangle) {
         self.texts.push(text);
     }
