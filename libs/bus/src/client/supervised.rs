@@ -1459,6 +1459,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
         return retry_or_fail(ctx, attempt, ClientError::Closed, "publication", None);
     };
 
+    let inner = ctx.inner.clone();
     let mut live = tokio::select! {
         biased;
         _ = ctx.out_tx.closed() => {
@@ -1477,7 +1478,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
                 "publication", None,
             );
         }
-        guard = ctx.inner.write() => guard,
+        guard = inner.write() => guard,
     };
 
     // 9. Commit the staged declarations, swap the live connection, advance
