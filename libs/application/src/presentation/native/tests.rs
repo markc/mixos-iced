@@ -51,15 +51,17 @@ fn write_manifest(dir: &std::path::Path, json: &serde_json::Value) {
 /// A real verified set under `root`, activated through `current`, using the
 /// real variable Inter, Noto Sans and JetBrains Mono fonts so the toolkit registry
 /// parses actual bytes and every embedded design record resolves (Inter
-/// doubles as the sans/display/mono packaged roles; Noto Sans covers the
-/// button records).
+/// supplies sans/display, JetBrains Mono supplies mono, and Noto Sans covers
+/// button records and declared UI fallbacks).
 fn publish_set(root: &std::path::Path, id: &str) {
     let dir = root.join("sets").join(id);
     let inter = include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
     let noto = include_bytes!("../../../../appearance/assets/test-fonts/NotoSans.ttf");
+    let mono = include_bytes!("../../../../appearance/assets/test-fonts/JetBrainsMono.ttf");
     let entries = vec![
         write_file(&dir, "fonts/Sans.ttf", inter),
         write_file(&dir, "fonts/Noto.ttf", noto),
+        write_file(&dir, "fonts/Mono.ttf", mono),
     ];
     write_manifest(
         &dir,
@@ -67,10 +69,10 @@ fn publish_set(root: &std::path::Path, id: &str) {
             "schema": assets::SCHEMA, "set_id": id,
             "fonts": {
                 "sans": "fonts/Sans.ttf", "display": "fonts/Sans.ttf",
-                "mono": "fonts/Sans.ttf", "extra": "fonts/Noto.ttf"
+                "mono": "fonts/Mono.ttf", "extra": "fonts/Noto.ttf"
             },
             "font_families": {
-                "sans": "Inter", "display": "Inter", "mono": "Inter", "extra": "Noto Sans"
+                "sans": "Inter", "display": "Inter", "mono": "JetBrains Mono", "extra": "Noto Sans"
             },
             "files": entries, "web_css": "/* fixture */\n"
         }),
@@ -91,9 +93,11 @@ fn publish_icon_set(root: &std::path::Path, id: &str) {
     let dir = root.join("sets").join(id);
     let inter = include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
     let noto = include_bytes!("../../../../appearance/assets/test-fonts/NotoSans.ttf");
+    let mono = include_bytes!("../../../../appearance/assets/test-fonts/JetBrainsMono.ttf");
     let entries = vec![
         write_file(&dir, "fonts/Sans.ttf", inter),
         write_file(&dir, "fonts/Noto.ttf", noto),
+        write_file(&dir, "fonts/Mono.ttf", mono),
         write_file(&dir, "icons/Symbols.codepoints", b"home 61\nemoji 1F600\n"),
     ];
     write_manifest(
@@ -102,10 +106,10 @@ fn publish_icon_set(root: &std::path::Path, id: &str) {
             "schema": assets::SCHEMA_V2, "set_id": id,
             "fonts": {
                 "sans": "fonts/Sans.ttf", "display": "fonts/Sans.ttf",
-                "mono": "fonts/Sans.ttf", "extra": "fonts/Noto.ttf"
+                "mono": "fonts/Mono.ttf", "extra": "fonts/Noto.ttf"
             },
             "font_families": {
-                "sans": "Inter", "display": "Inter", "mono": "Inter", "extra": "Noto Sans"
+                "sans": "Inter", "display": "Inter", "mono": "JetBrains Mono", "extra": "Noto Sans"
             },
             "files": entries, "web_css": "/* fixture */\n",
             "icon_default": { "family": "Inter", "style": "default", "weight": 400 },
@@ -586,7 +590,9 @@ async fn late_icon_failure_keeps_applied_ack_and_cache_capture_unchanged() {
     // A newer snapshot whose required icon is declared by the catalogue but
     // absent from the face's cmap fails the atomic batch: no activation, no
     // ACK, no new cache capture.
-    session.host.consumer_mut().observe(1, snapshot(2, false));
+    // Change the actual appearance: an identical projection intentionally
+    // advances its authority revision without requesting resource work.
+    session.host.consumer_mut().observe(1, snapshot(2, true));
     let (change, jobs) = session.handle(Event::Wake, Some(1));
     assert!(change.is_none());
     worker.replace(jobs);
