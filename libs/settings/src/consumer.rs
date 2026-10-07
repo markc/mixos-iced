@@ -223,6 +223,10 @@ impl Consumer {
                 return false;
             }
         };
+        if let Err(fault) = self.check(&prepared.snapshot) {
+            self.fault = Some(fault);
+            return false;
+        }
         let changes = ChangePlan::between(None, &prepared.snapshot, &self.context, self.shell);
         let serial = self.serial();
         self.pending = Some(Update {
@@ -574,6 +578,17 @@ impl Consumer {
             return None;
         }
         if !self.confirmed {
+            if self.buffered.as_ref().is_some_and(|old| {
+                old.incarnation == snapshot.incarnation
+                    && old.revision == snapshot.revision
+                    && old != &snapshot
+            }) {
+                return self.rejected_delivery(Diagnostic::new(
+                    "invalid_delivery",
+                    "snapshot",
+                    "Conflicting bootstrap delivery identity",
+                ));
+            }
             // Keep one latest candidate during bootstrap, not one read demand
             // per retained event. The fresh read establishes the history first.
             if self.buffered.as_ref().is_none_or(|old| {

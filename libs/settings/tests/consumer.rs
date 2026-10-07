@@ -282,6 +282,41 @@ fn malformed_delivery_storm_preserves_one_retry_and_cannot_bypass_backoff() {
     assert!(state.fault().is_none());
 }
 #[test]
+fn terminal_delivery_refusal_quiesces_but_valid_arrival_wakes_fresh_read() {
+    let mut state = consumer();
+    activate(&mut state, snapshot(1, "a"));
+    let mut unsupported = snapshot(2, "a");
+    unsupported.schema += 1;
+    assert!(state.observe(1, unsupported).is_none());
+    assert!(state.current_work().is_none());
+    assert!(state.retry_deadline().is_none());
+    assert!(!state.is_confirmed());
+    let read = state.observe(1, snapshot(2, "a")).unwrap();
+    state.complete(&read, Ok(Some(snapshot(2, "a"))));
+    assert!(state.is_confirmed());
+    assert!(state.fault().is_none());
+    assert_eq!(state.applied().unwrap().revision, Revision(2));
+}
+#[test]
+fn contradictory_bootstrap_deliveries_discard_the_candidate_and_bound_recovery() {
+    let mut state = consumer();
+    let read = read_work(&mut state, 1);
+    state.observe(1, snapshot(2, "a"));
+    let mut contradictory = snapshot(2, "a");
+    contradictory.effective.get_mut("app:ced").unwrap().ui.density = 1.5;
+    state.observe(1, contradictory);
+    assert_eq!(state.fault().unwrap().code, "invalid_delivery");
+    let deadline = state.retry_deadline().unwrap();
+    assert!(state.complete(&read, Ok(Some(snapshot(2, "a")))).is_none());
+    assert!(state.current().is_none());
+    assert_eq!(state.retry_deadline(), Some(deadline));
+    let fresh = state.retry().unwrap();
+    state.complete(&fresh, Ok(Some(snapshot(2, "a"))));
+    assert!(state.is_confirmed());
+    assert!(state.fault().is_none());
+    assert_eq!(state.pending().unwrap().snapshot().revision, Revision(2));
+}
+#[test]
 fn malformed_delivery_during_successful_read_keeps_recovery_deadline_and_then_converges() {
     let mut state = consumer();
     let read = read_work(&mut state, 1);
