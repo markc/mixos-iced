@@ -80,7 +80,7 @@ async fn omitted_verified_source_keeps_a_and_explicit_b_overrides_the_lifetime_p
     // source whose records all name a family actually carried by B, then
     // recompute its effective settings with the production resolver.
     let mut source = strict::to_json(&strict::parse(settings::EMBEDDED_DEFAULT_SOURCE).unwrap());
-    for record in source["typography"]["records"].as_object_mut().unwrap().values_mut() {
+    for record in source["design"]["v1"]["typography"]["records"].as_object_mut().unwrap().values_mut() {
         record["family"] = serde_json::json!("Inter");
         record["fallbacks"] = serde_json::json!([]);
     }
