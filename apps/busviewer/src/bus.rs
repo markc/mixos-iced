@@ -595,9 +595,9 @@ async fn worker(
                     // Only a typed name-taken collision may ever hand off;
                     // unknown or admission refusals never forward or exit.
                     outbox.push(Delivery::Refused {
-                        name_taken: reason
-                            .as_ref()
-                            .is_some_and(|reason| reason.kind() == RegistrationRejectionKind::NameTaken),
+                        name_taken: reason.as_ref().is_some_and(|reason| {
+                            reason.kind() == RegistrationRejectionKind::NameTaken
+                        }),
                         message: reason
                             .map_or_else(|| "connection stopped".into(), |reason| reason.message),
                     });
@@ -1229,8 +1229,7 @@ mod tests {
             instance: "fixture".into(),
             profile: "default".into(),
         };
-        let consumer =
-            settings::consumer::Consumer::for_app(binding.clone(), "busviewer").unwrap();
+        let consumer = settings::consumer::Consumer::for_app(binding.clone(), "busviewer").unwrap();
         let (mut ui, lane) = bridge(Session::new(consumer), Worker::offline(|_, _| Ok(())));
         // Establish a confirmed authority read through the real consumer.
         let _ = ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});

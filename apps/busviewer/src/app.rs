@@ -1489,13 +1489,8 @@ mod tests {
         INSTALLED.call_once(|| {
             let inter =
                 include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").as_slice();
-            toolkit::fonts::install(
-                toolkit::fonts::FontSet::new()
-                    .sans(inter)
-                    .mono(inter),
-                None,
-            )
-            .expect("built-in licensed test font installs");
+            toolkit::fonts::install(toolkit::fonts::FontSet::new().sans(inter).mono(inter), None)
+                .expect("built-in licensed test font installs");
         });
     }
     /// A real prepared-presentation activation: driving the shared lane/worker
@@ -1509,8 +1504,7 @@ mod tests {
             instance: "fixture".into(),
             profile: "default".into(),
         };
-        let consumer =
-            settings::consumer::Consumer::for_app(binding.clone(), "busviewer").unwrap();
+        let consumer = settings::consumer::Consumer::for_app(binding.clone(), "busviewer").unwrap();
         let (ui, mut lane) = application::presentation::native::bridge(
             application::presentation::native::Session::new(consumer),
             application::presentation::native::Worker::offline(|_, _| Ok(())),
@@ -1551,7 +1545,9 @@ mod tests {
 
         // Drive the real read pipeline through the app's own session, then run
         // the shared worker until the prepared presentation is published.
-        let _ = app.settings_ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});
+        let _ = app
+            .settings_ui
+            .handle_with(SettingsEvent::Wake, Some(1), |_| {});
         let subscribe = app
             .settings_ui
             .session()
@@ -1560,10 +1556,12 @@ mod tests {
             .current_work()
             .expect("subscribe work")
             .clone();
+        let _ =
+            app.settings_ui
+                .handle_with(SettingsEvent::Rpc(subscribe, Ok(None)), Some(1), |_| {});
         let _ = app
             .settings_ui
-            .handle_with(SettingsEvent::Rpc(subscribe, Ok(None)), Some(1), |_| {});
-        let _ = app.settings_ui.handle_with(SettingsEvent::Wake, Some(1), |_| {});
+            .handle_with(SettingsEvent::Wake, Some(1), |_| {});
         let read = app
             .settings_ui
             .session()
