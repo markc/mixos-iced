@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Paired endpoints on the host's existing UI and worker, with no own runtime.
-use super::{ChangePlan, Diagnostic, Event, Jobs, Mailbox, PreparationEvidence, PreparationRevision, Presentation, Session, Worker};
+use super::{
+    ChangePlan, Diagnostic, Event, Jobs, Mailbox, PreparationEvidence, PreparationRevision,
+    Presentation, Session, Worker,
+};
 use bus::native_client::IncomingCommand;
 use std::sync::Arc;
 #[cfg(feature = "settings-cache")]
@@ -83,14 +86,23 @@ impl<T, C> Ui<T, C> {
         self.handle_with(Event::Wake, live, |_| {});
     }
 
-    pub fn set_context(&mut self, next: C, live: Option<u64>) -> Result<PreparationRevision, Diagnostic>
-    where C: PartialEq {
+    pub fn set_context(
+        &mut self,
+        next: C,
+        live: Option<u64>,
+    ) -> Result<PreparationRevision, Diagnostic>
+    where
+        C: PartialEq,
+    {
         let (revision, jobs) = self.session.set_context(next, live)?;
         self.jobs.send_replace(Some(jobs));
         Ok(revision)
     }
 
-    pub fn retry_preparation(&mut self, live: Option<u64>) -> Result<PreparationRevision, Diagnostic> {
+    pub fn retry_preparation(
+        &mut self,
+        live: Option<u64>,
+    ) -> Result<PreparationRevision, Diagnostic> {
         let (revision, jobs) = self.session.retry_preparation(live)?;
         self.jobs.send_replace(Some(jobs));
         Ok(revision)

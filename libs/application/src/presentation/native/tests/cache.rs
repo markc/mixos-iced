@@ -9,7 +9,10 @@ use std::time::Duration;
 fn activated() -> Session<u64> {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    session.handle(Event::Prepared(ready(jobs.prepare_request().unwrap())), Some(1));
+    session.handle(
+        Event::Prepared(ready(jobs.prepare_request().unwrap())),
+        Some(1),
+    );
     session
 }
 async fn next(worker: &mut Worker<u64>) -> Event<u64> {

@@ -2046,7 +2046,10 @@ mod tests {
             )
             .unwrap();
         let binding = first.resources().unwrap().binding().unwrap().clone();
-        assert_eq!(first.resources().unwrap().evidence().registry.image, image_usage());
+        assert_eq!(
+            first.resources().unwrap().evidence().registry.image,
+            image_usage()
+        );
         assert!(binding.icons.is_none());
         let first_handle = image_handle(first.resources().unwrap().icon("slot"));
         first_host.roots.clear();
@@ -2075,7 +2078,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cold.resources().unwrap().binding(), Some(&binding));
-        assert_eq!(cold.resources().unwrap().evidence().registry.image, image_usage());
+        assert_eq!(
+            cold.resources().unwrap().evidence().registry.image,
+            image_usage()
+        );
         let cold_handle = image_handle(cold.resources().unwrap().icon("slot"));
         assert_eq!(
             cold_handle.id(),

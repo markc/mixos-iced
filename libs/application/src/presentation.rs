@@ -52,7 +52,11 @@ impl<T> Host<T> {
         self.presentation.as_ref()
     }
     #[cfg(feature = "settings-native")]
-    fn replace_local(&mut self, presentation: Presentation<T>, activate: impl FnOnce(&Presentation<T>)) {
+    fn replace_local(
+        &mut self,
+        presentation: Presentation<T>,
+        activate: impl FnOnce(&Presentation<T>),
+    ) {
         activate(&presentation);
         self.presentation = Some(presentation);
     }

@@ -5,9 +5,9 @@ use settings::{Binding, Desktop, Revision};
 use sha2::Digest;
 use toolkit::fonts::{FontChoice, FontSelection, FontSet};
 mod bridge;
-mod context;
 #[cfg(feature = "settings-cache")]
 mod cache;
+mod context;
 
 fn install_fonts() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
@@ -382,7 +382,10 @@ fn coalesced_jobs_retain_capture_and_atomic_loss_rejects_queued_ready() {
 fn no_op_revision_advances_evidence_without_a_resource_job() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let (change, _) = session.handle(Event::Prepared(ready(jobs.prepare_request().unwrap())), Some(1));
+    let (change, _) = session.handle(
+        Event::Prepared(ready(jobs.prepare_request().unwrap())),
+        Some(1),
+    );
     assert!(change.is_some());
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let (change, jobs) = session.handle(Event::Wake, Some(1));
