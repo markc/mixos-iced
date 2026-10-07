@@ -605,8 +605,7 @@ impl App {
             match effect {
                 Effect::Send { .. }
                 | Effect::Respond { .. }
-                | Effect::Timer { .. }
-                | Effect::Subscribe { .. } => {
+                | Effect::Timer { .. } => {
                     self.bus.perform(&effect);
                 }
                 Effect::Notice { tab, notice } => self.on_notice(tab, notice),

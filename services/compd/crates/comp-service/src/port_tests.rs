@@ -5,6 +5,7 @@
 
 use super::*;
 use std::future;
+use std::sync::atomic::AtomicBool;
 
 use comp_model::observation::PropValue;
 use comp_model::request::SequenceStep;
@@ -122,8 +123,12 @@ impl WorkerClient for FakeClient {
         Box::pin(future::ready(()))
     }
 
-    fn subscribe_topic<'a>(&'a self, _topic: &'a str) -> WorkerFuture<'a, Result<(), String>> {
-        Box::pin(future::ready(Ok(())))
+    fn registration_rejection(&self) -> Option<RegistrationRejected> {
+        None
+    }
+
+    fn subscription_declaration_error(&self) -> Option<SubscriptionDeclarationError> {
+        None
     }
 }
 
@@ -196,6 +201,101 @@ async fn next_port_command(source: &CommandSource) -> PortCommand {
     })
     .await
     .expect("worker admits command")
+}
+
+#[test]
+fn connect_error_classification_keeps_declaration_terminal_and_transport_retryable() {
+    let declared =
+        SupervisedError::SubscriptionDeclaration(SubscriptionDeclarationError::Rejected {
+            topic: "noded.props.changed".into(),
+            rc: 10,
+            message: "reserved".into(),
+        });
+    assert!(matches!(
+        classify_connect_error("comp-nested", declared),
+        ConnectAttemptError::DeclarationRejected { service, error }
+            if service == "comp-nested"
+                && matches!(
+                    error,
+                    SubscriptionDeclarationError::Rejected { topic, rc: 10, .. }
+                        if topic == "noded.props.changed"
+                )
+    ));
+    assert!(matches!(
+        classify_connect_error("comp-nested", SupervisedError::Disconnected),
+        ConnectAttemptError::Retry(_)
+    ));
+}
+
+#[tokio::test]
+async fn connect_loop_declaration_rejection_ends_the_attempt_without_retrying() {
+    let (_shutdown_tx, mut shutdown) = watch::channel(false);
+    let broker = AtomicU8::new(BROKER_CONNECTED);
+    let attempts = AtomicUsize::new(0);
+    let outcome = connect_loop(
+        &mut shutdown,
+        &broker,
+        || {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            future::ready(Err::<(), _>(
+                ConnectAttemptError::DeclarationRejected {
+                    service: "comp-nested".into(),
+                    error: SubscriptionDeclarationError::Rejected {
+                        topic: "noded.props.changed".into(),
+                        rc: 10,
+                        message: "reserved".into(),
+                    },
+                },
+            ))
+        },
+        Duration::from_millis(1),
+    )
+    .await;
+    assert!(matches!(
+        outcome,
+        ConnectOutcome::DeclarationRejected { service, error }
+            if service == "comp-nested"
+                && matches!(error, SubscriptionDeclarationError::Rejected { rc: 10, .. })
+    ));
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(broker.load(Ordering::Acquire), BROKER_RETRYING);
+}
+
+#[tokio::test]
+async fn complete_worker_loop_terminates_on_declaration_rejection_without_retry() {
+    let (ingress, _source, _) = test_ingress();
+    let broker = Arc::new(AtomicU8::new(BROKER_CONNECTED));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_connector = Arc::clone(&attempts);
+    let (_shutdown_tx, shutdown) = watch::channel(false);
+    let (publish_timeouts, observations, lost_count) = test_observation_args();
+    worker_loop(
+        "comp-nested".into(),
+        ingress,
+        Arc::clone(&broker),
+        Arc::new(AtomicU64::new(0)),
+        publish_timeouts,
+        observations,
+        Arc::new(tokio::sync::Notify::new()),
+        lost_count,
+        shutdown,
+        move || {
+            attempts_for_connector.fetch_add(1, Ordering::Relaxed);
+            future::ready(Err::<FakeClient, _>(
+                ConnectAttemptError::DeclarationRejected {
+                    service: "comp-nested".into(),
+                    error: SubscriptionDeclarationError::Rejected {
+                        topic: "noded.props.changed".into(),
+                        rc: 10,
+                        message: "reserved".into(),
+                    },
+                },
+            ))
+        },
+    )
+    .await;
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(broker.load(Ordering::Acquire), BROKER_RETRYING);
 }
 
 #[tokio::test(start_paused = true)]

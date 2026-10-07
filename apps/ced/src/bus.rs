@@ -3,8 +3,9 @@
 //! OS thread (the `mixos-term-core/src/bus.rs:68-107` shape) holding a
 //! `SupervisedClient` registered as `ced` (or `--service NAME`) with
 //! `fatal_on_registration_rejection(true)`. It correlates requests, arms
-//! one-shot timers and deadlines, subscribes topics (`edit.changed`,
-//! `theme.changed`, `noded.props.changed`), forwards connection edges, and
+//! one-shot timers and deadlines, declares the fixed startup topics on the
+//! supervisor (the settings path: `edit.changed`, `noded.props.changed`; the
+//! compatibility path adds `theme.changed`), forwards connection edges, and
 //! hands `ced.*` commands to the Controller. Deliveries reach iced through an
 //! unbounded futures channel exposed as a `Subscription` (no poll thread).
 //!
@@ -21,15 +22,19 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::bus::SupervisedError;
 use ::bus::native_client::{
-    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
+    SupervisedClient,
 };
 use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use edit::wire;
 use editor_model::types::{Incoming, ParsedBody};
 
 use crate::controller::{BusCommand, Effect};
 use application::presentation::native::{
-    Event as SettingsEvent, Progress, Session, Ui as SettingsUi, Worker as SettingsWorker, bridge,
+    Event as SettingsEvent, Lane as SettingsLane, Progress, Session, Ui as SettingsUi,
+    Worker as SettingsWorker, bridge,
 };
 
 /// Everything the bus thread delivers.
@@ -57,6 +62,9 @@ pub enum StartError {
     NameTaken,
     /// noded refused registration for another reason (message).
     Rejected(String),
+    /// A declared startup subscription was refused or invalid. Terminal;
+    /// never a name collision, never a retryable transport fault.
+    Declaration(String),
     /// No broker reachable.
     Unreachable(String),
     /// Local desktop settings binding could not be resolved.
@@ -68,6 +76,7 @@ impl std::fmt::Display for StartError {
         match self {
             StartError::NameTaken => f.write_str("the service name is already registered"),
             StartError::Rejected(m) => write!(f, "registration refused: {m}"),
+            StartError::Declaration(m) => write!(f, "subscription declaration refused: {m}"),
             StartError::Unreachable(m) => write!(f, "Bus unreachable: {m}"),
             StartError::SettingsBinding(m) => write!(f, "settings session: {m}"),
         }
@@ -119,7 +128,6 @@ impl BusHandle {
             Effect::Send { .. }
             | Effect::Respond { .. }
             | Effect::Timer { .. }
-            | Effect::Subscribe { .. }
             | Effect::Quit => {
                 let _ = self.tx.send(WorkerCommand::Effect(effect.clone()));
             }
@@ -230,19 +238,50 @@ async fn run(
             return;
         }
     };
+    // The declaration list is fixed by the startup path, chosen here before
+    // the client exists. The settings GUI consumes compiled snapshots, so
+    // the legacy `theme.changed` subscription is compatibility-only.
+    let declarations = if desktop_settings {
+        vec![wire::TOPIC_CHANGED.to_owned(), "noded.props.changed".to_owned()]
+    } else {
+        vec![
+            wire::TOPIC_CHANGED.to_owned(),
+            "theme.changed".to_owned(),
+            "noded.props.changed".to_owned(),
+        ]
+    };
     let options = SupervisedClient::connect_options(&service, &url)
         .fatal_on_registration_rejection(true)
-        .bounded_incoming(64);
+        .bounded_incoming(64)
+        .with_initial_topics(declarations);
     let client = if desktop_settings {
-        Arc::new(options.start())
+        // `start()` returns immediately; a stalled initial establishment is
+        // retired by its five-second whole-attempt budget and reaches native
+        // backoff promptly, without imposing a five-second GUI startup wait.
+        Arc::new(
+            options
+                .establishment_timeout(Duration::from_secs(5))
+                .start(),
+        )
     } else {
         match tokio::time::timeout(CONNECT_TIMEOUT, options.connect()).await {
             Ok(Ok(c)) => Arc::new(c),
-            Ok(Err(e)) => {
-                let err = match e.registration_rejection() {
-                    Some((_, msg)) if msg.contains("already registered") => StartError::NameTaken,
-                    Some((rc, msg)) => StartError::Rejected(format!("rc {rc}: {msg}")),
-                    None => StartError::Unreachable(e.to_string()),
+            Ok(Err(error)) => {
+                let err = match error {
+                    SupervisedError::SubscriptionDeclaration(error) => {
+                        StartError::Declaration(error.to_string())
+                    }
+                    error => match error.registration_rejection_typed() {
+                        Some(rejection)
+                            if rejection.kind() == RegistrationRejectionKind::NameTaken =>
+                        {
+                            StartError::NameTaken
+                        }
+                        Some(rejection) => {
+                            StartError::Rejected(format!("rc {}: {}", rejection.rc, rejection.message))
+                        }
+                        None => StartError::Unreachable(error.to_string()),
+                    },
                 };
                 let _ = ready.send(Err(err));
                 return;
@@ -287,14 +326,18 @@ async fn run(
     let mut incoming_open = true;
     let mut registered = false;
     let mut shutdown_session = None;
-    if desktop_settings && client.connection_generation() > 0 {
-        registered = true;
-        let _ = dtx.unbounded_send(Delivery::Registered);
-    }
-    if desktop_settings && matches!(client.state(), ConnState::Fatal | ConnState::ShuttingDown) {
-        let _ = dtx.unbounded_send(Delivery::RegistrationFailed(registration_error(&client)));
-    }
-    loop {
+    // Sample once before waiting: fast establishment may already have
+    // completed, and the first Connected must recover mirrors and release
+    // reads exactly like a later edge, never via a subscription retry event.
+    let mut running = deliver_state(
+        &client,
+        desktop_settings,
+        &mut registered,
+        &mut lane,
+        &dtx,
+        *state.borrow_and_update(),
+    );
+    while running {
         tokio::select! {
             result = replies.join_next(), if !replies.is_empty() => {
                 if let Some(Ok(Err(error))) = result {
@@ -407,39 +450,6 @@ async fn run(
                             let _ = d.unbounded_send(Delivery::Incoming(Incoming::Timer { id }));
                         });
                     }
-                    Effect::Subscribe { topic } => {
-                        // The migrated GUI consumes compiled settings snapshots.
-                        if lane.is_some() && topic == "theme.changed" { continue; }
-                        let (c, d) = (client.clone(), dtx.clone());
-                        tokio::spawn(async move {
-                            // The client replays only topics that once
-                            // subscribed, so a failed first subscribe would
-                            // leave ced deaf for good (Opus m7): retry with
-                            // backoff, and once it lands treat it as the
-                            // reconnect edge — every mirror recovers what it
-                            // missed.
-                            let mut delay = Duration::from_millis(250);
-                            let mut failed = false;
-                            loop {
-                                if matches!(c.state(), ConnState::ShuttingDown | ConnState::Fatal) { return; }
-                                match c.subscribe_topic(&topic).await {
-                                    Ok(_) => break,
-                                    Err(e) => {
-                                        if !failed {
-                                            tracing::warn!("subscribe {topic}: {e}; retrying");
-                                        }
-                                        failed = true;
-                                        tokio::time::sleep(delay).await;
-                                        delay = (delay * 2).min(Duration::from_secs(5));
-                                    }
-                                }
-                            }
-                            if failed {
-                                tracing::info!("subscribed {topic} after retrying");
-                                let _ = d.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
-                            }
-                        });
-                    }
                     Effect::Quit => break,
                     _ => {}
                 }
@@ -448,29 +458,14 @@ async fn run(
                 if changed.is_err() {
                     break;
                 }
-                let now = *state.borrow_and_update();
-                if desktop_settings && !registered && client.connection_generation() > 0 {
-                    registered = true;
-                    let _ = dtx.unbounded_send(Delivery::Registered);
-                }
-                match now {
-                    ConnState::Connected => {
-                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
-                        let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
-                    }
-                    ConnState::Disconnected => {
-                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
-                        let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
-                    }
-                    ConnState::ShuttingDown | ConnState::Fatal => {
-                        if !desktop_settings { break; }
-                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
-                        let error = registration_error(&client);
-                        let _ = dtx.unbounded_send(Delivery::RegistrationFailed(error));
-                        let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
-                    }
-                    ConnState::Connecting => {}
-                }
+                running = deliver_state(
+                    &client,
+                    desktop_settings,
+                    &mut registered,
+                    &mut lane,
+                    &dtx,
+                    *state.borrow_and_update(),
+                );
             }
         }
     }
@@ -523,11 +518,66 @@ async fn run(
     let _ = dtx.unbounded_send(Delivery::Stopped { faults });
 }
 
-fn registration_error(client: &SupervisedClient) -> StartError {
+/// The terminal establishment diagnostic: a declared-topic refusal first,
+/// then the broker's registration refusal. Only a genuine initial
+/// [`RegistrationRejectionKind::NameTaken`] is a single-instance collision.
+fn establishment_error(client: &SupervisedClient) -> StartError {
+    if let Some(error) = client.subscription_declaration_error() {
+        return StartError::Declaration(error.to_string());
+    }
     match client.registration_rejection() {
-        Some(reason) if reason.message.contains("already registered") => StartError::NameTaken,
+        Some(reason) if reason.kind() == RegistrationRejectionKind::NameTaken => {
+            StartError::NameTaken
+        }
         Some(reason) => StartError::Rejected(format!("rc {}: {}", reason.rc, reason.message)),
         None => StartError::Unreachable("connection stopped".into()),
+    }
+}
+
+/// Deliver one sampled lifecycle state exactly as a watch edge would: the
+/// first published Bus generation releases [`Delivery::Registered`], Connected
+/// wakes settings and recovers mirrors, and terminal states carry the
+/// establishment diagnostic. Returns `false` when a non-settings worker must
+/// end its loop on a terminal state.
+fn deliver_state(
+    client: &SupervisedClient,
+    desktop_settings: bool,
+    registered: &mut bool,
+    lane: &mut Option<SettingsLane<crate::theme::Theme>>,
+    dtx: &UnboundedSender<Delivery>,
+    now: ConnState,
+) -> bool {
+    if desktop_settings && !*registered && client.connection_generation() > 0 {
+        *registered = true;
+        let _ = dtx.unbounded_send(Delivery::Registered);
+    }
+    match now {
+        ConnState::Connected => {
+            if let Some(lane) = lane {
+                settings_wake(dtx, lane.publish(SettingsEvent::Wake));
+            }
+            let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
+            true
+        }
+        ConnState::Disconnected => {
+            if let Some(lane) = lane {
+                settings_wake(dtx, lane.publish(SettingsEvent::Wake));
+            }
+            let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
+            true
+        }
+        ConnState::ShuttingDown | ConnState::Fatal => {
+            if !desktop_settings {
+                return false;
+            }
+            if let Some(lane) = lane {
+                settings_wake(dtx, lane.publish(SettingsEvent::Wake));
+            }
+            let _ = dtx.unbounded_send(Delivery::RegistrationFailed(establishment_error(client)));
+            let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
+            true
+        }
+        ConnState::Connecting => true,
     }
 }
 
@@ -655,5 +705,36 @@ mod tests {
             "mesh:svc@beta"
         );
         assert_eq!(caller_key(&cmd("x", &[])), "anon");
+    }
+
+    /// The finite connect completes before the worker takes its lifecycle
+    /// watch: the first Connected must still be released by the initial
+    /// sample, exactly as a later edge, with no subscription retry event in
+    /// between.
+    #[tokio::test]
+    #[ignore = "requires isolated settings_test.mix broker"]
+    async fn sampled_first_connection_edge_is_delivered_without_a_subscription_retry() {
+        use application::iced::futures::StreamExt;
+        let (bus, mut deliveries) = spawn("ced-sampled-fixture").expect("bus starts");
+        let connected = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match deliveries.next().await {
+                    Some(Delivery::Incoming(Incoming::Connection { up: true })) => break,
+                    Some(Delivery::Incoming(
+                        Incoming::Topic { .. } | Incoming::Reply { .. },
+                    )) => {}
+                    other => panic!("unexpected first delivery: {other:?}"),
+                }
+            }
+        });
+        connected
+            .await
+            .expect("the sampled first Connected edge arrives");
+        bus.shutdown(None);
+        while let Some(delivery) = deliveries.next().await {
+            if matches!(delivery, Delivery::Stopped { .. }) {
+                break;
+            }
+        }
     }
 }

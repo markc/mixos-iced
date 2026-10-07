@@ -438,6 +438,7 @@ async fn connect(config: HostConfig, mut shutdown: watch::Receiver<bool>) -> Con
             SupervisedClient::connect_options(name, &config.noded_url)
                 .fatal_on_registration_rejection(true)
                 .bounded_incoming(INBOUND_CAPACITY)
+                .with_initial_topics(vec![REGISTRY_TOPIC.to_owned()])
                 .start(),
         );
         let mut lifecycle = client.subscribe_state();
@@ -453,6 +454,15 @@ async fn connect(config: HostConfig, mut shutdown: watch::Receiver<bool>) -> Con
                 // sample and this terminal state read.
                 if client.connection_generation() > 0 {
                     return Connected::Client(client, name.clone());
+                }
+                // A declared-topic refusal is terminal and ends the whole
+                // name-selection attempt: it is never a registration refusal
+                // and never triggers the override fallback name.
+                if let Some(error) = client.subscription_declaration_error() {
+                    tracing::error!(
+                        "SCENE HOST: the broker refused a declared subscription for `{name}` ({error})"
+                    );
+                    return Connected::Refused(format!("{name}: {error}"));
                 }
                 let refusal = client
                     .registration_rejection()
@@ -629,10 +639,12 @@ async fn serve(
     let mut flights = tokio::task::JoinSet::new();
     let mut replies = tokio::task::JoinSet::new();
     let mut sends = tokio::task::JoinSet::new();
-    let mut registry = None;
     let mut registry_retries = 0;
-    let mut registry_subscription = (initial_state == ConnState::Connected)
-        .then(|| Box::pin(registry_subscribe(Arc::clone(client))));
+    // The supervisor declared and ACKed the registry topic before Connected,
+    // so a sampled Connected state is already subscribe-before-read: start
+    // the authoritative full-set read directly.
+    let mut registry = (initial_state == ConnState::Connected)
+        .then(|| Box::pin(registry_read(Arc::clone(client), Duration::ZERO)));
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -651,22 +663,16 @@ async fn serve(
                 if changed.is_err() { lifecycle_open = false; }
                 let state = *lifecycle.borrow_and_update();
                 notify(lane.publish(SettingsEvent::Wake));
+                // Discard stale registry work: a read admitted on the earlier
+                // generation must not publish after a reconnect.
                 registry = None;
-                registry_subscription = (lifecycle_open && state == ConnState::Connected)
-                    .then(|| Box::pin(registry_subscribe(Arc::clone(client))));
+                if lifecycle_open && state == ConnState::Connected {
+                    registry = Some(Box::pin(registry_read(Arc::clone(client), Duration::ZERO)));
+                }
                 if !lifecycle_open || matches!(state, ConnState::Fatal | ConnState::ShuttingDown) {
                     let _ = delivery.send(Inbound::Refused(terminal_reason(client)));
                 }
                 registry_retries = 0;
-            }
-            subscribed = async { registry_subscription.as_mut().expect("guarded registry subscription").await }, if registry_subscription.is_some() => {
-                registry_subscription = None;
-                if subscribed {
-                    // Subscribe before read so a departure in the gap cannot
-                    // leave a successful but obsolete full-set baseline.
-                    registry = Some(Box::pin(registry_read(Arc::clone(client), Duration::ZERO)));
-                    registry_retries = 0;
-                }
             }
             result = async { registry.as_mut().expect("guarded registry read").await }, if registry.is_some() => {
                 registry = None;
@@ -712,7 +718,6 @@ async fn serve(
                     None => {
                         incoming_open = false;
                         registry = None;
-                        registry_subscription = None;
                         notify(lane.publish(SettingsEvent::Wake));
                         let _ = delivery.send(Inbound::Refused("Bus incoming lane closed; retaining settings resources".into()));
                     }
@@ -764,6 +769,9 @@ async fn serve(
 }
 
 fn terminal_reason(client: &SupervisedClient) -> String {
+    if let Some(error) = client.subscription_declaration_error() {
+        return format!("{error}; retaining settings resources");
+    }
     client.registration_rejection().map_or_else(
         || "Bus supervisor stopped; retaining settings resources".into(),
         |refusal| {
@@ -800,27 +808,6 @@ async fn registry_read(
         .map(|name| name.as_str().map(str::to_owned))
         .collect::<Option<BTreeSet<_>>>()?;
     Some((generation, services))
-}
-
-async fn registry_subscribe(client: Arc<SupervisedClient>) -> bool {
-    for attempt in 0..3 {
-        if settings::native::live_generation(&client).is_none() {
-            return false;
-        }
-        if matches!(
-            tokio::time::timeout(SEND_TIMEOUT, client.subscribe_topic(REGISTRY_TOPIC)).await,
-            Ok(Ok(()))
-        ) {
-            return true;
-        }
-        if attempt < 2 {
-            tokio::time::sleep(RETRY_INITIAL * (1 << attempt)).await;
-        }
-    }
-    tracing::warn!(
-        "scene host: registry subscription failed; retry waits for next lifecycle event"
-    );
-    false
 }
 
 /// Answer a request the engine never sees.

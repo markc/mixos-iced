@@ -81,8 +81,6 @@ pub enum Effect {
     Respond { id: u64, rc: u8, body: String },
     /// Arm a one-shot timer (`Incoming::Timer{id}` after `ms`).
     Timer { id: u64, ms: u64 },
-    /// Subscribe a topic (idempotent).
-    Subscribe { topic: String },
     /// Show something in the chrome.
     Notice { tab: Option<TabId>, notice: Notice },
     /// Write the clipboard (`primary`: the selection clipboard).
@@ -569,14 +567,11 @@ impl Controller {
         }
     }
 
-    /// The Bus came up: subscribe topics, ping `edit`, reattach the session.
+    /// The Bus came up: ping `edit`, reattach the session. Fixed topic
+    /// subscriptions are the Bus supervisor's initial declarations, chosen
+    /// by the host before it constructs the client, not effects here.
     pub fn start(&mut self) -> Vec<Effect> {
         let mut fx = Vec::new();
-        for topic in [wire::TOPIC_CHANGED, "theme.changed", "noded.props.changed"] {
-            fx.push(Effect::Subscribe {
-                topic: topic.to_string(),
-            });
-        }
         self.send_info(&mut fx);
         let out = Outgoing {
             verb: "edit.list".into(),
@@ -3082,12 +3077,9 @@ mod tests {
     }
 
     #[test]
-    fn start_subscribes_and_asks_edit_its_epoch() {
+    fn start_asks_edit_its_epoch_without_fixed_subscription_effects() {
         let mut c = ctl();
         let fx = c.start();
-        for t in ["edit.changed", "theme.changed", "noded.props.changed"] {
-            assert!(fx.contains(&Effect::Subscribe { topic: t.into() }), "{t}");
-        }
         assert!(
             fx.iter()
                 .any(|e| matches!(e, Effect::Send { out, .. } if out.verb == "edit.info"))

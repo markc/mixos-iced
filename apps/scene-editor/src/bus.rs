@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised native Bus connection. Topics drive refreshes; no poller.
 use ::bus::native_client::{
-    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
+    SupervisedClient,
 };
 use application::iced::futures::channel::{mpsc, oneshot};
 use application::presentation::native::{
@@ -199,6 +200,12 @@ async fn worker(
         SupervisedClient::connect_options(&service, &url)
             .fatal_on_registration_rejection(true)
             .bounded_incoming(64)
+            .with_initial_topics(vec![
+                "scenes.changed".to_owned(),
+                "noded.props.changed".to_owned(),
+                format!("{host}.panel.changed"),
+            ])
+            .establishment_timeout(Duration::from_secs(5))
             .start(),
     );
     let Some(mut incoming) = client.incoming_bounded() else {
@@ -230,7 +237,6 @@ async fn worker(
     let mut incoming_open = true;
     let mut connection_open = true;
     let mut operations = tokio::task::JoinSet::new();
-    let mut topics = tokio::task::JoinSet::new();
     let mut lifecycle = None;
     // Sample once before waiting: fast registration may already have completed.
     loop {
@@ -240,18 +246,24 @@ async fn worker(
             settings_wake(&send, lane.publish(SettingsEvent::Wake));
             match now {
                 ConnState::Connected => {
-                    arm_topics(&client, &host, &mut topics);
                     let _ = send.unbounded_send(Delivery::Connected);
                 }
                 ConnState::Fatal | ConnState::ShuttingDown => {
-                    let reason = client.registration_rejection();
-                    let _ = send.unbounded_send(Delivery::Refused {
-                        name_taken: reason
-                            .as_ref()
-                            .is_some_and(|reason| reason.message.contains("already registered")),
-                        message: reason
-                            .map_or_else(|| "connection stopped".into(), |reason| reason.message),
-                    });
+                    // A declared-topic refusal is terminal with its own
+                    // diagnostic; it is never the registration NameTaken kind.
+                    let (name_taken, message) = if let Some(error) =
+                        client.subscription_declaration_error()
+                    {
+                        (false, error.to_string())
+                    } else if let Some(reason) = client.registration_rejection() {
+                        (
+                            reason.kind() == RegistrationRejectionKind::NameTaken,
+                            reason.message,
+                        )
+                    } else {
+                        (false, "connection stopped".into())
+                    };
+                    let _ = send.unbounded_send(Delivery::Refused { name_taken, message });
                 }
                 ConnState::Disconnected => {
                     let _ = send.unbounded_send(Delivery::Disconnected);
@@ -262,9 +274,6 @@ async fn worker(
         tokio::select! {
             result = operations.join_next(), if !operations.is_empty() => {
                 if let Some(Err(error)) = result { eprintln!("scene-editor: Bus work: {error}"); }
-            }
-            result = topics.join_next(), if !topics.is_empty() => {
-                if let Some(Ok(Err(error))) = result { eprintln!("scene-editor: topic: {error}"); }
             }
             progress = lane.drive() => match progress {
                 Progress::Wake => settings_wake(&send, true),
@@ -344,7 +353,6 @@ async fn worker(
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut faults = Vec::new();
-    topics.abort_all();
     operations.abort_all();
     if let Err(error) = lane.flush_cache(deadline).await {
         faults.push(format!("settings cache: {}: {}", error.code, error.message));
@@ -356,27 +364,6 @@ async fn worker(
         faults.push("Bus close timed out".into());
     }
     eprintln!("SCENE_EDITOR_SHUTDOWN {}", json!({"faults":faults}));
-}
-
-fn arm_topics(
-    client: &Arc<SupervisedClient>,
-    host: &str,
-    tasks: &mut tokio::task::JoinSet<Result<(), String>>,
-) {
-    tasks.abort_all();
-    for topic in [
-        "scenes.changed".to_owned(),
-        "noded.props.changed".to_owned(),
-        format!("{host}.panel.changed"),
-    ] {
-        let client = Arc::clone(client);
-        tasks.spawn(async move {
-            tokio::time::timeout(Duration::from_secs(2), client.subscribe_topic(&topic))
-                .await
-                .map_err(|_| format!("{topic}: subscription timed out"))?
-                .map_err(|error| format!("{topic}: {error}"))
-        });
-    }
 }
 
 async fn forward_async(

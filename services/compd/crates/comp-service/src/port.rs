@@ -22,7 +22,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -30,7 +30,10 @@ use std::{
 };
 
 use bus::BusMessage;
-use bus::{ConnState, SupervisedClient, SupervisedError};
+use bus::{
+    ConnState, RegistrationRejected, SubscriptionDeclarationError, SupervisedClient,
+    SupervisedError,
+};
 use serde_json::{Value, json};
 use tokio::{
     sync::{Semaphore, mpsc as tokio_mpsc, watch},
@@ -620,6 +623,7 @@ impl PortStarter {
                         async move {
                             SupervisedClient::connect_options(&service, &url)
                                 .fatal_on_registration_rejection(true)
+                                .with_initial_topics(vec![REGISTRY_TOPIC.to_owned()])
                                 .connect()
                                 .await
                                 .map_err(|error| classify_connect_error(&service, error))
@@ -694,6 +698,12 @@ enum ConnectAttemptError {
         rc: u8,
         message: String,
     },
+    /// A declared initial topic was invalid or explicitly refused: terminal,
+    /// never retried and never reported as a registration rejection.
+    DeclarationRejected {
+        service: String,
+        error: SubscriptionDeclarationError,
+    },
 }
 
 enum ConnectOutcome<C> {
@@ -702,6 +712,10 @@ enum ConnectOutcome<C> {
         service: String,
         rc: u8,
         message: String,
+    },
+    DeclarationRejected {
+        service: String,
+        error: SubscriptionDeclarationError,
     },
     Shutdown,
 }
@@ -741,6 +755,9 @@ where
                     message,
                 };
             }
+            Err(ConnectAttemptError::DeclarationRejected { service, error }) => {
+                return ConnectOutcome::DeclarationRejected { service, error };
+            }
             Err(ConnectAttemptError::Retry(message)) => {
                 tracing::debug!(attempt, error = %message, "compositor Bus connect failed; retrying");
                 let exponential = 250_u64.saturating_mul(1_u64 << attempt.min(16)).min(30_000);
@@ -774,8 +791,11 @@ trait WorkerClient: Send + Sync + 'static {
     ) -> WorkerFuture<'a, Result<(), String>>;
     fn deregister(&self) -> WorkerFuture<'_, Result<(), String>>;
     fn close(&self) -> WorkerFuture<'_, ()>;
-    /// Subscribe once; the supervised client replays it on every reconnect.
-    fn subscribe_topic<'a>(&'a self, topic: &'a str) -> WorkerFuture<'a, Result<(), String>>;
+    /// The terminal broker registration refusal, if one was published.
+    fn registration_rejection(&self) -> Option<RegistrationRejected>;
+    /// The terminal declared-subscription refusal or validation failure, if
+    /// one was published.
+    fn subscription_declaration_error(&self) -> Option<SubscriptionDeclarationError>;
 }
 
 impl WorkerClient for SupervisedClient {
@@ -839,12 +859,12 @@ impl WorkerClient for SupervisedClient {
         Box::pin(SupervisedClient::close(self))
     }
 
-    fn subscribe_topic<'a>(&'a self, topic: &'a str) -> WorkerFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            SupervisedClient::subscribe_topic(self, topic)
-                .await
-                .map_err(|error| error.to_string())
-        })
+    fn registration_rejection(&self) -> Option<RegistrationRejected> {
+        SupervisedClient::registration_rejection(self)
+    }
+
+    fn subscription_declaration_error(&self) -> Option<SubscriptionDeclarationError> {
+        SupervisedClient::subscription_declaration_error(self)
     }
 }
 
@@ -899,6 +919,10 @@ async fn worker_loop<F, Fut, C>(
             tracing::error!(service = %service, rc, %message, "Bus registration rejected; compositor continues without a port");
             return;
         }
+        ConnectOutcome::DeclarationRejected { service, error } => {
+            tracing::error!(service = %service, %error, "declared subscription refused; compositor continues without a port");
+            return;
+        }
         ConnectOutcome::Shutdown => return,
     };
     let Some(mut incoming) = client.incoming() else {
@@ -926,23 +950,11 @@ async fn worker_loop<F, Fut, C>(
         Arc::clone(&publish_timeouts),
         shutdown.clone(),
     ));
-    // Holder cleanup on Bus departure. The supervised client replays a
-    // subscription once it has succeeded; until then every (re)connect tries
-    // again. Best effort: the liveness probe bounds what a missed departure
+    // Holder cleanup on Bus departure. The registry subscription is a
+    // supervised initial declaration: the finite connect above returned only
+    // after its ACK, and the supervisor replays it on every reconnect. Best
+    // effort beyond that: the liveness probe bounds what a missed departure
     // can leave behind.
-    let registry_subscribed = Arc::new(AtomicBool::new(false));
-    let subscribe_registry = |client: &Arc<C>, subscribed: &Arc<AtomicBool>| {
-        let client = Arc::clone(client);
-        let subscribed = Arc::clone(subscribed);
-        tokio::spawn(async move {
-            match client.subscribe_topic(REGISTRY_TOPIC).await {
-                Ok(()) => subscribed.store(true, Ordering::Release),
-                Err(error) => tracing::warn!(%error, "registry subscription failed; retried on the next connect"),
-            }
-        })
-    };
-    let mut registry_task = subscribe_registry(&client, &registry_subscribed);
-
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -957,12 +969,8 @@ async fn worker_loop<F, Fut, C>(
                 let state = *states.borrow_and_update();
                 apply_connection_state(&broker, state);
                 observation_notifier.notify_one();
-                if state == ConnState::Connected && !registry_subscribed.load(Ordering::Acquire) {
-                    registry_task.abort();
-                    registry_task = subscribe_registry(&client, &registry_subscribed);
-                }
                 if state == ConnState::Fatal {
-                    tracing::error!(service = %service, "Bus registration rejected during reconnect; compositor continues without a port");
+                    report_fatal(&client, &service);
                     break;
                 }
             }
@@ -971,7 +979,7 @@ async fn worker_loop<F, Fut, C>(
                     let state = client.state();
                     apply_connection_state(&broker, state);
                     if state == ConnState::Fatal {
-                        tracing::error!(service = %service, "Bus registration rejected during reconnect; compositor continues without a port");
+                        report_fatal(&client, &service);
                     }
                     break;
                 };
@@ -994,7 +1002,6 @@ async fn worker_loop<F, Fut, C>(
         }
     }
 
-    registry_task.abort();
     responders.abort_all();
     while responders.join_next().await.is_some() {}
     drop(reply_sender);
@@ -1008,14 +1015,33 @@ async fn worker_loop<F, Fut, C>(
 }
 
 fn classify_connect_error(service: &str, error: SupervisedError) -> ConnectAttemptError {
-    if let Some((rc, message)) = error.registration_rejection() {
+    if let SupervisedError::SubscriptionDeclaration(error) = &error {
+        return ConnectAttemptError::DeclarationRejected {
+            service: service.to_string(),
+            error: error.clone(),
+        };
+    }
+    if let Some(rejection) = error.registration_rejection_typed() {
         ConnectAttemptError::RegistrationRejected {
             service: service.to_string(),
-            rc,
-            message: message.to_string(),
+            rc: rejection.rc,
+            message: rejection.message.clone(),
         }
     } else {
         ConnectAttemptError::Retry(error.to_string())
+    }
+}
+
+/// One terminal supervisor outcome in the established worker: a declared
+/// subscription replay refusal is its own diagnostic, a registration
+/// rejection is another, and neither is ever manufactured from the other.
+fn report_fatal<C: WorkerClient>(client: &C, service: &str) {
+    if let Some(error) = client.subscription_declaration_error() {
+        tracing::error!(service = %service, %error, "declared subscription refused; compositor continues without a port");
+    } else if let Some(rejection) = client.registration_rejection() {
+        tracing::error!(service = %service, rc = rejection.rc, %rejection.message, "Bus registration rejected; compositor continues without a port");
+    } else {
+        tracing::error!(service = %service, "Bus supervisor stopped; compositor continues without a port");
     }
 }
 

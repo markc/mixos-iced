@@ -221,11 +221,20 @@ async fn worker(
     let connect = SupervisedClient::connect_options(&service, &url)
         .bounded_incoming(64)
         .fatal_on_registration_rejection(true)
+        .with_initial_topics(vec![
+            "theme.changed".to_owned(),
+            "noded.props.changed".to_owned(),
+        ])
         .connect();
     let client = match tokio::time::timeout(Duration::from_secs(5), connect).await {
         Ok(Ok(client)) => Arc::new(client),
         Ok(Err(error)) => {
-            let _ = ready.send(Err(format!("Bus registration: {error}")));
+            let _ = ready.send(Err(match error {
+                SupervisedError::SubscriptionDeclaration(error) => {
+                    format!("Bus subscription declaration: {error}")
+                }
+                error => format!("Bus registration: {error}"),
+            }));
             return;
         }
         Err(_) => {
@@ -238,16 +247,6 @@ async fn worker(
         return;
     };
     let mut connection = client.subscribe_state();
-    for topic in ["theme.changed".to_owned(), "noded.props.changed".to_owned()] {
-        if !matches!(
-            tokio::time::timeout(Duration::from_secs(2), client.subscribe_topic(&topic)).await,
-            Ok(Ok(()))
-        ) {
-            let _ = ready.send(Err(format!("cannot subscribe to {topic}")));
-            let _ = client.close().await;
-            return;
-        }
-    }
     let _ = ready.send(Ok(()));
     let mut pending: HashMap<u64, IncomingCommand> = HashMap::new();
     let mut next_id = 0;
@@ -466,5 +465,24 @@ mod tests {
         assert!(!CallError::transport(SupervisedError::Disconnected).outcome_unknown);
         assert!(!CallError::transport(SupervisedError::ShuttingDown).outcome_unknown);
         assert!(CallError::from("lost response").outcome_unknown);
+    }
+
+    /// The initial ready signal follows the finite connect, which now
+    /// includes the acknowledgement of both declared topics: `start` answers
+    /// only once `theme.changed` and `noded.props.changed` are established.
+    #[tokio::test]
+    #[ignore = "requires isolated settings_test.mix broker"]
+    async fn initial_ready_follows_finite_establishment_of_both_declared_topics() {
+        use application::iced::futures::StreamExt;
+        let url = std::env::var("MIXOS_NODED_URL").expect("isolated broker url");
+        let (handle, mut deliveries) =
+            start("busviewer-sampled-fixture", &url).expect("both declared topics acknowledged");
+        handle.quit();
+        while let Some(delivery) = deliveries.next().await {
+            if matches!(delivery, Delivery::Disconnected) {
+                break;
+            }
+        }
+        handle.wait_done().expect("bounded Bus shutdown");
     }
 }
