@@ -355,8 +355,8 @@ fn distinct_fallback_sources_keep_the_declared_order() {
         let mut raster = owned_raster(vec![vec![mono.clone()], sources.clone()], 500);
         let coverage = raster.unicode.fonts.declared_coverage();
         assert_eq!(coverage.len(), 2);
-        assert!(Arc::ptr_eq(&coverage[0].data, &sources[0].bytes));
-        assert!(Arc::ptr_eq(&coverage[1].data, &sources[1].bytes));
+        assert!(Arc::ptr_eq(&coverage[0].source(), &sources[0].bytes));
+        assert!(Arc::ptr_eq(&coverage[1].source(), &sources[1].bytes));
         let expected = coverage[0].key();
         let image = raster.unicode.image(
             &c.to_string(),
@@ -423,7 +423,7 @@ fn resize_retains_the_original_source_handles_and_coordinates() {
         .iter()
         .zip(resized.unicode.fonts.declared_coverage())
     {
-        assert!(Arc::ptr_eq(&original.data, &retained.data));
+        assert!(Arc::ptr_eq(&original.source(), &retained.source()));
         assert_eq!(original.key(), retained.key());
         assert_eq!(original.variations, retained.variations);
     }
