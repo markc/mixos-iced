@@ -97,8 +97,11 @@
 - Owned icon decoding supports PNG, JPEG, GIF, WebP, BMP and ICO with strict
   dimensions and checked source allocation before pixels are materialised.
   Ready images retain their intrinsic aspect ratio. The bounded SVG subset
-  refuses DTDs, CSS, filters, image/text dependencies and external uses before
-  constructing the renderer tree, and caps XML nodes and path bytes.
+  accepts filled shapes and bounded gradients, refuses DTDs, CSS, strokes,
+  indirect painting and image/text dependencies before constructing the tree,
+  and caps XML/depth, path/points bytes and gradient expansion. Converted
+  groups cannot require isolation. Final pixel accounting is distinct from
+  structural conversion budgets and advisory codec scratch limits.
   Zero-alpha tints fail visibly.
 
 - The opt-in `font-registration-guards` integration target owns the font

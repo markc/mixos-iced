@@ -38,7 +38,9 @@ const CAP: usize = 512;
 pub const MAX_PHYSICAL_SIDE: u32 = 2048;
 /// The largest encoded asset the decoder accepts.
 pub const MAX_ENCODED_BYTES: u64 = 8 * 1024 * 1024;
-/// The decoder's internal allocation cap (raster limits).
+/// The raster codec allocation limit and checked reported source charge.
+/// Some codecs treat internal scratch as advisory. This is not a whole-SVG
+/// heap ceiling; SVG conversion has separate structural complexity limits.
 pub const MAX_DECODER_ALLOC: u64 = 64 * 1024 * 1024;
 /// The binding retained pixel charge: width × height × 4. Both paths cap
 /// each side at [`MAX_PHYSICAL_SIDE`], so 2048² × 4 = 16 MiB is the real
@@ -231,11 +233,12 @@ impl DecodedIcon {
 ///
 /// SVG is scaled into a `physical_side` × `physical_side` canvas and
 /// tiny-skia's premultiplied output is unpremultiplied for iced's eager RGBA
-/// handles. Only a documented subset is materialised: DOCTYPEs, filters, CSS,
-/// image and feImage nodes and non-fragment `use` hrefs are refused before
-/// the usvg tree exists, text elements fail (without a font provider they
-/// would render partially), and node and path-attribute complexity is
-/// budgeted ([`MAX_SVG_NODES`], [`MAX_SVG_PATH_BYTES`]).
+/// handles. The supported subset is filled paths/basic shapes and bounded
+/// gradients. DTDs, CSS, text/images, nested SVG, strokes, local/external uses,
+/// filters, masks, clips, patterns, markers and isolation are refused before
+/// conversion. XML nodes/depth, path/points bytes and gradient expansion are
+/// budgeted; converted groups must also require no isolated surfaces. These
+/// structural limits are separate from retained final-pixel accounting.
 ///
 /// Raster is decoded over a [`Cursor`] on these bytes with bounded
 /// dimensions and allocation — the decoder's reported total bytes are

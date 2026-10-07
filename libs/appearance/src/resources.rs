@@ -93,6 +93,8 @@ fn fault(path: &str, message: impl Into<String>) -> Diagnostic {
 /// A process image-ledger refusal: an immutable cap was exhausted. Never an
 /// eviction decision, because the ledger never evicts.
 enum ImageError {
+    Sources { have: usize, limit: usize },
+    Collision,
     Variants { have: usize, limit: usize },
     Encoded { have: u64, need: u64, limit: u64 },
     Decoded { have: u64, need: u64, limit: u64 },
@@ -101,6 +103,8 @@ enum ImageError {
 impl ImageError {
     fn message(&self) -> String {
         match self {
+            Self::Sources { have, limit } => format!("image store would retain {have} sources; the limit is {limit}"),
+            Self::Collision => "equal image digests identify different source bytes".into(),
             Self::Variants { have, limit } => {
                 format!("decoded image ledger holds {have} variants; the limit is {limit}")
             }
@@ -128,6 +132,8 @@ pub struct ImageUsage {
 
 /// The decoded-image caps, shared by every host in the process.
 pub const MAX_RETAINED_VARIANTS: usize = 512;
+/// The maximum permanent source records, including their metadata.
+pub const MAX_RETAINED_SOURCES: usize = 4096;
 pub const MAX_RETAINED_ENCODED_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_RETAINED_DECODED_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -140,22 +146,18 @@ struct VariantKey {
     tint: Option<[u8; 4]>,
 }
 
-/// A permanently retained canonical encoded source.
-#[derive(Debug)]
-struct SourceCharge {
-    bytes: Arc<[u8]>,
-}
-
 /// A permanently retained canonical renderer handle. Widget/adapter clones
 /// cannot escape its accounting because the store never releases entries.
 #[derive(Debug)]
 struct VariantCharge {
+    key: VariantKey,
+    decoded: u64,
     handle: iced_core::image::Handle,
 }
 
 #[derive(Default)]
 struct ImageLedger {
-    sources: BTreeMap<String, Arc<SourceCharge>>,
+    sources: BTreeMap<String, Arc<[u8]>>,
     encoded_bytes: u64,
     variants: BTreeMap<VariantKey, Arc<VariantCharge>>,
     decoded_bytes: u64,
@@ -176,75 +178,71 @@ struct ImageStore {
     state: Mutex<ImageLedger>,
 }
 
+/// A bounded private admission plan. Nothing in it is process-visible until
+/// the complete resource batch succeeds. The enclosing STAGING permit excludes
+/// other admissions between preflight and publication.
+struct ImageAdmission {
+    sources: BTreeMap<String, Arc<[u8]>>,
+    variants: BTreeMap<VariantKey, Arc<VariantCharge>>,
+}
+
 impl ImageStore {
-    /// Retain one source permanently; equal captures share its actual bytes.
-    fn admit_source(&self, digest: &str, bytes: Arc<[u8]>) -> Result<Arc<SourceCharge>, ImageError> {
-        let mut ledger = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(charge) = ledger.sources.get(digest) {
-            return Ok(Arc::clone(charge));
-        }
-        let length = bytes.len() as u64;
-        if ledger
-            .encoded_bytes
-            .checked_add(length)
-            .is_none_or(|total| total > MAX_RETAINED_ENCODED_BYTES)
-        {
-            return Err(ImageError::Encoded {
-                have: ledger.encoded_bytes,
-                need: length,
-                limit: MAX_RETAINED_ENCODED_BYTES,
-            });
-        }
-        let charge = Arc::new(SourceCharge { bytes });
-        ledger
-            .sources
-            .insert(digest.to_owned(), Arc::clone(&charge));
-        ledger.encoded_bytes += length;
-        Ok(charge)
+    fn source(&self, digest: &str) -> Option<Arc<[u8]>> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .sources.get(digest).cloned()
     }
 
-    /// Retain one canonical decoded payload permanently, within process caps.
     fn variant(&self, key: &VariantKey) -> Option<Arc<VariantCharge>> {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
             .variants.get(key).cloned()
     }
 
-    fn admit_variant(&self, key: VariantKey, decoded: u64, handle: iced_core::image::Handle) -> Result<Arc<VariantCharge>, ImageError> {
+    fn preflight(&self, compact: &CompactSet, variants: &[Arc<VariantCharge>]) -> Result<ImageAdmission, ImageError> {
+        let ledger = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sources: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+        for source in &compact.assets {
+            if let Some(previous) = ledger.sources.get(&source.blake3).or_else(|| sources.get(&source.blake3)) {
+                if previous.as_ref() != source.bytes.as_ref() { return Err(ImageError::Collision); }
+            } else {
+                sources.insert(source.blake3.clone(), Arc::clone(&source.bytes));
+            }
+        }
+        let count = ledger.sources.len() + sources.len();
+        if count > MAX_RETAINED_SOURCES { return Err(ImageError::Sources { have:count, limit:MAX_RETAINED_SOURCES }); }
+        let encoded: u64 = sources.values().map(|source| source.len() as u64).sum();
+        if ledger.encoded_bytes.checked_add(encoded).is_none_or(|total| total > MAX_RETAINED_ENCODED_BYTES) {
+            return Err(ImageError::Encoded { have:ledger.encoded_bytes, need:encoded, limit:MAX_RETAINED_ENCODED_BYTES });
+        }
+        let variants: BTreeMap<_, _> = variants.iter()
+            .filter(|variant| !ledger.variants.contains_key(&variant.key))
+            .map(|variant| (variant.key.clone(), Arc::clone(variant))).collect();
+        let count = ledger.variants.len() + variants.len();
+        if count > MAX_RETAINED_VARIANTS { return Err(ImageError::Variants { have:count, limit:MAX_RETAINED_VARIANTS }); }
+        let decoded: u64 = variants.values().map(|variant| variant.decoded).sum();
+        if ledger.decoded_bytes.checked_add(decoded).is_none_or(|total| total > MAX_RETAINED_DECODED_BYTES) {
+            return Err(ImageError::Decoded { have:ledger.decoded_bytes, need:decoded, limit:MAX_RETAINED_DECODED_BYTES });
+        }
+        Ok(ImageAdmission { sources, variants })
+    }
+
+    fn publish(&self, admission: ImageAdmission) {
         let mut ledger = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(charge) = ledger.variants.get(&key) {
-            return Ok(Arc::clone(charge));
+        for (key, bytes) in admission.sources {
+            assert!(!ledger.sources.contains_key(&key), "STAGING excludes competing admissions");
+            ledger.encoded_bytes += bytes.len() as u64;
+            ledger.sources.insert(key, bytes);
         }
-        if ledger.variants.len() >= MAX_RETAINED_VARIANTS {
-            return Err(ImageError::Variants {
-                have: ledger.variants.len(),
-                limit: MAX_RETAINED_VARIANTS,
-            });
+        for (key, variant) in admission.variants {
+            assert!(!ledger.variants.contains_key(&key), "STAGING excludes competing admissions");
+            ledger.decoded_bytes += variant.decoded;
+            ledger.variants.insert(key, variant);
         }
-        if ledger
-            .decoded_bytes
-            .checked_add(decoded)
-            .is_none_or(|total| total > MAX_RETAINED_DECODED_BYTES)
-        {
-            return Err(ImageError::Decoded {
-                have: ledger.decoded_bytes,
-                need: decoded,
-                limit: MAX_RETAINED_DECODED_BYTES,
-            });
-        }
-        let charge = Arc::new(VariantCharge { handle });
-        ledger.variants.insert(key, Arc::clone(&charge));
-        ledger.decoded_bytes += decoded;
-        Ok(charge)
     }
 
     fn usage(&self) -> ImageUsage {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .usage()
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).usage()
     }
 }
-
 /// One process-wide image ledger, created on first use and never reset.
 fn image_store() -> &'static ImageStore {
     static STORE: OnceLock<ImageStore> = OnceLock::new();
@@ -594,7 +592,6 @@ struct CompactAsset {
     format: ImageFormat,
     blake3: String,
     bytes: Arc<[u8]>,
-    _charge: Arc<SourceCharge>,
 }
 
 /// A bounded compact set record: the verified identity, the retained source
@@ -642,7 +639,6 @@ struct RequestIdentity {
     /// Packaged-omission semantics: no authored reference and no authored
     /// icon selector, so documented role remapping may apply.
     packaged: bool,
-    fresh_omission: bool,
     expected: Option<ResourceBinding>,
 }
 
@@ -726,7 +722,17 @@ impl ResourceHost {
         });
         match compact_index {
             Some(index) => {
-                let compact = self.compact[index].clone();
+                let mut compact = self.compact[index].clone();
+                // Retain encoded payloads only for requested images. A new
+                // image requirement rereads this exact pinned manifest,
+                // never `current`, and replaces compact reuse metadata.
+                if requirements.icons().iter().any(|requirement| {
+                    !compact.catalogue.as_ref().is_some_and(|catalogue| catalogue.glyphs.contains_key(&requirement.name))
+                        && !compact.assets.iter().any(|asset| asset.name == requirement.name)
+                }) {
+                    compact = self.read(&identity, &requirements, check)?
+                        .ok_or_else(|| fault("resources", "pinned resource set is unavailable"))?;
+                }
                 let plan = icon_plan(&requirements, &compact)?;
                 let signature = text_signature(projection.type_records(), &compact);
                 let reusable = signature == compact.text_signature
@@ -749,7 +755,7 @@ impl ResourceHost {
                 };
                 let plan = icon_plan(&requirements, &compact)?;
                 let (prepared, updated) = register(projection, &plan, compact, &identity, check)?;
-                if identity.fresh_omission {
+                if reference.is_none() && self.pin.is_none() {
                     self.pin = Some(Pin {
                         set_id: updated.set_id.clone(),
                         digest: updated.digest,
@@ -814,7 +820,7 @@ impl ResourceHost {
                 None => return Ok(None),
             }
         };
-        let compact = extract(&set, identity, !requirements.icons().is_empty())?;
+        let compact = extract(&set, identity, requirements)?;
         check()?;
         Ok(Some(compact))
     }
@@ -844,6 +850,9 @@ fn request_identity(
     if let Some(binding) = expected {
         binding.validate()?;
         let digest = hex_digest(&binding.manifest_blake3)?;
+        if reference.is_none() && pin.is_some_and(|pin| pin.set_id != binding.set_id || pin.digest != digest) {
+            return Err(fault("resources", "recorded omission binding conflicts with the lifetime pin"));
+        }
         let selector = binding.icons.as_ref().map(Selector::from);
         if let Some(reference) = reference {
             reference.validate("appearance.resources")?;
@@ -863,7 +872,6 @@ fn request_identity(
             selector,
             explicit: true,
             packaged: reference.is_none() && binding.icons.is_none(),
-            fresh_omission: false,
             expected: Some(binding.clone()),
         })
     } else if let Some(reference) = reference {
@@ -874,7 +882,6 @@ fn request_identity(
             selector: reference.icons.as_ref().map(Selector::from),
             explicit: true,
             packaged: false,
-            fresh_omission: false,
             expected: None,
         })
     } else if let Some(pin) = pin {
@@ -884,7 +891,6 @@ fn request_identity(
             selector: None,
             explicit: true,
             packaged: true,
-            fresh_omission: false,
             expected: None,
         })
     } else {
@@ -894,7 +900,6 @@ fn request_identity(
             selector: None,
             explicit: false,
             packaged: true,
-            fresh_omission: true,
             expected: None,
         })
     }
@@ -922,7 +927,7 @@ fn source_slot(sources: &mut Vec<CompactSource>, file: &VerifiedFile) -> usize {
 fn extract(
     set: &VerifiedSet,
     identity: &RequestIdentity,
-    needs_icons: bool,
+    requirements: &ResourceRequirements,
 ) -> Result<CompactSet, Diagnostic> {
     let default = set.icon_default().cloned();
     let selected = identity
@@ -978,13 +983,14 @@ fn extract(
                 glyphs: resolved.glyphs.clone(),
             })
         }
-        None if needs_icons => return Err(fault("resources", "asset set declares no icon catalogue")),
+        None if !requirements.icons().is_empty() => return Err(fault("resources", "asset set declares no icon catalogue")),
         None => None,
     };
     let mut assets = Vec::new();
     if let Some(style) = selected.as_ref().map(|selector| selector.style.as_str()) {
         for asset in set.icon_assets() {
-            if asset.style == style {
+            if asset.style == style && requirements.icons().iter().any(|requirement| requirement.name == asset.name)
+                && !catalogue.as_ref().is_some_and(|catalogue| catalogue.glyphs.contains_key(&asset.name)) {
                 let file = set.icon_asset_file(asset).ok_or_else(|| {
                     fault("resources", format!("icon asset {:?} is not locked", asset.name))
                 })?;
@@ -994,19 +1000,13 @@ fn extract(
                         format!("icon asset {:?} exceeds the encoded image bound", asset.name),
                     ));
                 }
-                let charge = image_store()
-                    .admit_source(file.blake3(), file.shared_bytes())
-                    .map_err(|error| {
-                        Diagnostic::new("image_capacity", "resources", error.message())
-                    })?;
                 assets.push(CompactAsset {
                     name: asset.name.clone(),
                     style: asset.style.clone(),
                     symbolic: asset.symbolic,
                     format: image_format(&asset.path),
                     blake3: file.blake3().to_owned(),
-                    bytes: Arc::clone(&charge.bytes),
-                    _charge: charge,
+                    bytes: file.shared_bytes(),
                 });
             }
         }
@@ -1115,6 +1115,9 @@ fn decode_images(
 ) -> Result<(Vec<(String, Ready, IconEvidence)>, Vec<Arc<VariantCharge>>), Diagnostic> {
     let mut images = Vec::new();
     let mut charges = Vec::new();
+    let usage = image_store().usage();
+    let mut staged_bytes = 0u64;
+    let mut staged_variants = 0usize;
     for image in &plan.images {
         check()?;
         let key = VariantKey {
@@ -1123,13 +1126,20 @@ fn decode_images(
             side: if image.format == ImageFormat::Svg { image.side } else { 0 },
             tint: image.tint,
         };
-        let charge = match image_store().variant(&key) {
+        let charge = match image_store().variant(&key).or_else(|| charges.iter().find(|variant: &&Arc<VariantCharge>| variant.key == key).cloned()) {
             Some(charge) => charge,
             None => {
+                if usage.variants + staged_variants >= MAX_RETAINED_VARIANTS {
+                    return Err(Diagnostic::new("image_capacity", "resources", "decoded variant capacity exhausted"));
+                }
                 let decoded = decode_owned(Arc::clone(&image.bytes), image.format, image.side, image.tint)
                     .map_err(|error| fault(&format!("resources.icons.{}", image.key), error.to_string()))?;
-                image_store().admit_variant(key, decoded.byte_charge(), decoded.into_handle())
-                    .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?
+                staged_bytes += decoded.byte_charge();
+                if usage.decoded_bytes + staged_bytes > MAX_RETAINED_DECODED_BYTES {
+                    return Err(Diagnostic::new("image_capacity", "resources", "decoded pixel capacity exhausted"));
+                }
+                staged_variants += 1;
+                Arc::new(VariantCharge { key, decoded: decoded.byte_charge(), handle: decoded.into_handle() })
             }
         };
         let handle = charge.handle.clone();
@@ -1359,7 +1369,11 @@ fn reuse(
             ));
         }
     }
+    image_store().preflight(compact, &[])
+        .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let (images, charges) = decode_images(plan, check)?;
+    let admission = image_store().preflight(compact, &charges)
+        .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let mut icons = BTreeMap::new();
     let mut icon_evidence = Vec::new();
     for glyph in &plan.glyphs {
@@ -1398,7 +1412,9 @@ fn reuse(
     };
     check()?;
     let receipt = PreparedResources::assemble(Some(binding), compact.texts.clone(), compact.owned_texts.clone(), icons, evidence, charges);
-    projection.prepare_with_resources(receipt)
+    let prepared = projection.prepare_with_resources(receipt)?;
+    image_store().publish(admission);
+    Ok(prepared)
 }
 
 /// Submit exactly one atomic toolkit batch after all image decoding and
@@ -1418,7 +1434,11 @@ fn register(
             return Err(fault("resources", "verified resource identity differs from the recorded binding"));
         }
     }
+    image_store().preflight(&compact, &[])
+        .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let (images, charges) = decode_images(plan, check)?;
+    let admission = image_store().preflight(&compact, &charges)
+        .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     // The final cancellation fence before the registry/renderer mutation
     // locks are acquired.
     check()?;
@@ -1534,6 +1554,11 @@ fn register(
     updated.registry = registry;
     let receipt = PreparedResources::assemble(Some(binding), texts, owned_texts, icons, evidence, charges);
     let prepared = projection.prepare_with_resources(receipt)?;
+    image_store().publish(admission);
+    for asset in &mut updated.assets {
+        asset.bytes = image_store().source(&asset.blake3)
+            .expect("successful admission retains every compact image source");
+    }
     Ok((prepared, updated))
 }
 
@@ -1836,6 +1861,67 @@ mod tests {
         drop((first, warm, cold, explicit, first_host, cold_host));
         assert_eq!(image_usage(), usage, "escaped handles stay permanently charged");
         assert!(matches!(cold_handle, iced_core::image::Handle::Rgba { .. }));
+    }
+
+    #[test]
+    fn cold_omission_pins_a_while_current_points_at_b() {
+        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = publish_full(directory.path(), "cached-a", true, &["picture"]);
+        publish_full(directory.path(), "current-b", true, &["picture"]);
+        activate(directory.path(), "current-b");
+        let reference_a = reference("cached-a", &manifest);
+        let mut explicit_host = host(directory.path());
+        let a = explicit_host.prepare(explicit_projection(), Some(&reference_a), None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
+        assert!(explicit_host.pin.is_none(), "authored references do not establish omission policy");
+        let binding = a.resources().unwrap().binding().unwrap().clone();
+        let tint = Color::from_rgba8(255, 255, 255, 1.0);
+        let mut cold = host(directory.path());
+        let cached = cold.prepare(projection(), None, Some(&binding), requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        assert_eq!(cold.pin.as_ref().unwrap().set_id, "cached-a");
+        let live = cold.prepare(projection(), None, None, requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        assert_eq!(live.resources().unwrap().binding(), Some(&binding));
+        assert_eq!(image_handle(cached.resources().unwrap().icon("slot")).id(), image_handle(live.resources().unwrap().icon("slot")).id());
+        let unpinned = explicit_host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
+        assert_eq!(unpinned.resources().unwrap().binding().unwrap().set_id, "current-b");
+    }
+
+    #[test]
+    fn rejected_batches_and_unused_images_never_publish_partial_image_admissions() {
+        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_image_ledger_for_tests();
+        let directory = tempfile::tempdir().unwrap();
+        publish_full(directory.path(), "staged", true, &["good", "later"]);
+        activate(directory.path(), "staged");
+        let mut host = host(directory.path());
+        host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
+        assert_eq!(image_usage(), ImageUsage::default(), "text-only capture retains no unrequested image payloads");
+        let tint = Color::from_rgba8(255,255,255,1.0);
+        let requirements = ResourceRequirements::new(vec![
+            IconRequirement { key:"good".into(), name:"good".into(), logical_size:16.0, scale:1.0, tint },
+            IconRequirement { key:"missing".into(), name:"absent".into(), logical_size:16.0, scale:1.0, tint },
+        ]).unwrap();
+        let before = image_usage();
+        assert!(host.prepare(projection(), None, None, requirements, &mut check_ok()).is_err());
+        assert_eq!(image_usage(), before);
+        let mut effective = resolve(&Desktop::default()).unwrap().remove("desktop").unwrap();
+        effective.design.typography.get_mut("ui").unwrap().family = "Missing Family".into();
+        effective.design.typography.get_mut("ui").unwrap().fallbacks.clear();
+        assert!(host.prepare(Projection::new(&effective).unwrap(), None, None, requirement("good", "good", tint), &mut check_ok()).is_err());
+        assert_eq!(image_usage(), before, "registry refusal publishes neither encoded nor decoded images");
+        let identity = request_identity(None, None, host.pin.as_ref()).unwrap();
+        let mut compact = host.read(&identity, &ResourceRequirements::new(vec![
+            IconRequirement { key:"good".into(), name:"good".into(), logical_size:16.0, scale:1.0, tint },
+            IconRequirement { key:"later".into(), name:"later".into(), logical_size:16.0, scale:1.0, tint },
+        ]).unwrap(), &mut check_ok()).unwrap().unwrap();
+        compact.assets.iter_mut().find(|asset| asset.name == "later").unwrap().bytes = Arc::from(&b"malformed SVG"[..]);
+        let requirements = ResourceRequirements::new(vec![
+            IconRequirement { key:"good".into(), name:"good".into(), logical_size:16.0, scale:1.0, tint },
+            IconRequirement { key:"later".into(), name:"later".into(), logical_size:16.0, scale:1.0, tint },
+        ]).unwrap();
+        let plan = icon_plan(&requirements, &compact).unwrap();
+        assert!(decode_images(&plan, &mut check_ok()).is_err());
+        assert_eq!(image_usage(), before, "successful first decode remains private when the next decode fails");
     }
 
     #[test]
