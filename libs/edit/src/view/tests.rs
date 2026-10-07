@@ -604,6 +604,202 @@ fn touched<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (out, TOUCHED.with(|t| t.get()))
 }
 
+/// The original Unicode measurement path, retained only as a benchmark
+/// reference. It has no printable-ASCII stepping or batching.
+fn reference_clusters(
+    text: &Text,
+    cfg: &MeasureCfg,
+    range: Range<usize>,
+    cells: usize,
+) -> Vec<Cluster> {
+    let doc = GraphemeDoc::new(text);
+    let end = range.end.min(doc.len());
+    let mut at = cursor_at(range.start.min(end), cells);
+    let mut out = Vec::new();
+    while at.offset < end {
+        let next = measurer(&doc, cfg, at).goto_offset(at.offset + 1);
+        if next.offset <= at.offset || next.logical_pos.y != at.logical_pos.y {
+            break;
+        }
+        let range = at.offset..next.offset;
+        out.push(Cluster {
+            cells: (next.column - at.column) as u8,
+            is_tab: range.len() == 1 && doc.byte(range.start) == b'\t',
+            ascii: range.clone().all(|i| doc.byte(i).is_ascii()),
+            range,
+        });
+        at = next;
+    }
+    out
+}
+
+fn reference_checkpoints(text: &Text, cfg: &MeasureCfg, line: usize) -> Vec<(usize, usize)> {
+    let doc = GraphemeDoc::new(text);
+    let content = doc.content(text, line);
+    let mut out = vec![(content.start, 0)];
+    let mut m = measurer(&doc, cfg, cursor_at(content.start, 0));
+    let mut target = content.start + CHECKPOINT_EVERY;
+    while target < content.end {
+        let at = m.goto_offset(target);
+        if at.offset >= content.end {
+            break;
+        }
+        if out.last().is_none_or(|&(o, _)| at.offset > o) {
+            out.push((at.offset, at.column as usize));
+        }
+        target += CHECKPOINT_EVERY;
+    }
+    out
+}
+
+#[test]
+fn ascii_paths_match_unicode_measurement_at_joining_edges_and_gaps() {
+    for s in [
+        "abc\tdef\r\nend",
+        "a\u{301}b\t\u{301}c",
+        "abc\u{200D}\u{1F469}d\u{600}e\u{915}\u{94D}\u{937}f",
+        "\t \u{301}x\u{7}\u{7f}z\r",
+    ] {
+        for p in char_boundaries(s) {
+            let text = with_gap(s, p);
+            for tab in [1, 4, 8, 16] {
+                let cfg = MeasureCfg {
+                    tab_size: tab,
+                    ambiguous_wide: true,
+                };
+                for end in 0..=s.len() {
+                    assert_eq!(
+                        clusters(&text, &cfg, 0..end, 0).collect::<Vec<_>>(),
+                        reference_clusters(&text, &cfg, 0..end, 0),
+                        "clusters {s:?} gap={p} end={end} tab={tab}"
+                    );
+                }
+                let bytes = s.as_bytes();
+                for cells in 0..20 {
+                    let expected = MeasurementConfig::new(&bytes)
+                        .with_tab_size(CoordType::from(tab))
+                        .with_ambiguous_width(2)
+                        .goto_visual(Point { x: cells, y: 0 });
+                    assert_eq!(
+                        offset_at(&text, &cfg, 1, cells as usize, Round::Left),
+                        expected.offset
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn long_ascii_walk_has_linear_adapter_work() {
+    let s = "printable ASCII source code 0123456789;\t".repeat(2048);
+    let text = with_gap(&s, s.len() / 2);
+    let cfg = MeasureCfg::default();
+    let (walk, n) = touched(|| clusters(&text, &cfg, 0..text.len(), 0).collect::<Vec<_>>());
+    assert_eq!(walk, reference_clusters(&text, &cfg, 0..text.len(), 0));
+    assert!(
+        n <= s.len() * 4,
+        "ASCII cluster walk touched {n} bytes for {} source bytes",
+        s.len()
+    );
+    assert_eq!(
+        line_checkpoints(&text, &cfg, 1),
+        reference_checkpoints(&text, &cfg, 1)
+    );
+}
+
+#[test]
+#[ignore = "manual release benchmark; compare ASCII paths with Unicode-only reference"]
+fn long_line_ascii_measurement_benchmark() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let cfg = MeasureCfg::default();
+    let s = "let value = printable_ascii + 12345; ".repeat(32 * 1024);
+    let text = with_gap(&s, s.len() / 2);
+    assert_eq!(
+        line_checkpoints(&text, &cfg, 1),
+        reference_checkpoints(&text, &cfg, 1)
+    );
+    let start = Instant::now();
+    for _ in 0..10 {
+        let _ = black_box(reference_checkpoints(&text, &cfg, 1));
+    }
+    let before = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..10 {
+        let _ = black_box(line_checkpoints(&text, &cfg, 1));
+    }
+    let after = start.elapsed();
+    eprintln!(
+        "ASCII checkpoints bytes={} iterations=10 reference={before:?} batched={after:?}",
+        s.len()
+    );
+
+    let start = Instant::now();
+    for _ in 0..2000 {
+        let _ = black_box(reference_clusters(&text, &cfg, 0..160, 0));
+    }
+    let before = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..2000 {
+        let _ = black_box(clusters(&text, &cfg, 0..160, 0).collect::<Vec<_>>());
+    }
+    let after = start.elapsed();
+    eprintln!("ASCII visible clusters=160 iterations=2000 reference={before:?} stepped={after:?}");
+}
+
+#[test]
+#[ignore = "manual release benchmark for ordinary long ASCII source lines"]
+fn medium_line_ascii_measurement_benchmark() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    // Synthetic source, independent of any operator's live files.
+    let mut s = "{ key: \"value\", x: 123, y: 456, width: 789 }, ".repeat(20);
+    s.truncate(795);
+    let text = with_gap(&s, 400);
+    let cfg = MeasureCfg::default();
+    for offset in 0..=s.len() {
+        let doc = GraphemeDoc::new(&text);
+        let expected = measurer(&doc, &cfg, cursor_at(0, 0)).goto_offset(offset);
+        assert_eq!(
+            visual_of(&text, &cfg, offset).cells,
+            expected.column as usize
+        );
+        for round in [Round::Left, Round::Right, Round::Nearest] {
+            assert_eq!(offset_at(&text, &cfg, 1, offset, round), offset);
+        }
+    }
+
+    let start = Instant::now();
+    for _ in 0..10_000 {
+        let doc = GraphemeDoc::new(&text);
+        let _ = black_box(measurer(&doc, &cfg, cursor_at(0, 0)).goto_offset(795));
+    }
+    let before = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..10_000 {
+        let _ = black_box(visual_of(&text, &cfg, 795));
+    }
+    let after = start.elapsed();
+    eprintln!("ASCII caret line_bytes=795 iterations=10000 reference={before:?} batched={after:?}");
+
+    let start = Instant::now();
+    for _ in 0..2000 {
+        let _ = black_box(reference_clusters(&text, &cfg, 0..160, 0));
+    }
+    let before = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..2000 {
+        let _ = black_box(clusters(&text, &cfg, 0..160, 0).collect::<Vec<_>>());
+    }
+    let after = start.elapsed();
+    eprintln!(
+        "ASCII visible line_bytes=795 clusters=160 iterations=2000 reference={before:?} stepped={after:?}"
+    );
+}
+
 #[test]
 fn five_mib_line_seeks_touch_at_most_8_kib() {
     let s = long_line(5 * 1024 * 1024);

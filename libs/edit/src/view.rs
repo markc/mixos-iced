@@ -137,7 +137,8 @@ pub fn visual_of_with(
         Some((co, cc)) if co >= content.start => (co, cc),
         _ => (content.start, 0),
     };
-    let at = measurer(&doc, cfg, cursor_at(start, cells)).goto_offset(o);
+    let at = doc.advance_ascii(cfg, cursor_at(start, cells), o, usize::MAX);
+    let at = measurer(&doc, cfg, at).goto_offset(o);
     VisualPos {
         line,
         cells: at.column as usize,
@@ -175,7 +176,8 @@ pub fn offset_at_with(
         Some((co, cc)) if content.contains(&co) => (co, cc),
         _ => (content.start, 0),
     };
-    let mut m = measurer(&doc, cfg, cursor_at(start, start_cells));
+    let at = doc.advance_ascii(cfg, cursor_at(start, start_cells), usize::MAX, cells);
+    let mut m = measurer(&doc, cfg, at);
     let left = m.goto_visual(Point {
         x: cells as CoordType,
         y: 0,
@@ -257,7 +259,33 @@ pub fn clusters<'a>(
         if at.offset >= end {
             return None;
         }
-        let next = measurer(&doc, &cfg, at).goto_offset(at.offset + 1);
+        // Most source text is ASCII. A printable ASCII byte is a whole
+        // cluster when its trailing boundary is certain; do not use this
+        // path before a combining mark, ZWJ or other joining scalar.
+        let byte = doc.byte(at.offset);
+        let next = if matches!(byte, b' '..=b'~' | b'\t') && doc.certain(at.offset + 1) {
+            let width = if byte == b'\t' {
+                CoordType::from(tab_size(&cfg)) - at.column % CoordType::from(tab_size(&cfg))
+            } else {
+                1
+            };
+            touch(1);
+            Cursor {
+                offset: at.offset + 1,
+                logical_pos: Point {
+                    x: at.logical_pos.x + 1,
+                    ..at.logical_pos
+                },
+                visual_pos: Point {
+                    x: at.visual_pos.x + width,
+                    ..at.visual_pos
+                },
+                column: at.column + width,
+                ..at
+            }
+        } else {
+            measurer(&doc, &cfg, at).goto_offset(at.offset + 1)
+        };
         if next.offset <= at.offset || next.logical_pos.y != at.logical_pos.y {
             // A line ending: the caller's range ran past the content.
             at.offset = end;
@@ -289,6 +317,8 @@ pub fn line_checkpoints(text: &Text, cfg: &MeasureCfg, line: usize) -> Vec<(usiz
     let mut m = measurer(&doc, cfg, cursor_at(content.start, 0));
     let mut target = content.start + CHECKPOINT_EVERY;
     while target < content.end {
+        let at = doc.advance_ascii(cfg, m.cursor(), target, usize::MAX);
+        m = measurer(&doc, cfg, at);
         let at = m.goto_offset(target);
         if at.offset >= content.end {
             break;
@@ -432,7 +462,12 @@ impl<'a> GraphemeDoc<'a> {
 
     /// The scalar starting at char boundary `p < len`, and its byte length.
     fn char_at(&self, p: usize) -> (char, usize) {
-        let want = utf8_len(self.byte(p)).min(self.len() - p);
+        let lead = self.byte(p);
+        if lead.is_ascii() {
+            touch(1);
+            return (char::from(lead), 1);
+        }
+        let want = utf8_len(lead).min(self.len() - p);
         let mut buf = [0u8; 4];
         for (k, b) in buf.iter_mut().enumerate().take(want) {
             *b = self.byte(p + k);
@@ -466,6 +501,14 @@ impl<'a> GraphemeDoc<'a> {
         if !self.is_char_boundary(p) {
             return false;
         }
+        let lead = self.byte(p - 1);
+        let trail = self.byte(p);
+        if lead.is_ascii() && trail.is_ascii() {
+            // The only ASCII pair that joins is CRLF (GB3). Every other
+            // ASCII pair breaks in every grapheme-segmentation state.
+            touch(2);
+            return !(lead == b'\r' && trail == b'\n');
+        }
         let (lead, _) = self.char_at(self.prev_char_boundary(p));
         let (trail, _) = self.char_at(p);
         let (l, t) = (
@@ -474,6 +517,60 @@ impl<'a> GraphemeDoc<'a> {
         );
         ucd_grapheme_cluster_joins_done(ucd_grapheme_cluster_joins(0, l, t))
             && ucd_grapheme_cluster_joins_done(ucd_grapheme_cluster_joins(1, l, t))
+    }
+
+    /// Measure the initial printable-ASCII/tab prefix without decoding UTF-8
+    /// or consulting Unicode tables for each byte. The last ASCII byte is
+    /// left to the Unicode measurer if its following scalar can join it.
+    /// Starts are cluster boundaries, just like `MeasurementConfig` cursors.
+    fn advance_ascii(
+        &self,
+        cfg: &MeasureCfg,
+        mut at: Cursor,
+        offset_target: usize,
+        cells_target: usize,
+    ) -> Cursor {
+        let end = offset_target.min(self.len());
+        while at.offset < end && (at.column as usize) < cells_target {
+            if self.byte(at.offset) == b'\t' {
+                let width =
+                    CoordType::from(tab_size(cfg)) - at.column % CoordType::from(tab_size(cfg));
+                if width as usize > cells_target - at.column as usize {
+                    break;
+                }
+                touch(1);
+                at.offset += 1;
+                at.logical_pos.x += 1;
+                at.visual_pos.x += width;
+                at.column += width;
+                continue;
+            }
+            let side_end = if at.offset < self.gap() {
+                self.gap()
+            } else {
+                self.len()
+            };
+            let limit = (end - at.offset)
+                .min(side_end - at.offset)
+                .min(cells_target - at.column as usize);
+            let bytes = self.slice(at.offset..at.offset + limit);
+            let mut n = bytes
+                .iter()
+                .position(|b| !matches!(*b, b' '..=b'~'))
+                .unwrap_or(bytes.len());
+            touch(n);
+            if n > 0 && !self.certain(at.offset + n) {
+                n -= 1;
+            }
+            if n == 0 {
+                break;
+            }
+            at.offset += n;
+            at.logical_pos.x += n as CoordType;
+            at.visual_pos.x += n as CoordType;
+            at.column += n as CoordType;
+        }
+        at
     }
 
     /// The nearest certain boundary at or before `p`.
