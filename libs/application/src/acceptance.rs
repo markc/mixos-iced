@@ -131,10 +131,14 @@ pub fn track(
 }
 
 fn parse_body(body: &str) -> Result<Value, String> {
-    if body.len() > 16_384 { return Err("request body exceeds 16384 bytes".into()); }
+    if body.len() > 16_384 {
+        return Err("request body exceeds 16384 bytes".into());
+    }
     let value: Value = serde_json::from_str(if body.trim().is_empty() { "{}" } else { body })
         .map_err(|error| format!("bad request body: {error}"))?;
-    if !value.is_object() { return Err("request body must be an object".into()); }
+    if !value.is_object() {
+        return Err("request body must be an object".into());
+    }
     Ok(value)
 }
 
@@ -325,7 +329,10 @@ fn barrier_state_verb(
 
 fn parse_reference(incoming: &IncomingCommand) -> Result<barrier::Reference, String> {
     let body = parse_body(&incoming.body)?;
-    check_barrier_fields(&body, &["run", "instance", "generation", "sequence", "token"])?;
+    check_barrier_fields(
+        &body,
+        &["run", "instance", "generation", "sequence", "token"],
+    )?;
     check_request_generation(&body, incoming.generation)?;
     let token = barrier::Token::try_new(
         body.get("token")
@@ -335,13 +342,22 @@ fn parse_reference(incoming: &IncomingCommand) -> Result<barrier::Reference, Str
     .map_err(|error| format!("{error:?}"))?;
     Ok(barrier::Reference {
         fence: barrier::Fence {
-            run: body.get("run").and_then(Value::as_str)
+            run: body
+                .get("run")
+                .and_then(Value::as_str)
                 .filter(|run| !run.is_empty() && run.len() <= barrier::MAX_STRING)
-                .ok_or_else(|| "missing or oversized run".to_owned())?.to_owned(),
-            instance: body.get("instance").and_then(Value::as_u64).ok_or_else(|| "missing instance".to_owned())?,
+                .ok_or_else(|| "missing or oversized run".to_owned())?
+                .to_owned(),
+            instance: body
+                .get("instance")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "missing instance".to_owned())?,
             generation: incoming.generation,
         },
-        sequence: body.get("sequence").and_then(Value::as_u64).ok_or_else(|| "missing sequence".to_owned())?,
+        sequence: body
+            .get("sequence")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "missing sequence".to_owned())?,
         token,
     })
 }
@@ -349,12 +365,19 @@ fn parse_reference(incoming: &IncomingCommand) -> Result<barrier::Reference, Str
 fn check_request_generation(body: &Value, generation: u64) -> Result<(), String> {
     if let Some(requested) = body.get("generation")
         && requested.as_u64() != Some(generation)
-    { return Err("stale or invalid connection generation".into()); }
+    {
+        return Err("stale or invalid connection generation".into());
+    }
     Ok(())
 }
 
 fn check_barrier_fields(body: &Value, allowed: &[&str]) -> Result<(), String> {
-    if body.as_object().expect("validated object").keys().any(|key| !allowed.contains(&key.as_str())) {
+    if body
+        .as_object()
+        .expect("validated object")
+        .keys()
+        .any(|key| !allowed.contains(&key.as_str()))
+    {
         return Err("unknown barrier request field".into());
     }
     Ok(())

@@ -312,7 +312,6 @@ impl Shared {
         drop(guard);
         self.wake();
     }
-
 }
 
 /// The fixture side of the barrier: arms, waits for, releases and closes the
@@ -365,7 +364,9 @@ impl Controller {
             return Err(Error::Busy);
         }
 
-        guard.next_hold_generation = guard.next_hold_generation.checked_add(1)
+        guard.next_hold_generation = guard
+            .next_hold_generation
+            .checked_add(1)
             .ok_or(Error::Exhausted)?;
         guard.wait_slot = None;
         guard.hold = Some(Hold {
@@ -399,13 +400,19 @@ impl Controller {
         self.wait_owned(&reference.token, Some(reference)).await
     }
 
-    async fn wait_owned(&self, token: &Token, reference: Option<&Reference>) -> Result<Receipt, Error> {
+    async fn wait_owned(
+        &self,
+        token: &Token,
+        reference: Option<&Reference>,
+    ) -> Result<Receipt, Error> {
         // Reserve the single waiter slot; released when this future ends,
         // even if it is cancelled.
         let slot = {
             let mut guard = self.shared.core.lock().unwrap();
             self.shared.expire_due(&mut guard, Instant::now());
-            if let Some(reference) = reference { check_reference(&guard, reference)?; }
+            if let Some(reference) = reference {
+                check_reference(&guard, reference)?;
+            }
             let Some(hold) = guard.hold.as_mut() else {
                 return Err(Error::UnknownToken);
             };
@@ -470,10 +477,16 @@ impl Controller {
         self.release_owned(&reference.token, Some(reference))
     }
 
-    fn release_owned(&self, token: &Token, reference: Option<&Reference>) -> Result<Receipt, Error> {
+    fn release_owned(
+        &self,
+        token: &Token,
+        reference: Option<&Reference>,
+    ) -> Result<Receipt, Error> {
         let mut guard = self.shared.core.lock().unwrap();
         self.shared.expire_due(&mut guard, Instant::now());
-        if let Some(reference) = reference { check_reference(&guard, reference)?; }
+        if let Some(reference) = reference {
+            check_reference(&guard, reference)?;
+        }
         let Some(hold) = guard.hold.as_mut() else {
             return Err(Error::UnknownToken);
         };
@@ -507,10 +520,16 @@ impl Controller {
         self.snapshot_owned(&reference.token, Some(reference))
     }
 
-    fn snapshot_owned(&self, token: &Token, reference: Option<&Reference>) -> Result<Receipt, Error> {
+    fn snapshot_owned(
+        &self,
+        token: &Token,
+        reference: Option<&Reference>,
+    ) -> Result<Receipt, Error> {
         let mut guard = self.shared.core.lock().unwrap();
         self.shared.expire_due(&mut guard, Instant::now());
-        if let Some(reference) = reference { check_reference(&guard, reference)?; }
+        if let Some(reference) = reference {
+            check_reference(&guard, reference)?;
+        }
         let Some(hold) = guard.hold.as_ref() else {
             return Err(Error::UnknownToken);
         };
@@ -532,7 +551,9 @@ impl Controller {
         let active = {
             let mut guard = self.shared.core.lock().unwrap();
             self.shared.expire_due(&mut guard, Instant::now());
-            guard.hold.as_ref()
+            guard
+                .hold
+                .as_ref()
                 .filter(|hold| matches!(hold.state, State::Armed | State::Reached))
                 .map(|hold| (hold.hold_generation, hold.armed_at + self.shared.lifetime))
         };
@@ -848,44 +869,93 @@ mod tests {
     }
 
     fn make_due(controller: &Controller) {
-        controller.shared.core.lock().unwrap().hold.as_mut().unwrap().armed_at =
-            Instant::now() - controller.shared.lifetime;
+        controller
+            .shared
+            .core
+            .lock()
+            .unwrap()
+            .hold
+            .as_mut()
+            .unwrap()
+            .armed_at = Instant::now() - controller.shared.lifetime;
     }
 
     #[test]
     fn expiry_is_enforced_without_drive_and_allows_a_fresh_arm() {
         let (controller, hook, run) = pair();
-        let first = controller.arm(arm(&run, "dopus.before_execute", "first")).unwrap();
-        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        let first = controller
+            .arm(arm(&run, "dopus.before_execute", "first"))
+            .unwrap();
+        let permit = hook
+            .reach("dopus.before_execute", observation())
+            .unwrap()
+            .unwrap();
         make_due(&controller);
         assert_eq!(controller.release(&first.token), Err(Error::UnknownToken));
-        assert_eq!(controller.snapshot(&first.token).unwrap().state, State::Expired);
-        assert!(matches!(hook.reach("dopus.before_execute", observation()),
-            Err(Error::Cancelled { reason: ClosedReason::Expired })));
-        assert_eq!(permit.wait_blocking(), Err(Cancelled { reason: ClosedReason::Expired }));
-        let second = controller.arm(arm(&run, "dopus.before_execute", "second")).unwrap();
+        assert_eq!(
+            controller.snapshot(&first.token).unwrap().state,
+            State::Expired
+        );
+        assert!(matches!(
+            hook.reach("dopus.before_execute", observation()),
+            Err(Error::Cancelled {
+                reason: ClosedReason::Expired
+            })
+        ));
+        assert_eq!(
+            permit.wait_blocking(),
+            Err(Cancelled {
+                reason: ClosedReason::Expired
+            })
+        );
+        let second = controller
+            .arm(arm(&run, "dopus.before_execute", "second"))
+            .unwrap();
         assert!(second.sequence > first.sequence);
-        controller.shared.cancel_hold(first.sequence, ClosedReason::Expired);
-        assert_eq!(controller.snapshot(&second.token).unwrap().state, State::Armed);
+        controller
+            .shared
+            .cancel_hold(first.sequence, ClosedReason::Expired);
+        assert_eq!(
+            controller.snapshot(&second.token).unwrap().state,
+            State::Armed
+        );
     }
 
     #[tokio::test]
     async fn stale_waiter_and_permit_cannot_observe_a_rearmed_hold() {
         let (controller, hook, run) = pair();
-        let first = controller.arm(arm(&run, "dopus.before_execute", "same-token")).unwrap();
+        let first = controller
+            .arm(arm(&run, "dopus.before_execute", "same-token"))
+            .unwrap();
         let waiting = controller.wait_reached(&first.token);
         tokio::pin!(waiting);
-        assert!(matches!(futures::poll!(&mut waiting), std::task::Poll::Pending));
+        assert!(matches!(
+            futures::poll!(&mut waiting),
+            std::task::Poll::Pending
+        ));
         let old_generation = first.sequence;
         make_due(&controller);
-        let second = controller.arm(arm(&run, "dopus.before_execute", "same-token")).unwrap();
+        let second = controller
+            .arm(arm(&run, "dopus.before_execute", "same-token"))
+            .unwrap();
         let fresh = controller.wait_reached(&second.token);
         tokio::pin!(fresh);
-        assert!(matches!(futures::poll!(&mut fresh), std::task::Poll::Pending));
+        assert!(matches!(
+            futures::poll!(&mut fresh),
+            std::task::Poll::Pending
+        ));
         assert_eq!(waiting.await, Err(Error::UnknownToken));
-        assert_eq!(controller.shared.core.lock().unwrap().wait_slot, Some(second.sequence));
-        controller.shared.cancel_hold(old_generation, ClosedReason::Expired);
-        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        assert_eq!(
+            controller.shared.core.lock().unwrap().wait_slot,
+            Some(second.sequence)
+        );
+        controller
+            .shared
+            .cancel_hold(old_generation, ClosedReason::Expired);
+        let permit = hook
+            .reach("dopus.before_execute", observation())
+            .unwrap()
+            .unwrap();
         assert_eq!(fresh.await.unwrap().sequence, second.sequence);
         controller.release(&second.token).unwrap();
         assert_eq!(permit.wait().await, Ok(()));
@@ -894,40 +964,88 @@ mod tests {
     #[tokio::test]
     async fn idle_driver_does_not_spin_and_shutdown_cancels_async_waits() {
         let (mut controller, hook, run) = pair();
-        assert!(tokio::time::timeout(Duration::from_millis(10), controller.drive()).await.is_err());
-        let receipt = controller.arm(arm(&run, "dopus.before_execute", "first")).unwrap();
-        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), controller.drive())
+                .await
+                .is_err()
+        );
+        let receipt = controller
+            .arm(arm(&run, "dopus.before_execute", "first"))
+            .unwrap();
+        let permit = hook
+            .reach("dopus.before_execute", observation())
+            .unwrap()
+            .unwrap();
         controller.close(ClosedReason::Shutdown);
-        assert_eq!(permit.wait().await, Err(Cancelled { reason: ClosedReason::Shutdown }));
-        assert!(matches!(controller.wait_reached(&receipt.token).await,
-            Err(Error::Cancelled { reason: ClosedReason::Shutdown })));
+        assert_eq!(
+            permit.wait().await,
+            Err(Cancelled {
+                reason: ClosedReason::Shutdown
+            })
+        );
+        assert!(matches!(
+            controller.wait_reached(&receipt.token).await,
+            Err(Error::Cancelled {
+                reason: ClosedReason::Shutdown
+            })
+        ));
     }
 
     #[test]
     fn identity_exhaustion_refuses_without_replacing_the_retained_hold() {
         let (controller, _, run) = pair();
         controller.shared.core.lock().unwrap().next_hold_generation = u64::MAX;
-        assert_eq!(controller.arm(arm(&run, "dopus.before_execute", "first")), Err(Error::Exhausted));
+        assert_eq!(
+            controller.arm(arm(&run, "dopus.before_execute", "first")),
+            Err(Error::Exhausted)
+        );
         assert!(controller.shared.core.lock().unwrap().hold.is_none());
     }
 
     #[tokio::test]
     async fn native_reference_rejects_reused_token_and_stale_connection() {
         let (controller, hook, run) = pair();
-        let first = controller.arm(arm(&run, "dopus.before_execute", "token")).unwrap();
+        let first = controller
+            .arm(arm(&run, "dopus.before_execute", "token"))
+            .unwrap();
         let reference = Reference {
-            fence: Fence { run: first.run.clone(), instance: first.instance, generation: first.generation },
-            token: first.token.clone(), sequence: first.sequence,
+            fence: Fence {
+                run: first.run.clone(),
+                instance: first.instance,
+                generation: first.generation,
+            },
+            token: first.token.clone(),
+            sequence: first.sequence,
         };
         make_due(&controller);
-        let second = controller.arm(arm(&run, "dopus.before_execute", "token")).unwrap();
-        let permit = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
-        assert_eq!(controller.release_fenced(&reference), Err(Error::UnknownToken));
-        assert_eq!(controller.wait_fenced(&reference).await, Err(Error::UnknownToken));
-        assert_eq!(controller.snapshot_fenced(&reference), Err(Error::UnknownToken));
-        let mut current = Reference { sequence: second.sequence, ..reference };
+        let second = controller
+            .arm(arm(&run, "dopus.before_execute", "token"))
+            .unwrap();
+        let permit = hook
+            .reach("dopus.before_execute", observation())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            controller.release_fenced(&reference),
+            Err(Error::UnknownToken)
+        );
+        assert_eq!(
+            controller.wait_fenced(&reference).await,
+            Err(Error::UnknownToken)
+        );
+        assert_eq!(
+            controller.snapshot_fenced(&reference),
+            Err(Error::UnknownToken)
+        );
+        let mut current = Reference {
+            sequence: second.sequence,
+            ..reference
+        };
         current.fence.generation += 1;
-        assert_eq!(controller.release_fenced(&current), Err(Error::StaleGeneration));
+        assert_eq!(
+            controller.release_fenced(&current),
+            Err(Error::StaleGeneration)
+        );
         current.fence.generation = second.generation;
         controller.release_fenced(&current).unwrap();
         assert_eq!(permit.wait().await, Ok(()));
@@ -936,7 +1054,11 @@ mod tests {
     #[test]
     fn reach_without_an_arm_proceeds_immediately() {
         let (controller, hook, run) = pair();
-        assert!(hook.reach("dopus.before_execute", observation()).unwrap().is_none());
+        assert!(
+            hook.reach("dopus.before_execute", observation())
+                .unwrap()
+                .is_none()
+        );
         assert!(controller.snapshot(&Token::try_new("t").unwrap()).is_err());
         let _ = run;
     }
@@ -972,7 +1094,10 @@ mod tests {
             .reach("dopus.before_execute", observation())
             .unwrap()
             .expect("a matching arm holds the operation");
-        assert!(matches!(hook.reach("dopus.before_execute", observation()), Err(Error::AlreadyReached)));
+        assert!(matches!(
+            hook.reach("dopus.before_execute", observation()),
+            Err(Error::AlreadyReached)
+        ));
         assert_eq!(controller.snapshot(&token).unwrap().state, State::Reached);
 
         let released = controller.release(&token).unwrap();
