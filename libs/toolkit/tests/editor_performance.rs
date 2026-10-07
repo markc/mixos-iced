@@ -240,6 +240,51 @@ fn milliseconds(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
+/// Keep failures useful even for a twenty-megabyte target. Count differing
+/// pixels, retain one RGBA example and locate the affected rectangle.
+fn pixel_difference(
+    actual: &tiny_skia::Pixmap,
+    expected: &tiny_skia::Pixmap,
+    last_damage: Rectangle,
+    scale: f32,
+) -> Option<String> {
+    assert_eq!(actual.size(), expected.size());
+    let width = actual.width() as usize;
+    let physical = last_damage * scale;
+    let mut count = 0;
+    let mut outside = 0;
+    let mut first = None;
+    let (mut left, mut top, mut right, mut bottom) = (usize::MAX, usize::MAX, 0, 0);
+    for (index, (a, b)) in actual
+        .data()
+        .chunks_exact(4)
+        .zip(expected.data().chunks_exact(4))
+        .enumerate()
+    {
+        if a == b {
+            continue;
+        }
+        let (x, y) = (index % width, index / width);
+        count += 1;
+        outside += usize::from(
+            (x as f32) < physical.x.floor()
+                || (y as f32) < physical.y.floor()
+                || (x as f32) >= (physical.x + physical.width).ceil()
+                || (y as f32) >= (physical.y + physical.height).ceil(),
+        );
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x + 1);
+        bottom = bottom.max(y + 1);
+        first.get_or_insert_with(|| format!("({x},{y}) actual={a:?} expected={b:?}"));
+    }
+    first.map(|first| {
+        format!(
+            "pixels={count} bbox=({left},{top})..({right},{bottom}) first={first} outside_last_damage={outside} last_damage_physical={physical:?}"
+        )
+    })
+}
+
 #[test]
 #[ignore = "manual real EditorPane/tiny-skia performance measurement"]
 fn editor_render_phases_benchmark() {
@@ -289,6 +334,7 @@ fn editor_render_phases_benchmark() {
         fixture.text.len(),
         view.px
     );
+    let mut pixel_failures = Vec::new();
     for syntax in [false, true] {
         for case in [
             "cold full",
@@ -304,6 +350,7 @@ fn editor_render_phases_benchmark() {
             let mut pixels = tiny_skia::Pixmap::new(2750, 1900).unwrap();
             let mut mask = tiny_skia::Mask::new(2750, 1900).unwrap();
             let mut caret = Rectangle::new(Point::ORIGIN, Size::new(2.0, 20.0));
+            let mut last_damage = full;
             let mut samples = Vec::new();
             let mut post_caret_scroll = Vec::new();
             let mut totals = [0_usize; 8];
@@ -396,6 +443,7 @@ fn editor_render_phases_benchmark() {
                     full
                 };
                 let started = Instant::now();
+                last_damage = damage;
                 renderer.draw(
                     &mut pixels.as_mut(),
                     &mut mask,
@@ -428,11 +476,8 @@ fn editor_render_phases_benchmark() {
                 &[full],
                 palette.background,
             );
-            assert_eq!(
-                pixels.data(),
-                expected.data(),
-                "case={case} syntax={syntax}"
-            );
+            let difference =
+                pixel_difference(&pixels, &expected, last_damage, viewport.scale_factor());
             let means: [f64; 4] = std::array::from_fn(|phase| {
                 samples.iter().map(|s| s[phase]).sum::<f64>() / samples.len() as f64
             });
@@ -462,6 +507,17 @@ fn editor_render_phases_benchmark() {
                 totals[6] / 50,
                 totals[7] / 50
             );
+            if let Some(difference) = difference {
+                let failure =
+                    format!("case={case} syntax={syntax}: {difference}; caret_logical={caret:?}");
+                eprintln!("editor pixel oracle FAILED: {failure}");
+                pixel_failures.push(failure);
+            }
         }
     }
+    assert!(
+        pixel_failures.is_empty(),
+        "editor pixel oracle mismatches:\n{}",
+        pixel_failures.join("\n")
+    );
 }
