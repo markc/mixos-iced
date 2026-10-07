@@ -23,7 +23,8 @@ pub use mailbox::Mailbox;
 mod tests;
 
 /// Prepared fallback evidence and the whole host presentation, or diagnostics.
-pub type FallbackResult<T> = Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>;
+pub type FallbackResult<T> =
+    Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>;
 
 pub enum Event<T> {
     Wake,
@@ -32,10 +33,7 @@ pub enum Event<T> {
     Delivery(Decoded),
     Rpc(Work, Result<Option<Snapshot>, Diagnostic>),
     Prepared(Completion<T>),
-    Fallback(
-        settings::fallback::Request,
-        Box<FallbackResult<T>>,
-    ),
+    Fallback(settings::fallback::Request, Box<FallbackResult<T>>),
 }
 
 /// One desired job set, sent through the host's existing worker command lane.
