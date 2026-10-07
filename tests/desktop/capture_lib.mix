@@ -24,7 +24,7 @@ fn pixel($image,$x,$y)
   $y = floor($y)
   if $x < 0 or $y < 0 or $x >= $image.w or $y >= $image.h then raise("CAPTURE","Pixel outside screenshot") end
   $at = $image.off+($y*$image.w+$x)*3
-  return slice($image.bytes,$at,$at+3)
+  return [$image.bytes[$at],$image.bytes[$at+1],$image.bytes[$at+2]]
 end
 fn srgb($linear)
   return round(255 * (if $linear <= 0.0031308 then $linear*12.92 else 1.055*pow($linear,1/2.4)-0.055 end))

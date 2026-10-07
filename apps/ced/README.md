@@ -13,7 +13,11 @@ the same evidence and the current capture's cache persistence receipt.
 
 Session writes start only after this instance owns its Bus name. An initial
 name collision forwards launch paths asynchronously when the window has not
-been used; refusal after registration preserves the window. Closing queues the
+been used. A touched window or terminal refusal after registration preserves
+the window, its appearance and deferred document requests. An initial terminal
+refusal cannot open those requests until registration is explicitly recovered
+or the application restarts; an unavailable broker recovers automatically
+through the existing supervisor. Closing queues the
 final session and drains settings and session writes within a shared two-second
 budget on the existing worker. A timeout is reported without claiming a save.
 

@@ -8,4 +8,4 @@ settings-bootstrap = Starting appearance
 bus-connected = Connected
 bus-connecting = Connecting
 bus-disconnected = Disconnected
-bus-refused = Connection refused
+bus-refused = Registration refused
