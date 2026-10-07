@@ -1908,7 +1908,7 @@ fn build_registration(
         added_index.insert(*face_key, position);
     }
     let mut policies: Vec<PinnedFontPolicy> = Vec::with_capacity(staged.new_policies.len());
-    for (_digest, policy) in &staged.new_policies {
+    for policy in staged.new_policies.values() {
         let mut groups = Vec::with_capacity(policy.groups.len());
         for group in &policy.groups {
             let mut references = Vec::with_capacity(group.len());
@@ -2460,7 +2460,7 @@ mod tests {
         let metrics = cosmic_text::Metrics::new(16.0, 20.0);
         let mut buffer = cosmic_text::Buffer::new(raw, metrics);
         let attrs = cosmic_text::Attrs::new().family(cosmic_text::Family::Name(alias));
-        let glyphs = {
+        {
             let mut buffer = buffer.borrow_with(raw);
             buffer.set_size(Some(300.0), Some(100.0));
             buffer.set_text(text, &attrs, shaping, None);
@@ -2470,8 +2470,7 @@ mod tests {
                 .flat_map(|run| run.glyphs.iter())
                 .map(|glyph| (glyph.font_id, glyph.font_weight, glyph.glyph_id, glyph.w))
                 .collect::<Vec<_>>()
-        };
-        glyphs
+        }
     }
 
     fn snapshot(renderer: &IsolatedRenderer, ledger: &Ledger) -> (u32, usize, RegistryUsage) {

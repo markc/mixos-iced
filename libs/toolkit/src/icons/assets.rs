@@ -321,7 +321,6 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
         roxmltree::ParsingOptions {
             allow_dtd: false,
             nodes_limit: MAX_SVG_NODES as u32,
-            ..Default::default()
         },
     )
     .map_err(|error| {

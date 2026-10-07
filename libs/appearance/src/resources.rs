@@ -1883,10 +1883,10 @@ mod tests {
     use sha2::Digest as _;
     static TESTS: Mutex<()> = Mutex::new(());
 
-    /// The real variable Inter and static Noto Sans the fixtures register:
+    /// The real variable Inter and Noto Sans the fixtures register:
     /// genuine bytes, so the registry parses intrinsic families and weights.
     const INTER: &[u8] = include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
-    const NOTO: &[u8] = include_bytes!("../../../vendor/cosmic-text/fonts/NotoSans-Regular.ttf");
+    const NOTO: &[u8] = include_bytes!("../assets/test-fonts/NotoSans.ttf");
 
     fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> serde_json::Value {
         let path = dir.join(relative);
@@ -1919,7 +1919,7 @@ mod tests {
     }
 
     /// A set covering every embedded design record: Inter doubles as the
-    /// sans/display/mono roles (the packaged remap), Noto Sans covers the
+    /// sans/display/mono roles (the packaged remap), variable Noto Sans covers the
     /// button records, and — with `icons` — one v2 icon catalogue whose
     /// declared family is the true intrinsic Inter family, a codepoints table
     /// holding a real glyph (`home` → 'a') and a deliberate missing glyph
