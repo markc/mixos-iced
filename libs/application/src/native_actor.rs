@@ -22,7 +22,10 @@ pub struct TaskSet<T> {
 
 impl<T: Send + 'static> TaskSet<T> {
     pub fn new(capacity: usize) -> Self {
-        Self { capacity, tasks: JoinSet::new() }
+        Self {
+            capacity,
+            tasks: JoinSet::new(),
+        }
     }
     pub fn len(&self) -> usize {
         self.tasks.len()
@@ -47,7 +50,12 @@ impl<T: Send + 'static> TaskSet<T> {
             return Err(item);
         }
         let (permit, future) = make(item);
-        self.tasks.spawn(async move { Completed { permit, value: future.await } });
+        self.tasks.spawn(async move {
+            Completed {
+                permit,
+                value: future.await,
+            }
+        });
         Ok(())
     }
     pub async fn join_next(&mut self) -> Option<Result<Completed<T>, JoinError>> {
@@ -76,7 +84,12 @@ impl Accepted {
         permit: Permit,
         admitted_at: Instant,
     ) -> Self {
-        Self { client, command, permit, admitted_at }
+        Self {
+            client,
+            command,
+            permit,
+            admitted_at,
+        }
     }
     pub fn command(&self) -> &IncomingCommand {
         &self.command
@@ -91,11 +104,15 @@ impl Accepted {
         }
         let lifecycle = current.subscribe_state();
         let state = lifecycle.borrow();
-        *state == ConnState::Connected
-            && current.connection_generation() == self.command.generation
+        *state == ConnState::Connected && current.connection_generation() == self.command.generation
     }
     pub fn reply(self, rc: u8, body: String, deadline: Instant) -> Reply {
-        Reply { accepted: self, rc, body, deadline }
+        Reply {
+            accepted: self,
+            rc,
+            body,
+            deadline,
+        }
     }
     /// The host records a terminal retirement before explicitly finishing it.
     pub fn retire(self) -> Permit {
@@ -116,18 +133,36 @@ impl Reply {
     pub fn retire(self) -> Permit {
         self.accepted.retire()
     }
-    pub fn into_task(self) -> (Permit, impl Future<Output = Result<(), String>> + Send + 'static) {
-        let Self { accepted, rc, body, deadline } = self;
-        let Accepted { client, command, permit, .. } = accepted;
+    pub fn into_task(
+        self,
+    ) -> (
+        Permit,
+        impl Future<Output = Result<(), String>> + Send + 'static,
+    ) {
+        let Self {
+            accepted,
+            rc,
+            body,
+            deadline,
+        } = self;
+        let Accepted {
+            client,
+            command,
+            permit,
+            ..
+        } = accepted;
         (permit, async move {
             let deadline = tokio::time::Instant::from_std(deadline);
             if tokio::time::Instant::now() >= deadline {
                 return Err("Bus reply timed out".to_owned());
             }
-            tokio::time::timeout_at(deadline, SupervisedClient::respond(&client, &command, rc, &body))
-                .await
-                .map_err(|_| "Bus reply timed out".to_owned())?
-                .map_err(|error| format!("Bus reply: {error}"))
+            tokio::time::timeout_at(
+                deadline,
+                SupervisedClient::respond(&client, &command, rc, &body),
+            )
+            .await
+            .map_err(|_| "Bus reply timed out".to_owned())?
+            .map_err(|error| format!("Bus reply: {error}"))
         })
     }
 }
@@ -135,7 +170,9 @@ impl Reply {
 /// Preserve every accepted reply at its original position when tasks are full.
 pub fn submit_replies(retained: &mut Outbox<Reply, 0>, tasks: &mut TaskSet<Result<(), String>>) {
     retained.flush_with(|reply| {
-        tasks.try_spawn_with(reply, Reply::into_task).map_err(SendError::Full)
+        tasks
+            .try_spawn_with(reply, Reply::into_task)
+            .map_err(SendError::Full)
     });
 }
 
@@ -151,10 +188,14 @@ mod tests {
         let permit = admission.try_acquire().unwrap();
         let (done, observed) = tokio::sync::oneshot::channel();
         let mut tasks = TaskSet::new(1);
-        assert!(tasks.try_spawn_with(permit, |permit| (permit, async move {
-            done.send(()).unwrap();
-            7
-        })).is_ok());
+        assert!(
+            tasks
+                .try_spawn_with(permit, |permit| (permit, async move {
+                    done.send(()).unwrap();
+                    7
+                }))
+                .is_ok()
+        );
         observed.await.unwrap();
         assert!(tasks.is_full());
         assert!(admission.try_acquire().is_none());
@@ -173,10 +214,12 @@ mod tests {
         let invoked = Cell::new(false);
         let item = Box::new(31);
         let original = &*item as *const i32;
-        let returned = tasks.try_spawn_with(item, |_| {
-            invoked.set(true);
-            (Admission::new(1).try_acquire().unwrap(), async {})
-        }).unwrap_err();
+        let returned = tasks
+            .try_spawn_with(item, |_| {
+                invoked.set(true);
+                (Admission::new(1).try_acquire().unwrap(), async {})
+            })
+            .unwrap_err();
         assert_eq!(&*returned as *const i32, original);
         assert!(!invoked.get());
         assert!(tasks.is_empty());
@@ -187,10 +230,21 @@ mod tests {
         let admission = Admission::new(1);
         let mut tasks = TaskSet::new(1);
         let (release, waiting) = tokio::sync::oneshot::channel::<()>();
-        assert!(tasks.try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async move {
-            let _ = waiting.await;
-        })).is_ok());
-        assert!(tokio::time::timeout(Duration::from_millis(1), tasks.join_next()).await.is_err());
+        assert!(
+            tasks
+                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                    permit,
+                    async move {
+                        let _ = waiting.await;
+                    }
+                ))
+                .is_ok()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), tasks.join_next())
+                .await
+                .is_err()
+        );
         assert!(tasks.is_full());
         assert_eq!(admission.counts().active, 1);
         tasks.abort_all();
@@ -205,9 +259,13 @@ mod tests {
     async fn a_panicking_task_is_abandoned_and_never_reported_finished() {
         let admission = Admission::new(1);
         let mut tasks = TaskSet::<()>::new(1);
-        assert!(tasks.try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async {
-            panic!("owned task failure");
-        })).is_ok());
+        assert!(
+            tasks
+                .try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async {
+                    panic!("owned task failure");
+                }))
+                .is_ok()
+        );
         // Tokio polls the spawned task before this task resumes. The panic
         // releases admission, but its unreaped JoinError still owns a slot.
         tokio::task::yield_now().await;

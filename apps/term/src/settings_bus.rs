@@ -171,7 +171,7 @@ pub(crate) struct PreparationSeed {
     pub raster: term_core::raster::PreparedRaster,
     #[cfg(feature = "acceptance")]
     pub fixture: Option<crate::acceptance::Fixture>,
-    #[cfg(all(test,feature = "acceptance"))]
+    #[cfg(all(test, feature = "acceptance"))]
     pub fixture_admission: Option<tokio::sync::mpsc::UnboundedSender<usize>>,
 }
 
@@ -301,7 +301,7 @@ async fn worker(
         raster,
         #[cfg(feature = "acceptance")]
         mut fixture,
-        #[cfg(all(test,feature = "acceptance"))]
+        #[cfg(all(test, feature = "acceptance"))]
         fixture_admission,
     } = seed;
     // The shared session binding, following the existing diagnostics: a

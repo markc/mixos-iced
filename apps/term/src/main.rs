@@ -209,7 +209,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
             raster: bootstrap_raster,
             #[cfg(feature = "acceptance")]
             fixture,
-            #[cfg(all(test,feature = "acceptance"))]
+            #[cfg(all(test, feature = "acceptance"))]
             fixture_admission: None,
         },
     )
@@ -1117,8 +1117,9 @@ impl State {
             && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
                 window,
                 stamp: self.settings.session().frame_stamp(),
-            }) {
-                eprintln!("term: fixture frame target: {error}");
+            })
+        {
+            eprintln!("term: fixture frame target: {error}");
         }
     }
     fn scroll(&mut self, id: u64, delta: application::iced::mouse::ScrollDelta) {
