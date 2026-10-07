@@ -365,7 +365,7 @@ impl App {
                 self.body = text_editor::Content::new();
                 Task::none()
             }
-            Action::Copy => iced::clipboard::write(self.reply.text()),
+            Action::Copy => iced::clipboard::write(self.reply.text()).map(|_|Message::Noop),
             Action::About | Action::Shortcuts => {
                 self.dialog = Some(action);
                 Task::none()
@@ -486,6 +486,7 @@ impl App {
             Message::Action(action) => self.action(action),
             Message::OpenMenu(index) if self.dialog.is_none() => {
                 iced::advanced::widget::operate(toolkit::menu::open_operation(menu::BAR_ID, index))
+                    .map(|()|Message::Noop)
                     .chain(Task::done(Message::Noop))
             }
             Message::Key(key, mods) => {

@@ -31,7 +31,7 @@ try
       check(contains(read_file($hit.hit.path),"<svg"),"lookup supplies SVG bytes")
     end
   end
-  for each $app in ["term","ced","dopus","cap"]
+  for each $app in ["term","ced","dopus","cap","scene-editor","busviewer"]
     $entry=ini_parse(read_file($repo+"/apps/"+$app+"/assets/dev.mixos."+$app+".desktop"))["Desktop Entry"]
     $hit=$apps.resolve_icon($ctx,$entry.Icon,32,1,"mixos")
     check($hit.hit != nil and ends_with($hit.hit.path,"-symbolic.svg"),"declared app icon resolves: "+$app)
@@ -44,7 +44,7 @@ try
   -- Thinner sets are additive: distinct files, same names and shared mark.
   for each $weight in [300,200]
     $theme="mixos-"+to_string($weight)
-    for each $pair in [{name:"dev.mixos.term-symbolic",source:"terminal"},{name:"dev.mixos.ced-symbolic",source:"edit_note"},{name:"dev.mixos.dopus-symbolic",source:"folder_open"},{name:"dev.mixos.cap-symbolic",source:"screenshot_monitor"},{name:"audio-volume-high-symbolic",source:"volume_up"}]
+    for each $pair in [{name:"dev.mixos.term-symbolic",source:"terminal"},{name:"dev.mixos.ced-symbolic",source:"edit_note"},{name:"dev.mixos.dopus-symbolic",source:"folder_open"},{name:"dev.mixos.cap-symbolic",source:"screenshot_monitor"},{name:"dev.mixos.scene-editor-symbolic",source:"desktop_windows"},{name:"dev.mixos.busviewer-symbolic",source:"settings_ethernet"},{name:"audio-volume-high-symbolic",source:"volume_up"}]
       $regular=$apps.resolve_icon($ctx,$pair.name,32,1,"mixos").hit.path
       $light=$apps.resolve_icon($ctx,$pair.name,32,1,$theme).hit.path
       check($regular != $light,"weights coexist at separate paths: "+$pair.name)

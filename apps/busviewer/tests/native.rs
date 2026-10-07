@@ -24,7 +24,7 @@ fn native_discovery_calls_topics_and_singleton_registration() {
         let mut clients=Vec::new();
         for name in ["example","legacy","broken"] {
             let client=Arc::new(NodedClient::connect(name,&url).await.unwrap());
-            let mut incoming=client.incoming().unwrap();
+            let mut incoming=client.incoming_async().await.unwrap();
             let worker=client.clone();let count=count.clone();
             tokio::spawn(async move {
                 while let Some(command)=incoming.recv().await {
@@ -67,7 +67,7 @@ fn native_discovery_calls_topics_and_singleton_registration() {
         assert_eq!(reply.rc,10);assert_eq!(reply.body,"permission denied");
         let new_client=NodedClient::connect("new-citizen",&url).await.unwrap();
         let new_client=Arc::new(new_client);
-        let mut incoming=new_client.incoming().unwrap();let responder=new_client.clone();
+        let mut incoming=new_client.incoming_async().await.unwrap();let responder=new_client.clone();
         tokio::spawn(async move{while let Some(command)=incoming.recv().await{responder.respond(&command,10,"description unavailable").await.unwrap();}});
         assert!(tokio::time::timeout(Duration::from_secs(5),changed.notified()).await.is_ok(),"real registration topic must wake the viewer");
         let refreshed=viewer::discover(handle.clone()).await;
