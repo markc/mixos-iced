@@ -10,7 +10,7 @@ use application::iced::{
     widget::{self, column, container, row, text, text_editor},
     window,
 };
-use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
+use iced::futures::{StreamExt, channel::mpsc::Receiver};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -92,7 +92,7 @@ pub struct App {
     status: String,
     quitting: bool,
 }
-static STREAM: OnceLock<Mutex<Option<UnboundedReceiver<Delivery>>>> = OnceLock::new();
+static STREAM: OnceLock<Mutex<Option<Receiver<Delivery>>>> = OnceLock::new();
 fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     let rx = STREAM
         .get()
@@ -569,7 +569,7 @@ impl App {
                     self.selected = None;
                 }
                 self.rebuild();
-                self.status = if let Some(error) = &self.snapshot.error {
+                self.status = if !self.connected {label("disconnected")} else if let Some(error) = &self.snapshot.error {
                     format!("{}: {error}", label("discovery-failed"))
                 } else {
                     format!(
@@ -833,7 +833,7 @@ impl App {
 mod tests {
     use super::*;
     fn app() -> App {
-        let look = appearance::install(&appearance::Theme::default()).unwrap();
+        let look = appearance::install_with(&appearance::Theme::embedded(), appearance::FontSources::none(appearance::FontOrigin::NoSet{roots:vec![]})).unwrap();
         let mut app = App::new(Settings::default(), Handle::sink(), look);
         app.snapshot.services.insert(
             "example".into(),
@@ -948,9 +948,9 @@ mod tests {
     fn simulator_keeps_menu_and_modal_done_reachable_at_minimum_size() {
         let mut app = app();
         let mut sim = application::test::Simulator::with_size(
-            app.view(),
             iced::Settings::default(),
             iced::Size::new(760.0, 500.0),
+            app.view(),
         );
         sim.click("Help").unwrap();
         sim.click("About BusViewer").unwrap();
@@ -962,9 +962,9 @@ mod tests {
         );
         let _ = app.action(Action::About);
         let mut sim = application::test::Simulator::with_size(
-            app.view(),
             iced::Settings::default(),
             iced::Size::new(760.0, 500.0),
+            app.view(),
         );
         sim.click("Done").unwrap();
         assert!(sim.into_messages().any(|m| matches!(m, Message::Cancel)));

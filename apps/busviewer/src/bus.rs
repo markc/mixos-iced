@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised native Bus connection. Topics drive refreshes; no poller.
-use ::bus::native_client::{ConnState, IncomingCommand, NodedClient, SupervisedClient};
+use ::bus::native_client::{BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient};
+use application::iced::futures::SinkExt;
 use application::iced::futures::channel::{mpsc, oneshot};
 use serde_json::{Value, json};
 use std::{
@@ -77,8 +78,8 @@ impl Handle {
 pub fn start(
     service: &str,
     url: &str,
-) -> Result<(Handle, mpsc::UnboundedReceiver<Delivery>), String> {
-    let (send, receive) = mpsc::unbounded();
+) -> Result<(Handle, mpsc::Receiver<Delivery>), String> {
+    let (send, receive) = mpsc::channel(64);
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
     let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -112,11 +113,12 @@ pub fn start(
 async fn worker(
     service: String,
     url: String,
-    send: mpsc::UnboundedSender<Delivery>,
+    mut send: mpsc::Sender<Delivery>,
     mut effects: tokio::sync::mpsc::Receiver<Effect>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
 ) {
     let connect = SupervisedClient::connect_options(&service, &url)
+        .bounded_incoming(64)
         .fatal_on_registration_rejection(true)
         .connect();
     let client = match tokio::time::timeout(Duration::from_secs(5), connect).await {
@@ -130,7 +132,7 @@ async fn worker(
             return;
         }
     };
-    let Some(mut incoming) = client.incoming() else {
+    let Some(mut incoming) = client.incoming_bounded() else {
         let _ = ready.send(Err("no incoming Bus channel".into()));
         return;
     };
@@ -152,13 +154,21 @@ async fn worker(
     loop {
         tokio::select! {
             command = incoming.recv() => {
-                let Some(command) = command else { break; };
+                let command = match command {
+                    Some(BoundedIncomingEvent::Command(command)) => command,
+                    Some(BoundedIncomingEvent::Overflow{..}) => {
+                        let _ = send.send(Delivery::Changed).await;
+                        let _ = send.send(Delivery::Theme).await;
+                        continue;
+                    },
+                    None => break,
+                };
                 if let Some(topic) = command.topic() {
                     if topic == "noded.props.changed" && command.headers.get("gap").is_none_or(|value|value != "true")
                         && serde_json::from_str::<Value>(&command.body).ok().is_some_and(|body|body["path"] != "services.registered") {
                         continue;
                     }
-                    let _ = send.unbounded_send(if topic == "theme.changed" { Delivery::Theme } else { Delivery::Changed });
+                    let _ = send.send(if topic == "theme.changed" { Delivery::Theme } else { Delivery::Changed }).await;
                     continue;
                 }
                 if command.command.is_empty() {
@@ -172,7 +182,7 @@ async fn worker(
                 next_id += 1;
                 let delivery = Delivery::Command {id:next_id,verb:command.command.clone(),body:if command.body.trim().is_empty(){"{}".into()}else{command.body.clone()}};
                 pending.insert(next_id,command);
-                let _ = send.unbounded_send(delivery);
+                let _ = send.send(delivery).await;
             }
             effect = effects.recv() => {
                 let Some(effect) = effect else { break; };
@@ -208,11 +218,11 @@ async fn worker(
                     ConnState::Fatal | ConnState::ShuttingDown => break,
                     ConnState::Connecting => None,
                 };
-                if let Some(event) = event { let _ = send.unbounded_send(event); }
+                if let Some(event) = event { let _ = send.send(event).await; }
             }
         }
     }
-    let _ = send.unbounded_send(Delivery::Disconnected);
+    let _ = send.send(Delivery::Disconnected).await;
     let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
 }
 fn anonymous(url: &str, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
