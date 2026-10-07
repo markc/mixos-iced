@@ -71,6 +71,7 @@ fn display(look: Look, pane: &PaneModel, pane_id: PaneId) -> Element<'static, Ms
             text: path,
             font: look.mono_font,
             px: text_px(look),
+            line_height: look.mono_line_height.map(|height|height * text_px(look) / look.mono_px),
             color: look.chrome.secondary_text,
         })
         .padding(padding(look))

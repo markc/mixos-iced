@@ -3,11 +3,11 @@
 use super::*;
 
 type Gui = Outbox<Delivery, 4>;
-type SettingsLane = application::presentation::native::Lane<crate::app::Content>;
+type SettingsLane = application::presentation::native::Lane<crate::app::Content,crate::app::PreparationContext>;
 type Ready = Result<
     (
         Arc<SupervisedClient>,
-        Option<SettingsUi<crate::app::Content>>,
+        Option<SettingsUi<crate::app::Content,crate::app::PreparationContext>>,
         Option<appearance::settings::Prepared>,
     ),
     StartError,
@@ -348,23 +348,19 @@ async fn worker(
             return faults;
         }
     };
-    let cache = match crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT) {
-        Some(dirs) => SettingsWorker::offline_with_cache(
-            dirs.settings_cache_dir(),
-            crate::app::Content::build,
-        ),
-        None => SettingsWorker::offline(crate::app::Content::build),
+    let worker = SettingsWorker::contextual(crate::app::Content::build_contextual)
+        .with_contextual_resource_requirements(crate::icons::requirements);
+    let worker = match crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT) {
+        Some(dirs) => worker.with_cache_directory(dirs.settings_cache_dir()),
+        None => worker,
     };
-    let (ui, lane) = bridge(Session::new(consumer), cache);
+    let (ui, lane) = bridge(Session::with_context(consumer,crate::app::PreparationContext::default()),worker);
     if ready
         .send(Ok((client.clone(), Some(ui), Some(bootstrap))))
         .is_err()
     {
         client.close().await;
         return faults;
-    }
-    if let Err(error) = appearance::fonts::register_installed() {
-        tracing::warn!(%error, "DOpus static assets unavailable");
     }
     run(
         client,

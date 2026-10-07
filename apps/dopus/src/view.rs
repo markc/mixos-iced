@@ -50,20 +50,38 @@ pub struct Look {
     pub chrome: Chrome,
     pub ui_font: application::iced::Font,
     pub mono_font: application::iced::Font,
+    pub small_font: application::iced::Font,
     pub px: f32,
     pub mono_px: f32,
     /// The prepared role line heights (part of the cache key).
     pub ui_line_height: Option<f32>,
     pub mono_line_height: Option<f32>,
+    pub small_line_height: Option<f32>,
     /// The prepared ui.density (already folded into the chrome spacing; kept
     /// in the key so an equal-spacing change cannot collide).
     pub density: f32,
 }
 
 impl Look {
+    pub fn from_theme(theme: &crate::theme::Theme) -> Self {
+        Self {
+            sidebar_px:theme.sidebar_px, small_px:theme.small_px,
+            tokens:theme.tokens, chrome:theme.chrome,
+            ui_font:theme.ui_font, mono_font:theme.mono_font,small_font:theme.small_font,
+            px:theme.ui_px(),mono_px:theme.mono.1,
+            ui_line_height:theme.ui_line_height,mono_line_height:theme.mono_line_height,
+            small_line_height:theme.small_line_height,density:theme.density,
+        }
+    }
     /// One resolved typography token for Places and all Properties text.
     pub fn sidebar_px(&self) -> f32 {
         self.sidebar_px
+    }
+    pub fn sidebar_line_height(&self) -> Option<f32> {
+        self.ui_line_height.map(|height|height * self.sidebar_px / self.px)
+    }
+    pub fn small_height(&self) -> application::iced::advanced::text::LineHeight {
+        self.small_line_height.map(|height|application::iced::advanced::text::LineHeight::Absolute(height.into())).unwrap_or_default()
     }
 
     /// A full-width strip (headers, status bar) in the given token colours.

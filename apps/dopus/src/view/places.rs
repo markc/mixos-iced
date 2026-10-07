@@ -60,6 +60,7 @@ pub fn sidebar<'a>(
             text: (*name).to_owned(),
             font: look.ui_font,
             px: look.sidebar_px(),
+            line_height: look.sidebar_line_height(),
             color: if selected {
                 look.tokens.palette.selection_text
             } else {
@@ -124,6 +125,12 @@ fn place_look(
 
 /// A Material text glyph, or the cached Lucide fallback, at the same icon size.
 pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Element<'static, Msg> {
+    if let Some(ready) = icons.ready(icon,tint) {
+        return match ready {
+            toolkit::icons::Ready::Text(icon) => icon.size(look.chrome.icon).color(icons::tint_color(tint)).into(),
+            image @ toolkit::icons::Ready::Image {..} => image.view(),
+        };
+    }
     if let Some((glyph, font)) = icons.glyph(icon) {
         return application::iced::widget::text(glyph.to_string())
             .font(font)

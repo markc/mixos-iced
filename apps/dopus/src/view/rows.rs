@@ -31,14 +31,14 @@ pub fn presentation(look: Look) -> pane::Presentation {
 
 fn columns_new(look: Look, rows: &[VisibleRow]) -> Columns {
     let measure = |s: &str| {
-        FileList::shape(s, look.mono_font, look.small_px)
+        FileList::shape_with_line_height(s, look.mono_font, look.small_px,look.small_line_height)
             .min_bounds()
             .width
     };
     Columns {
         name_min: look.chrome.icon * 2.0
             + look.chrome.small
-            + FileList::shape("MMMM", look.ui_font, look.px)
+            + FileList::shape_with_line_height("MMMM", look.ui_font, look.px,look.ui_line_height)
                 .min_bounds()
                 .width,
         size: listing_size_width(
@@ -179,6 +179,8 @@ pub fn file_list<'a>(
         presentation(look),
         columns,
     )
+    // Numeric columns deliberately retain Mono at the Small role's size.
+    .line_heights(look.ui_line_height,look.small_line_height)
     .tint(tint)
     .busy(busy)
     .open_label(super::tips::action_label(

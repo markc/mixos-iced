@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use resvg::{self, tiny_skia, usvg};
+mod pinned;
+pub use pinned::requirements;
 
 /// The catalogue, in step with `ctk/src/icons.rs`'s `Icon`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -240,6 +242,8 @@ pub struct Icons {
     state: Arc<Mutex<State>>,
     material: Option<Arc<HashMap<Icon, (char, application::iced::Font)>>>,
     asset_set: Option<String>,
+    pinned: Option<appearance::resources::PreparedResources>,
+    prepared_side: Option<u32>,
 }
 
 impl Default for Icons {
@@ -349,11 +353,15 @@ impl Icons {
             state: Default::default(),
             material: None,
             asset_set: None,
+            pinned: None,
+            prepared_side: None,
         }
     }
 
     pub fn mode(&self) -> &'static str {
-        if self.material.is_some() {
+        if self.pinned.is_some() {
+            "prepared"
+        } else if self.material.is_some() {
             "material-symbols-rounded"
         } else {
             "lucide"
@@ -365,6 +373,10 @@ impl Icons {
     }
 
     pub fn weight(&self) -> Option<u16> {
+        if let Some(resources) = &self.pinned {
+            let weight = resources.evidence().icons.first()?.weight?;
+            return resources.evidence().icons.iter().all(|icon|icon.weight == Some(weight)).then_some(weight);
+        }
         self.material.as_ref().map(|_| 200)
     }
 
@@ -406,6 +418,15 @@ impl Icons {
                 clip,
             );
         } else if let Some(handle) = self.get(icon, tint, RASTER_PX) {
+            let bounds = match &handle {
+                application::iced::widget::image::Handle::Rgba {width,height,..} => {
+                    let scale = (bounds.width / *width as f32).min(bounds.height / *height as f32);
+                    let width = *width as f32 * scale;
+                    let height = *height as f32 * scale;
+                    application::iced::Rectangle {x:bounds.center_x()-width/2.0,y:bounds.center_y()-height/2.0,width,height}
+                }
+                _ => bounds,
+            };
             renderer.draw_image(
                 application::iced::advanced::image::Image::new(handle),
                 bounds,
@@ -465,11 +486,17 @@ impl Icons {
         tint: &str,
         px: u32,
     ) -> Option<application::iced::widget::image::Handle> {
+        if let Some(resources) = &self.pinned {
+            return match resources.icon(&pinned::key(icon,tint))? {
+                toolkit::icons::Ready::Image {handle,..} => Some(handle.clone()),
+                toolkit::icons::Ready::Text(_) => None,
+            };
+        }
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cache.get(&(icon, tint.to_owned(), px)).cloned()
+        state.cache.get(&(icon, tint.to_owned(), self.prepared_side.unwrap_or(px))).cloned()
     }
 }
 

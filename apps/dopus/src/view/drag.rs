@@ -542,10 +542,12 @@ mod tests {
             chrome: theme.chrome,
             ui_font: theme.ui_font,
             mono_font: theme.mono_font,
+            small_font: theme.small_font,
             px: theme.ui_px(),
             mono_px: theme.mono.1,
             ui_line_height: theme.ui_line_height,
             mono_line_height: theme.mono_line_height,
+            small_line_height: theme.small_line_height,
             density: theme.density,
         }
     }

@@ -1,5 +1,15 @@
 # DOpus Bus contract
 
+## 0.4.7
+
+- Adopt pinned glyphs and image allocations from the shared resource receipt;
+  prepare finite palette variants at density-scaled logical size and native
+  output scale. Generic bundled rescue no longer discovers installed fonts.
+- Prepare Small-role typography and line heights, invalidate shared row hit
+  geometry on padding or typography changes and retire stale drag geometry
+  synchronously with view-cache installation before settings acknowledgement.
+- Bound fixture progress by confirmed state instead of assumed event counts.
+
 ## 0.4.6
 
 - Share one native actor after headless or GUI startup, using retained

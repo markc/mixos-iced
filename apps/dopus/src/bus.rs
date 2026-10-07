@@ -150,7 +150,7 @@ pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
     done: Arc<(std::sync::Mutex<Done>, std::sync::Condvar)>,
     client: Option<Arc<SupervisedClient>>,
-    settings: Option<SettingsUi<crate::app::Content>>,
+    settings: Option<SettingsUi<crate::app::Content,crate::app::PreparationContext>>,
     bootstrap: Option<appearance::settings::Prepared>,
     themes: Admission,
     quitting: Arc<std::sync::atomic::AtomicBool>,
@@ -196,7 +196,7 @@ impl BusHandle {
             rx,
         )
     }
-    pub fn take_settings_ui(&mut self) -> Option<SettingsUi<crate::app::Content>> {
+    pub fn take_settings_ui(&mut self) -> Option<SettingsUi<crate::app::Content,crate::app::PreparationContext>> {
         self.settings.take()
     }
     pub fn take_bootstrap(&mut self) -> Option<appearance::settings::Prepared> {

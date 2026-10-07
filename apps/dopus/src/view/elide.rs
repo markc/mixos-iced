@@ -9,11 +9,15 @@ use unicode_segmentation::UnicodeSegmentation;
 type Para = <Renderer as text::Renderer>::Paragraph;
 
 pub fn shape(content: &str, font: application::iced::Font, px: f32) -> Para {
+    shape_with_line_height(content,font,px,None)
+}
+
+pub fn shape_with_line_height(content: &str, font: application::iced::Font, px: f32, line_height: Option<f32>) -> Para {
     Para::with_text(text::Text {
         content,
         bounds: Size::INFINITE,
         size: px.into(),
-        line_height: text::LineHeight::default(),
+        line_height: line_height.map(|height|text::LineHeight::Absolute(height.into())).unwrap_or_default(),
         font,
         align_x: text::Alignment::Left,
         align_y: application::iced::alignment::Vertical::Top,
@@ -96,6 +100,7 @@ pub struct Label {
     pub text: String,
     pub font: application::iced::Font,
     pub px: f32,
+    pub line_height: Option<f32>,
     pub color: application::iced::Color,
 }
 impl<M> application::iced::advanced::Widget<M, application::iced::Theme, Renderer> for Label {
@@ -106,7 +111,7 @@ impl<M> application::iced::advanced::Widget<M, application::iced::Theme, Rendere
         Size::new(Length::Fill, Length::Shrink)
     }
     fn state(&self) -> application::iced::advanced::widget::tree::State {
-        application::iced::advanced::widget::tree::State::new(shape("", self.font, self.px))
+        application::iced::advanced::widget::tree::State::new(shape_with_line_height("", self.font, self.px,self.line_height))
     }
     fn layout(
         &mut self,
@@ -116,10 +121,10 @@ impl<M> application::iced::advanced::Widget<M, application::iced::Theme, Rendere
     ) -> application::iced::advanced::layout::Node {
         let width = limits.max().width;
         let value = middle(&self.text, width, |s| {
-            shape(s, self.font, self.px).min_bounds().width
+            shape_with_line_height(s, self.font, self.px,self.line_height).min_bounds().width
         });
-        let para = shape(&value, self.font, self.px);
-        let height = shape("Ag", self.font, self.px).min_bounds().height;
+        let para = shape_with_line_height(&value, self.font, self.px,self.line_height);
+        let height = shape_with_line_height("Ag", self.font, self.px,self.line_height).min_bounds().height;
         *tree.state.downcast_mut::<Para>() = para;
         application::iced::advanced::layout::Node::new(limits.resolve(
             Length::Fill,

@@ -44,6 +44,7 @@ pub struct Theme {
     /// The fonts to hand iced, resolved to installed families.
     pub mono_font: application::iced::Font,
     pub ui_font: application::iced::Font,
+    pub small_font: application::iced::Font,
     /// The resolved selection (for `dopus.state` and theme actions).
     pub scheme: Scheme,
     pub mode: Mode,
@@ -53,6 +54,7 @@ pub struct Theme {
     /// The prepared role line heights (the measurement caches key on them).
     pub ui_line_height: Option<f32>,
     pub mono_line_height: Option<f32>,
+    pub small_line_height: Option<f32>,
     /// Something went wrong resolving (shown once in the status bar).
     pub notes: Option<String>,
 }
@@ -193,9 +195,11 @@ pub fn from_prepared(look: &appearance::settings::Prepared) -> Result<Theme, set
         mode: Mode::default(),
         mono_font: mono.font,
         ui_font: ui.font,
+        small_font: small.font,
         density: look.density(),
         ui_line_height: ui.line_height,
         mono_line_height: mono.line_height,
+        small_line_height: small.line_height,
         notes: None,
     })
 }
@@ -271,6 +275,7 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
     };
     let mono = role(TypographyRole::Mono);
     let ui = role(TypographyRole::Ui);
+    let small = role(TypographyRole::Small);
     let mono_font = font_for(&mono, true, selection.design_source.is_none());
     let ui_font = font_for(&ui, false, selection.design_source.is_none());
     Theme {
@@ -284,9 +289,11 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
         mode: selection.mode,
         mono_font,
         ui_font,
+        small_font: font_for(&small,false,selection.design_source.is_none()),
         density: 1.0,
         ui_line_height: ui.line_height.map(|v| v as f32),
         mono_line_height: mono.line_height.map(|v| v as f32),
+        small_line_height: small.line_height.map(|v| v as f32),
         notes: (!notes.is_empty()).then(|| notes.join("; ")),
     }
 }
@@ -667,7 +674,9 @@ mod tests {
         desktop.ui.density = 1.5;
         let look = appearance::settings::bootstrap().expect("generic bootstrap");
         let plain = from_prepared(&look).unwrap();
-        let theme = from_settings(&look, &snapshot(desktop)).unwrap();
+        let snapshot = snapshot(desktop);
+        let prepared = appearance::settings::Projection::new(&snapshot.effective["app:dopus"]).unwrap().prepare_registered(true).unwrap();
+        let theme = from_settings(&prepared, &snapshot).unwrap();
         assert_eq!((theme.scheme, theme.mode), (Scheme::Crimson, Mode::Dark));
         assert!(theme.density > 1.0);
         assert!(

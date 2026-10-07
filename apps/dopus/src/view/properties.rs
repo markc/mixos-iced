@@ -77,6 +77,7 @@ pub fn sidebar<'a>(
         text: title,
         font: look.ui_font,
         px: look.sidebar_px(),
+        line_height: look.sidebar_line_height(),
         color: look.tokens.palette.text,
     });
     for (label, value) in fields {

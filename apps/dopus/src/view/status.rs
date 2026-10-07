@@ -25,8 +25,9 @@ pub fn bar<'a>(
                 if places_open { "●" } else { "○" },
                 super::tips::action_label(actions, actions::view::TOGGLE_PLACES, "Places"),
             ))
-            .font(look.ui_font)
+            .font(look.small_font)
             .size(look.small_px)
+            .line_height(look.small_height())
         )
         .padding(look.chrome.small)
         .style(super::button_look(&look))
@@ -37,22 +38,25 @@ pub fn bar<'a>(
                 if properties_open { "●" } else { "○" },
                 super::tips::action_label(actions, actions::view::TOGGLE_PROPERTIES, "Properties"),
             ))
-            .font(look.ui_font)
+            .font(look.small_font)
             .size(look.small_px)
+            .line_height(look.small_height())
         )
         .padding(look.chrome.small)
         .style(super::button_look(&look))
         .on_press(Msg::Actions(vec![actions::view::TOGGLE_PROPERTIES])),
         super::elide::Label {
             text: info.into(),
-            font: look.ui_font,
+            font: look.small_font,
             px: look.small_px,
+            line_height: look.small_line_height,
             color: look.chrome.secondary_text
         },
         super::elide::Label {
-            text: provenance.to_owned().into(),
-            font: look.ui_font,
+            text: provenance.to_owned(),
+            font: look.small_font,
             px: look.small_px,
+            line_height: look.small_line_height,
             color: look.chrome.secondary_text
         },
     ])
