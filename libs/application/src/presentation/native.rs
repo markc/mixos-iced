@@ -3,6 +3,7 @@
 //! connection, runtime, receiver or loop is created here.
 use super::*;
 use crate::message::Once;
+use appearance::resources::{ResourceHost, ResourceRequirements};
 use settings::{
     Snapshot,
     consumer::Work,
@@ -12,7 +13,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
@@ -313,6 +314,12 @@ impl<T> Session<T> {
 
 type Rpc = Pin<Box<dyn Future<Output = Event<()>> + Send>>;
 type Builder<T> = Arc<dyn Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync>;
+/// Pure per-snapshot icon requirements, built on the worker before any
+/// renderer mutation. Applications collect their real static menu/control
+/// catalogue and bounded dynamic snapshot here; the default requests no icons.
+type Requirements = Arc<
+    dyn Fn(&Projection, &Snapshot) -> Result<ResourceRequirements, Diagnostic> + Send + Sync,
+>;
 
 enum Resource {
     Prepare(Request),
@@ -371,6 +378,11 @@ pub struct Worker<T> {
     running: Option<Running<T>>,
     build: Builder<T>,
     offered: Option<Resource>,
+    /// The one verified resource host. Locked only inside the serial blocking
+    /// closure and released before the event returns; UI and async scheduling
+    /// never touch it. A poisoned lock becomes a preparation diagnostic.
+    host: Arc<Mutex<ResourceHost>>,
+    requirements: Requirements,
     #[cfg(feature = "settings-cache")]
     cache: Option<cache::Lane>,
 }
@@ -385,8 +397,18 @@ impl<T: Send + 'static> Worker<T> {
     }
     /// Resource/fallback jobs may run while the host's existing connection is
     /// still starting. RPCs stay dormant until that same client is attached.
+    /// The resource host captures the normal MixOS lookup policy.
     pub fn offline(
         build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
+    ) -> Self {
+        Self::offline_with_host(build, ResourceHost::new(assets::mixos::lookup()))
+    }
+    /// An explicit host policy for tests and embeddings: the approved roots
+    /// only, never the process environment. This is host configuration, never
+    /// an authored settings field.
+    pub fn offline_with_host(
+        build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
+        host: ResourceHost,
     ) -> Self {
         Self {
             client: None,
@@ -397,8 +419,24 @@ impl<T: Send + 'static> Worker<T> {
             running: None,
             build: Arc::new(build),
             offered: None,
+            host: Arc::new(Mutex::new(host)),
+            requirements: Arc::new(|_, _| Ok(ResourceRequirements::empty())),
             #[cfg(feature = "settings-cache")]
             cache: None,
+        }
+    }
+    /// Replace the empty icon requirements with the application's own: a pure
+    /// projection/snapshot collection, evaluated before any renderer mutation.
+    pub fn with_resource_requirements(
+        self,
+        build: impl Fn(&Projection, &Snapshot) -> Result<ResourceRequirements, Diagnostic>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            requirements: Arc::new(build),
+            ..self
         }
     }
     /// Attach the host's already established connection, then resend its
@@ -415,6 +453,17 @@ impl<T: Send + 'static> Worker<T> {
         build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
     ) -> Self {
         let mut worker = Self::offline(build);
+        worker.cache = Some(cache::Lane::new(directory));
+        worker
+    }
+    /// Construction-only cache root with an explicit host policy.
+    #[cfg(feature = "settings-cache")]
+    pub fn offline_with_cache_and_host(
+        directory: std::path::PathBuf,
+        build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
+        host: ResourceHost,
+    ) -> Self {
+        let mut worker = Self::offline_with_host(build, host);
         worker.cache = Some(cache::Lane::new(directory));
         worker
     }
@@ -490,6 +539,8 @@ impl<T: Send + 'static> Worker<T> {
             Resource::Fallback(request) => Resource::Fallback(request.clone()),
         };
         let build = Arc::clone(&self.build);
+        let host = Arc::clone(&self.host);
+        let requirements = Arc::clone(&self.requirements);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::clone(&cancel);
         #[cfg(feature = "settings-cache")]
@@ -497,7 +548,15 @@ impl<T: Send + 'static> Worker<T> {
         let task = tokio::task::spawn_blocking(move || match resource {
             Resource::Prepare(request) => {
                 let snapshot = request.update().snapshot();
-                let result = prepare(snapshot, &request.context, &cancelled, &build);
+                let result = prepare(
+                    snapshot,
+                    &request.context,
+                    &cancelled,
+                    &build,
+                    host,
+                    requirements,
+                    None,
+                );
                 Event::Prepared(Completion {
                     update: request.update,
                     result: Box::new(result),
@@ -506,7 +565,7 @@ impl<T: Send + 'static> Worker<T> {
             Resource::Fallback(request) => {
                 let request = *request;
                 let mut presentation = None;
-                let prepared = request.prepare_with_cache(
+                let prepared = request.prepare_resources_with_cache(
                     || {
                         #[cfg(feature = "settings-cache")]
                         if let Some((directory, target)) = cache {
@@ -514,9 +573,23 @@ impl<T: Send + 'static> Worker<T> {
                         }
                         Ok(None)
                     },
-                    |snapshot, context, _| {
-                        presentation = Some(prepare(snapshot, context, &cancelled, &build)?);
-                        Ok(())
+                    |snapshot, context, _, expected| {
+                        presentation = Some(prepare(
+                            snapshot,
+                            context,
+                            &cancelled,
+                            &build,
+                            Arc::clone(&host),
+                            Arc::clone(&requirements),
+                            expected,
+                        )?);
+                        // The typed binding the fallback ladder records: exactly
+                        // what this preparation verified, so the later cache
+                        // capture cannot diverge from the activation.
+                        Ok(presentation
+                            .as_ref()
+                            .and_then(|prepared| prepared.appearance().resources())
+                            .and_then(|resources| resources.binding().cloned()))
                     },
                 );
                 Event::Fallback(
@@ -623,11 +696,20 @@ impl<T> Drop for Worker<T> {
         }
     }
 }
+/// One serial worker preparation: pure requirement collection, then the
+/// verified resource host under its lock, then the deliberate content builder.
+/// The host lock is released before the content builder runs and before the
+/// event returns; a poisoned lock is a diagnostic, never an unwrap. Cancellation
+/// is checked at the start, through every bounded host stage and again after
+/// the content builder, immediately before the candidate is returned.
 fn prepare<T>(
     snapshot: &Snapshot,
     context: &str,
     cancel: &AtomicBool,
     build: &Builder<T>,
+    host: Arc<Mutex<ResourceHost>>,
+    requirements: &Requirements,
+    expected: Option<&settings::ResourceBinding>,
 ) -> Result<Presentation<T>, Diagnostic> {
     let check = || {
         if cancel.load(Ordering::Acquire) {
@@ -645,8 +727,19 @@ fn prepare<T>(
         .effective
         .get(context)
         .ok_or_else(|| Diagnostic::new("missing_context", "effective", "Context missing"))?;
-    let appearance = Projection::new(effective)?
-        .prepare_registered_checked(snapshot.desktop.appearance.source.is_none(), check)?;
+    let projection = Projection::new(effective)?;
+    let required = requirements(&projection, snapshot)?;
+    let reference = snapshot.desktop.appearance.resources.as_ref();
+    let appearance = host
+        .lock()
+        .map_err(|_| {
+            Diagnostic::new(
+                "resource_host_poisoned",
+                "worker",
+                "Resource host lock poisoned",
+            )
+        })?
+        .prepare(projection, reference, expected, required, &mut check)?;
     let content = build(&appearance, snapshot)?;
     check()?;
     Ok(Presentation {

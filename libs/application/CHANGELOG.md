@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.11
+
+- The central verified resource host takes over live worker preparation: one
+  serial blocking job reads the authored or recorded resource identity once,
+  verifies the bytes, decodes required image variants and registers exactly
+  one atomic toolkit batch. The exact binding of what was verified is
+  acknowledged with the synchronous activation fence, so the captured cache
+  save records precisely what was prepared. `Worker::with_resource_requirements`
+  adds an application's pure icon requirements; `Worker::offline_with_host`
+  and `Worker::offline_with_cache_and_host` accept an explicit host policy for
+  tests and embeddings. Fallback preparation carries its verified binding
+  through the ladder. The legacy `prepare_registered_checked` compat path
+  remains available; the worker no longer uses it.
+
 ## 0.1.10
 
 Paired cache evidence explicitly reports an unconfigured persistent root,

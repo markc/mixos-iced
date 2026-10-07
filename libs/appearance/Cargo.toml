@@ -21,6 +21,13 @@ contract = "none"
 [lints.clippy]
 mod_module_files = "deny"
 
+[features]
+# The central verified resource host (resources.rs): verified set reads,
+# compact reuse, the one atomic toolkit batch, the owned image decoder and
+# the resource receipt attached to Prepared. Requires the assets `verified`
+# reader and toolkit's owned image decoding.
+resources = ["assets/verified", "dep:hex", "toolkit/image"]
+
 [dependencies]
 # The pinned font, icon and emoji set (its MixOS search path).
 assets = { workspace = true }
@@ -28,6 +35,8 @@ assets = { workspace = true }
 config = { workspace = true }
 # The design source and its compiler: colours, metrics, typography.
 design = { workspace = true }
+# Parsing recorded 64-hex manifest digests for the verified reader.
+hex = { version = "=0.4.3", optional = true }
 # `Color` and `Font`, the iced types the mapped tokens are made of.
 iced_core = { workspace = true }
 iced_widget = { workspace = true }
