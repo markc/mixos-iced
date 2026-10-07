@@ -195,7 +195,10 @@ pub fn run(
     bus.quit();
     // Reply-then-exit: the quit reply is flushed by the bus thread's
     // drain-before-break; joining it (bounded) means the reply is on the
-    // wire before this process disappears under the caller.
-    bus.wait_done(std::time::Duration::from_secs(3));
+    // wire before this process disappears under the caller. The checked
+    // receipt reports a silent timeout instead of hiding it.
+    if let Err(error) = bus.wait_done(std::time::Duration::from_secs(3)) {
+        tracing::warn!("dopus: {error}");
+    }
     Ok(())
 }

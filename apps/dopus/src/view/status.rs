@@ -7,10 +7,12 @@ use application::iced::{Element, Length};
 use crate::app::Msg;
 use crate::view::Look;
 
-/// The status bar strip.
+/// The status bar strip. `provenance` is the persistent settings/connection
+/// status (the shared Fluent catalogue labels).
 pub fn bar<'a>(
     look: Look,
     info: &'a str,
+    provenance: &'a str,
     places_open: bool,
     properties_open: bool,
     actions: &[crate::verbs::ActionRow],
@@ -42,6 +44,12 @@ pub fn bar<'a>(
         .on_press(Msg::Actions(vec![actions::view::TOGGLE_PROPERTIES])),
         super::elide::Label {
             text: info.into(),
+            font: look.ui_font,
+            px: look.small_px,
+            color: look.chrome.secondary_text
+        },
+        super::elide::Label {
+            text: provenance.into(),
             font: look.ui_font,
             px: look.small_px,
             color: look.chrome.secondary_text

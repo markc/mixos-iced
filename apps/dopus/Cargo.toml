@@ -1,6 +1,6 @@
 [package]
 name = "dopus"
-version = "0.4.4"
+version = "0.4.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,8 +18,9 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-application = { workspace = true, features = ["tiny-skia", "image"] }
-toolkit = { workspace = true, features = ["tiny-skia"] }
+application = { workspace = true, features = ["tiny-skia", "image", "settings-cache"] }
+settings = { workspace = true, features = ["native"] }
+toolkit = { workspace = true, features = ["tiny-skia", "i18n"] }
 design.workspace = true
 appearance.workspace = true
 dopus-core = { path = "crates/dopus-core" }

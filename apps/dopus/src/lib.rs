@@ -37,6 +37,7 @@ pub mod dirs;
 pub mod headless;
 pub mod icons;
 pub mod keys;
+mod strings;
 pub mod theme;
 pub mod verbs;
 pub mod view;

@@ -944,7 +944,7 @@ checked separately by the layering gate.
 | [ced](https://github.com/markc/mixos/blob/main/apps/ced/Cargo.toml) | ced | app | desktop | public | 0.1.8 |
 | [editor-model](https://github.com/markc/mixos/blob/main/apps/ced/crates/editor-model/Cargo.toml) | ced | app | core | none | 0.1.1 |
 | [syntax](https://github.com/markc/mixos/blob/main/apps/ced/crates/syntax/Cargo.toml) | ced | app | core | none | 0.1.1 |
-| [dopus](https://github.com/markc/mixos/blob/main/apps/dopus/Cargo.toml) | dopus | app | desktop | public | 0.4.4 |
+| [dopus](https://github.com/markc/mixos/blob/main/apps/dopus/Cargo.toml) | dopus | app | desktop | public | 0.4.5 |
 | [actions](https://github.com/markc/mixos/blob/main/apps/dopus/crates/actions/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [dopus-core](https://github.com/markc/mixos/blob/main/apps/dopus/crates/dopus-core/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [files](https://github.com/markc/mixos/blob/main/apps/dopus/crates/files/Cargo.toml) | dopus | app | core | none | 0.1.1 |
