@@ -108,7 +108,7 @@ impl Accepted {
     }
     pub fn reply(self, rc: u8, body: String, deadline: Instant) -> Reply {
         Reply {
-            accepted: self,
+            accepted: Box::new(self),
             rc,
             body,
             deadline,
@@ -122,7 +122,7 @@ impl Accepted {
 
 /// A reply keeps its origin and absolute deadline during retained queue delay.
 pub struct Reply {
-    accepted: Accepted,
+    accepted: Box<Accepted>,
     rc: u8,
     body: String,
     deadline: Instant,
@@ -150,7 +150,7 @@ impl Reply {
             command,
             permit,
             ..
-        } = accepted;
+        } = *accepted;
         (permit, async move {
             let deadline = tokio::time::Instant::from_std(deadline);
             if tokio::time::Instant::now() >= deadline {
