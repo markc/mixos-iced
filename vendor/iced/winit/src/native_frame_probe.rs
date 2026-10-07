@@ -2,6 +2,7 @@
 //! Opt-in native acceptance schedule. Stores one real feedback per window;
 //! shared control contains only bounded metadata and single-use notifications.
 
+use crate::core::window::presentation::probe::FailurePoint;
 use crate::core::window::{
     Id,
     presentation::{FrameBinding, FrameObserver, FrameOutcome, FrameStamp},
@@ -9,10 +10,12 @@ use crate::core::window::{
 use crate::futures::futures::channel::oneshot;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use winit::presentation::PresentationFeedback;
-use crate::core::window::presentation::probe::FailurePoint;
 
 mod recovery;
-pub use recovery::{RecoveryGuard, RecoveryHandle, RecoveryPlan, RecoveryReport, install_recovery, install_after_commit_recovery};
+pub use recovery::{
+    RecoveryGuard, RecoveryHandle, RecoveryPlan, RecoveryReport, install_after_commit_recovery,
+    install_recovery,
+};
 
 static INSTALLED: Mutex<Option<Installation>> = Mutex::new(None);
 
@@ -145,10 +148,12 @@ impl Handle {
 impl Drop for Guard {
     fn drop(&mut self) {
         let mut installed = lock(&INSTALLED);
-        if installed.as_ref().and_then(|installation| match installation {
-            Installation::Ordering(control) => control.upgrade(),
-            Installation::Recovery(_) => None,
-        })
+        if installed
+            .as_ref()
+            .and_then(|installation| match installation {
+                Installation::Ordering(control) => control.upgrade(),
+                Installation::Recovery(_) => None,
+            })
             .is_some_and(|control| Arc::ptr_eq(&control, &self.0))
         {
             *installed = None;
@@ -233,7 +238,9 @@ impl Gate {
         let installed = lock(&INSTALLED);
         let (control, recovery) = match installed.as_ref() {
             Some(Installation::Ordering(control)) => (control.upgrade(), None),
-            Some(Installation::Recovery(control)) => (None, control.upgrade().map(recovery::Gate::new)),
+            Some(Installation::Recovery(control)) => {
+                (None, control.upgrade().map(recovery::Gate::new))
+            }
             None => (None, None),
         };
         Self {
@@ -263,11 +270,17 @@ impl Gate {
         })
     }
 
-    pub(crate) fn begin(&mut self, window: Id, binding: Option<&FrameBinding>, physical_size: (u32, u32)) -> Option<FailurePoint> {
+    pub(crate) fn begin(
+        &mut self,
+        window: Id,
+        binding: Option<&FrameBinding>,
+        physical_size: (u32, u32),
+    ) -> Option<FailurePoint> {
         if let Some(recovery) = &mut self.recovery {
             return recovery.begin(window, binding, physical_size);
         }
-        self.begin_ordering(window, binding).then_some(FailurePoint::AfterCommit)
+        self.begin_ordering(window, binding)
+            .then_some(FailurePoint::AfterCommit)
     }
 
     fn begin_ordering(&mut self, window: Id, binding: Option<&FrameBinding>) -> bool {
@@ -309,7 +322,14 @@ impl Gate {
         pre_present_called: bool,
     ) -> Option<PresentationFeedback> {
         if let Some(recovery) = &mut self.recovery {
-            recovery.submitted(window, binding, request, successful, fault_consumed, pre_present_called);
+            recovery.submitted(
+                window,
+                binding,
+                request,
+                successful,
+                fault_consumed,
+                pre_present_called,
+            );
             return None;
         }
         let Some(control) = &self.control else {

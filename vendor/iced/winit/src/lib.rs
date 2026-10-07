@@ -952,14 +952,17 @@ async fn run_instance<P>(
                         window.presentation.drawn(drawn.clone());
                         let binding = window.presentation.feedback_candidate();
                         #[cfg(feature = "native-frame-probe")]
-                        let scope =
-                            window
-                                .native_frame_probe
-                                .begin(id, drawn.as_ref(), (physical_size.width, physical_size.height))
-                                .map(|point| {
-                                    core::window::presentation::probe::Scope::arm_at(point)
-                                        .expect("one native draw scope")
-                                });
+                        let scope = window
+                            .native_frame_probe
+                            .begin(
+                                id,
+                                drawn.as_ref(),
+                                (physical_size.width, physical_size.height),
+                            )
+                            .map(|point| {
+                                core::window::presentation::probe::Scope::arm_at(point)
+                                    .expect("one native draw scope")
+                            });
                         let mut feedback = None;
                         let mut pre_present_called = false;
                         let result = current_compositor.present(
