@@ -1144,12 +1144,14 @@ mod tests {
         // Click the very bottom pixel of the row: still row 3, exactly one
         // message.
         let mut bus = Bus::new();
-        let mut shell = iced_core::Shell::new(&Headless, Waker::noop(), &mut bus);
-        styled.as_widget_mut().update(
+        for event in [
+            iced_core::mouse::Event::ButtonPressed(iced_core::mouse::Button::Left),
+            iced_core::mouse::Event::ButtonReleased(iced_core::mouse::Button::Left),
+        ] {
+            let mut shell = iced_core::Shell::new(&Headless, Waker::noop(), &mut bus);
+            styled.as_widget_mut().update(
             &mut tree,
-            &iced_core::Event::Mouse(iced_core::mouse::Event::ButtonPressed(
-                iced_core::mouse::Button::Left,
-            )),
+            &iced_core::Event::Mouse(event.clone()),
             iced_core::Layout::new(&node),
             iced_core::mouse::Cursor::Available(iced_core::Point::new(
                 row.bounds().center_x(),
@@ -1158,7 +1160,11 @@ mod tests {
             &renderer,
             &mut shell,
             &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
-        );
+            );
+            if matches!(event, iced_core::mouse::Event::ButtonPressed(_)) {
+                assert!(bus.is_empty(), "press retains state until release");
+            }
+        }
         assert_eq!(
             bus.drain().collect::<Vec<_>>(),
             [ViewMessage(Event::Select(3))]

@@ -517,12 +517,12 @@ mod tests {
         let renderer = LayoutRenderer::new();
         let mut tree = Tree::empty();
         let mut messages = iced_core::shell::Bus::new();
-        let mut shell = Shell::new(
-            &iced_core::window::Headless,
-            iced_core::shell::Waker::noop(),
-            &mut messages,
-        );
         for _ in 0..2 {
+            let mut shell = Shell::new(
+                &iced_core::window::Headless,
+                iced_core::shell::Waker::noop(),
+                &mut messages,
+            );
             Widget::<bool, iced_core::Theme, LayoutRenderer>::update(
                 &mut toggle,
                 &mut tree,
@@ -533,6 +533,7 @@ mod tests {
                 &mut shell,
                 &Rectangle::with_size(Size::INFINITE),
             );
+            assert!(shell.is_event_captured());
         }
         assert_eq!(messages.into_iter().collect::<Vec<_>>(), [false, true]);
         // Disabled: no press callback, no flip.
