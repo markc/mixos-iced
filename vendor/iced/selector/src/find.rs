@@ -173,7 +173,7 @@ pub struct Finder<S> {
     truncated: bool,
 }
 
-impl<S> Finder<S> {
+impl<S: Strategy> Finder<S> {
     pub fn new(strategy: S) -> Self {
         Self {
             strategy,

@@ -22,7 +22,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bus::native_client::{IncomingCommand, SupervisedClient};
+use bus::native_client::{ConnState, IncomingCommand, SupervisedClient};
 use serde_json::{Value, json};
 
 use crate::inspect;
@@ -106,6 +106,12 @@ pub fn track(
     let controller = controller.clone();
 
     Some(async move {
+        // Queued work may first be polled after the receiving socket retired.
+        // This is a live sample; the owning worker also cancels its controller
+        // on lifecycle changes. The reply remains socket-fenced by Bus.
+        if !live_generation(&client, incoming.generation) {
+            return;
+        }
         let body = match verb {
             "describe" => Ok(describe_json(&describe)),
             "layout" => layout_verb(&describe, &inspector, &incoming).await,
@@ -116,6 +122,9 @@ pub fn track(
             _ => return,
         };
 
+        if !live_generation(&client, incoming.generation) {
+            return;
+        }
         let body = body.unwrap_or_else(error_json);
         let _ = client
             .respond_parts(
@@ -128,6 +137,13 @@ pub fn track(
             )
             .await;
     })
+}
+
+fn live_generation(client: &SupervisedClient, generation: u64) -> bool {
+    generation != 0
+        && client.connection_generation() == generation
+        && client.state() == ConnState::Connected
+        && client.connection_generation() == generation
 }
 
 fn parse_body(body: &str) -> Result<Value, String> {

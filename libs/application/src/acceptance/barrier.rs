@@ -236,6 +236,7 @@ struct Hold {
     armed_at: Instant,
     hold_generation: u64,
     reason: Option<ClosedReason>,
+    terminal: Arc<Mutex<Wait>>,
 }
 
 struct Core {
@@ -282,6 +283,7 @@ impl Shared {
         {
             hold.state = State::Expired;
             hold.reason = Some(ClosedReason::Expired);
+            *hold.terminal.lock().unwrap() = Wait::Failed(ClosedReason::Expired);
             core.retained = self.receipt(core);
             self.wake();
         }
@@ -308,6 +310,7 @@ impl Shared {
             }
         };
         hold.reason = Some(reason);
+        *hold.terminal.lock().unwrap() = Wait::Failed(reason);
         guard.retained = self.receipt(&guard);
         drop(guard);
         self.wake();
@@ -338,6 +341,7 @@ impl Drop for Liveness {
             .unwrap_or(0);
         drop(guard);
         self.shared.cancel_hold(generation, ClosedReason::Closed);
+        self.shared.wake();
     }
 }
 
@@ -379,6 +383,7 @@ impl Controller {
             armed_at: Instant::now(),
             hold_generation: guard.next_hold_generation,
             reason: None,
+            terminal: Arc::new(Mutex::new(Wait::Continue)),
         });
         let receipt = self.shared.receipt(&guard).unwrap();
         guard.retained = Some(receipt.clone());
@@ -498,6 +503,7 @@ impl Controller {
             State::Armed => Err(Error::NotReached),
             State::Reached => {
                 hold.state = State::Released;
+                *hold.terminal.lock().unwrap() = Wait::Released;
                 guard.retained = self.shared.receipt(&guard);
                 let receipt = guard.retained.clone().unwrap();
                 drop(guard);
@@ -583,6 +589,7 @@ impl Controller {
             .unwrap_or(0);
         drop(guard);
         self.shared.cancel_hold(generation, reason);
+        self.shared.wake();
     }
 }
 
@@ -630,11 +637,13 @@ impl Hook {
                 hold.observation = Some(observation);
                 let hold_generation = hold.hold_generation;
                 let deadline = hold.armed_at + self.shared.lifetime;
+                let terminal = Arc::clone(&hold.terminal);
                 guard.retained = self.shared.receipt(&guard);
                 let permit = Permit {
                     shared: Arc::clone(&self.shared),
                     hold_generation,
                     deadline,
+                    terminal,
                 };
                 drop(guard);
                 self.shared.wake();
@@ -654,6 +663,7 @@ pub struct Permit {
     shared: Arc<Shared>,
     hold_generation: u64,
     deadline: Instant,
+    terminal: Arc<Mutex<Wait>>,
 }
 
 impl Permit {
@@ -672,9 +682,8 @@ impl Permit {
                     if now >= deadline {
                         drop(guard);
                         self.expire();
-                        return Err(Cancelled {
-                            reason: ClosedReason::Expired,
-                        });
+                        guard = self.shared.core.lock().unwrap();
+                        continue;
                     }
                     let (next, _timeout) = self
                         .shared
@@ -694,6 +703,7 @@ impl Permit {
     pub async fn wait(self) -> Result<(), Cancelled> {
         let shared = Arc::clone(&self.shared);
         let hold_generation = self.hold_generation;
+        let terminal = Arc::clone(&self.terminal);
         let deadline = self.deadline;
 
         tokio::select! {
@@ -702,7 +712,7 @@ impl Permit {
                     let notified = shared.notify.notified();
                     tokio::pin!(notified);
                     notified.as_mut().enable();
-                    match state_of(&shared, hold_generation) {
+                    match state_of(&shared, &terminal) {
                         Wait::Continue => {}
                         Wait::Released => return Ok(()),
                         Wait::Failed(reason) => return Err(Cancelled { reason }),
@@ -712,18 +722,18 @@ impl Permit {
             } => result,
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                 shared.cancel_hold(hold_generation, ClosedReason::Expired);
-                Err(Cancelled { reason: ClosedReason::Expired })
+                match state_of(&shared, &terminal) {
+                    Wait::Released => Ok(()),
+                    Wait::Failed(reason) => Err(Cancelled { reason }),
+                    Wait::Continue => Err(Cancelled { reason: ClosedReason::Expired }),
+                }
             }
         }
     }
 
     fn state(&self, guard: &MutexGuard<'_, Core>) -> Wait {
-        guard
-            .hold
-            .as_ref()
-            .filter(|hold| hold.hold_generation == self.hold_generation)
-            .map(state_wait)
-            .unwrap_or(Wait::Failed(ClosedReason::Closed))
+        let _ = guard;
+        *self.terminal.lock().unwrap()
     }
 
     fn expire(&self) {
@@ -732,32 +742,17 @@ impl Permit {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Wait {
     Continue,
     Released,
     Failed(ClosedReason),
 }
 
-fn state_of(shared: &Shared, hold_generation: u64) -> Wait {
+fn state_of(shared: &Shared, terminal: &Mutex<Wait>) -> Wait {
     let mut guard = shared.core.lock().unwrap();
     shared.expire_due(&mut guard, Instant::now());
-    guard
-        .hold
-        .as_ref()
-        .filter(|hold| hold.hold_generation == hold_generation)
-        .map(state_wait)
-        .unwrap_or(Wait::Failed(ClosedReason::Closed))
-}
-
-fn state_wait(hold: &Hold) -> Wait {
-    match hold.state {
-        State::Armed | State::Reached => Wait::Continue,
-        State::Released => Wait::Released,
-        State::Cancelled => Wait::Failed(ClosedReason::PermitDropped),
-        State::Expired => Wait::Failed(ClosedReason::Expired),
-        State::Closed => Wait::Failed(hold.reason.unwrap_or(ClosedReason::Closed)),
-        State::Idle => Wait::Failed(ClosedReason::Closed),
-    }
+    *terminal.lock().unwrap()
 }
 
 impl Drop for Permit {
@@ -878,6 +873,34 @@ mod tests {
             .as_mut()
             .unwrap()
             .armed_at = Instant::now() - controller.shared.lifetime;
+    }
+
+    #[tokio::test]
+    async fn released_permits_survive_rearm_and_delayed_poll() {
+        let (controller, hook, run) = pair();
+        let first = controller.arm(arm(&run, "dopus.before_execute", "first")).unwrap();
+        let mut old = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        controller.release(&first.token).unwrap();
+        // Both async select branches are ready when this permit is first polled.
+        old.deadline = Instant::now() - Duration::from_secs(1);
+        controller.arm(arm(&run, "dopus.before_execute", "second")).unwrap();
+        assert_eq!(old.wait().await, Ok(()));
+        let blocking = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        controller.release(&Token::try_new("second").unwrap()).unwrap();
+        let fresh = controller.arm(arm(&run, "dopus.before_execute", "third")).unwrap();
+        assert_eq!(blocking.wait_blocking(), Ok(()));
+        assert_eq!(controller.snapshot(&fresh.token).unwrap().state, State::Armed);
+    }
+
+    #[tokio::test]
+    async fn idle_driver_wakes_on_close() {
+        let (mut controller, _, _) = pair();
+        let closing = controller.clone();
+        let driving = controller.drive();
+        tokio::pin!(driving);
+        assert!(matches!(futures::poll!(&mut driving), std::task::Poll::Pending));
+        closing.close(ClosedReason::Shutdown);
+        tokio::time::timeout(Duration::from_secs(1), driving).await.unwrap();
     }
 
     #[test]
