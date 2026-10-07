@@ -93,7 +93,15 @@ impl Default for CommonUi {
 pub struct Panel {
     pub edge: String,
     pub mode: String,
+    #[serde(deserialize_with = "deserialize_integer_u32")]
     pub thickness: u32,
+}
+pub(crate) fn integer_u32(value: f64) -> Option<u32> {
+    (value.is_finite() && (0.0..=f64::from(u32::MAX)).contains(&value) && value.fract() == 0.0)
+        .then_some(value as u32)
+}
+fn deserialize_integer_u32<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    integer_u32(f64::deserialize(deserializer)?).ok_or_else(|| serde::de::Error::custom("expected an integral u32 number"))
 }
 impl Default for Panel {
     fn default() -> Self {

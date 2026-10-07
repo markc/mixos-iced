@@ -28,6 +28,9 @@ The profile identifier and instance use 1–64 ASCII letters, digits, dash or
 underscore. Operation IDs use the same character set, up to 128 bytes. Revisions
 are canonical decimal u64 **strings**, including on strict-data boundaries;
 numeric, overflowing, signed and leading-zero representations are refused.
+Panel thickness accepts a whole numeric value such as 48 or 48.0, within its
+declared range; Mix data numbers use floating representation. Fractional values,
+numeric strings and overflow are refused before acceptance.
 
 ```json
 {

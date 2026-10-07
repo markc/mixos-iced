@@ -288,8 +288,8 @@ fn set(desktop: &mut Desktop, path: &str, value: Option<Value>) -> Result<(), Di
                         .panels
                         .get_mut(*id)
                         .ok_or_else(|| error(path, "Unknown panel"))?;
-                    panel.thickness =
-                        typed(path, value.unwrap_or(json!(Panel::default().thickness)))?;
+                    let number = typed::<f64>(path, value.unwrap_or(json!(Panel::default().thickness)))?;
+                    panel.thickness = crate::model::integer_u32(number).ok_or_else(|| error(path, "Expected an integral u32 number"))?;
                 }
                 ["apps", id] => {
                     key(id, path)?;
@@ -309,6 +309,20 @@ fn set(desktop: &mut Desktop, path: &str, value: Option<Value>) -> Result<(), Di
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mix_whole_numbers_are_accepted_but_fractional_string_and_overflow_are_not() {
+        let current = Desktop::default();
+        for value in [json!(48), json!(48.0)] {
+            let next = patch(&current,&BTreeMap::from([("shell.panels.bottom.thickness".into(),value.clone())]),&[]).unwrap();
+            assert_eq!(next.shell.panels["bottom"].thickness, 48);
+            let record: Panel = serde_json::from_value(json!({"thickness":value})).unwrap();
+            assert_eq!(record.thickness, 48);
+        }
+        for value in [json!(48.1),json!("48"),json!(-1),json!(4294967296u64)] {
+            assert!(patch(&current,&BTreeMap::from([("shell.panels.bottom.thickness".into(),value.clone())]),&[]).is_err());
+            assert!(serde_json::from_value::<Panel>(json!({"thickness":value})).is_err());
+        }
+    }
     #[test]
     fn high_contrast_cannot_hide_invalid_authored_app_values() {
         let mut desktop = Desktop::default();
