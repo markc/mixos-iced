@@ -184,7 +184,8 @@ try
   $R.session = $n.start({bin:$bin .. "/compd",tag:"ced-settings",run:$R.run,
     config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1})
   check($n.wait_ready($R.session,30),"Private compositor failed")
-  $R.b = $n.private_bus({dir:$root .. "/b",name:"ced-settings",noded:$bin .. "/noded"})
+  $R.b = $n.private_bus({dir:$root .. "/b",name:"ced-settings",noded:$bin .. "/noded",first_port:$R.a.port})
+  check($R.b.port != $R.a.port,"Broker bind collision was not recovered")
   print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
   start_authorities()
   $light = apply({"appearance.mode":"light"},"ced-gui-light")
@@ -238,6 +239,9 @@ try
     {env:bus_env($R.b,$root .. "/b"),stdout:{file:$root .. "/b/noded-restarted.log"},stderr:"stdout",detach:true})
   $R.b.pid=$broker
   wait_service("noded","noded.ping")
+  $broker_identity = rpc($R.b,$root .. "/b","noded","noded.info",{})
+  check(process_alive($broker) and $broker_identity.node == "ced-settings" and
+    $broker_identity.noded.pid == $broker,"Restart answered through a different broker")
   start_authorities()
   $restarted = rpc($R.b,$root .. "/b","settingsd","settings.get",{binding:$binding}).snapshot
   await_current($restarted,$cached_window)
