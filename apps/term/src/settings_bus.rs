@@ -940,10 +940,12 @@ mod tests {
         let (cleanup, reaper) = term_core::tabs::Cleanup::start().unwrap();
         let (_notes, notify_rx) = tokio::sync::mpsc::unbounded_channel();
         let wakes = Arc::new(AtomicUsize::new(0));
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let wake: Wake = {
             let wakes = Arc::clone(&wakes);
             Arc::new(move || {
                 wakes.fetch_add(1, Ordering::Relaxed);
+                let _ = wake_tx.send(());
             })
         };
         let started = start(
@@ -972,10 +974,44 @@ mod tests {
                     .unwrap(),
             );
             let before = wakes.load(Ordering::Relaxed);
-            // The UI half answers nothing: accepted describes wedge, the
-            // rest must come back BUSY instead of queueing unboundedly.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            // Await the actual adapter's registration, driven by its wake.
+            while started.handle.connection().state != ConnState::Connected {
+                tokio::time::timeout_at(deadline, wake_rx.recv())
+                    .await
+                    .expect("adapter registers before the deadline")
+                    .expect("wake lane remains open");
+            }
+            // Fill the frontend admission map one accepted request at a time.
+            // A simultaneous transport flood can overflow the incoming lane
+            // before reaching this cap and would not establish BUSY behaviour.
             let mut calls = tokio::task::JoinSet::new();
-            for _ in 0..80 {
+            let mut accepted = Vec::new();
+            for _ in 0..PENDING_CAP {
+                let caller = Arc::clone(&caller);
+                calls.spawn(async move {
+                    caller
+                        .call_with_headers_raw("term", "app.describe", &BTreeMap::new(), "{}")
+                        .await
+                });
+                loop {
+                    match started.describes.try_recv() {
+                        Ok(describe) => {
+                            accepted.push(describe.id);
+                            break;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            tokio::time::timeout_at(deadline, wake_rx.recv())
+                                .await
+                                .expect("each request reaches frontend admission")
+                                .expect("wake lane remains open");
+                        }
+                        Err(error) => panic!("describe lane closed: {error}"),
+                    }
+                }
+            }
+            assert_eq!(accepted.len(), PENDING_CAP);
+            for _ in 0..4 {
                 let caller = Arc::clone(&caller);
                 calls.spawn(async move {
                     caller
@@ -985,7 +1021,7 @@ mod tests {
             }
             let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
             let mut refused = 0;
-            while !calls.is_empty() && tokio::time::Instant::now() < deadline {
+            while refused < 4 && tokio::time::Instant::now() < deadline {
                 match tokio::time::timeout_at(deadline, calls.join_next()).await {
                     Ok(Some(Ok(Ok((rc, body, _))))) if rc == 10 && body.contains("BUSY") => {
                         refused += 1;
@@ -997,7 +1033,7 @@ mod tests {
             }
             calls.abort_all();
             assert!(
-                refused > 0,
+                refused == 4,
                 "the flood beyond the pending cap is refused BUSY, not queued"
             );
             assert!(
@@ -1007,6 +1043,9 @@ mod tests {
             // Slow-response leg: a stalled broker wedges every in-flight
             // send; quit must still progress under the shared deadline.
             let paused = broker.pause();
+            for id in accepted {
+                started.handle.reply(id, 0, json!({"app": "term"}));
+            }
             started.handle.quit();
             started
                 .handle

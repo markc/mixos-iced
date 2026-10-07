@@ -227,7 +227,6 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         applied_context: None,
         #[cfg(test)]
         fixture_lane: None,
-        bootstrap: started.bootstrap,
         bus: started.handle,
         describes: started.describes,
         waker,
@@ -343,8 +342,6 @@ struct State {
     applied_context: Option<LocalContext>,
     #[cfg(test)]
     fixture_lane: Option<application::presentation::native::Lane<Content, LocalContext>>,
-    /// Immediate generic appearance until the first checked preparation.
-    bootstrap: appearance::settings::Prepared,
     /// The desktop adapter: one client for the verb lane and the settings lane.
     bus: Handle,
     /// Queued `app.describe` requests, answered on the UI thread after the
@@ -1206,14 +1203,6 @@ impl State {
         }
     }
 
-    fn look(&self) -> &appearance::settings::Prepared {
-        self.settings
-            .session()
-            .host()
-            .presentation()
-            .map_or(&self.bootstrap, |presentation| presentation.appearance())
-    }
-
     /// Every queued `app.describe` is answered on the UI thread AFTER the
     /// settings reconcile above, so the evidence describes the live
     /// presentation. Bounded: the adapter refuses beyond 32 pending.
@@ -1917,7 +1906,6 @@ mod tests {
             applied_raster: None,
             applied_context: None,
             fixture_lane: Some(lane),
-            bootstrap,
             bus: Handle::sink(),
             describes,
             waker,
