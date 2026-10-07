@@ -1184,7 +1184,7 @@ mod tests {
         app.selected = Some(target());
         app.expanded.insert("service:example".into());
         let _ = app.refresh(None);
-        let ticket = app.discovery.unwrap().0;
+        let ticket = app.discovery.as_ref().unwrap().0;
         let mut snapshot = app.snapshot.clone();
         snapshot.services.insert(
             "broken".into(),
@@ -1327,7 +1327,7 @@ mod tests {
         let mut app = app();
         app.selected = Some(target());
         let _ = app.refresh(None);
-        let ticket = app.discovery.unwrap().0;
+        let ticket = app.discovery.as_ref().unwrap().0;
         let _ = app.update(Message::Bus(Delivery::Changed));
         assert!(app.refetch);
         let _ = app.update(Message::Bus(Delivery::Disconnected));
