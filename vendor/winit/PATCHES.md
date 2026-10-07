@@ -16,12 +16,15 @@ coalescing, weak loop lifetime, window-denial rollback and closed availability.
 An ignored owned-native guard creates a foreign Wayland loop on its owner thread,
 admits 128 actual requests, observes their real Discarded terminals through the
 transparent backend tap without typed dispatch, and drops the full queue while
-its Connection remains alive. A separate idle surviving loop must acknowledge
+its Connection remains alive. A separate surviving loop must acknowledge
 the actual capacity Ping, observe a changed epoch and admit a real reservation.
 Bounded channels coordinate teardown but never wake the surviving loop. A
 test-only counter observes existing wake acknowledgement; no budget is reset or
 manually released. The guard requires actual weak-charge retirement and final
 baseline restoration; it complements Iced's separately rendered target proof.
+The notification may already be queued before the survivor enters native poll;
+this schedule does not prove interruption of an already sleeping poll. The
+existing shared Ping acknowledges capacity and ordinary readiness together.
 
 The Wayland extension `request_redraw_after_present_failure` grants one retry
 redraw after a recoverable post-pre-present failure. It retains the existing

@@ -38,12 +38,13 @@ pub(crate) struct CapacityWake {
 
 impl CapacityWake {
     pub(crate) fn acknowledge(&self) {
-        #[cfg(not(test))]
-        self.pending.store(false, Ordering::Release);
+        let pending = self.pending.swap(false, Ordering::AcqRel);
         #[cfg(test)]
-        if self.pending.swap(false, Ordering::AcqRel) {
+        if pending {
             self.acknowledgements.fetch_add(1, Ordering::Relaxed);
         }
+        #[cfg(not(test))]
+        let _ = pending;
     }
 
     #[cfg(test)]

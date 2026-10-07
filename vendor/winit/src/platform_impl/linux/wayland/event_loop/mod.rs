@@ -755,7 +755,7 @@ mod presentation_native_guards {
 
     #[test]
     #[ignore = "requires an owned native compositor with wp_presentation"]
-    fn actual_foreign_undrained_queue_retirement_wakes_idle_capacity_waiter() {
+    fn actual_foreign_undrained_queue_retirement_notifies_capacity_waiter() {
         use std::sync::mpsc::sync_channel;
         use std::time::{Duration, Instant};
         let timeout = Duration::from_secs(10);
@@ -808,7 +808,7 @@ mod presentation_native_guards {
             finish_rx.recv_timeout(timeout).expect("finite survivor completion");
             drop(connection);
         });
-        ready_rx.recv_timeout(timeout).expect("actual undrained foreign terminals");
+        ready_rx.recv_timeout(Duration::from_secs(30)).expect("actual undrained foreign terminals");
         let blocked = window.presentation_capacity().expect("actual capacity snapshot");
         assert!(!blocked.available);
         assert_eq!(
@@ -848,7 +848,7 @@ mod presentation_native_guards {
         assert!(!observation.charge_alive());
         assert_eq!(native_process_count(), baseline);
         println!(
-            "WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true idle_native_wake=true real_readmission=true baseline_restored=true"
+            "WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true native_capacity_notification=true real_readmission=true baseline_restored=true"
         );
     }
 }

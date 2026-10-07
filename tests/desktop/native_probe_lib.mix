@@ -72,7 +72,7 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
         $output=$result.stdout
       end
       print($role .. " " .. trim($output))
-      if $probe == "native-winit-charge-test" and not contains($output,"WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true idle_native_wake=true real_readmission=true baseline_restored=true") then
+      if $probe == "native-winit-charge-test" and not contains($output,"WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true native_capacity_notification=true real_readmission=true baseline_restored=true") then
         raise("NATIVE_PROBE",$role .. " actual foreign queue capacity wake proof missing: " .. $output)
       end
       if $probe == "native-frame-iced-probe" then
