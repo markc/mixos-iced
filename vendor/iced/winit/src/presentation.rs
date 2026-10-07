@@ -177,10 +177,12 @@ mod tests {
         let old = binding(1, observer.clone());
         let current = binding(2, observer);
         let mut ledger = Ledger::new(Id::unique());
-        ledger.submitted(1, old, true);
+        ledger.submitted(1, old.clone(), true);
         ledger.submitted(2, current.clone(), true);
-        ledger.resolve(2, presented()).unwrap();
-        ledger.resolve(1, presented()).unwrap();
+        let newer = ledger.resolve(2, presented()).unwrap();
+        let older = ledger.resolve(1, presented()).unwrap();
+        assert!(newer.same_presentation(&current));
+        assert!(older.same_presentation(&old));
         assert!(!ledger.needs(&current));
     }
     #[test]

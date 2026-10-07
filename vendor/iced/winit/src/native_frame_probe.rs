@@ -13,31 +13,48 @@ use winit::presentation::PresentationFeedback;
 static INSTALLED: Mutex<Option<Weak<Control>>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug)]
+/// One real-window acceptance schedule, absent from ordinary builds.
 pub struct Plan {
+    /// Draw whose actual buffer commit is followed by one injected error.
     pub abort_once: FrameStamp,
+    /// Later successful draw whose actual feedback lease is held.
     pub hold_once: FrameStamp,
+    /// Successful replacement submission that releases the held lease.
     pub release_after_submit: FrameStamp,
+    /// Close the owning window while its real feedback is held instead.
     pub close_while_held: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Metadata notification after both the aborted terminal and held lease arrive.
 pub struct Held {
+    /// Actual owning runtime window.
     pub window: Id,
+    /// Identity of the real held native request.
     pub request: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Completed schedule metadata; contains no native object or feedback lease.
 pub struct Report {
+    /// Actual owning runtime window.
     pub window: Id,
+    /// Actual native request associated with the unsuccessful submission.
     pub aborted: u64,
+    /// Actual compositor terminal outcome for that unsuccessful submission.
     pub aborted_terminal: FrameOutcome,
+    /// Actual native request held until replacement or window retirement.
     pub held: u64,
+    /// Actual successful replacement request, absent for the close schedule.
     pub released_after: Option<u64>,
+    /// Whether the actual owning window retired with its feedback still held.
     pub closed_while_held: bool,
 }
 
+/// Installation lifetime; dropping it prevents new windows joining the probe.
 pub struct Guard(Arc<Control>);
 #[derive(Clone)]
+/// Single-use metadata notifications for the installed acceptance schedule.
 pub struct Handle(Arc<Control>);
 
 struct Control {
@@ -64,6 +81,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Install one process-wide schedule before creating its actual window.
 pub fn install(plan: Plan) -> Result<(Guard, Handle), String> {
     if plan.abort_once == plan.hold_once
         || plan.abort_once == plan.release_after_submit
@@ -92,11 +110,13 @@ pub fn install(plan: Plan) -> Result<(Guard, Handle), String> {
 }
 
 impl Handle {
+    /// Take the single held-feedback metadata notification.
     pub fn take_held(&self) -> Result<oneshot::Receiver<Result<Held, String>>, String> {
         lock(&self.0.held_receiver)
             .take()
             .ok_or_else(|| "held receiver already taken".into())
     }
+    /// Take the single completed-schedule metadata notification.
     pub fn take_report(&self) -> Result<oneshot::Receiver<Result<Report, String>>, String> {
         lock(&self.0.report_receiver)
             .take()
