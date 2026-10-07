@@ -1891,7 +1891,7 @@ mod tests {
         );
         let bootstrap = appearance::settings::bootstrap().unwrap();
         let ui = bootstrap.typography().get("ui").expect("UI typography");
-        let (describe_tx, describes) = std::sync::mpsc::channel();
+        let (describe_tx, describes) = tokio::sync::mpsc::channel(32);
         drop(describe_tx); // no adapter behind the fixture
         let state = State {
             painter,
