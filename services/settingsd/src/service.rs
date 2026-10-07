@@ -94,11 +94,19 @@ struct PublicationRetry {
 }
 impl PublicationRetry {
     fn complete(&mut self, success: bool) {
-        if success { *self = Self::default(); return; }
+        if success {
+            *self = Self::default();
+            return;
+        }
         self.failures = self.failures.saturating_add(1);
         self.deadline = if self.failures <= 3 {
-            Some(tokio::time::Instant::now() + Duration::from_millis(250 * (1u64 << (self.failures - 1))))
-        } else { None };
+            Some(
+                tokio::time::Instant::now()
+                    + Duration::from_millis(250 * (1u64 << (self.failures - 1))),
+            )
+        } else {
+            None
+        };
     }
     async fn wait(&self) {
         match self.deadline {
@@ -107,10 +115,16 @@ impl PublicationRetry {
         }
     }
 }
-async fn publish_pending(authority: &mut Authority, client: &SupervisedClient, retry: &mut PublicationRetry) {
+async fn publish_pending(
+    authority: &mut Authority,
+    client: &SupervisedClient,
+    retry: &mut PublicationRetry,
+) {
     let result = publish(authority, client).await;
     retry.complete(result.is_ok());
-    if let Err(error) = result { tracing::warn!(%error, failures=retry.failures,"settings publication pending"); }
+    if let Err(error) = result {
+        tracing::warn!(%error, failures=retry.failures,"settings publication pending");
+    }
 }
 
 pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
@@ -212,7 +226,10 @@ mod tests {
     fn publication_retry_stops_without_idle_polling_and_success_clears_job() {
         let mut retry = PublicationRetry::default();
         assert!(retry.deadline.is_none());
-        for _ in 0..3 { retry.complete(false); assert!(retry.deadline.is_some()); }
+        for _ in 0..3 {
+            retry.complete(false);
+            assert!(retry.deadline.is_some());
+        }
         retry.complete(false);
         assert!(retry.deadline.is_none());
         retry.complete(true);

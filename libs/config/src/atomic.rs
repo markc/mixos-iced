@@ -46,12 +46,22 @@ fn replace_with(
     bytes: &[u8],
     before: impl FnMut(Stage) -> io::Result<()>,
 ) -> Result<(), ReplaceError> {
-    let prepare = |source| ReplaceError { stage: Stage::Prepare, may_have_replaced: false, source };
-    let parent = path.parent().ok_or_else(|| prepare(io::Error::other("missing parent")))?;
-    let name = path.file_name().ok_or_else(|| prepare(io::Error::other("missing file name")))?;
-    let dir = OpenOptions::new().read(true)
+    let prepare = |source| ReplaceError {
+        stage: Stage::Prepare,
+        may_have_replaced: false,
+        source,
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| prepare(io::Error::other("missing parent")))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| prepare(io::Error::other("missing file name")))?;
+    let dir = OpenOptions::new()
+        .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(parent).map_err(prepare)?;
+        .open(parent)
+        .map_err(prepare)?;
     replace_in_with(&dir, name, bytes, before)
 }
 
@@ -73,7 +83,11 @@ fn replace_in_with(
     let result = (|| -> io::Result<()> {
         before(stage)?;
         use std::os::unix::ffi::OsStrExt;
-        if name.as_bytes().is_empty() || name.as_bytes().contains(&b'/') || name == "." || name == ".." {
+        if name.as_bytes().is_empty()
+            || name.as_bytes().contains(&b'/')
+            || name == "."
+            || name == ".."
+        {
             return Err(io::Error::other("expected a single file name"));
         }
         let name = std::ffi::CString::new(name.as_bytes())?;

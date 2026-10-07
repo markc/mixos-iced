@@ -25,8 +25,16 @@ pub struct Accepted {
 }
 impl Accepted {
     fn digest(&self) -> anyhow::Result<String> {
-        Ok(settings::digest(&(&self.schema, &self.binding, &self.incarnation,
-            &self.revision, &self.design_revision, &self.desktop, &self.embedded_source, &self.receipts))?)
+        Ok(settings::digest(&(
+            &self.schema,
+            &self.binding,
+            &self.incarnation,
+            &self.revision,
+            &self.design_revision,
+            &self.desktop,
+            &self.embedded_source,
+            &self.receipts,
+        ))?)
     }
     pub fn seal(&mut self) -> anyhow::Result<()> {
         self.content_digest = self.digest()?;
@@ -35,8 +43,14 @@ impl Accepted {
     pub fn check(&self, binding: &Binding) -> anyhow::Result<()> {
         anyhow::ensure!(self.schema == SCHEMA, "unsupported accepted schema");
         anyhow::ensure!(&self.binding == binding, "wrong stored authority binding");
-        anyhow::ensure!(self.embedded_source.len() <= MAX_SOURCE_BYTES, "pinned source limit exceeded");
-        anyhow::ensure!(self.content_digest == self.digest()?, "accepted content digest mismatch");
+        anyhow::ensure!(
+            self.embedded_source.len() <= MAX_SOURCE_BYTES,
+            "pinned source limit exceeded"
+        );
+        anyhow::ensure!(
+            self.content_digest == self.digest()?,
+            "accepted content digest mismatch"
+        );
         binding.validate().map_err(|e| anyhow::anyhow!(e.message))?;
         anyhow::ensure!(
             uuid::Uuid::parse_str(&self.incarnation).is_ok(),
@@ -98,7 +112,9 @@ impl Store {
             let mut cursor = root;
             while !cursor.exists() {
                 missing.push(cursor.to_path_buf());
-                cursor = cursor.parent().ok_or_else(|| anyhow::anyhow!("profile root has no existing ancestor"))?;
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("profile root has no existing ancestor"))?;
             }
             std::fs::DirBuilder::new()
                 .recursive(true)
@@ -106,11 +122,18 @@ impl Store {
                 .create(root)?;
             // Sync each newly created directory entry in its parent, outermost first.
             for created in missing.iter().rev() {
-                File::open(created.parent().ok_or_else(|| anyhow::anyhow!("missing parent"))?)?.sync_all()?;
+                File::open(
+                    created
+                        .parent()
+                        .ok_or_else(|| anyhow::anyhow!("missing parent"))?,
+                )?
+                .sync_all()?;
             }
         }
-        let directory = OpenOptions::new().read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(root)?;
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(root)?;
         let metadata = directory.metadata()?;
         anyhow::ensure!(
             metadata.is_dir()
@@ -120,7 +143,10 @@ impl Store {
         );
         let lock = open_in(&directory, "writer.lock", libc::O_RDWR | libc::O_CREAT)?;
         let lock_meta = lock.metadata()?;
-        anyhow::ensure!(lock_meta.is_file() && lock_meta.uid() == unsafe { libc::geteuid() }, "writer lock must be an owned regular file");
+        anyhow::ensure!(
+            lock_meta.is_file() && lock_meta.uid() == unsafe { libc::geteuid() },
+            "writer lock must be an owned regular file"
+        );
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             anyhow::bail!(
                 "profile already has an active writer: {}",
@@ -161,7 +187,11 @@ impl Store {
         accepted.seal()?;
         accepted.check(&accepted.binding)?;
         store.check_root()?;
-        config::atomic::replace_in(&store.directory, "desktop.conf.mix".as_ref(), &encode(&accepted)?)?;
+        config::atomic::replace_in(
+            &store.directory,
+            "desktop.conf.mix".as_ref(),
+            &encode(&accepted)?,
+        )?;
         store.check_root()?;
         Ok((store, accepted))
     }
@@ -186,12 +216,20 @@ impl Store {
                     schema: u32,
                     binding: Binding,
                 }
-                if let Ok(parsed) = open_in(&store.directory, "desktop.conf.mix", libc::O_RDONLY).and_then(read_typed::<Header>) {
+                if let Ok(parsed) = open_in(&store.directory, "desktop.conf.mix", libc::O_RDONLY)
+                    .and_then(read_typed::<Header>)
+                {
                     if parsed.schema != SCHEMA || &parsed.binding != binding {
                         return Err(primary_error);
                     }
                 }
-                let mut previous: Accepted = open_in(&store.directory, "desktop.previous.conf.mix", libc::O_RDONLY).and_then(read_typed).map_err(|e| {
+                let mut previous: Accepted = open_in(
+                    &store.directory,
+                    "desktop.previous.conf.mix",
+                    libc::O_RDONLY,
+                )
+                .and_then(read_typed)
+                .map_err(|e| {
                     anyhow::anyhow!(
                         "accepted store unavailable ({primary_error}); backup unavailable ({e})"
                     )
@@ -201,18 +239,32 @@ impl Store {
                     .map_err(|e| anyhow::anyhow!("backup invalid: {e:?}"))?;
                 // Preserve user/corrupt evidence before replacing anything.
                 store.check_root()?;
-                let corrupt = std::ffi::CString::new(format!("corrupt-{}.conf.mix", uuid::Uuid::now_v7()))?;
+                let corrupt =
+                    std::ffi::CString::new(format!("corrupt-{}.conf.mix", uuid::Uuid::now_v7()))?;
                 // Preserve the complete corrupt inode before replacement. A
                 // hard link leaves the primary present across every crash cut;
                 // rename-away would create an unrecoverable missing-store gap.
-                if unsafe { libc::linkat(store.directory.as_raw_fd(), c"desktop.conf.mix".as_ptr(), store.directory.as_raw_fd(), corrupt.as_ptr(), 0) } != 0 {
+                if unsafe {
+                    libc::linkat(
+                        store.directory.as_raw_fd(),
+                        c"desktop.conf.mix".as_ptr(),
+                        store.directory.as_raw_fd(),
+                        corrupt.as_ptr(),
+                        0,
+                    )
+                } != 0
+                {
                     return Err(std::io::Error::last_os_error().into());
                 }
                 store.directory.sync_all()?;
                 previous.incarnation = uuid::Uuid::now_v7().to_string();
                 previous.receipts.clear();
                 previous.seal()?;
-                config::atomic::replace_in(&store.directory, "desktop.conf.mix".as_ref(), &encode(&previous)?)?;
+                config::atomic::replace_in(
+                    &store.directory,
+                    "desktop.conf.mix".as_ref(),
+                    &encode(&previous)?,
+                )?;
                 store.check_root()?;
                 store.restored = true;
                 Ok((store, previous))
@@ -228,16 +280,27 @@ impl Store {
     fn check_root(&self) -> anyhow::Result<()> {
         let path = std::fs::symlink_metadata(&self.root)?;
         let held = self.directory.metadata()?;
-        anyhow::ensure!(path.is_dir() && path.dev() == held.dev() && path.ino() == held.ino(), "profile directory replaced or detached; restart required");
+        anyhow::ensure!(
+            path.is_dir() && path.dev() == held.dev() && path.ino() == held.ino(),
+            "profile directory replaced or detached; restart required"
+        );
         let lock = open_in(&self.directory, "writer.lock", libc::O_RDONLY)?.metadata()?;
         let held_lock = self._lock.metadata()?;
-        anyhow::ensure!(lock.dev() == held_lock.dev() && lock.ino() == held_lock.ino(), "profile writer lock replaced; restart required");
+        anyhow::ensure!(
+            lock.dev() == held_lock.dev() && lock.ino() == held_lock.ino(),
+            "profile writer lock replaced; restart required"
+        );
         Ok(())
     }
     pub fn commit(&mut self, current: &Accepted, next: &Accepted) -> anyhow::Result<()> {
-        self.commit_using(current, next, |dir, name, bytes| config::atomic::replace_in(dir, name.as_ref(), bytes))
+        self.commit_using(current, next, |dir, name, bytes| {
+            config::atomic::replace_in(dir, name.as_ref(), bytes)
+        })
     }
-    fn commit_using(&mut self, current: &Accepted, next: &Accepted,
+    fn commit_using(
+        &mut self,
+        current: &Accepted,
+        next: &Accepted,
         mut replace: impl FnMut(&File, &str, &[u8]) -> Result<(), config::atomic::ReplaceError>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
@@ -250,7 +313,11 @@ impl Store {
         }
         next.check(&current.binding)?;
         // Last-good copy is made durable before replacing the accepted document.
-        replace(&self.directory, "desktop.previous.conf.mix", &encode(current)?)?;
+        replace(
+            &self.directory,
+            "desktop.previous.conf.mix",
+            &encode(current)?,
+        )?;
         if let Err(error) = replace(&self.directory, "desktop.conf.mix", &encode(next)?) {
             self.recovering = error.may_have_replaced;
             return Err(error.into());
@@ -271,10 +338,22 @@ fn encode(data: &Accepted) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 fn open_in(directory: &File, name: &str, flags: libc::c_int) -> anyhow::Result<File> {
-    anyhow::ensure!(!name.contains('/') && name != "." && name != "..", "single file name required");
+    anyhow::ensure!(
+        !name.contains('/') && name != "." && name != "..",
+        "single file name required"
+    );
     let name = std::ffi::CString::new(name)?;
-    let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK, 0o600) };
-    if fd < 0 { return Err(std::io::Error::last_os_error().into()); }
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 fn read_typed<T: serde::de::DeserializeOwned>(file: File) -> anyhow::Result<T> {
@@ -303,17 +382,30 @@ mod tests {
     #[test]
     fn ambiguous_primary_sync_fences_mutations_and_reload_resolves_accepted_receipt() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut store, current) = Store::create(dir.path(), binding(), Desktop::default()).unwrap();
+        let (mut store, current) =
+            Store::create(dir.path(), binding(), Desktop::default()).unwrap();
         let mut next = current.clone();
         next.revision = Revision(2);
         next.desktop.ui.density = 1.5;
-        next.receipts.push(Receipt { operation_id: "ambiguous".into(), request_digest: "a".repeat(64), incarnation: next.incarnation.clone(), revision: next.revision, outcome: Outcome::Changed });
+        next.receipts.push(Receipt {
+            operation_id: "ambiguous".into(),
+            request_digest: "a".repeat(64),
+            incarnation: next.incarnation.clone(),
+            revision: next.revision,
+            outcome: Outcome::Changed,
+        });
         next.seal().unwrap();
         let result = store.commit_using(&current, &next, |dir, name, bytes| {
             config::atomic::replace_in(dir, name.as_ref(), bytes)?;
             if name == "desktop.conf.mix" {
-                Err(config::atomic::ReplaceError { stage: config::atomic::Stage::DirectorySync, may_have_replaced: true, source: std::io::Error::other("injected ambiguous sync outcome") })
-            } else { Ok(()) }
+                Err(config::atomic::ReplaceError {
+                    stage: config::atomic::Stage::DirectorySync,
+                    may_have_replaced: true,
+                    source: std::io::Error::other("injected ambiguous sync outcome"),
+                })
+            } else {
+                Ok(())
+            }
         });
         assert!(result.is_err());
         assert!(store.recovering);

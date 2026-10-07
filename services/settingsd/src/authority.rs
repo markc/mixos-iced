@@ -12,8 +12,9 @@ pub struct Authority {
 impl Authority {
     pub fn new(store: Store, accepted: Accepted) -> anyhow::Result<Self> {
         accepted.check(&accepted.binding)?;
-        let effective = settings::resolve_with_embedded(&accepted.desktop, &accepted.embedded_source)
-            .map_err(|e| anyhow::anyhow!("invalid accepted settings: {e:?}"))?;
+        let effective =
+            settings::resolve_with_embedded(&accepted.desktop, &accepted.embedded_source)
+                .map_err(|e| anyhow::anyhow!("invalid accepted settings: {e:?}"))?;
         let snapshot = snapshot(&accepted, effective)?;
         Ok(Self {
             store,
@@ -53,7 +54,8 @@ impl Authority {
         let next =
             settings::resolve::patch(&self.accepted.desktop, &request.changes, &request.reset)
                 .map_err(diagnostic)?;
-        let effective = settings::resolve_with_embedded(&next, &self.accepted.embedded_source).map_err(diagnostics)?;
+        let effective = settings::resolve_with_embedded(&next, &self.accepted.embedded_source)
+            .map_err(diagnostics)?;
         let mut candidate = self.accepted.clone();
         candidate.desktop = next;
         let candidate_snapshot = snapshot(&candidate, effective)
@@ -63,9 +65,15 @@ impl Authority {
         )
     }
     fn fence(&self, request: &ApplyRequest) -> Result<(), Value> {
-        if request.expected_incarnation != self.accepted.incarnation || request.expected_revision != self.accepted.revision {
-            Err(json!({"status":"conflict","incarnation":self.accepted.incarnation,"revision":self.accepted.revision}))
-        } else { Ok(()) }
+        if request.expected_incarnation != self.accepted.incarnation
+            || request.expected_revision != self.accepted.revision
+        {
+            Err(
+                json!({"status":"conflict","incarnation":self.accepted.incarnation,"revision":self.accepted.revision}),
+            )
+        } else {
+            Ok(())
+        }
     }
     /// Serialized by the owning worker. Deduplication before revision fencing
     /// makes a lost reply retry retrieve its original receipt after later edits.
@@ -135,7 +143,8 @@ impl Authority {
         let effective = if unchanged {
             self.snapshot.effective.clone()
         } else {
-            settings::resolve_with_embedded(&next.desktop, &next.embedded_source).map_err(diagnostics)?
+            settings::resolve_with_embedded(&next.desktop, &next.embedded_source)
+                .map_err(diagnostics)?
         };
         let next_snapshot = snapshot(&next, effective)
             .map_err(|e| json!({"status":"validation_failed","message":e.to_string()}))?;
@@ -154,7 +163,8 @@ impl Authority {
         if next.receipts.len() > MAX_RECEIPTS {
             next.receipts.remove(0);
         }
-        next.seal().map_err(|e| json!({"status":"storage_failed","message":e.to_string()}))?;
+        next.seal()
+            .map_err(|e| json!({"status":"storage_failed","message":e.to_string()}))?;
         if let Err(error) = self.store.commit(&self.accepted, &next) {
             return Err(
                 json!({"status":if self.store.recovering {"outcome_unknown"} else {"storage_failed"},"message":error.to_string()}),

@@ -33,14 +33,20 @@ fn validate_reports_its_base_and_rejects_stale_editors_without_writing() {
     assert_eq!(state.validate(&candidate).unwrap()["revision"], "1");
     assert!(state.accepted.receipts.is_empty());
     state.apply(request(&state, "winner", "dark")).unwrap();
-    assert_eq!(state.validate(&candidate).unwrap_err()["status"], "conflict");
+    assert_eq!(
+        state.validate(&candidate).unwrap_err()["status"],
+        "conflict"
+    );
     assert_eq!(state.accepted.receipts.len(), 1);
 }
 #[test]
 fn pinned_source_and_snapshot_survive_restart_and_valid_tampering_fails_closed() {
     let dir = tempfile::tempdir().unwrap();
     let state = authority(dir.path());
-    assert_eq!(state.snapshot.source_digest, source_digest(&state.accepted.embedded_source));
+    assert_eq!(
+        state.snapshot.source_digest,
+        source_digest(&state.accepted.embedded_source)
+    );
     let before = state.snapshot.clone();
     drop(state);
     let (store, data) = Store::open(dir.path(), &binding()).unwrap();
@@ -48,7 +54,8 @@ fn pinned_source_and_snapshot_survive_restart_and_valid_tampering_fails_closed()
     assert_eq!(state.snapshot, before);
     drop(state);
     let path = dir.path().join("desktop.conf.mix");
-    let mut value: serde_json::Value = strict::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut value: serde_json::Value =
+        strict::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     value["desktop"]["appearance"]["mode"] = json!("dark");
     let tampered = strict::to_string_pretty(&value).unwrap();
     std::fs::write(&path, &tampered).unwrap();
@@ -91,9 +98,15 @@ fn canonical_request_digest_ignores_object_key_order_but_binds_fences() {
     let dir = tempfile::tempdir().unwrap();
     let state = authority(dir.path());
     let mut first = request(&state, "canonical", "dark");
-    first.changes.insert("apps.term".into(), serde_json::from_str(r#"{"mode":"dark","contrast":"normal"}"#).unwrap());
+    first.changes.insert(
+        "apps.term".into(),
+        serde_json::from_str(r#"{"mode":"dark","contrast":"normal"}"#).unwrap(),
+    );
     let mut second = first.clone();
-    second.changes.insert("apps.term".into(), serde_json::from_str(r#"{"contrast":"normal","mode":"dark"}"#).unwrap());
+    second.changes.insert(
+        "apps.term".into(),
+        serde_json::from_str(r#"{"contrast":"normal","mode":"dark"}"#).unwrap(),
+    );
     assert_eq!(first.digest().unwrap(), second.digest().unwrap());
     second.expected_revision = Revision(2);
     assert_ne!(first.digest().unwrap(), second.digest().unwrap());

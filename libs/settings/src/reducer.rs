@@ -121,7 +121,10 @@ mod tests {
         state.install(snapshot(1, "a"), true, 0);
         let mut changed = snapshot(1, "a");
         changed.source_digest = "changed".into();
-        assert_eq!(state.install(changed.clone(), false, 0), Decision::ConfirmAuthority);
+        assert_eq!(
+            state.install(changed.clone(), false, 0),
+            Decision::ConfirmAuthority
+        );
         assert_eq!(state.install(changed, true, 0), Decision::Contradiction);
         assert_eq!(state.current().unwrap().source_digest, "source");
         let mut wrong = snapshot(2, "a");
@@ -137,7 +140,10 @@ mod tests {
         state.install(snapshot(4, "a"), true, 0);
         let ticket = state.invalidate_work();
         assert_eq!(state.observe(snapshot(6, "a")), Decision::Install);
-        assert_eq!(state.install(snapshot(5, "a"), true, ticket), Decision::Stale);
+        assert_eq!(
+            state.install(snapshot(5, "a"), true, ticket),
+            Decision::Stale
+        );
         assert_eq!(state.install(snapshot(7, "a"), false, 0), Decision::Stale);
         assert_eq!(state.current().unwrap().revision, Revision(6));
     }

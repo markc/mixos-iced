@@ -57,7 +57,10 @@ pub fn resolve(desktop: &Desktop) -> Result<BTreeMap<String, Effective>, Vec<Dia
 
 /// Authorities pin the package source at profile creation. A binary upgrade
 /// cannot silently alter effective values within an accepted revision.
-pub fn resolve_with_embedded(desktop: &Desktop, embedded_source: &str) -> Result<BTreeMap<String, Effective>, Vec<Diagnostic>> {
+pub fn resolve_with_embedded(
+    desktop: &Desktop,
+    embedded_source: &str,
+) -> Result<BTreeMap<String, Effective>, Vec<Diagnostic>> {
     let validate = || -> Result<(), Diagnostic> {
         bounded(desktop.ui.density, 0.5, 2.0, "ui.density")?;
         bounded(desktop.ui.text_scale, 0.5, 3.0, "ui.text_scale")?;
@@ -88,13 +91,25 @@ pub fn resolve_with_embedded(desktop: &Desktop, embedded_source: &str) -> Result
         }
         for (app, value) in &desktop.apps {
             key(app, "apps")?;
-            if value.scheme.as_deref().is_some_and(|name| design::Scheme::from_name(name).is_none()) {
+            if value
+                .scheme
+                .as_deref()
+                .is_some_and(|name| design::Scheme::from_name(name).is_none())
+            {
                 return Err(error(&format!("apps.{app}.scheme"), "Unknown scheme"));
             }
-            if value.mode.as_deref().is_some_and(|name| design::Mode::from_name(name).is_none()) {
+            if value
+                .mode
+                .as_deref()
+                .is_some_and(|name| design::Mode::from_name(name).is_none())
+            {
                 return Err(error(&format!("apps.{app}.mode"), "Unknown mode"));
             }
-            if value.contrast.as_deref().is_some_and(|name| design::Contrast::from_name(name).is_none()) {
+            if value
+                .contrast
+                .as_deref()
+                .is_some_and(|name| design::Contrast::from_name(name).is_none())
+            {
                 return Err(error(&format!("apps.{app}.contrast"), "Unknown contrast"));
             }
             if let Some(scale) = value.text_scale {
@@ -177,7 +192,9 @@ pub fn resolve_with_embedded(desktop: &Desktop, embedded_source: &str) -> Result
                 return Err(failure
                     .diagnostics
                     .into_iter()
-                    .map(|d| Diagnostic::new(d.code, &format!("appearance.source.{}", d.path), d.message))
+                    .map(|d| {
+                        Diagnostic::new(d.code, &format!("appearance.source.{}", d.path), d.message)
+                    })
                     .collect());
             }
         };
@@ -296,7 +313,13 @@ mod tests {
     fn high_contrast_cannot_hide_invalid_authored_app_values() {
         let mut desktop = Desktop::default();
         desktop.appearance.contrast = "high".into();
-        desktop.apps.insert("term".into(), AppOverride { contrast: Some("typo".into()), ..Default::default() });
+        desktop.apps.insert(
+            "term".into(),
+            AppOverride {
+                contrast: Some("typo".into()),
+                ..Default::default()
+            },
+        );
         assert_eq!(resolve(&desktop).unwrap_err()[0].path, "apps.term.contrast");
         desktop.apps.get_mut("term").unwrap().contrast = Some("normal".into());
         assert_eq!(resolve(&desktop).unwrap()["app:term"].contrast, "high");
