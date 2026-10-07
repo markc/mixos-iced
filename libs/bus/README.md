@@ -34,6 +34,53 @@ failure has no refusal diagnostic. Close, shutdown, deregister and drop are safe
 before a first socket exists and fence late registration publication. These are
 client lifecycle APIs; the frozen ABP wire format is unchanged.
 
+## Declared initial subscriptions
+
+`SupervisedConnectOptions::with_initial_topics(topics)` declares startup
+subscription requirements: the client registers and subscribes to every declared
+topic (in declaration order, before acknowledged registry replay) before it
+reports `Connected` or advances the generation. `establishment_timeout(duration)`
+bounds the WHOLE establishment attempt — dial, registration, transaction-lock
+wait, every subscribe write and ACK wait — defaulting to 60 seconds. One total
+deadline, not one per declaration.
+
+- Validation happens once, before any socket is opened: at most 64 declared
+  entries, 1024 UTF-8 bytes per topic, 16 KiB of raw topic bytes in total, no
+  empty names, CR, LF or NUL. Raw entries and bytes are counted before
+  deduplication, so duplicates cannot bypass the bounds. Exact duplicates are
+  one subscription, first-seen order; names are never trimmed or case-folded.
+- Invalid declarations, or a zero/overflowing establishment timeout, are a
+  typed `SubscriptionDeclarationError::Invalid`. `connect()` returns
+  `Err(SupervisedError::SubscriptionDeclaration(..))` without dialing;
+  `start()` returns a `Fatal` client whose `subscription_declaration_error()`
+  is already sampleable and whose incoming receiver ends at once.
+- A declared `topic.subscribe` needs an exact rc 0. Any explicit nonzero reply
+  — a warning rc included — is terminal: `SubscriptionDeclarationError::Rejected
+  { topic, rc, message }` is published with `Fatal` (the diagnostic is
+  sampleable before the edge), never retried, and the exact topic/rc/message
+  are preserved. `registration_rejection()` stays `None` for every subscription
+  error; typed `NameTaken` classification applies only to registration.
+  Ordinary (non-declared) replay refusals keep their existing retry contract.
+- `connect()` waits for full establishment and returns a generation-1 client;
+  transient establishment failure keeps the five-attempt budget and
+  `SupervisedError::InitialConnectFailed { attempts, source }`, where a
+  deadline is `ClientError::Timeout { to: "noded" }`. `start()` returns
+  immediately (`Connecting`, generation zero) and retries transient failure
+  indefinitely. A declared refusal is terminal on the initial connect and on
+  every later replay of that name.
+- A failed, unpublished attempt closes its socket, releases the registered
+  name, and changes nothing observable: no generation, no registry entry, no
+  live inner connection, and no queued incoming commands survive it. A
+  successful `unsubscribe_topic` of a declared topic removes it permanently —
+  it is not re-declared on reconnect (it retains declared refusal
+  classification only if re-added by name). Dynamic `subscribe_topic` /
+  `unsubscribe_topic` keep their transactional record-only-after-rc-0
+  semantics, including the old-socket ACK vs. reconnect-snapshot ordering.
+
+Compatibility: `connect()`/`start()` with empty declarations behave as before,
+and existing `with_verbs`, `with_provenance`, `bounded_incoming` and the public
+`(rc, message)` registration-rejection tuple are unchanged.
+
 A broker rejection is typed: `RegistrationRejected` keeps the public `rc` and
 `message` fields — field reads and the tuple accessors stay source-compatible,
 but old two-field struct literals no longer compile (construct with

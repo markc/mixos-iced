@@ -1,6 +1,6 @@
 [package]
 name = "term"
-version = "0.3.7"
+version = "0.3.10"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,6 +19,7 @@ mod_module_files = "deny"
 
 [features]
 default = ["tiny-skia"]
+acceptance = ["application/acceptance"]
 # The term stays on the explicit CPU renderer (application rendering
 # decision): `wgpu` is opt-in only, never enabled by dependency unification
 # with compd's GPU co-enable, so combined GPU builds keep the tiny-skia path.

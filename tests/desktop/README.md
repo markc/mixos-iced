@@ -98,3 +98,13 @@ It uses `settings_host_lib.mix` with the Ced settings gate. These settings gates
 run independently of `suite.mix`; they require `settingsd`, `noded`, the app,
 compd and the testkit binaries. Scene authority mutation and complete shell
 geometry are separate checks.
+
+`term_settings_gate.mix REPO BUILD_BIN_DIR` requires acceptance-enabled Term
+and the named candidate Mix, noded, settingsd and compd binaries. It shares the
+owned PTY mount-namespace launcher with `application_native_gate.mix`. All
+control uses the owned ABP broker. The gate checks ordinary fixture omission,
+actual Iced root layout, exact installed-stamp native presentation receipts,
+held local zoom retaining its raster/stamp, release, authority activation on
+the same window, and bounded shutdown while preparation is held. This is
+nested software-compositor evidence; physical GPU scanout and VT isolation
+remain separate checks.

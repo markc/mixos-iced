@@ -60,6 +60,11 @@ Ordering rules:
   indefinitely backwards.
 - Reliable entries keep relative FIFO order; total retention is at most
   `reliable_capacity + SLOTS`.
+- `retain` retires selected payloads and releases their queue capacity without
+  moving surviving slot markers or reliable entries. Record command retirement
+  first, then purge stale retained deliveries before reusing admission credits
+  after reconnect. Commands already handed to the bounded GUI channel need a
+  separate origin check before model mutation.
 - `push` returns the input unchanged when the reliable FIFO is full;
   `replace` returns the superseded value explicitly, and invalid indices
   return the input. A returned value is not load-shedding.
@@ -183,6 +188,31 @@ once the transport may have sent, a timeout is outcome-unknown unless the
 owning Bus error explicitly proves otherwise, and must not be replayed.
 
 ## Shutdown
+
+`TaskSet::abort_and_report` freezes admission, requests cancellation and returns
+only immediately available outcomes. Its `unconfirmed` count means future
+destruction has not been observed. Dropping the set requests abort; it cannot
+stop non-yielding code or a running blocking operation. Finish credits only for
+recorded outcomes; remaining credits remain active until actually abandoned.
+Check the common deadline before submitting another reply or starting a queued
+cache save. A Bus stop signal may still be attempted at expiry, with incomplete
+close reported. Term has one two-second lane drain and a separate runtime
+teardown allowance capped at 100 ms.
+
+Native Bus actors can use `application::native_actor` with the existing
+`settings-native` or `acceptance` feature. `TaskSet<T>` bounds running and
+completed but unreaped tasks, returning each successful task's `Permit` in
+`Completed<T>` for explicit host retirement. `try_spawn_with` checks capacity
+before invoking its factory and returns the original item on Full. Abort and
+panic count unfinished permits as abandoned; the task slot remains until reaped.
+
+`Accepted` retains the receiving supervisor, command and admission instant.
+`is_current` requires both supervisor identity and connected generation. `Reply`
+sends through that captured supervisor using the host-supplied absolute deadline,
+including retained queue delay. `submit_replies` restores work at its original
+outbox position when the task set is full. The concrete migration owners are
+Term and BusViewer; these shared mechanics introduce no client, receiver, runtime
+or worker loop. Product classification and shutdown ordering remain host-owned.
 
 1. Enter once and capture the host's one absolute deadline. Stop new
    ordinary admission. Keep the accepted app.quit response ahead of close.

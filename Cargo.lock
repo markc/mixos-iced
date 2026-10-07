@@ -203,7 +203,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.14"
+version = "0.1.17"
 dependencies = [
  "appearance",
  "assets",
@@ -701,15 +701,18 @@ dependencies = [
 
 [[package]]
 name = "busviewer"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "appearance",
  "application",
  "buildinfo",
  "bus",
+ "config",
  "fluent-bundle",
  "serde",
  "serde_json",
+ "settings",
+ "term-test-broker",
  "tokio",
  "toolkit",
 ]
@@ -7337,7 +7340,7 @@ dependencies = [
 
 [[package]]
 name = "term"
-version = "0.3.7"
+version = "0.3.10"
 dependencies = [
  "appearance",
  "application",

@@ -13,6 +13,30 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.10
+
+Use shared native task admission and origin-owned replies on the existing Bus
+worker. Retained send queue delay consumes the absolute reply budget. Replace
+unbounded post-abort reaping with finite reports of unconfirmed cancellation;
+the single two-second lane drain retains its separate bounded runtime teardown.
+Real broker regressions cover expired replies and reused supervisor generations.
+
+## 0.3.9
+
+Add non-default owned fixture acceptance on the existing Bus worker. Explicit
+run and process-instance configuration enables real root inspection, exact
+frame waits and a barrier inside the actual blocking preparation operation.
+Two tracked wait slots remain separate from ordinary control/reply capacity.
+Actual window ids replace latest-window lookup. Ordinary launches omit the
+fixture surface. Shutdown cancels observation and operation holds before drains.
+
+## 0.3.8
+
+Bind native frame feedback to the terminal's installed settings and local
+preparation stamp. Retain the last good stamp while a replacement prepares.
+The existing Bus worker fences waits on connection changes and closes the
+observation owner before shutdown drains. Observation requests no repaint.
+
 ## 0.3.7
 
 Prepare settings-owned terminal fonts, exact weights, scale and zoom on the

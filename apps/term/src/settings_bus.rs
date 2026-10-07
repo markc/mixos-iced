@@ -12,7 +12,8 @@ use ::bus::native_client::{
     RegistrationRejectionKind, SupervisedClient,
 };
 use application::message::Once;
-use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
+use application::native_actor::{Accepted, Completed, Reply, TaskSet, submit_replies};
+use application::native_queue::{Admission, Flush, Outbox, SendError};
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
@@ -145,6 +146,9 @@ impl Handle {
 
 pub struct Started {
     pub handle: Handle,
+    pub frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    pub fixture_frames: Option<application::acceptance::frames::Endpoint>,
     pub ui: Ui<Content, LocalContext>,
     pub bootstrap: appearance::settings::Prepared,
     pub describes: tokio::sync::mpsc::Receiver<Describe>,
@@ -166,9 +170,16 @@ type Ready = std::sync::mpsc::Sender<
 pub(crate) struct PreparationSeed {
     pub local: LocalContext,
     pub raster: term_core::raster::PreparedRaster,
+    #[cfg(feature = "acceptance")]
+    pub fixture: Option<crate::acceptance::Fixture>,
+    #[cfg(all(test, feature = "acceptance"))]
+    pub fixture_admission: Option<tokio::sync::mpsc::UnboundedSender<usize>>,
 }
 
 struct WorkerChannels {
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    fixture_frames: Option<application::acceptance::frames::Endpoint>,
     describes: tokio::sync::mpsc::Sender<Describe>,
     effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
@@ -184,6 +195,15 @@ pub fn start(
     wake: Wake,
     seed: PreparationSeed,
 ) -> Result<Started, String> {
+    let frames = application::frames::Handle::new();
+    let worker_frames = frames.clone();
+    #[cfg(feature = "acceptance")]
+    let fixture_frames = seed
+        .fixture
+        .as_ref()
+        .map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    #[cfg(feature = "acceptance")]
+    let worker_fixture_frames = fixture_frames.clone();
     let (describe_tx, describe_rx) = tokio::sync::mpsc::channel(PENDING_CAP);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
@@ -205,14 +225,18 @@ pub fn start(
                         notify_rx,
                         wake,
                         WorkerChannels {
+                            frames: worker_frames,
+                            #[cfg(feature = "acceptance")]
+                            fixture_frames: worker_fixture_frames,
                             describes: describe_tx,
                             effects: rx,
                             ready: ready_send,
                             seed,
                         },
                     ));
-                    // Bounded shutdown: the supervisor, serve task and flush
-                    // have finished; 100 ms is a ceiling, not a wait.
+                    // The bounded lane drain has ended; outstanding task
+                    // cancellation may remain unconfirmed. Runtime teardown
+                    // has a separate allowance capped at 100 ms.
                     runtime.shutdown_timeout(Duration::from_millis(100));
                 }
                 Err(error) => {
@@ -231,6 +255,9 @@ pub fn start(
         .map_err(|e| format!("Bus startup: {e}"))??;
     Ok(Started {
         handle: Handle { tx, done, shared },
+        frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
         ui,
         bootstrap,
         describes: describe_rx,
@@ -250,6 +277,9 @@ const PENDING_CAP: usize = 32;
 /// The total in-flight reply/refusal tasks. Bounded on its own account: the
 /// incoming lane's capacity never implies any bound on spawned tasks.
 const OPERATIONS_CAP: usize = 8;
+/// Starts when the frontend answer is ready, including retained-send queue
+/// delay. UI/domain work is not given a new implicit two-second deadline.
+const REPLY_BUDGET: Duration = Duration::from_secs(2);
 /// One shared shutdown budget for the whole lane, as everywhere else.
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
@@ -263,6 +293,9 @@ async fn worker(
     channels: WorkerChannels,
 ) {
     let WorkerChannels {
+        frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
         describes,
         mut effects,
         ready,
@@ -271,6 +304,10 @@ async fn worker(
     let PreparationSeed {
         local: initial,
         raster,
+        #[cfg(feature = "acceptance")]
+        mut fixture,
+        #[cfg(all(test, feature = "acceptance"))]
+        fixture_admission,
     } = seed;
     // The shared session binding, following the existing diagnostics: a
     // binding failure is reported and startup stops — a terminal never
@@ -315,7 +352,29 @@ async fn worker(
     // worker; the bridge records that missing cache configuration as a
     // diagnostic in the session's cache evidence, so it is visible rather
     // than silent.
+    #[cfg(feature = "acceptance")]
+    let prepare_hook = fixture.as_ref().map(|fixture| fixture.hook.clone());
     let settings_worker = Worker::contextual(move |appearance, snapshot, local: &LocalContext| {
+        #[cfg(feature = "acceptance")]
+        if let Some(hook) = &prepare_hook {
+            use application::acceptance::barrier::Observation;
+            let fault = |message| {
+                settings::Diagnostic::new("fixture_prepare_cancelled", "terminal.prepare", message)
+            };
+            let observation = Observation::try_new(format!(
+                "revision={} scale={} zoom={}",
+                snapshot.revision.0, local.scale, local.zoom_steps
+            ))
+            .map_err(|error| fault(format!("{error:?}")))?;
+            if let Some(permit) = hook
+                .reach("terminal.prepare", observation)
+                .map_err(|error| fault(format!("{error:?}")))?
+            {
+                permit
+                    .wait_blocking()
+                    .map_err(|error| fault(format!("{error:?}")))?;
+            }
+        }
         crate::presentation::prepare(appearance, snapshot, local, &raster)
     });
     let settings_worker = match config::AppDirs::resolve("term") {
@@ -346,8 +405,7 @@ async fn worker(
     let mut served = false;
     // A tracked describe keeps the client that received it, so its reply is
     // sent on the SAME connection whatever happened to the shared handle.
-    let mut pending: HashMap<u64, (Arc<SupervisedClient>, IncomingCommand, Permit)> =
-        HashMap::new();
+    let mut pending: HashMap<u64, Accepted> = HashMap::new();
     let mut next_id = 0u64;
     let mut lifecycle = None;
     let mut incoming_open = true;
@@ -359,9 +417,12 @@ async fn worker(
     // started as capacity frees; refusals are shed with a diagnostic instead.
     let admitted = Admission::new(PENDING_CAP);
     let refusals = Admission::new(4);
-    let mut retained_replies = Outbox::<Box<Reply>, 0>::new(PENDING_CAP);
+    let mut retained_replies = Outbox::<Reply, 0>::new(PENDING_CAP);
     let mut deliveries = Outbox::<Describe, 0>::new(PENDING_CAP);
-    let mut operations = tokio::task::JoinSet::new();
+    let mut operations = TaskSet::<Result<(), String>>::new(OPERATIONS_CAP);
+    // Two independently bounded waits cannot occupy ordinary control/reply
+    // slots. Credits remain in the JoinSet result until the actor reaps them.
+    let mut fixture_waits = TaskSet::<Result<(), String>>::new(2);
     loop {
         // Accepted replies retained while the task cap was exhausted start
         // the moment capacity frees; an unused permit returns immediately.
@@ -396,6 +457,13 @@ async fn worker(
         let generation = client.connection_generation();
         if lifecycle != Some((now, generation)) {
             lifecycle = Some((now, generation));
+            frames.set_live_generation(settings::native::live_generation(&client));
+            #[cfg(feature = "acceptance")]
+            if let Some(fixture) = &fixture {
+                fixture
+                    .controller
+                    .close(application::acceptance::barrier::ClosedReason::LostGeneration);
+            }
             // EVERY lifecycle transition publishes into the settings lane:
             // edge-triggered consumers and the UI reconcile on one signal.
             {
@@ -471,11 +539,11 @@ async fn worker(
                         // Replies from the old connection can never be sent:
                         // fence both the pending describes and any retained
                         // accepted replies on the replaced generation.
-                        for (_, (_, _, permit)) in pending.drain() {
-                            permit.finish();
+                        for (_, accepted) in pending.drain() {
+                            accepted.retire().finish();
                         }
                         for reply in retained_replies.drain() {
-                            reply.permit.finish();
+                            reply.retire().finish();
                         }
                         for delivery in deliveries.drain() {
                             let _ = delivery.ticket.take();
@@ -513,17 +581,12 @@ async fn worker(
             // evidence back to an old connection.
             let stale: Vec<_> = pending
                 .iter()
-                .filter_map(|(id, (stored, command, _))| {
-                    (!Arc::ptr_eq(stored, &client)
-                        || now != ConnState::Connected
-                        || generation != command.generation)
-                        .then_some(*id)
-                })
+                .filter_map(|(id, accepted)| (!accepted.is_current(&client)).then_some(*id))
                 .collect();
             for id in stale {
-                if let Some((_, _, permit)) = pending.remove(&id) {
+                if let Some(accepted) = pending.remove(&id) {
                     eprintln!("{service} retired stale describe {id}");
-                    permit.finish();
+                    accepted.retire().finish();
                 }
             }
             let queued: Vec<_> = deliveries.drain().collect();
@@ -543,9 +606,24 @@ async fn worker(
         // the command lane cannot starve either.
         tokio::select! {
             biased;
+            result = fixture_waits.join_next(), if !fixture_waits.is_empty() => {
+                match result {
+                    Some(Ok(Completed {permit,value:result})) => {
+                        if let Err(error) = result { eprintln!("{service} fixture wait: {error}"); }
+                        permit.finish();
+                    }
+                    Some(Err(error)) => eprintln!("{service} fixture wait: {error}"),
+                    None => {}
+                }
+            }
+            _ = async {
+                #[cfg(feature = "acceptance")]
+                if let Some(fixture) = fixture.as_mut() { fixture.controller.drive().await; return; }
+                std::future::pending::<()>().await;
+            } => {},
             result = operations.join_next(), if !operations.is_empty() => {
                 match result {
-                    Some(Ok((permit, result))) => {
+                    Some(Ok(Completed {permit,value:result})) => {
                         if let Err(error) = result { eprintln!("{service} Bus reply: {error}"); }
                         permit.finish();
                     }
@@ -567,13 +645,13 @@ async fn worker(
                         // Accepted replies take priority over refusals: when
                         // the task cap is exhausted they are retained, never
                         // dropped, and start as capacity frees.
-                        if let Some((client, command, permit)) = pending.remove(&id) {
-                            let body = value.to_string();
-                            if let Err(reply) = retained_replies.push(Box::new(Reply {client, command, permit, rc, body})) {
+                        if let Some(accepted) = pending.remove(&id) {
+                            let reply = accepted.reply(rc, value.to_string(), std::time::Instant::now() + REPLY_BUDGET);
+                            if let Err(reply) = retained_replies.push(reply) {
                                 // One credit covers pending + retained + tasks, so
                                 // this cannot be full after removing that pending.
                                 eprintln!("{service} accepted reply retention invariant failed");
-                                reply.permit.finish();
+                                reply.retire().finish();
                             }
                         }
                     }
@@ -618,6 +696,33 @@ async fn worker(
                     wake_ui(&wake, needed);
                     continue;
                 }
+                #[cfg(feature = "acceptance")]
+                if let Some(fixture) = &fixture
+                    && let Some(class) = application::acceptance::classify(&command.command) {
+                        frames.set_live_generation(settings::native::live_generation(&client));
+                        let waiting = class == application::acceptance::Class::Wait;
+                        let tasks = if waiting { &mut fixture_waits } else { &mut operations };
+                        let full = tasks.is_full();
+                        let permit = if full { None } else { admitted.try_acquire() };
+                        let Some(permit) = permit else {
+                            try_spawn(service,&refusals,&mut operations,Arc::clone(&client),command,10,
+                                "{\"error_code\":\"BUSY\",\"message\":\"acceptance capacity exhausted\"}".to_string());
+                            continue;
+                        };
+                        let accepted = Accepted::new(Arc::clone(&client), command, permit, std::time::Instant::now());
+                        let result = tasks.try_spawn_with(accepted, |accepted| accepted.into_task(|client, command, _| {
+                            let future = application::acceptance::track_result(client,command,
+                                &fixture.describe,&fixture.inspector,&fixture.controller,fixture_frames.as_ref()).expect("exact fixture verb");
+                            async move {future.await.map_err(|error| format!("acceptance: {error:?}"))}
+                        }));
+                        if let Err(accepted) = result {
+                            accepted.retire().finish();
+                            eprintln!("{service} fixture task capacity invariant failed");
+                        }
+                        #[cfg(all(test,feature = "acceptance"))]
+                        if waiting && let Some(probe) = &fixture_admission { let _ = probe.send(fixture_waits.len()); }
+                        continue;
+                }
                 if command.command == "app.describe" {
                     if client.state() != ConnState::Connected
                         || client.connection_generation() != command.generation {
@@ -651,11 +756,11 @@ async fn worker(
                             "{\"error_code\":\"CLOSED\",\"message\":\"no frontend to answer app.describe\"}".to_string());
                         continue;
                     }
-                    pending.insert(id, (Arc::clone(&client), command, permit));
+                    pending.insert(id, Accepted::new(Arc::clone(&client), command, permit, std::time::Instant::now()));
                     let delivery = Describe {id, ticket: Once::new(id)};
                     if let Err(delivery) = deliveries.push(delivery) {
                         let _ = delivery.ticket.take();
-                        if let Some((_, _, permit)) = pending.remove(&id) { permit.finish(); }
+                        if let Some(accepted) = pending.remove(&id) { accepted.retire().finish(); }
                         eprintln!("{service} frontend retention invariant failed");
                         break;
                     }
@@ -693,20 +798,50 @@ async fn worker(
             }
         }
     }
+    frames.close();
+    #[cfg(feature = "acceptance")]
+    if let Some(fixture) = &fixture {
+        fixture.close(application::acceptance::barrier::ClosedReason::Shutdown);
+    }
     // tabs.close -> global Bus finish: the serve task has drained the final
     // reap's completion notes by the time the TabSet emptied; wait for it,
     // the tracked replies, the cache flush and the client close all under ONE
-    // shared 2 s deadline. Tasks that exhaust the budget are aborted, never
-    // detached.
+    // shared 2 s deadline. On expiry request cancellation and report any
+    // unreaped work; abort alone does not prove the future was destroyed.
     let deadline = std::time::Instant::now() + SHUTDOWN_BUDGET;
     let deadline_at = tokio::time::Instant::from_std(deadline);
     let mut faults = Vec::new();
+    while !fixture_waits.is_empty() {
+        if std::time::Instant::now() >= deadline {
+            faults.push("fixture wait drain timed out".to_owned());
+            cancel_tasks("fixture wait", &mut fixture_waits, &mut faults);
+            break;
+        }
+        match tokio::time::timeout_at(deadline_at, fixture_waits.join_next()).await {
+            Ok(Some(Ok(Completed {
+                permit,
+                value: result,
+            }))) => {
+                if let Err(error) = result {
+                    faults.push(error);
+                }
+                permit.finish();
+            }
+            Ok(Some(Err(error))) => faults.push(format!("fixture wait: {error}")),
+            Ok(None) => break,
+            Err(_) => {
+                faults.push("fixture wait drain timed out".to_owned());
+                cancel_tasks("fixture wait", &mut fixture_waits, &mut faults);
+                break;
+            }
+        }
+    }
     // Accepted replies retained while the task cap was exhausted stay fenced
     // on their originating client and generation: they must be sent under the
     // shared deadline or be counted as undelivered — never silently dropped.
-    for (_, (_, _, permit)) in pending.drain() {
+    for (_, accepted) in pending.drain() {
         faults.push("accepted describe retired without frontend reply".into());
-        permit.finish();
+        accepted.retire().finish();
     }
     for delivery in deliveries.drain() {
         let _ = delivery.ticket.take();
@@ -721,14 +856,30 @@ async fn worker(
             _ = tokio::time::sleep_until(deadline_at) => {
                 task.abort();
                 faults.push("term Bus serve drain timed out".into());
-                let _ = task.await;
+                // Drop the aborted handle without an unbounded post-deadline
+                // await. The bounded owning runtime handles cancellation.
+                faults.push("term Bus serve cancellation requested; completion unconfirmed".into());
             }
         }
     }
     while !operations.is_empty() || !retained_replies.is_empty() {
+        if std::time::Instant::now() >= deadline {
+            cancel_tasks("Bus reply", &mut operations, &mut faults);
+            let unsent = retained_replies.len();
+            for reply in retained_replies.drain() {
+                reply.retire().finish();
+            }
+            faults.push(format!(
+                "term Bus reply drain timed out with {unsent} retained unsent replies"
+            ));
+            break;
+        }
         submit_replies(&mut retained_replies, &mut operations);
         match tokio::time::timeout_at(deadline_at, operations.join_next()).await {
-            Ok(Some(Ok((permit, result)))) => {
+            Ok(Some(Ok(Completed {
+                permit,
+                value: result,
+            }))) => {
                 if let Err(error) = result {
                     faults.push(error);
                 }
@@ -737,28 +888,22 @@ async fn worker(
             Ok(Some(Err(error))) => faults.push(format!("term Bus reply: {error}")),
             Ok(None) => break,
             Err(_) => {
-                let undelivered = operations.len() + retained_replies.len();
-                operations.abort_all();
-                while let Some(result) = operations.join_next().await {
-                    if let Ok((permit, result)) = result {
-                        if let Err(error) = result {
-                            faults.push(error);
-                        }
-                        permit.finish();
-                    }
-                }
+                let outstanding = operations.len() + retained_replies.len();
+                cancel_tasks("Bus reply", &mut operations, &mut faults);
                 for reply in retained_replies.drain() {
-                    reply.permit.finish();
+                    reply.retire().finish();
                 }
-                if undelivered > 0 {
+                if outstanding > 0 {
                     faults.push(format!(
-                        "term Bus reply drain timed out with {undelivered} undelivered replies"
+                        "term Bus reply drain timed out with {outstanding} outstanding replies; delivery unconfirmed"
                     ));
                 }
                 break;
             }
         }
     }
+    drop(fixture_waits);
+    drop(operations);
     if let Err(error) = lane.flush_cache(deadline).await {
         faults.push(format!("settings cache: {}: {}", error.code, error.message));
     }
@@ -778,36 +923,19 @@ async fn worker(
     );
 }
 
-/// One bounded reply on the client that received the command. Spawned as a
-/// tracked operation, so the settings lane is never blocked on a send.
-async fn respond(
-    client: Arc<SupervisedClient>,
-    command: IncomingCommand,
-    rc: u8,
-    body: String,
-) -> Result<(), String> {
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        SupervisedClient::respond(&client, &command, rc, &body),
-    )
-    .await
-    .map_err(|_| "Bus reply timed out".to_owned())?
-    .map_err(|error| format!("Bus reply: {error}"))
-}
-
 /// Start one bounded reply task if a permit remains. A refusal under
 /// saturation is shed with a diagnostic — the caller times out — while an
 /// accepted reply is retained by the caller instead, never dropped here.
 fn try_spawn(
     service: &'static str,
     permits: &Admission,
-    operations: &mut tokio::task::JoinSet<(Permit, Result<(), String>)>,
+    operations: &mut TaskSet<Result<(), String>>,
     client: Arc<SupervisedClient>,
     command: IncomingCommand,
     rc: u8,
     body: String,
 ) {
-    if operations.len() >= OPERATIONS_CAP {
+    if operations.is_full() {
         eprintln!("{service} Bus refusal send capacity exhausted (caller times out)");
         return;
     }
@@ -815,34 +943,40 @@ fn try_spawn(
         eprintln!("{service} Bus reply capacity exhausted; dropping a refusal (caller times out)");
         return;
     };
-    operations.spawn(async move {
-        let result = respond(client, command, rc, body).await;
-        (permit, result)
-    });
+    let admitted_at = std::time::Instant::now();
+    let reply = Accepted::new(client, command, permit, admitted_at).reply(
+        rc,
+        body,
+        admitted_at + REPLY_BUDGET,
+    );
+    if let Err(reply) = operations.try_spawn_with(reply, Reply::into_task) {
+        reply.retire().finish();
+        eprintln!("{service} refusal task capacity invariant failed");
+    }
 }
 
-struct Reply {
-    client: Arc<SupervisedClient>,
-    command: IncomingCommand,
-    permit: Permit,
-    rc: u8,
-    body: String,
-}
-
-fn submit_replies(
-    retained: &mut Outbox<Box<Reply>, 0>,
-    operations: &mut tokio::task::JoinSet<(Permit, Result<(), String>)>,
-) {
-    retained.flush_with(|reply| {
-        if operations.len() >= OPERATIONS_CAP {
-            return Err(SendError::Full(reply));
+/// This finite synchronous drain cannot extend the shared shutdown deadline.
+/// Unreaped aborted tasks stay unconfirmed, rather than being counted finished.
+fn cancel_tasks(label: &str, tasks: &mut TaskSet<Result<(), String>>, faults: &mut Vec<String>) {
+    let report = std::mem::replace(tasks, TaskSet::new(0)).abort_and_report();
+    for result in report.ready {
+        match result {
+            Ok(Completed { permit, value }) => {
+                if let Err(error) = value {
+                    faults.push(error);
+                }
+                permit.finish();
+            }
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => faults.push(format!("{label}: {error}")),
         }
-        operations.spawn(async move {
-            let result = respond(reply.client, reply.command, reply.rc, reply.body).await;
-            (reply.permit, result)
-        });
-        Ok(())
-    });
+    }
+    if report.unconfirmed > 0 {
+        faults.push(format!(
+            "{label} cancellation requested with {} unreaped tasks",
+            report.unconfirmed
+        ));
+    }
 }
 
 /// Successive overflow markers aggregate while the bounded verb queue is
@@ -892,6 +1026,339 @@ mod tests {
             .unwrap()
     }
 
+    async fn connected(name: &str, url: &str) -> Arc<SupervisedClient> {
+        let client = Arc::new(
+            SupervisedClient::connect_options(name, url)
+                .fatal_on_registration_rejection(true)
+                .bounded_incoming(4)
+                .start(),
+        );
+        let mut state = client.subscribe_state();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while *state.borrow_and_update() != ConnState::Connected {
+                state.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("actual broker registration");
+        client
+    }
+
+    async fn incoming_command(incoming: &mut BoundedIncomingReceiver) -> IncomingCommand {
+        match tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+            .await
+            .unwrap()
+        {
+            Some(BoundedIncomingEvent::Command(command)) => command,
+            other => panic!("real command expected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retained_expired_reply_sends_nothing_and_holds_credit_until_reaped() {
+        let broker = term_test_broker::Broker::start();
+        runtime().block_on(async {
+            let client = connected("actor-reply", &broker.url).await;
+            let mut incoming = client.incoming_bounded().unwrap();
+            let caller = Arc::new(
+                ::bus::native_client::NodedClient::connect_anonymous(&broker.url)
+                    .await
+                    .unwrap(),
+            );
+            let calling = caller.clone();
+            let call = tokio::spawn(async move {
+                calling.call("actor-reply", "app.describe", json!({})).await
+            });
+            let command = incoming_command(&mut incoming).await;
+            let original = (
+                command.generation,
+                command.from.clone(),
+                command.command.clone(),
+                command.id.clone(),
+            );
+            let admission = Admission::new(2);
+            let mut tasks = TaskSet::new(1);
+            let (release, held) = tokio::sync::oneshot::channel();
+            assert!(
+                tasks
+                    .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                        permit,
+                        async move {
+                            held.await.unwrap();
+                            Ok(())
+                        }
+                    ))
+                    .is_ok()
+            );
+            let admitted_at = std::time::Instant::now();
+            let deadline = admitted_at + Duration::from_millis(20);
+            let accepted = Accepted::new(
+                client.clone(),
+                command,
+                admission.try_acquire().unwrap(),
+                admitted_at,
+            );
+            let mut retained = Outbox::<Reply, 0>::new(1);
+            assert!(
+                retained
+                    .push(accepted.reply(0, json!({"expired":true}).to_string(), deadline))
+                    .is_ok()
+            );
+            submit_replies(&mut retained, &mut tasks);
+            assert_eq!(retained.len(), 1);
+            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            release.send(()).unwrap();
+            let blocker = tasks.join_next().await.unwrap().unwrap();
+            blocker.value.unwrap();
+            blocker.permit.finish();
+            submit_replies(&mut retained, &mut tasks);
+            assert!(retained.is_empty());
+            tokio::task::yield_now().await;
+            assert!(tasks.is_full());
+            assert_eq!(admission.counts().active, 1);
+            let completed = tasks.join_next().await.unwrap().unwrap();
+            assert_eq!(completed.value.unwrap_err(), "Bus reply timed out");
+            assert_eq!(admission.counts().active, 1);
+            completed.permit.finish();
+            // If the expired helper sent anything, that first response would
+            // have won. Reply now using the exact saved real wire identity.
+            client
+                .respond_parts(
+                    original.0,
+                    &original.1,
+                    &original.2,
+                    original.3.as_deref(),
+                    0,
+                    &json!({"sentinel":"after-expiry"}).to_string(),
+                )
+                .await
+                .unwrap();
+            let response = tokio::time::timeout(Duration::from_secs(5), call)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(response, json!({"sentinel":"after-expiry"}));
+            assert_eq!(admission.counts().finished, 2);
+            client.close().await;
+            caller.close().await;
+        });
+    }
+
+    #[test]
+    fn reused_generation_never_substitutes_a_reply_supervisor() {
+        let broker = term_test_broker::Broker::start();
+        runtime().block_on(async {
+            let a = connected("actor-origin", &broker.url).await;
+            let b = connected("actor-other", &broker.url).await;
+            assert_eq!(a.connection_generation(), 1);
+            assert_eq!(b.connection_generation(), 1);
+            let mut incoming = a.incoming_bounded().unwrap();
+            let caller = Arc::new(
+                ::bus::native_client::NodedClient::connect_anonymous(&broker.url)
+                    .await
+                    .unwrap(),
+            );
+            let calling = caller.clone();
+            let call = tokio::spawn(async move {
+                calling
+                    .call("actor-origin", "app.describe", json!({}))
+                    .await
+            });
+            let command = incoming_command(&mut incoming).await;
+            let admission = Admission::new(1);
+            let accepted = Accepted::new(
+                a.clone(),
+                command,
+                admission.try_acquire().unwrap(),
+                std::time::Instant::now(),
+            );
+            assert!(accepted.is_current(&a));
+            assert!(
+                !accepted.is_current(&b),
+                "generation equality is insufficient"
+            );
+            let (permit, reply) = accepted
+                .reply(
+                    0,
+                    json!({"origin":"a"}).to_string(),
+                    std::time::Instant::now() + Duration::from_secs(5),
+                )
+                .into_task();
+            reply.await.unwrap();
+            permit.finish();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), call)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                json!({"origin":"a"})
+            );
+
+            let calling = caller.clone();
+            let old_call = tokio::spawn(async move {
+                calling
+                    .call("actor-origin", "app.describe", json!({}))
+                    .await
+            });
+            let command = incoming_command(&mut incoming).await;
+            let old = Accepted::new(
+                a.clone(),
+                command,
+                admission.try_acquire().unwrap(),
+                std::time::Instant::now(),
+            );
+            a.close().await;
+            let replacement = connected("actor-origin", &broker.url).await;
+            assert_eq!(replacement.connection_generation(), 1);
+            assert!(!old.is_current(&replacement));
+            let mut fresh_incoming = replacement.incoming_bounded().unwrap();
+            let calling = caller.clone();
+            let fresh_call = tokio::spawn(async move {
+                calling
+                    .call("actor-origin", "app.describe", json!({}))
+                    .await
+            });
+            let fresh_command = incoming_command(&mut fresh_incoming).await;
+            let (permit, reply) = old
+                .reply(
+                    0,
+                    json!({"origin":"old"}).to_string(),
+                    std::time::Instant::now() + Duration::from_secs(5),
+                )
+                .into_task();
+            assert!(
+                reply.await.unwrap_err().starts_with("Bus reply:"),
+                "old supervisor rejects the send"
+            );
+            permit.finish();
+            replacement
+                .respond(
+                    &fresh_command,
+                    0,
+                    &json!({"origin":"replacement"}).to_string(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), fresh_call)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                json!({"origin":"replacement"})
+            );
+            old_call.abort();
+            let _ = old_call.await;
+            replacement.close().await;
+            b.close().await;
+            caller.close().await;
+        });
+    }
+
+    /// Real ABP actor and actual blocking preparation hook. The artificial
+    /// runtime target only holds a frame wait; this is not presentation proof.
+    #[cfg(feature = "acceptance")]
+    #[test]
+    fn fixture_waits_leave_release_and_shutdown_control_headroom() {
+        use application::acceptance::{Launch, frames::Target};
+        let broker = term_test_broker::Broker::start();
+        let settings = term_core::config::Settings {
+            config: term_core::config::Config::default(),
+            term: "xterm-256color",
+        };
+        let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
+        let (cleanup, reaper) = term_core::tabs::Cleanup::start().unwrap();
+        let (_notes, notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let wake: Wake = Arc::new(move || {
+            let _ = wake_tx.send(());
+        });
+        let (fixture, _inspect_task) = crate::acceptance::setup_launch(Launch {
+            run: "actor-owned".into(),
+            instance: 51,
+        })
+        .unwrap();
+        let initial = LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap();
+        let (admission_tx, mut admission_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut started = start(
+            "term",
+            broker.url.clone(),
+            tabs.clone(),
+            cleanup.clone(),
+            notify_rx,
+            wake,
+            PreparationSeed {
+                local: initial,
+                raster: term_core::raster::Raster::for_test(1.0, 13.0, initial.cursor)
+                    .unwrap()
+                    .prepared_snapshot(),
+                fixture: Some(fixture),
+                fixture_admission: Some(admission_tx),
+            },
+        )
+        .unwrap();
+        runtime().block_on(async {
+            let caller = Arc::new(::bus::native_client::NodedClient::connect_anonymous(&broker.url).await.unwrap());
+            tokio::time::timeout(Duration::from_secs(5),async {
+                loop {
+                    let generation = started.handle.settings_generation();
+                    started.ui.reconcile(generation);
+                    started.ui.drain_with(|| started.handle.settings_generation(), |_| {});
+                    if generation.is_some() && started.ui.preparation_evidence().current {break;}
+                    assert!(started.ui.preparation_evidence().fault.is_none(),"{:?}",started.ui.preparation_evidence().fault);
+                    wake_rx.recv().await.expect("native worker wake");
+                }
+            }).await.expect("native contextual bootstrap");
+            let identity = json!({"run":"actor-owned","instance":51});
+            let window = application::iced::window::Id::unique();
+            let stamp = started.ui.session().frame_stamp().unwrap();
+            started.fixture_frames.as_ref().unwrap().publish(Target {window,stamp:Some(stamp)}).unwrap();
+            let arm = caller.call("term","app.acceptance.barrier.arm",json!({"run":"actor-owned","instance":51,"point":"terminal.prepare","token":"held"})).await.unwrap();
+            assert_eq!(arm["state"],"armed");
+            let reference = json!({"run":"actor-owned","instance":51,"token":"held","sequence":arm["sequence"]});
+            let barrier_wait = {
+                let caller = caller.clone(); let reference = reference.clone();
+                tokio::spawn(async move {caller.call("term","app.acceptance.barrier.wait",reference).await})
+            };
+            let frame_wait = {
+                let caller = caller.clone();
+                tokio::spawn(async move {caller.call("term","app.acceptance.frame.wait",json!({"run":"actor-owned","instance":51,
+                    "window":window.raw(),"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision,"timeout_ms":10000})).await})
+            };
+            tokio::time::timeout(Duration::from_secs(2),async {
+                assert_eq!(admission_rx.recv().await,Some(1));
+                assert_eq!(admission_rx.recv().await,Some(2));
+            }).await.expect("both actual native wait operations admitted");
+            assert!(!barrier_wait.is_finished());
+            assert!(!frame_wait.is_finished());
+            let held = caller.call("term","app.acceptance.barrier.state",reference.clone()).await.unwrap();
+            assert_eq!(held["state"],"armed","control progresses while both wait operations are retained");
+            let mut next = initial; next.zoom_steps = 1;
+            started.ui.set_context(next,started.handle.settings_generation()).unwrap();
+            let reached = tokio::time::timeout(Duration::from_secs(3),barrier_wait).await.unwrap().unwrap().unwrap();
+            assert_eq!(reached["state"],"reached","actual preparation worker must reach the hold");
+            let released = tokio::time::timeout(Duration::from_secs(2),caller.call("term","app.acceptance.barrier.release",reference)).await.unwrap().unwrap();
+            assert_eq!(released["state"],"released","release must bypass held frame wait");
+            let state = caller.call("term","app.acceptance.frame.state",identity.clone()).await.unwrap();
+            assert_eq!(state["target"]["window"],window.raw());
+            let describe = caller.call("term","app.acceptance.describe",identity).await.unwrap();
+            assert_eq!(describe["frames"]["enabled"],true);
+            started.handle.quit();
+            let stopped = tokio::time::timeout(Duration::from_secs(3),frame_wait).await.unwrap().unwrap().unwrap();
+            assert_eq!(stopped["ok"],false);
+            assert!(stopped["error"].as_str().unwrap().contains("Closed"));
+            assert!(started.frames.snapshot().closed);
+        });
+        cleanup.submit(tabs.lock().unwrap().shutdown());
+        started.handle.quit();
+        started.handle.wait_done().unwrap();
+        started.worker.join().unwrap();
+        drop(cleanup);
+        reaper.join().unwrap();
+    }
+
     /// One client serves both lanes: an `app.describe` request is tracked by
     /// the adapter, answered by the UI half (the frontend) and carried back
     /// to the caller over the real embedded broker.
@@ -915,6 +1382,10 @@ mod tests {
             wake,
             PreparationSeed {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
+                #[cfg(feature = "acceptance")]
+                fixture: None,
+                #[cfg(feature = "acceptance")]
+                fixture_admission: None,
                 raster: term_core::raster::Raster::for_test(
                     1.0,
                     13.0,
@@ -1119,6 +1590,10 @@ mod tests {
             wake,
             PreparationSeed {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
+                #[cfg(feature = "acceptance")]
+                fixture: None,
+                #[cfg(feature = "acceptance")]
+                fixture_admission: None,
                 raster: term_core::raster::Raster::for_test(
                     1.0,
                     13.0,

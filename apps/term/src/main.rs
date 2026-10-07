@@ -17,6 +17,8 @@
 //! (four-row CPU bands or a whole-pane wgpu buffer). See `frame.rs` and
 //! `term_core::raster::render_into`.
 
+#[cfg(feature = "acceptance")]
+mod acceptance;
 mod clipboard;
 mod frame;
 mod ime;
@@ -149,6 +151,10 @@ fn resolve_config(
 }
 
 fn run(settings: core_config::Settings) -> Result<(), String> {
+    #[cfg(feature = "acceptance")]
+    let (fixture, initial_task) = acceptance::setup()?;
+    #[cfg(not(feature = "acceptance"))]
+    let initial_task = Task::none();
     // Scale 1.0 to start; the raster is rebuilt at the surface's real
     // fractional scale on the first `Rescaled`, so glyphs are rasterised at
     // physical resolution and the compositor never upscales them.
@@ -201,6 +207,10 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         settings_bus::PreparationSeed {
             local,
             raster: bootstrap_raster,
+            #[cfg(feature = "acceptance")]
+            fixture,
+            #[cfg(all(test, feature = "acceptance"))]
+            fixture_admission: None,
         },
     )
     .map_err(|e| format!("Bus startup: {e}"))?;
@@ -212,6 +222,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
     // A clone lives outside the State so teardown below can still quit the
     // adapter after the handle was moved in.
     let handle = started.handle.clone();
+    let frames = started.frames.clone();
 
     let state = State {
         painter,
@@ -222,6 +233,9 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         ui,
         chrome: layout::strip_height(1.0, ui),
         settings: started.ui,
+        frames: started.frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames: started.fixture_frames,
         local,
         baseline,
         applied_raster: None,
@@ -232,6 +246,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         describes: started.describes,
         waker,
         window: Size::new(900.0, 560.0),
+        window_id: None,
         shape: Shape::default(),
         grids: HashMap::new(),
         modifiers: application::iced::keyboard::Modifiers::empty(),
@@ -252,7 +267,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
 
     let ui_font = ui.font;
     let result = application::start(
-        (state, Task::none()),
+        (state, initial_task),
         update,
         view,
         application::Window::new(
@@ -263,6 +278,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
     )
     .title(DISPLAY_NAME)
     .subscription(subscription)
+    .frame_presentation(frame_binding)
     .theme(application::iced::Theme::Dark)
     .style(|state: &State, _theme| application::iced::theme::Style {
         background_color: state.tokens.palette.surface,
@@ -276,6 +292,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
     // cleanup is released, then the cleanup worker and reaper join. The
     // settings Lane drops with the adapter thread, last.
     let removed = tabs.lock().expect("tabs").shutdown();
+    frames.close();
     cleanup.submit(removed);
     handle.quit();
     let mut shutdown = Ok(());
@@ -337,6 +354,10 @@ struct State {
     /// The settings session's UI half, reconciled on every wake against the
     /// generation sampled from the actual shared client.
     settings: Ui<Content, LocalContext>,
+    /// One bounded observer for this actual window incarnation.
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    fixture_frames: Option<application::acceptance::frames::Endpoint>,
     local: LocalContext,
     baseline: f32,
     applied_raster: Option<RasterKey>,
@@ -351,6 +372,7 @@ struct State {
     waker: Arc<Waker>,
     /// Logical inner size of the window, as the compositor last reported it.
     window: Size,
+    window_id: Option<application::iced::window::Id>,
     /// Tabs and the active pane tree as of the last wake — what `view` draws.
     shape: Shape,
     /// Columns and rows each visible pane's PTY has been told about. A pane
@@ -402,7 +424,10 @@ enum Message {
     Paste(u64, Option<String>),
     Wheel(u64, application::iced::mouse::ScrollDelta),
     Pointer,
-    Window(application::iced::window::Event),
+    Window(
+        application::iced::window::Id,
+        application::iced::window::Event,
+    ),
     /// The window's device-pixel ratio, answered by the runtime.
     Scale(f32),
 }
@@ -415,11 +440,21 @@ fn subscription(_state: &State) -> Subscription<Message> {
         // events survive it: they are rare, and a lost resize is corrected by
         // the next one. `listen_with` already filters RedrawRequested, so
         // this cannot feed itself.
-        application::iced::event::listen_with(|event, _status, _window| match event {
-            application::iced::Event::Window(event) => Some(Message::Window(event)),
+        application::iced::event::listen_with(|event, _status, window| match event {
+            application::iced::Event::Window(event) => Some(Message::Window(window, event)),
             _ => None,
         }),
     ])
+}
+
+/// Sample only installed settings alongside the immutable view. A pending or
+/// failed preparation keeps the last good stamp; bootstrap remains unstamped.
+fn frame_binding(state: &State) -> Option<application::frames::FrameBinding> {
+    state
+        .settings
+        .session()
+        .frame_stamp()
+        .map(|stamp| state.frames.binding(stamp))
 }
 
 /// Publishes a [`Message::Wake`] whenever the core's eventfd fires.
@@ -634,16 +669,17 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
                 state.scroll(id, delta);
             }
         }
-        Message::Window(event) => match event {
+        Message::Window(window, _) if state.window_id.is_some_and(|owned| owned != window) => {}
+        Message::Window(window, event) => match event {
             application::iced::window::Event::Opened { size, .. } => {
+                state.window_id = Some(window);
                 state.resize(size);
+                state.publish_frame_target();
                 // Ask rather than wait: winit does not necessarily emit a
                 // Rescaled for the scale a surface is BORN at, and a terminal
                 // that renders one frame at the wrong scale is a terminal
                 // that starts blurry.
-                return application::iced::window::latest()
-                    .and_then(application::iced::window::scale_factor)
-                    .map(Message::Scale);
+                return application::iced::window::scale_factor(window).map(Message::Scale);
             }
             application::iced::window::Event::Resized(size) => state.resize(size),
             application::iced::window::Event::Rescaled(scale) => state.rescale(scale),
@@ -664,7 +700,10 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
                 state.wheel = 0.0;
                 state.scroll_wheel = 0.0;
             }
-            application::iced::window::Event::CloseRequested => return application::iced::exit(),
+            application::iced::window::Event::CloseRequested => {
+                state.frames.close();
+                return application::iced::exit();
+            }
             _ => {}
         },
     }
@@ -839,14 +878,20 @@ fn view(state: &State) -> Element<'_, Message> {
     if state.needs_paint() {
         content = content.on_redraw(state.last_redraw, Message::Paint);
     }
-    container(content)
+    let root = container(content)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_theme| container::Style {
             background: Some(tokens.palette.surface.into()),
             ..container::Style::default()
-        })
-        .into()
+        });
+    #[cfg(feature = "acceptance")]
+    let root = if state.fixture_frames.is_some() {
+        root.id(application::iced::widget::Id::from(acceptance::ROOT_ID))
+    } else {
+        root
+    };
+    root.into()
 }
 
 type HoveredCell = Option<(u64, u16, u16)>;
@@ -1066,6 +1111,17 @@ fn apply(tabs: &mut TabSet, action: Action) -> Vec<Removed> {
 }
 
 impl State {
+    fn publish_frame_target(&self) {
+        #[cfg(feature = "acceptance")]
+        if let (Some(endpoint), Some(window)) = (&self.fixture_frames, self.window_id)
+            && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
+                window,
+                stamp: self.settings.session().frame_stamp(),
+            })
+        {
+            eprintln!("term: fixture frame target: {error}");
+        }
+    }
     fn scroll(&mut self, id: u64, delta: application::iced::mouse::ScrollDelta) {
         if self.scroll_pane != Some(id) {
             self.scroll_wheel = 0.0;
@@ -1148,6 +1204,7 @@ impl State {
         let changes = self
             .settings
             .drain_with(|| self.bus.settings_generation(), |p| target.activate(p));
+        self.publish_frame_target();
         if !changes.is_empty() {
             // The settings activation receipt, same shape the other hosts
             // print: live evidence, cache state and fallback diagnostics.
@@ -1900,6 +1957,9 @@ mod tests {
             ui,
             chrome: layout::strip_height(1.0, ui),
             settings,
+            frames: application::frames::Handle::new(),
+            #[cfg(feature = "acceptance")]
+            fixture_frames: None,
             local,
             baseline: 13.0,
             applied_raster: None,
@@ -1909,6 +1969,7 @@ mod tests {
             describes,
             waker,
             window: Size::new(900.0, 560.0),
+            window_id: None,
             shape: Shape::default(),
             grids: HashMap::new(),
             modifiers: application::iced::keyboard::Modifiers::empty(),
@@ -2180,7 +2241,10 @@ mod tests {
         state.right_shift.set(true);
         let _ = update(
             &mut state,
-            Message::Window(application::iced::window::Event::Unfocused),
+            Message::Window(
+                application::iced::window::Id::unique(),
+                application::iced::window::Event::Unfocused,
+            ),
         );
         assert!(!state.right_shift.get());
         let _ = update(&mut state, Message::Ime(Event::Commit(text.into())));
@@ -2453,7 +2517,10 @@ mod tests {
         state.modifiers = application::iced::keyboard::Modifiers::SHIFT;
         let _ = update(
             &mut state,
-            Message::Window(application::iced::window::Event::Unfocused),
+            Message::Window(
+                application::iced::window::Id::unique(),
+                application::iced::window::Event::Unfocused,
+            ),
         );
         assert_eq!(
             input().unwrap(),
@@ -2582,7 +2649,10 @@ mod tests {
         );
         let _ = update(
             &mut state,
-            Message::Window(application::iced::window::Event::Unfocused),
+            Message::Window(
+                application::iced::window::Id::unique(),
+                application::iced::window::Event::Unfocused,
+            ),
         );
         assert_eq!(terminals[1].lock().unwrap().selection_text(), None);
         assert_eq!(
@@ -2696,20 +2766,33 @@ mod tests {
     #[test]
     fn a_zoom_repaints_before_the_next_draw() {
         let (mut state, reaper) = test_state();
+        assert!(
+            frame_binding(&state).is_none(),
+            "bootstrap has no installed stamp"
+        );
         let _ = state.sync();
         finish_preparation(&mut state);
+        let installed = frame_binding(&state).expect("actual settings activation");
         let _ = state.act(Action::Split(SplitDir::Vertical));
         let _ = state.sync();
         assert_eq!(state.shape.visible().len(), 2);
 
         let before = state.painter.cell();
         state.zoom(|font| font.step_by(6));
+        let pending = frame_binding(&state).unwrap();
+        assert!(
+            installed.same_presentation(&pending),
+            "pending context retains the drawn stamp and owner"
+        );
         assert_eq!(
             state.painter.cell(),
             before,
             "pending zoom retains the applied raster"
         );
         finish_preparation(&mut state);
+        let replaced = frame_binding(&state).unwrap();
+        assert_ne!(replaced.stamp, installed.stamp);
+        assert!(replaced.observer.same_owner(&installed.observer));
         let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
         let cell = state.painter.cell();
         assert_ne!(cell, before, "six steps must change the cell");
