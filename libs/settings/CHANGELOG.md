@@ -1,5 +1,30 @@
 # settings contract changes
 
+## 0.3.5
+
+Add optional versioned `appearance.resources` (set ID, exact manifest digest,
+icon family/style/weight) to authored and effective data with strict
+subdocument validation and whole-object change/reset; partial nested paths
+are refused. Omission is skipped in both serialisations, preserving old
+profile bytes and every digest over them; the top-level snapshot schema stays
+1. A resource reference change conservatively invalidates resources, text,
+layout and paint, while colour-only changes still skip re-registration.
+Add the renderer-neutral `ResourceBinding` capture seam: `Prepared::resources`
+plus `Consumer::acknowledge_resources` attach the exact prepared binding to
+the captured cache save, and the cache gains a schema-2 envelope whose
+domain-separated digest covers the unchanged snapshot and the binding. The
+resource readiness check receives the expected binding of the candidate being
+checked (retained activation binding, cached envelope binding, or none for
+embedded) and must return exactly that binding when one is expected; the
+fallback owner rejects disagreement and continues the ladder. `ResourceBinding.icons`
+carries the authored optional selector verbatim — resolved defaults are
+appearance evidence, never cache data. `settings::resource_interpretation()`
+is available without the optional cache feature, which re-exports the same
+value. Legacy schema-1 envelopes load only under the named predecessor
+interpretation and never carry an explicit reference; explicit references
+must equal their binding. Contract version advances to 0.1.1; authority verbs
+and snapshot schema remain unchanged.
+
 ## 0.3.4
 
 Expose the public snapshot identity of an activated cache capture so hosts can

@@ -10,11 +10,18 @@ pub fn describe() -> Value {
         "implementation": "headless authority; renderer integrations pending",
         "revision_encoding": "canonical decimal u64 string", "max_receipts": MAX_RECEIPTS,
         "receipt_expiry": "missing receipts are unknown; no ordering of opaque operation IDs",
+        "resources": {"supported": true, "schema": RESOURCE_SCHEMA,
+            "authority": "structural validation only; no file or font I/O",
+            "activation": "consumer preparation faults report LastGood, never authority rollback"},
         "fields": {
             "appearance.scheme": {"type":"string", "enum":["ocean","crimson","stone","forest","sunset","mono"]},
             "appearance.mode": {"type":"string", "enum":["light","dark"]},
             "appearance.contrast": {"type":"string", "enum":["normal","high"]},
             "appearance.source": {"type":"string|null", "max_bytes":MAX_SOURCE_BYTES},
+            "appearance.resources": {"type":"object|null", "schema":RESOURCE_SCHEMA,
+                "set_id":"1..96 ASCII letters, digits, dash or underscore",
+                "manifest_blake3":"exactly 64 lowercase hex characters",
+                "icons":{"type":"object|null", "family":"1..256 bytes", "style":"1..96 bytes", "weight":"exact 1..1000"}},
             "ui.density": {"type":"number", "minimum":0.5, "maximum":2.0},
             "ui.text_scale": {"type":"number", "minimum":0.5, "maximum":3.0},
             "ui.reduced_motion": {"type":"boolean"},
@@ -23,7 +30,7 @@ pub fn describe() -> Value {
             "apps.<id>": {"type":"app_override", "fields":["scheme","mode","contrast","text_scale"]}
         }, "reset":"remove explicit app values or restore field package default",
         "defaults": Desktop::default(), "native_apps": APPS,
-        "deferred":["renderer application","output overrides","font registration","artifacts","preview","replication","compatibility","policy"]})
+        "deferred":["renderer application","output overrides","resource hosting","font registration","artifacts","preview","replication","compatibility","policy"]})
 }
 
 fn error(path: &str, message: impl Into<String>) -> Diagnostic {
@@ -124,6 +131,9 @@ pub fn resolve_with_embedded(
         {
             return Err(error("appearance.source", "Source limit exceeded"));
         }
+        if let Some(resources) = &desktop.appearance.resources {
+            resources.validate("appearance.resources")?;
+        }
         Ok(())
     };
     validate().map_err(|e| vec![e])?;
@@ -207,6 +217,7 @@ pub fn resolve_with_embedded(
                 ui,
                 design: projection,
                 provenance,
+                resources: appearance.resources.clone(),
             },
         );
     }
@@ -254,6 +265,11 @@ fn set(desktop: &mut Desktop, path: &str, value: Option<Value>) -> Result<(), Di
         }
         "appearance.source" => {
             desktop.appearance.source = typed(path, value.unwrap_or(Value::Null))?
+        }
+        // Whole-object change/reset only: partial nested resource paths are
+        // deliberately unknown, so a reference can never be half-applied.
+        "appearance.resources" => {
+            desktop.appearance.resources = typed(path, value.unwrap_or(Value::Null))?
         }
         "ui.density" => {
             desktop.ui.density = typed(path, value.unwrap_or(json!(defaults.ui.density)))?
@@ -397,5 +413,68 @@ mod tests {
             patch(&next, &BTreeMap::new(), &["apps.term".into()]).unwrap(),
             current
         );
+    }
+    #[test]
+    fn resources_apply_and_reset_whole_object_and_nested_paths_are_unknown() {
+        let current = Desktop::default();
+        let reference = json!({"schema":1,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+            "icons":{"family":"Symbols","style":"rounded","weight":400}});
+        let next = patch(
+            &current,
+            &BTreeMap::from([("appearance.resources".into(), reference)]),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            next.appearance.resources.as_ref().unwrap().set_id,
+            "core-icons"
+        );
+        let effective = resolve(&next).unwrap();
+        for context in effective.values() {
+            assert_eq!(context.resources.as_ref().unwrap().set_id, "core-icons");
+        }
+        // Partial nested paths are refused, not silently merged.
+        for nested in [
+            "appearance.resources.set_id",
+            "appearance.resources.icons",
+            "appearance.resources.icons.style",
+        ] {
+            assert_eq!(
+                patch(
+                    &next,
+                    &BTreeMap::from([(nested.into(), json!("value"))]),
+                    &[]
+                )
+                .unwrap_err()
+                .code,
+                "validation_failed"
+            );
+        }
+        // Reset restores omission, and the bytes omit the field again.
+        let reset = patch(&next, &BTreeMap::new(), &["appearance.resources".into()]).unwrap();
+        assert_eq!(reset, current);
+        assert_eq!(
+            patch(&reset, &BTreeMap::from([(
+                "appearance.resources".into(),
+                Value::Null
+            )]), &[])
+            .unwrap(),
+            current
+        );
+    }
+    #[test]
+    fn invalid_resource_references_fail_structural_validation_before_acceptance() {
+        let mut desktop = Desktop::default();
+        for reference in [
+            json!({"schema":2,"set_id":"core-icons","manifest_blake3":"0".repeat(64)}),
+            json!({"schema":1,"set_id":"a/b","manifest_blake3":"0".repeat(64)}),
+            json!({"schema":1,"set_id":"core-icons","manifest_blake3":"0".repeat(63)}),
+            json!({"schema":1,"set_id":"core-icons","manifest_blake3":"A".repeat(64)}),
+            json!({"schema":1,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+                "icons":{"family":"Symbols","style":"rounded","weight":0}}),
+        ] {
+            desktop.appearance.resources = Some(serde_json::from_value(reference).unwrap());
+            assert!(resolve(&desktop).is_err());
+        }
     }
 }

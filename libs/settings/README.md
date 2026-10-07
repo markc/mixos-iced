@@ -1,8 +1,8 @@
 # settings
 
 Headless desktop settings types, validation/resolution and shared consumer.
-Shared by the authority and app/compositor adapters. Library API: 0.3.0;
-authority wire/schema contract remains 0.1.0/schema 1.
+Shared by the authority and app/compositor adapters. Library API: 0.3.5;
+authority wire contract 0.1.1, snapshot schema 1.
 
 `consumer::Consumer` owns ordering, bounded bootstrap buffering, one active
 subscribe/read job, pending-only recovery and fenced staged/application state.
@@ -79,12 +79,47 @@ never supplies authority evidence, even when its data is valid.
 `cache_target()` captures the immutable producer/binding/context/capability
 descriptor for `load_for` and `Writer::open_for`; the private producer fence
 does not enter the persistent filename. `Save::same_capture` allows bounded
-worker deduplication. `Request::prepare_with_cache` loads lazily after retained
+worker deduplication; a serial cannot change its resource binding.
+`Request::prepare_with_cache` loads lazily after retained
 resource validation and preserves load failures in its prepared diagnostics.
+
+The optional versioned `appearance.resources` reference is structural data:
+an exact subdocument schema, the assets set-ID contract, an exact lowercase
+manifest digest and optional icon family/style/weight bounds. The authority
+validates structure only and performs no file, font or asset I/O. Change/reset
+applies the whole object; nested paths are unknown. Omission is skipped in
+authored and effective serialisation, so old omitted-resource profile bytes,
+snapshot digests and effective digests stay exact. A resource reference change
+conservatively invalidates resources, text, layout and paint; colour-only
+changes do not re-register resources. Unsupported subdocument versions and
+unknown fields fail closed.
+
+Resource-aware hosts return a renderer-neutral `ResourceBinding` from their
+readiness check through `Request::prepare_resources_with_cache`; `Prepared`
+exposes it with `resources()`. The readiness callback also receives the
+expected binding of the candidate being checked — the retained activation
+binding, the cached envelope binding, or none for embedded — and must return
+exactly that binding when one is expected; any disagreement rejects the
+candidate with a `binding_mismatch` diagnostic and continues the fallback
+ladder, so a different current-default resolution is never labelled as the
+cached candidate. Pass the prepared binding to `Consumer::acknowledge_resources`
+with the same staged update so the captured `cache_save()` records exactly the
+binding that was prepared. The cache then writes a schema-2 envelope whose
+domain-separated digest covers the unchanged canonical snapshot and the
+binding; an explicit authored reference must equal its binding on load, while
+omission records the host's pinned default identity without canonical
+mutation. `ResourceBinding.icons` carries the authored optional icon selector
+verbatim (None means the descriptor default); the actually resolved default is
+appearance evidence, never cache data. Legacy schema-1 envelopes load only
+under the named predecessor interpretation and never claim a resource binding.
+Build binding interpretations with the feature-independent
+`settings::resource_interpretation()`; the optional cache module re-exports the
+same value rather than duplicating it.
 
 Capture `cache_save()` only after activation (or unchanged evidence advancement),
 then submit it to the host's one serial `cache::Writer` off the UI loop. Captures
-carry immutable applied data and an activation serial. A stable advisory lock
+carry immutable applied data, an activation serial and their resource binding.
+A stable advisory lock
 excludes duplicate writers; superseded saves cannot replace newer attempts.
 The latest failed save can retry, while post-rename sync failure reports
 `cache_write_ambiguous`. Do not delete corrupt/ambiguous data automatically.

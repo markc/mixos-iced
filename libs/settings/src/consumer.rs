@@ -136,6 +136,7 @@ pub struct Consumer {
     applied_kind: PresentationKind,
     #[cfg(feature = "cache")]
     applied_serial: u64,
+    applied_binding: Option<crate::ResourceBinding>,
     fallback_serial: u64,
     fault: Option<Diagnostic>,
     fallback_fault: Option<Diagnostic>,
@@ -190,6 +191,7 @@ impl Consumer {
             applied_kind: PresentationKind::Embedded,
             #[cfg(feature = "cache")]
             applied_serial: 0,
+            applied_binding: None,
             fallback_serial: 0,
             fault: None,
             fallback_fault: None,
@@ -253,6 +255,7 @@ impl Consumer {
             context: self.context.clone(),
             shell: self.shell,
             retained: self.buffered.clone(),
+            retained_binding: self.applied_binding.clone(),
         })
     }
     pub fn complete_fallback(
@@ -319,12 +322,13 @@ impl Consumer {
         ) {
             return None;
         }
-        Some(crate::cache::Save::capture(
+        Some(crate::cache::Save::capture_resources(
             self.owner,
             self.applied_serial,
             snapshot.clone(),
             self.context.clone(),
             self.shell,
+            self.applied_binding.clone(),
         ))
     }
     pub fn pending(&self) -> Option<&Update> {
@@ -612,6 +616,15 @@ impl Consumer {
                 "Unsupported settings/design schema",
             ));
         }
+        if let Some(resources) = &snapshot.desktop.appearance.resources
+            && let Err(error) = resources.validate("appearance.resources")
+        {
+            return Err(Diagnostic::new(
+                "invalid_snapshot",
+                "appearance.resources",
+                error.message,
+            ));
+        }
         if snapshot.incarnation.is_empty()
             || snapshot.incarnation.len() > 128
             || !snapshot.effective.contains_key(&self.context)
@@ -745,6 +758,17 @@ impl Consumer {
     }
     /// Invoke after the host atomically activated all staged resources/defaults.
     pub fn acknowledge(&mut self, update: &Update) -> bool {
+        self.acknowledge_resources(update, None)
+    }
+    /// Resource-aware activation acknowledgement: the host passes the
+    /// renderer-neutral binding of the resources it prepared for this exact
+    /// update. The binding shares the update's serial and becomes the cache
+    /// capture's binding; a serial cannot change its resource binding.
+    pub fn acknowledge_resources(
+        &mut self,
+        update: &Update,
+        resources: Option<crate::ResourceBinding>,
+    ) -> bool {
         if !self.is_current(update) {
             return false;
         }
@@ -754,6 +778,7 @@ impl Consumer {
         {
             self.applied_serial = self.serial();
         }
+        self.applied_binding = resources;
         self.pending = None;
         if update.kind == PresentationKind::Current {
             self.fault = None;

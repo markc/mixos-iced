@@ -21,10 +21,17 @@ pub struct Candidate {
     pub(crate) snapshot: Arc<Snapshot>,
     pub(crate) context: String,
     pub(crate) shell: bool,
+    pub(crate) binding: Option<crate::ResourceBinding>,
 }
 impl Candidate {
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
+    }
+    /// The renderer-neutral resource binding recorded with this cached
+    /// activation: an exact candidate identity for the host to reopen and
+    /// verify, never authority. Legacy schema-1 cache files carry none.
+    pub fn binding(&self) -> Option<&crate::ResourceBinding> {
+        self.binding.as_ref()
     }
 }
 
@@ -39,6 +46,10 @@ pub struct Request {
     pub(crate) context: String,
     pub(crate) shell: bool,
     pub(crate) retained: Option<Snapshot>,
+    /// The binding captured with the retained snapshot: the expected resource
+    /// identity the retained presentation was activated against. None means
+    /// the retained data has no recorded binding.
+    pub(crate) retained_binding: Option<crate::ResourceBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +57,7 @@ pub struct Prepared {
     pub(crate) request: Request,
     pub(crate) snapshot: Arc<Snapshot>,
     pub(crate) kind: PresentationKind,
+    pub(crate) resources: Option<crate::ResourceBinding>,
     diagnostics: Vec<Diagnostic>,
 }
 impl Prepared {
@@ -54,6 +66,14 @@ impl Prepared {
     }
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+    /// The renderer-neutral resource binding this preparation was checked
+    /// against. The host passes it to `Consumer::acknowledge_resources` with
+    /// the same activation, so the captured cache save records exactly what
+    /// was prepared. None means no binding was produced by the resource
+    /// check.
+    pub fn resources(&self) -> Option<&crate::ResourceBinding> {
+        self.resources.as_ref()
     }
 }
 impl Request {
@@ -78,19 +98,59 @@ impl Request {
     pub fn prepare_with_cache(
         &self,
         cache: impl FnOnce() -> Result<Option<Candidate>, Diagnostic>,
-        mut resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
+        resources: impl FnMut(&Snapshot, &str, bool) -> Result<(), Diagnostic>,
+    ) -> Result<Prepared, Vec<Diagnostic>> {
+        self.prepare_resources_with_cache(cache, |snapshot, context, shell, _expected| {
+            resources(snapshot, context, shell).map(|()| None)
+        })
+    }
+
+    /// Resource-aware variant of `prepare_with_cache`: the readiness check
+    /// receives the expected binding of the candidate being checked (the
+    /// retained activation binding, the cached envelope binding, or None for
+    /// embedded) and returns the renderer-neutral binding of whatever it
+    /// actually verified. When an expected binding is present, a successful
+    /// check must return exactly that binding; any disagreement rejects the
+    /// candidate and continues the fallback ladder, so a different
+    /// current-default resolution is never labelled as the cached candidate.
+    pub fn prepare_resources_with_cache(
+        &self,
+        cache: impl FnOnce() -> Result<Option<Candidate>, Diagnostic>,
+        mut resources: impl FnMut(
+            &Snapshot,
+            &str,
+            bool,
+            Option<&crate::ResourceBinding>,
+        ) -> Result<Option<crate::ResourceBinding>, Diagnostic>,
     ) -> Result<Prepared, Vec<Diagnostic>> {
         let mut diagnostics = Vec::new();
         if let Some(snapshot) = &self.retained {
             match validate_inline(snapshot, &self.binding, &self.context)
-                .and_then(|_| resources(snapshot, &self.context, self.shell))
-            {
-                Ok(()) => {
-                    return Ok(self.prepared(
-                        Arc::new(snapshot.clone()),
-                        PresentationKind::Retained,
-                        diagnostics,
-                    ));
+                .and_then(|_| {
+                    resources(
+                        snapshot,
+                        &self.context,
+                        self.shell,
+                        self.retained_binding.as_ref(),
+                    )
+                }) {
+                Ok(binding) => {
+                    if self.retained_binding.is_some()
+                        && binding.as_ref() != self.retained_binding.as_ref()
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            "binding_mismatch",
+                            "resources",
+                            "Prepared binding differs from the retained activation binding",
+                        ));
+                    } else {
+                        return Ok(self.prepared(
+                            Arc::new(snapshot.clone()),
+                            PresentationKind::Retained,
+                            binding,
+                            diagnostics,
+                        ));
+                    }
                 }
                 Err(error) => diagnostics.push(error),
             }
@@ -107,7 +167,12 @@ impl Request {
                 && candidate.context == self.context
                 && candidate.shell == self.shell
             {
-                resources(&candidate.snapshot, &self.context, self.shell)
+                resources(
+                    &candidate.snapshot,
+                    &self.context,
+                    self.shell,
+                    candidate.binding.as_ref(),
+                )
             } else {
                 Err(Diagnostic::new(
                     "wrong_cache_target",
@@ -116,12 +181,23 @@ impl Request {
                 ))
             };
             match check {
-                Ok(()) => {
-                    return Ok(self.prepared(
-                        candidate.snapshot,
-                        PresentationKind::Cached,
-                        diagnostics,
-                    ));
+                Ok(binding) => {
+                    if candidate.binding.is_some()
+                        && binding.as_ref() != candidate.binding.as_ref()
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            "binding_mismatch",
+                            "resources",
+                            "Prepared binding differs from the cached activation binding",
+                        ));
+                    } else {
+                        return Ok(self.prepared(
+                            candidate.snapshot,
+                            PresentationKind::Cached,
+                            binding,
+                            diagnostics,
+                        ));
+                    }
                 }
                 Err(error) => diagnostics.push(error),
             }
@@ -143,11 +219,16 @@ impl Request {
                 desktop,
                 effective,
             };
-            resources(&snapshot, &self.context, self.shell)?;
-            Ok::<_, Diagnostic>(Arc::new(snapshot))
+            let binding = resources(&snapshot, &self.context, self.shell, None)?;
+            Ok::<_, Diagnostic>((Arc::new(snapshot), binding))
         })();
         match embedded {
-            Ok(snapshot) => Ok(self.prepared(snapshot, PresentationKind::Embedded, diagnostics)),
+            Ok((snapshot, binding)) => Ok(self.prepared(
+                snapshot,
+                PresentationKind::Embedded,
+                binding,
+                diagnostics,
+            )),
             Err(error) => {
                 diagnostics.push(error);
                 Err(diagnostics)
@@ -158,12 +239,14 @@ impl Request {
         &self,
         snapshot: Arc<Snapshot>,
         kind: PresentationKind,
+        resources: Option<crate::ResourceBinding>,
         diagnostics: Vec<Diagnostic>,
     ) -> Prepared {
         Prepared {
             request: self.clone(),
             snapshot,
             kind,
+            resources,
             diagnostics,
         }
     }
@@ -236,4 +319,141 @@ pub(crate) fn validate_inline(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(set_id: &str) -> crate::ResourceBinding {
+        crate::ResourceBinding {
+            schema: crate::RESOURCE_SCHEMA,
+            set_id: set_id.into(),
+            manifest_blake3: "a".repeat(64),
+            interpretation: crate::resource_interpretation(),
+            icons: None,
+        }
+    }
+    fn fixture() -> Binding {
+        Binding {
+            instance: "fixture".into(),
+            profile: "default".into(),
+        }
+    }
+    fn snapshot() -> Snapshot {
+        let desktop = Desktop::default();
+        Snapshot {
+            schema: SCHEMA,
+            binding: fixture(),
+            incarnation: "authority".into(),
+            revision: Revision(1),
+            design_revision: Revision(1),
+            source_digest: source_digest(EMBEDDED_DEFAULT_SOURCE),
+            effective: resolve(&desktop).unwrap(),
+            desktop,
+        }
+    }
+    fn request(retained: Option<Snapshot>, retained_binding: Option<crate::ResourceBinding>) -> Request {
+        Request {
+            owner: 1,
+            serial: 2,
+            generation: None,
+            binding: fixture(),
+            context: "app:ced".into(),
+            shell: false,
+            retained,
+            retained_binding,
+        }
+    }
+    fn candidate(binding: Option<crate::ResourceBinding>) -> Candidate {
+        Candidate {
+            snapshot: Arc::new(snapshot()),
+            context: "app:ced".into(),
+            shell: false,
+            binding,
+        }
+    }
+    #[test]
+    fn expected_binding_must_be_returned_exactly_for_retained_candidates() {
+        let expected = binding("expected");
+        // A different returned binding rejects the retained candidate and the
+        // ladder continues; the diagnostic names the disagreement.
+        let request = request(Some(snapshot()), Some(expected.clone()));
+        let prepared = request
+            .prepare_resources_with_cache(|| Ok(None), |_, _, _, expected_binding| {
+                match expected_binding {
+                    Some(expected_binding) => {
+                        assert_eq!(expected_binding, &expected);
+                        Ok(Some(binding("different")))
+                    }
+                    None => Ok(None),
+                }
+            })
+            .unwrap();
+        assert_eq!(prepared.kind(), PresentationKind::Embedded);
+        assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
+        assert!(prepared.resources().is_none());
+        // Returning the exact expected binding accepts the retained candidate.
+        let request = request(Some(snapshot()), Some(expected.clone()));
+        let prepared = request
+            .prepare_resources_with_cache(
+                || panic!("a validated retained candidate must win"),
+                |_, _, _, expected_binding| {
+                    assert_eq!(expected_binding, Some(&expected));
+                    Ok(Some(expected.clone()))
+                },
+            )
+            .unwrap();
+        assert_eq!(prepared.kind(), PresentationKind::Retained);
+        assert_eq!(prepared.resources(), Some(&expected));
+        assert!(prepared.diagnostics().is_empty());
+    }
+    #[test]
+    fn cached_expected_binding_must_match_exactly() {
+        let pinned = binding("pinned");
+        let request = request(None, None);
+        // The exact recorded binding accepts the cached candidate.
+        let prepared = request
+            .prepare_resources_with_cache(|| Ok(Some(candidate(Some(pinned.clone())))), |_, _, _, expected_binding| {
+                assert_eq!(expected_binding, Some(&pinned));
+                Ok(Some(pinned.clone()))
+            })
+            .unwrap();
+        assert_eq!(prepared.kind(), PresentationKind::Cached);
+        assert_eq!(prepared.resources(), Some(&pinned));
+        assert!(prepared.diagnostics().is_empty());
+        // A default resolved differently now is never labelled as the cached
+        // candidate: the candidate is rejected and the ladder continues.
+        let prepared = request
+            .prepare_resources_with_cache(|| Ok(Some(candidate(Some(pinned.clone())))), |_, _, _, expected_binding| {
+                match expected_binding {
+                    Some(expected_binding) => {
+                        assert_eq!(expected_binding, &pinned);
+                        Ok(Some(binding("current-default")))
+                    }
+                    None => Ok(None),
+                }
+            })
+            .unwrap();
+        assert_eq!(prepared.kind(), PresentationKind::Embedded);
+        assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
+    }
+    #[test]
+    fn legacy_prepare_with_cache_cannot_claim_a_resource_bound_candidate() {
+        let request = request(None, None);
+        // The legacy wrapper returns no binding, so a schema-2 candidate's
+        // expected binding can never be satisfied: it falls through instead of
+        // pretending the recorded resources were verified.
+        let prepared = request
+            .prepare_with_cache(|| Ok(Some(candidate(Some(binding("pinned"))))), |_, _, _| Ok(()))
+            .unwrap();
+        assert_eq!(prepared.kind(), PresentationKind::Embedded);
+        assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
+        // A legacy envelope without a binding behaves exactly as before.
+        let prepared = request
+            .prepare_with_cache(|| Ok(Some(candidate(None))), |_, _, _| Ok(()))
+            .unwrap();
+        assert_eq!(prepared.kind(), PresentationKind::Cached);
+        assert!(prepared.diagnostics().is_empty());
+    }
 }

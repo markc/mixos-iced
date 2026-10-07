@@ -282,3 +282,147 @@ fn replaced_lock_fences_the_old_writer() {
     assert_eq!(writer.write(&save).unwrap_err().code, "cache_lock_replaced");
     assert_eq!(replacement.write(&save).unwrap(), WriteOutcome::Written);
 }
+
+fn binding_fixture() -> ResourceBinding {
+    ResourceBinding {
+        schema: RESOURCE_SCHEMA,
+        set_id: "core-icons".into(),
+        manifest_blake3: "a".repeat(64),
+        interpretation: cache::resource_interpretation(),
+        icons: None,
+    }
+}
+fn activate_resources(
+    state: &mut Consumer,
+    revision: u64,
+    density: f64,
+    resources: Option<ResourceBinding>,
+) {
+    let value = snapshot(revision, density);
+    if state.generation().is_none() {
+        let subscribe = state.connected(1).unwrap();
+        let read = state.complete(&subscribe, Ok(None)).unwrap();
+        state.complete(&read, Ok(Some(value)));
+    } else {
+        state.observe(1, value);
+    }
+    if let Some(update) = state.pending().cloned() {
+        assert!(state.acknowledge_resources(&update, resources));
+    }
+}
+#[test]
+fn resource_acknowledgement_captures_binding_and_round_trips_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = consumer();
+    let binding = binding_fixture();
+    activate_resources(&mut state, 1, 1.0, Some(binding.clone()));
+    let save = state.cache_save().unwrap();
+    assert_eq!(save.binding(), Some(&binding));
+    // The capture identity is stable for the same applied activation.
+    assert!(save.same_capture(&state.cache_save().unwrap()));
+    let mut writer = Writer::open(dir.path(), &state).unwrap();
+    assert_eq!(writer.write(&save).unwrap(), WriteOutcome::Written);
+    let candidate = cache::load(dir.path(), &state).unwrap();
+    assert_eq!(candidate.snapshot(), state.applied().unwrap());
+    assert_eq!(candidate.binding(), Some(&binding));
+    // A stale no-binding save cannot replace the resource-bound capture, and
+    // a fresh resource-bound save supersedes it normally.
+    activate_resources(&mut state, 2, 1.4, Some(binding.clone()));
+    let new = state.cache_save().unwrap();
+    assert_eq!(writer.write(&new).unwrap(), WriteOutcome::Written);
+    assert_eq!(writer.write(&save).unwrap(), WriteOutcome::Superseded);
+    assert_eq!(writer.write(&new).unwrap(), WriteOutcome::Unchanged);
+    let candidate = cache::load(dir.path(), &state).unwrap();
+    assert_eq!(candidate.snapshot().revision, Revision(2));
+    assert_eq!(candidate.binding(), Some(&binding));
+    // A plain acknowledge captures no binding: the writer keeps emitting the
+    // recognised legacy schema-1 predecessor bytes, which still load.
+    activate_resources(&mut state, 3, 1.7, None);
+    let legacy = state.cache_save().unwrap();
+    assert_eq!(legacy.binding(), None);
+    assert_eq!(writer.write(&legacy).unwrap(), WriteOutcome::Written);
+    let candidate = cache::load(dir.path(), &state).unwrap();
+    assert_eq!(candidate.snapshot().revision, Revision(3));
+    assert_eq!(candidate.binding(), None);
+    assert_eq!(candidate.snapshot(), state.applied().unwrap());
+}
+#[test]
+fn resource_binding_preparation_seam_and_acknowledgement_agree() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding_fixture();
+    // A resource-aware fallback preparation exposes the same renderer-neutral
+    // binding the host later acknowledges, and embedded fallback never
+    // becomes authority or a cache capture.
+    let mut state = consumer();
+    let request = state.fallback_request().unwrap();
+    let prepared = request
+        .prepare_resources_with_cache(|| Ok(None), |_, _, _, expected| {
+            assert_eq!(expected, None, "embedded has no expected binding");
+            Ok(Some(binding.clone()))
+        })
+        .unwrap();
+    assert_eq!(prepared.resources(), Some(&binding));
+    assert!(state.complete_fallback(&request, Ok(prepared)));
+    let update = state.pending().unwrap().clone();
+    assert!(state.acknowledge_resources(&update, Some(binding.clone())));
+    assert_eq!(state.presentation_kind(), Some(PresentationKind::Embedded));
+    assert!(state.cache_save().is_none());
+    // The same binding flows from an applied authority presentation into the
+    // captured save and the schema-2 envelope on disk.
+    activate_resources(&mut state, 1, 1.0, Some(binding.clone()));
+    let save = state.cache_save().unwrap();
+    assert_eq!(save.binding(), Some(&binding));
+    let mut writer = Writer::open(dir.path(), &state).unwrap();
+    assert_eq!(writer.write(&save).unwrap(), WriteOutcome::Written);
+    let candidate = cache::load(dir.path(), &state).unwrap();
+    assert_eq!(candidate.binding(), Some(&binding));
+    assert_eq!(candidate.snapshot(), state.applied().unwrap());
+    assert_eq!(candidate.snapshot().revision, Revision(1));
+}
+#[test]
+fn cold_cache_binding_reaches_the_readiness_check_and_must_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = consumer();
+    let binding = binding_fixture();
+    activate_resources(&mut state, 1, 1.0, Some(binding.clone()));
+    let mut writer = Writer::open(dir.path(), &state).unwrap();
+    assert_eq!(
+        writer.write(&state.cache_save().unwrap()).unwrap(),
+        WriteOutcome::Written
+    );
+    let mut cold = consumer();
+    let candidate = cache::load(dir.path(), &cold).unwrap();
+    assert_eq!(candidate.binding(), Some(&binding));
+    let request = cold.fallback_request().unwrap();
+    // The recorded binding is conveyed to the readiness check; returning it
+    // exactly accepts the cached presentation.
+    let prepared = request
+        .prepare_resources_with_cache(
+            || Ok(Some(candidate.clone())),
+            |_, _, _, expected| {
+                assert_eq!(expected, Some(&binding));
+                Ok(Some(binding.clone()))
+            },
+        )
+        .unwrap();
+    assert_eq!(prepared.kind(), PresentationKind::Cached);
+    assert_eq!(prepared.resources(), Some(&binding));
+    // A readiness check that resolves a different default (or nothing) must
+    // not relabel that different set as the cached candidate.
+    let prepared = request
+        .prepare_resources_with_cache(|| Ok(Some(candidate)), |_, _, _, expected| {
+            match expected {
+                Some(expected) => {
+                    assert_eq!(expected, &binding);
+                    Ok(Some(ResourceBinding {
+                        set_id: "other-default".into(),
+                        ..binding.clone()
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+        .unwrap();
+    assert_eq!(prepared.kind(), PresentationKind::Embedded);
+    assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
+}

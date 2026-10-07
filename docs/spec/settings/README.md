@@ -1,6 +1,6 @@
 # Desktop settings contract
 
-Status: accepted initial authority contract, version 0.1.0. Full desktop consumer
+Status: accepted initial authority contract, version 0.1.1. Full desktop consumer
 integration remains in development. No frozen ABP wire bytes change.
 
 `settingsd` serves one explicitly initialised profile in the initial slice.
@@ -90,8 +90,47 @@ context alone; profile high contrast takes precedence. A custom source is at
 most 256 KiB. Encoded requests are at most 384 KiB. Inline snapshots are at most
 960 KiB, reserving 64 KiB for ABP/broker envelope overhead under the current 1 MiB
 retained limit. Larger settings are refused until native immutable artifact
-delivery is implemented. Required fonts/assets and runtime live capability are
-not yet advertised.
+delivery is implemented.
+
+## Appearance resources reference
+
+`appearance.resources` is an optional versioned subdocument naming one immutable
+asset set by explicit identity, accepted through the ordinary fenced batch as a
+whole object; reset restores omission and nested partial paths such as
+`appearance.resources.set_id` are unknown. The authority validates structure
+only and never opens files, reads a host font database or performs asset I/O.
+
+```json
+{"schema": 1, "set_id": "core-icons",
+ "manifest_blake3": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+ "icons": {"family": "Symbols", "style": "rounded", "weight": 400}}
+```
+
+`schema` must be exactly 1; anything else is unsupported, not ignored.
+`set_id` uses the assets set-ID contract (1–96 ASCII letters, digits, dash or
+underscore). `manifest_blake3` is exactly 64 lowercase hex characters, so a set
+with the same ID and a changed manifest is never the requested set. The optional
+`icons` record selects one declared catalogue: family at most 256 bytes, style
+at most 96 bytes, weight an exact 1–1000 value. Unknown fields anywhere in the
+subdocument fail. Apps never override resources; every effective context
+carries the profile reference verbatim.
+
+Omission means the profile-pinned packaged default and is skipped in BOTH
+authored and effective serialisation. Serialising a null resources field would
+change old omitted-resource bytes and every digest over them (accepted profile,
+snapshot, effective interpretation), so old accepted profiles, old snapshots
+and old cache envelopes remain byte- and digest-identical. An existing old
+strict client rejects a snapshot carrying the new field rather than silently
+applying a changed interpretation; this compatibility boundary is advertised
+in `settings.describe` and contract version 0.1.1 while the top-level snapshot
+schema stays 1. An unavailable set is a consumer preparation fault reported as
+LastGood, never authority rollback or a settingsd font read.
+
+A resource reference change conservatively invalidates resources, text, layout
+and paint in the shared change plan (icon glyphs may change even with identical
+public family names); omission-to-omission colour changes do not re-register
+resources. A reference change participates in full appearance equality, so it
+advances design revision as well as revision.
 
 Snapshot schema 1 includes binding, incarnation, desktop revision, resolved-design
 generation, source digest, complete desktop and effective per-app/desktop design
@@ -106,8 +145,9 @@ Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.
 
-The settings library API is now 0.3.4; authority verbs and snapshot schema remain
-0.1.0 and 1. The shared consumer performs subscribe-before-get over the host's
+The settings library API is now 0.3.5; the contract is 0.1.1 and the snapshot
+schema remains 1. The shared consumer performs subscribe-before-get over the
+host's
 existing supervised Bus connection through its optional native executor. It
 owns no transport/task/incoming receiver. Hosts feed connection generations,
 deliveries and explicit queue loss, execute at most one current action, and
@@ -175,6 +215,37 @@ writer fences superseded applied-generation saves, permits retry of the latest
 failed attempt and reports ambiguous post-rename failure. All I/O belongs off
 the UI loop. Cache failure preserves usable applied data. Real font/asset loading,
 artifact preparation and GUI fallback/first-map timing remain pending.
+
+Cache envelope schema 2 adds a renderer-neutral `ResourceBinding`: schema,
+set ID, exact manifest digest, versioned selection interpretation and optional
+icon reference. Its domain-separated digest covers the unchanged canonical
+snapshot AND the binding, so a legacy snapshot digest can never replay into a
+resource-aware envelope. Resource-aware hosts return the binding from their
+readiness check, pass it to `Consumer::acknowledge_resources` with the same
+staged update, and the captured save writes schema 2. The readiness check is
+also given the expected binding of the candidate it is checking (retained
+activation binding, cached envelope binding, or none for embedded) and must
+return exactly that binding when one is expected; the fallback owner rejects
+disagreement with `binding_mismatch` and continues the ladder, so a different
+current-default resolution is never relabelled as the cached candidate. On
+load, an explicit authored reference must equal the recorded binding exactly
+(`cache_binding_mismatch` otherwise), including an omitted icon selector;
+`ResourceBinding.icons` records the authored optional selector verbatim, and
+the resolved default family/style/weight belongs to appearance evidence,
+never the cache binding. For omission the binding records the host's pinned
+default identity (icons None) without canonical mutation. Bindings never
+carry face IDs, aliases, pointers, filesystem roots or font bytes; cold loads
+re-register from verified set bytes. The resource interpretation is
+feature-independent `settings::resource_interpretation()`; the cache module
+re-exports the same value.
+
+Legacy schema-1 envelopes are read deliberately under the one named
+predecessor interpretation, with their original strict digest/recompile
+checks, and only without an explicit resource reference. Their absent binding
+means this host's packaged-default policy with honest legacy/unpinned-cache
+evidence; they never claim to retain original font bytes. New captures with a
+binding write schema 2; captures without one keep writing the recognised
+legacy predecessor bytes, and no eager rewrite of old files occurs on read.
 
 ## Shell panel preferences
 
@@ -317,8 +388,9 @@ OS process lifecycle here belongs to the test fixture; application calls
 and observations remain native ABP.
 
 This slice does not claim GUI propagation, renderer acknowledgements, presentation,
-GUI offline-fallback/first-map timing, candidate import/watch, immutable artifacts,
-full field provenance, named-profile management, compatibility, scheduled policy,
+GUI offline-fallback/first-map timing, candidate import/watch, live resource
+hosting and font registration, immutable artifact verification, full field
+provenance, named-profile management, compatibility, scheduled policy,
 preview, routed observation or replication. Every deferred feature must extend
 the same authority and shared contracts, with appropriate contract versions and
 migration. Native VT/image presentation and latency gates remain outstanding.

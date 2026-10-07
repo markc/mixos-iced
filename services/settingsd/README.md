@@ -1,6 +1,6 @@
 # settingsd
 
-Headless native ABP desktop settings authority, contract 0.1.0. An established
+Headless native ABP desktop settings authority, contract 0.1.1. An established
 profile has one writer and durable whole-document settings/operation receipts.
 Native publication is retained and owner-stamped by noded. Ced and compd's
 scene-host now consume shared appearance jobs on their existing Bus lifetimes.
@@ -35,6 +35,15 @@ settings readiness. An image must provision its service account's writable
 `MIXOS_ETC/settings` root and explicitly seed once during first installation.
 Automatic startup never receives --allow-create, so lost mounts/directories do
 not silently become new default profiles.
+
+The optional versioned `appearance.resources` reference is accepted through the
+ordinary fenced batch as a whole object; reset restores omission and nested
+partial paths are refused. The authority validates structure only (exact
+subdocument schema, set-ID contract, exact lowercase manifest digest, icon
+family/style/weight bounds) and performs no file, font or asset I/O; an
+unavailable set is a consumer preparation fault and LastGood, never authority
+rollback. Omitted resources stay omitted in authored and effective bytes, so
+old accepted profiles, snapshots and effective digests are byte-identical.
 
 See [the settings contract](../../docs/spec/settings/README.md). Worker tests:
 `cargo test -p settingsd`; real native gate:
