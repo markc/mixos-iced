@@ -5,10 +5,11 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
   if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
   if not contains(["testkit-queue-retirement","native-frame-winit-probe","native-winit-charge-test"],$probe) then raise("ARGS","Unknown native ownership probe") end
   $n = require("nested_host_lib.mix")
+  $h = require("settings_host_lib.mix")
   for each $name in ["compd","noded",$probe]
     if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
   end
-  $owned = {run:nil,bus:nil,session:nil,ok:false}
+  $owned = {run:nil,bus:nil,session:nil,probe:nil,ok:false}
   try
     $owned.run = $n.new_run("/var/tmp/native-probe")
     $root = $owned.run.path
@@ -17,21 +18,57 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
     write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
     write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
     $owned.session = $n.start({bin:$bin .. "/compd",tag:"native-probe",run:$owned.run,
-      config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:150,
+      config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:150,width:1280,height:720,
       env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
     if not $n.wait_ready($owned.session,30) then raise("SETUP","Owned compositor did not register") end
     for each $role in ["weston","compd"]
       $extra = if $role == "weston" then {WAYLAND_DISPLAY:"wl-host"} else {} end
       $command = if $probe == "native-winit-charge-test" then [$bin .. "/" .. $probe,"actual_charge_retires_with_undrained_and_closed_queues","--ignored","--nocapture","--test-threads=1"] else [$bin .. "/" .. $probe] end
-      $result = run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
-      write_file($root .. "/" .. $probe .. "-" .. $role .. ".log",$result.stdout)
-      if not $result.ok or $result.stdout_truncated or not contains($result.stdout,$marker) then
-        raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $result.stdout)
+      $log=$root .. "/" .. $probe .. "-" .. $role .. ".log"
+      if $role == "compd" and $probe == "native-frame-winit-probe" then
+        $owned.probe=spawn($command,{env:$n.client_env($owned.session,$extra),stdout:{file:$log},stderr:"stdout",detach:true})
+        $deadline=time()+10
+        $windows=[]
+        while time() < $deadline and process_alive($owned.probe)
+          $listed=$n.call($owned.session.service,"comp.windows.list",{})
+          if $listed.rc != 0 then raise("NATIVE_PROBE","Cannot inspect owned windows") end
+          $windows=filter($listed.result.windows,fn($row) = $row.pid == $owned.probe)
+          if len($windows) == 17 then break end
+          sleep(0.02)
+        end
+        if len($windows) != 17 then raise("NATIVE_PROBE","Churn windows did not map: " .. read_file($log)) end
+        -- Hidden surfaces need not be presented. Make every churn window
+        -- visible using the compositor's existing native ABP placement verb.
+        $x=0
+        $y=0
+        for each $window in $windows
+          $placed=$n.call($owned.session.service,"comp.window.place",{id:$window.id,generation:$window.generation,
+            x:$x,y:$y,width:120,height:96})
+          if $placed.rc != 0 then raise("NATIVE_PROBE","Owned grid placement failed: " .. json_encode($placed)) end
+          $x=$x+150
+          if $x >= 900 then $x=0; $y=$y+130 end
+        end
+        $deadline=time()+35
+        while time() < $deadline and process_alive($owned.probe)
+          sleep(0.02)
+        end
+        if process_alive($owned.probe) then raise("NATIVE_PROBE","Owned frame probe exceeded its deadline") end
+        $output=read_file($log)
+        $owned.probe=nil
+        if not contains($output,$marker) then raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $output) end
+      else
+        $result = run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
+        write_file($log,$result.stdout)
+        if not $result.ok or $result.stdout_truncated or not contains($result.stdout,$marker) then
+          raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $result.stdout)
+        end
+        $output=$result.stdout
       end
-      print($role .. " " .. trim($result.stdout))
+      print($role .. " " .. trim($output))
     end
     $owned.ok = true
   finally
+    if $owned.probe != nil then $h.stop($owned.probe) end
     if $owned.session != nil then $n.stop($owned.session) end
     if $owned.bus != nil then $n.stop_bus($owned.bus) end
     $n.finish_run($owned.run,$owned.ok)
