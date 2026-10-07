@@ -22,6 +22,7 @@ tests that fail if a re-vendor drops an edit.
 | winit | `winit/` | iced-rs fork 0.30.8, `05b8ff17a06562f0a10bb46e6eaacbe2a95cb5ed` | git-source patch | native Wayland data-device source/offer lifecycle and held-press ownership | Apache-2.0; `PATCHES.md`, validation tests and native desktop acceptance |
 | smithay-client-toolkit | `sctk/` | 0.19.2, `c583de8dd5651f8168c6513cd282137c42aae049` | `[patch.crates-io]` | transfer dropped-offer ownership to the native adapter | MIT; overlapping native-transfer acceptance |
 | dirs-sys | `dirs-sys/` | crates.io 0.5.0, `8bcd4aa2c35990d57a2cff2953793525fc42709c` | `[patch.crates-io]` | replace one OptionExt comparison with standard Option equality; remove option-ext | MIT OR Apache-2.0; upstream XDG tests and licence gate |
+| cosmic-text | `cosmic-text/` | crates.io 0.19.0 (SHA-256 `be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73`, matches Cargo.lock) | `[patch.crates-io]` | **yes, additions only**: pinned-alias shaping (matching, both Basic/Advanced fallback paths, sealed weights, variation coords) + atomic `FontSystem::register_fonts` transaction + `refresh_database`; see `cosmic-text/PATCHES.md` | MIT OR Apache-2.0; packaged test fonts cleared per font under SIL OFL 1.1 (Noto, Inter, Fira Mono) |
 
 The iced fork also exposes the neutral drag event/request bridge used by the
 native gallery; `iced/PATCHES.md` records it. The toolkit library does not
