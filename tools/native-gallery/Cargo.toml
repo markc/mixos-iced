@@ -21,6 +21,12 @@ tiny-skia = ["toolkit/tiny-skia"]
 wgpu = ["toolkit/wgpu"]
 gallery-wgpu = ["gallery", "wgpu", "toolkit/gallery-wgpu"]
 image = ["toolkit/image"]
+frame-probes = ["dep:winit", "dep:softbuffer"]
+
+[[bin]]
+name = "native-frame-winit-probe"
+path = "src/bin/native-frame-winit-probe.rs"
+required-features = ["frame-probes"]
 
 [dependencies]
 toolkit = { workspace = true }
@@ -29,6 +35,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 fluent-bundle = "0.15"
 iced_futures = { workspace = true }
+winit = { path = "../../vendor/winit", version = "0.30.8", optional = true, default-features = false, features = ["wayland", "wayland-dlopen", "rwh_06"] }
+softbuffer = { version = "=0.4.8", optional = true, default-features = false, features = ["wayland", "wayland-dlopen"] }
 
 [lints.clippy]
 mod_module_files = "deny"
