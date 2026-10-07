@@ -62,9 +62,9 @@ pub(super) fn draw<R: atext::Renderer<Font = Font>>(
     quad(r, g.bounds, p.background);
 
     let first = scroll.first_line;
-    let last = first
-        .saturating_add(g.drawn_rows().saturating_sub(1))
-        .min(text.line_count());
+    // Keep one row below the viewport: text_clip permits half a line of
+    // upper ink overhang, so tall accents there can still enter the viewport.
+    let last = first.saturating_add(g.drawn_rows()).min(text.line_count());
     let (x0, x1) = (scroll.x_cells, scroll.x_cells + g.cols() + 1);
     let mut cached = st.rows.borrow_mut();
     {
@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_rows_preserve_ascii_tabs_unicode_and_partial_viewport_output() {
+    fn cached_rows_preserve_ascii_tabs_unicode_and_viewport_guard_row() {
         let text = Text::from_text("alpha beta\t中 e\u{301}\nnext\nlast").unwrap();
         let palette = palette();
         let ed = Editor {
@@ -1226,8 +1226,8 @@ mod tests {
                 .iter()
                 .map(|t| t.content.as_str())
                 .collect::<Vec<_>>(),
-            ["alpha beta", "中", " ", "e\u{301}", "next"],
-            "contiguous ASCII groups, skipped tabs, intact Unicode graphemes; only visible rows",
+            ["alpha beta", "中", " ", "e\u{301}", "next", "last"],
+            "contiguous ASCII groups, skipped tabs, intact Unicode graphemes and the ink-overhang guard row",
         );
         let first = std::mem::take(&mut r.texts);
         draw(&ed, &st, &g, &mut r, mouse::Cursor::Unavailable);
