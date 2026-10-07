@@ -8,6 +8,8 @@
 - Quoin uses the same borrowed native worker and presentation coordinator for
   scene content, menus and decoration. Geometry and native frame proof remain
   pending.
+- Add `wgpu-bare` for hosts that select GPU backends themselves. Quoin keeps its
+  existing GLES backend without enabling Vulkan through application hosting.
 
 ## 0.1.3
 

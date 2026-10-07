@@ -18,7 +18,7 @@ contract = "none"
 workspace = true
 
 [dependencies]
-application = { workspace = true, features = ["settings-native", "wgpu"] }
+application = { workspace = true, features = ["settings-native", "wgpu-bare"] }
 appearance = { workspace = true }
 settings = { workspace = true, features = ["native"] }
 # conf.mix (strict data) and its path in the MixOS etc dir, as Quoin reads them.
