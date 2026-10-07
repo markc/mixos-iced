@@ -263,7 +263,8 @@ impl BusHandle {
             return Err("appearance queue exhausted".into());
         };
         if let Some(id) = &request.reply_id
-            && (!self.is_current(id) || id.ticket.take().is_none()) {
+            && (!self.is_current(id) || id.ticket.take().is_none())
+        {
             permit.finish();
             return Err("Bus theme request retired".into());
         }

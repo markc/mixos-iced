@@ -83,9 +83,11 @@ pub fn sidebar<'a>(
     for (label, value) in fields {
         content = content.push(
             column![
-                look.ui_text(look.sidebar_px() / look.px).text(label)
+                look.ui_text(look.sidebar_px() / look.px)
+                    .text(label)
                     .color(look.tokens.palette.muted_text),
-                look.ui_text(look.sidebar_px() / look.px).text(value)
+                look.ui_text(look.sidebar_px() / look.px)
+                    .text(value)
                     .wrapping(application::iced::advanced::text::Wrapping::WordOrGlyph)
                     .shaping(application::iced::advanced::text::Shaping::Advanced)
                     .color(look.tokens.palette.text)

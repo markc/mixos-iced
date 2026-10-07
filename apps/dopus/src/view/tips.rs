@@ -29,7 +29,8 @@ pub fn tip<'a, M: 'a>(
     // iced's default delay until the design supplies a duration role.
     tooltip(
         content,
-        look.small_text().text(label)
+        look.small_text()
+            .text(label)
             .shaping(application::iced::advanced::text::Shaping::Advanced)
             .wrapping(application::iced::advanced::text::Wrapping::WordOrGlyph),
         tooltip::Position::Bottom,

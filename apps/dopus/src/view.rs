@@ -64,13 +64,25 @@ pub struct Look {
 
 impl Look {
     pub fn ui_text(&self, scale: f32) -> toolkit::typography::TextStyle {
-        toolkit::typography::TextStyle { font: self.ui_font, size: self.px * scale, line_height: self.ui_line_height.map(|height| height * scale) }
+        toolkit::typography::TextStyle {
+            font: self.ui_font,
+            size: self.px * scale,
+            line_height: self.ui_line_height.map(|height| height * scale),
+        }
     }
     pub fn mono_text(&self, scale: f32) -> toolkit::typography::TextStyle {
-        toolkit::typography::TextStyle { font: self.mono_font, size: self.mono_px * scale, line_height: self.mono_line_height.map(|height| height * scale) }
+        toolkit::typography::TextStyle {
+            font: self.mono_font,
+            size: self.mono_px * scale,
+            line_height: self.mono_line_height.map(|height| height * scale),
+        }
     }
     pub fn small_text(&self) -> toolkit::typography::TextStyle {
-        toolkit::typography::TextStyle { font: self.small_font, size: self.small_px, line_height: self.small_line_height }
+        toolkit::typography::TextStyle {
+            font: self.small_font,
+            size: self.small_px,
+            line_height: self.small_line_height,
+        }
     }
     pub fn from_theme(theme: &crate::theme::Theme) -> Self {
         Self {
