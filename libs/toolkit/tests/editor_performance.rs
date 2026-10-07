@@ -248,7 +248,10 @@ fn pixel_difference(
     last_damage: Rectangle,
     scale: f32,
 ) -> Option<String> {
-    assert_eq!(actual.size(), expected.size());
+    assert_eq!(
+        (actual.width(), actual.height()),
+        (expected.width(), expected.height())
+    );
     let width = actual.width() as usize;
     let physical = last_damage * scale;
     let mut count = 0;
