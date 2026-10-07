@@ -1091,11 +1091,11 @@ impl Dopus {
                     tasks.push(self.serve_location_focus(id, pane))
                 }
                 Served::ThemeSet { id, scheme, mode } => {
-                    self.theme_request(Some(id), scheme.as_deref(), mode.as_deref());
+                    tasks.push(self.theme_request(Some(id), scheme.as_deref(), mode.as_deref()));
                 }
                 Served::ThemeAction { id, action } => match action {
                     verbs::ThemeAction::Scheme(name) => {
-                        self.theme_request(Some(id), Some(&name), None);
+                        tasks.push(self.theme_request(Some(id), Some(&name), None));
                     }
                     // Mode-toggle resolves against the live applied
                     // selection first (the keyboard path's rule).
@@ -1104,7 +1104,7 @@ impl Dopus {
                             Mode::Dark => Mode::Light,
                             _ => Mode::Dark,
                         };
-                        self.theme_request(Some(id), None, Some(mode.name()));
+                        tasks.push(self.theme_request(Some(id), None, Some(mode.name())));
                     }
                 },
                 Served::Quit { id } => {
@@ -1267,13 +1267,13 @@ impl Dopus {
                     Mode::Dark => Mode::Light,
                     _ => Mode::Dark,
                 };
-                self.theme_request(None, None, Some(mode.name()));
+                tasks.push(self.theme_request(None, None, Some(mode.name())));
                 continue;
             }
             if let Some(name) = verbs::scheme_action(*action) {
                 // The action names are exactly the scheme names; the fenced
                 // request validates them against the authority's vocabulary.
-                self.theme_request(None, Some(name), None);
+                tasks.push(self.theme_request(None, Some(name), None));
                 continue;
             }
             match verbs::apply_action(*action, &mut self.core) {
@@ -1286,14 +1286,14 @@ impl Dopus {
                 // arm does.
                 Ok(verbs::Applied::Theme(action)) => match action {
                     verbs::ThemeAction::Scheme(name) => {
-                        self.theme_request(None, Some(&name), None);
+                        tasks.push(self.theme_request(None, Some(&name), None));
                     }
                     verbs::ThemeAction::ModeToggle => {
                         let mode = match self.content().theme.mode {
                             Mode::Dark => Mode::Light,
                             _ => Mode::Dark,
                         };
-                        self.theme_request(None, None, Some(mode.name()));
+                        tasks.push(self.theme_request(None, None, Some(mode.name())));
                     }
                 },
                 Ok(verbs::Applied::Quit) => quit = true,
@@ -2168,7 +2168,7 @@ mod tests {
         let _ = app.begin_edit(PaneId::Left);
         let draft = "~/unfinished draft".to_owned();
         let _ = app.update(Msg::LocationInput(draft.clone()));
-        let _ = app.serve_location_focus(1, PaneId::Left);
+        let _ = app.serve_location_focus(1.into(), PaneId::Left);
         assert_eq!(app.editing, Some((PaneId::Left, draft)));
         assert_eq!(app.core.active(), PaneId::Left);
         assert!(app.router.lock().unwrap().focus_editable);
@@ -2182,7 +2182,7 @@ mod tests {
         app.core.navigate(PaneId::Right, right);
         let _ = app.begin_edit(PaneId::Left);
         let _ = app.update(Msg::LocationInput("~/unfinished draft".into()));
-        let _ = app.serve_location_focus(1, PaneId::Right);
+        let _ = app.serve_location_focus(1.into(), PaneId::Right);
         assert_eq!(
             app.editing,
             Some((PaneId::Right, pane_path_text(&app.core, PaneId::Right)))
