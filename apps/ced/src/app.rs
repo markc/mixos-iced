@@ -120,15 +120,27 @@ struct LintTrack {
     note: Option<String>,
 }
 
+enum BootstrapOpen {
+    New,
+    Paths(Vec<String>),
+}
+
 pub struct App {
     controller: Controller,
     bus: BusHandle,
     timers: Timers,
     dirs: Option<AppDirs>,
-    session_writer: crate::session::SessionWriter,
+    session_writer: Option<crate::session::SessionWriter>,
     config: Config,
     theme: Theme,
     settings: SettingsSession<Theme>,
+    registered: bool,
+    bootstrap_paths: Vec<String>,
+    bootstrap_opens: Vec<BootstrapOpen>,
+    bootstrap_touched: bool,
+    registration_refused: bool,
+    handoff_pending: bool,
+    launched: Instant,
     zoom_px: Option<u16>,
     whitespace: bool,
     line_numbers: bool,
@@ -180,22 +192,9 @@ static STREAMS: OnceLock<Mutex<Option<Streams>>> = OnceLock::new();
 
 /// Run the windowed app registered on the Bus as `service`, opening `paths`.
 pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<()> {
-    let (bus, deliveries) = match bus::spawn_settings(service) {
-        Ok(started) => started,
-        Err(bus::StartError::NameTaken) => {
-            // Lost the registration race to another ced (§4.8): hand it the
-            // paths if it answers, otherwise say why we cannot run.
-            if bus::probe_running(service) {
-                return bus::forward_open(service, &paths)
-                    .map_err(|e| anyhow::anyhow!("forwarding to the running ced: {e}"));
-            }
-            anyhow::bail!("the Bus name `{service}` is taken, but nothing answers ced.ping on it");
-        }
-        Err(bus::StartError::Rejected(message)) => {
-            anyhow::bail!("noded refused registration as `{service}`: {message}")
-        }
-        Err(bus::StartError::Unreachable(message)) => anyhow::bail!("no Bus broker: {message}"),
-    };
+    let launched = Instant::now();
+    let (bus, deliveries) = bus::spawn_settings(service)
+        .map_err(|error| anyhow::anyhow!("Ced bootstrap: {error}"))?;
     let (timers, fired) = Timers::start();
     let installed = STREAMS.set(Mutex::new(Some(Streams {
         deliveries,
@@ -236,10 +235,17 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         remote_carets: config.remote_carets,
         zoom_px: None,
         dirs,
-        session_writer: crate::session::SessionWriter::spawn(),
+        session_writer: Some(crate::session::SessionWriter::spawn()),
         config,
         theme,
         settings,
+        registered: false,
+        bootstrap_paths: paths,
+        bootstrap_opens: Vec::new(),
+        bootstrap_touched: false,
+        registration_refused: false,
+        handoff_pending: false,
+        launched,
         panel: None,
         modal: None,
         modal_queue: Default::default(),
@@ -285,11 +291,7 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
     if let Some(p) = &session_path {
         app.controller.set_session(crate::session::load(p));
     }
-    let mut effects = app.controller.start();
-    if !paths.is_empty() {
-        effects.extend(app.controller.open_paths(&paths, Intent::ui(0)));
-    }
-    let boot = app.perform(effects);
+    let boot = app.start_registered();
     application::start(
         (app, boot),
         App::update,
@@ -332,6 +334,54 @@ fn streams() -> impl application::iced::futures::Stream<Item = Msg> {
 // ── update ──────────────────────────────────────────────────────────────────
 
 impl App {
+    fn start_registered(&mut self) -> Task<Msg> {
+        if self.registered || self.quitting || self.bus.registration_generation() == 0 {
+            return Task::none();
+        }
+        self.registered = true;
+        let mut effects = self.controller.start();
+        let paths = std::mem::take(&mut self.bootstrap_paths);
+        if !paths.is_empty() {
+            effects.extend(self.controller.open_paths(&paths, Intent::ui(0)));
+        }
+        for pending in std::mem::take(&mut self.bootstrap_opens) {
+            match pending {
+                BootstrapOpen::New => effects.extend(self.controller.on_action(None, ActionId::FileNew, Intent::ui(0))),
+                BootstrapOpen::Paths(paths) => effects.extend(self.controller.open_paths(&paths, Intent::ui(0))),
+            }
+        }
+        self.perform(effects)
+    }
+
+    fn open_ui_paths(&mut self, paths: Vec<String>) -> Task<Msg> {
+        if !self.registered {
+            self.bootstrap_touched = true;
+            self.bootstrap_opens.push(BootstrapOpen::Paths(paths));
+            return Task::none();
+        }
+        let intent = Intent::ui(self.controller.active().unwrap_or(0));
+        let effects = self.controller.open_paths(&paths, intent);
+        self.perform(effects)
+    }
+
+    fn persistent_status(&self) -> String {
+        use settings::fallback::PresentationKind;
+        let evidence = self.settings.host().consumer().evidence();
+        let kind = match evidence.kind {
+            Some(PresentationKind::Current) => "settings-current",
+            Some(PresentationKind::Cached) => "settings-cached",
+            Some(PresentationKind::Embedded) => "settings-embedded",
+            Some(PresentationKind::Retained) => "settings-retained",
+            Some(PresentationKind::LastGood) => "settings-last-good",
+            None => "settings-bootstrap",
+        };
+        let connection = if self.bus.connected() { "bus-connected" }
+            else if self.registration_refused { "bus-refused" }
+            else if self.registered { "bus-disconnected" }
+            else { "bus-connecting" };
+        format!("{} · {}", crate::strings::label(kind), crate::strings::label(connection))
+    }
+
     fn title(&self) -> String {
         match self.active_tab() {
             Some(tab) => {
@@ -363,9 +413,19 @@ impl App {
                 .record_frame(self.update_us + self.view_us.get(), None);
             self.update_us = 0;
         }
+        if self.quitting {
+            return match msg {
+                Msg::Bus(delivery @ Delivery::Stopped { .. }) => self.on_delivery(delivery),
+                _ => Task::none(),
+            };
+        }
+        if !self.registered && matches!(&msg, Msg::Action(_) | Msg::Editor(..) | Msg::Dialog(_) | Msg::Paste(..) | Msg::RunMacro(_)) {
+            self.bootstrap_touched = true;
+        }
+        let registered = self.start_registered();
         let kind = msg_kind(&msg);
-        let task = self.dispatch(msg);
-        let task = Task::batch([task, self.after_transition()]);
+        let task = Task::batch([registered, self.dispatch(msg)]);
+        let task = if self.quitting { task } else { Task::batch([task, self.after_transition()]) };
         let spent = started.elapsed().as_micros() as u64;
         if spent > SLOW_US {
             // Evidence for the view_us budget: which message cost the frame.
@@ -535,7 +595,6 @@ impl App {
                 // The controller debounces session writes itself.
                 Effect::SaveSession => self.save_session(),
                 Effect::Quit => {
-                    self.bus.perform(&effect);
                     tasks.push(self.quit());
                 }
             }
@@ -545,28 +604,71 @@ impl App {
 
     fn on_delivery(&mut self, delivery: Delivery) -> Task<Msg> {
         match delivery {
+            Delivery::Stopped { faults } => {
+                eprintln!("CED_SHUTDOWN {}", serde_json::json!({"faults": faults}));
+                application::iced::exit()
+            }
+            Delivery::Registered => self.start_registered(),
+            Delivery::RegistrationFailed(error) => {
+                // Watch may coalesce a successful register with later Fatal.
+                // Actual generation, not a previously delivered edge, decides
+                // whether this instance ever owned the name.
+                let start = self.start_registered();
+                self.registration_refused = true;
+                if !self.registered && !self.bootstrap_touched && !self.handoff_pending && matches!(error, bus::StartError::NameTaken) {
+                    self.handoff_pending = true;
+                    self.bus.forward_bootstrap(self.bootstrap_paths.clone());
+                } else {
+                    tracing::warn!(%error, "Ced registration stopped; keeping the window and editor state");
+                }
+                start
+            }
+            Delivery::HandoffFinished(result) => {
+                self.handoff_pending = false;
+                match result {
+                    Ok(()) if !self.registered && self.bus.registration_generation() == 0 && !self.bootstrap_touched => self.quit(),
+                    Ok(()) => Task::none(),
+                    Err(error) => { tracing::warn!(%error, "Ced initial handoff failed"); Task::none() }
+                }
+            }
             Delivery::Incoming(incoming) => {
                 let effects = self.controller.on_incoming(incoming);
                 self.perform(effects)
             }
             Delivery::Command(cmd) => {
-                let effects = self.controller.on_bus_command(cmd);
+                let describe = cmd.verb == "app.describe";
+                let id = cmd.id;
+                let mut effects = self.controller.on_bus_command(cmd);
+                if describe {
+                    let evidence = self.settings.host().consumer().evidence();
+                    for effect in &mut effects {
+                        if let Effect::Respond { id: reply, body, .. } = effect
+                            && *reply == id
+                            && let Ok(serde_json::Value::Object(mut object)) = serde_json::from_str(body)
+                        {
+                            object.insert("settings".into(), serde_json::to_value(&evidence).expect("settings evidence"));
+                            object.insert("settings_cache".into(), serde_json::json!({
+                                "persisted": self.settings.cache_persisted(),
+                                "fault": self.settings.cache_fault(),
+                                "fallback_diagnostics": self.settings.fallback_diagnostics(),
+                            }));
+                            *body = serde_json::Value::Object(object).to_string();
+                        }
+                    }
+                }
                 self.perform(effects)
             }
             Delivery::Settings(mailbox) => {
                 for event in mailbox.take() {
-                    let (changed, jobs) =
-                        self.settings.handle(event, self.bus.settings_generation());
+                    let theme = &mut self.theme;
+                    let (changed, jobs) = self.settings.handle_with(event, self.bus.settings_generation(), |presentation| {
+                        *theme = presentation.content().clone();
+                    });
                     if changed.is_some() {
-                        // No await can interleave the activation and this
-                        // replacement of all theme data used by the view.
-                        self.theme = self
-                            .settings
-                            .host()
-                            .presentation()
-                            .expect("activated presentation")
-                            .content()
-                            .clone();
+                        eprintln!("CED_SETTINGS {}", serde_json::json!({
+                            "elapsed_ms": self.launched.elapsed().as_millis(),
+                            "evidence": self.settings.host().consumer().evidence(),
+                        }));
                     }
                     self.bus.settings_jobs(jobs);
                 }
@@ -602,6 +704,13 @@ impl App {
     }
 
     fn on_ui_action(&mut self, action: ActionId) -> Task<Msg> {
+        if !self.registered {
+            self.bootstrap_touched = true;
+            if action == ActionId::FileNew {
+                self.bootstrap_opens.push(BootstrapOpen::New);
+                return Task::none();
+            }
+        }
         let tab = self.controller.active();
         let intent = Intent::ui(tab.unwrap_or(0));
         match action {
@@ -971,9 +1080,7 @@ impl App {
                     None => Task::none(),
                     Some(FileOutcome::Open(paths)) => {
                         self.modal = None;
-                        let intent = Intent::ui(self.controller.active().unwrap_or(0));
-                        let effects = self.controller.open_paths(&paths, intent);
-                        self.perform(effects)
+                        self.open_ui_paths(paths)
                     }
                     Some(FileOutcome::SaveAs {
                         tab,
@@ -1238,11 +1345,7 @@ impl App {
             }
             application::iced::window::Event::Unfocused => self.window_focused = false,
             application::iced::window::Event::FileDropped(path) => {
-                let intent = Intent::ui(self.controller.active().unwrap_or(0));
-                let effects = self
-                    .controller
-                    .open_paths(&[path.to_string_lossy().into_owned()], intent);
-                return self.perform(effects);
+                return self.open_ui_paths(vec![path.to_string_lossy().into_owned()]);
             }
             application::iced::window::Event::CloseRequested => return self.quit(),
             _ => {}
@@ -1257,8 +1360,8 @@ impl App {
         }
         self.quitting = true;
         self.save_session();
-        self.session_writer.flush();
-        application::iced::exit()
+        self.bus.shutdown(self.session_writer.take());
+        Task::none()
     }
 
     /// Work that follows any state change: agent-edit badges, marker timers,
@@ -1456,10 +1559,17 @@ impl App {
     }
 
     fn save_session(&mut self) {
+        if !self.registered {
+            return;
+        }
         let Some(path) = self.dirs.as_ref().map(|d| d.session_file()) else {
             return;
         };
-        self.session_writer.save(path, self.controller.session());
+        if let Some(writer) = &self.session_writer
+            && let Err(error) = writer.queue(path, self.controller.session())
+        {
+            tracing::warn!(%error, "Ced session write could not be queued");
+        }
     }
 
     fn recent(&self) -> Vec<String> {
@@ -1629,6 +1739,7 @@ impl App {
             tab,
             self.unprotected(),
             self.status.as_deref(),
+            self.persistent_status(),
         ));
 
         let modal_open = self.modal.is_some();

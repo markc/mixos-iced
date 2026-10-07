@@ -1,6 +1,6 @@
 [package]
 name = "ced"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,9 +18,9 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-application = { workspace = true, features = ["tiny-skia", "settings-native"] }
+application = { workspace = true, features = ["tiny-skia", "settings-cache"] }
 settings = { workspace = true, features = ["native"] }
-toolkit = { workspace = true, features = ["tiny-skia"] }
+toolkit = { workspace = true, features = ["tiny-skia", "i18n"] }
 design.workspace = true
 appearance.workspace = true
 editor-model = { path = "crates/editor-model" }

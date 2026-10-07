@@ -65,6 +65,10 @@ current activation's completed save; `Event::RetryCache` explicitly retries it
 without a timer or failure loop. Replacing the producer retires the writer
 after in-flight work finishes; construction fixes the directory for its life.
 
+`Session::cache_persisted()` exposes the identity from a successful write or
+unchanged receipt for the current capture. It stays empty for superseded saves
+and never implies authority confirmation or presentation.
+
 Call `Worker::flush_cache(deadline)` on the existing shutdown worker to drain
 pending saves within a budget. A timeout cannot interrupt already-running OS
 I/O. Dropping the worker may lose an unstarted save; persistence requires a

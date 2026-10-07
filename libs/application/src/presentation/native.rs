@@ -75,6 +75,8 @@ pub struct Session<T> {
     #[cfg(feature = "settings-cache")]
     cache_fault: Option<Diagnostic>,
     #[cfg(feature = "settings-cache")]
+    cache_persisted: Option<settings::consumer::SnapshotIdentity>,
+    #[cfg(feature = "settings-cache")]
     retry_save: u64,
 }
 impl<T> Session<T> {
@@ -88,6 +90,8 @@ impl<T> Session<T> {
             fallback_diagnostics: Vec::new(),
             #[cfg(feature = "settings-cache")]
             cache_fault: None,
+            #[cfg(feature = "settings-cache")]
+            cache_persisted: None,
             #[cfg(feature = "settings-cache")]
             retry_save: 0,
         }
@@ -103,6 +107,10 @@ impl<T> Session<T> {
     #[cfg(feature = "settings-cache")]
     pub fn cache_fault(&self) -> Option<&Diagnostic> {
         self.cache_fault.as_ref()
+    }
+    #[cfg(feature = "settings-cache")]
+    pub fn cache_persisted(&self) -> Option<&settings::consumer::SnapshotIdentity> {
+        self.cache_persisted.as_ref()
     }
     /// `live` is the connection's current sampled state, read on the UI loop.
     /// Queued lifecycle notices cannot authorise an activation after real loss.
@@ -180,6 +188,9 @@ impl<T> Session<T> {
                     .as_ref()
                     .is_some_and(|current| current.same_capture(&save))
                 {
+                    if matches!(result, Ok(settings::cache::WriteOutcome::Written | settings::cache::WriteOutcome::Unchanged)) {
+                        self.cache_persisted = Some(save.identity());
+                    }
                     self.cache_fault = result.err();
                 }
             }

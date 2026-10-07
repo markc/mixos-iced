@@ -12,6 +12,8 @@ pub mod anchor;
 pub mod audio_style;
 pub mod badge;
 pub mod card;
+#[cfg(feature = "i18n")]
+pub mod catalogue;
 pub mod centered;
 pub mod collapsible;
 pub mod color_picker;

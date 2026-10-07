@@ -394,8 +394,11 @@ pristine iced; an optional native host extension belongs outside the crate.
 
 ## Strings
 
-The widgets draw only what the application gives them. The gallery's own
-labels come from `i18n/en/toolkit.ftl` (Fluent), used by the examples only.
+The widgets draw only what the application gives them. With the optional
+`i18n` feature, `catalogue::Catalogue` parses embedded Fluent resources and
+formats labels and arguments, reporting missing messages and formatting errors.
+The gallery and Ced share this formatter and own their separate catalogues
+under `i18n/en/`. Parsing performs no filesystem work.
 
 ## Examples
 

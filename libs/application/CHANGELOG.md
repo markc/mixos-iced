@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7
+
+- Expose the latest producer-fenced settings cache persistence identity.
+  Written and unchanged saves provide a receipt; superseded or foreign work
+  cannot claim the current presentation was persisted.
+
 ## 0.1.6
 
 - Opt-in `settings-cache` loads resource-checked persistent fallback and saves

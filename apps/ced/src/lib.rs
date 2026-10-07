@@ -23,5 +23,6 @@ pub mod keys;
 pub mod lint;
 pub mod macros;
 pub mod session;
+mod strings;
 pub mod theme;
 pub mod verbs;

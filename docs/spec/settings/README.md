@@ -106,7 +106,7 @@ Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.
 
-The settings library API is now 0.3.3; authority verbs and snapshot schema remain
+The settings library API is now 0.3.4; authority verbs and snapshot schema remain
 0.1.0 and 1. The shared consumer performs subscribe-before-get over the host's
 existing supervised Bus connection through its optional native executor. It
 owns no transport/task/incoming receiver. Hosts feed connection generations,

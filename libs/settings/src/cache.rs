@@ -61,6 +61,11 @@ pub struct Save {
     shell: bool,
 }
 impl Save {
+    /// Identity of this activated capture. Persistence callers can expose a
+    /// successful write receipt without copying the projection or private fence.
+    pub fn identity(&self) -> crate::consumer::SnapshotIdentity {
+        crate::consumer::SnapshotIdentity::from(self.snapshot.as_ref())
+    }
     /// Compare private producer and activation fences without copying data.
     pub fn same_capture(&self, other: &Self) -> bool {
         self.owner == other.owner && self.serial == other.serial

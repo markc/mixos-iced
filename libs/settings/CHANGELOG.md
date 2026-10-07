@@ -1,5 +1,13 @@
 # settings contract changes
 
+## 0.3.4
+
+Expose the public snapshot identity of an activated cache capture so hosts can
+report fenced persistence receipts without copying its projection or private
+producer serial. Authority verbs/schema remain 0.1.0/1. The cache interpretation
+includes the library version; older caches fall back visibly without affecting
+authority history.
+
 ## 0.3.3
 
 Add immutable cache targets for borrowed workers, capture deduplication and

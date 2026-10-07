@@ -119,22 +119,8 @@ fn main() {
     let result = if args.headless {
         ced::headless::run(&args.service, config)
     } else {
-        // Single instance (plan §4.8): a running ced takes the paths.
-        if ced::bus::probe_running(&args.service) {
-            if paths.is_empty() {
-                // Nothing to hand over (a launcher relaunch): the running
-                // instance is the answer, not an error (Opus m6).
-                eprintln!("ced: already running as {}", args.service);
-                return;
-            }
-            match ced::bus::forward_open(&args.service, &paths) {
-                Ok(()) => return,
-                Err(e) => {
-                    eprintln!("ced: a running instance answered but refused the paths: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
+        // Registration and a possible initial-instance handoff run on Ced's
+        // existing Bus worker while its labelled fallback window is usable.
         ced::app::run(&args.service, config, paths)
     };
     if let Err(e) = result {

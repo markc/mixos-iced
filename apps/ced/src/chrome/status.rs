@@ -170,6 +170,7 @@ pub fn view<'a>(
     tab: Option<&'a Tab>,
     unprotected: bool,
     message: Option<&'a str>,
+    persistent: String,
 ) -> Element<'a, Msg> {
     let t = look.tokens;
     let (left, right) = match tab {
@@ -209,6 +210,7 @@ pub fn view<'a>(
         l = l.push(look.small(message).color(t.palette.muted_text));
     }
     let mut r = row![].spacing(18).align_y(Alignment::Center);
+    r = r.push(look.small(persistent).color(t.palette.muted_text));
     for f in right {
         r = r.push(draw(f));
     }

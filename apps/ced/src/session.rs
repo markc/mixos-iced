@@ -87,6 +87,7 @@ pub fn save(path: &std::path::Path, session: &Session) -> std::io::Result<()> {
 pub struct SessionWriter {
     tx: Option<std::sync::mpsc::Sender<(std::path::PathBuf, Session)>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    completion: std::sync::mpsc::Receiver<bool>,
 }
 
 impl Default for SessionWriter {
@@ -98,22 +99,29 @@ impl Default for SessionWriter {
 impl SessionWriter {
     pub fn spawn() -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<(std::path::PathBuf, Session)>();
+        let (completed, completion) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("ced-session".into())
             .spawn(move || {
+                let mut saved = true;
                 while let Ok(mut job) = rx.recv() {
                     while let Ok(newer) = rx.try_recv() {
                         job = newer;
                     }
                     if let Err(e) = save(&job.0, &job.1) {
+                        saved = false;
                         tracing::warn!("ced: saving {}: {e}", job.0.display());
+                    } else {
+                        saved = true;
                     }
                 }
+                let _ = completed.send(saved);
             })
             .ok();
         Self {
             tx: thread.as_ref().map(|_| tx),
             thread,
+            completion,
         }
     }
 
@@ -131,6 +139,12 @@ impl SessionWriter {
         }
     }
 
+    /// GUI queueing never falls back to filesystem work on the event loop.
+    pub fn queue(&self, path: std::path::PathBuf, session: Session) -> Result<(), String> {
+        self.tx.as_ref().ok_or("session writer unavailable")?
+            .send((path, session)).map_err(|_| "session writer stopped".to_owned())
+    }
+
     /// Wait until every queued write is on disk; later saves write inline.
     pub fn flush(&mut self) {
         self.tx = None;
@@ -138,11 +152,43 @@ impl SessionWriter {
             let _ = t.join();
         }
     }
+
+    /// Drain on the host's existing worker, with a bounded receipt. Closing
+    /// the queue lets its one writer finish; timeout detaches that writer and
+    /// never claims its queued state was persisted.
+    pub fn flush_for(&mut self, budget: std::time::Duration) -> bool {
+        self.tx = None;
+        let completed = self.completion.recv_timeout(budget).unwrap_or(false);
+        if completed {
+            if let Some(thread) = self.thread.take() {
+                return thread.join().is_ok();
+            }
+        }
+        self.thread.take();
+        completed
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_writer_receipt_reports_success_failure_and_unavailable_queue() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = SessionWriter::spawn();
+        let path = directory.path().join("session.json");
+        writer.queue(path.clone(), Session::default()).unwrap();
+        assert!(writer.flush_for(std::time::Duration::from_secs(2)));
+        assert!(path.is_file());
+        assert!(writer.queue(path.clone(), Session::default()).is_err());
+        let mut writer = SessionWriter::spawn();
+        let obstruction = directory.path().join("file");
+        std::fs::write(&obstruction, "obstruction").unwrap();
+        writer.queue(obstruction.join("session.json"), Session::default()).unwrap();
+        assert!(!writer.flush_for(std::time::Duration::from_secs(2)));
+        assert_eq!(std::fs::read_to_string(obstruction).unwrap(), "obstruction");
+    }
 
     #[test]
     fn the_writer_keeps_the_newest_session_and_flushes() {

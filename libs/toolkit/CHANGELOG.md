@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5
+
+- Share the gallery's real Fluent formatter as optional `catalogue::Catalogue`
+  for native hosts and widgets. Owners supply their embedded English resource
+  and explicit message IDs; parsing and formatting errors are typed. Gallery
+  and Ced use the same implementation, without a custom Fluent parser.
+
 ## 0.2.4
 
 - Prepared immutable typography defaults and shared text/input builders let

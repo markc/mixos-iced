@@ -38,6 +38,16 @@ pub enum Delivery {
     Incoming(Incoming),
     Command(BusCommand),
     Settings(Mailbox<crate::theme::Theme>),
+    Registered,
+    RegistrationFailed(StartError),
+    HandoffFinished(Result<(), String>),
+    Stopped { faults: Vec<String> },
+}
+
+enum WorkerCommand {
+    Effect(Effect),
+    ForwardOpen(Vec<String>),
+    Shutdown(Option<crate::session::SessionWriter>),
 }
 
 /// Why the Bus could not be started.
@@ -77,7 +87,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Bus (sends, replies, timers, subscriptions). Other effects are the host's
 /// own (chrome, clipboard, session) and are ignored here.
 pub struct BusHandle {
-    tx: tokio::sync::mpsc::UnboundedSender<Effect>,
+    tx: tokio::sync::mpsc::UnboundedSender<WorkerCommand>,
     settings: tokio::sync::watch::Sender<Option<Jobs>>,
     binding: Option<settings::Binding>,
     client: Arc<SupervisedClient>,
@@ -90,6 +100,18 @@ impl BusHandle {
     pub fn settings_generation(&self) -> Option<u64> {
         settings::native::live_generation(&self.client)
     }
+    pub fn registration_generation(&self) -> u64 {
+        self.client.connection_generation()
+    }
+    pub fn connected(&self) -> bool {
+        self.client.is_connected()
+    }
+    pub fn forward_bootstrap(&self, paths: Vec<String>) {
+        let _ = self.tx.send(WorkerCommand::ForwardOpen(paths));
+    }
+    pub fn shutdown(&self, session: Option<crate::session::SessionWriter>) {
+        let _ = self.tx.send(WorkerCommand::Shutdown(session));
+    }
     pub fn settings_jobs(&self, jobs: Jobs) {
         self.settings.send_replace(Some(jobs));
     }
@@ -100,7 +122,7 @@ impl BusHandle {
             | Effect::Timer { .. }
             | Effect::Subscribe { .. }
             | Effect::Quit => {
-                let _ = self.tx.send(effect.clone());
+                let _ = self.tx.send(WorkerCommand::Effect(effect.clone()));
             }
             _ => {}
         }
@@ -167,6 +189,9 @@ fn spawn_inner(
                 settings_rx,
                 desktop_settings,
             ));
+            // A timed-out spawn_blocking cache operation cannot be aborted.
+            // Do not turn bounded worker shutdown into unbounded runtime Drop.
+            runtime.shutdown_timeout(Duration::from_millis(100));
         })
         .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
     match ready_rx.recv() {
@@ -188,7 +213,7 @@ async fn run(
     service: String,
     url: String,
     dtx: UnboundedSender<Delivery>,
-    mut erx: tokio::sync::mpsc::UnboundedReceiver<Effect>,
+    mut erx: tokio::sync::mpsc::UnboundedReceiver<WorkerCommand>,
     ready: std::sync::mpsc::Sender<
         Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>,
     >,
@@ -205,11 +230,12 @@ async fn run(
             return;
         }
     };
-    let connect = SupervisedClient::connect_options(&service, &url)
+    let options = SupervisedClient::connect_options(&service, &url)
         .fatal_on_registration_rejection(true)
-        .bounded_incoming(64)
-        .connect();
-    let client = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+        .bounded_incoming(64);
+    let client = if desktop_settings {
+        Arc::new(options.start())
+    } else { match tokio::time::timeout(CONNECT_TIMEOUT, options.connect()).await {
         Ok(Ok(c)) => Arc::new(c),
         Ok(Err(e)) => {
             let err = match e.registration_rejection() {
@@ -224,14 +250,18 @@ async fn run(
             let _ = ready.send(Err(StartError::Unreachable("connect timed out".into())));
             return;
         }
-    };
+    }};
     let Some(mut incoming) = client.incoming_bounded() else {
         let _ = ready.send(Err(StartError::Unreachable("no incoming channel".into())));
         return;
     };
     let mut state = client.subscribe_state();
     let _ = ready.send(Ok((binding.clone(), Arc::clone(&client))));
-    let mut settings_worker = SettingsWorker::new(Arc::clone(&client), crate::theme::from_settings);
+    let mut settings_worker = match desktop_settings.then(|| crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT)).flatten() {
+        Some(dirs) => SettingsWorker::offline_with_cache(dirs.cache().join("settings"), crate::theme::from_settings),
+        None => SettingsWorker::offline(crate::theme::from_settings),
+    };
+    settings_worker.connect(Arc::clone(&client));
     let settings_mailbox = Mailbox::default();
     let settings_send = |event| {
         if settings_mailbox.publish(event) {
@@ -240,16 +270,28 @@ async fn run(
     };
 
     let mut commands: HashMap<u64, IncomingCommand> = HashMap::new();
+    let mut replies = tokio::task::JoinSet::new();
     let mut next_command = 0u64;
+    let mut incoming_open = true;
+    let mut registered = false;
+    let mut shutdown_session = None;
+    if desktop_settings && client.connection_generation() > 0 {
+        registered = true;
+        let _ = dtx.unbounded_send(Delivery::Registered);
+    }
+    if desktop_settings && matches!(client.state(), ConnState::Fatal | ConnState::ShuttingDown) {
+        let _ = dtx.unbounded_send(Delivery::RegistrationFailed(registration_error(&client)));
+    }
     loop {
         tokio::select! {
+            _ = replies.join_next(), if !replies.is_empty() => {},
             changed = settings_rx.changed() => {
                 if changed.is_err() { break; }
                 let jobs = settings_rx.borrow_and_update().clone();
                 if let Some(jobs) = jobs { settings_worker.replace(jobs); }
             }
             event = settings_worker.next() => { if let Some(event) = event.take() { settings_send(event); } }
-            cmd = incoming.recv() => {
+            cmd = incoming.recv(), if incoming_open => {
                 let cmd = match cmd {
                     Some(BoundedIncomingEvent::Command(cmd)) => cmd,
                     Some(BoundedIncomingEvent::Overflow { .. }) => {
@@ -258,7 +300,12 @@ async fn run(
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
                         continue;
                     }
-                    None => break,
+                    None => {
+                        if !desktop_settings { break; }
+                        incoming_open = false;
+                        settings_send(SettingsEvent::Wake);
+                        continue;
+                    },
                 };
                 if let Some(decoded) = binding.as_ref().and_then(|binding| settings::native::Decoded::from_command(binding, &cmd)) {
                     settings_send(SettingsEvent::Delivery(decoded));
@@ -284,7 +331,21 @@ async fn run(
                 let _ = dtx.unbounded_send(delivery);
             }
             effect = erx.recv() => {
-                let Some(effect) = effect else { break };
+                let Some(command) = effect else { break };
+                let effect = match command {
+                    WorkerCommand::Shutdown(session) => { shutdown_session = session; break; }
+                    WorkerCommand::ForwardOpen(paths) => {
+                        let (url, service, d) = (url.clone(), service.clone(), dtx.clone());
+                        if client.connection_generation() == 0 {
+                            tokio::spawn(async move {
+                                let result = forward_open_async(&url, &service, &paths).await;
+                                let _ = d.unbounded_send(Delivery::HandoffFinished(result));
+                            });
+                        }
+                        continue;
+                    }
+                    WorkerCommand::Effect(effect) => effect,
+                };
                 match effect {
                     Effect::Send { req, out } => {
                         let (c, d) = (client.clone(), dtx.clone());
@@ -314,7 +375,7 @@ async fn run(
                     Effect::Respond { id, rc, body } => {
                         if let Some(cmd) = commands.remove(&id) {
                             let c = client.clone();
-                            tokio::spawn(async move {
+                            replies.spawn(async move {
                                 let _ = tokio::time::timeout(Duration::from_secs(2), c.respond(&cmd, rc, &body)).await;
                             });
                         }
@@ -340,6 +401,7 @@ async fn run(
                             let mut delay = Duration::from_millis(250);
                             let mut failed = false;
                             loop {
+                                if matches!(c.state(), ConnState::ShuttingDown | ConnState::Fatal) { return; }
                                 match c.subscribe_topic(&topic).await {
                                     Ok(_) => break,
                                     Err(e) => {
@@ -367,6 +429,10 @@ async fn run(
                     break;
                 }
                 let now = *state.borrow_and_update();
+                if desktop_settings && !registered && client.connection_generation() > 0 {
+                    registered = true;
+                    let _ = dtx.unbounded_send(Delivery::Registered);
+                }
                 match now {
                     ConnState::Connected => {
                         if binding.is_some() { settings_send(SettingsEvent::Wake); }
@@ -376,13 +442,80 @@ async fn run(
                         if binding.is_some() { settings_send(SettingsEvent::Wake); }
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
                     }
-                    ConnState::ShuttingDown | ConnState::Fatal => break,
+                    ConnState::ShuttingDown | ConnState::Fatal => {
+                        if !desktop_settings { break; }
+                        settings_send(SettingsEvent::Wake);
+                        let error = registration_error(&client);
+                        let _ = dtx.unbounded_send(Delivery::RegistrationFailed(error));
+                        let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
+                    }
                     ConnState::Connecting => {}
                 }
             }
         }
     }
-    let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut faults = Vec::new();
+    // Quit may win select before the last activated save is received.
+    if let Some(jobs) = settings_rx.borrow_and_update().clone() {
+        settings_worker.replace(jobs);
+    }
+    // A quit response is queued before Shutdown. Let the existing response
+    // tasks send it before closing its generation's socket.
+    while !replies.is_empty() {
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), replies.join_next()).await {
+            Ok(Some(Ok(()))) => {},
+            Ok(Some(Err(error))) => faults.push(format!("Bus reply: {error}")),
+            Ok(None) => break,
+            Err(_) => {
+                faults.push("Bus reply drain timed out".into());
+                replies.abort_all();
+                break;
+            }
+        }
+    }
+    if desktop_settings {
+        if let Err(error) = settings_worker.flush_cache(deadline).await {
+            faults.push(format!("settings cache: {}: {}", error.code, error.message));
+        }
+        if let Some(mut writer) = shutdown_session {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let drained = tokio::task::spawn_blocking(move || writer.flush_for(remaining));
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), drained).await {
+                Ok(Ok(true)) => {},
+                _ => faults.push("session drain timed out or failed".into()),
+            }
+        }
+    }
+    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), client.close()).await.is_err() {
+        faults.push("Bus close timed out".into());
+    }
+    let _ = dtx.unbounded_send(Delivery::Stopped { faults });
+}
+
+fn registration_error(client: &SupervisedClient) -> StartError {
+    match client.registration_rejection() {
+        Some(reason) if reason.message.contains("already registered") => StartError::NameTaken,
+        Some(reason) => StartError::Rejected(format!("rc {}: {}", reason.rc, reason.message)),
+        None => StartError::Unreachable("connection stopped".into()),
+    }
+}
+
+async fn forward_open_async(url: &str, service: &str, paths: &[String]) -> Result<(), String> {
+    let client = tokio::time::timeout(Duration::from_secs(5), NodedClient::connect_anonymous(url))
+        .await.map_err(|_| "forward connection timed out".to_string())?
+        .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let ping = client.call_with_headers_raw(service, "ced.ping", &BTreeMap::new(), "{}").await
+            .map_err(|error| error.to_string())?;
+        if ping.0 != 0 { return Err(format!("ced.ping refused: rc {}", ping.0)); }
+        if paths.is_empty() { return Ok(()); }
+        let reply = client.call_with_headers_raw(service, "ced.open", &BTreeMap::new(),
+            &serde_json::json!({"paths": paths}).to_string()).await.map_err(|error| error.to_string())?;
+        if reply.0 == 0 { Ok(()) } else { Err(format!("ced.open refused: rc {}: {}", reply.0, reply.1)) }
+    }).await.unwrap_or_else(|_| Err("forward request timed out".into()));
+    let _ = tokio::time::timeout(Duration::from_millis(500), client.close()).await;
+    result
 }
 
 /// One anonymous request to `service`, bounded by `limit`.

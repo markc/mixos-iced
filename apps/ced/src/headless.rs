@@ -71,6 +71,7 @@ pub fn run(service: &str, config: Config) -> anyhow::Result<()> {
                     mailbox.take();
                     Vec::new()
                 }
+                Delivery::Registered | Delivery::RegistrationFailed(_) | Delivery::HandoffFinished(_) | Delivery::Stopped { .. } => Vec::new(),
             };
         }
     });
