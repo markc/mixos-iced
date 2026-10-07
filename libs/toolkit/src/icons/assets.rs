@@ -129,6 +129,8 @@ pub enum IconDecodeError {
     SvgFilter,
     /// CSS styles are outside the bounded SVG subset.
     SvgStyleDependency,
+    /// Expansion, isolation or indirect painting outside the bounded subset.
+    SvgUnsupported,
     /// The SVG `use` href is not a same-document fragment (`#id`).
     SvgUseDependency,
     /// The SVG exceeds the pre-scan complexity budget.
@@ -165,6 +167,7 @@ impl fmt::Display for IconDecodeError {
             Self::SvgTextDependency => write!(f, "SVG contains text without a font provider"),
             Self::SvgFilter => write!(f, "SVG uses a filter, which is outside the supported subset"),
             Self::SvgStyleDependency => write!(f, "SVG uses CSS outside the supported subset"),
+            Self::SvgUnsupported => write!(f, "SVG uses expansion or indirect painting outside the supported subset"),
             Self::SvgUseDependency => {
                 write!(f, "SVG `use` href is not a same-document fragment")
             }
@@ -375,7 +378,11 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
             "text" | "tspan" | "textPath" => return Err(IconDecodeError::SvgTextDependency),
             "filter" => return Err(IconDecodeError::SvgFilter),
             "style" => return Err(IconDecodeError::SvgStyleDependency),
-            _ => {}
+            "use" | "pattern" | "marker" | "mask" | "clipPath" => return Err(IconDecodeError::SvgUnsupported),
+            "svg" | "g" | "defs" | "path" | "rect" | "circle" | "ellipse"
+            | "line" | "polyline" | "polygon" | "linearGradient" | "radialGradient"
+            | "stop" | "title" | "desc" => {},
+            _ => return Err(IconDecodeError::SvgUnsupported),
         }
         for attribute in node.attributes() {
             if attribute.name() == "style" {
@@ -386,10 +393,10 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
             if attribute.name() == "filter" {
                 return Err(IconDecodeError::SvgFilter);
             }
-            if node.tag_name().name() == "use" && attribute.name() == "href"
-                && (!attribute.value().starts_with('#') || attribute.value().len() == 1)
-            {
-                return Err(IconDecodeError::SvgUseDependency);
+            if matches!(attribute.name(), "opacity" | "isolation" | "mix-blend-mode"
+                | "mask" | "clip-path" | "marker-start" | "marker-mid" | "marker-end"
+                | "stroke-dasharray" | "stroke-dashoffset") {
+                return Err(IconDecodeError::SvgUnsupported);
             }
             if attribute.name() == "d" {
                 path_bytes += attribute.value().len();
@@ -945,9 +952,12 @@ mod tests {
             (r#"<rect width="1" height="1" filter="url(#external)"/>"#, IconDecodeError::SvgFilter),
             (r#"<style>rect { f\69 lter: url(#f); }</style><rect width="1" height="1"/>"#, IconDecodeError::SvgStyleDependency),
             (r#"<rect width="1" height="1" style="fill:red"/>"#, IconDecodeError::SvgStyleDependency),
-            (r#"<use href="file:///missing.svg#icon"/>"#, IconDecodeError::SvgUseDependency),
-            (r#"<use href="data:image/svg+xml,ignored"/>"#, IconDecodeError::SvgUseDependency),
-            (r#"<use href="#"/>"#, IconDecodeError::SvgUseDependency),
+            (r#"<use href="file:///missing.svg#icon"/>"#, IconDecodeError::SvgUnsupported),
+            (r#"<use href="data:image/svg+xml,ignored"/>"#, IconDecodeError::SvgUnsupported),
+            (r#"<use href="#"/>"#, IconDecodeError::SvgUnsupported),
+            (r#"<pattern id="p" width="1000000" height="1000000" patternUnits="userSpaceOnUse"><rect width="1" height="1"/></pattern>"#, IconDecodeError::SvgUnsupported),
+            (r#"<g opacity="0.5"><g opacity="0.5"><rect width="1" height="1"/></g></g>"#, IconDecodeError::SvgUnsupported),
+            (r#"<path d="M0 0 L1000000000 0" stroke="red" stroke-dasharray="0.01 0.01"/>"#, IconDecodeError::SvgUnsupported),
             (r#"<feImage href="data:malformed"/>"#, IconDecodeError::SvgImageDependency),
         ] {
             let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="0.01" height="0.01">{body}</svg>"#);
@@ -956,8 +966,7 @@ mod tests {
         let dtd = br#"<!DOCTYPE svg [<!ENTITY colour "red">]><svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="&colour;"/></svg>"#;
         assert_eq!(decode_owned(dtd.to_vec().into(), ImageFormat::Svg, 16, None), Err(IconDecodeError::SvgParse));
         let local = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs><rect id="icon" width="10" height="10" fill="red"/></defs><use href="#icon"/></svg>"##;
-        let visible = decode_owned(local.to_vec().into(), ImageFormat::Svg, 16, None).unwrap();
-        assert!(visible.pixels().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        assert_eq!(decode_owned(local.to_vec().into(), ImageFormat::Svg, 16, None), Err(IconDecodeError::SvgUnsupported));
         assert_eq!(decode_owned(local.to_vec().into(), ImageFormat::Svg, 16, Some([255,0,0,0])), Err(IconDecodeError::TintAlphaZero));
     }
 
