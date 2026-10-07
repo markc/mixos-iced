@@ -11,7 +11,7 @@ use sha2::Digest;
 
 use crate::error::{Error, Result, invalid, io};
 use crate::manifest::{
-    IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE, Manifest, ParsedManifest,
+    IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE, Manifest, ManifestV2, ParsedManifest,
     STYLESHEET_FILE, parse_codepoints, valid_relative_path, valid_set_id,
 };
 
@@ -30,6 +30,7 @@ pub struct AssetSet {
     assets_root: PathBuf,
     root: PathBuf,
     manifest: Manifest,
+    manifest_v2: Option<ManifestV2>,
     icon_meta: crate::manifest::IconMeta,
     icons: BTreeMap<String, char>,
 }
@@ -83,6 +84,7 @@ impl AssetSet {
         let text = read_bounded(&manifest_path, MANIFEST_LIMIT)?;
         let parsed = ParsedManifest::parse(&text, &manifest_path)?;
         parsed.validate(set_id)?;
+        let manifest_v2 = parsed.v2().cloned();
         let manifest = parsed.v1();
         for file in &manifest.files {
             let path = checked_file(&root, &file.path)?;
@@ -100,6 +102,7 @@ impl AssetSet {
             assets_root,
             root,
             manifest,
+            manifest_v2,
             icon_meta,
             icons,
         })
@@ -120,9 +123,23 @@ impl AssetSet {
         &self.assets_root
     }
 
-    /// The locked manifest.
+    /// The locked manifest. For a v2 set this is the read-only v1
+    /// projection of the shared fields — its `schema` stays
+    /// [`SCHEMA_V2`](crate::SCHEMA_V2), so it must not be re-validated or
+    /// re-serialized as a v1 manifest; the versioned metadata is read
+    /// through [`manifest_v2`](Self::manifest_v2) and the `icon_*`
+    /// accessors.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// The versioned icon-metadata manifest, when this set declares one
+    /// ([`SCHEMA_V2`](crate::SCHEMA_V2)); `None` for a v1 set. The parsed
+    /// DTO is retained whole, so the declared `icon_default`,
+    /// `icon_catalogues` and `icon_assets` are readable here as declared,
+    /// beside the resolved views of the `icon_*` accessors.
+    pub fn manifest_v2(&self) -> Option<&ManifestV2> {
+        self.manifest_v2.as_ref()
     }
 
     /// The family name a role's font declares, when the manifest records it.
@@ -430,7 +447,16 @@ fn read_bounded(path: &Path, limit: u64) -> Result<String> {
         .map_err(io("open", path))?
         .take(limit + 1)
         .read_to_string(&mut text)
-        .map_err(io("read", path))?;
+        .map_err(|source| {
+            // Invalid UTF-8 is content, not I/O: the same defect the
+            // verified path classifies as `Error::Invalid`. Ordinary I/O
+            // failures keep their kind.
+            if source.kind() == ErrorKind::InvalidData {
+                invalid(format!("{} is not UTF-8 text", path.display()))
+            } else {
+                io("read", path)(source)
+            }
+        })?;
     if text.len() as u64 > limit {
         return Err(too_large());
     }

@@ -42,7 +42,11 @@ metadata over the same v1 fields, all strict and bounded:
 
 `AssetSet`/`VerifiedSet` expose this through `icon_default()`,
 `icon_catalogues()`, `icon_assets()` and `icon_catalogue(family, style)`;
-the legacy `icon(name)`/`icons()` table is the default catalogue.
+the legacy `icon(name)`/`icons()` table is the default catalogue. The
+parsed v2 DTO is retained whole behind `manifest_v2()` (`None` for a v1
+set). `manifest()` stays the read-only v1 projection of the shared
+fields: for a v2 set its `schema` reads `SCHEMA_V2`, so it must not be
+re-validated or re-serialized as a v1 manifest.
 
 Opening a set checks the layout (no symlinks, no escapes, no extra
 components), the manifest against the rules in `manifest.rs`, every size
@@ -117,7 +121,10 @@ What the read guarantees:
 - **Strict reparse.** The manifest is parsed and validated again from its
   own bytes; the verified set never trusts an earlier `AssetSet::open`.
   Manifest parse errors stay `Error::Manifest`, icon catalogue errors stay
-  `Error::Invalid`, content differences stay `Error::Mismatch`.
+  `Error::Invalid`, content differences stay `Error::Mismatch`. Invalid
+  UTF-8 in the manifest or a catalogue is `Error::Invalid` on every path
+  — the open path classifies it the same way the verified path does —
+  never an I/O error.
 - **One read, exact length, both digests.** Each locked file is
   descriptor-opened once, its metadata length must equal the locked size,
   it is read exactly once, and the SHA-256 and BLAKE3 are computed over
@@ -171,8 +178,20 @@ ordered roots. An absent root or set falls through to the next (`Ok(None)`
 when no root holds it); an encountered set that fails verification, is a
 symlink or not a directory, or whose manifest digest is not the requested
 one is a diagnostic — never silently replaced by a copy in a later root.
-With a pinned digest the check runs before any locked payload is read, so
-a set with the same ID and a changed manifest is refused cheaply.
+With a pinned digest the check runs immediately after the manifest
+re-parse, before the stylesheet or any locked payload is read, so a set
+with the same ID and a changed manifest is refused cheaply.
+
+`VerifiedSet::read_current(root, limits)` is the descriptor-owned analogue
+of `AssetSet::current`: the initial omitted-resource selection follows the
+held root's `current` link exactly once — the link is read through the
+root descriptor and never followed by the kernel, and the selected set is
+captured through the same descriptor-relative opens as every verified
+read. `Ok(None)` when the root has no `current`; an error when it has one
+that is not a symlink to a valid `sets/<id>`, or when that set does not
+open or verify. Nothing is re-opened through a path after the pin. Only
+this selection consults `current`; a request that names an expected
+binding uses `read_at`/`read_explicit`, which never do.
 
 ## The MixOS defaults
 
@@ -201,14 +220,17 @@ The lock and installer for the MixOS set live in `share/assets/`
 parser, the read limits, the lookup order and the manifest version
 routing; `tests/sets.rs` the public behaviour on fixture sets in a
 temporary directory (pinning across a `current` swap, XDG precedence,
-tampering, symlinks, escapes, bad manifests, v2 icon metadata and
-selection, v1-derived defaults and the nondefault-style refusal);
+tampering, symlinks, escapes, bad manifests, invalid-UTF-8
+classification, v2 icon metadata and selection, v1-derived defaults,
+the nondefault-style refusal and the icon-asset count cap);
 `tests/verified.rs` the verified reads (owned bytes surviving path
 replacement and removal, descriptor pinning across a substitution,
 symlink escapes, staging limits, length and digest refusals, malformed
 manifests and catalogues, `shared_bytes`, v2 catalogue glyphs and owned
-asset bytes, explicit ID/digest resolution with absent fall-through and
-invalid-present diagnostics); `tests/layout.rs` the installed
+asset bytes, explicit ID/digest resolution with absent fall-through,
+invalid-present diagnostics, digest-before-stylesheet precedence and v2
+digest-pinned resolution, and descriptor-owned `read_current` selection
+and pinning); `tests/layout.rs` the installed
 `2026-10-04-core-3` layout rebuilt with stand-in bytes and resolved
 through the MixOS search path, plus the real installation when the
 machine has one. `config::atomic::open_nested` and

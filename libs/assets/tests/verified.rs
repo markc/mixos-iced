@@ -464,14 +464,15 @@ fn malformed_or_unlocked_catalogues_keep_their_error_kind() {
     let error = VerifiedSet::read_in(directory, "one", ReadLimits::default()).unwrap_err();
     assert!(matches!(error, assets::Error::Invalid(_)));
     assert!(error.to_string().contains("not locked"), "{error}");
-    // A locked catalogue beyond the 1 MiB catalogue limit.
+    // A locked catalogue beyond the 1 MiB catalogue limit is refused at
+    // the read cap, before its bytes are allocated.
     fs::remove_dir_all(&dir).unwrap();
     let oversized = vec![b'a'; 1024 * 1024 + 1];
     publish(temp.path(), "one", b"font bytes", b"icon font", &oversized);
     let directory = config::atomic::open_directory(&dir).unwrap();
     let error = VerifiedSet::read_in(directory, "one", ReadLimits::default()).unwrap_err();
     assert!(matches!(error, assets::Error::Invalid(_)));
-    assert!(error.to_string().contains("exceeds"), "{error}");
+    assert!(error.to_string().contains("codepoints"), "{error}");
 }
 
 #[test]
@@ -483,7 +484,7 @@ fn shared_bytes_share_the_verified_allocation() {
     let shared = sans.shared_bytes();
     assert_eq!(&*shared, b"font bytes");
     // The same allocation the digests were computed over, not a copy.
-    assert_eq!(Arc::as_ptr(&shared), sans.bytes().as_ptr());
+    assert_eq!(shared.as_ptr(), sans.bytes().as_ptr());
     // Cloning the Arc shares the allocation too.
     assert!(Arc::ptr_eq(&shared, &sans.shared_bytes()));
 }
@@ -512,6 +513,9 @@ fn v1_verified_sets_derive_the_default_catalogue() {
     );
     assert_eq!(catalogues[0].glyphs["delete"], '\u{e872}');
     assert!(set.icon_assets().is_empty());
+    // A v1 set retains no versioned DTO; the legacy projection is all
+    // there is.
+    assert!(set.manifest_v2().is_none());
     // The legacy table is the derived default catalogue.
     assert_eq!(set.icon("folder"), Some('\u{e2c7}'));
     assert_eq!(set.icons().len(), 2);
@@ -554,6 +558,14 @@ fn v2_verified_sets_parse_every_catalogue_and_expose_owned_bytes() {
         .unwrap();
     assert_eq!(outlined.catalogue.face_index, 1);
     assert_eq!(outlined.glyphs["delete"], '\u{e900}');
+    // The versioned DTO is retained whole behind the typed accessor; the
+    // legacy projection stays read-only (its schema is SCHEMA_V2 and it
+    // cannot revalidate as v1).
+    let v2 = set.manifest_v2().unwrap();
+    assert_eq!(v2.schema, SCHEMA_V2);
+    assert_eq!(v2.icon_catalogues.len(), 2);
+    assert_eq!(v2.icon_default.family, "Fixture Symbols");
+    assert_eq!(set.manifest().schema, SCHEMA_V2);
     assert!(
         set.icon_catalogue("Fixture Symbols", "filled")
             .unwrap()
@@ -740,8 +752,136 @@ fn explicit_requests_keep_the_read_caps() {
             ..ReadLimits::default()
         },
     )
-    .unwrap()
     .unwrap_err();
     assert!(matches!(error, assets::Error::Invalid(_)));
     assert!(error.to_string().contains("per-file"), "{error}");
+}
+
+#[test]
+fn a_pinned_digest_is_refused_before_the_stylesheet_is_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = fixture(temp.path(), "one");
+    let root = config::atomic::open_directory(temp.path()).unwrap();
+    let wrong = ExplicitRequest {
+        set_id: "one",
+        manifest_blake3: Some([0u8; 32]),
+    };
+    // The stylesheet is corrupted too: the identity refusal must answer
+    // first — the digest mismatch, never the stylesheet mismatch.
+    fs::write(dir.join(STYLESHEET_FILE), "/* corrupt */\n").unwrap();
+    let error = VerifiedSet::read_at(&root, &wrong, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Mismatch(_)), "{error}");
+    assert!(error.to_string().contains("digest"), "{error}");
+    assert!(!error.to_string().contains("fonts.css"), "{error}");
+    // The same corruption without a pinned digest is the stylesheet
+    // mismatch.
+    let request = ExplicitRequest {
+        set_id: "one",
+        manifest_blake3: None,
+    };
+    let error = VerifiedSet::read_at(&root, &request, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Mismatch(_)), "{error}");
+    assert!(error.to_string().contains("fonts.css"), "{error}");
+}
+
+#[test]
+fn explicit_requests_resolve_v2_sets_with_digest_pinning() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = publish_v2(temp.path(), "two");
+    let root = config::atomic::open_directory(temp.path()).unwrap();
+    let digest: [u8; 32] = blake3::hash(&fs::read(dir.join(MANIFEST_FILE)).unwrap()).into();
+    let request = ExplicitRequest {
+        set_id: "two",
+        manifest_blake3: Some(digest),
+    };
+    let set = VerifiedSet::read_at(&root, &request, ReadLimits::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(set.set_id(), "two");
+    assert_eq!(set.identity().manifest_blake3(), digest);
+    // The versioned DTO is retained whole and the v2 metadata resolves
+    // through the digest-pinned path: declared fields and parsed glyph
+    // tables both come from the verified bytes.
+    let v2 = set.manifest_v2().unwrap();
+    assert_eq!(v2.schema, SCHEMA_V2);
+    assert_eq!(v2.icon_default.family, "Fixture Symbols");
+    assert_eq!(v2.icon_catalogues.len(), 2);
+    let rounded = set
+        .icon_catalogue("Fixture Symbols", "rounded")
+        .unwrap()
+        .unwrap();
+    assert_eq!(rounded.catalogue.face_index, 0);
+    assert_eq!(rounded.glyphs["delete"], '\u{e872}');
+    let outlined = set
+        .icon_catalogue("Fixture Symbols", "outlined")
+        .unwrap()
+        .unwrap();
+    assert_eq!(outlined.catalogue.face_index, 1);
+    assert_eq!(outlined.glyphs["delete"], '\u{e900}');
+    assert_eq!(
+        set.icon_asset_file(&set.icon_assets()[0]).unwrap().bytes(),
+        b"<svg/>"
+    );
+    // A wrong digest for the same v2 set is refused, never a fall-through.
+    let wrong = ExplicitRequest {
+        set_id: "two",
+        manifest_blake3: Some([0u8; 32]),
+    };
+    let error = VerifiedSet::read_at(&root, &wrong, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Mismatch(_)), "{error}");
+    assert!(error.to_string().contains("digest"), "{error}");
+}
+
+#[test]
+fn read_current_selects_under_a_descriptor_and_stays_pinned() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture(temp.path(), "one");
+    let root = config::atomic::open_directory(temp.path()).unwrap();
+    symlink("sets/one", temp.path().join("current")).unwrap();
+    // The initial omitted-resource selection follows `current` exactly
+    // once, through the held root descriptor, never through a path.
+    let set = VerifiedSet::read_current(&root, ReadLimits::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(set.set_id(), "one");
+    assert_eq!(set.identity().manifest_blake3_hex().len(), 64);
+    assert_eq!(set.font("sans").unwrap().bytes(), b"font bytes");
+    // The capture stays pinned: republishing `sets/one` with different
+    // bytes changes what the next read selects, never what this one holds.
+    fs::remove_dir_all(temp.path().join("sets/one")).unwrap();
+    publish(
+        temp.path(),
+        "one",
+        b"substituted!",
+        b"new icons",
+        b"new e123\n",
+    );
+    assert_eq!(set.font("sans").unwrap().bytes(), b"font bytes");
+    assert_eq!(set.icon("delete"), Some('\u{e872}'));
+    let again = VerifiedSet::read_current(&root, ReadLimits::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.font("sans").unwrap().bytes(), b"substituted!");
+    // A dangling link is an error, not a fall-through.
+    fs::remove_file(temp.path().join("current")).unwrap();
+    symlink("sets/absent", temp.path().join("current")).unwrap();
+    let error = VerifiedSet::read_current(&root, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Io { .. }), "{error}");
+    // A `current` that is not a symlink at all is refused as invalid.
+    fs::remove_file(temp.path().join("current")).unwrap();
+    fs::write(temp.path().join("current"), b"not a link").unwrap();
+    let error = VerifiedSet::read_current(&root, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    // An escaping target is refused before any open.
+    fs::remove_file(temp.path().join("current")).unwrap();
+    symlink("../elsewhere", temp.path().join("current")).unwrap();
+    let error = VerifiedSet::read_current(&root, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    // No link at all selects nothing.
+    fs::remove_file(temp.path().join("current")).unwrap();
+    assert!(
+        VerifiedSet::read_current(&root, ReadLimits::default())
+            .unwrap()
+            .is_none()
+    );
 }

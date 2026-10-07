@@ -386,6 +386,14 @@ fn v2_declares_real_icon_metadata_and_selection() {
     assert_eq!(set.manifest().schema, assets::SCHEMA_V2);
     assert_eq!(set.manifest().files.len(), 6);
     assert_eq!(set.manifest().web_css, "/* fixture */\n");
+    // The versioned DTO is retained whole behind the typed accessor; the
+    // legacy projection stays read-only (its schema is SCHEMA_V2 and it
+    // cannot revalidate as v1).
+    let v2 = set.manifest_v2().unwrap();
+    assert_eq!(v2.schema, assets::SCHEMA_V2);
+    assert_eq!(v2.icon_default.weight, 400);
+    assert_eq!(v2.icon_catalogues.len(), 2);
+    assert_eq!(v2.icon_assets.len(), 1);
     // The declared default: an omitted icon request uses this.
     let default = set.icon_default().unwrap();
     assert_eq!(
@@ -453,6 +461,9 @@ fn v1_derives_default_icon_metadata_and_refuses_nondefault_styles() {
     assert_eq!(catalogues[0].face_index, 0);
     assert_eq!(catalogues[0].codepoints, "icons/Symbols.codepoints");
     assert!(set.icon_assets().is_empty());
+    // A v1 set retains no versioned DTO; the legacy projection is all
+    // there is.
+    assert!(set.manifest_v2().is_none());
     // The default style selects the one catalogue.
     assert!(
         set.icon_catalogue("Fixture Symbols", "default")
@@ -592,4 +603,54 @@ fn v2_refuses_incomplete_duplicate_and_unknown_icon_metadata() {
         write_manifest(&dir, &json);
         assert!(AssetSet::open(temp.path(), "two").is_err(), "{bad}");
     }
+}
+
+#[test]
+fn the_icon_asset_cap_accepts_its_bound_and_refuses_one_more() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture_v2(temp.path(), "two");
+    let dir = temp.path().join("sets/two");
+    let original = strict::to_json(&strict::parse_file(&dir.join(MANIFEST_FILE)).unwrap());
+    // The cap counts declarations, not files: every declared asset may
+    // share the one locked SVG path.
+    let assets = |count: usize| {
+        (0..count)
+            .map(|i| {
+                serde_json::json!({
+                    "name": format!("icon{i}"), "style": "rounded",
+                    "path": "icons/mark.svg", "symbolic": true
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut at_bound = original.clone();
+    at_bound["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS));
+    write_manifest(&dir, &at_bound);
+    assert!(AssetSet::open(temp.path(), "two").is_ok());
+    let mut over = original;
+    over["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS + 1));
+    write_manifest(&dir, &over);
+    let error = AssetSet::open(temp.path(), "two").unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    assert!(error.to_string().contains("too many icon assets"), "{error}");
+}
+
+#[test]
+fn invalid_utf8_manifests_and_catalogues_keep_the_invalid_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = fixture(temp.path(), "one");
+    // A manifest that is not UTF-8 is an invalid manifest, not an I/O
+    // error — the same classification the verified path uses.
+    fs::write(dir.join(MANIFEST_FILE), b"\x80\x81 not utf-8\n").unwrap();
+    let error = AssetSet::open(temp.path(), "one").unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    assert!(error.to_string().contains("UTF-8"), "{error}");
+    // The same for a locked icon catalogue. The corrupted bytes keep the
+    // locked size so the size check passes and the content defect is what
+    // is reported.
+    fixture(temp.path(), "one");
+    fs::write(dir.join("icons/Symbols.codepoints"), vec![0xffu8; 24]).unwrap();
+    let error = AssetSet::open(temp.path(), "one").unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    assert!(error.to_string().contains("UTF-8"), "{error}");
 }

@@ -107,7 +107,9 @@ pub struct ManifestV2 {
 
 impl ManifestV2 {
     /// The v1 view of this manifest: the shared fields, with the icon
-    /// metadata set aside. The schema stays [`SCHEMA_V2`].
+    /// metadata set aside. The schema stays [`SCHEMA_V2`], so this
+    /// projection is read-only convenience: it must not be re-validated
+    /// or re-serialized as a v1 manifest (its schema would refuse it).
     pub(crate) fn v1(&self) -> Manifest {
         Manifest {
             schema: self.schema.clone(),
@@ -128,8 +130,9 @@ pub struct IconDefault {
     pub family: String,
     /// The declared style (e.g. `default`, `rounded`, `outlined`).
     pub style: String,
-    /// The exact weight, 1–1000 (a static weight or a supported `wght`
-    /// axis value).
+    /// The exact weight, 1–1000: a static weight or a supported `wght`
+    /// axis value. Integer only — a fractional `wght` axis value cannot
+    /// be declared.
     pub weight: u16,
 }
 
@@ -468,6 +471,17 @@ impl ParsedManifest {
         }
     }
 
+    /// The parsed v2 manifest, when the declared schema is
+    /// [`SCHEMA_V2`]; `None` for a v1 manifest. The parsed DTO is
+    /// retained whole so callers can read the declared metadata back
+    /// typed, instead of reassembling it from the projected v1 view.
+    pub(crate) fn v2(&self) -> Option<&ManifestV2> {
+        match self {
+            Self::V2(manifest) => Some(manifest),
+            Self::V1(_) => None,
+        }
+    }
+
     /// The resolved icon metadata: declared by a v2 manifest, derived for
     /// a v1 manifest from its `icons` role.
     pub(crate) fn icon_meta(&self) -> Result<IconMeta> {
@@ -671,7 +685,7 @@ mod tests {
     }
 
     fn text(json: serde_json::Value) -> String {
-        strict::encode_pretty(&strict::from_json(json)).unwrap()
+        strict::encode_pretty(&strict::from_json(&json)).unwrap()
     }
 
     #[test]
@@ -704,6 +718,17 @@ mod tests {
             "fonts": {}, "files": [], "web_css": ""
         }));
         let error = ParsedManifest::parse(&other, path).unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)), "{error}");
+        assert!(error.to_string().contains("unsupported"), "{error}");
+        // The schema is routed before hydration: a document with an
+        // unsupported schema and a body that also breaks the v1 shape
+        // still reports the unsupported schema first, as an invalid
+        // manifest rather than a manifest parse error.
+        let bad_body = text(serde_json::json!({
+            "schema": "other.static-assets.v1", "set_id": "one",
+            "fonts": {}, "files": [], "web_css": "", "unexpected": true
+        }));
+        let error = ParsedManifest::parse(&bad_body, path).unwrap_err();
         assert!(matches!(error, Error::Invalid(_)), "{error}");
         assert!(error.to_string().contains("unsupported"), "{error}");
         // A schema that is not a string keeps the manifest error kind the

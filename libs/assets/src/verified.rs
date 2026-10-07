@@ -17,6 +17,12 @@
 //! under held approved root descriptors, selecting `sets/<id>` directly
 //! and never `current`: an absent root or set falls through, an
 //! encountered invalid or digest-mismatched set is a diagnostic.
+//!
+//! [`VerifiedSet::read_current`] is the descriptor-owned analogue of
+//! [`AssetSet::current`]: the initial omitted-resource selection follows
+//! a held root's `current` link exactly once. Only that selection
+//! consults `current`; a request that names an expected binding uses
+//! `read_at`, which never does.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -29,10 +35,10 @@ use sha2::Digest;
 
 use crate::error::{Error, Result, invalid, io};
 use crate::manifest::{
-    AssetFile, IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE, Manifest, ParsedManifest,
-    STYLESHEET_FILE, parse_codepoints, valid_set_id,
+    AssetFile, IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE, Manifest, ManifestV2,
+    ParsedManifest, STYLESHEET_FILE, parse_codepoints, valid_set_id,
 };
-use crate::set::{CATALOGUE_LIMIT, MANIFEST_LIMIT};
+use crate::set::{CATALOGUE_LIMIT, CURRENT_LINK, MANIFEST_LIMIT};
 
 /// Bounds on how many source bytes a verified read may capture at once.
 ///
@@ -230,6 +236,7 @@ pub struct ExplicitRequest<'a> {
 pub struct VerifiedSet {
     identity: SetIdentity,
     manifest: Manifest,
+    manifest_v2: Option<ManifestV2>,
     manifest_bytes: Arc<[u8]>,
     stylesheet: String,
     files: Vec<VerifiedFile>,
@@ -320,6 +327,57 @@ impl VerifiedSet {
         Ok(None)
     }
 
+    /// The verified, descriptor-owned analogue of
+    /// [`AssetSet::current`](crate::AssetSet::current): follow a held
+    /// root's `current` link exactly once and capture the selected set.
+    ///
+    /// This is the one verified entry that consults `current`, and only
+    /// for the initial omitted-resource selection: the link is read
+    /// through the held root descriptor and never followed by the kernel,
+    /// its target must be a plain `sets/<id>`, and the set is captured
+    /// through the same descriptor-relative opens as every verified read.
+    /// Nothing is re-opened through a path after the pin, so replacing
+    /// the link or the set directory afterwards changes what the next
+    /// reader selects, never what the returned set holds. A request that
+    /// names an expected binding resolves through
+    /// [`read_at`](Self::read_at)/[`read_explicit`](Self::read_explicit),
+    /// which never consult `current`.
+    ///
+    /// `Ok(None)` when the root has no `current` link; an error when it
+    /// has one that is not a symlink to a valid `sets/<id>`, or when that
+    /// set does not open or verify.
+    pub fn read_current(root: &File, limits: ReadLimits) -> Result<Option<Self>> {
+        let display = PathBuf::from(CURRENT_LINK);
+        let target = match config::atomic::read_link_in(root, std::ffi::OsStr::new(CURRENT_LINK)) {
+            Ok(target) => target,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput => {
+                return Err(invalid(format!(
+                    "{} must be a symlink to sets/<id>",
+                    display.display()
+                )));
+            }
+            Err(err) => return Err(io("read link", &display)(err)),
+        };
+        let set_id = target
+            .to_str()
+            .and_then(|text| text.strip_prefix("sets/"))
+            .filter(|id| valid_set_id(id))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "{} must point at sets/<id>, not {}",
+                    display.display(),
+                    target.display()
+                ))
+            })?;
+        let sets = config::atomic::open_nested_directory(root, Path::new("sets"))
+            .map_err(io("open", Path::new("sets")))?;
+        let set_display = PathBuf::from(format!("sets/{set_id}"));
+        let directory = config::atomic::open_nested_directory(&sets, Path::new(set_id))
+            .map_err(io("open", &set_display))?;
+        read_in_at(directory, set_id, limits, None, &set_display).map(Some)
+    }
+
     /// The set's identity: ID and manifest digest.
     pub fn identity(&self) -> &SetIdentity {
         &self.identity
@@ -330,9 +388,23 @@ impl VerifiedSet {
         self.identity.set_id()
     }
 
-    /// The re-parsed, re-validated manifest.
+    /// The re-parsed, re-validated manifest. For a v2 set this is the
+    /// read-only v1 projection of the shared fields — its `schema` stays
+    /// [`SCHEMA_V2`](crate::SCHEMA_V2), so it must not be re-validated or
+    /// re-serialized as a v1 manifest; the versioned metadata is read
+    /// through [`manifest_v2`](Self::manifest_v2) and the `icon_*`
+    /// accessors.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// The versioned icon-metadata manifest, when this set declares one
+    /// ([`SCHEMA_V2`](crate::SCHEMA_V2)); `None` for a v1 set. The parsed
+    /// DTO is retained whole, so the declared `icon_default`,
+    /// `icon_catalogues` and `icon_assets` are readable here as declared,
+    /// beside the resolved views of the `icon_*` accessors.
+    pub fn manifest_v2(&self) -> Option<&ManifestV2> {
+        self.manifest_v2.as_ref()
     }
 
     /// The exact manifest bytes the identity's digest covers.
@@ -483,7 +555,26 @@ fn read_in_at(
     })?;
     let parsed = ParsedManifest::parse(text, &manifest_path)?;
     parsed.validate(set_id)?;
+    let manifest_v2 = parsed.v2().cloned();
     let manifest = parsed.v1();
+
+    let identity = SetIdentity {
+        set_id: manifest.set_id.clone(),
+        manifest_blake3: blake3::hash(&manifest_bytes).into(),
+    };
+    // An explicit request pins the exact manifest bytes: a set with the
+    // same ID and a different manifest is not the requested set, so the
+    // refusal comes before any locked payload — the stylesheet included —
+    // is read or compared.
+    if let Some(expected) = expected {
+        if identity.manifest_blake3 != expected {
+            return Err(Error::Mismatch(format!(
+                "asset set {set_id} manifest digest {} does not match the requested {}",
+                hex::encode(identity.manifest_blake3),
+                hex::encode(expected)
+            )));
+        }
+    }
 
     let stylesheet_path = display.join(STYLESHEET_FILE);
     let css = read_limited(
@@ -503,34 +594,38 @@ fn read_in_at(
     let stylesheet =
         String::from_utf8(css).expect("stylesheet equals the manifest's web_css string");
 
-    let identity = SetIdentity {
-        set_id: manifest.set_id.clone(),
-        manifest_blake3: blake3::hash(&manifest_bytes).into(),
-    };
-    // An explicit request pins the exact manifest bytes: a set with the
-    // same ID and a different manifest is not the requested set, so the
-    // refusal comes before any locked payload is read.
-    if let Some(expected) = expected {
-        if identity.manifest_blake3 != expected {
-            return Err(Error::Mismatch(format!(
-                "asset set {set_id} manifest digest {} does not match the requested {}",
-                hex::encode(identity.manifest_blake3),
-                hex::encode(expected)
-            )));
-        }
-    }
-
+    let icon_meta = parsed.icon_meta()?;
+    let catalogue_paths: BTreeSet<&str> = icon_meta
+        .catalogues
+        .iter()
+        .map(|catalogue| catalogue.codepoints.as_str())
+        .collect();
     let mut files = Vec::with_capacity(manifest.files.len());
     for entry in &manifest.files {
-        files.push(read_file(&directory, set_id, entry, limits, &mut staged)?);
+        // A locked `.codepoints` file is capped at the catalogue bound,
+        // not the much larger per-file bound: a set whose catalogue is
+        // too large is refused before its bytes are allocated.
+        let per_read = if catalogue_paths.contains(entry.path.as_str()) {
+            CATALOGUE_LIMIT.min(limits.max_file_bytes)
+        } else {
+            limits.max_file_bytes
+        };
+        files.push(read_file(
+            &directory,
+            set_id,
+            entry,
+            limits,
+            &mut staged,
+            per_read,
+        )?);
     }
 
-    let icon_meta = parsed.icon_meta()?;
     let (icons, catalogues) = icon_data(&icon_meta, &files, set_id)?;
 
     Ok(VerifiedSet {
         identity,
         manifest,
+        manifest_v2,
         manifest_bytes: Arc::from(manifest_bytes.into_boxed_slice()),
         stylesheet,
         files,
@@ -607,18 +702,21 @@ fn read_fixed(mut file: File, bound: u64, display: &Path) -> Result<Vec<u8>> {
 
 /// One locked file: descriptor-opened once, its metadata and exact length
 /// checked, read once, both digests computed over the same owned bytes.
+/// Its cap is `per_read` — the per-file bound, or the catalogue bound for
+/// a locked codepoints file — checked before the read allocates.
 fn read_file(
     dir: &File,
     set_id: &str,
     entry: &AssetFile,
     limits: ReadLimits,
     staged: &mut u64,
+    per_read: u64,
 ) -> Result<VerifiedFile> {
     let display = PathBuf::from(format!("sets/{set_id}/{}", entry.path));
-    if entry.bytes > limits.max_file_bytes {
+    if entry.bytes > per_read {
         return Err(invalid(format!(
             "locked asset {:?} is {} bytes, beyond the per-file read limit of {} bytes",
-            entry.path, entry.bytes, limits.max_file_bytes
+            entry.path, entry.bytes, per_read
         )));
     }
     if *staged + entry.bytes > limits.max_total_bytes {
@@ -638,7 +736,8 @@ fn read_file(
     }
     // The locked size bounds the read ([`read_fixed`] adds one lookahead
     // byte): a file that grew while being read is caught by the length
-    // check below.
+    // check below. The per-read cap was already enforced on the locked
+    // size above, so the bound stays the locked size, not the allowance.
     let bytes = read_fixed(file, entry.bytes, &display)?;
     if bytes.len() as u64 != entry.bytes {
         return Err(Error::Mismatch(format!(

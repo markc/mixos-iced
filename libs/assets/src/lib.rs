@@ -67,6 +67,26 @@
     feature = "verified",
     doc = "  an encountered invalid or digest-mismatched set is a diagnostic."
 )]
+#![cfg_attr(
+    feature = "verified",
+    doc = "- [`VerifiedSet::read_current`] (the `verified` feature) is the"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  descriptor-owned analogue of [`AssetSet::current`]: the initial"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  omitted-resource selection follows `current` exactly once under a held"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  root descriptor. Only that selection consults `current`; an"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  expected-binding request uses `read_at`, which never does."
+)]
 //!
 //! Native readers call `discover` once at startup and keep that selection
 //! while `current` changes underneath them. An installer opens its own
