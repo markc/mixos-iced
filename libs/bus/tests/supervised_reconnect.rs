@@ -344,7 +344,12 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                                 }
                             }
                         };
-                        tokio::time::sleep(stub.register_delay).await;
+                        if !stub.register_delay.is_zero() {
+                            tokio::select! {
+                                _ = tokio::time::sleep(stub.register_delay) => {}
+                                _ = stream.next() => break 'conn,
+                            }
+                        }
                         if collision {
                             // Keep the socket open, as the real broker does;
                             // the client must close its half-built
@@ -409,7 +414,10 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                                 rc,
                             } => {
                                 entered.notify_one();
-                                release.notified().await;
+                                tokio::select! {
+                                    _ = release.notified() => {}
+                                    _ = stream.next() => break 'conn,
+                                }
                                 (rc, false)
                             }
                             SubscribeAction::Disconnect => (0, true),
@@ -418,13 +426,21 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                             let _ = sink.close().await;
                             break 'conn;
                         }
-                        if !stub.subscribe_delay.is_zero() {
-                            tokio::time::sleep(stub.subscribe_delay).await;
-                        } else if conn_index == 1 && !stub.initial_subscribe_delay.is_zero() {
-                            tokio::time::sleep(stub.initial_subscribe_delay).await;
-                        }
-                        if conn_index >= 2 {
-                            tokio::time::sleep(stub.replay_delay).await;
+                        let delay = if !stub.subscribe_delay.is_zero() {
+                            stub.subscribe_delay
+                        } else if conn_index == 1 {
+                            stub.initial_subscribe_delay
+                        } else {
+                            Duration::ZERO
+                        } + if conn_index >= 2 { stub.replay_delay } else { Duration::ZERO };
+                        if !delay.is_zero() {
+                            // Keep the broker's transport reader alive while
+                            // withholding an ACK. A closed abandoned attempt
+                            // must release its name before the next dial.
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => {}
+                                _ = stream.next() => break 'conn,
+                            }
                         }
                         let mut response = bus::parse(&reply(&req, &rc.to_string()))
                             .expect("stub subscribe reply parses");
@@ -2547,7 +2563,7 @@ async fn bounded_flood_before_final_ack_delivers_overflow_only_after_publication
 
     let mut saw_overflow = false;
     let mut commands = 0;
-    for _ in 0..16 {
+    for _ in 0..3 {
         match tokio::time::timeout(Duration::from_secs(2), incoming.recv())
             .await
             .expect("the lane yields promptly")
@@ -2566,6 +2582,8 @@ async fn bounded_flood_before_final_ack_delivers_overflow_only_after_publication
     assert!(saw_overflow, "the overflow must be delivered after success");
     assert_eq!(commands, 2, "the two retained commands follow");
     assert_eq!(incoming.overflow_count(), 30);
+    assert!(tokio::time::timeout(Duration::from_millis(200), incoming.recv()).await.is_err(),
+        "only one overflow notice and two retained commands are emitted");
     client.close().await;
 }
 
