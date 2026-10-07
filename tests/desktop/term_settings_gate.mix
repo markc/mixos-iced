@@ -1,0 +1,246 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Actual Term layout, installed native frames, held preparation and shutdown.
+-- Requires the named exact-commit acceptance-enabled candidate binaries.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$pty=require("pty_host_lib.mix")
+for each $name in ["mix","term","noded","settingsd","compd"]
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
+end
+$pty.check_support()
+$R={run:nil,bus:nil,session:nil,children:[],calls:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+$verbs=["app.acceptance.describe","app.acceptance.layout","app.acceptance.barrier.arm",
+  "app.acceptance.barrier.wait","app.acceptance.barrier.release","app.acceptance.barrier.state",
+  "app.acceptance.frame.state","app.acceptance.frame.wait"]
+fn check($condition,$message)
+  if not $condition then raise("TERM_SETTINGS_GATE",$message) end
+end
+fn call($service,$verb,$body)
+  return $h.call($mix,$R.bus,$R.run.path,$service,$verb,$body)
+end
+fn rpc($service,$verb,$body)
+  $reply=call($service,$verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn app($verb,$body)
+  return rpc("term",$verb,$body)
+end
+fn fixture($verb,$body)
+  $reply=app("app.acceptance." .. $verb,$body)
+  check(type($reply) == "map" and $reply.ok == true,$verb .. ": " .. json_encode($reply))
+  return $reply
+end
+fn comp($verb,$body)
+  return rpc($R.session.service,$verb,$body)
+end
+fn wait_service($service,$verb,$child,$log)
+  for $attempt=1 to 60
+    check(process_alive($child),"Launcher exited: " .. read_file($log))
+    $reply=call($service,$verb,{})
+    if $reply.rc == 0 then return $reply.result end
+    sleep(0.1)
+  end
+  raise("SETUP","Service did not register: " .. $service)
+end
+fn launch_term($label,$identity)
+  $home=$R.run.path .. "/home-" .. $label
+  $extra=merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,XDG_CONFIG_HOME:$home .. "/config",
+    XDG_STATE_HOME:$home .. "/state",MIXOS_APP_HOME:$home,MIXOS_SETTINGS_INSTANCE:"fixture",
+    MIXOS_SETTINGS_PROFILE:"default",TERM_NOTIFY:"0",LIBGL_ALWAYS_SOFTWARE:"1",WGPU_BACKEND:"gl",
+    MIXOS_ACCEPTANCE_RUN:nil,MIXOS_ACCEPTANCE_INSTANCE:nil})
+  if $identity != nil then
+    $extra.MIXOS_ACCEPTANCE_RUN=$identity.run
+    $extra.MIXOS_ACCEPTANCE_INSTANCE=to_string($identity.instance)
+  end
+  $client=$n.client_env($R.session,$extra)
+  $log=$R.run.path .. "/term-" .. $label .. ".log"
+  $child=spawn($pty.launch_argv($bin,$client),{env:$client,stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[{pid:$child,privileged_launcher:true}])
+  wait_service("term","app.describe",$child,$log)
+  $window=comp("comp.window.wait",{match:{app_id:"dev.mixos.term"},until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.pid != nil,"Term did not present an owned window")
+  $R.children=concat($R.children,[{pid:$window.pid,privileged_launcher:false}])
+  $fence={id:$window.id,generation:$window.generation}
+  comp("comp.window.place",merge($fence,{x:0,y:0,width:1100,height:700}))
+  comp("comp.window.wait",{match:$fence,until:"size",width:1100,height:700,timeout_ms:5000})
+  comp("comp.window.focus",$fence)
+  return {launcher:$child,pid:$window.pid,window:$fence,log:$log}
+end
+fn await_current($snapshot,$zoom)
+  $last=nil
+  $deadline=time()+10
+  while time() < $deadline
+    $last=app("app.describe",{})
+    if ($last.preparation.current and $last.preparation.applied == $last.preparation.desired and
+      $last.preparation.applied_zoom_steps == $zoom and
+      deep_eq($last.settings.applied,$h.identity($snapshot)) and
+      deep_eq($last.settings_cache.persisted,$last.settings.applied)) then return $last end
+    check($last.preparation.fault == nil,"Preparation fault: " .. json_encode($last))
+    sleep(0.05)
+  end
+  raise("ACTIVATION","Term did not settle: " .. json_encode($last))
+end
+fn target($identity,$applied)
+  $state=fixture("frame.state",$identity)
+  check(not $state.evidence.closed and $state.target != nil and $state.target.stamp != nil,"No installed frame target")
+  check($state.target.stamp.activation_epoch > 0 and $state.target.stamp.local_revision == $applied,"Wrong installed stamp")
+  return $state
+end
+fn presented($identity,$target,$label)
+  $receipt=fixture("frame.wait",merge($identity,{window:$target.window,
+    activation_epoch:$target.stamp.activation_epoch,local_revision:$target.stamp.local_revision,timeout_ms:4000})).receipt
+  check($receipt.window == $target.window and deep_eq($receipt.stamp,$target.stamp) and
+    $receipt.request_id != nil and $receipt.outcome.kind == "presented","Missing exact native presentation: " .. json_encode($receipt))
+  write_file($R.run.path .. "/frame-" .. $label .. ".json",json_encode($receipt))
+  return $receipt
+end
+fn layout($identity,$window,$label)
+  $value=fixture("layout",merge($identity,{window:$window,layer:"base",aliases:["root"]}))
+  check($value.window_id == $window and $value.layout_sequence > 0 and not $value.truncated and
+    $value.logical_size[0] > 0 and $value.logical_size[1] > 0,"Invalid real layout traversal")
+  check(len($value.aliases) == 1 and $value.aliases[0].status == "found" and
+    len($value.records) == 1 and $value.records[0].alias == "root","Root alias not uniquely found")
+  $record=$value.records[0]
+  check($record.layout_bounds[2] > 0 and $record.layout_bounds[3] > 0 and $record.visible_bounds != nil and
+    $record.visible_bounds[2] > 0 and $record.visible_bounds[3] > 0,"Root lacks real visible geometry")
+  write_file($R.run.path .. "/layout-" .. $label .. ".json",json_encode($value))
+  return $value
+end
+fn asynchronous($verb,$body,$label,$timeout)
+  $out=$R.run.path .. "/" .. $label .. ".reply"
+  $child=$h.call_async($mix,$R.bus,$R.run.path,"term","app.acceptance." .. $verb,$body,$out,$timeout)
+  $R.calls=concat($R.calls,[$child])
+  return {pid:$child,out:$out}
+end
+fn collect_call($pending,$budget)
+  $deadline=time()+$budget
+  while time() < $deadline
+    $reply=$h.collect($pending.out,$pending.pid)
+    if $reply != nil then return $reply end
+    sleep(0.02)
+  end
+  raise("CALL_TIMEOUT","Native helper did not terminate: " .. $pending.out)
+end
+fn reached($identity,$token,$zoom)
+  $arm=fixture("barrier.arm",merge($identity,{point:"terminal.prepare",token:$token}))
+  check($arm.state == "armed","Barrier failed to arm")
+  $reference=merge($identity,{sequence:$arm.sequence,token:$token})
+  $pending=asynchronous("barrier.wait",$reference,$token,12)
+  comp("comp.input.key",{seat:"human",key:"equal",modifiers:["ctrl"]})
+  $reply=collect_call($pending,4)
+  check($reply.rc == 0 and $reply.result.ok and $reply.result.state == "reached" and
+    $reply.result.sequence == $arm.sequence and $reply.result.token == $token and
+    contains($reply.result.observation,"zoom=" .. to_string($zoom)),"Wrong real preparation barrier: " .. json_encode($reply))
+  return $reference
+end
+try
+  $R.run=$n.new_run("/var/tmp/term-settings")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"term-settings",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"term-settings",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:180})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned native compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  $authority_log=$root .. "/settingsd.log"
+  $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
+    {env:$h.bus_env($R.bus,$root),stdout:{file:$authority_log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[{pid:$authority,privileged_launcher:false}])
+  wait_service("settingsd","settings.describe",$authority,$authority_log)
+  $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $ordinary=launch_term("ordinary",nil)
+  $describe=app("app.describe",{})
+  check($describe.schema == "term.v1" and $describe.service == "term" and
+    $describe.app_id == "dev.mixos.term" and $describe.transport == "native","Wrong ordinary native owner")
+  $help=app("HELP",{})
+  check(type($help) == "string" and not contains($help,"app.acceptance."),"Ordinary HELP advertised fixture commands")
+  for each $verb in $verbs
+    $reply=call("term",$verb,{})
+    check($reply.rc != 0 and $reply.rc != -9 and type($reply.result) == "string" and
+      contains(lower($reply.result),"unknown"),"Ordinary fixture verb did not return explicit unknown: " .. json_encode($reply))
+  end
+  check($pty.stop_child({pid:$ordinary.pid,privileged_launcher:false}),"Ordinary Term survived teardown")
+  check($pty.stop_child({pid:$ordinary.launcher,privileged_launcher:true}),"Ordinary launcher survived teardown")
+  $identity={run:"term-native-" .. to_string(pid()),instance:1}
+  $term=launch_term("fixture",$identity)
+  $info=fixture("describe",$identity)
+  check($info.pid == $term.pid and $info.run == $identity.run and $info.instance == 1 and
+    $info.protocol == 1 and deep_eq($info.aliases,["root"]) and deep_eq($info.points,["terminal.prepare"]) and
+    $info.frames.enabled,"Wrong explicit native fixture")
+  $before=await_current($snapshot,0)
+  $initial=target($identity,$before.preparation.applied)
+  $identity=merge($identity,{generation:$initial.evidence.live_generation})
+  $first=presented($identity,$initial.target,"baseline")
+  layout($identity,$initial.target.window,"baseline")
+  $reference=reached($identity,"zoom-1",1)
+  $held=app("app.describe",{})
+  check(not $held.preparation.current and $held.preparation.desired > $before.preparation.applied and
+    $held.preparation.desired_zoom_steps == 1 and $held.preparation.applied_zoom_steps == 0 and
+    $held.preparation.applied == $before.preparation.applied and deep_eq($held.preparation.raster,$before.preparation.raster) and
+    deep_eq($held.preparation.cell,$before.preparation.cell) and $held.preparation.fault == nil,"Held preparation replaced LastGood raster")
+  check(deep_eq(fixture("frame.state",$identity).target,$initial.target),"Held builder relabelled installed frame")
+  layout($identity,$initial.target.window,"held")
+  $negative=call("term","app.acceptance.frame.wait",merge($identity,{window:$initial.target.window,
+    activation_epoch:$initial.target.stamp.activation_epoch,local_revision:$held.preparation.desired,timeout_ms:200}))
+  check($negative.rc == 0 and not $negative.result.ok and contains($negative.result.error,"TimedOut"),"Old frame satisfied future stamp")
+  check(fixture("barrier.release",$reference).state == "released","Release failed")
+  $after=await_current($snapshot,1)
+  $second=target($identity,$after.preparation.applied)
+  check($second.target.window == $initial.target.window and not deep_eq($second.target.stamp,$initial.target.stamp) and
+    $after.preparation.raster.logical_px > $before.preparation.raster.logical_px,"Zoom did not activate on same window")
+  presented($identity,$second.target,"zoom")
+  layout($identity,$second.target.window,"zoom")
+  rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:"term-native-dark",changes:{"appearance.mode":"dark","ui.text_scale":1.25},reset:[]})
+  $changed=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  check($changed.revision > $snapshot.revision,"Authority revision did not advance")
+  $current=await_current($changed,1)
+  $third=target($identity,$current.preparation.applied)
+  check($third.target.window == $initial.target.window and not deep_eq($third.target.stamp,$second.target.stamp),"Settings activation did not install a new stamp")
+  presented($identity,$third.target,"settings")
+  $closing=reached($identity,"closing",2)
+  $waiting=asynchronous("frame.wait",merge($identity,{window:$third.target.window,
+    activation_epoch:$third.target.stamp.activation_epoch,local_revision:$current.preparation.applied+1,timeout_ms:10000}),"closing-frame",12)
+  $deadline=time()+5
+  comp("comp.input.key",{seat:"human",key:"q",modifiers:["ctrl","shift"]})
+  while process_alive($term.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($term.pid),"Held native preparation prevented bounded shutdown")
+  $closed=collect_call($waiting,2)
+  check(not ($closed.rc == 0 and type($closed.result) == "map" and $closed.result.ok),"Future frame wait succeeded during close")
+  write_file($root .. "/acceptance.json",json_encode({ordinary_omission:true,layout:true,presented:true,
+    held_last_good:true,zoom_release:true,settings_applied:$h.identity($changed),same_window:true,
+    shutdown:true,shutdown_wait:$closed,dbus:false}))
+  $R.ok=true
+catch $message
+  print("FAIL Term native settings: " .. $message)
+finally
+  for each $child in $R.calls
+    $h.stop($child)
+  end
+  for each $child in $R.children
+    if not $pty.stop_child($child) then $R.ok=false; print("FAIL owned child survived: " .. to_string($child.pid)) end
+  end
+  if $R.session != nil then
+    $n.stop($R.session)
+    for each $child in $R.session.pids
+      if process_alive($child) then $h.stop($child) end
+      check(not process_alive($child),"Native host survived teardown")
+    end
+  end
+  if $R.bus != nil then $h.stop($R.bus.pid) end
+  if $R.ok then print("PASS Term native settings: actual layout, exact installed native receipts, held/released raster, settings activation and bounded shutdown") end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
