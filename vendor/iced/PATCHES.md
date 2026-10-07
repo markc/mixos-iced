@@ -30,8 +30,22 @@ drain the backlog. An additional unheld AfterCommit schedule accepts either real
 terminal outcome and independently requires successful recovery. No fixture
 redraw, resize or raw commit assists these recovery schedules. Physical draw size
 and observer owner stay fixed. Metadata/observations are bounded and the runner
-supplies finite execution/cleanup deadlines. Shared process-capacity native
-acceptance remains separate required work.
+supplies finite execution/cleanup deadlines.
+
+The separate process-capacity probe creates sixteen donors sequentially. Each
+requests eight real feedback objects at its first successful buffer submission;
+the fixture retains every actual terminal lease before closing that donor and
+waiting for its actual native Destroyed event. Native IDs are matched only to
+active incarnations and terminal request IDs remain distinct. One later immutable
+target must receive actual Capacity while all 128 foreign leases remain held.
+Only an actual blocked/unavailable AboutToWait scan signals a finite release
+thread. That thread drops the whole native leases without sending an app message,
+reply or user event. Read-only hooks require a changed release epoch and the
+actual production capacity-retry branch before the exact target Presented
+receipt. The target receives no Opened completion message, redraw, resize or view
+change during recovery. Ordinary builds omit these bounded fixture holders and
+notifications. Cross-loop undrained-queue wake acceptance is a separate backend
+guard; the process probe does not claim that combined lifetime schedule.
 
 ## Non-default native frame ordering acceptance
 

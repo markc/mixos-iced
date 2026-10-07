@@ -728,6 +728,110 @@ mod presentation_native_guards {
         }
         println!("WINIT_CHARGE PASS queued=true late=true backend_retired=true");
     }
+
+    fn native_window(event_loop: &EventLoop<()>) -> Window {
+        let target = match &event_loop.window_target.p {
+            PlatformActiveEventLoop::Wayland(target) => target,
+            #[cfg(x11_platform)]
+            _ => unreachable!(),
+        };
+        Window::new(target, crate::window::WindowAttributes::default()).expect("actual configured window")
+    }
+
+    fn retire_native_window(event_loop: &EventLoop<()>, window: Window) {
+        let id = window.id();
+        drop(window);
+        let target = match &event_loop.window_target.p {
+            PlatformActiveEventLoop::Wayland(target) => target,
+            #[cfg(x11_platform)]
+            _ => unreachable!(),
+        };
+        let mut state = target.state.borrow_mut();
+        state.drag_close_window(id);
+        drop(state.window_requests.get_mut().remove(&id));
+        drop(state.windows.get_mut().remove(&id));
+    }
+
+    #[test]
+    #[ignore = "requires an owned native compositor with wp_presentation"]
+    fn actual_foreign_undrained_queue_retirement_wakes_idle_capacity_waiter() {
+        use std::sync::mpsc::sync_channel;
+        use std::time::{Duration, Instant};
+        let timeout = Duration::from_secs(10);
+        let baseline = native_process_count();
+        assert_eq!(baseline, 0, "serial native guard process");
+        let mut survivor = EventLoop::<()>::new().expect("surviving native loop");
+        let connection = survivor.connection.clone();
+        let window = native_window(&survivor);
+        survivor.loop_dispatch(Some(Duration::ZERO)).expect("initial readiness");
+        let (ready_tx, ready_rx) = sync_channel(1);
+        let (release_tx, release_rx) = sync_channel(1);
+        let (retired_tx, retired_rx) = sync_channel(1);
+        let (finish_tx, finish_rx) = sync_channel(1);
+        let donor = std::thread::spawn(move || {
+            let donor = EventLoop::<()>::new().expect("foreign native loop on its owner thread");
+            let connection = donor.connection.clone();
+            // Window construction dispatches protocol setup. Construct them all
+            // before any feedback is requested, preserving undrained terminals.
+            let windows: Vec<_> = (0..16).map(|_| native_window(&donor)).collect();
+            let mut observations = Vec::with_capacity(128);
+            for window in &windows {
+                for _ in 0..8 {
+                    window.request_presentation_feedback().expect("real donor reservation");
+                    observations.push(window.take_native_request().expect("real native request tap"));
+                }
+            }
+            for window in windows { retire_native_window(&donor, window); }
+            let deadline = Instant::now() + timeout;
+            while observations.iter().any(|observation| !observation.discarded()) && Instant::now() < deadline {
+                connection.roundtrip().expect("backend-only terminal progress");
+            }
+            assert_eq!(observations.len(), 128);
+            assert!(observations.iter().all(|observation| observation.discarded()
+                && observation.charge_alive()
+                && connection.backend().info(observation.object_id()).is_err()));
+            assert_eq!(native_process_count(), baseline + 128);
+            ready_tx.send(()).expect("survivor setup notification");
+            release_rx.recv_timeout(timeout).expect("finite foreign queue release instruction");
+            // Drop the complete typed queue on its owner thread. The actual
+            // terminal userdata retires charges while Connection remains live.
+            drop(donor);
+            assert!(observations.iter().all(|observation| !observation.charge_alive()));
+            assert_eq!(native_process_count(), baseline);
+            retired_tx.send(()).expect("retired scalar diagnostics");
+            finish_rx.recv_timeout(timeout).expect("finite survivor completion");
+            drop(connection);
+        });
+        ready_rx.recv_timeout(timeout).expect("actual undrained foreign terminals");
+        let blocked = window.presentation_capacity().expect("actual capacity snapshot");
+        assert!(!blocked.available);
+        assert_eq!(window.request_presentation_feedback(), Err(crate::presentation::PresentationError::Capacity));
+        // Process admission fails before any credit is reserved, creating no
+        // process release. No fixture channel is registered as a native source.
+        let acknowledged = survivor._presentation_capacity_wake.as_ref().expect("actual wake subscriber").native_acknowledgements();
+        release_tx.send(()).expect("one foreign retirement instruction");
+        let deadline = Instant::now() + timeout;
+        while survivor._presentation_capacity_wake.as_ref().unwrap().native_acknowledgements() == acknowledged {
+            let remaining = deadline.checked_duration_since(Instant::now()).expect("actual capacity wake deadline");
+            survivor.loop_dispatch(Some(remaining)).expect("native readiness-driven wait");
+        }
+        let available = window.presentation_capacity().expect("actual post-wake capacity");
+        assert!(available.available);
+        assert!(available.release_epoch > blocked.release_epoch);
+        retired_rx.recv_timeout(timeout).expect("foreign queue baseline restored");
+        window.request_presentation_feedback().expect("actual reopened reservation");
+        let observation = window.take_native_request().expect("survivor real request");
+        assert!(observation.charge_alive());
+        finish_tx.send(()).expect("release retained foreign connection");
+        donor.join().expect("foreign native owner retired");
+        retire_native_window(&survivor, window);
+        read_actual_terminal(&connection, &observation);
+        drop(survivor);
+        drop(connection);
+        assert!(!observation.charge_alive());
+        assert_eq!(native_process_count(), baseline);
+        println!("WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true idle_native_wake=true real_readmission=true baseline_restored=true");
+    }
 }
 
 impl ActiveEventLoop {
