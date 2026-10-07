@@ -21,6 +21,8 @@
 //! `--translucent` uses premultiplied half-alpha ARGB with no opaque region;
 //! the default XRGB buffer is opaque. `--ssd` requests server decorations.
 //! `--colour RRGGBB` draws a fixed colour, premultiplied when translucent.
+//! `--delay-size-commit WxH:MS` ACKs that size, retaining the old buffer for
+//! the stated interval before committing the new one. Other sizes are immediate.
 //! `--seats` lists and labels every seat's keyboard/pointer events.
 //! `--idle-timeout-ms N` also enables this mode and subscribes to one
 //! ext-idle-notify notification per seat. Seat names are whatever the
@@ -202,6 +204,7 @@ struct Options {
     translucent: bool,
     colour: Option<[u8; 3]>,
     ssd: bool,
+    delay_size_commit: Option<(i32, i32, Duration)>,
 }
 
 fn options() -> Result<Options, String> {
@@ -222,6 +225,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         translucent: false,
         colour: None,
         ssd: false,
+        delay_size_commit: None,
     };
     while let Some(argument) = arguments.next() {
         let mut value = || {
@@ -259,6 +263,20 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
             "--translucent" => options.translucent = true,
             "--colour" => options.colour = Some(parse_colour(&value()?)?),
             "--ssd" => options.ssd = true,
+            "--delay-size-commit" => {
+                let input = value()?;
+                let (size, millis) = input.split_once(':')
+                    .ok_or("--delay-size-commit expects WxH:MS")?;
+                let (width, height) = size.split_once('x')
+                    .ok_or("--delay-size-commit expects WxH:MS")?;
+                let width: i32 = width.parse().map_err(|_| "invalid delayed width")?;
+                let height: i32 = height.parse().map_err(|_| "invalid delayed height")?;
+                let millis: u64 = millis.parse().map_err(|_| "invalid delayed milliseconds")?;
+                if width <= 0 || height <= 0 || millis == 0 || millis > 60_000 {
+                    return Err("delayed size must be positive, interval 1..=60000 ms".into());
+                }
+                options.delay_size_commit = Some((width, height, Duration::from_millis(millis)));
+            }
             "--remap-once-ms" => {
                 options.remap_once = Some(Duration::from_millis(
                     value()?
@@ -465,6 +483,7 @@ fn run() -> Result<(), String> {
     let mut awaiting_configure = false;
     let mut remap_at: Option<Instant> = None;
     let mut remap_left = options.remap_once;
+    let mut delayed_commit: Option<(i32, i32, Instant)> = None;
     while Instant::now() < deadline && (!probe.closed || options.hide_on_close) {
         if let Some(error) = probe.seat_error.take() {
             return Err(error);
@@ -472,6 +491,7 @@ fn run() -> Result<(), String> {
         if probe.closed && !hidden {
             probe.closed = false;
             hidden = true;
+            delayed_commit = None;
             surface.attach(None, 0, 0);
             surface.commit();
             say("hidden");
@@ -503,17 +523,39 @@ fn run() -> Result<(), String> {
             xdg.ack_configure(serial);
             let width = if width > 0 { width } else { options.width };
             let height = if height > 0 { height } else { options.height };
-            if current
+            let resizing = current
                 .as_ref()
-                .is_none_or(|canvas| (canvas.width, canvas.height) != (width, height))
-            {
+                .is_none_or(|canvas| (canvas.width, canvas.height) != (width, height));
+            let delay = options.delay_size_commit.filter(|(w, h, _)|
+                (*w, *h) == (width, height) && current.is_some() && resizing);
+            if let Some((_, _, interval)) = delay {
+                if delayed_commit.is_none() {
+                    delayed_commit = Some((width, height, Instant::now() + interval));
+                    // Apply the ACK with the existing buffer. ACK alone must
+                    // not fabricate a committed client size or an input enter.
+                    surface.commit();
+                    say(&format!("deferred_commit {width} {height}"));
+                }
+            } else if resizing {
+                delayed_commit = None;
                 current = Some(canvas(&shm, &qh, width, height, options.translucent)?);
                 say(&format!("configure {width} {height}"));
+                dirty = true;
+            } else if delayed_commit.is_none() {
+                dirty = true;
             }
-            dirty = true;
             awaiting_configure = false;
         }
+        if let Some((width, height, at)) = delayed_commit
+            && Instant::now() >= at
+        {
+            delayed_commit = None;
+            current = Some(canvas(&shm, &qh, width, height, options.translucent)?);
+            say(&format!("configure {width} {height}"));
+            dirty = true;
+        }
         if let Some(canvas) = current.as_ref()
+            && delayed_commit.is_none()
             && (dirty || (probe.frame_done && !awaiting_configure))
         {
             frame = frame.wrapping_add(1);
@@ -994,6 +1036,20 @@ ignore_events!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_size_commit_is_bounded_and_does_not_change_default_timing() {
+        assert!(parse_options(std::iter::empty()).unwrap().delay_size_commit.is_none());
+        let parse = |value: &str| parse_options([
+            "--delay-size-commit".to_string(), value.to_string(),
+        ].into_iter());
+        assert_eq!(parse("1280x736:3000").unwrap().delay_size_commit,
+            Some((1280, 736, Duration::from_secs(3))));
+        for value in ["0x736:3000", "1280x-1:3000", "1280x736:0",
+            "1280x736:60001", "1280x736", "1280:3000", "x736:10", "1280x736:bad"] {
+            assert!(parse(value).is_err(), "{value}");
+        }
+    }
 
     #[test]
     fn default_options_do_not_enable_seat_observation() {

@@ -44,7 +44,7 @@ use crate::camera::transform::translate::transform::{
 };
 
 /// Read a surface's [`SurfaceView`] logical destination size (reflects viewport / buffer-scale).
-fn root_dst(surface: &WlSurface) -> Option<smithay::utils::Size<i32, Logical>> {
+pub(crate) fn root_dst(surface: &WlSurface) -> Option<smithay::utils::Size<i32, Logical>> {
     with_states(surface, |states: &SurfaceData| {
         states
             .data_map
@@ -775,4 +775,3 @@ pub fn surface_under_filtered_cx(
     }
     check_layer(Layer::Background)
 }
-

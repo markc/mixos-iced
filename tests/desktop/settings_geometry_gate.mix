@@ -204,7 +204,8 @@ try
   $height = $output.height
   $layout = await_layout(52)
   $probe_log = $root .. "/probe.log"
-  $probe = spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.SettingsGeometry","--size","320x240","--seconds","180","--colour","ff00ff"],
+  $delayed_size = to_string($width) .. "x" .. to_string($height-64)
+  $probe = spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.SettingsGeometry","--size","320x240","--seconds","180","--colour","ff00ff","--delay-size-commit",$delayed_size .. ":3000"],
     {env:$n.client_env($R.session,{}),stdout:{file:$probe_log},stderr:"stdout",detach:true})
   $R.children = concat($R.children,[$probe])
   $mapped = comp("comp.window.wait",{match:{app_id:"dev.mixos.SettingsGeometry"},until:"presented",timeout_ms:15000})
@@ -245,10 +246,16 @@ try
   $changed = apply({"shell.panels.bottom.thickness":64},"dock-64")
   await_panel("docked",64,64,$changed.revision)
   $layout = await_layout(64)
+  await_new($probe_log,$offset,"PROBE deferred_commit " .. to_string($width) .. " " .. to_string($height-64))
+  comp("comp.window.wait",{match:$window,until:"size",width:$width,height:$height-96,timeout_ms:500})
+  $delayed_slot = comp("compd.truth",{}).slots[to_string($window.id)]
+  if not deep_eq($delayed_slot.decided,[$width,$height-64]) then raise("INPUT","Delayed ACK changed the decided slot") end
+  if contains(tail_after($probe_log,$offset),"PROBE enter") then raise("INPUT","ACK without a new buffer fabricated a client enter") end
   $truth = wait_size($width,$height-64,$offset)
   if $truth.outputs[keys($truth.outputs)[0]].usable.height != $height-64 then raise("WORK_AREA","Regrowth did not update usable area") end
   if $y >= $layout.surface.y then raise("INPUT","Parked pointer is not in the vacated client strip") end
   await_new($probe_log,$offset,"PROBE enter")
+  await_point($probe_log,$offset,$x,$y)
   capture("dock-64",$layout,$height-67,$height-80,$changed,"resting")
   $after = comp("comp.window.wait",{match:$window,until:"presented",timeout_ms:5000}).window
   if $after.id != $window.id or $after.generation != $window.generation then raise("IDENTITY","Window replaced during activation") end

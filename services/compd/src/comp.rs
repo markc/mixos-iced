@@ -115,13 +115,14 @@ pub(crate) fn reconcile_scene_geometry(lp: &mut Loop) {
     let parked = native::render::execute::execute::frames_parked(lp);
     #[cfg(not(feature = "backend-native"))]
     let parked = false;
-    if !parked && world::comp::scenes::geometry_dirty(lp) {
+    if !parked && lp.inner.comp.input_geometry_dirty() {
         // The previous frame has now applied pending iced sizes/scales. Publish
-        // current scene rows before routing the unchanged pointer. Existing
-        // queued-iced handling schedules the hover frame after this pass.
+        // current scene rows before routing the unchanged pointer. A delayed
+        // client buffer can remove a letterbox after scene geometry settled;
+        // the commit observer requests the same reconciliation in that case.
         refresh_scene_surfaces(lp);
         if policy_host::input::try_retarget_pointer(lp) {
-            world::comp::scenes::clear_geometry_dirty(lp);
+            lp.inner.comp.clear_input_geometry_dirty();
         }
     }
 }

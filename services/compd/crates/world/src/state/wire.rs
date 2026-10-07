@@ -339,6 +339,18 @@ impl WireTrait for Orchestrator {
         self.comp.apply(event);
     }
 
+    fn committed_input_geometry(&mut self, surface: &WlSurface) {
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+        if let Some(window) = find::in_space(&self.owning_space(&root).state, &root)
+            && crate::comp::input_geometry::observe(&window)
+        {
+            self.comp.mark_input_geometry_dirty();
+        }
+    }
+
     fn forget_withdrawn_x11(&mut self, surface: &X11Surface) {
         self.withdrawn_x11.remove(&surface.window_id());
     }

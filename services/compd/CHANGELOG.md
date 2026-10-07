@@ -1,5 +1,9 @@
 # Changelog
 
+- Reconcile stationary pointer routing when an applied client shape changes
+  after a scene resize. Same-sized buffer repaints remain quiet; the composed
+  gate forces a delayed size commit and distinguishes ACK from new content.
+
 ## 0.1.9
 
 - Expose shell settings activation evidence through existing `shell.props.get`

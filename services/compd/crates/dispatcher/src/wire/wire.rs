@@ -764,6 +764,7 @@ impl<A: WireTrait + 'static> Wire<A> {
                 });
             }
             self.inner.surface_event(SurfaceEvent::Buffer { handle: SurfaceHandle::wl(surface), attached });
+            self.inner.committed_input_geometry(surface);
         }
         // Live layer-shell reconfiguration: if a committed surface is a mapped layer
         // surface, re-arrange its output so anchor / size / margin / exclusive-zone
@@ -922,4 +923,3 @@ impl<A: WireTrait + 'static> Wire<A> {
 // `client_compositor_state` accessor used by the drain (it lives on the handler
 // trait `CompositorHandler for Dispatch`, but the inherent borrow path is
 // clearer; re-expose the dispatcher fn for the drain).
-

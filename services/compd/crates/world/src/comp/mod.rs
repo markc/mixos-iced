@@ -24,6 +24,7 @@ pub mod causes;
 pub mod corners;
 pub mod fullscreen;
 pub mod injection;
+pub(crate) mod input_geometry;
 pub mod latch;
 pub mod occlusion;
 pub mod panels;
@@ -91,6 +92,9 @@ pub struct OutputGeneration {
 
 #[derive(Default)]
 pub struct CompState {
+    /// Scene or committed client input shape changed. Retained through grabs,
+    /// output loss and parked frames; drained by the owning seat path.
+    input_geometry_dirty: bool,
     pub registry: Registry<SurfaceHandle>,
     /// The workspace model (count, current per output).
     pub workspaces: WorkspaceState,

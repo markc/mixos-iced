@@ -176,4 +176,7 @@ pub trait WireTrait {
     /// Queued events arrive from `drain_protocol` in arrival order; the drain arms and
     /// the frame hook call this directly.
     fn surface_event(&mut self, event: crate::wire::trait_::surface_event::SurfaceEvent);
+    /// Observe applied client input shape after the commit drain has updated
+    /// window geometry. Routing remains the host's post-dispatch work.
+    fn committed_input_geometry(&mut self, _surface: &WlSurface) {}
 }
