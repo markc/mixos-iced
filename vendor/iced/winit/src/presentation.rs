@@ -46,13 +46,14 @@ impl Ledger {
     }
     pub fn submitted(&mut self, id: u64, binding: FrameBinding, successful: bool) {
         debug_assert!(self.pending.len() < CAP && !self.pending.contains_key(&id));
-        self.pending.insert(
+        let previous = self.pending.insert(
             id,
             Submission {
                 binding,
                 successful,
             },
         );
+        debug_assert!(previous.is_none(), "checked native request IDs must be unique");
     }
     /// Mutate the correlation table before returning its owned observer.
     pub fn resolve(&mut self, id: u64, outcome: FrameOutcome) -> Option<FrameBinding> {

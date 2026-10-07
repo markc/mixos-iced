@@ -181,7 +181,7 @@ where
     C: Compositor<Renderer = P::Renderer>,
     P::Theme: theme::Base,
 {
-    pub presentation: crate::presentation::Ledger,
+    pub(crate) presentation: crate::presentation::Ledger,
     pub raw: Arc<winit::window::Window>,
     pub waker: shell::Waker,
     pub state: State<P>,
