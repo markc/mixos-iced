@@ -120,7 +120,9 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
     let server = comp.clone();
     let fixture = tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
-            if request.command == "comp.capture.frame" {
+            if request.command == "comp.info" {
+                server.respond(&request, 0, "{\"instance\":\"capture-fixture\"}").await.unwrap();
+            } else if request.command == "comp.capture.frame" {
                 let args: Value = serde_json::from_str(&request.body).unwrap();
                 let path = args["path"].as_str().unwrap();
                 let image =
@@ -132,7 +134,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
                     .respond(
                         &request,
                         10,
-                        "{\"error\":\"fixture only handles frame capture\"}",
+                        "{\"error\":\"fixture only handles info and frame capture\"}",
                     )
                     .await
                     .unwrap();

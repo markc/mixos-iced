@@ -1870,6 +1870,8 @@ mod tests {
         // confirm dialogue instead of quitting under it.
         let mut app = test_app();
         app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());
+        app.document.as_mut().unwrap().set_crop(Some(Crop { x: 0, y: 0, width: 5, height: 5 })).unwrap();
+        assert!(app.document.as_ref().unwrap().dirty());
         let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
         assert!(app.confirm);
         assert!(matches!(app.pending, Some(Pending::Quit)));

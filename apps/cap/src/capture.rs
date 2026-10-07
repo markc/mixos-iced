@@ -401,14 +401,12 @@ pub async fn take(
     let mut hidden = false;
     let result = async {
         if request.delay > 0 {
-            use iced::futures::future::{Either, select};
-            let timer = Box::pin(bus.delay(Duration::from_secs(u64::from(request.delay))));
-            let cancelled = Box::pin(cancel.changed());
-            match select(timer, cancelled).await {
-                Either::Left((done, _)) => done.map_err(CaptureError::plain)?,
-                Either::Right(_) => {
+            tokio::select! {
+                biased;
+                _ = cancel.changed() => {
                     return Err(CaptureError::cancelled(Some(cleanup_target.clone())));
                 }
+                done = bus.delay(Duration::from_secs(u64::from(request.delay))) => done.map_err(CaptureError::plain)?,
             }
         }
         if *cancel.borrow() {
@@ -608,13 +606,13 @@ mod tests {
             ("HOME", "/six"),
         ];
         let expected = [
-            "/one",
-            "/two/cap",
-            "/three/apps/cap",
-            "/five/mixos/apps/cap",
-            "/six/.local/state/mixos/apps/cap",
+            (0, "/one"),
+            (1, "/two/cap"),
+            (2, "/three/apps/cap"),
+            (3, "/five/mixos/apps/cap"),
+            (5, "/six/.local/state/mixos/apps/cap"),
         ];
-        for (offset, expected) in expected.into_iter().enumerate() {
+        for (offset, expected) in expected {
             let base = media_base(|key| {
                 vars[offset..]
                     .iter()
