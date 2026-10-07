@@ -356,10 +356,13 @@ fn resource_binding_preparation_seam_and_acknowledgement_agree() {
     let mut state = consumer();
     let request = state.fallback_request().unwrap();
     let prepared = request
-        .prepare_resources_with_cache(|| Ok(None), |_, _, _, expected| {
-            assert_eq!(expected, None, "embedded has no expected binding");
-            Ok(Some(binding.clone()))
-        })
+        .prepare_resources_with_cache(
+            || Ok(None),
+            |_, _, _, expected| {
+                assert_eq!(expected, None, "embedded has no expected binding");
+                Ok(Some(binding.clone()))
+            },
+        )
         .unwrap();
     assert_eq!(prepared.resources(), Some(&binding));
     assert!(state.complete_fallback(&request, Ok(prepared)));
@@ -410,8 +413,9 @@ fn cold_cache_binding_reaches_the_readiness_check_and_must_match() {
     // A readiness check that resolves a different default (or nothing) must
     // not relabel that different set as the cached candidate.
     let prepared = request
-        .prepare_resources_with_cache(|| Ok(Some(candidate)), |_, _, _, expected| {
-            match expected {
+        .prepare_resources_with_cache(
+            || Ok(Some(candidate)),
+            |_, _, _, expected| match expected {
                 Some(expected) => {
                     assert_eq!(expected, &binding);
                     Ok(Some(ResourceBinding {
@@ -420,9 +424,93 @@ fn cold_cache_binding_reaches_the_readiness_check_and_must_match() {
                     }))
                 }
                 None => Ok(None),
-            }
-        })
+            },
+        )
         .unwrap();
     assert_eq!(prepared.kind(), PresentationKind::Embedded);
     assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
+}
+
+fn referenced_snapshot(revision: u64, density: f64) -> Snapshot {
+    let mut desktop = Desktop::default();
+    desktop.ui.density = density;
+    desktop.appearance.resources = Some(ResourceReference {
+        schema: RESOURCE_SCHEMA,
+        set_id: "core-icons".into(),
+        manifest_blake3: "a".repeat(64),
+        icons: None,
+    });
+    Snapshot {
+        schema: SCHEMA,
+        binding: binding(),
+        incarnation: "authority".into(),
+        revision: Revision(revision),
+        design_revision: Revision(1),
+        source_digest: source_digest(EMBEDDED_DEFAULT_SOURCE),
+        effective: resolve(&desktop).unwrap(),
+        desktop,
+    }
+}
+#[test]
+fn retained_fallback_binding_survives_plain_acknowledge_and_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding_fixture();
+    // Bootstrap retains a snapshot with an explicit authored reference, then
+    // the connection is lost before any read completes.
+    let mut state = consumer();
+    let subscribe = state.connected(1).unwrap();
+    let read = state.complete(&subscribe, Ok(None)).unwrap();
+    state.observe(1, referenced_snapshot(9, 1.4));
+    state.complete(
+        &read,
+        Err(Diagnostic::new("read_timeout", "native", "Deadline")),
+    );
+    // The resource-aware preparation verifies the retained candidate and
+    // returns its exact binding; retained bootstrap data carries no recorded
+    // binding of its own.
+    let request = state.fallback_request().unwrap();
+    let prepared = request
+        .prepare_resources_with_cache(
+            || panic!("a validated retained candidate must win"),
+            |_, _, _, expected| {
+                assert_eq!(expected, None);
+                Ok(Some(binding.clone()))
+            },
+        )
+        .unwrap();
+    assert_eq!(prepared.kind(), PresentationKind::Retained);
+    assert_eq!(prepared.resources(), Some(&binding));
+    assert!(state.complete_fallback(&request, Ok(prepared)));
+    let update = state.pending().unwrap().clone();
+    assert_eq!(update.resources(), Some(&binding));
+    // A resource-aware acknowledgement that disagrees with the prepared
+    // binding refuses the fallback stage; the stage stays pending.
+    let mut other = binding.clone();
+    other.set_id = "other-set".into();
+    assert!(!state.acknowledge_resources(&update, Some(other)));
+    assert!(state.pending().is_some());
+    // The ordinary plain acknowledge carries the prepared binding into the
+    // captured save without a manual host pairing.
+    assert!(state.acknowledge(&update));
+    assert_eq!(state.presentation_kind(), Some(PresentationKind::Retained));
+    let save = state.cache_save().unwrap();
+    assert_eq!(save.binding(), Some(&binding));
+    let mut writer = Writer::open(dir.path(), &state).unwrap();
+    assert_eq!(writer.write(&save).unwrap(), WriteOutcome::Written);
+    // Write-then-load: the persisted envelope loads with the same snapshot
+    // and binding.
+    let candidate = cache::load(dir.path(), &state).unwrap();
+    assert_eq!(candidate.binding(), Some(&binding));
+    assert_eq!(candidate.snapshot(), state.applied().unwrap());
+    assert_eq!(
+        candidate
+            .snapshot()
+            .desktop
+            .appearance
+            .resources
+            .as_ref()
+            .unwrap()
+            .set_id,
+        "core-icons"
+    );
 }

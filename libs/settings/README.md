@@ -102,17 +102,26 @@ binding, the cached envelope binding, or none for embedded — and must return
 exactly that binding when one is expected; any disagreement rejects the
 candidate with a `binding_mismatch` diagnostic and continues the fallback
 ladder, so a different current-default resolution is never labelled as the
-cached candidate. Pass the prepared binding to `Consumer::acknowledge_resources`
-with the same staged update so the captured `cache_save()` records exactly the
-binding that was prepared. The cache then writes a schema-2 envelope whose
-domain-separated digest covers the unchanged canonical snapshot and the
+cached candidate. The prepared binding is carried on the staged `Update`
+itself, so the ordinary `Consumer::acknowledge` preserves it verbatim without
+a manual pairing; `acknowledge_resources` remains for current stages where the
+host computes the binding, and must agree with a fallback stage's carried
+binding rather than replacing it. The captured `cache_save()` then records
+exactly the binding that was prepared. The cache writes a schema-2 envelope
+whose domain-separated digest covers the unchanged canonical snapshot and the
 binding; an explicit authored reference must equal its binding on load, while
 omission records the host's pinned default identity without canonical
-mutation. `ResourceBinding.icons` carries the authored optional icon selector
-verbatim (None means the descriptor default); the actually resolved default is
-appearance evidence, never cache data. Legacy schema-1 envelopes load only
-under the named predecessor interpretation and never claim a resource binding.
-Build binding interpretations with the feature-independent
+mutation. The writer applies the same equality before serialisation — a
+mismatched binding or an invented selector on omission refuses the write with
+`cache_binding_mismatch`, and a resource-bearing snapshot without a binding
+refuses with `cache_binding_required` — so no envelope the loader rejects is
+ever persisted. `ResourceBinding.icons` carries the authored optional icon
+selector verbatim (None means the descriptor default); the actually resolved
+default is appearance evidence, never cache data. Legacy schema-1 envelopes
+load only under the named predecessor interpretation and never claim a
+resource binding, and that interpretation derives from the actual embedded
+default source, so legacy loadability is conditional on an unchanged embedded
+default. Build binding interpretations with the feature-independent
 `settings::resource_interpretation()`; the optional cache module re-exports the
 same value rather than duplicating it.
 

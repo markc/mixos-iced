@@ -68,10 +68,11 @@ impl Prepared {
         &self.diagnostics
     }
     /// The renderer-neutral resource binding this preparation was checked
-    /// against. The host passes it to `Consumer::acknowledge_resources` with
-    /// the same activation, so the captured cache save records exactly what
-    /// was prepared. None means no binding was produced by the resource
-    /// check.
+    /// against. `Consumer::complete_fallback` carries it on the staged
+    /// update, so the ordinary `acknowledge` preserves it and the captured
+    /// cache save records exactly what was prepared; a host may also pass it
+    /// to `Consumer::acknowledge_resources` explicitly. None means no
+    /// binding was produced by the resource check.
     pub fn resources(&self) -> Option<&crate::ResourceBinding> {
         self.resources.as_ref()
     }
@@ -125,15 +126,14 @@ impl Request {
     ) -> Result<Prepared, Vec<Diagnostic>> {
         let mut diagnostics = Vec::new();
         if let Some(snapshot) = &self.retained {
-            match validate_inline(snapshot, &self.binding, &self.context)
-                .and_then(|_| {
-                    resources(
-                        snapshot,
-                        &self.context,
-                        self.shell,
-                        self.retained_binding.as_ref(),
-                    )
-                }) {
+            match validate_inline(snapshot, &self.binding, &self.context).and_then(|_| {
+                resources(
+                    snapshot,
+                    &self.context,
+                    self.shell,
+                    self.retained_binding.as_ref(),
+                )
+            }) {
                 Ok(binding) => {
                     if self.retained_binding.is_some()
                         && binding.as_ref() != self.retained_binding.as_ref()
@@ -182,8 +182,7 @@ impl Request {
             };
             match check {
                 Ok(binding) => {
-                    if candidate.binding.is_some()
-                        && binding.as_ref() != candidate.binding.as_ref()
+                    if candidate.binding.is_some() && binding.as_ref() != candidate.binding.as_ref()
                     {
                         diagnostics.push(Diagnostic::new(
                             "binding_mismatch",
@@ -223,12 +222,9 @@ impl Request {
             Ok::<_, Diagnostic>((Arc::new(snapshot), binding))
         })();
         match embedded {
-            Ok((snapshot, binding)) => Ok(self.prepared(
-                snapshot,
-                PresentationKind::Embedded,
-                binding,
-                diagnostics,
-            )),
+            Ok((snapshot, binding)) => {
+                Ok(self.prepared(snapshot, PresentationKind::Embedded, binding, diagnostics))
+            }
             Err(error) => {
                 diagnostics.push(error);
                 Err(diagnostics)
@@ -353,7 +349,10 @@ mod tests {
             desktop,
         }
     }
-    fn request(retained: Option<Snapshot>, retained_binding: Option<crate::ResourceBinding>) -> Request {
+    fn request(
+        retained: Option<Snapshot>,
+        retained_binding: Option<crate::ResourceBinding>,
+    ) -> Request {
         Request {
             owner: 1,
             serial: 2,
@@ -380,15 +379,16 @@ mod tests {
         // ladder continues; the diagnostic names the disagreement.
         let request = request(Some(snapshot()), Some(expected.clone()));
         let prepared = request
-            .prepare_resources_with_cache(|| Ok(None), |_, _, _, expected_binding| {
-                match expected_binding {
+            .prepare_resources_with_cache(
+                || Ok(None),
+                |_, _, _, expected_binding| match expected_binding {
                     Some(expected_binding) => {
                         assert_eq!(expected_binding, &expected);
                         Ok(Some(binding("different")))
                     }
                     None => Ok(None),
-                }
-            })
+                },
+            )
             .unwrap();
         assert_eq!(prepared.kind(), PresentationKind::Embedded);
         assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
@@ -414,10 +414,13 @@ mod tests {
         let request = request(None, None);
         // The exact recorded binding accepts the cached candidate.
         let prepared = request
-            .prepare_resources_with_cache(|| Ok(Some(candidate(Some(pinned.clone())))), |_, _, _, expected_binding| {
-                assert_eq!(expected_binding, Some(&pinned));
-                Ok(Some(pinned.clone()))
-            })
+            .prepare_resources_with_cache(
+                || Ok(Some(candidate(Some(pinned.clone())))),
+                |_, _, _, expected_binding| {
+                    assert_eq!(expected_binding, Some(&pinned));
+                    Ok(Some(pinned.clone()))
+                },
+            )
             .unwrap();
         assert_eq!(prepared.kind(), PresentationKind::Cached);
         assert_eq!(prepared.resources(), Some(&pinned));
@@ -425,15 +428,16 @@ mod tests {
         // A default resolved differently now is never labelled as the cached
         // candidate: the candidate is rejected and the ladder continues.
         let prepared = request
-            .prepare_resources_with_cache(|| Ok(Some(candidate(Some(pinned.clone())))), |_, _, _, expected_binding| {
-                match expected_binding {
+            .prepare_resources_with_cache(
+                || Ok(Some(candidate(Some(pinned.clone())))),
+                |_, _, _, expected_binding| match expected_binding {
                     Some(expected_binding) => {
                         assert_eq!(expected_binding, &pinned);
                         Ok(Some(binding("current-default")))
                     }
                     None => Ok(None),
-                }
-            })
+                },
+            )
             .unwrap();
         assert_eq!(prepared.kind(), PresentationKind::Embedded);
         assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
@@ -445,7 +449,10 @@ mod tests {
         // expected binding can never be satisfied: it falls through instead of
         // pretending the recorded resources were verified.
         let prepared = request
-            .prepare_with_cache(|| Ok(Some(candidate(Some(binding("pinned"))))), |_, _, _| Ok(()))
+            .prepare_with_cache(
+                || Ok(Some(candidate(Some(binding("pinned"))))),
+                |_, _, _| Ok(()),
+            )
             .unwrap();
         assert_eq!(prepared.kind(), PresentationKind::Embedded);
         assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");

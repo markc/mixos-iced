@@ -16,14 +16,24 @@ domain-separated digest covers the unchanged snapshot and the binding. The
 resource readiness check receives the expected binding of the candidate being
 checked (retained activation binding, cached envelope binding, or none for
 embedded) and must return exactly that binding when one is expected; the
-fallback owner rejects disagreement and continues the ladder. `ResourceBinding.icons`
+fallback owner rejects disagreement and continues the ladder. The prepared
+binding is carried on the staged update, so the ordinary acknowledge
+preserves it; a resource-aware acknowledgement that disagrees with a fallback
+stage's carried binding is refused. `ResourceBinding.icons`
 carries the authored optional selector verbatim — resolved defaults are
 appearance evidence, never cache data. `settings::resource_interpretation()`
 is available without the optional cache feature, which re-exports the same
 value. Legacy schema-1 envelopes load only under the named predecessor
 interpretation and never carry an explicit reference; explicit references
-must equal their binding. Contract version advances to 0.1.1; authority verbs
-and snapshot schema remain unchanged.
+must equal their binding. The writer applies the same binding/reference
+cross-check before serialising and refuses resource-bearing saves without a
+binding, so no persisted envelope fails its own loader. `appearance.resources.schema`
+and `icons.weight` accept Mix whole-number floats (1.0, 400.0) like panel
+thickness, while fractional, negative, out-of-range and non-finite values are
+refused. Legacy loadability stays conditional on an unchanged embedded
+default source, and the version-embedded resource interpretation invalidates
+earlier resource-bound caches on upgrade. Contract version advances to 0.1.1;
+authority verbs and snapshot schema remain unchanged.
 
 ## 0.3.4
 

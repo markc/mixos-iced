@@ -454,13 +454,46 @@ mod tests {
         let reset = patch(&next, &BTreeMap::new(), &["appearance.resources".into()]).unwrap();
         assert_eq!(reset, current);
         assert_eq!(
-            patch(&reset, &BTreeMap::from([(
-                "appearance.resources".into(),
-                Value::Null
-            )]), &[])
+            patch(
+                &reset,
+                &BTreeMap::from([("appearance.resources".into(), Value::Null)]),
+                &[]
+            )
             .unwrap(),
             current
         );
+        // Mix whole-number floats are the same values as integer literals.
+        let floats = json!({"schema":1.0,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+            "icons":{"family":"Symbols","style":"rounded","weight":400.0}});
+        assert_eq!(
+            patch(
+                &reset,
+                &BTreeMap::from([("appearance.resources".into(), floats)]),
+                &[]
+            )
+            .unwrap(),
+            next
+        );
+        // Fractional, negative and out-of-range numbers are refused whole.
+        for bad in [
+            json!({"schema":1.5,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+                "icons":{"family":"Symbols","style":"rounded","weight":400}}),
+            json!({"schema":-1.0,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+                "icons":{"family":"Symbols","style":"rounded","weight":400}}),
+            json!({"schema":1,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+                "icons":{"family":"Symbols","style":"rounded","weight":400.5}}),
+            json!({"schema":1,"set_id":"core-icons","manifest_blake3":"0".repeat(64),
+                "icons":{"family":"Symbols","style":"rounded","weight":70000.0}}),
+        ] {
+            assert!(
+                patch(
+                    &reset,
+                    &BTreeMap::from([("appearance.resources".into(), bad)]),
+                    &[]
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn invalid_resource_references_fail_structural_validation_before_acceptance() {

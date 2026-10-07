@@ -111,7 +111,10 @@ only and never opens files, reads a host font database or performs asset I/O.
 underscore). `manifest_blake3` is exactly 64 lowercase hex characters, so a set
 with the same ID and a changed manifest is never the requested set. The optional
 `icons` record selects one declared catalogue: family at most 256 bytes, style
-at most 96 bytes, weight an exact 1–1000 value. Unknown fields anywhere in the
+at most 96 bytes, weight an exact 1–1000 value. `schema` and `weight` accept
+Mix's floating whole numbers (`1.0`, `400.0`) exactly like panel thickness;
+fractional, negative, out-of-range and non-finite values are refused before
+acceptance. Unknown fields anywhere in the
 subdocument fail. Apps never override resources; every effective context
 carries the profile reference verbatim.
 
@@ -221,8 +224,11 @@ set ID, exact manifest digest, versioned selection interpretation and optional
 icon reference. Its domain-separated digest covers the unchanged canonical
 snapshot AND the binding, so a legacy snapshot digest can never replay into a
 resource-aware envelope. Resource-aware hosts return the binding from their
-readiness check, pass it to `Consumer::acknowledge_resources` with the same
-staged update, and the captured save writes schema 2. The readiness check is
+readiness check; the staged update carries it, so the ordinary
+`Consumer::acknowledge` preserves it, and `acknowledge_resources` remains for
+current stages where the host computes the binding — it must agree with a
+fallback stage's carried binding rather than replace it. The captured save
+writes schema 2. The readiness check is
 also given the expected binding of the candidate it is checking (retained
 activation binding, cached envelope binding, or none for embedded) and must
 return exactly that binding when one is expected; the fallback owner rejects
@@ -246,6 +252,18 @@ means this host's packaged-default policy with honest legacy/unpinned-cache
 evidence; they never claim to retain original font bytes. New captures with a
 binding write schema 2; captures without one keep writing the recognised
 legacy predecessor bytes, and no eager rewrite of old files occurs on read.
+The writer applies the same binding/reference equality as the loader before
+serialising: a mismatched binding or an invented selector on omission refuses
+the write with `cache_binding_mismatch`, and a resource-bearing snapshot
+without a binding refuses with `cache_binding_required`, so no envelope the
+loader rejects is ever persisted. The named predecessor interpretation derives
+from the actual embedded default source, so legacy loadability is conditional
+on that source remaining byte-identical to the 0.3.4 release's; a changed
+default relabels genuine legacy envelopes `unsupported_cache` rather than
+loading them under a changed interpretation. The resource interpretation also
+embeds the settings library version, so every settings release refuses
+resource-bound schema-2 caches (`unsupported_cache`) until new captures are
+written.
 
 ## Shell panel preferences
 

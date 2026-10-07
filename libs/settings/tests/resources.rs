@@ -69,10 +69,7 @@ fn explicit_reference_round_trips_strictly_and_carries_into_every_context() {
     assert_eq!(value["appearance"]["resources"]["schema"], RESOURCE_SCHEMA);
     assert_eq!(value["appearance"]["resources"]["set_id"], "core-icons");
     assert!(value["appearance"]["resources"].get("icons").is_none());
-    assert_eq!(
-        serde_json::from_value::<Desktop>(value).unwrap(),
-        desktop
-    );
+    assert_eq!(serde_json::from_value::<Desktop>(value).unwrap(), desktop);
     let effective = resolve(&desktop).unwrap();
     for context in effective.values() {
         assert_eq!(context.resources.as_ref(), Some(&reference));

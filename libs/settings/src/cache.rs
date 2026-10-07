@@ -65,6 +65,43 @@ fn resource_digest(
 ) -> Result<String, serde_json::Error> {
     crate::digest(&("settings-cache-resource", binding, snapshot))
 }
+
+/// A recorded binding must equal the snapshot's authored reference verbatim:
+/// an explicit reference matches set/manifest/icons exactly (including an
+/// omitted icon selector), and omission must not record an invented selector.
+/// Shared by the load and write paths so no envelope the loader rejects is
+/// ever persisted.
+fn check_binding_matches_snapshot(
+    binding: &ResourceBinding,
+    snapshot: &Snapshot,
+) -> Result<(), Diagnostic> {
+    match &snapshot.desktop.appearance.resources {
+        // The resolved descriptor default is appearance evidence, never cache
+        // binding data.
+        Some(reference) => {
+            if binding.set_id != reference.set_id
+                || binding.manifest_blake3 != reference.manifest_blake3
+                || binding.icons != reference.icons
+            {
+                return Err(fault(
+                    "cache_binding_mismatch",
+                    "Cache resource binding differs from the authored reference",
+                ));
+            }
+        }
+        // Omission records only the host's pinned exact set identity
+        // (default pin). An icon selector must not be invented here.
+        None => {
+            if binding.icons.is_some() {
+                return Err(fault(
+                    "cache_binding_mismatch",
+                    "Omitted resources must not record an icon selector",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 fn fault(code: &str, error: impl std::fmt::Display) -> Diagnostic {
     Diagnostic::new(code, "cache", error.to_string())
 }
@@ -95,9 +132,7 @@ impl Save {
     /// Compare private producer and activation fences without copying data.
     /// A serial cannot change its resource binding.
     pub fn same_capture(&self, other: &Self) -> bool {
-        self.owner == other.owner
-            && self.serial == other.serial
-            && self.binding == other.binding
+        self.owner == other.owner && self.serial == other.serial && self.binding == other.binding
     }
     /// The renderer-neutral resource binding captured with this activation.
     /// None means the presentation had no explicit reference and no pinned
@@ -257,7 +292,11 @@ impl Writer {
         // A capture with a resource binding writes a schema-2 envelope whose
         // digest covers binding AND unchanged snapshot; without one it writes
         // the recognised legacy schema-1 predecessor bytes, which stay
-        // readable by the previous release.
+        // readable by the previous release. No envelope this loader
+        // deterministically refuses is ever persisted: the binding passes the
+        // same authored-reference cross-check at write time that the loader
+        // applies at read time, and a resource-bearing snapshot without a
+        // binding is refused instead of writing a self-invalidating envelope.
         let (schema, interpretation, digest) = match save.binding.as_ref() {
             Some(binding) => {
                 if binding.interpretation != resource_interpretation() {
@@ -269,6 +308,7 @@ impl Writer {
                 binding
                     .validate()
                     .map_err(|error| fault(&error.code, error.message))?;
+                check_binding_matches_snapshot(binding, save.snapshot.as_ref())?;
                 (
                     RESOURCE_CACHE_SCHEMA,
                     resource_interpretation(),
@@ -276,12 +316,20 @@ impl Writer {
                         .map_err(|e| fault("invalid_cache_snapshot", e))?,
                 )
             }
-            None => (
-                CACHE_SCHEMA,
-                legacy_interpretation(),
-                crate::digest(save.snapshot.as_ref())
-                    .map_err(|e| fault("invalid_cache_snapshot", e))?,
-            ),
+            None => {
+                if save.snapshot.desktop.appearance.resources.is_some() {
+                    return Err(fault(
+                        "cache_binding_required",
+                        "A resource-bearing snapshot requires a resource binding",
+                    ));
+                }
+                (
+                    CACHE_SCHEMA,
+                    legacy_interpretation(),
+                    crate::digest(save.snapshot.as_ref())
+                        .map_err(|e| fault("invalid_cache_snapshot", e))?,
+                )
+            }
         };
         if let Some((serial, previous, committed)) = &self.latest {
             if save.serial < *serial {
@@ -434,33 +482,7 @@ pub fn load_for(directory: &Path, target: &Target) -> Result<Candidate, Diagnost
                 return Err(fault("invalid_cache", "Digest differs"));
             }
             validate_inline(&envelope.snapshot, &target.binding, &target.context)?;
-            match &envelope.snapshot.desktop.appearance.resources {
-                // An explicit authored reference must equal the binding
-                // verbatim, including an omitted (None) icon selector: the
-                // resolved descriptor default is appearance evidence, never
-                // cache binding data.
-                Some(reference) => {
-                    if binding.set_id != reference.set_id
-                        || binding.manifest_blake3 != reference.manifest_blake3
-                        || binding.icons != reference.icons
-                    {
-                        return Err(fault(
-                            "cache_binding_mismatch",
-                            "Cache resource binding differs from the authored reference",
-                        ));
-                    }
-                }
-                // Omission records only the host's pinned exact set identity
-                // (default pin). An icon selector must not be invented here.
-                None => {
-                    if binding.icons.is_some() {
-                        return Err(fault(
-                            "cache_binding_mismatch",
-                            "Omitted resources must not record an icon selector",
-                        ));
-                    }
-                }
-            }
+            check_binding_matches_snapshot(binding, &envelope.snapshot)?;
             Ok(Candidate {
                 snapshot: Arc::new(envelope.snapshot),
                 context: envelope.context,
@@ -525,12 +547,31 @@ mod tests {
     }
     fn store_envelope(dir: &Path, envelope: &Envelope) {
         let directory = config::atomic::open_directory(dir).unwrap();
-        let name = name(&envelope.snapshot.binding, &envelope.context, envelope.shell);
-        config::atomic::replace_in(&directory, name.as_ref(), &serde_json::to_vec(envelope).unwrap())
-            .unwrap();
+        let name = name(
+            &envelope.snapshot.binding,
+            &envelope.context,
+            envelope.shell,
+        );
+        config::atomic::replace_in(
+            &directory,
+            name.as_ref(),
+            &serde_json::to_vec(envelope).unwrap(),
+        )
+        .unwrap();
     }
     #[test]
-    fn legacy_and_resource_interpretations_are_distinct_and_named() {
+    fn legacy_interpretation_is_pinned_and_distinct_from_resources() {
+        // Real 0.3.4 envelopes only match while the embedded default source is
+        // byte-identical to what that release shipped: the predecessor label
+        // and schema are frozen, and the interpretation derives from the
+        // actual in-tree embedded source, never a copied constant.
+        let predecessor = source_digest(&format!(
+            "settings-cache-{CACHE_SCHEMA}-{}-{}",
+            "0.3.4",
+            source_digest(EMBEDDED_DEFAULT_SOURCE)
+        ));
+        assert_eq!(legacy_interpretation(), predecessor);
+        // The named predecessor never collides with the resource interpretation.
         assert_ne!(legacy_interpretation(), resource_interpretation());
     }
     #[test]
@@ -789,11 +830,7 @@ mod tests {
         );
         // Unsupported selection semantics.
         let mut semantics = envelope.clone();
-        semantics
-            .binding
-            .as_mut()
-            .unwrap()
-            .interpretation = "foreign".into();
+        semantics.binding.as_mut().unwrap().interpretation = "foreign".into();
         store_envelope(dir.path(), &semantics);
         assert_eq!(
             load_for(dir.path(), &target).unwrap_err().code,
@@ -850,8 +887,98 @@ mod tests {
         let mut writer = Writer::open_for(dir.path(), &target).unwrap();
         let mut binding = resource_binding("core-icons");
         binding.interpretation = "foreign-selection-semantics".into();
-        let save =
-            Save::capture_resources(7, 3, snapshot, "app:ced".into(), false, Some(binding));
+        let save = Save::capture_resources(7, 3, snapshot, "app:ced".into(), false, Some(binding));
         assert_eq!(writer.write(&save).unwrap_err().code, "unsupported_cache");
+    }
+    #[test]
+    fn writer_refuses_persisting_envelopes_its_loader_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = target();
+        let authored = reference("core-icons");
+        // A resource-bearing snapshot without a binding would persist a legacy
+        // envelope the loader deterministically refuses; the write fails
+        // closed and nothing is persisted.
+        let mut writer = Writer::open_for(dir.path(), &target).unwrap();
+        let bindingless = Save::capture_resources(
+            7,
+            4,
+            Arc::new(snapshot(Some(authored.clone()))),
+            "app:ced".into(),
+            false,
+            None,
+        );
+        assert_eq!(
+            writer.write(&bindingless).unwrap_err().code,
+            "cache_binding_required"
+        );
+        assert!(load_for(dir.path(), &target).is_err(), "nothing persisted");
+        // A binding for a different authored set is refused before
+        // serialisation, as is an invented icon selector on omission.
+        let mismatched = Save::capture_resources(
+            7,
+            5,
+            Arc::new(snapshot(Some(authored.clone()))),
+            "app:ced".into(),
+            false,
+            Some(resource_binding("other-set")),
+        );
+        assert_eq!(
+            writer.write(&mismatched).unwrap_err().code,
+            "cache_binding_mismatch"
+        );
+        let mut invented = resource_binding("core-icons");
+        invented.icons = Some(crate::IconReference {
+            family: "Symbols".into(),
+            style: "rounded".into(),
+            weight: 400,
+        });
+        let invented = Save::capture_resources(
+            7,
+            6,
+            Arc::new(snapshot(None)),
+            "app:ced".into(),
+            false,
+            Some(invented),
+        );
+        assert_eq!(
+            writer.write(&invented).unwrap_err().code,
+            "cache_binding_mismatch"
+        );
+        // Refusals never advance the serial fence: the exact matching binding
+        // on the refused serial still writes, and the persisted envelope loads.
+        let valid = Save::capture_resources(
+            7,
+            4,
+            Arc::new(snapshot(Some(authored))),
+            "app:ced".into(),
+            false,
+            Some(resource_binding("core-icons")),
+        );
+        assert_eq!(writer.write(&valid).unwrap(), WriteOutcome::Written);
+        let candidate = load_for(dir.path(), &target).unwrap();
+        assert_eq!(candidate.binding(), Some(&resource_binding("core-icons")));
+        assert_eq!(
+            candidate.snapshot().desktop.appearance.resources,
+            Some(reference("core-icons"))
+        );
+        // A later refusal leaves the persisted envelope byte-identical.
+        let file = dir
+            .path()
+            .join(format!("{}.json", name(&binding(), "app:ced", false)));
+        let bytes = std::fs::read(&file).unwrap();
+        let newer = Save::capture_resources(
+            7,
+            7,
+            Arc::new(snapshot(Some(reference("core-icons")))),
+            "app:ced".into(),
+            false,
+            Some(resource_binding("other-set")),
+        );
+        assert_eq!(
+            writer.write(&newer).unwrap_err().code,
+            "cache_binding_mismatch"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert!(load_for(dir.path(), &target).is_ok());
     }
 }

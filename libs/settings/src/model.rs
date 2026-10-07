@@ -81,6 +81,7 @@ pub fn resource_interpretation() -> String {
 pub struct IconReference {
     pub family: String,
     pub style: String,
+    #[serde(deserialize_with = "deserialize_integer_u16")]
     pub weight: u16,
 }
 
@@ -91,6 +92,7 @@ pub struct IconReference {
 #[serde(deny_unknown_fields)]
 pub struct ResourceReference {
     /// Exactly `RESOURCE_SCHEMA`; anything else is unsupported, not ignored.
+    #[serde(deserialize_with = "deserialize_integer_u32")]
     pub schema: u32,
     /// The assets set-ID contract: 1–96 ASCII letters, digits, `-` or `_`.
     pub set_id: String,
@@ -154,10 +156,18 @@ impl ResourceReference {
             return Err(Diagnostic::new(
                 "unsupported_resources",
                 path,
-                format!("Unsupported resources schema {}; expected {RESOURCE_SCHEMA}", self.schema),
+                format!(
+                    "Unsupported resources schema {}; expected {RESOURCE_SCHEMA}",
+                    self.schema
+                ),
             ));
         }
-        validate_resource_identity(&self.set_id, &self.manifest_blake3, self.icons.as_ref(), path)
+        validate_resource_identity(
+            &self.set_id,
+            &self.manifest_blake3,
+            self.icons.as_ref(),
+            path,
+        )
     }
 }
 
@@ -264,6 +274,16 @@ fn deserialize_integer_u32<'de, D: serde::Deserializer<'de>>(
 ) -> Result<u32, D::Error> {
     integer_u32(f64::deserialize(deserializer)?)
         .ok_or_else(|| serde::de::Error::custom("expected an integral u32 number"))
+}
+fn integer_u16(value: f64) -> Option<u16> {
+    (value.is_finite() && (0.0..=f64::from(u16::MAX)).contains(&value) && value.fract() == 0.0)
+        .then_some(value as u16)
+}
+fn deserialize_integer_u16<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u16, D::Error> {
+    integer_u16(f64::deserialize(deserializer)?)
+        .ok_or_else(|| serde::de::Error::custom("expected an integral u16 number"))
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -476,7 +496,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(without_icons.icons, None);
-        assert!(serde_json::to_value(without_icons).unwrap().get("icons").is_none());
+        assert!(
+            serde_json::to_value(without_icons)
+                .unwrap()
+                .get("icons")
+                .is_none()
+        );
         let mut unknown = serde_json::to_value(reference()).unwrap();
         unknown["typo"] = serde_json::json!(true);
         assert!(serde_json::from_value::<ResourceReference>(unknown).is_err());
@@ -487,7 +512,9 @@ mod tests {
         let value = serde_json::to_value(&appearance).unwrap();
         assert!(value.get("resources").is_none());
         assert_eq!(
-            serde_json::from_value::<Appearance>(value).unwrap().resources,
+            serde_json::from_value::<Appearance>(value)
+                .unwrap()
+                .resources,
             None
         );
         let mut with_resources = appearance;
@@ -525,6 +552,61 @@ mod tests {
         })
         .unwrap();
         assert!(value.get("icons").is_none());
+    }
+    #[test]
+    fn schema_and_weight_accept_mix_whole_number_floats_and_refuse_bad_numbers() {
+        let reference = reference();
+        // Mix data numbers use floating representation: whole-number floats
+        // are the same values as the integer literals the spec fixture uses.
+        let floats = serde_json::json!({
+            "schema": 1.0,
+            "set_id": "core-icons",
+            "manifest_blake3": "0".repeat(64),
+            "icons": {"family": "Symbols", "style": "rounded", "weight": 400.0},
+        });
+        assert_eq!(
+            serde_json::from_value::<ResourceReference>(floats).unwrap(),
+            reference
+        );
+        // Serialisation keeps integer bytes, so existing digests stay exact.
+        let wire = serde_json::to_value(&reference).unwrap();
+        assert_eq!(wire["schema"], serde_json::json!(1));
+        assert_eq!(wire["icons"]["weight"], serde_json::json!(400));
+        for bad in [
+            serde_json::json!({"schema": 1.5, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": 400}}),
+            serde_json::json!({"schema": -1.0, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": 400}}),
+            serde_json::json!({"schema": 4294967296.0, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": 400}}),
+            serde_json::json!({"schema": 1, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": 400.5}}),
+            serde_json::json!({"schema": 1, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": -1.0}}),
+            serde_json::json!({"schema": 1, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": 65536.0}}),
+            serde_json::json!({"schema": "1", "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": 400}}),
+        ] {
+            assert!(serde_json::from_value::<ResourceReference>(bad).is_err());
+        }
+        // Whole numbers outside the declared range stay deserialisable and
+        // fail the structural range check, like the existing thickness rule.
+        for weight in [0.0, 1001.0] {
+            let value = serde_json::json!({"schema": 1, "set_id": "core-icons", "manifest_blake3": "0".repeat(64),
+                "icons": {"family": "Symbols", "style": "rounded", "weight": weight}});
+            let parsed = serde_json::from_value::<ResourceReference>(value).unwrap();
+            assert_eq!(
+                parsed.validate("appearance.resources").unwrap_err().code,
+                "invalid_resources"
+            );
+        }
+        // Non-finite values cannot arrive from JSON but are refused safely by
+        // the finite check when a numeric-capable deserialiser produces them.
+        for nonfinite in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(integer_u16(nonfinite).is_none());
+            assert!(integer_u32(nonfinite).is_none());
+        }
     }
     #[test]
     fn resource_interpretation_is_available_without_the_cache_feature() {

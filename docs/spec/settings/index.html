@@ -339,7 +339,10 @@ only and never opens files, reads a host font database or performs asset I/O.</p
 underscore). <code>manifest_blake3</code> is exactly 64 lowercase hex characters, so a set
 with the same ID and a changed manifest is never the requested set. The optional
 <code>icons</code> record selects one declared catalogue: family at most 256 bytes, style
-at most 96 bytes, weight an exact 1–1000 value. Unknown fields anywhere in the
+at most 96 bytes, weight an exact 1–1000 value. <code>schema</code> and <code>weight</code> accept
+Mix's floating whole numbers (<code>1.0</code>, <code>400.0</code>) exactly like panel thickness;
+fractional, negative, out-of-range and non-finite values are refused before
+acceptance. Unknown fields anywhere in the
 subdocument fail. Apps never override resources; every effective context
 carries the profile reference verbatim.</p>
 <p>Omission means the profile-pinned packaged default and is skipped in BOTH
@@ -442,8 +445,11 @@ set ID, exact manifest digest, versioned selection interpretation and optional
 icon reference. Its domain-separated digest covers the unchanged canonical
 snapshot AND the binding, so a legacy snapshot digest can never replay into a
 resource-aware envelope. Resource-aware hosts return the binding from their
-readiness check, pass it to <code>Consumer::acknowledge_resources</code> with the same
-staged update, and the captured save writes schema 2. The readiness check is
+readiness check; the staged update carries it, so the ordinary
+<code>Consumer::acknowledge</code> preserves it, and <code>acknowledge_resources</code> remains for
+current stages where the host computes the binding — it must agree with a
+fallback stage's carried binding rather than replace it. The captured save
+writes schema 2. The readiness check is
 also given the expected binding of the candidate it is checking (retained
 activation binding, cached envelope binding, or none for embedded) and must
 return exactly that binding when one is expected; the fallback owner rejects
@@ -465,7 +471,19 @@ checks, and only without an explicit resource reference. Their absent binding
 means this host's packaged-default policy with honest legacy/unpinned-cache
 evidence; they never claim to retain original font bytes. New captures with a
 binding write schema 2; captures without one keep writing the recognised
-legacy predecessor bytes, and no eager rewrite of old files occurs on read.</p>
+legacy predecessor bytes, and no eager rewrite of old files occurs on read.
+The writer applies the same binding/reference equality as the loader before
+serialising: a mismatched binding or an invented selector on omission refuses
+the write with <code>cache_binding_mismatch</code>, and a resource-bearing snapshot
+without a binding refuses with <code>cache_binding_required</code>, so no envelope the
+loader rejects is ever persisted. The named predecessor interpretation derives
+from the actual embedded default source, so legacy loadability is conditional
+on that source remaining byte-identical to the 0.3.4 release's; a changed
+default relabels genuine legacy envelopes <code>unsupported_cache</code> rather than
+loading them under a changed interpretation. The resource interpretation also
+embeds the settings library version, so every settings release refuses
+resource-bound schema-2 caches (<code>unsupported_cache</code>) until new captures are
+written.</p>
 <h2 id="shell-panel-preferences">Shell panel preferences</h2>
 <p>Quoin prepares appearance and the global panel policy together, then installs
 both on the compositor loop before acknowledging the settings revision. Each
