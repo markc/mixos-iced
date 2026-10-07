@@ -588,7 +588,6 @@ mod tests {
             targets,
             limits: Limits::new(),
             request_tx: Mutex::new(None),
-            pending: AtomicBool::new(false),
             pending_reply: Mutex::new(None),
         }
     }
