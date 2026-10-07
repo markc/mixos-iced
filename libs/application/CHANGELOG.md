@@ -86,3 +86,13 @@ separately from write faults, saved identities and usable fallback state.
   configuration and renderer feature selection across Ced, DOpus and Term.
 - Share native CPU grid drawing and persistent GPU textures over caller-owned
   frame sources. Retain sparse damage and explicit frame lifetime identities.
+
+## Unreleased
+
+- Add `application::native_queue`: a bounded retained outbox (reliable FIFO
+  plus fixed replaceable slots that keep their original queue position) and
+  a shared admission pool whose permits are explicitly finished or counted
+  abandoned. Both primitives are std-only and renderer- and
+  transport-neutral, with no Bus client, runtime or actor dependency. Full
+  and closed receivers hand each item back at its original position; closure
+  stops flushing for the actor to retire remaining work explicitly.
