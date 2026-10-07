@@ -156,9 +156,7 @@ pub fn read_selection(
 /// Convert one prepared settings projection into a [`Theme`]. Called on the
 /// settings worker BEFORE the UI activates the stage: no authored source
 /// compilation, theme-file read or font discovery happens here.
-pub fn from_prepared(
-    look: &appearance::settings::Prepared,
-) -> Result<Theme, settings::Diagnostic> {
+pub fn from_prepared(look: &appearance::settings::Prepared) -> Result<Theme, settings::Diagnostic> {
     let missing = |name| {
         settings::Diagnostic::new(
             "unsupported_content",
@@ -220,8 +218,7 @@ pub fn from_settings(
         .effective
         .get("app:dopus")
         .ok_or_else(|| missing("app:dopus"))?;
-    theme.scheme =
-        Scheme::from_name(&effective.scheme).ok_or_else(|| missing("scheme"))?;
+    theme.scheme = Scheme::from_name(&effective.scheme).ok_or_else(|| missing("scheme"))?;
     theme.mode = Mode::from_name(&effective.mode).ok_or_else(|| missing("mode"))?;
     Ok(theme)
 }
@@ -656,7 +653,9 @@ mod tests {
         let effective = &settings::resolve(&settings::Desktop::default()).unwrap()["desktop"];
         assert_eq!(
             theme.ui_line_height,
-            effective.design.typography["ui"].line_height.map(|v| v as f32)
+            effective.design.typography["ui"]
+                .line_height
+                .map(|v| v as f32)
         );
     }
 
@@ -671,7 +670,10 @@ mod tests {
         let theme = from_settings(&look, &snapshot(desktop)).unwrap();
         assert_eq!((theme.scheme, theme.mode), (Scheme::Crimson, Mode::Dark));
         assert!(theme.density > 1.0);
-        assert!(theme.chrome.gap > plain.chrome.gap, "density scales chrome spacing");
+        assert!(
+            theme.chrome.gap > plain.chrome.gap,
+            "density scales chrome spacing"
+        );
         assert_eq!(
             theme.chrome.gap,
             plain.chrome.gap * theme.density,

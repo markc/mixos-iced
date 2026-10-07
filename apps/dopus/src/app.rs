@@ -242,8 +242,8 @@ pub fn run(
     paths: &[String],
 ) -> anyhow::Result<()> {
     let launched = Instant::now();
-    let (mut bus, deliveries) =
-        bus::spawn_settings(service, noded_url).map_err(|e| anyhow::anyhow!("Dopus bootstrap: {e}"))?;
+    let (mut bus, deliveries) = bus::spawn_settings(service, noded_url)
+        .map_err(|e| anyhow::anyhow!("Dopus bootstrap: {e}"))?;
 
     let keymap_path = dirs.as_ref().map(|d| d.keymap_file());
     let router = keys::initial(keymap_path.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -938,7 +938,11 @@ impl Dopus {
                     self.lost_race = true;
                 }
                 self.status = Some(format!("Bus: {error}"));
-                if !self.registered && !self.bootstrap_touched && !self.handoff_pending && name_taken {
+                if !self.registered
+                    && !self.bootstrap_touched
+                    && !self.handoff_pending
+                    && name_taken
+                {
                     // The single-instance forward: only a TYPED NameTaken
                     // (the shared client's classification — no text match
                     // here), only before this instance ever owned the name.
@@ -1067,8 +1071,7 @@ impl Dopus {
                     );
                 }
                 Served::Reply { id, rc, body } => {
-                    let body = if matches!(command.verb.as_str(), "dopus.state" | "app.describe")
-                    {
+                    let body = if matches!(command.verb.as_str(), "dopus.state" | "app.describe") {
                         // The canonical settings evidence (reconciled at the
                         // top of serve) joins the actual client state.
                         match serde_json::from_str::<serde_json::Value>(&body) {
@@ -1077,9 +1080,8 @@ impl Dopus {
                                     self.settings.session().host().consumer().evidence(),
                                 )
                                 .expect("settings evidence serialises");
-                                value["settings_cache"] = serde_json::json!(
-                                    self.settings.session().cache_evidence()
-                                );
+                                value["settings_cache"] =
+                                    serde_json::json!(self.settings.session().cache_evidence());
                                 value.to_string()
                             }
                             _ => body,
@@ -1350,7 +1352,10 @@ impl Dopus {
                     eprintln!("DOPUS_SHUTDOWN {}", serde_json::json!({ "faults": faults }));
                 }
                 Err(error) => {
-                    eprintln!("DOPUS_SHUTDOWN {}", serde_json::json!({ "faults": [error] }));
+                    eprintln!(
+                        "DOPUS_SHUTDOWN {}",
+                        serde_json::json!({ "faults": [error] })
+                    );
                 }
             }
         }
@@ -1614,10 +1619,13 @@ mod tests {
     }
 
     fn fixture_with(
-        build: impl Fn(&appearance::settings::Prepared, &settings::Snapshot) -> Result<Content, Diagnostic>
-            + Send
-            + Sync
-            + 'static,
+        build: impl Fn(
+            &appearance::settings::Prepared,
+            &settings::Snapshot,
+        ) -> Result<Content, Diagnostic>
+        + Send
+        + Sync
+        + 'static,
     ) -> (
         tempfile::TempDir,
         Dopus,
@@ -1746,7 +1754,14 @@ mod tests {
         desktop: settings::Desktop,
     ) -> Option<settings::domains::ChangePlan> {
         let generation = 1;
-        if app.settings.session().host().consumer().generation().is_none() {
+        if app
+            .settings
+            .session()
+            .host()
+            .consumer()
+            .generation()
+            .is_none()
+        {
             // Bootstrap: connect; while the subscribe runs, the offline
             // fallback prepares the embedded presentation.
             let _ = app
@@ -1766,9 +1781,9 @@ mod tests {
             .current_work()
             .cloned()
             .expect("subscribe work");
-        let _ = app
-            .settings
-            .handle_with(SettingsEvent::Rpc(work, Ok(None)), Some(generation), |_| {});
+        let _ =
+            app.settings
+                .handle_with(SettingsEvent::Rpc(work, Ok(None)), Some(generation), |_| {});
         drive(lane, 1);
         let work = app
             .settings
@@ -2280,13 +2295,19 @@ mod tests {
         desktop.appearance.mode = "dark".into();
         desktop.ui.density = 1.5;
         let changed = activate(&mut app, &mut lane, desktop);
-        assert!(changed.is_some(), "a new generation must be a render change");
+        assert!(
+            changed.is_some(),
+            "a new generation must be a render change"
+        );
         assert_eq!(app.content().theme.scheme, Scheme::Crimson);
         assert_eq!(app.content().theme.mode, Mode::Dark);
         assert!(app.content().theme.density > 1.0);
         // The app-owned model is untouched.
         assert_eq!(app.core.pane(PaneId::Left).path, dir.path());
-        assert_eq!(app.core.selected_paths(PaneId::Left), vec![paths[0].clone()]);
+        assert_eq!(
+            app.core.selected_paths(PaneId::Left),
+            vec![paths[0].clone()]
+        );
         assert!(matches!(
             app.dialog,
             Some(dialogs::Dialog::Confirm { token: 7, .. })
@@ -2302,7 +2323,10 @@ mod tests {
         ] {
             for icon in icons::ALL {
                 assert!(
-                    app.content().icons.get(icon, &tint, icons::RASTER_PX).is_some()
+                    app.content()
+                        .icons
+                        .get(icon, &tint, icons::RASTER_PX)
+                        .is_some()
                         || app.content().icons.glyph(icon).is_some(),
                     "{icon:?} at {tint} must exist before activation"
                 );
@@ -2366,7 +2390,11 @@ mod tests {
         drive(&mut lane, 2);
         let changed = drain(&mut app);
         assert!(changed.is_empty(), "a fault never activates");
-        assert_eq!(app.content().theme.scheme, Scheme::Crimson, "LastGood retained");
+        assert_eq!(
+            app.content().theme.scheme,
+            Scheme::Crimson,
+            "LastGood retained"
+        );
         let evidence = app.settings.session().host().consumer().evidence();
         assert!(evidence.fault.is_some());
         assert_eq!(
@@ -2386,8 +2414,14 @@ mod tests {
             panic!("theme.request must forward a fenced apply")
         };
         assert_eq!(request.reply_id, Some(42));
-        assert_eq!(request.changes["appearance.scheme"], serde_json::json!("crimson"));
-        assert_eq!(request.changes["appearance.mode"], serde_json::json!("dark"));
+        assert_eq!(
+            request.changes["appearance.scheme"],
+            serde_json::json!("crimson")
+        );
+        assert_eq!(
+            request.changes["appearance.mode"],
+            serde_json::json!("dark")
+        );
         assert_eq!(request.expected_incarnation, "fixture");
         assert_eq!(request.expected_revision, settings::Revision(1));
         assert_eq!(request.binding.instance, "fixture");
@@ -2404,7 +2438,12 @@ mod tests {
         let (handle, mut responses) = BusHandle::response_sink();
         app.bus = Some(handle);
         let _ = app.theme_request(Some(7), Some("crimson"), None);
-        let Ok(bus::Effect::Respond { id: 7, rc: 10, body }) = responses.try_recv() else {
+        let Ok(bus::Effect::Respond {
+            id: 7,
+            rc: 10,
+            body,
+        }) = responses.try_recv()
+        else {
             panic!("an unconfirmed settings read must refuse, never fake success")
         };
         let refusal: verbs::Refusal = serde_json::from_str(&body).unwrap();

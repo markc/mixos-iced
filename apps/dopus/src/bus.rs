@@ -69,7 +69,9 @@ pub enum Delivery {
     ThemeApplied(Result<(String, String), String>),
     /// The bus thread finished (replies flushed, cache drained); the faults
     /// list is empty on a clean shutdown.
-    Stopped { faults: Vec<String> },
+    Stopped {
+        faults: Vec<String>,
+    },
 }
 
 /// One request to dopus. `id` indexes a pending reply; `None`-reply verbs
@@ -422,8 +424,11 @@ fn spawn_reply(
         // ACCEPT-time fence: the reply may only travel on the socket its
         // command arrived on; a reconnect retires it.
         if client.is_connected() && client.connection_generation() == accepted.generation {
-            match tokio::time::timeout(SHUTDOWN_BUDGET, client.respond(&accepted.command, rc, &body))
-                .await
+            match tokio::time::timeout(
+                SHUTDOWN_BUDGET,
+                client.respond(&accepted.command, rc, &body),
+            )
+            .await
             {
                 Ok(Ok(())) => Ok((None, None)),
                 Ok(Err(error)) => Ok((None, Some(format!("Bus reply: {error}")))),
@@ -540,10 +545,7 @@ fn admit(
 /// (`::bus::client_helpers::resolve_noded_url()` unless
 /// `--noded-url` overrode it). The headless path: registration is awaited
 /// with a timeout and its refusal is a hard error.
-pub fn spawn(
-    service: &str,
-    url: &str,
-) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+pub fn spawn(service: &str, url: &str) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
     let (dtx, drx) = channel(DELIVERY_BOUND);
     let (etx, erx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -926,9 +928,11 @@ async fn run_settings(
                 // Fatal/closed keep the GUI alive: the window runs offline
                 // with its retained look until it quits.
                 ConnState::Fatal | ConnState::ShuttingDown => {
-                    deliver(&dtx, &mut outbox, Delivery::RegistrationFailed(registration_error(
-                        &client,
-                    )));
+                    deliver(
+                        &dtx,
+                        &mut outbox,
+                        Delivery::RegistrationFailed(registration_error(&client)),
+                    );
                 }
                 ConnState::Disconnected => {
                     deliver(&dtx, &mut outbox, Delivery::Disconnected);
@@ -1156,12 +1160,19 @@ async fn run_settings(
     if let Err(error) = lane.flush_cache(deadline).await {
         faults.push(format!("settings cache: {}: {}", error.code, error.message));
     }
-    if tokio::time::timeout_at(deadline_at, client.close()).await.is_err() {
+    if tokio::time::timeout_at(deadline_at, client.close())
+        .await
+        .is_err()
+    {
         faults.push("Bus close timed out".into());
     }
-    deliver(&dtx, &mut outbox, Delivery::Stopped {
-        faults: faults.clone(),
-    });
+    deliver(
+        &dtx,
+        &mut outbox,
+        Delivery::Stopped {
+            faults: faults.clone(),
+        },
+    );
     pump(&dtx, &mut outbox);
     faults
 }
@@ -1259,7 +1270,10 @@ async fn theme_apply(
             .map_err(|message| authority_refusal(&message))?;
         let status = validated.get("status").and_then(|s| s.as_str());
         if status != Some("valid") {
-            return Err(settings_refusal(status.unwrap_or("validation_failed"), &validated));
+            return Err(settings_refusal(
+                status.unwrap_or("validation_failed"),
+                &validated,
+            ));
         }
         let applied = call_settings(client, "settings.apply", body)
             .await
@@ -1267,7 +1281,10 @@ async fn theme_apply(
         let status = applied.get("status").and_then(|s| s.as_str());
         match status {
             Some("changed" | "unchanged") => Ok(()),
-            _ => Err(settings_refusal(status.unwrap_or("apply_refused"), &applied)),
+            _ => Err(settings_refusal(
+                status.unwrap_or("apply_refused"),
+                &applied,
+            )),
         }
     })
     .await
@@ -1424,9 +1441,11 @@ mod tests {
             "beyond the accepted bound the worker must admit refusal, never queue"
         );
         // Replaceable results still fit: reserved for lifecycle/results.
-        assert!(deliver(&tx, &mut outbox, Delivery::Stopped {
-            faults: Vec::new()
-        }));
+        assert!(deliver(
+            &tx,
+            &mut outbox,
+            Delivery::Stopped { faults: Vec::new() }
+        ));
     }
 
     #[test]
@@ -1506,10 +1525,7 @@ mod tests {
                 expected_incarnation: "fixture".into(),
                 expected_revision: settings::Revision(1),
                 operation_id: "dopus-theme-test-1".into(),
-                changes: BTreeMap::from([(
-                    "appearance.mode".into(),
-                    serde_json::json!("dark"),
-                )]),
+                changes: BTreeMap::from([("appearance.mode".into(), serde_json::json!("dark"))]),
                 scheme: "ocean".into(),
                 mode: "dark".into(),
             };
@@ -1529,7 +1545,10 @@ mod tests {
             })
             .await
             .expect("the theme completion must arrive");
-            assert!(outcome.is_err(), "no authority reachable: the CAS must refuse");
+            assert!(
+                outcome.is_err(),
+                "no authority reachable: the CAS must refuse"
+            );
             // Closing the GUI endpoint drains the worker; the receipt is
             // clean because the refusal is a RESULT, not a worker fault.
             drop(ui);
