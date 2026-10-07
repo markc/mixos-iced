@@ -1148,12 +1148,7 @@ impl NodedClient {
         // (`call_typed` folds it into a message string). Success semantics
         // are unchanged: any `rc < 10` is a successful register.
         let (rc, reply_body, error_header) = self
-            .call_with_headers_raw(
-                "noded",
-                "noded.register",
-                &BTreeMap::new(),
-                &request_body,
-            )
+            .call_with_headers_raw("noded", "noded.register", &BTreeMap::new(), &request_body)
             .await?;
         if rc < crate::RC_ERROR {
             return Ok(());
@@ -1776,7 +1771,10 @@ mod registration_rejection_classification_tests {
     fn missing_fields_are_unknown() {
         for body in [
             "{}".to_string(),
-            format!(r#"{{"schema": "{}"}}"#, crate::REGISTRATION_REJECTION_SCHEMA),
+            format!(
+                r#"{{"schema": "{}"}}"#,
+                crate::REGISTRATION_REJECTION_SCHEMA
+            ),
             format!(
                 r#"{{"error_code": "{}"}}"#,
                 crate::REGISTRATION_REJECTION_NAME_TAKEN
@@ -1829,6 +1827,9 @@ mod registration_rejection_classification_tests {
             "same rc and wording, different classification"
         );
         // Display keeps the historical rc + message shape.
-        assert_eq!(named.to_string(), "Bus registration rejected with rc 10: held");
+        assert_eq!(
+            named.to_string(),
+            "Bus registration rejected with rc 10: held"
+        );
     }
 }

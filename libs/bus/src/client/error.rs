@@ -212,11 +212,8 @@ mod tests {
 
     #[test]
     fn from_native_carries_the_typed_rejection_kind() {
-        let native = RegistrationRejected::new(
-            10,
-            "held elsewhere",
-            RegistrationRejectionKind::NameTaken,
-        );
+        let native =
+            RegistrationRejected::new(10, "held elsewhere", RegistrationRejectionKind::NameTaken);
         let mapped = ClientError::from_native(anyhow::Error::from(native.clone()));
         assert_eq!(
             mapped.registration_rejection_typed(),
