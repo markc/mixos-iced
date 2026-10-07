@@ -309,7 +309,8 @@ pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
     required_nonempty_bounded(object, "version")?;
     let pid = object
         .get("pid")
-        .and_then(Value::as_u64)
+        .ok_or_else(|| Violation::new("pid", code::MISSING_FIELD, "pid is required"))?
+        .as_u64()
         .filter(|pid| (1..=u64::from(u32::MAX)).contains(pid))
         .ok_or_else(|| {
             Violation::new("pid", code::INVALID_IDENTITY, "pid must be a positive u32")
@@ -965,7 +966,7 @@ mod tests {
                 .code,
             code::INVALID_IDENTITY
         );
-        let mut blank_version = json!({"version": "1.0.0", "verbs": ["app.describe"]});
+        let mut blank_version = json!({"verbs": ["app.describe"]});
         assert_eq!(
             complete(
                 &mut blank_version,
