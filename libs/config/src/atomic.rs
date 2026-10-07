@@ -171,6 +171,57 @@ pub fn open_nested(dir: &File, relative: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Open a nested directory under a held directory descriptor, walking
+/// every component with `openat` (`O_DIRECTORY | O_NOFOLLOW`) and refusing
+/// a symlink at any level. A missing component is `NotFound`; a component
+/// that exists but is not a plain directory is refused. The returned
+/// descriptor is bound to the opened inode, not to the walked path.
+///
+/// `relative` must be a relative path of plain components, with the same
+/// raw-byte validation as [`open_nested`]: no leading `/`, no `.`, `..`,
+/// empty or NUL-bearing components, and at least one component.
+pub fn open_nested_directory(dir: &File, relative: &Path) -> io::Result<File> {
+    use std::os::unix::ffi::OsStrExt;
+    let raw = relative.as_os_str().as_bytes();
+    if raw.is_empty() || raw[0] == b'/' {
+        return Err(io::Error::other(
+            "expected a relative path of plain components",
+        ));
+    }
+    let mut names: Vec<&[u8]> = Vec::new();
+    for part in raw.split(|byte| *byte == b'/') {
+        if part.is_empty() || part == b"." || part == b".." {
+            return Err(io::Error::other(
+                "expected a relative path of plain components",
+            ));
+        }
+        if part.contains(&0) {
+            return Err(io::Error::other("component contains a NUL byte"));
+        }
+        names.push(part);
+    }
+    if names.is_empty() {
+        return Err(io::Error::other("expected a directory name"));
+    }
+    let mut current = dir.try_clone()?;
+    for name in names {
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| io::Error::other("component contains a NUL byte"))?;
+        let fd = unsafe {
+            libc::openat(
+                current.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        current = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Prepare,
@@ -462,6 +513,52 @@ mod tests {
         let fifo = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         assert!(open_nested(&held, Path::new("a/pipe")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_nested_directory_walks_pins_and_refuses_links() {
+        use std::io::Read;
+        let root =
+            std::env::temp_dir().join(format!("settings-nested-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/file.txt"), b"pinned").unwrap();
+        let held = open_directory(&root).unwrap();
+        // The nested directory opens, and files inside it read normally.
+        let nested = open_nested_directory(&held, Path::new("a/b")).unwrap();
+        let mut file = open_nested(&nested, Path::new("file.txt")).unwrap();
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes).unwrap();
+        assert_eq!(bytes, "pinned");
+        // The descriptor is bound to the inode: the path is renamed aside
+        // and replaced, the held directory still answers with the old file.
+        std::fs::rename(root.join("a"), root.join("old-a")).unwrap();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/file.txt"), b"replacement").unwrap();
+        let mut file = open_nested(&nested, Path::new("file.txt")).unwrap();
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes).unwrap();
+        assert_eq!(bytes, "pinned");
+        // A missing component is NotFound, so callers can fall through.
+        let missing = open_nested_directory(&held, Path::new("a/missing")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+        // A symlinked intermediate component is refused.
+        std::os::unix::fs::symlink(root.join("old-a"), root.join("a/link")).unwrap();
+        assert!(open_nested_directory(&held, Path::new("a/link/b")).is_err());
+        std::fs::remove_file(root.join("a/link")).unwrap();
+        // A symlinked final component, and a final component that is a
+        // regular file, are refused.
+        std::os::unix::fs::symlink(root.join("old-a/b"), root.join("a/swapped")).unwrap();
+        assert!(open_nested_directory(&held, Path::new("a/swapped")).is_err());
+        std::fs::remove_file(root.join("a/swapped")).unwrap();
+        assert!(open_nested_directory(&held, Path::new("a/b/file.txt")).is_err());
+        // Traversal, escapes and normalisation are refused before any open.
+        assert!(open_nested_directory(&held, Path::new("a/../b")).is_err());
+        assert!(open_nested_directory(&held, Path::new("/absolute")).is_err());
+        assert!(open_nested_directory(&held, Path::new("")).is_err());
+        assert!(open_nested_directory(&held, Path::new("a/./b")).is_err());
+        assert!(open_nested_directory(&held, Path::new("a//b")).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

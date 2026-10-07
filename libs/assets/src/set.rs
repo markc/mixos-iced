@@ -11,8 +11,8 @@ use sha2::Digest;
 
 use crate::error::{Error, Result, invalid, io};
 use crate::manifest::{
-    MANIFEST_FILE, Manifest, STYLESHEET_FILE, parse_codepoints, valid_relative_path, valid_set_id,
-    validate,
+    IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE, Manifest, ParsedManifest,
+    STYLESHEET_FILE, parse_codepoints, valid_relative_path, valid_set_id,
 };
 
 /// The activation link inside a root: `current -> sets/<id>`.
@@ -30,6 +30,7 @@ pub struct AssetSet {
     assets_root: PathBuf,
     root: PathBuf,
     manifest: Manifest,
+    icon_meta: crate::manifest::IconMeta,
     icons: BTreeMap<String, char>,
 }
 
@@ -68,8 +69,10 @@ impl AssetSet {
     /// Open the published set `sets/<set_id>` under `assets_root`.
     ///
     /// Checks the layout, the manifest, every locked file's size and the
-    /// stylesheet text, and loads the icon catalogue. Payload hashes are
-    /// left to [`verify`](Self::verify) so opening does no bulk I/O.
+    /// stylesheet text, and loads the default icon catalogue. Payload
+    /// hashes are left to [`verify`](Self::verify) so opening does no
+    /// bulk I/O. A [`SCHEMA_V2`](crate::SCHEMA_V2) manifest is read as
+    /// versioned icon metadata; the v1 fields and behaviour are shared.
     pub fn open(assets_root: &Path, set_id: &str) -> Result<Self> {
         if !valid_set_id(set_id) {
             return Err(invalid(format!("invalid asset set ID {set_id:?}")));
@@ -78,11 +81,9 @@ impl AssetSet {
         let root = checked_directory(&assets_root, &format!("sets/{set_id}"))?;
         let manifest_path = checked_file(&root, MANIFEST_FILE)?;
         let text = read_bounded(&manifest_path, MANIFEST_LIMIT)?;
-        let manifest: Manifest = strict::from_str(&text).map_err(|source| Error::Manifest {
-            path: manifest_path.clone(),
-            source,
-        })?;
-        validate(&manifest, set_id)?;
+        let parsed = ParsedManifest::parse(&text, &manifest_path)?;
+        parsed.validate(set_id)?;
+        let manifest = parsed.v1();
         for file in &manifest.files {
             let path = checked_file(&root, &file.path)?;
             check_size(&path, &file.path, file.bytes)?;
@@ -93,28 +94,13 @@ impl AssetSet {
                 "{STYLESHEET_FILE} differs from the locked web_css in {set_id}"
             )));
         }
-        let icons = match manifest.fonts.get("icons") {
-            Some(font) => {
-                let catalogue = Path::new(font).with_extension("codepoints");
-                let catalogue = catalogue
-                    .to_str()
-                    .ok_or_else(|| invalid("invalid icon catalogue path"))?;
-                if !manifest.files.iter().any(|file| file.path == catalogue) {
-                    return Err(invalid(format!(
-                        "icon catalogue {catalogue:?} is not locked"
-                    )));
-                }
-                parse_codepoints(&read_bounded(
-                    &checked_file(&root, catalogue)?,
-                    CATALOGUE_LIMIT,
-                )?)?
-            }
-            None => BTreeMap::new(),
-        };
+        let icons = icons_for_open(&parsed, &root, set_id)?;
+        let icon_meta = parsed.icon_meta()?;
         Ok(Self {
             assets_root,
             root,
             manifest,
+            icon_meta,
             icons,
         })
     }
@@ -166,14 +152,48 @@ impl AssetSet {
         self.manifest.fonts.keys().map(String::as_str)
     }
 
-    /// The character for a named icon in the `icons` font's catalogue.
+    /// The character for a named icon in the set's default icon catalogue
+    /// (for a v1 set, the `icons` font's `.codepoints` sibling).
     pub fn icon(&self, name: &str) -> Option<char> {
         self.icons.get(name).copied()
     }
 
-    /// The icon catalogue: name → character.
+    /// The default icon catalogue: name → character.
     pub fn icons(&self) -> &BTreeMap<String, char> {
         &self.icons
+    }
+
+    /// The manifest-declared default icon selection: the family, style and
+    /// exact weight an omitted icon request uses. For a v1 set this is
+    /// derived from the `icons` role (style
+    /// [`DEFAULT_ICON_STYLE`](crate::DEFAULT_ICON_STYLE), weight 400); for
+    /// a v2 set it is the declared `icon_default`. `None` when the set has
+    /// no icon catalogue.
+    pub fn icon_default(&self) -> Option<&IconDefault> {
+        self.icon_meta.default.as_ref()
+    }
+
+    /// Every declared icon catalogue: family, style, locked font path and
+    /// face index, and the locked codepoints path. A v1 set derives its one
+    /// default catalogue from the `icons` role.
+    pub fn icon_catalogues(&self) -> &[IconCatalogue] {
+        &self.icon_meta.catalogues
+    }
+
+    /// Every declared non-font icon asset (SVG or raster). Always empty
+    /// for a v1 set.
+    pub fn icon_assets(&self) -> &[IconAsset] {
+        &self.icon_meta.assets
+    }
+
+    /// The catalogue an explicit `(family, style)` request selects:
+    /// `Ok(None)` when the set does not declare the pair; an error when it
+    /// cannot express the request at all — a v1 set asked for a nondefault
+    /// style, whose per-style metadata it does not record. The declared
+    /// default ([`icon_default`](Self::icon_default)) answers an omitted
+    /// request instead.
+    pub fn icon_catalogue(&self, family: &str, style: &str) -> Result<Option<&IconCatalogue>> {
+        self.icon_meta.select(family, style)
     }
 
     /// Resolve a locked file, the manifest or the stylesheet to its path,
@@ -276,6 +296,54 @@ impl AssetSet {
         limits: crate::verified::ReadLimits,
     ) -> Result<crate::verified::VerifiedSet> {
         crate::verified::read(self.assets_root(), self.set_id(), limits)
+    }
+}
+
+/// The default icon catalogue, parsed at open: for a v1 set the `icons`
+/// role's locked `.codepoints` sibling (the legacy rule), for a v2 set the
+/// declared default catalogue's locked codepoints file.
+fn icons_for_open(
+    parsed: &ParsedManifest,
+    root: &Path,
+    set_id: &str,
+) -> Result<BTreeMap<String, char>> {
+    match parsed {
+        ParsedManifest::V1(manifest) => match manifest.fonts.get("icons") {
+            Some(font) => {
+                let catalogue = Path::new(font).with_extension("codepoints");
+                let catalogue = catalogue
+                    .to_str()
+                    .ok_or_else(|| invalid("invalid icon catalogue path"))?;
+                if !manifest.files.iter().any(|file| file.path == catalogue) {
+                    return Err(invalid(format!(
+                        "icon catalogue {catalogue:?} is not locked"
+                    )));
+                }
+                parse_codepoints(&read_bounded(
+                    &checked_file(root, catalogue)?,
+                    CATALOGUE_LIMIT,
+                )?)
+            }
+            None => Ok(BTreeMap::new()),
+        },
+        ParsedManifest::V2(manifest) => {
+            let default = &manifest.icon_default;
+            // `validate` guarantees the default names a declared
+            // catalogue; this is a defensive re-check.
+            let catalogue = manifest
+                .icon_catalogues
+                .iter()
+                .find(|entry| entry.family == default.family && entry.style == default.style)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "icon_default names no declared icon catalogue in {set_id}"
+                    ))
+                })?;
+            parse_codepoints(&read_bounded(
+                &checked_file(root, &catalogue.codepoints)?,
+                CATALOGUE_LIMIT,
+            )?)
+        }
     }
 }
 

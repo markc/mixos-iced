@@ -31,8 +31,10 @@ default = ["mixos"]
 # depends on no other MixOS crate but `strict`.
 mixos = ["verified"]
 # Immutable verified byte reads (`AssetSet::read_verified`): every locked
-# file captured once through descriptor-relative opens in `config::atomic`.
-# Off, the core depends on no other MixOS crate but `strict`.
+# file captured once through descriptor-relative opens in `config::atomic`,
+# plus explicit ID/digest resolution (`VerifiedSet::read_at`/`read_explicit`)
+# under held approved root descriptors. Off, the core depends on no other
+# MixOS crate but `strict`.
 verified = ["dep:config"]
 
 [dependencies]

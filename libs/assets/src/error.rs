@@ -25,7 +25,8 @@ pub enum Error {
     /// The layout, the manifest or the activation link breaks a rule.
     #[error("{0}")]
     Invalid(String),
-    /// A locked file's size or hash differs from the manifest.
+    /// A locked file's size or hash differs from the manifest, or a
+    /// resolved set's manifest digest is not the requested identity.
     #[error("{0}")]
     Mismatch(String),
 }

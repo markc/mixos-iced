@@ -7,8 +7,16 @@
 //! each one's length and both digests against the same owned bytes that
 //! are retained. The result is a [`VerifiedSet`]: the parsed manifest, the
 //! exact manifest bytes (whose BLAKE3 is the identity's digest), the
-//! stylesheet and every file's bytes, and the parsed icon catalogue.
+//! stylesheet and every file's bytes, the resolved icon metadata (a v2
+//! manifest's declared default, catalogues and assets, or a v1 set's
+//! derived default catalogue) and each catalogue's parsed glyph table.
 //! Nothing is reopened later.
+//!
+//! [`VerifiedSet::read_at`] and [`VerifiedSet::read_explicit`] resolve an
+//! [`ExplicitRequest`] — a set ID with an optional exact manifest digest —
+//! under held approved root descriptors, selecting `sets/<id>` directly
+//! and never `current`: an absent root or set falls through, an
+//! encountered invalid or digest-mismatched set is a diagnostic.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,7 +29,8 @@ use sha2::Digest;
 
 use crate::error::{Error, Result, invalid, io};
 use crate::manifest::{
-    AssetFile, MANIFEST_FILE, Manifest, STYLESHEET_FILE, parse_codepoints, valid_set_id, validate,
+    AssetFile, IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE, Manifest, ParsedManifest,
+    STYLESHEET_FILE, parse_codepoints, valid_set_id,
 };
 use crate::set::{CATALOGUE_LIMIT, MANIFEST_LIMIT};
 
@@ -161,6 +170,15 @@ impl VerifiedFile {
         &self.bytes
     }
 
+    /// The owned, verified bytes as a shared `Arc<[u8]>`: the same
+    /// allocation [`bytes`](Self::bytes) reads, handed out without a copy
+    /// so a caller that needs owned bytes (say, to hand a sized buffer to
+    /// a parser) charges one `Arc` clone, not a second copy of the file.
+    /// The bytes remain immutable.
+    pub fn shared_bytes(&self) -> Arc<[u8]> {
+        Arc::clone(&self.bytes)
+    }
+
     /// The SHA-256 of [`bytes`](Self::bytes), lower-case hex.
     pub fn sha256(&self) -> &str {
         &self.sha256
@@ -172,11 +190,37 @@ impl VerifiedFile {
     }
 }
 
+/// One resolved icon catalogue of a verified set: the declared metadata
+/// together with the parsed name → character table of its locked,
+/// verified codepoints bytes.
+#[derive(Clone, Debug)]
+pub struct ResolvedCatalogue {
+    /// The declared metadata: family, style, locked font path and face
+    /// index, and the locked codepoints path.
+    pub catalogue: IconCatalogue,
+    /// The parsed glyph table of the locked codepoints file.
+    pub glyphs: BTreeMap<String, char>,
+}
+
+/// An explicit set request: the `sets/<id>` directory to resolve under an
+/// approved asset root, never the `current` link, together with the exact
+/// manifest digest the caller expects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExplicitRequest<'a> {
+    /// The set's ID (its `sets/<id>` directory name).
+    pub set_id: &'a str,
+    /// When set, the verified set's manifest BLAKE3 must equal it: a set
+    /// with the same ID and a different manifest is not the requested set
+    /// and is refused as a mismatch rather than silently replaced.
+    pub manifest_blake3: Option<[u8; 32]>,
+}
+
 /// A set whose every byte was read once through a held directory
 /// descriptor, checked against the locked manifest and retained: the
 /// re-parsed manifest, the manifest bytes themselves (whose BLAKE3 is the
 /// identity's digest), the captured stylesheet and every locked file's
-/// owned bytes, and the parsed icon catalogue.
+/// owned bytes, the resolved icon metadata (declared by a v2 manifest,
+/// derived for v1) and every icon catalogue's parsed glyph table.
 ///
 /// Nothing is reopened later: font bytes come from
 /// [`font`](Self::font).`bytes()`, never from the path. Replacing or
@@ -190,6 +234,8 @@ pub struct VerifiedSet {
     stylesheet: String,
     files: Vec<VerifiedFile>,
     icons: BTreeMap<String, char>,
+    icon_meta: crate::manifest::IconMeta,
+    catalogues: Vec<ResolvedCatalogue>,
     /// Retained for the lifetime of the set: holding the descriptor pins
     /// the set directory inode the bytes were read from. Never read after
     /// construction.
@@ -217,7 +263,61 @@ impl VerifiedSet {
                 display.display()
             )));
         }
-        read_in_at(directory, set_id, limits, &display)
+        read_in_at(directory, set_id, limits, None, &display)
+    }
+
+    /// Resolve an explicit request under one held approved root
+    /// descriptor: open `sets/<set_id>` relative to it (no symlink at any
+    /// level), verify and capture the set, and — when the request pins a
+    /// digest — check the manifest BLAKE3 against it before any locked
+    /// payload is read.
+    ///
+    /// `Ok(None)` when the root holds no `sets` directory or no set of
+    /// that ID, so a missing set may fall through to the next root. An
+    /// encountered directory that is not a plain set, fails verification,
+    /// or has a manifest digest other than the requested one is an error,
+    /// never a fall-through to a different copy. The `current` link is
+    /// never followed, and no provenance URL is fetched.
+    pub fn read_at(
+        root: &File,
+        request: &ExplicitRequest<'_>,
+        limits: ReadLimits,
+    ) -> Result<Option<Self>> {
+        let set_id = request.set_id;
+        if !valid_set_id(set_id) {
+            return Err(invalid(format!("invalid asset set ID {set_id:?}")));
+        }
+        let display = PathBuf::from(format!("sets/{set_id}"));
+        let sets = match config::atomic::open_nested_directory(root, Path::new("sets")) {
+            Ok(directory) => directory,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(io("open", Path::new("sets"))(err)),
+        };
+        let directory = match config::atomic::open_nested_directory(&sets, Path::new(set_id)) {
+            Ok(directory) => directory,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(io("open", &display)(err)),
+        };
+        read_in_at(directory, set_id, limits, request.manifest_blake3, &display).map(Some)
+    }
+
+    /// Resolve an explicit request across ordered held roots, in search
+    /// order: the first root that holds the set answers; an absent root or
+    /// set falls through to the next; an encountered set that fails
+    /// verification or whose manifest digest is not the requested one is a
+    /// diagnostic, never silently replaced by a copy in a later root.
+    /// `Ok(None)` when no root holds the set.
+    pub fn read_explicit(
+        roots: &[File],
+        request: &ExplicitRequest<'_>,
+        limits: ReadLimits,
+    ) -> Result<Option<Self>> {
+        for root in roots {
+            if let Some(set) = Self::read_at(root, request, limits)? {
+                return Ok(Some(set));
+            }
+        }
+        Ok(None)
     }
 
     /// The set's identity: ID and manifest digest.
@@ -263,14 +363,75 @@ impl VerifiedSet {
             .and_then(|path| self.file(path))
     }
 
-    /// The character for a named icon in the `icons` font's catalogue.
+    /// The character for a named icon in the set's default icon catalogue
+    /// (for a v1 set, the `icons` font's `.codepoints` sibling).
     pub fn icon(&self, name: &str) -> Option<char> {
         self.icons.get(name).copied()
     }
 
-    /// The icon catalogue: name → character.
+    /// The default icon catalogue: name → character.
     pub fn icons(&self) -> &BTreeMap<String, char> {
         &self.icons
+    }
+
+    /// The manifest-declared default icon selection: the family, style and
+    /// exact weight an omitted icon request uses. For a v1 set this is
+    /// derived from the `icons` role (style
+    /// [`DEFAULT_ICON_STYLE`](crate::DEFAULT_ICON_STYLE), weight 400); for
+    /// a v2 set it is the declared `icon_default`. `None` when the set has
+    /// no icon catalogue.
+    pub fn icon_default(&self) -> Option<&IconDefault> {
+        self.icon_meta.default.as_ref()
+    }
+
+    /// Every resolved icon catalogue with its parsed glyph table, in
+    /// declared order. A v1 set resolves its one default catalogue from
+    /// the `icons` role.
+    pub fn icon_catalogues(&self) -> &[ResolvedCatalogue] {
+        &self.catalogues
+    }
+
+    /// Every declared non-font icon asset (SVG or raster). Always empty
+    /// for a v1 set.
+    pub fn icon_assets(&self) -> &[IconAsset] {
+        &self.icon_meta.assets
+    }
+
+    /// The resolved catalogue an explicit `(family, style)` request
+    /// selects: `Ok(None)` when the set does not declare the pair; an
+    /// error when it cannot express the request at all — a v1 set asked
+    /// for a nondefault style, whose per-style metadata it does not
+    /// record. The declared default
+    /// ([`icon_default`](Self::icon_default)) answers an omitted request
+    /// instead.
+    pub fn icon_catalogue(
+        &self,
+        family: &str,
+        style: &str,
+    ) -> Result<Option<&ResolvedCatalogue>> {
+        // Refuse what the metadata cannot express (a nondefault style on
+        // a metadata-free v1 set), then answer by the resolved pair.
+        self.icon_meta.select(family, style)?;
+        Ok(self
+            .catalogues
+            .iter()
+            .find(|resolved| resolved.catalogue.family == family && resolved.catalogue.style == style))
+    }
+
+    /// The owned, verified font bytes a catalogue's `face_index` selects
+    /// into: the locked file itself, from which
+    /// [`shared_bytes`](VerifiedFile::shared_bytes) hands out owned bytes
+    /// without a copy. `None` cannot occur for a catalogue this set
+    /// resolved.
+    pub fn icon_catalogue_font(&self, catalogue: &ResolvedCatalogue) -> Option<&VerifiedFile> {
+        self.file(&catalogue.catalogue.font)
+    }
+
+    /// The owned, verified bytes of a declared non-font icon asset
+    /// (SVG or raster), from [`shared_bytes`](VerifiedFile::shared_bytes).
+    /// `None` cannot occur for an asset this set resolved.
+    pub fn icon_asset_file(&self, asset: &IconAsset) -> Option<&VerifiedFile> {
+        self.file(&asset.path)
     }
 }
 
@@ -292,13 +453,14 @@ pub(crate) fn read(assets_root: &Path, set_id: &str, limits: ReadLimits) -> Resu
     }
     let display = assets_root.join("sets").join(set_id);
     let directory = config::atomic::open_directory(&display).map_err(io("open", &display))?;
-    read_in_at(directory, set_id, limits, &display)
+    read_in_at(directory, set_id, limits, None, &display)
 }
 
 fn read_in_at(
     directory: File,
     set_id: &str,
     limits: ReadLimits,
+    expected: Option<[u8; 32]>,
     display: &Path,
 ) -> Result<VerifiedSet> {
     let limits = limits.checked()?;
@@ -324,11 +486,9 @@ fn read_in_at(
             manifest_path.display()
         ))
     })?;
-    let manifest: Manifest = strict::from_str(text).map_err(|source| Error::Manifest {
-        path: manifest_path,
-        source,
-    })?;
-    validate(&manifest, set_id)?;
+    let parsed = ParsedManifest::parse(text, &manifest_path)?;
+    parsed.validate(set_id)?;
+    let manifest = parsed.v1();
 
     let stylesheet_path = display.join(STYLESHEET_FILE);
     let css = read_limited(
@@ -352,13 +512,26 @@ fn read_in_at(
         set_id: manifest.set_id.clone(),
         manifest_blake3: blake3::hash(&manifest_bytes).into(),
     };
+    // An explicit request pins the exact manifest bytes: a set with the
+    // same ID and a different manifest is not the requested set, so the
+    // refusal comes before any locked payload is read.
+    if let Some(expected) = expected {
+        if identity.manifest_blake3 != expected {
+            return Err(Error::Mismatch(format!(
+                "asset set {set_id} manifest digest {} does not match the requested {}",
+                hex::encode(identity.manifest_blake3),
+                hex::encode(expected)
+            )));
+        }
+    }
 
     let mut files = Vec::with_capacity(manifest.files.len());
     for entry in &manifest.files {
         files.push(read_file(&directory, set_id, entry, limits, &mut staged)?);
     }
 
-    let icons = icons(&manifest, &files, set_id)?;
+    let icon_meta = parsed.icon_meta()?;
+    let (icons, catalogues) = icon_data(&icon_meta, &files, set_id)?;
 
     Ok(VerifiedSet {
         identity,
@@ -367,6 +540,8 @@ fn read_in_at(
         stylesheet,
         files,
         icons,
+        icon_meta,
+        catalogues,
         _directory: directory,
     })
 }
@@ -499,33 +674,58 @@ fn read_file(
     })
 }
 
-/// The icon table, parsed from the verified catalogue bytes, under the same
-/// rules as `open`: the `icons` role's font with a `.codepoints` sibling
-/// that must itself be locked.
-fn icons(
-    manifest: &Manifest,
+/// The icon tables of a verified set: the default catalogue's name →
+/// character table (the legacy `icons` table — for a v1 set the `icons`
+/// role's `.codepoints` sibling, for a v2 set the declared default
+/// catalogue) and every declared catalogue's parsed glyph table, from the
+/// verified bytes, under the same rules as `open`.
+fn icon_data(
+    meta: &crate::manifest::IconMeta,
     files: &[VerifiedFile],
     set_id: &str,
-) -> Result<BTreeMap<String, char>> {
-    let Some(font) = manifest.fonts.get("icons") else {
-        return Ok(BTreeMap::new());
-    };
-    let catalogue = Path::new(font).with_extension("codepoints");
-    let catalogue = catalogue
-        .to_str()
-        .ok_or_else(|| invalid("invalid icon catalogue path"))?;
-    let file = files
-        .iter()
-        .find(|file| file.path == catalogue)
-        .ok_or_else(|| invalid(format!("icon catalogue {catalogue:?} is not locked")))?;
-    if file.bytes.len() as u64 > CATALOGUE_LIMIT {
-        return Err(invalid(format!(
-            "icon catalogue {catalogue:?} in {set_id} exceeds {CATALOGUE_LIMIT} bytes"
-        )));
+) -> Result<(BTreeMap<String, char>, Vec<ResolvedCatalogue>)> {
+    let mut catalogues = Vec::new();
+    for catalogue in &meta.catalogues {
+        let file = files
+            .iter()
+            .find(|file| file.path == catalogue.codepoints)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "icon catalogue {:?} is not locked",
+                    catalogue.codepoints
+                ))
+            })?;
+        if file.bytes.len() as u64 > CATALOGUE_LIMIT {
+            return Err(invalid(format!(
+                "icon catalogue {:?} in {set_id} exceeds {CATALOGUE_LIMIT} bytes",
+                catalogue.codepoints
+            )));
+        }
+        let text = std::str::from_utf8(file.bytes()).map_err(|_| {
+            invalid(format!(
+                "icon catalogue {:?} is not UTF-8 text",
+                catalogue.codepoints
+            ))
+        })?;
+        catalogues.push(ResolvedCatalogue {
+            catalogue: catalogue.clone(),
+            glyphs: parse_codepoints(text)?,
+        });
     }
-    let text = std::str::from_utf8(file.bytes())
-        .map_err(|_| invalid(format!("icon catalogue {catalogue:?} is not UTF-8 text")))?;
-    parse_codepoints(text)
+    let icons = meta
+        .default
+        .as_ref()
+        .and_then(|default| {
+            catalogues
+                .iter()
+                .find(|resolved| {
+                    resolved.catalogue.family == default.family
+                        && resolved.catalogue.style == default.style
+                })
+                .map(|resolved| resolved.glyphs.clone())
+        })
+        .unwrap_or_default();
+    Ok((icons, catalogues))
 }
 
 #[cfg(test)]

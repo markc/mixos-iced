@@ -11,18 +11,38 @@ this crate finds, checks and reads it.
 <root>/
   current -> sets/2026-10-04-core-3      the activation link
   sets/2026-10-04-core-3/
-    manifest.conf.mix                    strict data, schema mixos.static-assets.v1
+    manifest.conf.mix                    strict data, schema mixos.static-assets.v1 or .v2
     fonts.css                            generated stylesheet, text locked as web_css
     fonts/  icons/  emoji/  web/  licences/
 ```
 
-The manifest (`Manifest`) names the schema, the set ID, the font roles
+The manifest names the schema, the set ID, the font roles
 (`sans`, `serif`, `mono`, `icons`, `emoji`, `display`, `serif_italic`,
 `mono_italic`, …) and the family each role declares (`font_families`),
 and locks every file (`AssetFile`: path, HTTPS url and upstream, revision,
 licence, size, SHA-256, BLAKE3). The `icons` role's font has a
 `.codepoints` catalogue beside it (`name hex` per line) that becomes the
 `icon(name)` table.
+
+Two schemas are accepted. `mixos.static-assets.v1` is the legacy layout
+above: its one icons catalogue is labelled style `default` (weight 400,
+face index 0), and an explicit nondefault-style request against it is
+refused rather than guessed. `mixos.static-assets.v2` adds declared icon
+metadata over the same v1 fields, all strict and bounded:
+
+- `icon_default` — the family/style/exact weight an omitted icon request
+  uses, which must name a declared catalogue;
+- `icon_catalogues` — per-style family/style → locked font path, exact
+  TTC `face_index`, locked `.codepoints` file; family/style pairs are
+  unique, and the font intrinsic family/face-index claims are verified
+  downstream where the bytes are parsed (assets exposes the owned bytes);
+- `icon_assets` — named non-font SVG/raster assets (locked path,
+  `symbolic` flag); unique per name/style, bytes exposed for downstream
+  decoding.
+
+`AssetSet`/`VerifiedSet` expose this through `icon_default()`,
+`icon_catalogues()`, `icon_assets()` and `icon_catalogue(family, style)`;
+the legacy `icon(name)`/`icons()` table is the default catalogue.
 
 Opening a set checks the layout (no symlinks, no escapes, no extra
 components), the manifest against the rules in `manifest.rs`, every size
@@ -124,6 +144,36 @@ changes what the next reader sees, never what a captured `VerifiedSet`
 holds. Nothing is reopened later; the directory descriptor is retained
 for the life of the set.
 
+`VerifiedFile::shared_bytes()` hands out the owned bytes as an
+`Arc<[u8]>` sharing the verified allocation — one `Arc` clone, never a
+second copy of the file.
+
+### Explicit requests: ID and digest, never `current`
+
+An explicit request names a set ID and, optionally, the exact manifest
+BLAKE3, and resolves `sets/<id>` directly under held approved root
+descriptors — never the `current` link, never a provenance URL:
+
+```rust
+let roots: [std::fs::File; 1] = [
+    config::atomic::open_directory(root_path)?, // captured once as policy
+];
+let request = assets::ExplicitRequest {
+    set_id: "2026-10-04-core-3",
+    manifest_blake3: Some(digest), // exactly 32 bytes, from authority data
+};
+let set: Option<assets::VerifiedSet> =
+    assets::VerifiedSet::read_explicit(&roots, &request, ReadLimits::default())?;
+```
+
+`VerifiedSet::read_at` resolves under one root, `read_explicit` across
+ordered roots. An absent root or set falls through to the next (`Ok(None)`
+when no root holds it); an encountered set that fails verification, is a
+symlink or not a directory, or whose manifest digest is not the requested
+one is a diagnostic — never silently replaced by a copy in a later root.
+With a pinned digest the check runs before any locked payload is read, so
+a set with the same ID and a changed manifest is refused cheaply.
+
 ## The MixOS defaults
 
 `assets::mixos` (the default `mixos` feature) is the MixOS search path, kept
@@ -148,14 +198,19 @@ The lock and installer for the MixOS set live in `share/assets/`
 ## Testing
 
 `cargo test -p assets`. The unit tests cover the validators, the catalogue
-parser, the read limits and the lookup order; `tests/sets.rs` the public
-behaviour on fixture sets in a temporary directory (pinning across a
-`current` swap, XDG precedence, tampering, symlinks, escapes, bad
-manifests); `tests/verified.rs` the verified reads (owned bytes surviving
-path replacement and removal, descriptor pinning across a substitution,
+parser, the read limits, the lookup order and the manifest version
+routing; `tests/sets.rs` the public behaviour on fixture sets in a
+temporary directory (pinning across a `current` swap, XDG precedence,
+tampering, symlinks, escapes, bad manifests, v2 icon metadata and
+selection, v1-derived defaults and the nondefault-style refusal);
+`tests/verified.rs` the verified reads (owned bytes surviving path
+replacement and removal, descriptor pinning across a substitution,
 symlink escapes, staging limits, length and digest refusals, malformed
-manifests and catalogues); `tests/layout.rs` the installed
+manifests and catalogues, `shared_bytes`, v2 catalogue glyphs and owned
+asset bytes, explicit ID/digest resolution with absent fall-through and
+invalid-present diagnostics); `tests/layout.rs` the installed
 `2026-10-04-core-3` layout rebuilt with stand-in bytes and resolved
 through the MixOS search path, plus the real installation when the
-machine has one. `config::atomic::open_nested`'s walker refusals are
-tested in `libs/config/src/atomic.rs`.
+machine has one. `config::atomic::open_nested` and
+`open_nested_directory`'s walker refusals are tested in
+`libs/config/src/atomic.rs`.
