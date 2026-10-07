@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "buildinfo",
  "comp-model",
@@ -7416,6 +7416,7 @@ dependencies = [
  "libc",
  "model",
  "policy",
+ "policy-host",
  "protocols",
  "screencopy",
  "smithay",

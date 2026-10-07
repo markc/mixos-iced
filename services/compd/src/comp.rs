@@ -61,15 +61,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::calloop::ping::make_ping;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 
-use comp_service::{CompEngine, LongReply, ObservationProducer, PortContext, PortService, PortWorker};
 use comp_model::observation::{ObservationRecord, PanelRequest, PointerPosition, PointerSample};
 use comp_model::reply::ControlReply;
 use comp_model::request::{InputOp, LongOp, WaitSpec, WindowOp};
 use comp_model::snapshot::{CompSnapshot, ReadScopes, project_window_row, surface_key};
+use comp_service::{
+    CompEngine, LongReply, ObservationProducer, PortContext, PortService, PortWorker,
+};
 use outputs::render_contract::contract::RendererId;
 use policy::window::{WaitResolution, WindowFacts};
 use world::state::Loop;
@@ -120,7 +122,9 @@ fn refresh_scene_surfaces(lp: &mut Loop) {
     let mut inputs = Vec::new();
     let space = &lp.inner.host_space().state;
     for output in space.outputs() {
-        let Some(geometry) = space.output_geometry(output) else { continue };
+        let Some(geometry) = space.output_geometry(output) else {
+            continue;
+        };
         let (ox, oy) = (geometry.loc.x as f32, geometry.loc.y as f32);
         for surface in scene_host::surfaces(&world::state::state::output_key(output)) {
             inputs.push(world::comp::scenes::SceneInput {
@@ -215,7 +219,12 @@ struct OneShot {
 }
 
 impl OneShot {
-    fn rearm(&mut self, handle: &LoopHandle<'static, Loop>, deadline: Option<Instant>, on_fire: fn(&mut Loop)) {
+    fn rearm(
+        &mut self,
+        handle: &LoopHandle<'static, Loop>,
+        deadline: Option<Instant>,
+        on_fire: fn(&mut Loop),
+    ) {
         let live = self.armed.as_ref().filter(|(_, _, fired)| !fired.get());
         if live.is_some_and(|(_, at, _)| Some(*at) == deadline) {
             return;
@@ -228,11 +237,14 @@ impl OneShot {
         let Some(deadline) = deadline else { return };
         let fired = Rc::new(Cell::new(false));
         let flag = Rc::clone(&fired);
-        match handle.insert_source(Timer::from_deadline(deadline), move |_, _, lp: &mut Loop| {
-            flag.set(true);
-            on_fire(lp);
-            TimeoutAction::Drop
-        }) {
+        match handle.insert_source(
+            Timer::from_deadline(deadline),
+            move |_, _, lp: &mut Loop| {
+                flag.set(true);
+                on_fire(lp);
+                TimeoutAction::Drop
+            },
+        ) {
             Ok(token) => self.armed = Some((token, deadline, fired)),
             Err(error) => model::warn!("Bus one-shot timer: {error}"),
         }
@@ -309,7 +321,8 @@ impl Bus {
         // output-logical, as every comp coordinate is. Re-pinned every pass so a
         // resize or a pane split never projects through a stale camera.
         if world::camera::pin::pin(&mut lp.inner) {
-            lp.state.schedule_redraw(dispatcher::state::state::RedrawReason::Output);
+            lp.state
+                .schedule_redraw(dispatcher::state::state::RedrawReason::Output);
         }
         // The pointer starts at the output's centre, not in its top-left corner.
         world::camera::pin::centre_pointer_once(lp);
@@ -339,7 +352,10 @@ impl Bus {
         // The key-binding table for this profile (built once; batch B).
         lp.inner.comp.bindings.ensure(self.binding_profile);
         // Losing input authority (a session pause) clears the agent seat.
-        let paused = matches!(lp.inner.status_session, world::state::state::StatusSession::Paused);
+        let paused = matches!(
+            lp.inner.status_session,
+            world::state::state::StatusSession::Paused
+        );
         // So does a session lock beginning.
         let locked = world::comp::session_lock::active(lp);
         let lock_began = locked && !self.locked;
@@ -368,13 +384,17 @@ impl Bus {
         // The corner topics the pointer path earned, then the dwell timer for
         // whatever is pending now.
         for topic in policy_host::edges::corner_topics(lp) {
-            self.producer.offer_next(move |event_seq| topic.into_record(event_seq));
+            self.producer
+                .offer_next(move |event_seq| topic.into_record(event_seq));
         }
         self.dwell
-            .rearm(&self.handle, lp.inner.comp.corners.next_deadline(), |lp| lp.inner.comp.corners.tick());
+            .rearm(&self.handle, lp.inner.comp.corners.next_deadline(), |lp| {
+                lp.inner.comp.corners.tick()
+            });
         let (context, binding_profile) = (&self.context, self.binding_profile);
         for record in self.edges.pass(lp, || identity(context, binding_profile)) {
-            self.producer.offer_next(move |event_seq| record.with_event_seq(event_seq));
+            self.producer
+                .offer_next(move |event_seq| record.with_event_seq(event_seq));
         }
         // The causes noted for this pass's changes are spent (F4).
         lp.inner.comp.causes.clear();
@@ -410,7 +430,8 @@ impl Bus {
         // change is free.
         let (context, binding_profile) = (&self.context, self.binding_profile);
         for record in self.edges.pass(lp, || identity(context, binding_profile)) {
-            self.producer.offer_next(move |event_seq| record.with_event_seq(event_seq));
+            self.producer
+                .offer_next(move |event_seq| record.with_event_seq(event_seq));
         }
         lp.inner.comp.causes.clear();
         self.service_pointer(lp);
@@ -430,13 +451,14 @@ impl Bus {
         let deadline = policy_host::panel::service(lp, Instant::now());
         self.panel_timer.rearm(&self.handle, deadline, |_| {});
         for (output, edge, surface, reveal) in policy_host::panel::take_commands(lp) {
-            self.producer.offer_next(move |event_seq| ObservationRecord::PanelCommand {
-                output,
-                edge,
-                surface,
-                reveal,
-                event_seq,
-            });
+            self.producer
+                .offer_next(move |event_seq| ObservationRecord::PanelCommand {
+                    output,
+                    edge,
+                    surface,
+                    reveal,
+                    event_seq,
+                });
         }
         if !self.waiters.is_empty() {
             self.settle_waiters(lp);
@@ -467,10 +489,14 @@ impl Bus {
                     output,
                     valid: position.is_some(),
                     position,
-                    timestamp_ms: u64::try_from(watch.epoch.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    timestamp_ms: u64::try_from(watch.epoch.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
                 };
                 self.producer
-                    .offer_next(move |event_seq| ObservationRecord::PointerChanged { sample, event_seq });
+                    .offer_next(move |event_seq| ObservationRecord::PointerChanged {
+                        sample,
+                        event_seq,
+                    });
             }
         } else {
             watch.seen = None;
@@ -497,7 +523,8 @@ impl Bus {
         let now = Instant::now();
         let mut still = Vec::with_capacity(self.waiters.len());
         for waiter in std::mem::take(&mut self.waiters) {
-            let waited_ms = u64::try_from(waiter.admitted.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let waited_ms =
+                u64::try_from(waiter.admitted.elapsed().as_millis()).unwrap_or(u64::MAX);
             let Waiter {
                 kind,
                 reply,
@@ -531,9 +558,18 @@ impl Bus {
                     }
                 }
                 WaiterKind::ForceClose { id, generation } => {
-                    use policy::window::{ForceCloseOutcome, close_reply, force_close_at_deadline, kill_reply};
-                    match force_close_at_deadline(&lp.inner.comp.registry, id, generation, world::comp::session_lock::active(lp)) {
-                        ForceCloseOutcome::Gone => reply.send(close_reply(id, generation, "gone", waited_ms)),
+                    use policy::window::{
+                        ForceCloseOutcome, close_reply, force_close_at_deadline, kill_reply,
+                    };
+                    match force_close_at_deadline(
+                        &lp.inner.comp.registry,
+                        id,
+                        generation,
+                        world::comp::session_lock::active(lp),
+                    ) {
+                        ForceCloseOutcome::Gone => {
+                            reply.send(close_reply(id, generation, "gone", waited_ms))
+                        }
                         _ if now < deadline => still.push(Waiter {
                             kind: WaiterKind::ForceClose { id, generation },
                             reply,
@@ -584,7 +620,10 @@ fn window_facts(snapshot: &CompSnapshot, id: surfaces::SurfaceId) -> WindowFacts
         committed_maximized: row.maximized,
         committed_fullscreen: row.fullscreen,
         visible: row.visible,
-        geometry_size: (row.window.window_width as i32, row.window.window_height as i32),
+        geometry_size: (
+            row.window.window_width as i32,
+            row.window.window_height as i32,
+        ),
         ..WindowFacts::default()
     }
 }
@@ -628,10 +667,13 @@ impl Engine<'_> {
         }
         let deadline = admitted + spec.timeout;
         let flag = Rc::clone(self.pending);
-        if let Err(error) = self.handle.insert_source(Timer::from_deadline(deadline), move |_, _, _| {
-            flag.set(true);
-            TimeoutAction::Drop
-        }) {
+        if let Err(error) =
+            self.handle
+                .insert_source(Timer::from_deadline(deadline), move |_, _, _| {
+                    flag.set(true);
+                    TimeoutAction::Drop
+                })
+        {
             model::warn!("comp.window.wait: no deadline timer: {error}");
             reply.send(ControlReply::Busy);
             return;
@@ -646,8 +688,20 @@ impl Engine<'_> {
 
     /// Admit `comp.window.close {force}`: the polite close now (also on a
     /// refusal), then a deadline timer for the kill.
-    fn start_force_close(&mut self, id: u64, generation: u64, timeout: std::time::Duration, reply: LongReply, admitted: Instant) {
-        let effects = match policy::window::start_force_close(&self.lp.inner.comp.registry, id, generation, world::comp::session_lock::active(self.lp)) {
+    fn start_force_close(
+        &mut self,
+        id: u64,
+        generation: u64,
+        timeout: std::time::Duration,
+        reply: LongReply,
+        admitted: Instant,
+    ) {
+        let effects = match policy::window::start_force_close(
+            &self.lp.inner.comp.registry,
+            id,
+            generation,
+            world::comp::session_lock::active(self.lp),
+        ) {
             Ok(effects) => effects,
             Err((refusal, effects)) => {
                 policy_host::control::execute(self.lp, effects);
@@ -658,10 +712,13 @@ impl Engine<'_> {
         policy_host::control::execute(self.lp, effects);
         let deadline = admitted + timeout;
         let flag = Rc::clone(self.pending);
-        if let Err(error) = self.handle.insert_source(Timer::from_deadline(deadline), move |_, _, _| {
-            flag.set(true);
-            TimeoutAction::Drop
-        }) {
+        if let Err(error) =
+            self.handle
+                .insert_source(Timer::from_deadline(deadline), move |_, _, _| {
+                    flag.set(true);
+                    TimeoutAction::Drop
+                })
+        {
             model::warn!("comp.window.close force: no deadline timer: {error}");
             reply.send(ControlReply::Busy);
             return;
@@ -700,12 +757,17 @@ impl CompEngine for Engine<'_> {
     }
     fn start_long(&mut self, op: LongOp, reply: LongReply, admitted: Instant) {
         // `comp.input.sequence`.
-        let Some((op, reply)) = self.sequences.start(self.lp, self.handle, op, reply, admitted) else {
+        let Some((op, reply)) = self
+            .sequences
+            .start(self.lp, self.handle, op, reply, admitted)
+        else {
             return;
         };
         match op {
             LongOp::CaptureFrame(spec) => {
-                policy_host::capture::start(self.lp, spec, admitted, move |answer| reply.send(answer));
+                policy_host::capture::start(self.lp, spec, admitted, move |answer| {
+                    reply.send(answer)
+                });
             }
             LongOp::RegionSelect { output, timeout } => {
                 if self.region_reply.is_some() {
@@ -713,7 +775,13 @@ impl CompEngine for Engine<'_> {
                     return;
                 }
                 let busy = !self.sequences.is_empty();
-                match policy_host::region::start(self.lp, output.as_deref(), timeout, admitted, busy) {
+                match policy_host::region::start(
+                    self.lp,
+                    output.as_deref(),
+                    timeout,
+                    admitted,
+                    busy,
+                ) {
                     Ok(()) => *self.region_reply = Some(reply),
                     Err(answer) => reply.send(answer),
                 }
@@ -735,8 +803,11 @@ impl CompEngine for Engine<'_> {
 
     // Seed (or keep) the props.changed baseline; idle drops it.
     fn watch_props(&mut self, active: bool) -> bool {
-        self.edges
-            .watch(self.lp, identity(self.context, self.binding_profile), active)
+        self.edges.watch(
+            self.lp,
+            identity(self.context, self.binding_profile),
+            active,
+        )
     }
 
     // pointer.watch: (re)open the lease; `Bus::service_pointer`

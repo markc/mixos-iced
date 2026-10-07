@@ -418,10 +418,28 @@ the last good appearance and panel policy. Correct them through a new fenced
 settings mutation. This is consumer capability validation, not a rollback of
 the accepted authority revision. Empty page ordering preserves local order.</p>
 <p>Requested maximised windows keep their owning output and follow only changes
-to its usable area; removal chooses an available output while retaining the
-original unmaximise geometry. Fullscreen continues to use the whole output.
-Persistent tiling, delayed-buffer protocol evidence and native VT frame/latency
-acceptance remain outstanding.</p>
+to their desired content rectangle; removal chooses an available output while
+retaining the original unmaximise geometry. Scene reservations are reconciled
+after settings activation and before frame work, including without the comp
+Bus port. An unchanged target does not emit another maximise configure while
+the client is slow to acknowledge or replace its buffer. The compositor's
+decided slot remains authoritative during these transitions; older legally
+acknowledged buffers do not undo a newer target. Existing aspect-preserving
+fit and inverse input mapping remain in use.</p>
+<p>Fullscreen continues to use the whole output. Its compositor record, pending
+protocol intent and committed state fence work-area reconfiguration through
+delayed entry/exit commits. After fullscreen releases ownership, the next normal
+dispatch restores the latest maximised content rectangle, even if the work-area
+map has not changed again. Window geometry changes schedule redraw and retarget
+the human Wayland pointer, respecting grabs. This does not by itself prove
+stationary iced hover or scene bounds before/after rendering.</p>
+<p>The protocol fixtures exercise actual xdg configure/ack/buffer commits using
+the production geometry executor. Their headless output has no renderer; native
+Bus delivery fixtures and protocol fixtures do not establish their composed
+rendered settings-to-frame behaviour. Persistent tiling, new maximise intent
+with no outputs, native window/input/frame evidence and VT latency acceptance
+remain outstanding. Current text scale changes the title font, while decoration
+extents continue to come from the selected style's fixed height and border.</p>
 <h2 id="topics-and-storage">Topics and storage</h2>
 <p>Publish retained <code>settingsd.desktop.changed.&lt;profile&gt;</code>, owned by the registered
 <code>settingsd</code> service. The unscoped base name is reserved too. All clients may

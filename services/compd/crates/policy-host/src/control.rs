@@ -91,7 +91,11 @@ pub fn reserved_for(lp: &Loop, output: &smithay::output::Output) -> Reserved {
 /// windows maximised by request take the new area.
 pub fn refresh_usable(lp: &mut Loop) -> crate::geometry::GeometryChange {
     refresh_output_generations(lp);
-    let windows: Vec<_> = lp.inner.comp.maximized_ids().into_iter()
+    let windows: Vec<_> = lp
+        .inner
+        .comp
+        .maximized_ids()
+        .into_iter()
         .filter_map(|id| Some((id, window_of(lp, id)?)))
         .collect();
     let (comp, space) = lp.inner.comp_space_mut();

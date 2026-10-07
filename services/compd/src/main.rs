@@ -11,6 +11,7 @@ mod xwayland;
 
 use model::{info, trace, warn};
 
+use dispatcher::wire::trait_::wire_trait::WireTrait;
 use smithay::reexports::calloop::channel as cl_channel;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, Mode, PostAction};
@@ -18,7 +19,6 @@ use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use std::time::Instant;
 use world::state::Loop;
 use world::state::state::{Loader, Orchestrator as State};
-use dispatcher::wire::trait_::wire_trait::WireTrait;
 // App-launch executor (kernel.execution driver) — all worker/reaper/channel
 // wiring is encapsulated behind `install`.
 use crate::execution::driver::executor::install::install as launch_executor;
@@ -29,7 +29,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Set once the idle hook has reported the active world diverging from the
 /// spawn target (see the queued-iced check), so the error is logged once.
-static WORLD_DIVERGENCE_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WORLD_DIVERGENCE_REPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Answer `--version`/`-V` (and `--version --json`) as
@@ -74,7 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the developer logging process (fan-in buffer + drain/print + gRPC stream).
     // Levels come from COMPOSITOR_LOG_LEVEL.
     model::log::process::main::spawn();
-    info!("{}: {} backend", buildinfo::build_info!().line(), backend.label());
+    info!(
+        "{}: {} backend",
+        buildinfo::build_info!().line(),
+        backend.label()
+    );
     for var in cli::UNSUPPORTED_ENV {
         if std::env::var_os(var).is_some() {
             warn!("{var} is set but compd does not implement it; ignored");
@@ -151,7 +156,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let env_flags: Vec<(String, String)> = vec![
         ("COMPOSITOR_PRIORITY".to_string(), e.priority.clone()),
-        ("COMPOSITOR_RENDERER_SYNC".to_string(), e.renderer_sync.clone()),
+        (
+            "COMPOSITOR_RENDERER_SYNC".to_string(),
+            e.renderer_sync.clone(),
+        ),
         ("COMPOSITOR_HDR".to_string(), e.hdr.to_string()),
         ("COMPOSITOR_DEPTH".to_string(), e.depth.to_string()),
         ("COMPOSITOR_VRR".to_string(), e.vrr.to_string()),
@@ -205,7 +213,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::remove_var("WAYLAND_DISPLAY");
             std::env::remove_var("DISPLAY");
         }
-        info!("cleared inherited WAYLAND_DISPLAY/DISPLAY before GPU init (native session compositor)");
+        info!(
+            "cleared inherited WAYLAND_DISPLAY/DISPLAY before GPU init (native session compositor)"
+        );
     }
 
     info!("Creating the loop loader");
@@ -244,8 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // anything else) installs its own host here instead.
     kernel_data.insert(
         &effects::EFFECTS,
-        Box::new(effects::NullEffects)
-            as Box<dyn effects::EffectHost>,
+        Box::new(effects::NullEffects) as Box<dyn effects::EffectHost>,
     );
     let worlds = {
         // World kinds: the main world is SPATIAL (owns the window Space + is the
@@ -296,8 +305,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // KernelData: hand systems the smithay wiring handles (read-only tokens).
     {
-        let pointer = state.state.seat.seat.get_pointer().expect("seat factory adds a pointer");
-        let keyboard = state.state.seat.seat.get_keyboard().expect("seat factory adds a keyboard");
+        let pointer = state
+            .state
+            .seat
+            .seat
+            .get_pointer()
+            .expect("seat factory adds a pointer");
+        let keyboard = state
+            .state
+            .seat
+            .seat
+            .get_keyboard()
+            .expect("seat factory adds a keyboard");
         world::smithay_glue::data::data::populate(
             &mut state.inner.kernel,
             display.handle(),
@@ -316,10 +335,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Re-advertise per-world foreign-toplevels when the spawn-target world changes —
     // event-driven (replaces the old per-iteration generation poll).
-    state.inner.bus.register(
-        &world::state::state::WORLD_SWITCHED,
-        |l, _event| l.on_world_switched(),
-    );
+    state
+        .inner
+        .bus
+        .register(&world::state::state::WORLD_SWITCHED, |l, _event| {
+            l.on_world_switched()
+        });
 
     let wayland_socket_name_default_subprocess = wayland_socket.name.clone();
     let wayland_socket_name_default_subprocess_2 = wayland_socket.name.clone();
@@ -340,7 +361,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 unsafe {
                     // `D = Dispatch`: the wayland dispatch type is the protocol
                     // state field, not the whole Loop.
-                    display.get_mut().dispatch_clients(&mut state.state).unwrap();
+                    display
+                        .get_mut()
+                        .dispatch_clients(&mut state.state)
+                        .unwrap();
                 }
                 // No drain here. Dispatching only QUEUES onto the protocol outboxes;
                 // applying them is the loop's job, once per iteration, after every
@@ -387,7 +411,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // compositor_kernel_native_device_interface_base): the main project applies
             // runtime device settings through them.
             // KMS: the one process-wide output scale, before any output exists.
-            kms::output::physical::physical::set_scale(cli::output_scale(&cli, cli::Backend::Kms).unwrap_or(1.0));
+            kms::output::physical::physical::set_scale(
+                cli::output_scale(&cli, cli::Backend::Kms).unwrap_or(1.0),
+            );
             let backend_handles = native::wire::entry::entry::wire(
                 &mut state,
                 wayland_socket_name_default_subprocess,
@@ -400,7 +426,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "backend-winit")]
         cli::Backend::Nested => {
             // `--scale` overrides the host window's scale for the nested output.
-            nested::window::factory::factory::set_scale(cli::output_scale(&cli, cli::Backend::Nested));
+            nested::window::factory::factory::set_scale(cli::output_scale(
+                &cli,
+                cli::Backend::Nested,
+            ));
             nested::wire::entry::entry::wire(
                 &mut state,
                 wayland_socket_name_default_subprocess,
@@ -441,8 +470,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // there. This must run AFTER the backend maps the output — `apply_pointer`
     // re-projects world `(0,0)` through the live camera + output geometry, which
     // don't exist when the seat is constructed. Single-output, so it runs once.
-    state.inner.apply_pointer(smithay::utils::Point::from((0.0, 0.0)));
-
+    state
+        .inner
+        .apply_pointer(smithay::utils::Point::from((0.0, 0.0)));
 
     // Now that the backend is wired, advertise OUR socket as WAYLAND_DISPLAY for
     // child processes. This must happen AFTER the backend wire(): the winit
@@ -451,7 +481,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (not-yet-serving) socket. The native backend doesn't nest, so post-wire is
     // correct for both. Children spawn below (announce_session), after this.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &wayland_socket_name_for_children) };
-    info!("WAYLAND_DISPLAY set to {:?} for child processes", wayland_socket_name_for_children);
+    info!(
+        "WAYLAND_DISPLAY set to {:?} for child processes",
+        wayland_socket_name_for_children
+    );
 
     // Native XWayland. AFTER the WAYLAND_DISPLAY export above, because the X server is
     // a wayland client of ours and smithay hands it the socket it must connect back
@@ -470,7 +503,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Widget and renderer worker notifications must restart an idle output as
     // well as wake calloop. Independent of the Bus and GPU publish wake paths.
     ui::engine::wake::register(&event_loop.handle(), |state: &mut world::state::Loop| {
-        state.state.schedule_redraw(dispatcher::state::state::RedrawReason::Iced);
+        state
+            .state
+            .schedule_redraw(dispatcher::state::state::RedrawReason::Iced);
     })?;
 
     // The native `comp` Bus service. Its worker dials noded on
@@ -493,7 +528,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The Mix Scenes host (scene-host): its own Bus registration (`shell`),
     // opt-in by the `scene_host` preference. Like the comp port, a missing
     // broker never holds the compositor up.
-    let mut scenes = scenes::Scenes::start(&state, cli.scene_service.as_deref(), &event_loop.handle());
+    let mut scenes =
+        scenes::Scenes::start(&state, cli.scene_service.as_deref(), &event_loop.handle());
     let scenes_port = &mut scenes;
 
     // After WlrLayerShellState::new and event loop is running.
@@ -525,17 +561,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // boost, as intended) — arm the kernel-level inheritance stop: tasks
     // created from here on, the IME below and every launched client included,
     // start at default scheduling.
-    crate::priority::arm::arm::arm(
-        &model::environment::config::base::get().priority,
-    );
+    crate::priority::arm::arm::arm(&model::environment::config::base::get().priority);
 
     // Launch the compositor-owned input method configured in `preferences.json`
     // (`ime: { exec, args }`); unset ⇒ none is launched. Must be AFTER WAYLAND_DISPLAY is exported
     // (above) so it connects to OUR socket; the spawned process group is the ONLY client
     // authorized to bind the input-method / virtual-keyboard globals (see `text.input.launch`).
-    protocols::text::input::launch::launch::launch(
-        state.inner.preference.ime.clone(),
-    );
+    protocols::text::input::launch::launch::launch(state.inner.preference.ime.clone());
 
     // Sampling heartbeat — a sparing, multi-level demo of live developer logs (so the
     // viewer shows activity over time and its level filters can be exercised). Remove when

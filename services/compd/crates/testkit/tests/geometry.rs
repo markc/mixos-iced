@@ -6,7 +6,7 @@
 use policy_host::geometry::{self, GeometryChange};
 use smithay::desktop::Window;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
-use smithay::utils::{Logical, Point, Size, Transform};
+use smithay::utils::{Size, Transform};
 use surfaces::SurfaceId;
 use testkit::{Harness, client::protocol_id};
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -14,6 +14,8 @@ use wayland_protocols::xdg::shell::client::{xdg_surface::XdgSurface, xdg_topleve
 use world::camera::transform::translate::{fit::window_fit, slot};
 use world::comp::usable::Reserved;
 use protocols::window::shell::shell;
+use world::window::interface::record::window::LoopWindow;
+use world::window::interface::data::data::WindowFullscreen;
 
 fn window(h: &Harness, surface: &WlSurface) -> (SurfaceId, Window) {
     let handle = h.handle_of(surface);
@@ -199,6 +201,11 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     h.client.attach(&surface, 1920, 1080);
     h.roundtrip();
     let restore = h.comp().maximize_restore(id).unwrap();
+    window.set_fullscreen(Some(WindowFullscreen {
+        restore_loc: (0, 0).into(), restore_size: (1920, 1080).into(),
+    }));
+    bottom(&mut h, 40);
+    assert!(!refresh(&mut h, id, &window).windows, "compositor fullscreen record owns slot before protocol intent");
     // Stage the real protocol fullscreen ownership. Loop-owned restore data is
     // separately fenced by the same production helper; no fake Loop is built.
     shell::set_fullscreen(&window, true);
@@ -214,6 +221,7 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     h.client.attach(&surface, 1920, 1080);
     h.roundtrip();
     shell::set_fullscreen(&window, false);
+    window.set_fullscreen(None);
     shell::send(&window);
     h.roundtrip();
     let before = count(&h, &top);
@@ -233,4 +241,44 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     h.roundtrip();
     assert_eq!(count(&h, &top), before);
     assert_eq!(h.comp().maximize_restore(id), Some(restore));
+}
+
+#[test]
+fn unmaximise_restores_the_decided_size_when_client_geometry_lags() {
+    let mut h = Harness::new();
+    let (surface, _, top) = h.mapped_toplevel(640, 480);
+    let (id, window) = window(&h, &surface);
+    slot::set_expected_size(&window, (800, 600).into());
+    assert_eq!(window.geometry().size, Size::from((640, 480)));
+    maximize(&mut h, id, &window, true);
+    h.roundtrip();
+    assert_eq!(h.comp().maximize_restore(id).unwrap().size, Size::from((800, 600)));
+    maximize(&mut h, id, &window, false);
+    h.roundtrip();
+    configured(&h, &top, (800, 600), false);
+    assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
+}
+
+#[test]
+fn refreshing_another_world_never_admits_its_window_into_this_space() {
+    let mut h = Harness::new();
+    let (surface, _, top) = h.mapped_toplevel(640, 480);
+    let (id, window) = window(&h, &surface);
+    refresh(&mut h, id, &window);
+    maximize(&mut h, id, &window, true);
+    h.roundtrip();
+    let restore = h.comp().maximize_restore(id).unwrap();
+    h.wire.inner.space.state.unmap_elem(&window);
+    bottom(&mut h, 80);
+    let before = count(&h, &top);
+    assert_eq!(refresh(&mut h, id, &window), GeometryChange { usable: true, windows: false });
+    h.roundtrip();
+    assert!(h.wire.inner.space.state.element_location(&window).is_none());
+    assert_eq!(count(&h, &top), before);
+    assert_eq!(h.comp().maximize_restore(id), Some(restore));
+    // Once its world is hosted again, the unchanged usable map still reflows.
+    h.wire.inner.space.state.map_element(window.clone(), (32, 24), false);
+    assert!(refresh(&mut h, id, &window).windows);
+    h.roundtrip();
+    configured(&h, &top, (1920, 1000), true);
 }

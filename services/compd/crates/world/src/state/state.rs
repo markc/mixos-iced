@@ -1,27 +1,27 @@
+use crate::environment::type_::base::Environment;
 use drivers::world::audio::controller::interface::interface::AudioController;
 use drivers::world::audio::controller::interface::media::MediaController;
-use crate::environment::type_::base::Environment;
+use graphics::capture::registry::CaptureRegistry;
+use protocols::window::find::find;
+use protocols::window::shell::shell;
 use smithay::backend::drm::{DrmDeviceFd, DrmNode};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::GpuManager;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::desktop::{Window, layer_map_for_output};
-use protocols::window::find::find;
-use protocols::window::shell::shell;
-use graphics::capture::registry::CaptureRegistry;
 
+use crate::camera::state::state::Camera;
+use crate::canvas::state::state::CanvasState;
+use crate::seat::gesture::scroll::scroll::FingerScrollRamp;
+use crate::seat::pointer::snapshot::snapshot::CursorSnapshot;
+use dispatcher::wire::trait_::wire_trait::WireTrait;
+use dispatcher::wire::wire::Wire;
 use smithay::reexports::calloop::{EventLoop, LoopSignal, RegistrationToken};
 use smithay::reexports::wayland_server::DisplayHandle;
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::rc::Rc;
 use std::time::Instant;
-use crate::camera::state::state::Camera;
-use crate::canvas::state::state::CanvasState;
-use crate::seat::pointer::snapshot::snapshot::CursorSnapshot;
-use crate::seat::gesture::scroll::scroll::FingerScrollRamp;
-use dispatcher::wire::wire::Wire;
-use dispatcher::wire::trait_::wire_trait::WireTrait;
 
 pub struct Loader {
     pub socket_name: OsString,
@@ -113,7 +113,11 @@ pub struct Orchestrator {
     /// takes its entry, a `DestroyNotify` drops it, and `xwayland::died` clears the lot.
     pub withdrawn_x11: std::collections::HashMap<
         u32,
-        (uuid::Uuid, smithay::desktop::Window, smithay::utils::Point<i32, smithay::utils::Logical>),
+        (
+            uuid::Uuid,
+            smithay::desktop::Window,
+            smithay::utils::Point<i32, smithay::utils::Logical>,
+        ),
     >,
     /// Active per-region render override (see [`RenderTarget`]). Set only inside
     /// the `scene.frame` region loop.
@@ -219,8 +223,9 @@ pub struct StateDRMBinding {
 /// here with `StateDRMBinding` to avoid a dependency cycle.
 pub static GPU_BINDING: slots::storage::token::base::Token<Option<Rc<RefCell<StateDRMBinding>>>> =
     slots::storage::token::base::Token::new();
-pub static GPU_BINDING_MUT: slots::storage::token::base::TokenMut<Option<Rc<RefCell<StateDRMBinding>>>> =
-    slots::storage::token::base::TokenMut::new(&GPU_BINDING);
+pub static GPU_BINDING_MUT: slots::storage::token::base::TokenMut<
+    Option<Rc<RefCell<StateDRMBinding>>>,
+> = slots::storage::token::base::TokenMut::new(&GPU_BINDING);
 
 pub enum Status {
     Running,
@@ -256,7 +261,10 @@ impl Orchestrator {
 
         // Audio/media are driver data: stored in the kernel/driver storage by
         // token, not as Orchestrator fields.
-        kernel_data.insert(&drivers::audio::base::AUDIO, AudioController::new("compd").ok());
+        kernel_data.insert(
+            &drivers::audio::base::AUDIO,
+            AudioController::new("compd").ok(),
+        );
         kernel_data.insert(&drivers::audio::base::MEDIA, Some(MediaController::new()));
         // GPU driver: DRM binding slot, populated post-init by the backend.
         kernel_data.insert(&GPU_BINDING, None);
@@ -272,7 +280,10 @@ impl Orchestrator {
         kernel_data.insert(&drivers::logind::base::LOGIND, None);
         // Capture driver: registry + session state.
         kernel_data.insert(&crate::driver::capture::base::CAPTURE_REGISTRY, None);
-        kernel_data.insert(&crate::driver::capture::base::CAPTURE, crate::capture::session::session::CaptureState::idle());
+        kernel_data.insert(
+            &crate::driver::capture::base::CAPTURE,
+            crate::capture::session::session::CaptureState::idle(),
+        );
         // Backend kind (nested winit vs udev) mirrored into the kernel store so
         // input/draw systems can read it via `cx.kernel`.
         kernel_data.insert(&crate::storage::state::state::NESTED, nested);
@@ -280,12 +291,18 @@ impl Orchestrator {
         // Output-mode driver: rim-issued mode request + kernel-written advertised
         // modes snapshot and apply result (settings window ↔ DRM, like the lid).
         kernel_data.insert(&drivers::output::base::OUTPUT_MODE_REQUEST, None);
-        kernel_data.insert(&drivers::output::base::OUTPUT_MODES_SNAPSHOT, Default::default());
+        kernel_data.insert(
+            &drivers::output::base::OUTPUT_MODES_SNAPSHOT,
+            Default::default(),
+        );
         kernel_data.insert(&drivers::output::base::OUTPUT_MODE_RESULT, None);
         // Kernel-written full connector list (the settings Display panel's monitor
         // picker + advertised modes).
         kernel_data.insert(&drivers::output::base::OUTPUTS_SNAPSHOT, Default::default());
-        kernel_data.insert(&drivers::output::base::TOUCH_DEVICES_SNAPSHOT, Default::default());
+        kernel_data.insert(
+            &drivers::output::base::TOUCH_DEVICES_SNAPSHOT,
+            Default::default(),
+        );
         // Rim→kernel: request a reconcile pass after an activate/deactivate.
         kernel_data.insert(&drivers::output::base::OUTPUT_RECONCILE_REQUEST, false);
         // Baseline of a provisional activate/deactivate awaiting the "check changes"
@@ -398,9 +415,7 @@ impl Orchestrator {
             // Lock never calls this function at all, which is why the session world
             // survives it; the guard covers the rest.
             if previous != self.worlds.active_id() {
-                graphics::bridge::publish::retire::retire::retire_world(
-                    previous.as_u128(),
-                );
+                graphics::bridge::publish::retire::retire::retire_world(previous.as_u128());
                 self.release_world_surfaces(previous);
             }
             self.bus.send(&WORLD_SWITCHED_TX, WorldSwitched);
@@ -477,7 +492,10 @@ impl Orchestrator {
     /// The world whose Space maps the window `surface` belongs to — `surface` may be
     /// a subsurface; the toplevel is its tree root. `None` for a surface no world
     /// maps (a toplevel before its initial map, a layer, a cursor, an iced surface).
-    pub fn surface_world(&self, surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> Option<uuid::Uuid> {
+    pub fn surface_world(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> Option<uuid::Uuid> {
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
@@ -487,9 +505,7 @@ impl Orchestrator {
                 .get(id)
                 .storage()
                 .try_get(&crate::host::space::base::SPACE)
-                .is_some_and(|w| {
-                    w.inner.state.elements().any(|e| find::is_surface(e, &root))
-                })
+                .is_some_and(|w| w.inner.state.elements().any(|e| find::is_surface(e, &root)))
         })
     }
 
@@ -558,7 +574,6 @@ impl Orchestrator {
             }
         }
     }
-
 
     /// Publish `xdg_toplevel.suspended` across every world, from the per-pane `on_pane_awake`
     /// marker every monitor filled this frame.
@@ -645,7 +660,8 @@ impl Orchestrator {
         // Keyed by uuid rather than held in the window's user data, so both have to be
         // swept: a window that closed while its world was parked would otherwise leave
         // entries behind for the life of the session.
-        self.last_on_pane_awake.retain(|uuid, _| live.contains(uuid));
+        self.last_on_pane_awake
+            .retain(|uuid, _| live.contains(uuid));
         self.suspended.retain(|uuid| live.contains(uuid));
     }
 
@@ -741,10 +757,7 @@ impl Orchestrator {
 
     /// A NAMED world's Space. See `window_of_surface` for why the drag paths
     /// cannot use the `spawn_target`-bound accessor below.
-    pub fn space_of_mut(
-        &mut self,
-        world: uuid::Uuid,
-    ) -> &mut protocols::space::state::SpaceState {
+    pub fn space_of_mut(&mut self, world: uuid::Uuid) -> &mut protocols::space::state::SpaceState {
         &mut self
             .worlds
             .get_mut(world)
@@ -766,10 +779,20 @@ impl Orchestrator {
     /// Disjoint policy state and placement Space for renderer-free geometry
     /// execution. Resolve candidate windows across worlds before taking this
     /// mutable view; placement keeps the existing spawn-target semantics.
-    pub fn comp_space_mut(&mut self) -> (&mut crate::comp::CompState, &mut smithay::desktop::Space<Window>) {
+    pub fn comp_space_mut(
+        &mut self,
+    ) -> (
+        &mut crate::comp::CompState,
+        &mut smithay::desktop::Space<Window>,
+    ) {
         let target = self.worlds.spawn_target();
-        let space = &mut self.worlds.get_mut(target).storage_mut()
-            .get_mut(&crate::host::space::base::SPACE_MUT).inner.state;
+        let space = &mut self
+            .worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::host::space::base::SPACE_MUT)
+            .inner
+            .state;
         (&mut self.comp, space)
     }
 
@@ -921,11 +944,18 @@ impl Orchestrator {
     pub fn camera(&self) -> &crate::camera::state::state::Camera {
         let target = self.worlds.spawn_target();
         let key = self.current_output_key();
-        let viewports = self.worlds.get(target).storage().get(&crate::viewport::state::state::OUTPUT_VIEWS).views(&key);
+        let viewports = self
+            .worlds
+            .get(target)
+            .storage()
+            .get(&crate::viewport::state::state::OUTPUT_VIEWS)
+            .views(&key);
         // Inside the per-region render loop, resolve the pane being drawn; else
         // the focused (active) slot.
         match self.render_target {
-            Some(rt) => viewports.camera_of(rt.slot).unwrap_or_else(|| viewports.focus_camera()),
+            Some(rt) => viewports
+                .camera_of(rt.slot)
+                .unwrap_or_else(|| viewports.focus_camera()),
             None => viewports.focus_camera(),
         }
     }
@@ -934,7 +964,12 @@ impl Orchestrator {
         let target = self.worlds.spawn_target();
         let key = self.current_output_key();
         let render_slot = self.render_target.map(|rt| rt.slot);
-        let viewports = self.worlds.get_mut(target).storage_mut().get_mut(&crate::viewport::state::state::OUTPUT_VIEWS_MUT).views_mut(&key);
+        let viewports = self
+            .worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::viewport::state::state::OUTPUT_VIEWS_MUT)
+            .views_mut(&key);
         // Render target may be a floating pane's slot, so search all panes.
         match render_slot.filter(|id| viewports.camera_of(*id).is_some()) {
             Some(id) => viewports.camera_of_mut(id).expect("checked present"),
@@ -964,13 +999,21 @@ impl Orchestrator {
     pub fn viewports(&self) -> &crate::viewport::state::state::Viewports {
         let target = self.worlds.spawn_target();
         let key = self.current_output_key();
-        self.worlds.get(target).storage().get(&crate::viewport::state::state::OUTPUT_VIEWS).views(&key)
+        self.worlds
+            .get(target)
+            .storage()
+            .get(&crate::viewport::state::state::OUTPUT_VIEWS)
+            .views(&key)
     }
 
     pub fn viewports_mut(&mut self) -> &mut crate::viewport::state::state::Viewports {
         let target = self.worlds.spawn_target();
         let key = self.current_output_key();
-        self.worlds.get_mut(target).storage_mut().get_mut(&crate::viewport::state::state::OUTPUT_VIEWS_MUT).views_mut(&key)
+        self.worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::viewport::state::state::OUTPUT_VIEWS_MUT)
+            .views_mut(&key)
     }
 
     /// The per-output view map. Used to select/create the current output's view tree
@@ -978,7 +1021,10 @@ impl Orchestrator {
     /// pointer path points `current` at the cursor's output for the systems).
     pub fn output_views_mut(&mut self) -> &mut crate::viewport::state::state::OutputViews {
         let target = self.worlds.spawn_target();
-        self.worlds.get_mut(target).storage_mut().get_mut(&crate::viewport::state::state::OUTPUT_VIEWS_MUT)
+        self.worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::viewport::state::state::OUTPUT_VIEWS_MUT)
     }
 
     /// Read-only per-output view map — every output's `Viewports` (cameras + visible
@@ -986,7 +1032,10 @@ impl Orchestrator {
     /// fractional scale = highest zoom of any viewport across ALL outputs showing it).
     pub fn output_views(&self) -> &crate::viewport::state::state::OutputViews {
         let target = self.worlds.spawn_target();
-        self.worlds.get(target).storage().get(&crate::viewport::state::state::OUTPUT_VIEWS)
+        self.worlds
+            .get(target)
+            .storage()
+            .get(&crate::viewport::state::state::OUTPUT_VIEWS)
     }
 
     /// The Space refresh, with `wl_output` membership as the engine actually models it: every
@@ -1078,12 +1127,18 @@ impl Orchestrator {
     /// FOCUS ACCESSOR: the focused world's canvas slot (input grab, …).
     pub fn canvas(&self) -> &crate::canvas::state::state::CanvasState {
         let target = self.worlds.spawn_target();
-        self.worlds.get(target).storage().get(&crate::canvas::system::base::CANVAS)
+        self.worlds
+            .get(target)
+            .storage()
+            .get(&crate::canvas::system::base::CANVAS)
     }
 
     pub fn canvas_mut(&mut self) -> &mut crate::canvas::state::state::CanvasState {
         let target = self.worlds.spawn_target();
-        self.worlds.get_mut(target).storage_mut().get_mut(&crate::canvas::system::base::CANVAS_MUT)
+        self.worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::canvas::system::base::CANVAS_MUT)
     }
 
     /// FOCUS ACCESSOR: the focused world's channel router — rim triggers announce
@@ -1105,37 +1160,58 @@ impl Orchestrator {
     /// registry is None until that lands).
     pub fn surface(&self) -> &crate::surface::state::state::SurfaceState {
         let target = self.worlds.spawn_target();
-        self.worlds.get(target).storage().get(&crate::surface::system::base::SURFACE)
+        self.worlds
+            .get(target)
+            .storage()
+            .get(&crate::surface::system::base::SURFACE)
     }
 
     pub fn surface_mut(&mut self) -> &mut crate::surface::state::state::SurfaceState {
         let target = self.worlds.spawn_target();
-        self.worlds.get_mut(target).storage_mut().get_mut(&crate::surface::system::base::SURFACE_MUT)
+        self.worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::surface::system::base::SURFACE_MUT)
     }
 
     /// FOCUS ACCESSOR: the focused world's pointer slot (cursor world coords).
     pub fn pointer(&self) -> &crate::seat::pointer::state::state::PointerState {
         let target = self.worlds.spawn_target();
-        self.worlds.get(target).storage().get(&crate::seat::system::pointer::base::POINTER)
+        self.worlds
+            .get(target)
+            .storage()
+            .get(&crate::seat::system::pointer::base::POINTER)
     }
 
     pub fn pointer_mut(&mut self) -> &mut crate::seat::pointer::state::state::PointerState {
         let target = self.worlds.spawn_target();
-        self.worlds.get_mut(target).storage_mut().get_mut(&crate::seat::system::pointer::base::POINTER_MUT)
+        self.worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::seat::system::pointer::base::POINTER_MUT)
     }
 
     /// FOCUS ACCESSOR: the focused world's window-lifecycle queue (smithay Wire
     /// pushes map/destroy/fullscreen events here; the focused world's WindowSystem
     /// drains them — new windows map into the focused/spawn-target world).
-    pub fn window_lifecycle_mut(&mut self) -> &mut crate::window::lifecycle::state::lifecycle::WindowLifecycle {
+    pub fn window_lifecycle_mut(
+        &mut self,
+    ) -> &mut crate::window::lifecycle::state::lifecycle::WindowLifecycle {
         let target = self.worlds.spawn_target();
-        self.worlds.get_mut(target).storage_mut().get_mut(&crate::window::system::base::WINDOW_LIFECYCLE_MUT)
+        self.worlds
+            .get_mut(target)
+            .storage_mut()
+            .get_mut(&crate::window::system::base::WINDOW_LIFECYCLE_MUT)
     }
 
     /// Register a drawable at the top of the draw-order authority. Agnostic:
     /// works for any drawable (windows today; iced surfaces, …). Called from
     /// EVERY map path so `drawable_order()` never drops a live drawable.
-    pub fn register_drawable(&mut self, uuid: uuid::Uuid, layer: crate::order::track::base::DrawLayer) {
+    pub fn register_drawable(
+        &mut self,
+        uuid: uuid::Uuid,
+        layer: crate::order::track::base::DrawLayer,
+    ) {
         let target = self.worlds.spawn_target();
         self.worlds
             .get_mut(target)
@@ -1271,7 +1347,9 @@ pub trait CoordinateTrait {
 impl CoordinateTrait for Loop {
     fn size_ctx_all(&self) -> crate::camera::transform::translate::transform::Context {
         let output = self.inner.current_output();
-        let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
+        let mode = output
+            .current_mode()
+            .unwrap_or_else(|| abort!("output has a current mode"));
         let scale = output.current_scale().fractional_scale();
         let camera = &self.inner.camera().transform;
         crate::camera::transform::translate::transform::Context::new(
@@ -1288,10 +1366,19 @@ impl CoordinateTrait for Loop {
     ) -> crate::camera::transform::translate::transform::Context {
         let (mode_w, mode_h, scale) = {
             let output = self.inner.current_output();
-            let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
-            (mode.size.w, mode.size.h, output.current_scale().fractional_scale())
+            let mode = output
+                .current_mode()
+                .unwrap_or_else(|| abort!("output has a current mode"));
+            (
+                mode.size.w,
+                mode.size.h,
+                output.current_scale().fractional_scale(),
+            )
         };
-        let bounds = smithay::utils::Rectangle::new(smithay::utils::Point::from((0, 0)), smithay::utils::Size::from((mode_w, mode_h)));
+        let bounds = smithay::utils::Rectangle::new(
+            smithay::utils::Point::from((0, 0)),
+            smithay::utils::Size::from((mode_w, mode_h)),
+        );
         let viewports = self.inner.viewports();
         // Slot missing → full output.
         let Some(rect) = crate::viewport::layout::layout::compute(viewports, bounds)
@@ -1302,7 +1389,10 @@ impl CoordinateTrait for Loop {
         else {
             return self.size_ctx_all();
         };
-        let camera = viewports.camera_of(slot).map(|c| &c.transform).unwrap_or(&viewports.focus_camera().transform);
+        let camera = viewports
+            .camera_of(slot)
+            .map(|c| &c.transform)
+            .unwrap_or(&viewports.focus_camera().transform);
         crate::camera::transform::translate::transform::Context::new_region(
             (camera.position.x, camera.position.y),
             camera.zoom,
@@ -1336,15 +1426,24 @@ impl CoordinateTrait for Loop {
     ) -> crate::camera::transform::translate::transform::Context {
         let (mode_w, mode_h, scale) = {
             let output = self.inner.current_output();
-            let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
-            (mode.size.w, mode.size.h, output.current_scale().fractional_scale())
+            let mode = output
+                .current_mode()
+                .unwrap_or_else(|| abort!("output has a current mode"));
+            (
+                mode.size.w,
+                mode.size.h,
+                output.current_scale().fractional_scale(),
+            )
         };
         let bounds = smithay::utils::Rectangle::new(
             smithay::utils::Point::from((0, 0)),
             smithay::utils::Size::from((mode_w, mode_h)),
         );
         let computed = crate::viewport::layout::layout::compute(self.inner.viewports(), bounds);
-        let p = smithay::utils::Point::<i32, smithay::utils::Physical>::from((phys.x.round() as i32, phys.y.round() as i32));
+        let p = smithay::utils::Point::<i32, smithay::utils::Physical>::from((
+            phys.x.round() as i32,
+            phys.y.round() as i32,
+        ));
         // During a viewport drag (separator / floating move-resize), FREEZE the
         // operative pane so the cursor mapping stays put and can't jump between
         // viewports mid-drag. Otherwise: over a leaf → that pane; over a
@@ -1356,14 +1455,24 @@ impl CoordinateTrait for Loop {
         };
         let (slot, rect) = if dragging {
             let current = self.inner.viewports().pointer;
-            let rect = computed.regions.iter().find(|reg| reg.slot == current).map(|reg| reg.rect).unwrap_or(bounds);
+            let rect = computed
+                .regions
+                .iter()
+                .find(|reg| reg.slot == current)
+                .map(|reg| reg.rect)
+                .unwrap_or(bounds);
             (current, rect)
         } else {
             match crate::viewport::layout::layout::slot_at(&computed, p) {
                 Some((s, r)) => (s, r),
                 None => {
                     let current = self.inner.viewports().pointer;
-                    let rect = computed.regions.iter().find(|reg| reg.slot == current).map(|reg| reg.rect).unwrap_or(bounds);
+                    let rect = computed
+                        .regions
+                        .iter()
+                        .find(|reg| reg.slot == current)
+                        .map(|reg| reg.rect)
+                        .unwrap_or(bounds);
                     (current, rect)
                 }
             }
@@ -1386,8 +1495,14 @@ impl CoordinateTrait for Loop {
     fn focus_pane_context(&self) -> crate::camera::transform::translate::transform::Context {
         let (mode_w, mode_h, scale) = {
             let output = self.inner.current_output();
-            let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
-            (mode.size.w, mode.size.h, output.current_scale().fractional_scale())
+            let mode = output
+                .current_mode()
+                .unwrap_or_else(|| abort!("output has a current mode"));
+            (
+                mode.size.w,
+                mode.size.h,
+                output.current_scale().fractional_scale(),
+            )
         };
         let bounds = smithay::utils::Rectangle::new(
             smithay::utils::Point::from((0, 0)),
@@ -1395,7 +1510,12 @@ impl CoordinateTrait for Loop {
         );
         let pointer = self.inner.viewports().pointer;
         let computed = crate::viewport::layout::layout::compute(self.inner.viewports(), bounds);
-        let rect = computed.regions.iter().find(|r| r.slot == pointer).map(|r| r.rect).unwrap_or(bounds);
+        let rect = computed
+            .regions
+            .iter()
+            .find(|r| r.slot == pointer)
+            .map(|r| r.rect)
+            .unwrap_or(bounds);
         // `camera()` resolves to the pointer pane (focus_camera) outside the render loop.
         let (cx, cy, cz) = {
             let c = &self.inner.camera().transform;
@@ -1409,9 +1529,7 @@ impl CoordinateTrait for Loop {
             scale,
         )
     }
-
 }
 
 /// The compositor loop: protocol state (`Dispatch`) + the orchestrator.
 pub type Loop = Wire<Orchestrator>;
-

@@ -81,7 +81,7 @@ pub fn set_maximized(
         } else {
             comp.set_maximize_restore(id, Some(MaximizeRestore {
                 location: space.element_location(window).unwrap_or(area.loc),
-                size: window.geometry().size,
+                size: slot::size_of(window).unwrap_or(window.geometry().size),
                 output,
             }));
         }
@@ -118,6 +118,9 @@ pub fn refresh_usable(
     let mut change = GeometryChange { usable: changed, windows: false };
     for (id, window) in windows {
         let Some(mut restore) = comp.maximize_restore(*id) else { continue };
+        // A dormant world's window may be resolved by the caller, but this
+        // reconciliation must not admit it into the current placement Space.
+        if space.element_location(window).is_none() { continue }
         // Fullscreen owns its geometry through delayed entry/exit commits.
         // Revisit on the next normal dispatch after it releases ownership,
         // even when the work-area map itself has not changed again.

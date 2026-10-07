@@ -11,24 +11,24 @@ use std::os::fd::{AsFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 
 use wayland_client::backend::WaylandError;
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor,
-    wl_pointer, wl_pointer::WlPointer, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm,
-    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+    wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_pointer,
+    wl_pointer::WlPointer, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
+    wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface, xdg_surface::XdgSurface,
     xdg_toplevel::XdgToplevel, xdg_wm_base, xdg_wm_base::XdgWmBase,
 };
-use wayland_client::protocol::wl_output::WlOutput;
-use wayland_protocols_wlr::screencopy::v1::client::{
-    zwlr_screencopy_frame_v1, zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
-    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
-};
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1, zwlr_layer_shell_v1::ZwlrLayerShellV1, zwlr_layer_surface_v1,
     zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1, zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
 
 /// What the client's event handlers record.
@@ -132,7 +132,9 @@ impl TestClient {
     /// [`Self::read`] that hands back the connection's failure instead of
     /// panicking — for tests that expect compd to post a protocol error.
     pub fn try_read(&mut self) -> Result<(), WaylandError> {
-        self.queue.dispatch_pending(&mut self.state).map_err(dispatch_error)?;
+        self.queue
+            .dispatch_pending(&mut self.state)
+            .map_err(dispatch_error)?;
         if let Some(guard) = self.queue.prepare_read() {
             match guard.read() {
                 Ok(_) => {}
@@ -140,7 +142,9 @@ impl TestClient {
                 Err(e) => return Err(e),
             }
         }
-        self.queue.dispatch_pending(&mut self.state).map_err(dispatch_error)?;
+        self.queue
+            .dispatch_pending(&mut self.state)
+            .map_err(dispatch_error)?;
         Ok(())
     }
 
@@ -272,7 +276,8 @@ impl TestClient {
     }
 
     fn shm_buffer(&mut self, width: i32, height: i32) -> WlBuffer {
-        self.shm_buffer_with(width, height, width * 4, wl_shm::Format::Argb8888).0
+        self.shm_buffer_with(width, height, width * 4, wl_shm::Format::Argb8888)
+            .0
     }
 
     /// An shm buffer of any layout, and the index of its backing file for
@@ -306,7 +311,8 @@ impl TestClient {
         let file = &self.files[index];
         let len = file.metadata().expect("shm file metadata").len() as usize;
         let mut bytes = vec![0; len];
-        file.read_exact_at(&mut bytes, 0).expect("read the shm file");
+        file.read_exact_at(&mut bytes, 0)
+            .expect("read the shm file");
         bytes
     }
 
@@ -314,7 +320,10 @@ impl TestClient {
     /// as `(x, y, width, height)` in output-local logical coordinates) of the
     /// first `wl_output`. Its events land in [`ClientState::frames`] under the
     /// returned index.
-    pub fn capture(&mut self, region: Option<(i32, i32, i32, i32)>) -> (ZwlrScreencopyFrameV1, usize) {
+    pub fn capture(
+        &mut self,
+        region: Option<(i32, i32, i32, i32)>,
+    ) -> (ZwlrScreencopyFrameV1, usize) {
         self.capture_with(region, false)
     }
 
@@ -332,7 +341,9 @@ impl TestClient {
         self.state.frames.push(FrameEvents::default());
         let frame = match region {
             None => manager.capture_output(cursor, output, &self.qh, index),
-            Some((x, y, w, h)) => manager.capture_output_region(cursor, output, x, y, w, h, &self.qh, index),
+            Some((x, y, w, h)) => {
+                manager.capture_output_region(cursor, output, x, y, w, h, &self.qh, index)
+            }
         };
         (frame, index)
     }
@@ -376,7 +387,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, usize> for ClientState {
     ) {
         let record = &mut state.frames[*index];
         match event {
-            zwlr_screencopy_frame_v1::Event::Buffer { format, width, height, stride } => {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
                 let format = match format {
                     wayland_client::WEnum::Value(f) => f as u32,
                     wayland_client::WEnum::Unknown(f) => f,
@@ -390,7 +406,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, usize> for ClientState {
                     wayland_client::WEnum::Unknown(f) => f,
                 });
             }
-            zwlr_screencopy_frame_v1::Event::Damage { x, y, width, height } => {
+            zwlr_screencopy_frame_v1::Event::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => {
                 record.damage.push((x, y, width, height));
             }
             zwlr_screencopy_frame_v1::Event::Ready { .. } => record.ready = true,
@@ -478,11 +499,17 @@ impl Dispatch<XdgToplevel, ()> for ClientState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Configure { width, height, states } = event {
+        if let wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Configure {
+            width,
+            height,
+            states,
+        } = event
+        {
             state.toplevel_configures.push(ToplevelConfigure {
                 toplevel: protocol_id(toplevel),
                 size: (width, height),
-                states: states.chunks_exact(4)
+                states: states
+                    .chunks_exact(4)
                     .map(|bytes| u32::from_ne_bytes(bytes.try_into().expect("four-byte state")))
                     .collect(),
             });
@@ -517,8 +544,16 @@ impl Dispatch<WlPointer, usize> for ClientState {
     ) {
         match event {
             wl_pointer::Event::Enter { serial, .. } => state.enter_serial = Some(serial),
-            wl_pointer::Event::Button { serial, button, state: pressed, .. } => {
-                let pressed = matches!(pressed, wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed));
+            wl_pointer::Event::Button {
+                serial,
+                button,
+                state: pressed,
+                ..
+            } => {
+                let pressed = matches!(
+                    pressed,
+                    wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed)
+                );
                 state.buttons.push((serial, button, pressed, *seat));
             }
             _ => {}
