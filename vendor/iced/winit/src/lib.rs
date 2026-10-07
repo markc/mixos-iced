@@ -1726,7 +1726,7 @@ fn run_action<'a, P, C>(
         Action::Query {
             target,
             layer,
-            operation,
+            mut operation,
             traversal,
             reply,
         } => {
