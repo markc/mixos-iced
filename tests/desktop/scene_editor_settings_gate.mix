@@ -170,6 +170,27 @@ fn proc_state($pid)
   $parts=split(read_file("/proc/" .. to_string($pid) .. "/stat"),")")
   return substr(trim($parts[len($parts)-1]),0,1)
 end
+-- Retired: no longer running. A reaped-but-unreaped zombie counts: it cannot
+-- execute, bind or answer anything.
+fn proc_retired($pid)
+  return not process_alive($pid) or proc_state($pid) == "Z"
+end
+-- The real compositor must answer on the owning A broker. nested_host_lib's
+-- readiness probe inherits the process-global bus environment, which a later
+-- private_bus export retargeted, so probe explicitly with the A environment
+-- and verify the owned PID and Wayland socket within the deadline.
+fn real_ready($seconds)
+  $deadline=time()+$seconds
+  while time() < $deadline
+    if not process_alive($R.session.comp_pid) then return false end
+    if exists($R.session.runtime .. "/" .. $R.session.socket) then
+      $reply=$h.call($mix,$R.a,$root .. "/a",$R.session.service,"comp.ping",{})
+      if $reply.rc == 0 then return true end
+    end
+    sleep(0.5)
+  end
+  return false
+end
 fn real_current($snapshot,$budget)
   $deadline=time()+$budget
   $last=nil
@@ -212,7 +233,8 @@ end
 fn real_shutdown()
   $receipt=false
   if $R.real.scenes_paused and $R.real.scenes != nil and process_alive($R.real.scenes) then
-    kill($R.real.scenes,18)
+    $sent=kill($R.real.scenes,18)
+    check($sent,"Shutdown resume signal was not delivered")
     $R.real.scenes_paused=false
   end
   if $R.real.action_client != nil and process_alive($R.real.action_client) then $h.stop($R.real.action_client) end
@@ -365,10 +387,13 @@ try
   $R.real.settingsd=authority($R.a,$root .. "/a",$R.real.settings_root)
   $light=apply($R.a,{"appearance.mode":"light"},"real-gui-light")
   write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"scene-settings-fallback",decorations_ssd:false}))
+  -- The real compositor must dial the owning A broker explicitly: a later
+  -- private_bus export retargeted the process-global bus environment, and a
+  -- cached Mix bus connection is never retargeted by an export.
   $R.session=$n.start({bin:$bin .. "/compd",tag:"scene-editor-settings-real",run:$R.run,
     config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,
-    env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
-  check($n.wait_ready($R.session,30),"Real owned compositor failed")
+    env:merge($h.bus_env($R.a,$root .. "/a"),{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"})})
+  check(real_ready(30),"Real owned compositor failed")
   $found=nil
   for $attempt=1 to 60
     $found=re_find(read_file($R.session.log),"scene host: registered as `([^`]+)`")
@@ -377,7 +402,7 @@ try
   end
   check($found != nil and len($found) > 0,"Real scene host never registered")
   $R.real.shell=$found[0].groups[0]
-  check($R.real.shell == "shell","Real scene host registered as `" .. $R.real.shell .. "`, not `shell`")
+  check($R.real.shell == "shell","Real scene host registered as `" .. $R.real.shell .. "`: on the empty private A broker the production host must take `shell`, never its scene_service fallback")
   $host_info=real_shell("shell.info",{})
   check($host_info.service == "shell" and $host_info.contract == "shell.v1","shell.info is not the real shell.v1 host: " .. json_encode($host_info))
   for each $verb in ["scene.get","scene.layout","props.get","panel.mode"]
@@ -392,7 +417,7 @@ try
   $R.real.scenes=spawn([$mix,"--serve",$repo .. "/services/compd/scripts/scenes.mix","--name","scenes"],
     {env:merge($h.bus_env($R.a,$root .. "/a"),{SCENES_DIR:$R.real.scene_root,
       SCENES_TEMPLATES:$repo .. "/share/scenes",SCENES_LIB:$repo .. "/share/scenes/lib",
-      SCENE_HOST:"shell",SCENES_FIRST_RUN:"0",SCENES_EDITOR_APP:"1",
+      SCENE_HOST:$R.real.shell,SCENES_FIRST_RUN:"0",SCENES_EDITOR_APP:"1",
       SCENE_EDITOR_SERVICE:"scene-editor-real-gate"}),
       stdout:{file:$root .. "/real-scenes.log"},stderr:"stdout",detach:true})
   $R.children=concat($R.children,[$R.real.scenes])
@@ -425,7 +450,7 @@ try
   $panel=real_shell("shell.panel.state",{edge:"right"})
   check($panel.page == "scene-retained","Right edge default page is not scene-retained: " .. json_encode($panel))
   $R.real.app=launch($R.a,"scene-editor-real-gate",$R.real.app_home,"real","mixos-scene-editor:installed/calendar",
-    {SCENES_SERVICE:"scenes",SCENE_HOST:"shell"})
+    {SCENES_SERVICE:"scenes",SCENE_HOST:$R.real.shell})
   $R.real.window=presented($R.real.app,1000)
   wait_service($R.a,"scene-editor-real-gate","scene-editor.info")
   real_current($light,10)
@@ -551,7 +576,8 @@ try
   $R.real.selection=$baseline.selection
   $R.real.epoch=$baseline.epoch
   check(process_alive($R.real.scenes),"Owned scenes process vanished before the hold")
-  kill($R.real.scenes,19)
+  $sent=kill($R.real.scenes,19)
+  check($sent,"SIGSTOP was not delivered to the owned scenes process")
   $R.real.scenes_paused=true
   $deadline=time()+5
   $stopped=false
@@ -597,7 +623,8 @@ try
   check($state.mode == $R.real.mode and $state.page == $R.real.page,"Shell mode changed while the action was held")
   capture("real-held",$R.real.window,$held_colour,900,$R.a,"scene-editor-real-gate")
   check(time()-$R.real.issued < 18,"Held interval exceeded the bounded budget")
-  kill($R.real.scenes,18)
+  $sent=kill($R.real.scenes,18)
+  check($sent,"SIGCONT was not delivered to the owned scenes process")
   $deadline=time()+5
   $resumed=false
   while time() < $deadline and not $resumed
@@ -649,6 +676,31 @@ try
     "Window identity changed across the held action")
   capture("real-docked",$R.real.window,$held_colour,900,$R.a,"scene-editor-real-gate")
   check(real_shutdown(),"Real phase teardown did not obtain the GUI shutdown receipt: " .. to_string($R.real.teardown_error))
+  -- Owned-process retirement is part of the verdict: nothing below may still
+  -- be running when the acceptance is recorded. A zombie counts as retired;
+  -- anything executing fails the gate.
+  $deadline=time()+5
+  $retired=false
+  while time() < $deadline and not $retired
+    $retired=true
+    for each $pid in [$R.real.app.pid,$R.real.scenes,$R.real.settingsd,$R.real.action_client]
+      if $pid != nil and not proc_retired($pid) then $retired=false end
+    end
+    if not $retired then sleep(0.1) end
+  end
+  check($retired,"Owned real-phase processes did not retire before the verdict")
+  $n.stop($R.session)
+  $deadline=time()+3
+  $compositor_gone=false
+  while time() < $deadline and not $compositor_gone
+    $compositor_gone=true
+    for each $pid in $R.session.pids
+      if not proc_retired($pid) then $compositor_gone=false end
+    end
+    if not $compositor_gone then sleep(0.1) end
+  end
+  check($compositor_gone,"Owned real compositor did not retire before the verdict")
+  $h.stop($R.a.pid)
   write_file($root .. "/acceptance.json",json_encode({current:true,cached:true,embedded:true,
     selection_retained:true,dialogue_retained:true,outage_seconds:65,same_window:true,
     initial_collision_forwarded:true,shutdown_receipts:true,
@@ -671,7 +723,9 @@ finally
     try
       real_shutdown()
     catch $ignored
-      if $R.real.scenes_paused and $R.real.scenes != nil and process_alive($R.real.scenes) then kill($R.real.scenes,18) end
+      if $R.real.scenes_paused and $R.real.scenes != nil and process_alive($R.real.scenes) then
+        $sent=kill($R.real.scenes,18)
+      end
     end
   end
   for each $child in $R.children
