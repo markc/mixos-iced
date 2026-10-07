@@ -96,6 +96,9 @@ before installing it. Work tickets fence superseded asynchronous completion.
 Conflicting payloads at the same incarnation/revision trigger a fresh read;
 if the bound authority confirms the contradiction, report it and preserve the
 installed values rather than enter an endless readback loop.
+Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
+asynchronous completions; a new delivery can advance the state while an older
+bound read is pending, and that read cannot roll the revision back.
 
 ## Topics and storage
 
@@ -130,6 +133,8 @@ Post-rename sync errors report outcome_unknown and fence further mutations until
 recovery; they cannot be reported as a known uncommitted failure. Corrupt input
 is preserved before a valid backup is restored with a new incarnation. Newer
 schemas or mismatched target bindings are not overwritten by a fallback.
+Corruption evidence is hard-linked and synced before the atomic replacement;
+recovery never removes the primary before its replacement is ready.
 A missing established primary fails visibly even with a backup; automatic
 recovery applies only to a present corrupt primary.
 

@@ -42,6 +42,12 @@ impl Reducer {
     pub fn ticket(&self) -> u64 {
         self.ticket
     }
+    /// A freshly received, already validated delivery uses the current ticket.
+    /// Asynchronous decode/resolve completions must instead call install with
+    /// the ticket captured when that work began.
+    pub fn observe(&mut self, incoming: Snapshot) -> Decision {
+        self.install(incoming, false, self.ticket)
+    }
     pub fn examine(&self, incoming: &Snapshot, confirmed: bool) -> Decision {
         if incoming.binding != self.binding {
             return Decision::WrongTarget;
@@ -124,6 +130,16 @@ mod tests {
         let mut future = snapshot(2, "a");
         future.schema = SCHEMA + 1;
         assert_eq!(state.install(future, true, 0), Decision::Unsupported);
+    }
+    #[test]
+    fn new_delivery_during_pending_read_wins_and_old_async_work_stays_fenced() {
+        let mut state = Reducer::new(snapshot(1, "a").binding);
+        state.install(snapshot(4, "a"), true, 0);
+        let ticket = state.invalidate_work();
+        assert_eq!(state.observe(snapshot(6, "a")), Decision::Install);
+        assert_eq!(state.install(snapshot(5, "a"), true, ticket), Decision::Stale);
+        assert_eq!(state.install(snapshot(7, "a"), false, 0), Decision::Stale);
+        assert_eq!(state.current().unwrap().revision, Revision(6));
     }
     #[test]
     fn queued_incarnations_and_superseded_completion_cannot_replace_current() {

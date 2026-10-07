@@ -202,7 +202,10 @@ impl Store {
                 // Preserve user/corrupt evidence before replacing anything.
                 store.check_root()?;
                 let corrupt = std::ffi::CString::new(format!("corrupt-{}.conf.mix", uuid::Uuid::now_v7()))?;
-                if unsafe { libc::renameat(store.directory.as_raw_fd(), c"desktop.conf.mix".as_ptr(), store.directory.as_raw_fd(), corrupt.as_ptr()) } != 0 {
+                // Preserve the complete corrupt inode before replacement. A
+                // hard link leaves the primary present across every crash cut;
+                // rename-away would create an unrecoverable missing-store gap.
+                if unsafe { libc::linkat(store.directory.as_raw_fd(), c"desktop.conf.mix".as_ptr(), store.directory.as_raw_fd(), corrupt.as_ptr(), 0) } != 0 {
                     return Err(std::io::Error::last_os_error().into());
                 }
                 store.directory.sync_all()?;
