@@ -81,7 +81,10 @@ impl Handle {
             .unwrap_or_else(|e| e.into_inner())
             .client
             .as_ref()
-            .map_or_else(|| "term".to_owned(), |client| client.service_name().to_owned())
+            .map_or_else(
+                || "term".to_owned(),
+                |client| client.service_name().to_owned(),
+            )
     }
 
     /// The live connection provenance for the chrome label.
@@ -143,14 +146,7 @@ pub struct Started {
 }
 
 type Ready = std::sync::mpsc::Sender<
-    Result<
-        (
-            Arc<RwLock<Shared>>,
-            Ui<()>,
-            appearance::settings::Prepared,
-        ),
-        String,
-    >,
+    Result<(Arc<RwLock<Shared>>, Ui<()>, appearance::settings::Prepared), String>,
 >;
 
 pub fn start(
@@ -400,8 +396,7 @@ async fn worker(
                                 .start(),
                         );
                         {
-                            let mut shared =
-                                shared.write().unwrap_or_else(|e| e.into_inner());
+                            let mut shared = shared.write().unwrap_or_else(|e| e.into_inner());
                             shared.client = Some(Arc::clone(&client));
                             shared.state = ConnState::Connecting;
                             shared.refused = None;
@@ -413,8 +408,10 @@ async fn worker(
                         lifecycle = None; // re-observe the fresh client
                         continue;
                     }
-                    eprintln!("{service} Bus unavailable: {}", reason.map_or_else(
-                        || "connection stopped".into(), |r| r.message));
+                    eprintln!(
+                        "{service} Bus unavailable: {}",
+                        reason.map_or_else(|| "connection stopped".into(), |r| r.message)
+                    );
                 }
                 ConnState::Connecting | ConnState::Disconnected | ConnState::ShuttingDown => {}
             }
@@ -569,7 +566,10 @@ async fn worker(
     if let Err(error) = lane.flush_cache(deadline).await {
         faults.push(format!("settings cache: {}: {}", error.code, error.message));
     }
-    if tokio::time::timeout_at(deadline_at, client.close()).await.is_err() {
+    if tokio::time::timeout_at(deadline_at, client.close())
+        .await
+        .is_err()
+    {
         faults.push("Bus close timed out".into());
     }
     eprintln!("TERM_SHUTDOWN {}", json!({"faults": faults}));
@@ -737,13 +737,19 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<BoundedIncomingEvent>(1);
         tx.try_send(command()).unwrap(); // the queue is full
         let mut pending = Some(BoundedIncomingEvent::Overflow { dropped: 2 });
-        assert!(matches!(deliver_retained(&tx, &mut pending), Retained::Full));
+        assert!(matches!(
+            deliver_retained(&tx, &mut pending),
+            Retained::Full
+        ));
         assert!(matches!(
             pending,
             Some(BoundedIncomingEvent::Overflow { dropped: 2 })
         ));
         rx.try_recv().unwrap(); // capacity frees
-        assert!(matches!(deliver_retained(&tx, &mut pending), Retained::Delivered));
+        assert!(matches!(
+            deliver_retained(&tx, &mut pending),
+            Retained::Delivered
+        ));
         assert!(pending.is_none());
         assert!(matches!(
             rx.try_recv().unwrap(),
@@ -753,7 +759,10 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<BoundedIncomingEvent>(1);
         drop(rx);
         let mut pending = Some(BoundedIncomingEvent::Overflow { dropped: 1 });
-        assert!(matches!(deliver_retained(&tx, &mut pending), Retained::Closed));
+        assert!(matches!(
+            deliver_retained(&tx, &mut pending),
+            Retained::Closed
+        ));
         assert!(pending.is_none());
     }
 }

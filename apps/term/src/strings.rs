@@ -7,11 +7,7 @@ thread_local! {
 }
 
 pub fn label(key: &str) -> String {
-    CATALOGUE.with(|catalogue| {
-        catalogue
-            .label(key)
-            .expect("Term catalogue message")
-    })
+    CATALOGUE.with(|catalogue| catalogue.label(key).expect("Term catalogue message"))
 }
 
 pub fn format(key: &str, values: &[(&str, String)]) -> String {

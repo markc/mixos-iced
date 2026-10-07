@@ -37,6 +37,7 @@ mod cpu_grid;
 #[cfg(not(any(feature = "wgpu", feature = "tiny-skia")))]
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
+use ::bus::native_client::ConnState;
 use application::iced::widget::{Row, column, container, row, space};
 use application::iced::{Element, Length, Size, Subscription, Task};
 use application::presentation::native::Ui;
@@ -59,7 +60,6 @@ use term_core::{
     version::version_request,
     wake::WakeFd,
 };
-use ::bus::native_client::ConnState;
 
 const DISPLAY_NAME: &str = "MixOS Term";
 /// The Bus name and verb namespace this frontend owns (D1). The Bevy frontend
@@ -774,46 +774,47 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     let last = std::cell::Cell::new(state.pointer.get().and_then(&hovered));
     let mouse = clipboard::MouseEvents::new(state);
-    let mut content = toolkit::keys::keys(column![tab_strip(state, scale, ui), panes], move |event| {
-        state
-            .right_shift
-            .set(input::right_shift_after(event, state.right_shift.get()));
-        let message = on_key_context(event, false, state.right_shift.get());
-        // Ordinary typing must not acquire an extra terminal/grid lock just
-        // to decide who owns a scrollback chord.
-        if matches!(message, Some(Message::Action(Action::Scroll(_)))) {
-            let tabs = state.tabs.lock().expect("tabs");
-            if !tabs.is_empty()
-                && tabs
-                    .active_terminal()
-                    .lock()
-                    .expect("terminal")
-                    .alternate_screen()
-            {
-                return on_key_context(event, true, state.right_shift.get());
-            }
-        }
-        message
-    })
-    .on_pointer(move |position| {
-        let cell = hovered(position);
-        pointer_message(&state.pointer, &last, cell, position)
-    })
-    .on_mouse(move |event, position| mouse.message(state, event, position))
-    .input_method(
-        match ime_cursor {
-            Some(cursor) if state.keyboard_focus && state.ime.enabled() => {
-                application::iced::advanced::input_method::InputMethod::Enabled {
-                    // Runtime composition overlay; only Commit goes to the PTY.
-                    cursor,
-                    purpose: application::iced::advanced::input_method::Purpose::Terminal,
-                    preedit: state.ime_preedit.clone(),
+    let mut content =
+        toolkit::keys::keys(column![tab_strip(state, scale, ui), panes], move |event| {
+            state
+                .right_shift
+                .set(input::right_shift_after(event, state.right_shift.get()));
+            let message = on_key_context(event, false, state.right_shift.get());
+            // Ordinary typing must not acquire an extra terminal/grid lock just
+            // to decide who owns a scrollback chord.
+            if matches!(message, Some(Message::Action(Action::Scroll(_)))) {
+                let tabs = state.tabs.lock().expect("tabs");
+                if !tabs.is_empty()
+                    && tabs
+                        .active_terminal()
+                        .lock()
+                        .expect("terminal")
+                        .alternate_screen()
+                {
+                    return on_key_context(event, true, state.right_shift.get());
                 }
             }
-            _ => application::iced::advanced::input_method::InputMethod::Disabled,
-        },
-        |event| Message::Ime(event.clone()),
-    );
+            message
+        })
+        .on_pointer(move |position| {
+            let cell = hovered(position);
+            pointer_message(&state.pointer, &last, cell, position)
+        })
+        .on_mouse(move |event, position| mouse.message(state, event, position))
+        .input_method(
+            match ime_cursor {
+                Some(cursor) if state.keyboard_focus && state.ime.enabled() => {
+                    application::iced::advanced::input_method::InputMethod::Enabled {
+                        // Runtime composition overlay; only Commit goes to the PTY.
+                        cursor,
+                        purpose: application::iced::advanced::input_method::Purpose::Terminal,
+                        preedit: state.ime_preedit.clone(),
+                    }
+                }
+                _ => application::iced::advanced::input_method::InputMethod::Disabled,
+            },
+            |event| Message::Ime(event.clone()),
+        );
     // Clean chrome redraws must not publish Paint: iced would rebuild the UI
     // and dispatch RedrawRequested a second time for no terminal change.
     if state.needs_paint() {
@@ -1942,22 +1943,38 @@ mod tests {
             *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
         }
         let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
-        let generation =
-            |state: &State, id| state.painter.existing(id).unwrap().lock().unwrap().generation();
+        let generation = |state: &State, id| {
+            state
+                .painter
+                .existing(id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .generation()
+        };
         let grids = state.grids.clone();
         let force_paint = state.force_paint;
-        let before = [generation(&state, visible[0]), generation(&state, visible[1])];
+        let before = [
+            generation(&state, visible[0]),
+            generation(&state, visible[1]),
+        ];
         let mut tokens = state.tokens;
         tokens.palette.surface = tokens.palette.text;
         state.apply_chrome(state.ui, tokens);
-        assert_eq!(state.grids, grids, "a colour change must not reflow the PTYs");
+        assert_eq!(
+            state.grids, grids,
+            "a colour change must not reflow the PTYs"
+        );
         assert_eq!(
             state.force_paint, force_paint,
             "a colour change must not replace the raster"
         );
         let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
         assert_eq!(
-            [generation(&state, visible[0]), generation(&state, visible[1])],
+            [
+                generation(&state, visible[0]),
+                generation(&state, visible[1])
+            ],
             before,
             "a colour change must not repaint any pane"
         );
@@ -2011,7 +2028,10 @@ mod tests {
         }
         let settled = state.grids.clone();
         state.apply_chrome(ui, state.tokens);
-        assert_eq!(state.grids, settled, "an unchanged extent must not relayout");
+        assert_eq!(
+            state.grids, settled,
+            "an unchanged extent must not relayout"
+        );
         let removed = state.tabs.lock().unwrap().shutdown();
         state.cleanup.submit(removed);
         drop(state);
@@ -2496,7 +2516,10 @@ mod tests {
         // No PTY sender: a failed report must still NEVER fall back to paste.
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"\x1b[?9hword");
         state.grids.insert(id, (8, 3));
-        let position = Point::new(4.0, layout::strip_height(state.painter.scale(), state.ui) + 4.0);
+        let position = Point::new(
+            4.0,
+            layout::strip_height(state.painter.scale(), state.ui) + 4.0,
+        );
         let now = Instant::now();
         assert_eq!(
             state

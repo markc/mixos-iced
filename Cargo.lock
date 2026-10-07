@@ -7330,7 +7330,7 @@ dependencies = [
 
 [[package]]
 name = "term"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "appearance",
  "application",
@@ -7338,9 +7338,9 @@ dependencies = [
  "bus",
  "bytes",
  "config",
- "design",
  "libc",
  "serde_json",
+ "settings",
  "term-core",
  "term-test-broker",
  "tiny-skia 0.11.4",
