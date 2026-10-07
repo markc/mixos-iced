@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Run against an isolated real broker on a native-session capable kernel.
+use application::iced::futures::StreamExt;
 use bus::native_client::NodedClient;
 use busviewer::bus::{self as viewer, Delivery};
-use application::iced::futures::StreamExt;
-use std::{sync::{Arc,atomic::{AtomicUsize,Ordering}},time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 #[test]
 #[ignore = "requires BUSVIEWER_TEST_URL and an isolated native broker"]
 fn native_discovery_calls_topics_and_singleton_registration() {
-    let url=std::env::var("BUSVIEWER_TEST_URL").expect("isolated broker URL");
-    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let url = std::env::var("BUSVIEWER_TEST_URL").expect("isolated broker URL");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         let count=Arc::new(AtomicUsize::new(0));
         let mut clients=Vec::new();

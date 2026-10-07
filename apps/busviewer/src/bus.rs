@@ -42,7 +42,8 @@ impl Handle {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Effect::Call(service.into(), verb.into(), body, tx))
-            .await.map_err(|_| "Bus stopped")?;
+            .await
+            .map_err(|_| "Bus stopped")?;
         rx.await.map_err(|_| "Bus request abandoned")?
     }
     pub async fn call(&self, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
@@ -134,10 +135,7 @@ async fn worker(
         return;
     };
     let mut connection = client.subscribe_state();
-    for topic in [
-        "theme.changed".to_owned(),
-        "noded.props.changed".to_owned(),
-    ] {
+    for topic in ["theme.changed".to_owned(), "noded.props.changed".to_owned()] {
         if !matches!(
             tokio::time::timeout(Duration::from_secs(2), client.subscribe_topic(&topic)).await,
             Ok(Ok(()))
@@ -253,16 +251,19 @@ pub fn forward(url: &str, service: &str) -> Result<(), String> {
 
 async fn json_call(handle: &Handle, service: &str, verb: &str) -> Result<Value, String> {
     let reply = handle.raw(service, verb, String::new()).await?;
-    if reply.rc >= 10 { return Err(format!("rc = {}: {}",reply.rc,reply.body)); }
+    if reply.rc >= 10 {
+        return Err(format!("rc = {}: {}", reply.rc, reply.body));
+    }
     serde_json::from_str(&reply.body).map_err(|e| e.to_string())
 }
 async fn describe(handle: &Handle, service: &str) -> Result<Vec<crate::model::Verb>, String> {
-    let help = match json_call(handle,service,"HELP").await {
-        Ok(value) => crate::model::parse_verbs(&value), Err(error) => Err(error),
+    let help = match json_call(handle, service, "HELP").await {
+        Ok(value) => crate::model::parse_verbs(&value),
+        Err(error) => Err(error),
     };
     match help {
         Ok(verbs) => Ok(verbs),
-        Err(help_error) => match json_call(handle,service,"app.describe").await {
+        Err(help_error) => match json_call(handle, service, "app.describe").await {
             Ok(value) => crate::model::parse_verbs(&value),
             Err(error) => Err(format!("HELP: {help_error}\napp.describe: {error}")),
         },
@@ -272,18 +273,30 @@ async fn describe(handle: &Handle, service: &str) -> Result<Vec<crate::model::Ve
 pub async fn discover(handle: Handle) -> crate::model::Snapshot {
     use application::iced::futures::{StreamExt, stream};
     let mut snapshot = crate::model::Snapshot::default();
-    let names = match json_call(&handle,"noded","noded.list").await.and_then(|v|crate::model::services(&v)) {
+    let names = match json_call(&handle, "noded", "noded.list")
+        .await
+        .and_then(|v| crate::model::services(&v))
+    {
         Ok(names) => names,
-        Err(error) => { snapshot.error = Some(error); return snapshot; }
+        Err(error) => {
+            snapshot.error = Some(error);
+            return snapshot;
+        }
     };
-    match json_call(&handle,"noded","noded.peers").await {
+    match json_call(&handle, "noded", "noded.peers").await {
         Ok(value) => snapshot.peers = crate::model::peers(&value),
         Err(error) => snapshot.peer_error = Some(error),
     }
     let results = stream::iter(names.into_iter().map(|name| {
         let handle = handle.clone();
-        async move { let result = describe(&handle,&name).await; (name,result) }
-    })).buffer_unordered(8).collect::<Vec<_>>().await;
+        async move {
+            let result = describe(&handle, &name).await;
+            (name, result)
+        }
+    }))
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await;
     snapshot.services.extend(results);
     snapshot
 }

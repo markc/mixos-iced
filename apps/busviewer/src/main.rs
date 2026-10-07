@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use busviewer::{app::Settings, bus};
-fn parse(args: impl Iterator<Item=String>) -> Result<Settings,String> {
+fn parse(args: impl Iterator<Item = String>) -> Result<Settings, String> {
     let mut settings = Settings::default();
     let mut args = args;
     while let Some(arg) = args.next() {
-        let value = args.next().filter(|v| !v.is_empty()).ok_or_else(|| format!("{arg} needs a value"))?;
+        let value = args
+            .next()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| format!("{arg} needs a value"))?;
         match arg.as_str() {
             "--noded-url" => settings.url = value,
             "--service" => settings.service = value,
@@ -12,8 +15,12 @@ fn parse(args: impl Iterator<Item=String>) -> Result<Settings,String> {
             _ => return Err(format!("unknown option: {arg}")),
         }
     }
-    for name in [&settings.service,&settings.comp] {
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+    for name in [&settings.service, &settings.comp] {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        {
             return Err("invalid service name".into());
         }
     }
@@ -21,27 +28,49 @@ fn parse(args: impl Iterator<Item=String>) -> Result<Settings,String> {
 }
 fn main() {
     buildinfo::exit_on_version!(leading);
-    if matches!(std::env::args().nth(1).as_deref(),Some("--help"|"-h")) {
-        println!("busviewer — native ABP service and verb browser\nUsage: busviewer [--noded-url URL] [--service NAME] [--comp NAME]");
+    if matches!(std::env::args().nth(1).as_deref(), Some("--help" | "-h")) {
+        println!(
+            "busviewer — native ABP service and verb browser\nUsage: busviewer [--noded-url URL] [--service NAME] [--comp NAME]"
+        );
         return;
     }
     let result = parse(std::env::args().skip(1)).and_then(|settings| {
-        if bus::probe(&settings.url,&settings.service) { return bus::forward(&settings.url,&settings.service); }
+        if bus::probe(&settings.url, &settings.service) {
+            return bus::forward(&settings.url, &settings.service);
+        }
         match busviewer::app::run(settings.clone()) {
-            Err(_) if bus::probe(&settings.url,&settings.service) => bus::forward(&settings.url,&settings.service),
+            Err(_) if bus::probe(&settings.url, &settings.service) => {
+                bus::forward(&settings.url, &settings.service)
+            }
             result => result,
         }
     });
-    if let Err(error) = result { eprintln!("busviewer: {error}"); std::process::exit(1); }
+    if let Err(error) = result {
+        eprintln!("busviewer: {error}");
+        std::process::exit(1);
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn rejects_unknown_missing_and_unsafe_options() {
-        for args in [vec!["--noded-url"],vec!["--bogus","x"],vec!["--service","bad name"]] {
+        for args in [
+            vec!["--noded-url"],
+            vec!["--bogus", "x"],
+            vec!["--service", "bad name"],
+        ] {
             assert!(parse(args.into_iter().map(str::to_owned)).is_err());
         }
-        assert_eq!(parse(["--service","busviewer.test"].into_iter().map(str::to_owned)).unwrap().service,"busviewer.test");
+        assert_eq!(
+            parse(
+                ["--service", "busviewer.test"]
+                    .into_iter()
+                    .map(str::to_owned)
+            )
+            .unwrap()
+            .service,
+            "busviewer.test"
+        );
     }
 }
