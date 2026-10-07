@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.11
+
+- Add the opt-in `describe` feature: the shared `app.describe` discovery
+  contract (`application.describe.v1`, registry version 0.1.0), owned by this
+  crate. Request checks, atomic envelope completion, v1 validation and
+  permissive legacy reading use serde/serde_json only; no Bus, settings or
+  renderer dependency is added. See `docs/spec/application/describe-v1.md`.
+
 ## 0.1.10
 
 Paired cache evidence explicitly reports an unconfigured persistent root,

@@ -1,0 +1,11 @@
+{
+  "app_id": null,
+  "describe_contract": "application.describe.v1",
+  "pid": 12345,
+  "schema": "dopus.v1",
+  "service": "dopus",
+  "settings": null,
+  "settings_cache": null,
+  "verbs": ["dopus.describe", "dopus.info", "app.describe"],
+  "version": "0.4.4"
+}

@@ -1,0 +1,46 @@
+{
+  "app_id": "dev.mixos.scene-editor",
+  "schema": "scene-editor.v1",
+  "settings": {
+    "applied": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "4",
+      "source_digest": "digest-of-pinned-source"
+    },
+    "binding": {"instance": "example", "profile": "default"},
+    "confirmed": true,
+    "context": "app:scene-editor",
+    "current": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "4",
+      "source_digest": "digest-of-pinned-source"
+    },
+    "fault": null,
+    "fallback_fault": null,
+    "generation": 3,
+    "kind": "current"
+  },
+  "settings_cache": {
+    "configuration": null,
+    "fault": null,
+    "fallback_diagnostics": [],
+    "persisted": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "4",
+      "source_digest": "digest-of-pinned-source"
+    }
+  },
+  "transport": "native",
+  "verbs": [
+    "scene-editor.ping",
+    "scene-editor.info",
+    "scene-editor.show",
+    "scene-editor.action",
+    "scene-editor.quit"
+  ],
+  "version": "0.1.1",
+  "views": ["gallery", "installed", "arrange"]
+}

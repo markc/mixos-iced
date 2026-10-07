@@ -1,0 +1,62 @@
+{
+  "app": "ced",
+  "contract": "ctk-app-control.v0",
+  "controls": [],
+  "description": "The MixOS Editor: an iced editor over the edit Bus service",
+  "engine": "iced",
+  "settings": {
+    "applied": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "6",
+      "source_digest": "digest-of-pinned-source"
+    },
+    "binding": {"instance": "example", "profile": "default"},
+    "confirmed": true,
+    "context": "app:ced",
+    "current": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "6",
+      "source_digest": "digest-of-pinned-source"
+    },
+    "fault": null,
+    "fallback_fault": null,
+    "generation": 3,
+    "kind": "current"
+  },
+  "settings_cache": {
+    "configuration": null,
+    "fault": null,
+    "fallback_diagnostics": [],
+    "persisted": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "6",
+      "source_digest": "digest-of-pinned-source"
+    }
+  },
+  "title": "MixOS Editor",
+  "verbs": [
+    "ced.ping",
+    "ced.info",
+    "ced.open",
+    "ced.new",
+    "ced.tabs",
+    "ced.focus",
+    "ced.state",
+    "ced.type",
+    "ced.select",
+    "ced.action",
+    "ced.actions",
+    "ced.wait",
+    "ced.layout",
+    "ced.stats",
+    "ced.diagnostics",
+    "ced.problems",
+    "app.describe",
+    "app.quit"
+  ],
+  "version": "0.1.8",
+  "view": ""
+}

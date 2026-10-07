@@ -1,0 +1,229 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- describe_test.mix — contract fixture gate for app.describe.
+--
+-- Consumes docs/spec/application/describe-v1.spec.mix and the fixture files it
+-- names, and cross-checks the single registry row in
+-- docs/spec/bus/verbs.conf.mix. Strict data and pure shape checks only: no
+-- binaries, no cargo, no network. The Rust validator
+-- (libs/application/src/describe.rs) owns the encoded-byte bounds; this gate
+-- owns manifest/fixture consistency and the v1/legacy shape rules in Mix.
+
+fn v1_problems($value, $contract)
+  $problems = []
+  if type($value) != "map" then
+    push($problems, "root is not a map")
+    return $problems
+  end
+  if not has_key($value, "describe_contract") or $value.describe_contract != $contract then
+    push($problems, "describe_contract is not " .. $contract)
+  end
+  for each $key in ["version", "service"]
+    if not has_key($value, $key) or type($value[$key]) != "string" or trim($value[$key]) == "" then
+      push($problems, $key .. " must be a nonblank string")
+    end
+  end
+  if not has_key($value, "pid") or type($value.pid) != "number" or floor($value.pid) != $value.pid or $value.pid <= 0 then
+    push($problems, "pid must be a positive integer")
+  end
+  if not has_key($value, "app_id") then
+    push($problems, "app_id is required")
+  elif $value.app_id != nil and not (type($value.app_id) == "string" and trim($value.app_id) != "") then
+    push($problems, "app_id must be a nonblank string or null")
+  end
+  if not has_key($value, "verbs") or type($value.verbs) != "list" then
+    push($problems, "verbs must be a list")
+  else
+    $names = []
+    $has_describe = false
+    for each $entry in $value.verbs
+      $name = nil
+      if type($entry) == "string" and trim($entry) != "" then
+        $name = $entry
+      elif type($entry) == "map" and has_key($entry, "name") and type($entry.name) == "string" and trim($entry.name) != "" then
+        $name = $entry.name
+        if has_key($entry, "read_only") and type($entry.read_only) != "bool" and $entry.read_only != nil then
+          push($problems, "read_only for " .. $name .. " must be boolean or null")
+        end
+        if has_key($entry, "description") and type($entry.description) != "string" then
+          push($problems, "description for " .. $name .. " must be a string")
+        end
+        if $name == "app.describe" and $entry.read_only != true then
+          push($problems, "app.describe descriptor must mark read_only true")
+        end
+      else
+        push($problems, "verb must be a nonempty name string or a descriptor object")
+      end
+      if $name != nil then
+        if contains($names, $name) then
+          push($problems, "duplicate verb " .. $name)
+        end
+        push($names, $name)
+        if $name == "app.describe" then $has_describe = true end
+      end
+    end
+    if not $has_describe then push($problems, "verbs must include app.describe") end
+  end
+  for each $key in ["settings", "settings_cache"]
+    if has_key($value, $key) and type($value[$key]) != "map" and $value[$key] != nil then
+      push($problems, $key .. " must be a map or null")
+    end
+  end
+  return $problems
+end
+
+fn legacy_problems($value)
+  $problems = []
+  if type($value) != "map" then
+    push($problems, "root is not a map")
+    return $problems
+  end
+  if has_key($value, "describe_contract") then
+    push($problems, "a legacy fixture must not carry describe_contract; declare it v1")
+  end
+  if not (has_key($value, "contract") or has_key($value, "schema") or has_key($value, "service")) then
+    push($problems, "legacy object has no contract, schema or service marker")
+  end
+  if has_key($value, "verbs") then
+    if type($value.verbs) != "list" then
+      push($problems, "verbs must be a list")
+    else
+      for each $entry in $value.verbs
+        if type($entry) == "string" then
+          if trim($entry) == "" then push($problems, "empty verb name") end
+        elif type($entry) == "map" then
+          if not has_key($entry, "name") or type($entry.name) != "string" or trim($entry.name) == "" then
+            push($problems, "descriptor needs a nonempty string name")
+          end
+        else
+          push($problems, "verb must be a name string or a descriptor object")
+        end
+      end
+    end
+  end
+  return $problems
+end
+
+$root = dirname(dirname(dirname(realpath($0))))
+$spec = $root .. "/docs/spec/application/describe-v1.spec.mix"
+$dir = dirname($spec) .. "/fixtures"
+
+$manifest = nil
+try
+  $manifest = validate(load_data($spec), {
+    status:{type:"string"},
+    version:{type:"string"},
+    schema:{type:"number"},
+    contract:{type:"string"},
+    verb:{type:"string"},
+    limits:{type:"map"},
+    requests:{type:"list", items:{type:"map"}},
+    fixtures:{type:"list", items:{type:"map"}}
+  })
+catch $msg
+  raise("SPEC_MANIFEST", "invalid " .. $spec .. ": " .. $msg)
+end
+if $manifest.contract != "application.describe.v1" or $manifest.verb != "app.describe" then
+  raise("SPEC_MANIFEST", "manifest names the wrong contract or verb")
+end
+if $manifest.status != "accepted" then
+  raise("SPEC_MANIFEST", "spec status must be accepted once implementation and checks land")
+end
+
+-- Limits must agree with the Rust constants in libs/application/src/describe.rs.
+$expected_limits = {request_bytes:4096, response_bytes:262144, max_verbs:512, verb_name_bytes:128, identity_bytes:256, descriptor_bytes:16384}
+for each $key in keys($expected_limits)
+  if not has_key($manifest.limits, $key) or $manifest.limits[$key] != $expected_limits[$key] then
+    raise("LIMITS", "manifest limit " .. $key .. " must be " .. to_string($expected_limits[$key]))
+  end
+end
+
+-- One registry row, owned by application, at the manifest's version.
+$registry = load_data($root .. "/docs/spec/bus/verbs.conf.mix")
+$rows = filter($registry.verbs, fn($row) = $row.name == "app.describe")
+if len($rows) != 1 then
+  raise("REGISTRY", "exactly one app.describe registry row required, found " .. to_string(len($rows)))
+end
+$row = $rows[0]
+if $row.owner != "application" or $row.version != $manifest.version or $row.status != "accepted" then
+  raise("REGISTRY", "app.describe row must be owned by application, version " .. $manifest.version .. ", accepted")
+end
+
+-- Request bodies: bounded, and each declared expectation matches the shape.
+for each $request in $manifest.requests
+  $body = $request.body
+  $problems = []
+  if len($body) > $manifest.limits.request_bytes then
+    push($problems, "request body exceeds request_bytes")
+  end
+  $accepted_shape = trim($body) == "" or $body == "{}"
+  if $request.expected == "accepted" and not $accepted_shape then
+    push($problems, "accepted request must be {} or blank")
+  end
+  if $request.expected == "refused" then
+    $parses = false
+    $parsed = nil
+    try
+      $parsed = json_parse($body)
+      $parses = true
+    catch $msg
+      $parses = false
+    end
+    if $parses and $accepted_shape then
+      push($problems, "refused request parses as the accepted form")
+    end
+    if $parses and type($parsed) == "map" and len(keys($parsed)) == 0 then
+      push($problems, "refused request parses as an empty object")
+    end
+  end
+  if len($problems) > 0 then
+    raise("REQUEST_FIXTURE", "request " .. json_encode($body) .. ": " .. join($problems, "; "))
+  end
+end
+
+-- Fixture files exist, parse, and match their declared mode and expectation.
+$checked = 0
+for each $fixture in $manifest.fixtures
+  for each $key in ["file", "producer", "verb", "mode", "origin", "expected"]
+    if not has_key($fixture, $key) then
+      raise("FIXTURE_MANIFEST", "fixture row is missing " .. $key)
+    end
+  end
+  if not contains(["legacy", "v1"], $fixture.mode) then
+    raise("FIXTURE_MANIFEST", $fixture.file .. " has unknown mode " .. $fixture.mode)
+  end
+  if not contains(["legacy_valid", "v1_valid", "refused"], $fixture.expected) then
+    raise("FIXTURE_MANIFEST", $fixture.file .. " has unknown expectation " .. $fixture.expected)
+  end
+  $path = $dir .. "/" .. $fixture.file
+  if not is_file($path) then
+    raise("FIXTURE_MISSING", "fixture file not found: " .. $fixture.file)
+  end
+  $value = nil
+  try
+    $value = json_parse(read_file($path))
+  catch $msg
+    raise("FIXTURE_JSON", "fixture is not valid JSON: " .. $fixture.file .. ": " .. $msg)
+  end
+  if $fixture.mode == "v1" then
+    $problems = v1_problems($value, $manifest.contract)
+    if $fixture.expected == "v1_valid" and len($problems) > 0 then
+      raise("FIXTURE_V1", $fixture.file .. " expected v1_valid but: " .. join($problems, "; "))
+    end
+    if $fixture.expected == "refused" and len($problems) == 0 then
+      raise("FIXTURE_V1", $fixture.file .. " expected refused but passes the v1 shape checks")
+    end
+  end
+  if $fixture.mode == "legacy" then
+    $problems = legacy_problems($value)
+    if $fixture.expected == "legacy_valid" and len($problems) > 0 then
+      raise("FIXTURE_LEGACY", $fixture.file .. " expected legacy_valid but: " .. join($problems, "; "))
+    end
+    if $fixture.expected == "refused" and len($problems) == 0 then
+      raise("FIXTURE_LEGACY", $fixture.file .. " expected refused but passes the legacy shape checks")
+    end
+  end
+  $checked = $checked + 1
+end
+
+print("app.describe fixtures: " .. to_string($checked) .. " fixtures and " .. to_string(len($manifest.requests)) .. " request bodies consistent with describe-v1.spec.mix")

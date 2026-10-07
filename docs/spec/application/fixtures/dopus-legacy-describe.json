@@ -1,0 +1,21 @@
+{
+  "contract": "ctk-app-control.v0",
+  "app": "dopus",
+  "title": "MixOS DOpus",
+  "view": "dopus",
+  "engine": "iced",
+  "version": "0.4.4",
+  "description": "the MixOS twin-pane file manager (P4: plain Places and Properties panels; file operations via keyboard and dialogs; file.* stays Bus-forbidden)",
+  "controls": [],
+  "verbs": [
+    "dopus.ping",
+    "dopus.describe",
+    "dopus.info",
+    "dopus.state",
+    "dopus.action",
+    "dopus.actions.list",
+    "dopus.theme.set",
+    "dopus.open",
+    "dopus.quit"
+  ]
+}

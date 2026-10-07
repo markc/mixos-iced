@@ -1,0 +1,30 @@
+{
+  "contract": "ctk-app-control.v0",
+  "app": "ced",
+  "title": "MixOS Editor",
+  "view": "",
+  "engine": "iced",
+  "version": "0.1.8",
+  "description": "The MixOS Editor: an iced editor over the edit Bus service",
+  "controls": [],
+  "verbs": [
+    "ced.ping",
+    "ced.info",
+    "ced.open",
+    "ced.new",
+    "ced.tabs",
+    "ced.focus",
+    "ced.state",
+    "ced.type",
+    "ced.select",
+    "ced.action",
+    "ced.actions",
+    "ced.wait",
+    "ced.layout",
+    "ced.stats",
+    "ced.diagnostics",
+    "ced.problems",
+    "app.describe",
+    "app.quit"
+  ]
+}
