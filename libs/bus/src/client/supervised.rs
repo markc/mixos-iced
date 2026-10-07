@@ -1143,6 +1143,12 @@ fn publish_declaration_rejection(ctx: &SupervisorCtx, error: &SubscriptionDeclar
 }
 
 /// Deliver a terminal failure to a finite connect and stop the supervisor.
+///
+/// `attempts` keeps the pre-change finite loop's counting exactly: an
+/// in-attempt terminal (a fatal registration rejection) reports the 1-based
+/// attempt index (`attempt + 1` for the 0-based `attempt`), and budget
+/// exhaustion always reports [`MAX_INITIAL_ATTEMPTS`] — the loop's post-loop
+/// value. The count is dial/establishment attempts, never subscribe count.
 fn fail_initial(ctx: &mut SupervisorCtx, attempts: u32, source: ClientError) {
     if let Some(result) = ctx.initial_result.take() {
         let _ = result.send(Err(SupervisedError::InitialConnectFailed {
@@ -1224,6 +1230,11 @@ fn attempt_failed(
 /// or deliver the finite budget exhaustion and stop. A deadline is a
 /// [`ClientError::Timeout`], never a subscription refusal — `is_connected`
 /// is deliberately still true on the native client until close.
+///
+/// `attempt` is the 0-based index of the failing attempt; exhaustion means
+/// `attempt + 1 >= MAX_INITIAL_ATTEMPTS`, reported as exactly
+/// [`MAX_INITIAL_ATTEMPTS`] — the pre-change finite loop's own post-loop
+/// value, so legacy callers see the same count.
 fn retry_or_fail(
     ctx: &mut SupervisorCtx,
     attempt: u32,
@@ -1377,10 +1388,10 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
             ) => result,
         };
         match reply {
-            Ok((rc, _, _)) if rc == crate::RC_SUCCESS => {
-                staged.push(topic.clone());
-            }
-            Ok((rc, body, error_header)) if declared => {
+            // An explicit nonzero declared reply is terminal: the wire has no
+            // reliable transient/permanent refusal classifier. A warning rc
+            // is a refusal too — a declared topic needs an exact rc 0.
+            Ok((rc, body, error_header)) if declared && rc != crate::RC_SUCCESS => {
                 let error = SubscriptionDeclarationError::Rejected {
                     topic: topic.clone(),
                     rc,
@@ -1389,8 +1400,14 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
                 owner.abort().await;
                 return declaration_terminal(ctx, error);
             }
+            // Ordinary replay keeps the legacy success interpretation: any
+            // rc < 10 (a warning rc 5 included) is a successful subscription.
+            Ok((rc, _, _)) if rc < crate::RC_ERROR => {
+                staged.push(topic.clone());
+            }
+            // rc >= 10 on an ordinary topic: the legacy refusal contract,
+            // retried on a fresh socket.
             Ok((rc, body, error_header)) => {
-                // Ordinary replay refusal: the legacy retry contract.
                 let error = ClientError::Refused {
                     rc,
                     message: reply_error_message(&body, error_header),
@@ -1430,10 +1447,14 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
 
     // The native lane (retained publications/commands from this attempt)
     // either publishes with this generation or is discarded with the
-    // connection: there is no staging queue.
-    let rx = connection
-        .take_native_incoming()
-        .expect("a fresh connection has its incoming receiver");
+    // connection: there is no staging queue. An absent receiver is an
+    // internal invariant failure: close the attempt through the owner and
+    // retry/fail as a typed Closed rather than leaking the socket behind a
+    // panic.
+    let Some(rx) = connection.take_native_incoming() else {
+        owner.abort().await;
+        return retry_or_fail(ctx, attempt, ClientError::Closed, "publication", None);
+    };
 
     let mut live = tokio::select! {
         biased;
@@ -1732,13 +1753,14 @@ mod tests {
     }
 
     #[test]
-    fn declarations_reject_bad_entries_with_their_index() {
-        for (offset, bad) in ["", "a\rb", "a\nb", "a\0b"].iter().enumerate() {
-            let topics: Vec<String> = ["ok".to_string(), bad.to_string()];
+    fn declarations_reject_bad_entries_with_the_reported_index() {
+        for bad in ["", "a\rb", "a\nb", "a\0b"] {
+            // Every case places the bad topic second: the reported index is 1.
+            let topics = vec!["ok".to_string(), bad.to_string()];
             let err = validate_declarations(&topics).unwrap_err();
             match err {
                 SubscriptionDeclarationError::Invalid { index, message } => {
-                    assert_eq!(index, Some(offset + 1), "entry {bad:?}");
+                    assert_eq!(index, Some(1), "entry {bad:?}");
                     assert!(!message.is_empty());
                 }
                 other => panic!("expected Invalid, got {other:?}"),
@@ -1784,5 +1806,245 @@ mod tests {
             validate_declarations(&dup_heavy),
             Err(SubscriptionDeclarationError::Invalid { index: None, .. })
         ));
+    }
+
+    // ── Establishment cancellation guards ────────────────────────────────
+    //
+    // These drive the real `establish_attempt` against a real local native
+    // WebSocket stub, holding the exact private await the guard protects, so
+    // the cancellation is exercised deterministically rather than raced.
+
+    /// A one-connection native stub: ACK `noded.register` and each
+    /// `topic.subscribe` with rc 0, signal each receipt, and signal the
+    /// socket's close/EOF so the tests observe the owner's teardown.
+    async fn mini_stub(
+        listener: tokio::net::TcpListener,
+        register_seen: oneshot::Sender<()>,
+        subscribe_seen: Option<oneshot::Sender<()>>,
+        eof: oneshot::Sender<()>,
+    ) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::tungstenite::Message;
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(socket).await.unwrap();
+        loop {
+            let text = match websocket.next().await {
+                Some(Ok(Message::Text(text))) => text.to_string(),
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => continue,
+                Some(Err(_)) => break,
+            };
+            let Ok(request) = crate::parse(&text) else {
+                continue;
+            };
+            let command = request.get("command").unwrap_or("").to_string();
+            let mut reply = BusMessage::new()
+                .with_header("type", "response")
+                .with_header("command", &command)
+                .with_header("from", "noded")
+                .with_header("rc", "0");
+            if let Some(id) = request.get("id") {
+                reply = reply.with_header("id", id);
+            }
+            let send_ok = websocket.send(Message::Text(reply.to_wire().into())).await.is_ok();
+            if command == "noded.register" {
+                let _ = register_seen.send(());
+            } else if command == "topic.subscribe" {
+                if let Some(seen) = &subscribe_seen {
+                    let _ = seen.send(());
+                }
+            }
+            if !send_ok {
+                break;
+            }
+        }
+        let _ = eof.send(());
+    }
+
+    /// A supervisor context wired for the guard tests, plus the shutdown
+    /// sender and the outward receiver (held so the producer never closes).
+    fn guard_test_ctx(
+        noded_url: &str,
+        declarations: Vec<String>,
+    ) -> (
+        SupervisorCtx,
+        watch::Sender<bool>,
+        mpsc::UnboundedReceiver<IncomingCommand>,
+    ) {
+        let (state_tx, _) = watch::channel(ConnState::Connecting);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        (
+            SupervisorCtx {
+                inner: Arc::new(RwLock::new(None)),
+                state_tx,
+                state_publish: Arc::new(std::sync::Mutex::new(())),
+                registration_rejection: Arc::new(std::sync::Mutex::new(None)),
+                declaration_error: Arc::new(std::sync::Mutex::new(None)),
+                connection_generation: Arc::new(AtomicU64::new(0)),
+                registry: SubscriptionRegistry::new(),
+                subscription_transaction: Arc::new(TokioMutex::new(())),
+                out_tx: SupervisorOutgoing::Unbounded(out_tx),
+                shutdown_rx,
+                service_name: "guard-test".to_string(),
+                noded_url: noded_url.to_string(),
+                fatal_on_registration_rejection: false,
+                connection_options: ConnectionOptions::default(),
+                declarations,
+                establishment_timeout: Duration::from_secs(60),
+                initial_result: None,
+            },
+            shutdown_tx,
+            out_rx,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transaction_lock_wait_shutdown_closes_the_attempt() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (register_seen_tx, register_seen_rx) = oneshot::channel();
+        let (eof_tx, eof_rx) = oneshot::channel();
+        let stub = tokio::spawn(mini_stub(listener, register_seen_tx, None, eof_tx));
+
+        let (mut ctx, shutdown_tx, _out_rx) =
+            guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
+        let state_rx = ctx.state_tx.subscribe();
+        let inner = ctx.inner.clone();
+        let registry = ctx.registry.clone();
+        let generation = ctx.connection_generation.clone();
+        // Hold the transaction lock: the attempt can never pass the lock
+        // wait, so the shutdown that resolves it is consumed exactly there.
+        let transaction = ctx.subscription_transaction.clone();
+        let held = transaction.lock().await;
+        let handle = tokio::spawn(async move { establish_attempt(&mut ctx, 0).await });
+
+        // Registration was received; with the lock held the attempt cannot
+        // pass the lock wait, so the shutdown that resolves the attempt is
+        // consumed by the lock-wait select itself (or, if the register ACK
+        // has not yet been processed, by the equally guarded dial select —
+        // both abort the attempt).
+        register_seen_rx.await.unwrap();
+        shutdown_tx.send(true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the lock wait must resolve on shutdown, not hang")
+            .expect("attempt task joined");
+        assert!(matches!(outcome, EstablishOutcome::Stop));
+        drop(held);
+
+        // Nothing was published and the owner closed the socket.
+        assert_eq!(*state_rx.borrow(), ConnState::Connecting);
+        assert!(inner.read().await.is_none());
+        assert!(registry.is_empty());
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), eof_rx)
+            .await
+            .expect("the unpublished attempt must close its socket")
+            .unwrap();
+        stub.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publication_barrier_deadline_retries_without_publishing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (register_seen_tx, register_seen_rx) = oneshot::channel();
+        let (subscribe_seen_tx, subscribe_seen_rx) = oneshot::channel();
+        let (eof_tx, eof_rx) = oneshot::channel();
+        let stub = tokio::spawn(mini_stub(
+            listener,
+            register_seen_tx,
+            Some(subscribe_seen_tx),
+            eof_tx,
+        ));
+
+        let (mut ctx, _shutdown_tx, _out_rx) =
+            guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
+        ctx.establishment_timeout = Duration::from_secs(3);
+        let state_rx = ctx.state_tx.subscribe();
+        let inner = ctx.inner.clone();
+        let registry = ctx.registry.clone();
+        let generation = ctx.connection_generation.clone();
+        // Hold the publication barrier: once the subscribe ACKs, the only
+        // await left is the live-write-lock wait (the section between the
+        // ACK and that await is synchronous), so the attempt deadline is
+        // consumed by the publication select itself.
+        let inner_arc = ctx.inner.clone();
+        let write_guard = inner_arc.write().await;
+        let handle = tokio::spawn(async move { establish_attempt(&mut ctx, 0).await });
+
+        register_seen_rx.await.unwrap();
+        subscribe_seen_rx.await.unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("the publication barrier must yield to the attempt deadline")
+            .expect("attempt task joined");
+        assert!(matches!(outcome, EstablishOutcome::Retry));
+        drop(write_guard);
+
+        assert_eq!(*state_rx.borrow(), ConnState::Connecting);
+        assert!(inner.read().await.is_none());
+        assert!(
+            registry.is_empty(),
+            "staged declarations never commit on a blocked publication"
+        );
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), eof_rx)
+            .await
+            .expect("the unpublished attempt must close its socket")
+            .unwrap();
+        stub.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publication_barrier_shutdown_closes_without_publishing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (register_seen_tx, register_seen_rx) = oneshot::channel();
+        let (subscribe_seen_tx, subscribe_seen_rx) = oneshot::channel();
+        let (eof_tx, eof_rx) = oneshot::channel();
+        let stub = tokio::spawn(mini_stub(
+            listener,
+            register_seen_tx,
+            Some(subscribe_seen_tx),
+            eof_tx,
+        ));
+
+        // The default 60s deadline never interferes: only the shutdown
+        // resolves the held publication barrier.
+        let (mut ctx, shutdown_tx, _out_rx) =
+            guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
+        let state_rx = ctx.state_tx.subscribe();
+        let inner = ctx.inner.clone();
+        let registry = ctx.registry.clone();
+        let generation = ctx.connection_generation.clone();
+        let inner_arc = ctx.inner.clone();
+        let write_guard = inner_arc.write().await;
+        let handle = tokio::spawn(async move { establish_attempt(&mut ctx, 0).await });
+
+        register_seen_rx.await.unwrap();
+        subscribe_seen_rx.await.unwrap();
+        // Yield so the ACKed attempt reaches the write-lock wait; the proof
+        // is the held lock plus the bounded join below, not this yield.
+        tokio::task::yield_now().await;
+        shutdown_tx.send(true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the publication barrier must resolve on shutdown, not hang")
+            .expect("attempt task joined");
+        assert!(matches!(outcome, EstablishOutcome::Stop));
+        drop(write_guard);
+
+        assert_eq!(*state_rx.borrow(), ConnState::Connecting);
+        assert!(inner.read().await.is_none());
+        assert!(registry.is_empty());
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), eof_rx)
+            .await
+            .expect("the unpublished attempt must close its socket")
+            .unwrap();
+        stub.await.unwrap();
     }
 }

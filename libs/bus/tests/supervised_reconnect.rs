@@ -2077,6 +2077,92 @@ async fn declared_replay_refusal_is_terminal_but_ordinary_replay_keeps_retrying(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_replay_warning_rc_is_a_success_not_a_refusal() {
+    // Legacy ordinary replay accepted any rc < 10: a warning reply to a
+    // non-declared topic is a successful replay, not a refusal loop. Only
+    // declared topics demand an exact rc 0.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .replay_actions
+        .insert("dyn.warn".to_string(), SubscribeAction::Refuse(5));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect("warn-replay", &url).await.unwrap();
+    client
+        .subscribe_topic("dyn.warn")
+        .await
+        .expect("dynamic subscribe");
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    assert_eq!(client.state(), ConnState::Connected);
+    assert!(client.subscription_declaration_error().is_none());
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["dyn.warn".to_string()],
+        "a warning replay neither drops nor duplicates the recorded topic"
+    );
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "a warning replay must not loop"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readded_declared_name_keeps_its_exact_rc0_declared_classification() {
+    // A declared name that was unsubscribed and later re-added dynamically
+    // retains its declared classification: on the next replay it needs an
+    // exact rc 0, so a warning reply is a terminal typed refusal — ordinary
+    // topics would have accepted rc 5 as success.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .replay_actions
+        .insert("decl.x".to_string(), SubscribeAction::Refuse(5));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("readd", &url)
+        .with_initial_topics(vec!["decl.x".to_string()])
+        .connect()
+        .await
+        .expect("initial establish");
+    client.unsubscribe_topic("decl.x").await.expect("unsubscribe");
+    client
+        .subscribe_topic("decl.x")
+        .await
+        .expect("re-add dynamically");
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.x".to_string()]
+    );
+    let mut states = client.subscribe_state();
+
+    stub.drop_conn1.notify_one();
+    wait_fatal(&mut states, 5).await;
+    let diagnostic = client.subscription_declaration_error().unwrap();
+    assert_eq!(
+        diagnostic,
+        bus::SubscriptionDeclarationError::Rejected {
+            topic: "decl.x".to_string(),
+            rc: 5,
+            message: "stub refused topic".to_string(),
+        },
+        "the re-added declared name keeps its declared classification on replay"
+    );
+    assert!(client.registration_rejection().is_none());
+    assert_eq!(client.connection_generation(), 1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "a classified refusal is terminal, never retried"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_declarations_are_one_request_in_first_seen_order() {
     let stub = Stub::new(false, false);
     let (url, _acceptor) = start(&stub).await;
