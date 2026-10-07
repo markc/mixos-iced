@@ -6658,7 +6658,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "blake3",
  "bus",
@@ -6675,7 +6675,7 @@ dependencies = [
 
 [[package]]
 name = "settingsd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "buildinfo",
