@@ -36,9 +36,13 @@ i18n = ["dep:fluent-bundle"]
 gallery = ["dep:iced", "i18n"]
 gallery-wgpu = ["gallery", "wgpu", "iced/wgpu-bare"]
 gallery-tiny-skia = ["gallery", "tiny-skia", "iced/tiny-skia"]
+# Test-only: mirrors cosmic-text's per-script monospace index feature so the
+# guard suite's path-included sources see the `monospace_fallback` cfg they
+# declare, and forwards it to the cosmic dev-dependency.
+monospace_fallback = ["cosmic-text/monospace_fallback"]
 # Test-only selection of the font registration guard suite
 # (`tests/font_registration.rs`); no production code branch.
-font-registration-guards = []
+font-registration-guards = ["monospace_fallback"]
 
 [dependencies]
 iced_core = { workspace = true, features = ["advanced"] }

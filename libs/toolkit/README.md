@@ -472,7 +472,8 @@ above; `tests/colours.rs` is the colour-literal gate; `tests/snapshots.rs`
 the offscreen gallery (see Examples). The opt-in font registration guard
 suite (`cargo test -p toolkit --features font-registration-guards --test
 font_registration`) owns the registration seam guards against the crate's
-own resolved dependency graph.
+own resolved dependency graph, including the cosmic per-script monospace
+index guards.
 
 ## Licence
 

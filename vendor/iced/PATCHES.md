@@ -122,7 +122,9 @@ The guard tests live in the root-owned toolkit integration target
 (see `vendor/cosmic-text/PATCHES.md`) and ports the wrapper scenarios below
 through the public font system, registration, version and paragraph APIs.
 The exact-delta assertions use the read-only `Version::value()` accessor.
-The private `cfg(test)` duplicates previously carried in this file and in
+The guard feature also forwards the cosmic `monospace_fallback` feature
+through a test-only toolkit alias, so the path-included per-script
+monospace index guards run their full assertions. The private `cfg(test)` duplicates previously carried in this file and in
 `core/src/font.rs` were removed so the patch documentation names one
 executable owner; no upstream unit test was touched. The ported scenarios
 use the packaged Noto Sans fixture for their text (an icon-only face does

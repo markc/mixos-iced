@@ -125,7 +125,11 @@ cargo test --locked --profile release-fast -p toolkit --features font-registrati
 The suite is the 15 registration guards below, the retained
 `variable_font_all_weights_match` legacy guard and the ported iced wrapper
 guards (see `vendor/iced/PATCHES.md`); a run that matches none of these
-names is a failure.
+names is a failure. The guard feature forwards this package's
+`monospace_fallback` feature through a test-only toolkit alias of the same
+name, so the `monospace_fallback` cfg the included sources declare is
+enabled and the two per-script index guards below run their full
+assertions.
 
 | test | fails when |
 |---|---|
