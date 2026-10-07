@@ -1,0 +1,43 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Shared owned-fixture support. All calls use native Mix ABP; no app transport
+-- is substituted. Callers retain child ownership and acceptance assertions.
+fn bus_env($broker,$directory)
+  return {MIXOS_NODED_URL:$broker.url,COSMIX_NODED_URL:$broker.url,
+    MIXOS_NODE_CONFIG:$broker.conf,COSMIX_NODE_CONFIG:$broker.conf,
+    MIXOS_RUN:$directory .. "/run",MIXOS_ETC:$directory .. "/etc",MIXOS_VAR:$directory .. "/var",
+    HOME:$directory .. "/home",MIXOS_BROKER_ACCOUNT:env("MIXOS_BROKER_ACCOUNT")}
+end
+fn call($mix,$broker,$directory,$service,$verb,$body)
+  $script = '$body = ' .. json_encode(json_encode($body)) .. "\nsend " .. json_encode($service) ..
+    " " .. $verb .. ' body=$body timeout=5' .. "\n" .. 'print($rc)' .. "\n" .. 'print(json_encode($result))' .. "\n"
+  $reply = run_argv([$mix,"-c",$script],{timeout:10,env:bus_env($broker,$directory),max_output:2000000})
+  $lines = split(trim($reply.stdout),"\n")
+  if not $reply.ok or $reply.stdout_truncated or len($lines) < 2 then return {rc:-9,result:trim($reply.stdout .. $reply.stderr)} end
+  $value = json_parse(join(slice($lines,1),"\n"))
+  if type($value) == "string" and starts_with($value,"{") then $value=json_parse($value) end
+  return {rc:to_number($lines[0]),result:$value}
+end
+fn rpc($mix,$broker,$directory,$service,$verb,$body)
+  $reply = call($mix,$broker,$directory,$service,$verb,$body)
+  if $reply.rc != 0 then raise("SETTINGS_HOST_RPC",$verb .. ": " .. json_encode($reply)) end
+  return $reply.result
+end
+fn identity($snapshot)
+  return {incarnation:$snapshot.incarnation,revision:$snapshot.revision,
+    design_revision:$snapshot.design_revision,source_digest:$snapshot.source_digest}
+end
+fn stop($child)
+  if not process_alive($child) then return end
+  $sent = kill($child,15)
+  for $attempt = 1 to 40
+    if not process_alive($child) then return end
+    sleep(0.05)
+  end
+  $sent = kill($child,9)
+  for $attempt = 1 to 40
+    if not process_alive($child) then return end
+    sleep(0.05)
+  end
+  raise("TEARDOWN","Owned child did not stop")
+end

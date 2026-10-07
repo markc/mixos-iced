@@ -1,0 +1,253 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Owned native GUI proof: the app broker may be offline while the independent
+-- compositor remains available. Collision activation uses the compositor's
+-- broker directly, preserving the app's existing native show path.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$pixels=require("capture_lib.mix")
+$R={run:nil,a:nil,b:nil,session:nil,children:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+fn check($condition,$message)
+  if not $condition then raise("SCENE_EDITOR_SETTINGS_GATE",$message) end
+end
+fn rpc($broker,$service,$verb,$body)
+  $directory=$R.run.path .. if $broker.node == $R.a.node then "/a" else "/b" end
+  return $h.rpc($mix,$broker,$directory,$service,$verb,$body)
+end
+fn comp($verb,$body)
+  return rpc($R.a,$R.session.service,$verb,$body)
+end
+fn app($verb,$body)
+  return rpc($R.b,"scene-editor-settings-gate",$verb,$body)
+end
+fn wait_service($broker,$service,$verb)
+  $directory=$R.run.path .. if $broker.node == $R.a.node then "/a" else "/b" end
+  $deadline=time()+10
+  while time() < $deadline
+    if $h.call($mix,$broker,$directory,$service,$verb,{}).rc == 0 then return end
+    sleep(0.1)
+  end
+  raise("SERVICE","Service did not register: " .. $service)
+end
+fn authority()
+  $child=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$R.run.path .. "/profile"],
+    {env:$h.bus_env($R.b,$R.run.path .. "/b"),stdout:{file:$R.run.path .. "/settingsd.log"},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$child])
+  wait_service($R.b,"settingsd","settings.describe")
+end
+fn apply($changes,$operation)
+  $snapshot=rpc($R.b,"settingsd","settings.get",{binding:$binding}).snapshot
+  rpc($R.b,"settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:$operation,changes:$changes,reset:[]})
+  return rpc($R.b,"settingsd","settings.get",{binding:$binding}).snapshot
+end
+fn launch($broker,$service,$home,$label,$selection)
+  $directory=$R.run.path .. if $broker.node == $R.a.node then "/a" else "/b" end
+  $log=$R.run.path .. "/scene-editor-" .. $label .. ".log"
+  $extra=merge($h.bus_env($broker,$directory),{MIXOS_APP_HOME:$home,
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1"})
+  $at=time()
+  $child=spawn([$bin .. "/scene-editor","--service",$service,"--comp",$R.session.service,$selection],
+    {env:$n.client_env($R.session,$extra),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$child])
+  return {pid:$child,log:$log,at:$at}
+end
+fn presented($launch,$budget)
+  $row=comp("comp.window.wait",{match:{app_id:"dev.mixos.scene-editor"},until:"presented",timeout_ms:5000}).window
+  $elapsed=(time()-$launch.at)*1000
+  check($row != nil and $row.pid == $launch.pid,"Window did not present for the owned process")
+  check($elapsed <= $budget,"First map exceeded " .. to_string($budget) .. "ms: " .. to_string($elapsed))
+  print("Scene Editor first map " .. to_string($elapsed) .. "ms " .. $launch.log)
+  return {id:$row.id,generation:$row.generation}
+end
+fn current($snapshot,$window,$budget)
+  $deadline=time()+$budget
+  $last=nil
+  while time() < $deadline
+    $reply=$h.call($mix,$R.b,$R.run.path .. "/b","scene-editor-settings-gate","app.describe",{})
+    if $reply.rc == 0 then
+      $last=$reply.result
+      if ($last.settings != nil and $last.settings.kind == "current" and
+        deep_eq($last.settings.applied,$h.identity($snapshot)) and
+        deep_eq($last.settings_cache.persisted,$last.settings.applied)) then
+        check(comp("comp.window.wait",{match:$window,until:"presented",timeout_ms:5000}).window != nil,"Window was replaced")
+        return $last
+      end
+    end
+    sleep(0.1)
+  end
+  raise("CURRENT","Applied/cache identity did not settle: " .. json_encode($last))
+end
+fn exit_clean($launch)
+  $deadline=time()+3
+  while time() < $deadline
+    if not process_alive($launch.pid) then
+      check(contains(read_file($launch.log),"SCENE_EDITOR_SHUTDOWN {\"faults\":[]}"),"Missing clean shutdown receipt: " .. read_file($launch.log))
+      return
+    end
+    sleep(0.05)
+  end
+  raise("SHUTDOWN","Scene Editor exceeded shutdown budget: " .. read_file($launch.log))
+end
+fn fallback($launch,$kind)
+  $deadline=time()+3
+  while time() < $deadline
+    for each $line in split(read_file($launch.log),"\n")
+      if starts_with($line,"SCENE_EDITOR_SETTINGS ") then
+        $event=json_parse(slice($line,len("SCENE_EDITOR_SETTINGS ")))
+        if $event.evidence.kind == $kind then
+          check(not $event.evidence.confirmed,"Fallback fabricated authority confirmation")
+          check($event.elapsed_ms <= 1000,"Checked fallback exceeded bootstrap budget")
+          return $event
+        end
+      end
+    end
+    sleep(0.05)
+  end
+  raise("FALLBACK","Missing " .. $kind .. " activation: " .. read_file($launch.log))
+end
+fn capture($label,$window,$snapshot,$width)
+  comp("comp.window.place",merge($window,{x:0,y:0,width:$width,height:600}))
+  check(comp("comp.window.wait",{match:$window,until:"size",width:$width,height:600,timeout_ms:5000}).window != nil,"New client size did not commit")
+  $path=$R.run.path .. "/" .. $label .. ".ppm"
+  $wanted=if $snapshot != nil then $snapshot.effective["app:scene-editor"].design.pairs.base.rendered_surface else nil end
+  for $attempt=1 to 30
+    print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,
+      env:$n.client_env($R.session,$h.bus_env($R.a,$R.run.path .. "/a"))}))
+    $image=$pixels.ppm($path)
+    $pixel=$pixels.pixel($image,5,400)
+    $matches=true
+    if $wanted != nil then
+      for $channel=0 to 2
+        if abs($pixel[$channel]-$pixels.srgb($wanted[$channel])) > 8 then $matches=false end
+      end
+      check(deep_eq(app("app.describe",{}).settings.applied,$h.identity($snapshot)),"Appearance changed during capture")
+    end
+    if $matches then print("captured Scene Editor " .. $label .. " " .. json_encode($pixel)); return $pixel end
+    sleep(0.05)
+  end
+  raise("FRAME","Client pixels did not match the current authority")
+end
+try
+  $R.run=$n.new_run("/var/tmp/scene-editor-settings")
+  $root=$R.run.path
+  $R.a=$n.private_bus({dir:$root .. "/a",name:"scene-editor-desktop",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"scene-editor-settings",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1})
+  check($n.wait_ready($R.session,30),"Owned compositor failed")
+  $R.b=$n.private_bus({dir:$root .. "/b",name:"scene-editor-settings",noded:$bin .. "/noded",first_port:$R.a.port})
+  check($R.a.port != $R.b.port,"Forced broker collision was not recovered")
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  authority()
+  $light=apply({"appearance.mode":"light"},"scene-gui-light")
+  $home=$root .. "/app-home"
+  $online=launch($R.b,"scene-editor-settings-gate",$home,"online","mixos-scene-editor:installed/panel")
+  $window=presented($online,1000)
+  current($light,$window,10)
+  wait_service($R.b,"scene-editor-settings-gate","scene-editor.info")
+  $light_pixel=capture("online-light",$window,$light,1000)
+  comp("comp.window.focus",$window)
+  comp("comp.input.key",{seat:"human",key:"F1"})
+  $before=app("scene-editor.info",{})
+  check($before.selection.scene == "panel" and $before.ui.dialog == "shortcuts","Selection/dialogue stimulus did not land")
+  $dark=apply({"appearance.mode":"dark","ui.text_scale":1.25,"ui.density":1.25},"scene-gui-dark")
+  current($dark,$window,10)
+  capture("dark-dialogue",$window,nil,1002)
+  $after=app("scene-editor.info",{})
+  check(deep_eq($before.selection,$after.selection) and $before.epoch == $after.epoch and
+    deep_eq($before.snapshot,$after.snapshot) and $after.ui.dialog == "shortcuts","Theme activation changed scene state/dialogue")
+  comp("comp.input.key",{seat:"human",key:"Escape"})
+  $dark_pixel=capture("online-dark",$window,$dark,1004)
+  check(not deep_eq($light_pixel,$dark_pixel),"Light/dark did not repaint")
+  check(app("app.quit",{}).quitting,"Quit reply was lost")
+  exit_clean($online)
+  for each $child in $R.children
+    if process_alive($child) then $h.stop($child) end
+  end
+  $h.stop($R.b.pid)
+  $offline=launch($R.b,"scene-editor-settings-gate",$home,"cached","mixos-scene-editor:installed/panel")
+  $cached_window=presented($offline,1000)
+  fallback($offline,"cached")
+  check(deep_eq(capture("offline-cached",$cached_window,nil,1002),$dark_pixel),"Cached palette did not survive restart")
+  comp("comp.window.focus",$cached_window)
+  comp("comp.input.key",{seat:"human",key:"F1"})
+  $until=time()+65
+  while time() < $until
+    check(process_alive($offline.pid),"Long-outage GUI exited")
+    sleep(min(1,$until-time()))
+  end
+  $broker=spawn([$bin .. "/noded","serve","--listen","127.0.0.1:" .. to_string($R.b.port),"--node","scene-editor-settings","--no-monitor","--no-log"],
+    {env:$h.bus_env($R.b,$root .. "/b"),stdout:{file:$root .. "/b/noded-restarted.log"},stderr:"stdout",detach:true})
+  $R.b.pid=$broker
+  wait_service($R.b,"noded","noded.ping")
+  $owned=rpc($R.b,"noded","noded.info",{})
+  check($owned.node == $R.b.node and $owned.noded.pid == $broker and process_alive($broker),"Restart reached another broker")
+  authority()
+  $restarted=rpc($R.b,"settingsd","settings.get",{binding:$binding}).snapshot
+  current($restarted,$cached_window,45)
+  $recovered=app("scene-editor.info",{})
+  check($recovered.selection.scene == "panel" and $recovered.ui.dialog == "shortcuts","Recovery lost selection/dialogue")
+  capture("recovered-dialogue",$cached_window,nil,1004)
+  comp("comp.input.key",{seat:"human",key:"Escape"})
+  capture("recovered-current",$cached_window,$restarted,1006)
+  check(app("app.quit",{}).quitting,"Recovery quit reply lost")
+  exit_clean($offline)
+  -- A collision's existing compositor control path lives on broker A.
+  $first=launch($R.a,"scene-editor-collision",$root .. "/first-home","first","mixos-scene-editor:gallery")
+  $first_window=presented($first,1000)
+  wait_service($R.a,"scene-editor-collision","scene-editor.info")
+  $second=launch($R.a,"scene-editor-collision",$root .. "/second-home","collision","mixos-scene-editor:installed/forwarded")
+  exit_clean($second)
+  $forwarded=rpc($R.a,"scene-editor-collision","scene-editor.info",{})
+  check($forwarded.pid == $first.pid and $forwarded.selection.scene == "forwarded","Initial collision did not activate the original selection")
+  check(rpc($R.a,"scene-editor-collision","app.quit",{}).quitting,"Collision owner quit reply lost")
+  exit_clean($first)
+  for each $child in $R.children
+    if process_alive($child) then $h.stop($child) end
+  end
+  $h.stop($R.b.pid)
+  for each $case in ["missing","corrupt"]
+    $case_home=if $case == "corrupt" then $home else $root .. "/fresh-home" end
+    if $case == "corrupt" then
+      $files=glob($case_home .. "/cache/settings/*.json")
+      check(len($files) == 1,"Expected one bound cache")
+      write_file($files[0],"{broken cache")
+    end
+    $launch=launch($R.b,"scene-editor-settings-gate",$case_home,$case,"mixos-scene-editor:installed/panel")
+    $window=presented($launch,1000)
+    $event=fallback($launch,"embedded")
+    if $case == "corrupt" then check(len($event.settings_cache.fallback_diagnostics) > 0,"Corrupt cache lacked diagnostics") end
+    capture("offline-" .. $case,$window,nil,1000)
+    comp("comp.window.close",$window)
+    exit_clean($launch)
+  end
+  write_file($root .. "/acceptance.json",json_encode({current:true,cached:true,embedded:true,
+    selection_retained:true,dialogue_retained:true,outage_seconds:65,same_window:true,
+    initial_collision_forwarded:true,shutdown_receipts:true}))
+  print("PASS Scene Editor settings: native frames/cache/fallback, selection/dialogue retained, >60s outage recovery, native collision activation and bounded shutdown")
+  $R.ok=true
+catch $message
+  print("FAIL " .. $message)
+  if $R.run != nil then
+    for each $log in glob($R.run.path .. "/*.log")
+      print(run_argv(["tail","-n","20",$log],{max_output:16000}).stdout)
+    end
+  end
+finally
+  for each $child in $R.children
+    if process_alive($child) then $h.stop($child) end
+  end
+  if $R.session != nil then $n.stop($R.session) end
+  if $R.a != nil then $h.stop($R.a.pid) end
+  if $R.b != nil then $h.stop($R.b.pid) end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end

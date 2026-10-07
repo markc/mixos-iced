@@ -8,6 +8,7 @@ $repo = args()[0]
 $bin = args()[1]
 $mix = env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
 $n = require("nested_host_lib.mix")
+$h = require("settings_host_lib.mix")
 $capture = require("capture_lib.mix")
 for each $name in ["compd","settingsd","noded","editd","ced","testkit-screenshot"]
   if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing " .. $name) end
@@ -18,20 +19,10 @@ fn check($condition,$message)
   if not $condition then raise("CED_SETTINGS_GATE",$message) end
 end
 fn bus_env($broker,$directory)
-  return {MIXOS_NODED_URL:$broker.url,COSMIX_NODED_URL:$broker.url,
-    MIXOS_NODE_CONFIG:$broker.conf,COSMIX_NODE_CONFIG:$broker.conf,
-    MIXOS_RUN:$directory .. "/run",MIXOS_ETC:$directory .. "/etc",MIXOS_VAR:$directory .. "/var",
-    HOME:$directory .. "/home",MIXOS_BROKER_ACCOUNT:env("MIXOS_BROKER_ACCOUNT")}
+  return $h.bus_env($broker,$directory)
 end
 fn call($broker,$directory,$service,$verb,$body)
-  $script = '$body = ' .. json_encode(json_encode($body)) .. "\nsend " .. json_encode($service) ..
-    " " .. $verb .. ' body=$body timeout=5' .. "\n" .. 'print($rc)' .. "\n" .. 'print(json_encode($result))' .. "\n"
-  $reply = run_argv([$mix,"-c",$script],{timeout:10,env:bus_env($broker,$directory),max_output:2000000})
-  $lines = split(trim($reply.stdout),"\n")
-  if not $reply.ok or len($lines) < 2 then return {rc:-9,result:trim($reply.stdout .. $reply.stderr)} end
-  $body = json_parse(join(slice($lines,1),"\n"))
-  if type($body) == "string" and starts_with($body,"{") then $body=json_parse($body) end
-  return {rc:to_number($lines[0]),result:$body}
+  return $h.call($mix,$broker,$directory,$service,$verb,$body)
 end
 fn rpc($broker,$directory,$service,$verb,$body)
   $reply = call($broker,$directory,$service,$verb,$body)
@@ -45,18 +36,7 @@ fn app($verb,$body)
   return rpc($R.b,$R.run.path .. "/b","ced-settings-gate",$verb,$body)
 end
 fn stop_process($child)
-  if not process_alive($child) then return end
-  $sent = kill($child,15)
-  for $attempt = 1 to 40
-    if not process_alive($child) then return end
-    sleep(0.05)
-  end
-  $sent = kill($child,9)
-  for $attempt = 1 to 40
-    if not process_alive($child) then return end
-    sleep(0.05)
-  end
-  raise("TEARDOWN","Owned child did not stop")
+  return $h.stop($child)
 end
 fn await_exit($child,$log)
   for $attempt = 1 to 60
@@ -95,8 +75,7 @@ fn apply($changes,$operation)
   return rpc($R.b,$R.run.path .. "/b","settingsd","settings.get",{binding:$binding}).snapshot
 end
 fn identity($snapshot)
-  return {incarnation:$snapshot.incarnation,revision:$snapshot.revision,
-    design_revision:$snapshot.design_revision,source_digest:$snapshot.source_digest}
+  return $h.identity($snapshot)
 end
 fn await_current($snapshot,$window,$budget)
   $last = nil
