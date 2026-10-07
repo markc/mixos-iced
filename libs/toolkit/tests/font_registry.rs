@@ -136,7 +136,7 @@ fn registry_end_to_end_scenarios() {
     let selection = registration.font("ui").expect("role receipt");
     assert_eq!(selection.font().weight, Weight::Numeric(400));
     let alias = alias_of(selection);
-    assert!(alias.starts_with("mixos-pinned-"));
+    assert!(alias.starts_with("toolkit-pinned-"));
     let evidence = selection.evidence();
     assert_eq!(evidence.declared, vec!["Inter"]);
     assert_eq!(evidence.chosen_group, 0);
@@ -161,7 +161,7 @@ fn registry_end_to_end_scenarios() {
     );
     assert_eq!(registration.collection_id().as_str().len(), 64);
     for shaping in [cosmic_text::Shaping::Basic, cosmic_text::Shaping::Advanced] {
-        let glyphs = shape(alias, "Hello MixOS", shaping);
+        let glyphs = shape(alias, "Hello toolkit", shaping);
         assert!(!glyphs.is_empty());
         for (id, glyph_id, _) in &glyphs {
             assert_ne!(*glyph_id, 0);
