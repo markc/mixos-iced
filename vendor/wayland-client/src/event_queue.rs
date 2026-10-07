@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::os::unix::io::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::{atomic::Ordering, Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, atomic::Ordering};
 use std::task;
 
 use wayland_backend::{
@@ -11,7 +11,7 @@ use wayland_backend::{
     protocol::{Argument, Message},
 };
 
-use crate::{conn::SyncData, Connection, DispatchError, Proxy};
+use crate::{Connection, DispatchError, Proxy, conn::SyncData};
 
 /// A trait for handlers of proxies' events delivered to an [`EventQueue`].
 ///
@@ -195,12 +195,18 @@ type QueueCallback<State> = fn(
     &QueueHandle<State>,
 ) -> Result<(), DispatchError>;
 
-struct QueueEvent<State>(QueueCallback<State>, Message<ObjectId, OwnedFd>, Arc<dyn ObjectData>);
+struct QueueEvent<State>(
+    QueueCallback<State>,
+    Message<ObjectId, OwnedFd>,
+    Arc<dyn ObjectData>,
+);
 
 impl<State> std::fmt::Debug for QueueEvent<State> {
     #[cfg_attr(unstable_coverage, coverage(off))]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QueueEvent").field("msg", &self.1).finish_non_exhaustive()
+        f.debug_struct("QueueEvent")
+            .field("msg", &self.1)
+            .finish_non_exhaustive()
     }
 }
 
@@ -333,7 +339,8 @@ impl<State> EventQueueInner<State> {
         &mut self,
         msg: Message<ObjectId, OwnedFd>,
         odata: Arc<dyn ObjectData>,
-    ) -> Option<QueueEvent<State>> where
+    ) -> Option<QueueEvent<State>>
+    where
         State: Dispatch<I, U> + 'static,
         U: Send + Sync + 'static,
         I: Proxy + 'static,
@@ -370,7 +377,9 @@ impl<State> Drop for EventQueue<State> {
 impl<State> std::fmt::Debug for EventQueue<State> {
     #[cfg_attr(unstable_coverage, coverage(off))]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventQueue").field("handle", &self.handle).finish_non_exhaustive()
+        f.debug_struct("EventQueue")
+            .field("handle", &self.handle)
+            .finish_non_exhaustive()
     }
 }
 
@@ -389,7 +398,10 @@ impl<State> EventQueue<State> {
             freeze_count: 0,
             waker: None,
         }));
-        Self { handle: QueueHandle { inner }, conn }
+        Self {
+            handle: QueueHandle { inner },
+            conn,
+        }
     }
 
     /// Get a [`QueueHandle`] for this event queue
@@ -509,7 +521,9 @@ impl<State> EventQueue<State> {
     fn try_next(inner: &Mutex<EventQueueInner<State>>) -> Option<QueueEvent<State>> {
         let mut lock = inner.lock().unwrap();
         if lock.freeze_count != 0 && !lock.queue.is_empty() {
-            let waker = Arc::new(DispatchWaker { cond: Condvar::new() });
+            let waker = Arc::new(DispatchWaker {
+                cond: Condvar::new(),
+            });
             while lock.freeze_count != 0 {
                 lock.waker = Some(waker.clone().into());
                 lock = waker.cond.wait(lock).unwrap();
@@ -613,13 +627,17 @@ pub struct QueueFreezeGuard<'a, State> {
 impl<State> std::fmt::Debug for QueueHandle<State> {
     #[cfg_attr(unstable_coverage, coverage(off))]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QueueHandle").field("inner", &Arc::as_ptr(&self.inner)).finish()
+        f.debug_struct("QueueHandle")
+            .field("inner", &Arc::as_ptr(&self.inner))
+            .finish()
     }
 }
 
 impl<State> Clone for QueueHandle<State> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -677,7 +695,10 @@ fn queue_callback<
     qhandle: &QueueHandle<State>,
 ) -> Result<(), DispatchError> {
     let (proxy, event) = I::parse_event(handle, msg)?;
-    let udata = odata.data_as_any().downcast_ref().expect("Wrong user_data value for object");
+    let udata = odata
+        .data_as_any()
+        .downcast_ref()
+        .expect("Wrong user_data value for object");
     <State as Dispatch<I, U, State>>::event(data, &proxy, event, udata, handle, qhandle);
     Ok(())
 }
@@ -705,7 +726,12 @@ where
             .any(|arg| matches!(arg, Argument::NewId(id) if !id.is_null()))
             .then(|| State::event_created_child(msg.opcode, &self.handle));
 
-        let rejected = self.handle.inner.lock().unwrap().enqueue_event::<I, U>(msg, self.clone());
+        let rejected = self
+            .handle
+            .inner
+            .lock()
+            .unwrap()
+            .enqueue_event::<I, U>(msg, self.clone());
         drop(rejected);
 
         new_data
@@ -731,13 +757,22 @@ mod queue_retirement_guards {
     }
     impl Drop for Sentinel {
         fn drop(&mut self) {
-            assert!(self.handle.inner.try_lock().is_ok(), "userdata must retire outside the queue mutex");
+            assert!(
+                self.handle.inner.try_lock().is_ok(),
+                "userdata must retire outside the queue mutex"
+            );
             let _ = &self.alive;
         }
     }
     impl Dispatch<wl_callback::WlCallback, Sentinel> for State {
-        fn event(_: &mut Self, _: &wl_callback::WlCallback, _: wl_callback::Event,
-            _: &Sentinel, _: &Connection, _: &QueueHandle<Self>) {
+        fn event(
+            _: &mut Self,
+            _: &wl_callback::WlCallback,
+            _: wl_callback::Event,
+            _: &Sentinel,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
             panic!("an abandoned queue must not dispatch application callbacks");
         }
     }
@@ -749,31 +784,65 @@ mod queue_retirement_guards {
         let handle = queue.handle();
         let alive = Arc::new(());
         let weak = Arc::downgrade(&alive);
-        let data = handle.make_data::<wl_callback::WlCallback, _>(Sentinel {alive, handle:handle.clone()});
-        if close_first { drop(queue); } else {
-            let child = data.event(&connection.backend(), Message {sender_id:ObjectId::null(), opcode:0, args:Default::default()});
-            assert!(child.is_none());
-            assert!(weak.upgrade().is_some(), "queued native userdata retains its lease");
+        let data = handle.make_data::<wl_callback::WlCallback, _>(Sentinel {
+            alive,
+            handle: handle.clone(),
+        });
+        if close_first {
             drop(queue);
-            assert!(weak.upgrade().is_none(), "queue retirement breaks the actual QueueProxyData cycle");
+        } else {
+            let child = data.event(
+                &connection.backend(),
+                Message {
+                    sender_id: ObjectId::null(),
+                    opcode: 0,
+                    args: Default::default(),
+                },
+            );
+            assert!(child.is_none());
+            assert!(
+                weak.upgrade().is_some(),
+                "queued native userdata retains its lease"
+            );
+            drop(queue);
+            assert!(
+                weak.upgrade().is_none(),
+                "queue retirement breaks the actual QueueProxyData cycle"
+            );
             return;
         }
-        let child = data.event(&connection.backend(), Message {sender_id:ObjectId::null(), opcode:0, args:Default::default()});
+        let child = data.event(
+            &connection.backend(),
+            Message {
+                sender_id: ObjectId::null(),
+                opcode: 0,
+                args: Default::default(),
+            },
+        );
         assert!(child.is_none());
         assert!(handle.inner.lock().unwrap().queue.is_empty());
-        assert!(weak.upgrade().is_none(), "a late delivery cannot recreate a retired queue cycle");
+        assert!(
+            weak.upgrade().is_none(),
+            "a late delivery cannot recreate a retired queue cycle"
+        );
     }
 
     #[test]
-    fn undrained_callback_userdata_retires_outside_the_queue_mutex() { exercise(false); }
+    fn undrained_callback_userdata_retires_outside_the_queue_mutex() {
+        exercise(false);
+    }
     #[test]
-    fn a_closed_queue_rejects_late_callback_userdata() { exercise(true); }
+    fn a_closed_queue_rejects_late_callback_userdata() {
+        exercise(true);
+    }
 }
 
 impl<I: Proxy, U: std::fmt::Debug, State> std::fmt::Debug for QueueProxyData<I, U, State> {
     #[cfg_attr(unstable_coverage, coverage(off))]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QueueProxyData").field("udata", &self.udata).finish()
+        f.debug_struct("QueueProxyData")
+            .field("udata", &self.udata)
+            .finish()
     }
 }
 

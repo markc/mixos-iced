@@ -332,14 +332,18 @@ impl Handle {
         impl Drop for PendingGuard {
             fn drop(&mut self) {
                 let mut pending = self.0.pending_reply.lock().unwrap();
-                if pending.as_ref() == Some(&self.1) { *pending = None; }
+                if pending.as_ref() == Some(&self.1) {
+                    *pending = None;
+                }
             }
         }
         let (reply_tx, reply_rx) = oneshot::channel();
         let reply_tx = Reply::new(reply_tx);
         {
             let mut pending = self.inner.pending_reply.lock().unwrap();
-            if pending.is_some() { return Err(Error::Busy); }
+            if pending.is_some() {
+                return Err(Error::Busy);
+            }
             *pending = Some(reply_tx.clone());
         }
         let guard = PendingGuard(Arc::clone(&self.inner), reply_tx.clone());
@@ -374,7 +378,14 @@ impl Handle {
     /// resolves as [`Error::Closed`]. Safe to call more than once.
     pub fn close(&self) {
         *self.inner.request_tx.lock().unwrap() = None;
-        if let Some(reply) = self.inner.pending_reply.lock().unwrap().take().and_then(|reply| reply.take()) {
+        if let Some(reply) = self
+            .inner
+            .pending_reply
+            .lock()
+            .unwrap()
+            .take()
+            .and_then(|reply| reply.take())
+        {
             let _ = reply.send(Err(Error::Closed));
         }
     }
@@ -475,7 +486,9 @@ fn run_request<Message: Send + 'static>(
     let selected = match select_aliases(&inner, &request) {
         Ok(selected) => selected,
         Err(error) => {
-            if let Some(reply) = reply.take() { let _ = reply.send(Err(error)); }
+            if let Some(reply) = reply.take() {
+                let _ = reply.send(Err(error));
+            }
             return Task::none();
         }
     };
@@ -511,7 +524,9 @@ fn run_request<Message: Send + 'static>(
     let query = select::query(make_selector(), target, request.layer, limits);
 
     query.then(move |result| {
-        let Some(reply) = reply.take() else { return Task::none(); };
+        let Some(reply) = reply.take() else {
+            return Task::none();
+        };
         let report = match result {
             Ok(report) => report,
             Err(error) => {
@@ -613,8 +628,10 @@ mod tests {
     fn targets_are_validated_at_registration() {
         let limits = Limits::new();
 
-        assert!(matches!(channel::<()>(vec![target("a"), target("a")], limits),
-            Err(Error::DuplicateAlias(alias)) if alias == "a"));
+        assert!(
+            matches!(channel::<()>(vec![target("a"), target("a")], limits),
+            Err(Error::DuplicateAlias(alias)) if alias == "a")
+        );
         assert!(matches!(
             channel::<()>(
                 vec![target("a"), Target::new("b", widget::Id::new("probe"))],
