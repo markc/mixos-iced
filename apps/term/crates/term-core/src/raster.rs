@@ -2052,7 +2052,7 @@ mod tests {
                     glyph.data = (0..9usize)
                         .flat_map(|row| (0..256usize).map(move |col| (col + row * 37) as u8))
                         .collect();
-                    raster.cache.insert(('M', true, fg), Some(glyph));
+                    raster.cache.insert(('M', true), Some(glyph));
                     let mut grid = screen(3, 3, 'M');
                     for cell in &mut grid.cells {
                         cell.fg = fg;
@@ -2071,7 +2071,7 @@ mod tests {
             glyph.placement.width = mask_width;
             glyph.placement.height = mask_height;
             glyph.data = vec![255; (mask_width * mask_height) as usize];
-            raster.cache.insert(('M', true, [9, 9, 9]), Some(glyph));
+            raster.cache.insert(('M', true), Some(glyph));
             let mut grid = screen(3, 3, 'M');
             for cell in &mut grid.cells {
                 cell.fg = [9, 9, 9];
