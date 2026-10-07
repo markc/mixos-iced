@@ -5,7 +5,8 @@
 if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
 $repo=args()[0]
 $bin=args()[1]
-$mix=env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
 $n=require("nested_host_lib.mix")
 $h=require("settings_host_lib.mix")
 $pty=require("pty_host_lib.mix")
@@ -51,6 +52,8 @@ fn wait_service($service,$verb,$child,$log)
 end
 fn launch_term($label,$identity)
   $home=$R.run.path .. "/home-" .. $label
+  mkdir($home .. "/config",{parents:true})
+  mkdir($home .. "/state",{parents:true})
   $extra=merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,XDG_CONFIG_HOME:$home .. "/config",
     XDG_STATE_HOME:$home .. "/state",MIXOS_APP_HOME:$home,MIXOS_SETTINGS_INSTANCE:"fixture",
     MIXOS_SETTINGS_PROFILE:"default",TERM_NOTIFY:"0",LIBGL_ALWAYS_SOFTWARE:"1",WGPU_BACKEND:"gl",
@@ -208,9 +211,24 @@ try
   $third=target($identity,$current.preparation.applied)
   check($third.target.window == $initial.target.window and not deep_eq($third.target.stamp,$second.target.stamp),"Settings activation did not install a new stamp")
   presented($identity,$third.target,"settings")
+  $shutdown_started=time()
   $closing=reached($identity,"closing",2)
-  $waiting=asynchronous("frame.wait",merge($identity,{window:$third.target.window,
-    activation_epoch:$third.target.stamp.activation_epoch,local_revision:$current.preparation.applied+1,timeout_ms:10000}),"closing-frame",12)
+  $future=merge($identity,{window:$third.target.window,
+    activation_epoch:$third.target.stamp.activation_epoch,local_revision:$current.preparation.applied+1,timeout_ms:10000})
+  $waiting=asynchronous("frame.wait",$future,"closing-frame",12)
+  -- Exact Busy comes from the real frame owner after a waiter claims its
+  -- slot, proving the asynchronous request is admitted before closing.
+  $admitted=false
+  $admission_deadline=time()+1
+  while time() < $admission_deadline
+    $busy=call("term","app.acceptance.frame.wait",merge($future,{timeout_ms:100}))
+    if $busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"frame wait: Busy") then
+      $admitted=true
+      break
+    end
+    check($busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"TimedOut"),"Unexpected waiter admission result: " .. json_encode($busy))
+  end
+  check($admitted and process_alive($waiting.pid),"Closing wait never claimed the real owner")
   $deadline=time()+5
   comp("comp.input.key",{seat:"human",key:"q",modifiers:["ctrl","shift"]})
   while process_alive($term.pid) and time() < $deadline
@@ -218,7 +236,9 @@ try
   end
   check(not process_alive($term.pid),"Held native preparation prevented bounded shutdown")
   $closed=collect_call($waiting,2)
-  check(not ($closed.rc == 0 and type($closed.result) == "map" and $closed.result.ok),"Future frame wait succeeded during close")
+  check($closed.rc == 0 and type($closed.result) == "map" and not $closed.result.ok and
+    contains($closed.result.error,"frame wait: Closed"),"Admitted frame wait did not retire explicitly: " .. json_encode($closed))
+  check(time()-$shutdown_started < 8,"Shutdown could have relied on barrier automatic expiry")
   write_file($root .. "/acceptance.json",json_encode({ordinary_omission:true,layout:true,presented:true,
     held_last_good:true,zoom_release:true,settings_applied:$h.identity($changed),same_window:true,
     shutdown:true,shutdown_wait:$closed,dbus:false}))
@@ -227,19 +247,46 @@ catch $message
   print("FAIL Term native settings: " .. $message)
 finally
   for each $child in $R.calls
-    $h.stop($child)
-  end
-  for each $child in $R.children
-    if not $pty.stop_child($child) then $R.ok=false; print("FAIL owned child survived: " .. to_string($child.pid)) end
-  end
-  if $R.session != nil then
-    $n.stop($R.session)
-    for each $child in $R.session.pids
-      if process_alive($child) then $h.stop($child) end
-      check(not process_alive($child),"Native host survived teardown")
+    try
+      $h.stop($child)
+    catch $error
+      $R.ok=false
+      print("FAIL native call teardown: " .. $error)
     end
   end
-  if $R.bus != nil then $h.stop($R.bus.pid) end
+  for each $child in $R.children
+    try
+      if not $pty.stop_child($child) then $R.ok=false; print("FAIL owned child survived: " .. to_string($child.pid)) end
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+    catch $error
+      $R.ok=false
+      print("FAIL native host signal: " .. $error)
+    end
+    for each $child in $R.session.pids
+      try
+        if process_alive($child) then $h.stop($child) end
+        check(not process_alive($child),"Native host survived teardown")
+      catch $error
+        $R.ok=false
+        print("FAIL native host teardown: " .. $error)
+      end
+    end
+  end
+  if $R.bus != nil then
+    try
+      $h.stop($R.bus.pid)
+    catch $error
+      $R.ok=false
+      print("FAIL native broker teardown: " .. $error)
+    end
+  end
   if $R.ok then print("PASS Term native settings: actual layout, exact installed native receipts, held/released raster, settings activation and bounded shutdown") end
   $n.finish_run($R.run,$R.ok)
 end
