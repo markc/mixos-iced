@@ -29,6 +29,10 @@ usable data during loss/recovery. Captured read baselines expose same-incarnatio
 rollback while allowing an older read that legitimately raced a newer event.
 Cancel an old executor future when `current_work()` changes or disappears;
 superseded work must not become a second active host job.
+Reconcile the pending timer from `retry_deadline()` after every engine input and
+completion, including successful RPC replies: a delivery anomaly may have
+scheduled recovery while that otherwise successful read was in flight. Timer
+scheduling follows engine state, not just the last RPC result.
 
 Each native call has a one-second bound. Pass the same initial deadline to
 `native::execute_until` for subscribe and read to bound their combined bootstrap

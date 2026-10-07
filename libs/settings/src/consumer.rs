@@ -242,9 +242,7 @@ impl Consumer {
         })
     }
     pub fn refresh(&mut self) -> Option<Work> {
-        if self.generation.is_none() {
-            return None;
-        }
+        self.generation?;
         if self.work.is_some() {
             self.read_again = true;
             return None;

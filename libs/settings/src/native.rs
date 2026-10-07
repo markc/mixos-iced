@@ -10,10 +10,9 @@ use std::time::Duration;
 
 pub const BOOTSTRAP_BUDGET: Duration = Duration::from_secs(1);
 
-/// Execute one fenced action. The host can multiplex this future with incoming
-/// events and its existing work. A bootstrap host caps the combined initial
-/// subscribe/read sequence at BOOTSTRAP_BUDGET before showing a labelled fallback.
-/// Each individual recovery call is also bounded by that budget.
+/// Execute one fenced RECOVERY action, bounded to one second. Hosts multiplex
+/// this future with incoming events and existing work. Initial bootstrap must
+/// use execute_until with the SAME deadline for both subscribe and read.
 pub async fn execute(
     client: &SupervisedClient,
     work: &Work,

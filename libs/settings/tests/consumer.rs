@@ -281,6 +281,21 @@ fn malformed_delivery_storm_preserves_one_retry_and_cannot_bypass_backoff() {
     state.disconnected();
     assert!(state.fault().is_none());
 }
+#[test]
+fn malformed_delivery_during_successful_read_keeps_recovery_deadline_and_then_converges() {
+    let mut state = consumer();
+    let read = read_work(&mut state,1);
+    state.rejected_delivery(Diagnostic::new("invalid_delivery","snapshot","Malformed"));
+    let deadline = state.retry_deadline().unwrap();
+    assert!(state.complete(&read,Ok(Some(snapshot(1,"a")))).is_none());
+    assert!(state.current_work().is_none());
+    assert!(state.current().is_none(),"pre-gap read cannot activate");
+    assert_eq!(state.retry_deadline(),Some(deadline),"host schedules from state even after an RPC success");
+    let fresh = state.retry().unwrap();
+    state.complete(&fresh,Ok(Some(snapshot(2,"a"))));
+    assert!(state.retry_deadline().is_none()); assert!(state.is_confirmed());
+    assert_eq!(state.pending().unwrap().snapshot().revision,Revision(2));
+}
 #[cfg(feature = "native")]
 #[test]
 fn native_deliveries_require_owner_topic_and_generation_and_bound_bad_data() {
