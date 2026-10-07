@@ -30,7 +30,9 @@ impl std::fmt::Display for ReplaceError {
     }
 }
 impl std::error::Error for ReplaceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.source) }
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// Parent must already exist. Directory-relative operations keep the rename
@@ -49,16 +51,33 @@ fn replace_with(
     let mut renamed = false;
     let result = (|| -> io::Result<()> {
         before(stage)?;
-        let parent = path.parent().ok_or_else(|| io::Error::other("missing parent"))?;
-        let name = path.file_name().ok_or_else(|| io::Error::other("missing file name"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("missing parent"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("missing file name"))?;
         use std::os::unix::ffi::OsStrExt;
         let name = std::ffi::CString::new(name.as_bytes())?;
-        let dir = OpenOptions::new().read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(parent)?;
-        let temp = std::ffi::CString::new(format!(".replace-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)))?;
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(parent)?;
+        let temp = std::ffi::CString::new(format!(
+            ".replace-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ))?;
         // Never dereference an existing destination symlink.
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-        let rc = unsafe { libc::fstatat(dir.as_raw_fd(), name.as_ptr(), metadata.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
+        let rc = unsafe {
+            libc::fstatat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                metadata.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
         if rc == 0 {
             if unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFREG {
                 return Err(io::Error::other("destination is not a regular file"));
@@ -66,8 +85,17 @@ fn replace_with(
         } else if io::Error::last_os_error().kind() != io::ErrorKind::NotFound {
             return Err(io::Error::last_os_error());
         }
-        let fd = unsafe { libc::openat(dir.as_raw_fd(), temp.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, 0o600) };
-        if fd < 0 { return Err(io::Error::last_os_error()); }
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                temp.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
         let mut file = unsafe { File::from_raw_fd(fd) };
         let write = (|| -> io::Result<()> {
             file.write_all(bytes)?;
@@ -76,7 +104,15 @@ fn replace_with(
             file.sync_all()?;
             stage = Stage::Rename;
             before(stage)?;
-            if unsafe { libc::renameat(dir.as_raw_fd(), temp.as_ptr(), dir.as_raw_fd(), name.as_ptr()) } != 0 {
+            if unsafe {
+                libc::renameat(
+                    dir.as_raw_fd(),
+                    temp.as_ptr(),
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                )
+            } != 0
+            {
                 return Err(io::Error::last_os_error());
             }
             renamed = true;
@@ -85,11 +121,17 @@ fn replace_with(
             dir.sync_all()
         })();
         if !renamed {
-            unsafe { libc::unlinkat(dir.as_raw_fd(), temp.as_ptr(), 0); }
+            unsafe {
+                libc::unlinkat(dir.as_raw_fd(), temp.as_ptr(), 0);
+            }
         }
         write
     })();
-    result.map_err(|source| ReplaceError { stage, may_have_replaced: renamed, source })
+    result.map_err(|source| ReplaceError {
+        stage,
+        may_have_replaced: renamed,
+        source,
+    })
 }
 
 #[cfg(test)]
@@ -101,13 +143,30 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("settings-atomic-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("desktop.conf.mix");
-        for fail in [Stage::Prepare, Stage::FileSync, Stage::Rename, Stage::DirectorySync] {
+        for fail in [
+            Stage::Prepare,
+            Stage::FileSync,
+            Stage::Rename,
+            Stage::DirectorySync,
+        ] {
             replace(&path, b"old").unwrap();
             let error = replace_with(&path, b"new", |stage| {
-                if stage == fail { Err(io::Error::other("injected")) } else { Ok(()) }
-            }).unwrap_err();
+                if stage == fail {
+                    Err(io::Error::other("injected"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
             assert_eq!(error.may_have_replaced, fail == Stage::DirectorySync);
-            assert_eq!(std::fs::read(&path).unwrap(), if error.may_have_replaced { b"new" } else { b"old" });
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                if error.may_have_replaced {
+                    b"new"
+                } else {
+                    b"old"
+                }
+            );
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared headless settings contract. No renderer, files or transport lifetime.
 pub mod model;
-pub mod resolve;
 pub mod reducer;
-pub use model::*;
-pub use resolve::{resolve, describe};
+pub mod resolve;
 pub use design::EMBEDDED_DEFAULT_SOURCE;
+pub use model::*;
+pub use resolve::{describe, resolve};
 
 pub const CONTRACT_VERSION: &str = "0.1.0";
 pub const SCHEMA: u32 = 1;
@@ -14,9 +14,15 @@ pub const MAX_SNAPSHOT_BYTES: usize = 1024 * 1024 - 64 * 1024;
 pub const MAX_RECEIPTS: usize = 128;
 
 /// Registered service ownership is settingsd, independent of profile name.
-pub fn topic(profile: &str) -> String { format!("settingsd.desktop.changed.{profile}") }
+pub fn topic(profile: &str) -> String {
+    format!("settingsd.desktop.changed.{profile}")
+}
 
 pub fn digest<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
-    Ok(blake3::hash(&serde_json::to_vec(value)?).to_hex().to_string())
+    Ok(blake3::hash(&serde_json::to_vec(value)?)
+        .to_hex()
+        .to_string())
 }
-pub fn source_digest(source: &str) -> String { blake3::hash(source.as_bytes()).to_hex().to_string() }
+pub fn source_digest(source: &str) -> String {
+    blake3::hash(source.as_bytes()).to_hex().to_string()
+}

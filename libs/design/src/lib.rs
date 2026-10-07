@@ -59,7 +59,6 @@ pub use colour_model::{
     ResolvedPair, TEXT_PAIR_NAMES, contrast_ratio,
 };
 pub use compiler::compile_design;
-pub use projection::{DesignReadProjection, ReadButton, ReadMetric, ReadPair, ReadType};
 pub use context::{Contrast, DesignContext, Mode, Scheme};
 pub use design_model::{
     AuthoredMetric, DesignApplyDecision, DesignApplyTransition, DesignCompileFailure,
@@ -78,6 +77,7 @@ pub use mapping_model::{
     ButtonTypographyTable, ResolvedButtonCell, ResolvedButtonTable, ResolvedTypeRecord,
     ResolvedTypographyAssignment,
 };
+pub use projection::{DesignReadProjection, ReadButton, ReadMetric, ReadPair, ReadType};
 pub use recipe::{
     DerivationRecipe, PairRefDecision, PairRefExclusion, PairSubstitutionPolicy, REGISTRY,
     RecipeBinding, RecipeImplicitBinding, RecipeImplicitInput, RecipeMovement, RecipeOutput,

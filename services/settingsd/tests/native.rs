@@ -1,31 +1,61 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Real broker integration, invoked by tests/settings/authority_test.mix.
 use bus::native_client::NodedClient;
-use serde_json::{Value,json};
-use std::{collections::BTreeMap, process::{Child,Command,Stdio}, time::Duration};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    process::{Child, Command, Stdio},
+    time::Duration,
+};
 
 struct Daemon(Option<Child>);
 impl Drop for Daemon {
-    fn drop(&mut self) { if let Some(mut child) = self.0.take() { let _ = child.kill(); let _ = child.wait(); } }
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
-fn spawn(root:&std::path::Path) -> Daemon {
+fn spawn(root: &std::path::Path) -> Daemon {
     let log = std::fs::File::create(root.join("settingsd.log")).unwrap();
-    Daemon(Some(Command::new(env!("CARGO_BIN_EXE_settingsd"))
-        .args(["serve","--instance","fixture","--root"]).arg(root)
-        .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap()))
+    Daemon(Some(
+        Command::new(env!("CARGO_BIN_EXE_settingsd"))
+            .args(["serve", "--instance", "fixture", "--root"])
+            .arg(root)
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .unwrap(),
+    ))
 }
-async fn read(client:&NodedClient) -> Value {
-    let deadline = tokio::time::Instant::now()+Duration::from_secs(20);
+async fn read(client: &NodedClient) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
-        if let Ok(value) = client.call("settingsd","settings.get",json!({"binding":{"instance":"fixture","profile":"default"}})).await { return value; }
-        assert!(tokio::time::Instant::now() < deadline,"authority did not register");
+        if let Ok(value) = client
+            .call(
+                "settingsd",
+                "settings.get",
+                json!({"binding":{"instance":"fixture","profile":"default"}}),
+            )
+            .await
+        {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "authority did not register"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 #[test]
 #[ignore = "requires isolated real noded from authority_test.mix"]
 fn real_abp_publication_open_operator_receipts_and_authority_restart() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         let url = std::env::var("MIXOS_NODED_URL").expect("isolated broker URL");
         let root = tempfile::tempdir().unwrap();

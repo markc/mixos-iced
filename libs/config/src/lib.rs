@@ -21,8 +21,8 @@
 //! # Ok::<(), config::Error>(())
 //! ```
 
-mod dir;
 pub mod atomic;
+mod dir;
 pub mod node;
 pub mod store;
 
