@@ -5,8 +5,7 @@
 use std::marker::PhantomData;
 
 use toolkit::core::{
-    Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation,
-    layout::Limits,
+    Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation, layout::Limits,
     renderer, text, widget::Tree,
 };
 use toolkit::menu::{Item, MenuStyle, Panel, panel_size_text};
@@ -35,9 +34,8 @@ impl renderer::Renderer for Recorder {
     fn allocate_image(
         &mut self,
         handle: &toolkit::core::image::Handle,
-        callback: impl FnOnce(
-            Result<toolkit::core::image::Allocation, toolkit::core::image::Error>,
-        ) + Send
+        callback: impl FnOnce(Result<toolkit::core::image::Allocation, toolkit::core::image::Error>)
+        + Send
         + 'static,
     ) {
         renderer::Renderer::allocate_image(&mut (), handle, callback);
@@ -88,7 +86,8 @@ fn the_original_list_literal_compiles_and_lays_out_unchanged() {
         selected: None,
         phantomdata: PhantomData,
     };
-    let mut tree = Tree::new(&list as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
+    let mut tree =
+        Tree::new(&list as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut list = list;
     list.diff(&mut tree);
     let renderer = Recorder::default();
@@ -97,7 +96,8 @@ fn the_original_list_literal_compiles_and_lays_out_unchanged() {
     assert_eq!(node.size().height, (12.0 + 10.0) * 2.0);
     // The consuming builders return the prepared wrapper, whose rows grow.
     let mut styled = list.line_height(30.0);
-    let mut tree = Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
+    let mut tree =
+        Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     styled.diff(&mut tree);
     let node = toolkit::core::Widget::layout(&mut styled, &mut tree, &renderer, &limits());
     assert_eq!(node.size().height, (30.0 + 10.0) * 2.0);
@@ -114,7 +114,8 @@ fn panels_remain_renderer_neutral_and_the_styled_forms_agree() {
     // The legacy panel takes no font parameter.
     let panel: Panel<'_, u8> = Panel::new(&items, None);
     let mut panel = panel;
-    let mut tree = Tree::new(&panel as &dyn toolkit::core::Widget<u8, toolkit::core::Theme, Recorder>);
+    let mut tree =
+        Tree::new(&panel as &dyn toolkit::core::Widget<u8, toolkit::core::Theme, Recorder>);
     panel.diff(&mut tree);
     let node = toolkit::core::Widget::layout(&mut panel, &mut tree, &renderer, &limits());
     assert_eq!(node.size().height, 64.0);
@@ -126,7 +127,8 @@ fn panels_remain_renderer_neutral_and_the_styled_forms_agree() {
         line_height: Some(30.0),
     };
     let mut styled = panel.text_style(text);
-    let mut tree = Tree::new(&styled as &dyn toolkit::core::Widget<u8, toolkit::core::Theme, Recorder>);
+    let mut tree =
+        Tree::new(&styled as &dyn toolkit::core::Widget<u8, toolkit::core::Theme, Recorder>);
     styled.diff(&mut tree);
     let node = toolkit::core::Widget::layout(&mut styled, &mut tree, &renderer, &limits());
     assert_eq!(
@@ -141,22 +143,22 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
     let renderer = Recorder::default();
     let legacy: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
         SelectionList::new(&options, |_, value: String| value);
-    let mut tree = Tree::new(&legacy as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
+    let mut tree =
+        Tree::new(&legacy as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut legacy = legacy;
     legacy.diff(&mut tree);
-    let legacy_height =
-        toolkit::core::Widget::layout(&mut legacy, &mut tree, &renderer, &limits())
-            .size()
-            .height;
+    let legacy_height = toolkit::core::Widget::layout(&mut legacy, &mut tree, &renderer, &limits())
+        .size()
+        .height;
     // The prepared rows are taller than the legacy text-size rows.
     let styled: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
         SelectionList::new(&options, |_, value: String| value).line_height(30.0);
-    let mut tree = Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
+    let mut tree =
+        Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut styled = styled;
     styled.diff(&mut tree);
-    let styled_height =
-        toolkit::core::Widget::layout(&mut styled, &mut tree, &renderer, &limits())
-            .size()
-            .height;
+    let styled_height = toolkit::core::Widget::layout(&mut styled, &mut tree, &renderer, &limits())
+        .size()
+        .height;
     assert!(styled_height > legacy_height);
 }

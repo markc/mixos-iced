@@ -13,9 +13,9 @@ use iced_core::layout::{self, Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
 use iced_core::text;
+use iced_core::widget::Tree;
 use iced_core::widget::text::{Ellipsis, LineHeight, Shaping, Wrapping};
 use iced_core::widget::tree::{State, Tag};
-use iced_core::widget::Tree;
 use iced_core::{Border, Color, Element, Event, Length, Point, Rectangle, Shell, Size, Widget};
 
 use super::{Catalog, Status};
@@ -629,8 +629,9 @@ mod tests {
         // can borrow them for the caller's lifetime.
         let class: <iced_core::Theme as Catalog>::Class<'a> =
             <iced_core::Theme as Catalog>::default();
-        let on_selected = Box::leak(Box::new(|_: usize, _: String| String::new())
-            as Box<dyn Fn(usize, String) -> String>);
+        let on_selected =
+            Box::leak(Box::new(|_: usize, _: String| String::new())
+                as Box<dyn Fn(usize, String) -> String>);
         List {
             options,
             font: iced_core::Font::DEFAULT,

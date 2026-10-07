@@ -765,9 +765,7 @@ impl App {
                     }
                 }
             }
-            Message::Bus(Delivery::Connected) => {
-                self.refresh()
-            }
+            Message::Bus(Delivery::Connected) => self.refresh(),
             Message::Bus(Delivery::Disconnected) => {
                 self.status = label("waiting");
                 Task::none()
@@ -1263,10 +1261,14 @@ mod tests {
         ))));
         assert!(!app.quitting);
         let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
-        assert!(!app.quitting, "unsolicited late completion must not close a window");
+        assert!(
+            !app.quitting,
+            "unsolicited late completion must not close a window"
+        );
         let mut untouched = super::tests::app();
         let _ = untouched.update(Message::Bus(Delivery::Refused {
-            name_taken: true, message: "already registered".into(),
+            name_taken: true,
+            message: "already registered".into(),
         }));
         let _ = untouched.update(Message::Bus(Delivery::Forwarded(Ok(()))));
         assert!(untouched.quitting);

@@ -8,13 +8,11 @@ pub mod list;
 use iced_core::layout::{Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
-use iced_core::text::paragraph::{self, Paragraph};
 use iced_core::text::Text;
-use iced_core::widget::tree::{self, Tree};
+use iced_core::text::paragraph::{self, Paragraph};
 use iced_core::widget::Operation;
-use iced_core::{
-    Border, Element, Event, Layout, Length, Padding, Rectangle, Shell, Size, Widget,
-};
+use iced_core::widget::tree::{self, Tree};
+use iced_core::{Border, Element, Event, Layout, Length, Padding, Rectangle, Shell, Size, Widget};
 use iced_widget::container::{self, Container};
 use iced_widget::scrollable::{self, Scrollable};
 use iced_widget::text::{LineHeight, Wrapping};
@@ -23,8 +21,8 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-pub use list::{List, StyledList};
 use crate::typography::TextStyle;
+pub use list::{List, StyledList};
 
 /// The interaction status of a [`SelectionList`] row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -122,11 +120,8 @@ impl<'a, T, L, Message, Theme, Renderer> SelectionList<'a, T, L, Message, Theme,
 where
     Message: 'a + Clone,
     Renderer: 'a + renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: 'a
-        + Catalog
-        + container::Catalog
-        + scrollable::Catalog
-        + iced_core::widget::text::Catalog,
+    Theme:
+        'a + Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog,
     T: Clone + Display + Eq + Hash,
     L: Borrow<[T]>,
     [T]: ToOwned<Owned = Vec<T>>,
@@ -274,7 +269,8 @@ where
     [T]: ToOwned<Owned = Vec<T>>,
     Message: 'static + Clone,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font> + 'a,
-    Theme: Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
+    Theme:
+        Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
 {
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(&mut [&mut self.list_container() as &mut dyn Widget<_, _, _>]);
@@ -452,7 +448,8 @@ where
     [T]: ToOwned<Owned = Vec<T>>,
     Message: 'static + Clone,
     Renderer: 'a + renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: 'a + Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog,
+    Theme:
+        'a + Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog,
 {
     fn from(selection_list: SelectionList<'a, T, L, Message, Theme, Renderer>) -> Self {
         Element::new(selection_list)

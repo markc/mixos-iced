@@ -267,7 +267,9 @@ where
     /// larger) of a supplied text style.
     fn bar_height(&self) -> f32 {
         self.text_style.map_or(self.metrics().row_height, |text| {
-            self.metrics().row_height.max(text.size.max(text.line_box()))
+            self.metrics()
+                .row_height
+                .max(text.size.max(text.line_box()))
         })
     }
 
@@ -562,10 +564,16 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
         let text = self.text(renderer, style);
         let mut anchors = Vec::with_capacity(state.nav.path.len());
         anchors.push(if nav.is_bar() {
-            bar_rects(renderer, &self.items, bounds + state.translation, style, text)
-                .get(root)
-                .copied()
-                .unwrap_or(bounds + state.translation)
+            bar_rects(
+                renderer,
+                &self.items,
+                bounds + state.translation,
+                style,
+                text,
+            )
+            .get(root)
+            .copied()
+            .unwrap_or(bounds + state.translation)
         } else {
             Rectangle::new(state.position + state.translation, Size::new(1.0, 1.0))
         });
@@ -1127,7 +1135,12 @@ impl<Message: Clone, Renderer: text::Renderer> Popup<'_, Message, Renderer> {
                 let items = self.nav.panel(&self.state.nav, depth);
                 return Some((
                     depth,
-                    row_at_with(items, position.y - panel.bounds().y, self.metrics(), self.text),
+                    row_at_with(
+                        items,
+                        position.y - panel.bounds().y,
+                        self.metrics(),
+                        self.text,
+                    ),
                 ));
             }
         }
@@ -1307,9 +1320,9 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
         let selectable = self
             .hit(layout, cursor, renderer)
             .is_some_and(|(depth, row)| {
-            row.and_then(|row| self.nav.panel(&self.state.nav, depth).get(row))
-                .is_some_and(Item::selectable)
-        });
+                row.and_then(|row| self.nav.panel(&self.state.nav, depth).get(row))
+                    .is_some_and(Item::selectable)
+            });
         if selectable {
             mouse::Interaction::Pointer
         } else {
@@ -1547,10 +1560,7 @@ mod tests {
 
         fn cursor(&self) -> text::editor::Cursor {
             text::editor::Cursor {
-                position: text::Position {
-                    line: 0,
-                    index: 0,
-                },
+                position: text::Position { line: 0, index: 0 },
                 selection: None,
             }
         }
@@ -1698,29 +1708,14 @@ mod tests {
         fn default_size(&self) -> iced_core::Pixels {
             iced_core::Pixels(14.0)
         }
-        fn fill_paragraph(
-            &mut self,
-            paragraph: &FaceParagraph,
-            _: Point,
-            _: Color,
-            _: Rectangle,
-        ) {
-            self.paragraphs.push((
-                paragraph.font(),
-                paragraph.size(),
-                paragraph.line_height(),
-            ));
+        fn fill_paragraph(&mut self, paragraph: &FaceParagraph, _: Point, _: Color, _: Rectangle) {
+            self.paragraphs
+                .push((paragraph.font(), paragraph.size(), paragraph.line_height()));
         }
         fn fill_editor(&mut self, editor: &FaceEditor, _: Point, _: Color, _: Rectangle) {
             self.editors.push((editor.font(), editor.text_size()));
         }
-        fn fill_text(
-            &mut self,
-            text: text::Text<String, Face>,
-            _: Point,
-            _: Color,
-            _: Rectangle,
-        ) {
+        fn fill_text(&mut self, text: text::Text<String, Face>, _: Point, _: Color, _: Rectangle) {
             self.texts.push((text.font, text.size, text.line_height));
         }
     }
@@ -2954,11 +2949,8 @@ mod tests {
             size: 18.0,
             line_height: Some(40.0),
         };
-        let root: Element<'_, u8, iced_core::Theme, FaceRenderer> = iced_widget::column![
-            style.text("hello"),
-            style.input("placeholder", "value")
-        ]
-        .into();
+        let root: Element<'_, u8, iced_core::Theme, FaceRenderer> =
+            iced_widget::column![style.text("hello"), style.input("placeholder", "value")].into();
         let mut ui = iced_runtime::UserInterface::build(
             root,
             Size::new(400.0, 300.0),
@@ -3040,9 +3032,8 @@ mod tests {
             size: 20.0,
             line_height: Some(30.0),
         };
-        let menu = |text: TextStyle| {
-            Menu::bar(vec![Item::submenu("file", items())]).text_style(text)
-        };
+        let menu =
+            |text: TextStyle| Menu::bar(vec![Item::submenu("file", items())]).text_style(text);
         // Open the bar and its submenu with the small style.
         let mut renderer = crate::test_renderer::LayoutRenderer::new();
         let mut ui = iced_runtime::UserInterface::build(
@@ -3081,7 +3072,9 @@ mod tests {
         messages.clear();
         update_ui(
             &mut ui,
-            &[Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))],
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
             mouse::Cursor::Available(Point::new(170.0, 120.0)),
             &mut renderer,
             &mut messages,
@@ -3115,7 +3108,9 @@ mod tests {
         messages.clear();
         update_ui(
             &mut ui,
-            &[Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))],
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
             mouse::Cursor::Available(Point::new(10.0, 65.0)),
             &mut renderer,
             &mut messages,

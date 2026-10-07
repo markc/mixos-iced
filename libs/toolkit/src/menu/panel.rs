@@ -385,8 +385,7 @@ fn panel_update<Message, Renderer: text::Renderer>(
             let row = row_under(point);
             // Also re-report a row that keyboard navigation moved the
             // selection away from, as the in-surface overlay reselects it.
-            let reselect =
-                row != selected && row.is_some_and(|row| items[row].selectable());
+            let reselect = row != selected && row.is_some_and(|row| items[row].selectable());
             if state.hovered != Some(row) || reselect {
                 state.hovered = Some(row);
                 if let Some(on_hover) = on_hover {
