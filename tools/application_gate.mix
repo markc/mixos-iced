@@ -4,7 +4,7 @@
 $root=dirname(dirname(realpath($0)))
 if len(args())!=0 then raise("USAGE","application_gate.mix takes no arguments") end
 $metadata=json_parse(run_argv_must(["cargo","metadata","--locked","--format-version","1","--no-deps"],{cwd:$root,timeout:120}))
-$apps=["ced","dopus","term","scene-editor"]
+$apps=["ced","dopus","term","scene-editor","busviewer"]
 $principals=[]
 for each $package in $metadata.packages
   $component=$package.metadata.mixos.component
@@ -23,4 +23,4 @@ for each $package in $metadata.packages
   end
 end
 if not deep_eq(sort($principals),sort($apps)) then raise("MISSING_APP","Expected all application principals") end
-print("application host gate: Ced, DOpus, Term and Scene Editor have no direct iced-family dependencies")
+print("application host gate: Ced, DOpus, Term, Scene Editor and BusViewer have no direct iced-family dependencies")
