@@ -28,6 +28,7 @@ pub const SCHEMA: &str = "dopus.v1";
 pub const VERBS: &[(&str, bool)] = &[
     ("dopus.ping", true),
     ("dopus.describe", true),
+    ("app.describe", true),
     ("dopus.info", true),
     ("dopus.state", true),
     ("dopus.action", false),
@@ -790,7 +791,7 @@ pub fn serve_command(
                 headless: meta.headless,
             },
         )],
-        "dopus.describe" => vec![Served::reply_json(
+        "dopus.describe" | "app.describe" => vec![Served::reply_json(
             command.id,
             &DescribeReply {
                 contract: "ctk-app-control.v0".to_owned(),

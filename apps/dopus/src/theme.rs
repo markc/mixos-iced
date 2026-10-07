@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Theme: the effective ctk theme selection — shared
-//! `::config::store::config_dir()/theme.conf.mix` layered with the
-//! per-app `<AppDirs dopus>/config/theme.conf.mix` (`ctk/src/theme.rs`
-//! rule) — compiled with mixos-design in the user's mode, re-resolved on
-//! the `theme.changed` topic and by the `theme.*` actions.
+//! Theme: the compiled appearance of one prepared settings generation.
+//! The live window converts shared authority data through
+//! [`from_settings`] on the settings worker (checked fonts, tokens,
+//! typography, density and line heights); it never reads the legacy
+//! `theme.conf.mix` files as an authority. The legacy selection/compilation
+//! helpers remain only for standalone callers and fixtures.
 //!
 //! Desktop-wide theming is mandatory: there is no colour literal anywhere in
 //! dopus. Every colour is a compiled design token or a mix of two of them. A
@@ -46,6 +47,12 @@ pub struct Theme {
     /// The resolved selection (for `dopus.state` and theme actions).
     pub scheme: Scheme,
     pub mode: Mode,
+    /// The prepared ui.density: chrome spacing is scaled by it, and the
+    /// measurement caches key on it so a density change reshapes.
+    pub density: f32,
+    /// The prepared role line heights (the measurement caches key on them).
+    pub ui_line_height: Option<f32>,
+    pub mono_line_height: Option<f32>,
     /// Something went wrong resolving (shown once in the status bar).
     pub notes: Option<String>,
 }
@@ -69,6 +76,21 @@ pub struct Chrome {
     pub warning: Color,
 }
 
+impl Chrome {
+    /// Density-scaled chrome: the spacing-derived fields shrink as the
+    /// interface gets denser. `edge` is a border width and stays an unscaled
+    /// logical pixel.
+    pub fn scaled(self, density: f32) -> Self {
+        Self {
+            gap: self.gap * density,
+            pad: self.pad * density,
+            small: self.small * density,
+            icon: self.icon * density,
+            ..self
+        }
+    }
+}
+
 /// The effective `(scheme, mode)` and the design source to compile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Selection {
@@ -86,14 +108,10 @@ struct ThemeFileSelection {
     design: Option<serde::de::IgnoredAny>,
 }
 
-/// The shared theme path (`ctk::theme::shared_theme_path`).
-pub fn shared_theme_path() -> PathBuf {
-    ::config::store::config_dir().join("theme.conf.mix")
-}
-
-/// Read `shared ← app` selections. Missing files are skipped; malformed ones
-/// are skipped with a note, exactly as ctk does — a broken theme never bricks
-/// the app.
+/// Read `shared ← app` selections for legacy fixtures. Missing files are
+/// skipped; malformed ones are skipped with a note, exactly as ctk does — a
+/// broken theme never bricks the app. The live window does not call this: the
+/// shared settings authority is the only live selection source.
 pub fn read_selection(
     shared: Option<&Path>,
     app: Option<&Path>,
@@ -135,28 +153,78 @@ pub fn read_selection(
     selection
 }
 
-/// Resolve from the theme files, with an in-session `(scheme, mode)` override
-/// (the `theme.*` actions and `dopus.theme.set`; P1 does not persist it —
-/// filemgr's shared-file write arrives with P2's config work).
-pub fn resolve_selected(
-    override_selection: Option<(Scheme, Mode)>,
-    app_override: Option<&Path>,
-) -> Theme {
-    let mut notes = Vec::new();
-    let shared = shared_theme_path();
-    let mut selection = read_selection(Some(&shared), app_override, &mut notes);
-    if let Some((scheme, mode)) = override_selection {
-        selection.scheme = scheme;
-        selection.mode = mode;
-    }
-    resolve_selection(&selection, notes)
+/// Convert one prepared settings projection into a [`Theme`]. Called on the
+/// settings worker BEFORE the UI activates the stage: no authored source
+/// compilation, theme-file read or font discovery happens here.
+pub fn from_prepared(look: &appearance::settings::Prepared) -> Result<Theme, settings::Diagnostic> {
+    let missing = |name| {
+        settings::Diagnostic::new(
+            "unsupported_content",
+            name,
+            "Required appearance input missing",
+        )
+    };
+    let chrome = build_chrome(look.dictionary())
+        .map_err(|name| {
+            settings::Diagnostic::new(
+                "unsupported_content",
+                &name,
+                "Chrome colour or metric missing",
+            )
+        })?
+        .scaled(look.density());
+    let ui = look.typography().get("ui").ok_or_else(|| missing("ui"))?;
+    let mono = look
+        .typography()
+        .get("mono")
+        .ok_or_else(|| missing("mono"))?;
+    let small = look
+        .typography()
+        .get("small")
+        .ok_or_else(|| missing("small"))?;
+    Ok(Theme {
+        sidebar_px: ui.size * 0.9,
+        small_px: small.size,
+        tokens: look.tokens(),
+        chrome,
+        mono: (family_name(&mono.font), mono.size),
+        ui: (family_name(&ui.font), ui.size),
+        scheme: Scheme::default(),
+        mode: Mode::default(),
+        mono_font: mono.font,
+        ui_font: ui.font,
+        density: look.density(),
+        ui_line_height: ui.line_height,
+        mono_line_height: mono.line_height,
+        notes: None,
+    })
 }
 
-pub fn resolve(app_override: Option<&Path>) -> Theme {
-    resolve_selected(None, app_override)
+/// The windowed conversion: [`from_prepared`] plus the app-context selection
+/// the accepted snapshot resolved for `app:dopus`.
+pub fn from_settings(
+    look: &appearance::settings::Prepared,
+    snapshot: &settings::Snapshot,
+) -> Result<Theme, settings::Diagnostic> {
+    let mut theme = from_prepared(look)?;
+    let missing = |name| {
+        settings::Diagnostic::new(
+            "unsupported_content",
+            name,
+            "Required appearance input missing",
+        )
+    };
+    let effective = snapshot
+        .effective
+        .get("app:dopus")
+        .ok_or_else(|| missing("app:dopus"))?;
+    theme.scheme = Scheme::from_name(&effective.scheme).ok_or_else(|| missing("scheme"))?;
+    theme.mode = Mode::from_name(&effective.mode).ok_or_else(|| missing("mode"))?;
+    Ok(theme)
 }
 
-/// Compile `selection` into a [`Theme`].
+/// Compile `selection` into a [`Theme`] (legacy fixture path only; the live
+/// window builds its theme from prepared settings data).
 pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme {
     if let Err(error) = appearance::fonts::register_installed() {
         notes.push(format!("static assets: {error}"));
@@ -216,6 +284,9 @@ pub fn resolve_selection(selection: &Selection, mut notes: Vec<String>) -> Theme
         mode: selection.mode,
         mono_font,
         ui_font,
+        density: 1.0,
+        ui_line_height: ui.line_height.map(|v| v as f32),
+        mono_line_height: mono.line_height.map(|v| v as f32),
         notes: (!notes.is_empty()).then(|| notes.join("; ")),
     }
 }
@@ -533,8 +604,80 @@ mod tests {
     }
 
     #[test]
-    fn override_selection_wins_over_files() {
-        let theme = resolve_selected(Some((Scheme::Mono, Mode::Light)), None);
+    fn explicit_selection_resolves_directly() {
+        let theme = resolve_selection(
+            &Selection {
+                scheme: Scheme::Mono,
+                mode: Mode::Light,
+                design_source: None,
+            },
+            Vec::new(),
+        );
         assert_eq!((theme.scheme, theme.mode), (Scheme::Mono, Mode::Light));
+    }
+
+    fn snapshot(desktop: settings::Desktop) -> settings::Snapshot {
+        settings::Snapshot {
+            schema: settings::SCHEMA,
+            binding: settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            incarnation: "fixture".into(),
+            revision: settings::Revision(1),
+            design_revision: settings::Revision(1),
+            source_digest: settings::source_digest(settings::EMBEDDED_DEFAULT_SOURCE),
+            effective: settings::resolve(&desktop).expect("default desktop resolves"),
+            desktop,
+        }
+    }
+
+    #[test]
+    fn settings_conversion_preserves_chrome_palette_and_typography() {
+        let look = appearance::settings::bootstrap().expect("generic bootstrap");
+        let theme = from_settings(&look, &snapshot(settings::Desktop::default())).unwrap();
+        assert_eq!((theme.scheme, theme.mode), (Scheme::Ocean, Mode::Light));
+        assert_ne!(
+            theme.tokens.palette.surface,
+            Tokens::default().palette.surface,
+            "not the fallback palette"
+        );
+        assert!(theme.chrome.gap > 0.0 && theme.chrome.icon > 0.0);
+        assert_eq!(theme.density, 1.0);
+        assert!(
+            (theme.ui.1 - 14.666_667).abs() < 0.001,
+            "Ui role is the embedded 14.667 px: {}",
+            theme.ui.1
+        );
+        assert!((theme.mono.1 - 16.0).abs() < 0.01, "Mono role is 16 px");
+        let effective = &settings::resolve(&settings::Desktop::default()).unwrap()["desktop"];
+        assert_eq!(
+            theme.ui_line_height,
+            effective.design.typography["ui"]
+                .line_height
+                .map(|v| v as f32)
+        );
+    }
+
+    #[test]
+    fn settings_conversion_takes_the_app_effective_selection_and_density() {
+        let mut desktop = settings::Desktop::default();
+        desktop.appearance.scheme = "crimson".into();
+        desktop.appearance.mode = "dark".into();
+        desktop.ui.density = 1.5;
+        let look = appearance::settings::bootstrap().expect("generic bootstrap");
+        let plain = from_prepared(&look).unwrap();
+        let theme = from_settings(&look, &snapshot(desktop)).unwrap();
+        assert_eq!((theme.scheme, theme.mode), (Scheme::Crimson, Mode::Dark));
+        assert!(theme.density > 1.0);
+        assert!(
+            theme.chrome.gap > plain.chrome.gap,
+            "density scales chrome spacing"
+        );
+        assert_eq!(
+            theme.chrome.gap,
+            plain.chrome.gap * theme.density,
+            "spacing scales linearly with density"
+        );
     }
 }

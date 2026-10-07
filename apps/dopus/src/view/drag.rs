@@ -544,6 +544,9 @@ mod tests {
             mono_font: theme.mono_font,
             px: theme.ui_px(),
             mono_px: theme.mono.1,
+            ui_line_height: theme.ui_line_height,
+            mono_line_height: theme.mono_line_height,
+            density: theme.density,
         }
     }
 

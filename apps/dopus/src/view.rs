@@ -38,6 +38,10 @@ use crate::theme::Chrome;
 /// Passed by value through every view fn (the ced `chrome::Look` shape —
 /// everything is `Copy`, so styling closures capture copies and stay
 /// `'static` instead of borrowing a local `Look`).
+///
+/// The measurement/layout caches key on the WHOLE value: font, size, line
+/// height and the density-scaled chrome all invalidate together, so a
+/// settings text or density change reshapes instead of drawing stale.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Look {
     pub sidebar_px: f32,
@@ -48,6 +52,12 @@ pub struct Look {
     pub mono_font: application::iced::Font,
     pub px: f32,
     pub mono_px: f32,
+    /// The prepared role line heights (part of the cache key).
+    pub ui_line_height: Option<f32>,
+    pub mono_line_height: Option<f32>,
+    /// The prepared ui.density (already folded into the chrome spacing; kept
+    /// in the key so an equal-spacing change cannot collide).
+    pub density: f32,
 }
 
 impl Look {
@@ -75,7 +85,8 @@ impl Look {
 /// Fill portions; `editing` is `(pane, real path text)` while a location
 /// bar is being edited; the listed `rows` are the app's per-pane snapshots;
 /// `dialog` is the outstanding core reservation rendered as a modal card
-/// over a scrim (nothing else on this surface while it is up).
+/// over a scrim (nothing else on this surface while it is up); `provenance`
+/// is the persistent settings/connection status the bar carries.
 // The window's whole projection in one call (ced's editor/draw.rs precedent
 // for the allow).
 #[allow(clippy::too_many_arguments)]
@@ -92,6 +103,7 @@ pub fn root<'a>(
     right_rows: &'a [VisibleRow],
     editing: Option<(PaneId, &'a str)>,
     info: &'a str,
+    provenance: &'a str,
     dialog: Option<&'a dialogs::Dialog>,
     places: &'a [(&'static str, std::path::PathBuf)],
     properties: dopus_core::properties::Properties,
@@ -224,6 +236,7 @@ pub fn root<'a>(
         status::bar(
             look,
             info,
+            provenance,
             places_config.open,
             properties_config.open,
             actions

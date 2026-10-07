@@ -26,13 +26,14 @@ impl AppDirs {
     pub fn config_dir(&self) -> PathBuf {
         self.config()
     }
-    /// Per-app theme override (layered over the shared `theme.conf.mix`).
-    pub fn theme_override(&self) -> PathBuf {
-        self.config().join("theme.conf.mix")
-    }
     /// Per-app keymap overlay over `mixos-actions`' packaged dopus defaults.
     pub fn keymap_file(&self) -> PathBuf {
         self.config().join("keymap.conf.mix")
+    }
+    /// The shared settings cache root (`cache/settings`), the same slice ced
+    /// and the scene editor persist applied generations into.
+    pub fn settings_cache_dir(&self) -> PathBuf {
+        self.cache().join("settings")
     }
 }
 
@@ -100,8 +101,8 @@ mod tests {
             Path::new("/h/.local/state/mixos/apps/dopus/config/keymap.conf.mix")
         );
         assert_eq!(
-            d.theme_override(),
-            Path::new("/h/.local/state/mixos/apps/dopus/config/theme.conf.mix")
+            d.settings_cache_dir(),
+            Path::new("/h/.local/state/mixos/apps/dopus/cache/settings")
         );
     }
 
