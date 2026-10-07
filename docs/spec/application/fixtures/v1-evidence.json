@@ -1,0 +1,44 @@
+{
+  "app_id": "dev.mixos.ced",
+  "describe_contract": "application.describe.v1",
+  "pid": 8,
+  "service": "ced",
+  "settings": {
+    "applied": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "6",
+      "source_digest": "digest-of-pinned-source"
+    },
+    "binding": {"instance": "example", "profile": "default"},
+    "confirmed": true,
+    "context": "app:ced",
+    "current": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "7",
+      "source_digest": "digest-of-pinned-source"
+    },
+    "fault": null,
+    "fallback_fault": null,
+    "generation": 3,
+    "kind": "current"
+  },
+  "settings_cache": {
+    "configuration": null,
+    "fault": null,
+    "fallback_diagnostics": [],
+    "persisted": {
+      "design_revision": "2",
+      "incarnation": "authority-readback-uuid",
+      "revision": "6",
+      "source_digest": "digest-of-pinned-source"
+    }
+  },
+  "verbs": [
+    "ced.ping",
+    {"name": "ced.info", "read_only": true},
+    "app.describe"
+  ],
+  "version": "0.1.8"
+}

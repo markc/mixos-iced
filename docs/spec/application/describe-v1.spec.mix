@@ -1,0 +1,53 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Machine-checkable fixtures for the app.describe contract (describe-v1.md).
+-- Strict data: loaded with load_data, never executed. The gate
+-- tests/application/describe_test.mix consumes this manifest and the files
+-- under fixtures/. Producer fixtures are copied from the named builder;
+-- values the builder takes from live state (pid, installed build version,
+-- active tab, settings evidence) are example-normalised in the owner's exact
+-- field shape. Term and Cap serve no describe verb in this tree and have no
+-- fixture; do not fabricate replies for unmigrated producers.
+{
+  status:"accepted", version:"0.1.0", schema:1,
+  contract:"application.describe.v1", verb:"app.describe",
+  limits:{
+    request_bytes:4096,
+    response_bytes:262144,
+    max_verbs:512,
+    verb_name_bytes:128,
+    identity_bytes:256,
+    descriptor_bytes:16384
+  },
+  requests:[
+    {body:"", expected:"accepted"},
+    {body:"   ", expected:"accepted"},
+    {body:"{}", expected:"accepted"},
+    {body:" {} ", expected:"accepted"},
+    {body:"\n{}\n", expected:"accepted"},
+    {body:"{ }", expected:"accepted"},
+    {body:"[]", expected:"refused"},
+    {body:"null", expected:"refused"},
+    {body:"\"describe\"", expected:"refused"},
+    {body:"{\"extra\":true}", expected:"refused"},
+    {body:"{not json", expected:"refused"}
+  ],
+  fixtures:[
+    {file:"ced-legacy-describe.json", producer:"ced", verb:"app.describe", mode:"legacy", origin:"apps/ced/src/controller.rs:2602", expected:"legacy_valid", note:"headless ctk-app-control.v0 reply; no pid, app_id, service or v1 marker; view is the active tab name, example-normalised to \"\""},
+    {file:"ced-legacy-describe-gui.json", producer:"ced", verb:"app.describe", mode:"legacy", origin:"apps/ced/src/app.rs:703", expected:"legacy_valid", note:"GUI seam adds settings/settings_cache in the exact Evidence/CacheEvidence field shape with example-normalised values; still no v1 envelope"},
+    {file:"scene-editor-legacy-describe.json", producer:"scene-editor", verb:"app.describe", mode:"legacy", origin:"apps/scene-editor/src/model.rs:147 + apps/scene-editor/src/app.rs:469", expected:"legacy_valid", note:"product object from model::describe (model.rs:147); the app.describe command seam (app.rs:469) adds settings/settings_cache; verbs do not yet list app.describe; evidence values example-normalised; no pid, service or v1 marker"},
+    {file:"busviewer-legacy-describe.json", producer:"busviewer", verb:"app.describe", mode:"legacy", origin:"apps/busviewer/src/model.rs:137", expected:"legacy_valid", note:"deterministic descriptor inventory; app.describe served but absent from the advertised list; no version, pid or v1 marker"},
+    {file:"dopus-legacy-describe.json", producer:"dopus", verb:"dopus.describe", mode:"legacy", origin:"apps/dopus/src/verbs.rs:793", expected:"legacy_valid", note:"served only as dopus.describe; app.describe is not dispatched in this tree; version is the installed build version, example-normalised to the crate version"},
+    {file:"shell-info-legacy.json", producer:"scene-host", verb:"shell.info", mode:"legacy", origin:"services/compd/crates/scene-host/src/host.rs:205", expected:"legacy_valid", note:"documented non-app.describe object: bare verb suffixes, shell.v1 contract; read_legacy must not convert it into a v1 describe"},
+    {file:"v1-minimal-strings.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"v1_valid", note:"string inventory with explicit null app_id and null evidence; unknown root field schema survives"},
+    {file:"v1-descriptors.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"v1_valid", note:"descriptor inventory; app.describe descriptor read_only true; descriptor extension field survives"},
+    {file:"v1-evidence.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"v1_valid", note:"mixed inventory plus evidence objects in owner field shape with example values; current and applied differ deliberately (pending activation) and stay valid"},
+    {file:"v1-refusal-duplicate-verbs.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"duplicate_verb"},
+    {file:"v1-refusal-missing-marker.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"missing_marker: absent marker must not pass as v1"},
+    {file:"v1-refusal-unknown-marker.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"unknown_marker"},
+    {file:"v1-refusal-app-describe-mutable.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"app_describe_mutable"},
+    {file:"v1-refusal-missing-app-describe.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"app_describe_missing"},
+    {file:"v1-refusal-bad-identity.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"invalid_identity: pid 0"},
+    {file:"v1-refusal-pid-overflow.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"invalid_identity: pid 4294967296 exceeds the positive u32 range"},
+    {file:"v1-refusal-bad-evidence.json", producer:"validator", verb:"app.describe", mode:"v1", origin:"validator-only", expected:"refused", note:"invalid_evidence: settings is a string"}
+  ]
+}

@@ -53,6 +53,10 @@ pub mod inspect;
 
 #[cfg(feature = "acceptance")]
 pub mod acceptance;
+/// The shared `app.describe` discovery contract (`application.describe.v1`):
+/// request checks, atomic envelope completion and v1/legacy validation.
+#[cfg(feature = "describe")]
+pub mod describe;
 
 #[cfg(feature = "native-grid")]
 pub mod native_grid;

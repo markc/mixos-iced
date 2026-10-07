@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.19"
+version = "0.1.20"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -39,6 +39,7 @@ native-inspect = ["iced/selector"]
 # dependencies. Does not force a GPU backend or a settings feature. Not in
 # defaults.
 acceptance = ["native-inspect", "dep:bus", "dep:tokio", "dep:serde", "dep:serde_json"]
+describe = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }

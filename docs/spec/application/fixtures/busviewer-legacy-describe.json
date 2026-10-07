@@ -1,0 +1,35 @@
+{
+  "app_id": "dev.mixos.busviewer",
+  "schema": "busviewer.v1",
+  "verbs": [
+    {"description": "Probe BusViewer", "name": "busviewer.ping", "read_only": true},
+    {
+      "description": "Inspect discovery, selection, reply and UI state",
+      "name": "busviewer.info",
+      "read_only": true
+    },
+    {
+      "description": "Restore and focus the existing window",
+      "name": "busviewer.show",
+      "read_only": false
+    },
+    {
+      "description": "Refetch services and descriptions",
+      "name": "busviewer.refresh",
+      "read_only": true
+    },
+    {
+      "args": {"service": "string", "verb": "string"},
+      "description": "Select an advertised verb",
+      "name": "busviewer.select",
+      "read_only": false
+    },
+    {
+      "args": {"body": "optional JSON text", "service": "optional string", "verb": "optional string"},
+      "description": "Call exactly once; target's safety is unchanged",
+      "name": "busviewer.call",
+      "read_only": false
+    },
+    {"description": "Close when idle", "name": "busviewer.quit", "read_only": false}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "app_id": "dev.mixos.busviewer",
+  "describe_contract": "application.describe.v1",
+  "pid": 999,
+  "service": "busviewer",
+  "verbs": [
+    {"description": "Probe BusViewer", "name": "busviewer.ping", "read_only": true},
+    {
+      "description": "Restore and focus the existing window",
+      "name": "busviewer.show",
+      "read_only": false
+    },
+    {
+      "args": {"service": "string", "verb": "string"},
+      "description": "Select an advertised verb",
+      "extension": {"kept": true},
+      "name": "busviewer.select",
+      "read_only": false
+    },
+    {
+      "description": "Shared discovery contract",
+      "name": "app.describe",
+      "read_only": true
+    }
+  ],
+  "version": "0.1.0"
+}

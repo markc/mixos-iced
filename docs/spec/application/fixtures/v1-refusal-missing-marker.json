@@ -1,0 +1,7 @@
+{
+  "app_id": null,
+  "pid": 1,
+  "service": "example",
+  "verbs": ["example.ping", "app.describe"],
+  "version": "0.1.0"
+}

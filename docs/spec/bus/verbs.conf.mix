@@ -49,6 +49,7 @@
     {name:"scene-editor.info", owner:"scene-editor", version:"0.1.0", status:"accepted"},
     {name:"scene-editor.show", owner:"scene-editor", version:"0.1.0", status:"accepted"},
     {name:"scene-editor.action", owner:"scene-editor", version:"0.1.0", status:"accepted"},
-    {name:"scene-editor.quit", owner:"scene-editor", version:"0.1.0", status:"accepted"}
+    {name:"scene-editor.quit", owner:"scene-editor", version:"0.1.0", status:"accepted"},
+    {name:"app.describe", owner:"application", version:"0.1.0", status:"accepted"}
   ]
 }

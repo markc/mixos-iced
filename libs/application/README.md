@@ -124,3 +124,12 @@ Call `Worker::flush_cache(deadline)` on the existing shutdown worker to drain
 pending saves within a budget. A timeout cannot interrupt already-running OS
 I/O. Dropping the worker may lose an unstarted save; persistence requires a
 successful save or drain receipt. No UI thread, transport or runtime is added.
+
+The opt-in `describe` feature adds the shared `app.describe` discovery
+contract (`application.describe.v1`). `describe::validate_request` checks a
+command body before dispatch; `describe::complete` adds the common identity
+envelope (`describe_contract`, `version`, `pid`, `service`, `app_id`) to a
+product object atomically, after validating the whole response; `validate`
+and `read_legacy` read back v1 and pre-envelope objects. It depends only on
+serde/serde_json, creates no connection or runtime, and owns no settings
+state. The spec and fixtures live in `docs/spec/application/`.

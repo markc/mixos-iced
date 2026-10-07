@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.20
+
+- Converge the shared description contract with native preparation and actor
+  ownership, preserving the existing optional features and public validators.
+
 ## 0.1.19
 
 - Share bounded native actor diagnostics, task outcome recording and cancellation
@@ -84,6 +89,11 @@ control/wait classification. Expired shutdown cannot start a queued cache write.
   tests and embeddings. Fallback preparation carries its verified binding
   through the ladder. The legacy `prepare_registered_checked` compat path
   remains available; the worker no longer uses it.
+- Add the opt-in `describe` feature: the shared `app.describe` discovery
+  contract (`application.describe.v1`, registry version 0.1.0), owned by this
+  crate. Request checks, atomic envelope completion, v1 validation and
+  permissive legacy reading use serde/serde_json only; no Bus, settings or
+  renderer dependency is added. See `docs/spec/application/describe-v1.md`.
 
 ## 0.1.10
 
