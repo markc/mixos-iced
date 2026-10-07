@@ -75,7 +75,7 @@ pub fn from_settings(
         .get("app:ced")
         .ok_or_else(|| missing("app:ced"))?;
     let (palette, chrome) = build_palette(look.dictionary()).map_err(|name| {
-        settings::Diagnostic::new("unsupported_content", name, "Editor colour missing")
+        settings::Diagnostic::new("unsupported_content", &name, "Editor colour missing")
     })?;
     let ui = look.typography().get("ui").ok_or_else(|| missing("ui"))?;
     let mono = look
