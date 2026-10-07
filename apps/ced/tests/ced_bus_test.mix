@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
 -- End-to-end (ced E1 plan §7.3): a private noded, the real editd with
 -- recovery files in the temp dir, and `ced --headless --service ced`, driven
 -- by one-shot Mix clients. Agents' edits reach ced's mirror; concurrent
@@ -14,9 +15,9 @@
 -- port, private unix socket, admission off, HOME and state dirs in the temp
 -- dir.
 --
--- Run: MIXOS=<checkout> mix src/desktop/apps/ced/tests/ced-bus-test.mix [--editd PATH] [--ced PATH]
+-- Run: MIXOS=<checkout> mix apps/ced/tests/ced_bus_test.mix [--editd PATH] [--ced PATH]
 -- Binaries: --editd (or MIXOS_TEST_EDITD), default $MIXOS/target/release-fast/editd;
--- --ced (or MIXOS_TEST_CED), default $MIXOS/src/desktop/target/release/ced;
+-- --ced (or MIXOS_TEST_CED), default $MIXOS/target/release-fast/ced;
 -- MIXOS_TEST_MIX / MIXOS_TEST_NODED point at freshly built mix / noded,
 -- defaults are the system install.
 $root = env("MIXOS")
@@ -29,7 +30,7 @@ for each $k in range(0, length($argv) - 2)
   if $argv[$k] == "--ced" then $ced = $argv[$k + 1] end
 end
 if $editd == "" then $editd = $root .. "/target/release-fast/editd" end
-if $ced == "" then $ced = $root .. "/src/desktop/target/release/ced" end
+if $ced == "" then $ced = $root .. "/target/release-fast/ced" end
 $mix = env("MIXOS_TEST_MIX") ?? ""
 if $mix == "" then $mix = "/opt/mixos/bin/mix" end
 $noded = env("MIXOS_TEST_NODED") ?? ""
@@ -41,7 +42,7 @@ $tmp = trim(run_argv_must(["mktemp", "-d", "/tmp/mixos-ced-bus-test.XXXXXXXX"]))
 $tag = uuid()
 $node = $tmp .. "/node.conf.mix"
 $recdir = $tmp .. "/recovery"
-$env = {MIXOS_NODE_CONFIG: $node, MIX_STATS: "off", PATH: "/usr/bin:/bin",
+$env = {MIXOS_NODE_CONFIG: $node, COSMIX_NODE_CONFIG: $node, MIX_STATS: "off", PATH: "/usr/bin:/bin",
   HOME: $tmp, XDG_STATE_HOME: $tmp, XDG_RUNTIME_DIR: $tmp, XDG_CONFIG_HOME: $tmp .. "/config",
   RUST_LOG: "editd=debug", CED_LOG: "info", MIXOS_EDIT_RECOVERY_DIR: $recdir}
 $editd_pid = nil
@@ -164,6 +165,11 @@ try
   $broker_alive = false
   for each $attempt in range(1, 5)
     $port = random(48000, 48999)
+    -- The installed Mix retains frozen pre-transplant names. Both generations
+    -- must resolve the same owned broker, including after a port retry.
+    $url = "ws://127.0.0.1:" .. to_string($port) .. "/ws"
+    $env["MIXOS_NODED_URL"] = $url
+    $env["COSMIX_NODED_URL"] = $url
     write_file($node, json_encode({node: "ced-bus-test-" .. $tag, wg_ip: "", mesh: "ced-bus-test.invalid",
       noded: {port: $port, admission: "off", unix_socket: $tmp .. "/bus.sock"}}))
     $noded_pid = spawn([$noded, "serve", "--listen", "127.0.0.1:" .. to_string($port),
