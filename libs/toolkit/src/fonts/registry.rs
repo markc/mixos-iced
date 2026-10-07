@@ -17,7 +17,7 @@
 //! which cannot fail by construction and is therefore asserted, never
 //! returned as a recoverable error.
 //!
-//! Selections become private aliases (`mixos-pinned-<digest>`) in the
+//! Selections become private aliases (`toolkit-pinned-<digest>`) in the
 //! renderer: a selection's public family spelling never becomes the key iced
 //! shapes with, so two collections whose fonts claim the same family names
 //! can coexist and old paragraphs stay bound to their original bytes.
@@ -945,10 +945,10 @@ impl RendererOwner for iced_graphics::text::FontSystem {
     }
 }
 
-const ALIAS_PREFIX: &str = "mixos-pinned-";
-const COLLECTION_DOMAIN: &[u8] = b"mixos-toolkit-font-collection-v1\0";
-const SELECTION_DOMAIN: &[u8] = b"mixos-toolkit-font-selection-v1\0";
-const ICON_SELECTION_DOMAIN: &[u8] = b"mixos-toolkit-font-icon-selection-v1\0";
+const ALIAS_PREFIX: &str = "toolkit-pinned-";
+const COLLECTION_DOMAIN: &[u8] = b"toolkit-font-collection-v1\0";
+const SELECTION_DOMAIN: &[u8] = b"toolkit-font-selection-v1\0";
+const ICON_SELECTION_DOMAIN: &[u8] = b"toolkit-font-icon-selection-v1\0";
 
 fn digest_hex(digest: &Digest) -> String {
     blake3::Hash::from_bytes(*digest).to_hex().to_string()
@@ -2491,7 +2491,7 @@ mod tests {
         let selection = registration.font("ui").unwrap();
         assert_eq!(selection.font().weight, Weight::Numeric(400));
         let alias = alias_of(selection);
-        assert!(alias.starts_with("mixos-pinned-"));
+        assert!(alias.starts_with("toolkit-pinned-"));
         let evidence = selection.evidence();
         assert_eq!(evidence.declared, vec!["Inter"]);
         assert_eq!(evidence.chosen_group, 0);
@@ -2507,7 +2507,7 @@ mod tests {
         };
         let added_id = ledger.faces[&face_key].id;
         for shaping in [cosmic_text::Shaping::Basic, cosmic_text::Shaping::Advanced] {
-            let glyphs = shape(&mut renderer.raw, "Hello MixOS", alias, shaping);
+            let glyphs = shape(&mut renderer.raw, "Hello toolkit", alias, shaping);
             assert!(!glyphs.is_empty());
             for (id, _, glyph_id, _) in &glyphs {
                 assert_eq!(
