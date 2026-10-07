@@ -22,6 +22,7 @@
 //! ```
 
 mod dir;
+pub mod atomic;
 pub mod node;
 pub mod store;
 

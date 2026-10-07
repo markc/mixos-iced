@@ -44,6 +44,7 @@ mod equivalence;
 pub mod family;
 mod mapping;
 mod mapping_model;
+mod projection;
 mod recipe;
 mod recipe_compiler;
 mod source;
@@ -58,6 +59,7 @@ pub use colour_model::{
     ResolvedPair, TEXT_PAIR_NAMES, contrast_ratio,
 };
 pub use compiler::compile_design;
+pub use projection::{DesignReadProjection, ReadButton, ReadMetric, ReadPair, ReadType};
 pub use context::{Contrast, DesignContext, Mode, Scheme};
 pub use design_model::{
     AuthoredMetric, DesignApplyDecision, DesignApplyTransition, DesignCompileFailure,

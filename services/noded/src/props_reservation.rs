@@ -65,6 +65,7 @@ pub(crate) fn reserved_owner(name: &str) -> Option<&str> {
 /// publish side is reserved. Record/audit topics retain their stricter grant
 /// rules through [`reserved_owner`].
 pub(crate) fn publisher_owner(name: &str) -> Option<&str> {
+    if settings_topic(name) { return Some("settingsd"); }
     reserved_owner(name)
         .or_else(|| {
             name.strip_suffix(".pointer.changed")
@@ -74,6 +75,11 @@ pub(crate) fn publisher_owner(name: &str) -> Option<&str> {
             name.strip_suffix(PUBLIC_CHANGED_SUFFIX)
                 .filter(|owner| !owner.is_empty())
         })
+}
+
+fn settings_topic(name: &str) -> bool {
+    name == "settingsd.desktop.changed" || name.strip_prefix("settingsd.desktop.changed.")
+        .is_some_and(|profile| !profile.is_empty() && profile.len() <= 64 && profile.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
 }
 
 /// True iff this peer may publish to `name`. Non-reserved topics
@@ -95,6 +101,7 @@ pub(crate) fn may_subscribe(name: &str) -> bool {
 
 /// Private reserved-topic `clear` requires `peer_id == owner`.
 pub(crate) fn may_clear(name: &str, peer_id: &str) -> bool {
+    if settings_topic(name) { return peer_id == "settingsd"; }
     match reserved_owner(name) {
         Some(owner) => owner == peer_id,
         None => true,
@@ -138,7 +145,7 @@ pub(crate) fn visible_in_list(name: &str, peer_id: &str) -> bool {
 /// reserved path with a parseable inner, returns the re-serialised
 /// canonical wire bytes.
 pub(crate) fn canonicalize_reserved_inner(topic: &str, inner_wire: &str) -> Option<String> {
-    reserved_owner(topic)?;
+    if !settings_topic(topic) { reserved_owner(topic)?; }
     let mut inner = match bus::wire::parse(inner_wire) {
         Ok(m) => m,
         Err(_) => return None,
@@ -151,6 +158,22 @@ pub(crate) fn canonicalize_reserved_inner(topic: &str, inner_wire: &str) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_settings_snapshot_is_public_but_owned_by_settingsd() {
+        let topic = "settingsd.desktop.changed.default";
+        assert_eq!(publisher_owner(topic),Some("settingsd"));
+        assert!(may_publish(topic,"settingsd"));
+        assert!(!may_publish(topic,"operator"));
+        assert!(!may_clear(topic,"operator"));
+        assert!(may_subscribe(topic));
+        assert!(visible_in_list(topic,"operator"));
+        let hostile = "---\ncommand: delete\nfrom: forged\nto: victim\n---\n{}";
+        let safe = bus::wire::parse(&canonicalize_reserved_inner(topic,hostile).unwrap()).unwrap();
+        assert_eq!(safe.get("command"),Some(topic));
+        assert_eq!(safe.get("from"),None);
+        assert_eq!(safe.get("to"),None);
+    }
 
     #[test]
     fn detects_records_changed_topic() {

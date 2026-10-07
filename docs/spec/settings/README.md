@@ -1,0 +1,136 @@
+# Desktop settings contract
+
+Status: accepted initial authority contract, version 0.1.0. Full desktop consumer
+integration remains in development. No frozen ABP wire bytes change.
+
+`settingsd` serves one explicitly initialised profile in the initial slice.
+`settings` provides shared headless types, resolver and pure snapshot reducer;
+`design::DesignReadProjection` is render data that cannot construct an accepted
+design or fork compiler apply lineage. The current apps are Ced, Dopus, Term,
+Cap, BusViewer and Scene Editor; compd owns the iced Quoin shell.
+
+## Served verbs
+
+All trusted mesh operators can invoke these verbs. Requests carry JSON bodies;
+responses preserve ordinary ABP rc conventions: 0 for handled results and 10 for
+refusal, invalid input or unknown verbs. Domain status is structured in the body.
+
+| Verb | Input and result |
+| --- | --- |
+| `settings.describe` | No mutation; version, fields, ranges, defaults, limits and implemented/deferred capabilities |
+| `settings.get` | `{binding:{instance,profile}}`; complete accepted snapshot, publication/recovery status |
+| `settings.validate` | Apply-shaped body; resolve/compile candidate without a write or receipt; valid or field diagnostics |
+| `settings.apply` | Fenced batch described below; durable changed/unchanged receipt |
+| `settings.reset` | Apply-shaped body with empty changes and explicit reset paths; same transaction semantics |
+| `settings.status` | Binding plus optional operation_id; accepted/published revision and retained receipt or unknown_operation |
+
+The profile identifier and instance use 1–64 ASCII letters, digits, dash or
+underscore. Operation IDs use the same character set, up to 128 bytes. Revisions
+are canonical decimal u64 **strings**, including on strict-data boundaries;
+numeric, overflowing, signed and leading-zero representations are refused.
+
+```json
+{
+  "binding": {"instance": "example", "profile": "default"},
+  "expected_incarnation": "authority-readback-uuid",
+  "expected_revision": "1",
+  "operation_id": "example-batch-1",
+  "changes": {
+    "appearance.mode": "dark",
+    "ui.text_scale": 1.1,
+    "shell.panels.bottom.thickness": 48
+  },
+  "reset": []
+}
+```
+
+An optional request_digest is checked against BLAKE3 of the canonical serde JSON
+representation of the typed request, with request_digest set to null. Object
+maps are sorted; reset-list order remains part of the request. Use the shared
+request digest API rather than hashing arbitrary JSON text. Reusing an operation
+ID with different input is refused. Receipt lookup/deduplication precedes expected
+revision conflict, after target/incarnation checks. An old retained operation can
+retrieve its original receipt after subsequent edits.
+
+Retain at most 128 receipts, inside the accepted document. A no-op writes its
+receipt durably without increasing desktop revision or publishing a new snapshot.
+Missing/evicted IDs return unknown_operation: opaque IDs have no expiry order,
+and the initial contract cannot prove expired_operation. Resolve ambiguity by
+readback and a newly fenced operation; exactly-once is not promised beyond
+retention. Restores establish a new incarnation and clear foreign-history
+receipts. Status includes publication_pending and recovering separately from
+durable acceptance; a changed result can remain unpublished after broker failure.
+
+## Initial data and resolution
+
+The schema covers appearance scheme/mode/contrast plus embedded or complete
+strict-data design source; UI density/text scale/reduced motion; named panels
+with edge/mode/thickness; ordered shell pages; and whole app override records
+with scheme/mode/contrast/text scale. Describe supplies exact ranges. Unknown
+fields/scopes are refused. Field reset restores a package default; removing an
+app override restores profile inheritance. Per-field authored provenance beyond
+these initial concrete profile values is later work.
+
+Validate the whole candidate and all advertised app contexts before acceptance.
+Compilation checks the source's claimed contexts. App overlays affect their
+context alone; profile high contrast takes precedence. A custom source is at
+most 256 KiB. Encoded requests are at most 384 KiB. Inline snapshots are at most
+960 KiB, reserving 64 KiB for ABP/broker envelope overhead under the current 1 MiB
+retained limit. Larger settings are refused until native immutable artifact
+delivery is implemented. Required fonts/assets and runtime live capability are
+not yet advertised.
+
+Snapshot schema 1 includes binding, incarnation, desktop revision, resolved-design
+generation, source digest, complete desktop and effective per-app/desktop design
+projections. The resolved-design generation is owned by the authority and
+survives restart; it is not a broker sequence or a reconstituted compiler apply
+handle. Clients must confirm an incarnation change through fresh bound readback
+before installing it. Work tickets fence superseded asynchronous completion.
+
+## Topics and storage
+
+Publish retained `settingsd.desktop.changed.<profile>`, owned by the registered
+`settingsd` service. The unscoped base name is reserved too. All clients may
+subscribe; ordinary publishers/clearers cannot replace its canonical state.
+Noded strips inner routing headers and stamps broker_service independently of
+caller input. The publisher repopulates retained state at startup and reconnect,
+even without a settings mutation. Generic props-prefix ownership is deliberately
+not used: embedding a profile in that prefix changes its matched service owner.
+
+Default root: resolved MixOS Etc directory / `settings/<profile>/`. Explicit
+test roots are supported. One retained writer.lock inode provides a process
+flock; it is never removed on normal exit. The root must be an owned directory
+not writable by other users. `desktop.conf.mix` holds schema, binding,
+incarnation, revisions, authored desktop and receipts. A synced
+`desktop.previous.conf.mix` is written before replacing the accepted generation.
+Files are private, never evaluated as Mix source.
+
+Replacement uses exclusive temporary create, write, file sync, directory-relative
+rename and directory sync. Pre-rename errors leave accepted state unchanged.
+Post-rename sync errors report outcome_unknown and fence further mutations until
+recovery; they cannot be reported as a known uncommitted failure. Corrupt input
+is preserved before a valid backup is restored with a new incarnation. Newer
+schemas or mismatched target bindings are not overwritten by a fallback.
+
+`settingsd init --instance example` explicitly creates a profile and refuses
+existing accepted/backup data. `settingsd serve --instance example` never
+materialises defaults for a missing established store. Installer seeding and
+automatic session adoption are separate later work; the unit is packaged but
+the session target does not yet start it automatically.
+
+## Validation and remaining scope
+
+Machine fixtures: [authority.spec.mix](authority.spec.mix). Rust tests cover
+precision, patches, projection round-trip, writer locking, changed/no-op receipts,
+lost replies, conflicts, digest reuse, eviction, backup restore and future schemas.
+`tests/settings/authority_test.mix` runs real ABP publication, unrelated operator
+mutation, forged publish/clear refusal and authority restart against an isolated
+noded. OS process lifecycle here belongs to the test fixture; application calls
+and observations remain native ABP.
+
+This slice does not claim GUI propagation, renderer acknowledgements, presentation,
+offline async client bootstrap, candidate import/watch, immutable artifacts,
+full field provenance, named-profile management, compatibility, scheduled policy,
+preview, routed observation or replication. Every deferred feature must extend
+the same authority and shared contracts, with appropriate contract versions and
+migration. Native VT/image presentation and latency gates remain outstanding.

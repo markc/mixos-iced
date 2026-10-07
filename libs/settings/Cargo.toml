@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "settings"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Headless desktop settings contracts, resolution and snapshot reducer"
+
+[package.metadata.mixos]
+component = "settings"
+kind = "lib"
+layer = "core"
+contract = "public"
+
+[lints.clippy]
+mod_module_files = "deny"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+design.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+strict.workspace = true

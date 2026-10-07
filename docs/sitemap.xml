@@ -10,6 +10,7 @@
   <url><loc>https://mixos.dev/ced/</loc></url>
   <url><loc>https://mixos.dev/decisions/2026-10-05-toolkit-is-generic/</loc></url>
   <url><loc>https://mixos.dev/decisions/2026-10-07-scene-editor-application/</loc></url>
+  <url><loc>https://mixos.dev/decisions/2026-10-07-settings-authority/</loc></url>
   <url><loc>https://mixos.dev/dev/bevy-to-iced/</loc></url>
   <url><loc>https://mixos.dev/dev/components/</loc></url>
   <url><loc>https://mixos.dev/dopus/</loc></url>
@@ -18,5 +19,6 @@
   <url><loc>https://mixos.dev/native-session/</loc></url>
   <url><loc>https://mixos.dev/noded/</loc></url>
   <url><loc>https://mixos.dev/scene-editor/</loc></url>
+  <url><loc>https://mixos.dev/spec/settings/</loc></url>
   <url><loc>https://mixos.dev/term/</loc></url>
 </urlset>

@@ -1,0 +1,18 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Build-worker gate: real native ABP authority, isolated from operator services.
+$root = dirname(dirname(dirname(realpath($0))))
+$host = require($root .. "/tests/desktop/nested_host_lib.mix")
+$noded = env("MIXOS_TEST_NODED", $root .. "/target/release-fast/noded")
+export MIXOS_TEST_MIX=env("MIXOS_TEST_MIX", "/opt/cosmix/bin/mix")
+if not is_file($noded) then raise("BINARY", "Build the exact-revision noded first") end
+$dir = "/var/tmp/settings-native-" .. uuid()
+$broker = $host.private_bus({dir:$dir, name:"settings-gate", noded:$noded})
+try
+  $result = run_argv(["cargo", "test", "--locked", "--profile", "release-fast", "-p", "settingsd", "--test", "native", "--", "--ignored", "--nocapture"], {cwd:$root, timeout:300, max_output:1000000, stderr:"stdout"})
+  print($result.stdout)
+  if not $result.ok or $result.stdout_truncated then raise("SETTINGS_NATIVE", "Real native authority gate failed") end
+finally
+  $host.stop_bus($broker)
+end
+print("SET-PUBLISH / SET-OPS / authority lifecycle slice passed on real noded")
