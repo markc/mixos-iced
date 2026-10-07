@@ -432,7 +432,11 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                             stub.initial_subscribe_delay
                         } else {
                             Duration::ZERO
-                        } + if conn_index >= 2 { stub.replay_delay } else { Duration::ZERO };
+                        } + if conn_index >= 2 {
+                            stub.replay_delay
+                        } else {
+                            Duration::ZERO
+                        };
                         if !delay.is_zero() {
                             // Keep the broker's transport reader alive while
                             // withholding an ACK. A closed abandoned attempt
@@ -1749,7 +1753,9 @@ async fn finite_connect_waits_for_all_declarations() {
     });
     entered.notified().await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), &mut result_rx).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(200), &mut result_rx)
+            .await
+            .is_err(),
         "connect must not return while an ACK is held"
     );
 
@@ -2580,8 +2586,12 @@ async fn bounded_flood_before_final_ack_delivers_overflow_only_after_publication
     assert!(saw_overflow, "the overflow must be delivered after success");
     assert_eq!(commands, 2, "the two retained commands follow");
     assert_eq!(incoming.overflow_count(), 30);
-    assert!(tokio::time::timeout(Duration::from_millis(200), incoming.recv()).await.is_err(),
-        "only one overflow notice and two retained commands are emitted");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), incoming.recv())
+            .await
+            .is_err(),
+        "only one overflow notice and two retained commands are emitted"
+    );
     client.close().await;
 }
 
