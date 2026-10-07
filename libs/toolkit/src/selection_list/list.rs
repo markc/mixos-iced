@@ -634,10 +634,9 @@ mod tests {
         // can borrow them for the caller's lifetime.
         let class: &'a <iced_core::Theme as Catalog>::Class<'a> =
             Box::leak(<iced_core::Theme as Catalog>::default());
-        let on_selected: &'a dyn Fn(usize, String) -> String = Box::leak(
-            Box::new(|_: usize, _: String| String::new())
-                as Box<dyn Fn(usize, String) -> String>,
-        );
+        let on_selected: &'a dyn Fn(usize, String) -> String =
+            Box::leak(Box::new(|_: usize, _: String| String::new())
+                as Box<dyn Fn(usize, String) -> String>);
         List {
             options,
             font: iced_core::Font::DEFAULT,

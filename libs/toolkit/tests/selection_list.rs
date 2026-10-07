@@ -167,15 +167,14 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
         Tree::new(&legacy as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut legacy = legacy;
     legacy.diff(&mut tree);
-    let legacy_height =
-        toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
-            &mut legacy,
-            &mut tree,
-            &renderer,
-            &limits(),
-        )
-        .size()
-        .height;
+    let legacy_height = toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
+        &mut legacy,
+        &mut tree,
+        &renderer,
+        &limits(),
+    )
+    .size()
+    .height;
     // The prepared rows are taller than the legacy text-size rows.
     let styled: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
         SelectionList::new(&options, |_, value: String| value).line_height(30.0_f32);
@@ -183,14 +182,13 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
         Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut styled = styled;
     styled.diff(&mut tree);
-    let styled_height =
-        toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
-            &mut styled,
-            &mut tree,
-            &renderer,
-            &limits(),
-        )
-        .size()
-        .height;
+    let styled_height = toolkit::core::Widget::<String, toolkit::core::Theme, Recorder>::layout(
+        &mut styled,
+        &mut tree,
+        &renderer,
+        &limits(),
+    )
+    .size()
+    .height;
     assert!(styled_height > legacy_height);
 }
