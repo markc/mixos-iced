@@ -13,15 +13,17 @@
 //! all. It never silently takes a different name.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use bus::{BoundedIncomingEvent, IncomingCommand, SupervisedClient, SupervisedError};
-use application::presentation::native::{Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker};
 use crate::appearance::Look;
+use application::presentation::native::{
+    Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker,
+};
+use bus::{BoundedIncomingEvent, IncomingCommand, SupervisedClient, SupervisedError};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
@@ -85,7 +87,14 @@ pub enum Inbound {
 }
 
 enum Outbound {
-    Reply { to: String, command: String, id: Option<String>, rc: u8, body: String, generation: u64 },
+    Reply {
+        to: String,
+        command: String,
+        id: Option<String>,
+        rc: u8,
+        body: String,
+        generation: u64,
+    },
     /// A topic wire: `<service>.scene.changed`, or with `panel`
     /// `<service>.panel.changed`, retained as Quoin's is (a loader that
     /// subscribes late still reads the current panels).
@@ -124,7 +133,10 @@ struct SettingsLane {
 /// The names to try, in order: `shell`, then the override when it differs.
 pub fn candidate_names(service_override: Option<&str>) -> Vec<String> {
     let mut names = vec![DEFAULT_SERVICE.to_owned()];
-    if let Some(name) = service_override.map(str::trim).filter(|name| !name.is_empty() && *name != DEFAULT_SERVICE) {
+    if let Some(name) = service_override
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != DEFAULT_SERVICE)
+    {
         names.push(name.to_owned());
     }
     names
@@ -134,10 +146,15 @@ impl Port {
     /// Start the worker. The broker connection is the worker's: a missing
     /// noded is retried with backoff and never blocks the compositor.
     pub fn start(config: HostConfig, waker: Waker) -> Result<Self, String> {
-        let binding = settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
+        let binding =
+            settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
         let (settings_jobs, jobs) = watch::channel(None);
         let settings_mailbox = Mailbox::default();
-        let lane = SettingsLane { binding: binding.clone(), jobs, mailbox: settings_mailbox.clone() };
+        let lane = SettingsLane {
+            binding: binding.clone(),
+            jobs,
+            mailbox: settings_mailbox.clone(),
+        };
         let (inbound_tx, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (outbound, outbound_rx) = tokio_mpsc::unbounded_channel();
         let (events, events_rx) = tokio_mpsc::unbounded_channel();
@@ -151,31 +168,70 @@ impl Port {
             .name("compd-scenes".into())
             .spawn(move || {
                 let _completion = CompletionOnDrop(completion_tx);
-                let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         tracing::error!(%error, "scene host: failed to build its Bus runtime");
                         return;
                     }
                 };
-                let delivery = Delivery { sender: inbound_tx, waker };
-                runtime.block_on(worker(config, delivery, outbound_rx, events_rx, pending, shutdown_rx, published, lane));
+                let delivery = Delivery {
+                    sender: inbound_tx,
+                    waker,
+                };
+                runtime.block_on(worker(
+                    config,
+                    delivery,
+                    outbound_rx,
+                    events_rx,
+                    pending,
+                    shutdown_rx,
+                    published,
+                    lane,
+                ));
             })
             .map_err(|error| format!("failed to spawn the scene host's Bus worker: {error}"))?;
-        let sink = EventSink { events, pending: pending_events };
-        Ok(Self { inbound, outbound, sink, shutdown, completion, thread: Some(thread), client, binding, settings_jobs, settings_mailbox })
+        let sink = EventSink {
+            events,
+            pending: pending_events,
+        };
+        Ok(Self {
+            inbound,
+            outbound,
+            sink,
+            shutdown,
+            completion,
+            thread: Some(thread),
+            client,
+            binding,
+            settings_jobs,
+            settings_mailbox,
+        })
     }
 
-    pub(crate) fn settings_binding(&self) -> settings::Binding { self.binding.clone() }
-    pub(crate) fn settings_jobs(&self, jobs: Jobs) { self.settings_jobs.send_replace(Some(jobs)); }
-    pub(crate) fn take_settings(&self) -> Vec<SettingsEvent<Look>> { self.settings_mailbox.take() }
+    pub(crate) fn settings_binding(&self) -> settings::Binding {
+        self.binding.clone()
+    }
+    pub(crate) fn settings_jobs(&self, jobs: Jobs) {
+        self.settings_jobs.send_replace(Some(jobs));
+    }
+    pub(crate) fn take_settings(&self) -> Vec<SettingsEvent<Look>> {
+        self.settings_mailbox.take()
+    }
     pub(crate) fn settings_generation(&self) -> Option<u64> {
-        self.client.get().and_then(|client| settings::native::live_generation(client))
+        self.client
+            .get()
+            .and_then(|client| settings::native::live_generation(client))
     }
 
     /// The live broker connection's generation; `None` before registering.
     pub fn connection_generation(&self) -> Option<u64> {
-        self.client.get().map(|client| client.connection_generation())
+        self.client
+            .get()
+            .map(|client| client.connection_generation())
     }
 
     /// The next message from the worker, without blocking.
@@ -220,7 +276,9 @@ impl Port {
     /// Deregister and stop, bounded.
     pub fn finish(mut self) {
         let _ = self.shutdown.send(true);
-        let Some(thread) = self.thread.take() else { return };
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
         match self.completion.recv_timeout(SHUTDOWN_GRACE) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 if thread.join().is_err() {
@@ -248,10 +306,18 @@ impl EventSink {
     pub fn emit(&self, citizen: &str, verb: &str, body: Value) -> bool {
         if self.pending.fetch_add(1, Ordering::AcqRel) >= MAX_PENDING_EVENTS {
             self.pending.fetch_sub(1, Ordering::AcqRel);
-            tracing::warn!(citizen, verb, "scene event dropped: {MAX_PENDING_EVENTS} events already pending");
+            tracing::warn!(
+                citizen,
+                verb,
+                "scene event dropped: {MAX_PENDING_EVENTS} events already pending"
+            );
             return false;
         }
-        let event = Event { to: citizen.to_owned(), verb: verb.to_owned(), body };
+        let event = Event {
+            to: citizen.to_owned(),
+            verb: verb.to_owned(),
+            body,
+        };
         if self.events.send(event).is_err() {
             self.pending.fetch_sub(1, Ordering::AcqRel);
             return false;
@@ -377,12 +443,19 @@ async fn connect(config: &HostConfig, shutdown: &mut watch::Receiver<bool>) -> C
                 },
             }
         }
-        if let Some(next) = names.iter().skip_while(|candidate| *candidate != name).nth(1) {
+        if let Some(next) = names
+            .iter()
+            .skip_while(|candidate| *candidate != name)
+            .nth(1)
+        {
             tracing::error!("SCENE HOST: falling back to the configured override name `{next}`");
         }
     }
     let reason = if names.len() == 1 {
-        format!("{}; no --scene-service / scene_service override is configured, so the scene host is OFF", refusals.join("; "))
+        format!(
+            "{}; no --scene-service / scene_service override is configured, so the scene host is OFF",
+            refusals.join("; ")
+        )
     } else {
         format!("{}; the scene host is OFF", refusals.join("; "))
     };
@@ -391,7 +464,9 @@ async fn connect(config: &HostConfig, shutdown: &mut watch::Receiver<bool>) -> C
 }
 
 fn registration_refusal(error: &SupervisedError) -> Option<String> {
-    error.registration_rejection().map(|(rc, message)| format!("rc {rc}: {message}"))
+    error
+        .registration_rejection()
+        .map(|(rc, message)| format!("rc {rc}: {message}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -406,7 +481,9 @@ async fn worker(
     mut lane: SettingsLane,
 ) {
     let settings_send = |event| {
-        if lane.mailbox.publish(event) { (delivery.waker)(); }
+        if lane.mailbox.publish(event) {
+            (delivery.waker)();
+        }
     };
     let mut settings_worker = SettingsWorker::offline(crate::appearance::build);
     let mut connect_shutdown = shutdown.clone();
@@ -437,9 +514,14 @@ async fn worker(
     };
     let _ = published.set(Arc::clone(&client));
     settings_worker.connect(Arc::clone(&client));
-    if let Some(jobs) = lane.jobs.borrow_and_update().clone() { settings_worker.replace(jobs); }
+    if let Some(jobs) = lane.jobs.borrow_and_update().clone() {
+        settings_worker.replace(jobs);
+    }
     settings_send(SettingsEvent::Wake);
-    tracing::info!("scene host: registered as `{service}` via {}", config.noded_url);
+    tracing::info!(
+        "scene host: registered as `{service}` via {}",
+        config.noded_url
+    );
     if !delivery.send(Inbound::Registered(service.clone())) {
         tracing::warn!("scene host: the engine's queue refused the registration notice");
     }
@@ -449,7 +531,10 @@ async fn worker(
         return;
     };
     let mut lifecycle = client.subscribe_state();
-    let topics = (format!("{service}.scene.changed"), format!("{service}.panel.changed"));
+    let topics = (
+        format!("{service}.scene.changed"),
+        format!("{service}.panel.changed"),
+    );
     let mut flights = tokio::task::JoinSet::new();
     let registry_client = Arc::clone(&client);
     flights.spawn(async move {
@@ -531,7 +616,12 @@ async fn refuse(client: &SupervisedClient, command: &IncomingCommand, rc: u8, bo
     }
 }
 
-async fn admit(service: &str, client: &SupervisedClient, delivery: &Delivery, command: IncomingCommand) {
+async fn admit(
+    service: &str,
+    client: &SupervisedClient,
+    delivery: &Delivery,
+    command: IncomingCommand,
+) {
     match route(service, &command) {
         Route::Scene(verb) => {
             let request = Request {
@@ -558,39 +648,69 @@ async fn admit(service: &str, client: &SupervisedClient, delivery: &Delivery, co
         }
         Route::Unknown => {
             let message = format!("{} is not a scene host verb", command.command);
-            refuse(client, &command, 10, json!({"error_code":"UNKNOWN_VERB","message":message})).await;
+            refuse(
+                client,
+                &command,
+                10,
+                json!({"error_code":"UNKNOWN_VERB","message":message}),
+            )
+            .await;
         }
         Route::Ignore => {}
     }
 }
 
-async fn send(client: &SupervisedClient, (scene_topic, panel_topic): &(String, String), message: Outbound) {
+async fn send(
+    client: &SupervisedClient,
+    (scene_topic, panel_topic): &(String, String),
+    message: Outbound,
+) {
     let topic = match &message {
         Outbound::Publish { panel: true, .. } => panel_topic.as_str(),
         _ => scene_topic.as_str(),
     };
     let result = match &message {
-        Outbound::Reply { generation, command, .. } if *generation != client.connection_generation() => {
+        Outbound::Reply {
+            generation,
+            command,
+            ..
+        } if *generation != client.connection_generation() => {
             // Its caller's connection is gone; a reply on the new one would
             // reach whoever holds that name now, under a stale id.
             tracing::debug!(command = %command, "scene host reply dropped: admitted on an earlier connection");
             Ok(())
         }
-        Outbound::Reply { generation, to, command, id, rc, body, .. } => {
-            tokio::time::timeout(SEND_TIMEOUT, client.respond_parts(*generation, to, command, id.as_deref(), *rc, body))
-                .await
-                .map_err(|_| "timed out".to_string())
-                .and_then(|result| result.map_err(|error| error.to_string()))
-        }
+        Outbound::Reply {
+            generation,
+            to,
+            command,
+            id,
+            rc,
+            body,
+            ..
+        } => tokio::time::timeout(
+            SEND_TIMEOUT,
+            client.respond_parts(*generation, to, command, id.as_deref(), *rc, body),
+        )
+        .await
+        .map_err(|_| "timed out".to_string())
+        .and_then(|result| result.map_err(|error| error.to_string())),
         Outbound::Publish { panel, wire } => {
             let mut headers = BTreeMap::new();
             headers.insert("name".to_string(), topic.to_string());
             headers.insert("retain".to_string(), panel.to_string());
-            match tokio::time::timeout(SEND_TIMEOUT, client.call_with_headers_raw("noded", "topic.publish", &headers, wire)).await {
+            match tokio::time::timeout(
+                SEND_TIMEOUT,
+                client.call_with_headers_raw("noded", "topic.publish", &headers, wire),
+            )
+            .await
+            {
                 Err(_) => Err("timed out".to_string()),
                 Ok(Err(error)) => Err(error.to_string()),
                 Ok(Ok((0, _, _))) => Ok(()),
-                Ok(Ok((rc, body, _))) => Err(format!("topic.publish rejected with rc {rc}: {body}")),
+                Ok(Ok((rc, body, _))) => {
+                    Err(format!("topic.publish rejected with rc {rc}: {body}"))
+                }
             }
         }
     };
@@ -615,64 +735,121 @@ mod tests {
         use smithay::reexports::calloop::ping::make_ping;
         use smithay::reexports::wayland_server::Display;
 
-        struct Data { dispatch: Dispatch, host: crate::host::Host, frames: u32 }
+        struct Data {
+            dispatch: Dispatch,
+            host: crate::host::Host,
+            frames: u32,
+        }
         let mut event_loop: EventLoop<'static, Data> = EventLoop::try_new().unwrap();
         let display: Display<Dispatch> = Display::new().unwrap();
-        let mut dispatch = dispatcher::wire::wire::new_dispatch(&display.handle(), None, event_loop.handle());
+        let mut dispatch =
+            dispatcher::wire::wire::new_dispatch(&display.handle(), None, event_loop.handle());
         let (redraw, source) = make_ping().unwrap();
         dispatch.redraw.set_ping(redraw);
         dispatch.redraw.rendering("kms");
         dispatch.redraw.frame("kms", false);
-        event_loop.handle().insert_source(source, |_, _, data: &mut Data| {
-            assert!(data.dispatch.redraw.pending());
-            data.dispatch.redraw.rendering("kms");
-            assert!(data.dispatch.redraw.frame("kms", false).contains(RedrawReason::Publish));
-            data.frames += 1;
-        }).unwrap();
+        event_loop
+            .handle()
+            .insert_source(source, |_, _, data: &mut Data| {
+                assert!(data.dispatch.redraw.pending());
+                data.dispatch.redraw.rendering("kms");
+                assert!(
+                    data.dispatch
+                        .redraw
+                        .frame("kms", false)
+                        .contains(RedrawReason::Publish)
+                );
+                data.frames += 1;
+            })
+            .unwrap();
 
         let mut host = crate::host::Host::default();
         host.panels.ensure("DP-1", (1280.0, 800.0));
         let request = |verb, body: Value| Request {
-            verb, from: "scenes".into(), command: "shell.panel.page.set".into(), id: Some("1".into()),
-            body: body.to_string(), headers: BTreeMap::from([("broker_origin".into(), "local".into())]), generation: 1,
+            verb,
+            from: "scenes".into(),
+            command: "shell.panel.page.set".into(),
+            id: Some("1".into()),
+            body: body.to_string(),
+            headers: BTreeMap::from([("broker_origin".into(), "local".into())]),
+            generation: 1,
         };
-        let mut no_layout = |_: &crate::store::SceneStore, _: &str, _: Option<&str>| Err(Value::Null);
+        let mut no_layout =
+            |_: &crate::store::SceneStore, _: &str, _: Option<&str>| Err(Value::Null);
         for name in ["calendar", "notifications"] {
-            let source = format!("---\nscene: 1\nname: {name}\ncitizen: scenes\nwindow: {{\"kind\":\"edge\",\"edge\":\"right\"}}\n---\n```mix\nroot: {{widget: \"column\", children: []}}\n```\n");
-            let answer = host.answer(&request(SceneVerb::Load, json!({"source":source})), "DP-1", Some(1), &mut no_layout);
+            let source = format!(
+                "---\nscene: 1\nname: {name}\ncitizen: scenes\nwindow: {{\"kind\":\"edge\",\"edge\":\"right\"}}\n---\n```mix\nroot: {{widget: \"column\", children: []}}\n```\n"
+            );
+            let answer = host.answer(
+                &request(SceneVerb::Load, json!({"source":source})),
+                "DP-1",
+                Some(1),
+                &mut no_layout,
+            );
             assert_eq!(answer.rc, 0);
         }
         host.panels.sync(&host.store);
-        host.panels.page_set("DP-1", crate::seat::Edge::Right, "scene-calendar").unwrap();
+        host.panels
+            .page_set("DP-1", crate::seat::Edge::Right, "scene-calendar")
+            .unwrap();
 
         // This is the production worker Delivery, including its after-enqueue
         // Ping. There are no input, frame clock, or watchdog sources to help it.
         let (sender, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (ping, source) = make_ping().unwrap();
-        let delivery = Arc::new(Delivery { sender, waker: Arc::new(move || ping.ping()) });
-        event_loop.handle().insert_source(source, move |_, _, data: &mut Data| {
-            let Inbound::Request(request) = inbound.try_recv().unwrap() else { panic!("expected page request") };
-            let answer = data.host.answer(&request, "DP-1", Some(1), &mut no_layout);
-            assert_eq!(answer.rc, 0);
-            // lib::service uses exactly this changed verdict to request pixels.
-            assert!(answer.changed);
-            data.dispatch.schedule_redraw(RedrawReason::Publish);
-        }).unwrap();
-        let mut data = Data { dispatch, host, frames: 0 };
-        for (index, page) in ["scene-notifications", "scene-calendar"].into_iter().enumerate() {
+        let delivery = Arc::new(Delivery {
+            sender,
+            waker: Arc::new(move || ping.ping()),
+        });
+        event_loop
+            .handle()
+            .insert_source(source, move |_, _, data: &mut Data| {
+                let Inbound::Request(request) = inbound.try_recv().unwrap() else {
+                    panic!("expected page request")
+                };
+                let answer = data.host.answer(&request, "DP-1", Some(1), &mut no_layout);
+                assert_eq!(answer.rc, 0);
+                // lib::service uses exactly this changed verdict to request pixels.
+                assert!(answer.changed);
+                data.dispatch.schedule_redraw(RedrawReason::Publish);
+            })
+            .unwrap();
+        let mut data = Data {
+            dispatch,
+            host,
+            frames: 0,
+        };
+        for (index, page) in ["scene-notifications", "scene-calendar"]
+            .into_iter()
+            .enumerate()
+        {
             let delivery = Arc::clone(&delivery);
             let request = request(SceneVerb::PanelPageSet, json!({"edge":"right", "id":page}));
-            let worker = std::thread::spawn(move || assert!(delivery.send(Inbound::Request(request))));
-            event_loop.dispatch(Duration::from_secs(1), &mut data).unwrap();
-            assert_eq!(data.host.panels.state("DP-1", crate::seat::Edge::Right)["page"], page);
+            let worker =
+                std::thread::spawn(move || assert!(delivery.send(Inbound::Request(request))));
+            event_loop
+                .dispatch(Duration::from_secs(1), &mut data)
+                .unwrap();
+            assert_eq!(
+                data.host.panels.state("DP-1", crate::seat::Edge::Right)["page"],
+                page
+            );
             assert!(data.dispatch.redraw.needs("kms"));
-            event_loop.dispatch(Duration::from_secs(1), &mut data).unwrap();
+            event_loop
+                .dispatch(Duration::from_secs(1), &mut data)
+                .unwrap();
             worker.join().unwrap();
             assert_eq!(data.frames, index as u32 + 1);
         }
     }
 
-    fn incoming(from: &str, command: &str, id: Option<&str>, headers: &[(&str, &str)], body: &str) -> IncomingCommand {
+    fn incoming(
+        from: &str,
+        command: &str,
+        id: Option<&str>,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> IncomingCommand {
         IncomingCommand {
             generation: 0,
             from: from.into(),
@@ -680,7 +857,10 @@ mod tests {
             id: id.map(str::to_owned),
             args: Value::Null,
             body: body.into(),
-            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
@@ -689,25 +869,65 @@ mod tests {
         assert_eq!(candidate_names(None), ["shell"]);
         assert_eq!(candidate_names(Some("shell")), ["shell"]);
         assert_eq!(candidate_names(Some("  ")), ["shell"]);
-        assert_eq!(candidate_names(Some("shell-nested")), ["shell", "shell-nested"]);
+        assert_eq!(
+            candidate_names(Some("shell-nested")),
+            ["shell", "shell-nested"]
+        );
     }
 
     #[test]
     fn frames_route_to_verbs_registry_sets_or_nothing() {
-        let load = incoming("loader", "shell.scene.load", Some("1"), &[("broker_origin", "local")], "{}");
+        let load = incoming(
+            "loader",
+            "shell.scene.load",
+            Some("1"),
+            &[("broker_origin", "local")],
+            "{}",
+        );
         assert_eq!(route("shell", &load), Route::Scene(SceneVerb::Load));
         let unknown = incoming("loader", "shell.no.such.verb", Some("2"), &[], "{}");
         assert_eq!(route("shell", &unknown), Route::Unknown);
         let fire_and_forget = incoming("loader", "shell.no.such.verb", None, &[], "{}");
         assert_eq!(route("shell", &fire_and_forget), Route::Ignore);
         let registry = r#"{"path":"services.registered","new":["comp","scenes"]}"#;
-        let live = incoming("noded", "", None, &[("topic", REGISTRY_TOPIC), ("broker_origin", "local")], registry);
-        assert_eq!(route("shell", &live), Route::Live(BTreeSet::from(["comp".to_string(), "scenes".to_string()])));
-        let forged = incoming("noded", "", None, &[("topic", REGISTRY_TOPIC), ("broker_origin", "mesh")], registry);
+        let live = incoming(
+            "noded",
+            "",
+            None,
+            &[("topic", REGISTRY_TOPIC), ("broker_origin", "local")],
+            registry,
+        );
+        assert_eq!(
+            route("shell", &live),
+            Route::Live(BTreeSet::from(["comp".to_string(), "scenes".to_string()]))
+        );
+        let forged = incoming(
+            "noded",
+            "",
+            None,
+            &[("topic", REGISTRY_TOPIC), ("broker_origin", "mesh")],
+            registry,
+        );
         assert_eq!(route("shell", &forged), Route::Forged);
-        let other_path = incoming("noded", "", None, &[("topic", REGISTRY_TOPIC)], r#"{"path":"x","new":[]}"#);
+        let other_path = incoming(
+            "noded",
+            "",
+            None,
+            &[("topic", REGISTRY_TOPIC)],
+            r#"{"path":"x","new":[]}"#,
+        );
         assert_eq!(route("shell", &other_path), Route::Ignore);
-        let delivery = incoming("x", "shell.scene.load", None, &[("topic", "x.changed")], "{}");
-        assert_eq!(route("shell", &delivery), Route::Ignore, "a topic delivery is never a request");
+        let delivery = incoming(
+            "x",
+            "shell.scene.load",
+            None,
+            &[("topic", "x.changed")],
+            "{}",
+        );
+        assert_eq!(
+            route("shell", &delivery),
+            Route::Ignore,
+            "a topic delivery is never a request"
+        );
     }
 }

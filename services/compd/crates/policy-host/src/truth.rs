@@ -77,10 +77,10 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use comp_model::snapshot::output_key;
-use surfaces::SurfaceRole;
-use protocols::window::ident::ident;
 use dispatcher::wire::trait_::surface_event::SurfaceHandle;
 use dispatcher::wire::trait_::wire_trait::WireTrait;
+use protocols::window::ident::ident;
+use surfaces::SurfaceRole;
 use world::state::Loop;
 
 pub fn truth(lp: &Loop) -> Value {
@@ -99,7 +99,8 @@ pub fn truth(lp: &Loop) -> Value {
                 .map(move |window| (window, space.state.element_location(window)))
         })
         .filter_map(|(window, location)| {
-            let id = SurfaceHandle::of_window(window).and_then(|handle| registry.id_for_handle(&handle))?;
+            let id = SurfaceHandle::of_window(window)
+                .and_then(|handle| registry.id_for_handle(&handle))?;
             let location = location.unwrap_or_default();
             let size = window.geometry().size;
             Some((
@@ -107,7 +108,12 @@ pub fn truth(lp: &Loop) -> Value {
                 (
                     crate::control::drawn(lp, window),
                     crate::control::committed_maximized(window),
-                    [location.x as f32, location.y as f32, size.w as f32, size.h as f32],
+                    [
+                        location.x as f32,
+                        location.y as f32,
+                        size.w as f32,
+                        size.h as f32,
+                    ],
                 ),
             ))
         })
@@ -119,10 +125,13 @@ pub fn truth(lp: &Loop) -> Value {
         .iter()
         .flat_map(|space| space.state.elements())
         .filter_map(|window| {
-            let id = SurfaceHandle::of_window(window).and_then(|handle| registry.id_for_handle(&handle))?;
+            let id = SurfaceHandle::of_window(window)
+                .and_then(|handle| registry.id_for_handle(&handle))?;
             let size = window
                 .toplevel()
-                .and_then(|toplevel| toplevel.with_committed_state(|state| state.and_then(|state| state.size)))
+                .and_then(|toplevel| {
+                    toplevel.with_committed_state(|state| state.and_then(|state| state.size))
+                })
                 .unwrap_or_else(|| window.geometry().size);
             Some((id.0.to_string(), [size.w, size.h]))
         })
@@ -132,7 +141,10 @@ pub fn truth(lp: &Loop) -> Value {
         .filter(|record| record.role() == SurfaceRole::Toplevel && record.mapped())
         .map(|record| {
             commits.insert(record.id().0.to_string(), comp.commits(record.id()));
-            let engine = drawn.get(&record.id().0).copied().unwrap_or((false, false, [0.0; 4]));
+            let engine = drawn
+                .get(&record.id().0)
+                .copied()
+                .unwrap_or((false, false, [0.0; 4]));
             json!({
                 "id": record.id().0,
                 "generation": record.generation(),
@@ -174,7 +186,8 @@ pub fn truth(lp: &Loop) -> Value {
             if !ident::is_drawn(window) || !decor::window::decorated(window) {
                 continue;
             }
-            let Some(id) = SurfaceHandle::of_window(window).and_then(|handle| registry.id_for_handle(&handle))
+            let Some(id) =
+                SurfaceHandle::of_window(window).and_then(|handle| registry.id_for_handle(&handle))
             else {
                 continue;
             };
@@ -282,8 +295,10 @@ pub fn truth(lp: &Loop) -> Value {
 /// expected colours from compd itself.
 fn chrome(windows: BTreeMap<u64, Value>) -> Value {
     let decorated: Vec<u64> = windows.keys().copied().collect();
-    let windows: serde_json::Map<String, Value> =
-        windows.into_iter().map(|(id, entry)| (id.to_string(), entry)).collect();
+    let windows: serde_json::Map<String, Value> = windows
+        .into_iter()
+        .map(|(id, entry)| (id.to_string(), entry))
+        .collect();
     let ssd_enabled = decor::window::ssd_enabled();
     let Some(theme) = decor::window::installed() else {
         return json!({"installed": false, "ssd_enabled": ssd_enabled, "decorated": decorated});
@@ -342,7 +357,11 @@ fn geometry_digest(windows: &[Value]) -> u64 {
     };
     for row in windows {
         for key in ["id", "x", "y", "width", "height", "visible", "maximized"] {
-            feed(row.get(key).map_or_else(String::new, Value::to_string).as_bytes());
+            feed(
+                row.get(key)
+                    .map_or_else(String::new, Value::to_string)
+                    .as_bytes(),
+            );
             feed(b"|");
         }
     }

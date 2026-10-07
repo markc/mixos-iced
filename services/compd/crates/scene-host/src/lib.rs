@@ -18,9 +18,9 @@
 use std::cell::RefCell;
 
 use dispatcher::state::state::RedrawReason;
-use world::state::Loop;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Point, Size};
+use world::state::Loop;
 
 mod appearance;
 pub mod conf;
@@ -28,14 +28,14 @@ pub mod host;
 mod icons;
 mod images;
 pub mod layout;
-pub mod mount;
 pub mod menu;
+pub mod mount;
 pub mod panels;
 pub mod port;
 pub mod render;
 pub mod seat;
-pub mod store;
 mod state;
+pub mod store;
 pub mod templates;
 pub mod verb;
 pub mod view;
@@ -89,7 +89,11 @@ pub fn per_frame(lp: &mut Loop, renderer: &mut GlesRenderer, size: Size<i32, Phy
         let output = lp.inner.current_output();
         let name = output.name();
         let scale = output.current_scale().fractional_scale().max(0.1);
-        host.ensure_output(lp.inner.current_output_key(), &name, (size.w as f32 / scale as f32, size.h as f32 / scale as f32));
+        host.ensure_output(
+            lp.inner.current_output_key(),
+            &name,
+            (size.w as f32 / scale as f32, size.h as f32 / scale as f32),
+        );
         let wake = host.tick_panels(&name);
         host.render(lp, renderer, size);
         Some(wake)
@@ -105,15 +109,28 @@ pub fn pointer_motion(lp: &mut Loop, point: Option<Point<f64, Physical>>) {
         let host = slot.as_mut()?;
         let output = lp.inner.active_output();
         let name = output.name();
-        let size = output.current_transform().transform_size(output.current_mode()?.size);
+        let size = output
+            .current_transform()
+            .transform_size(output.current_mode()?.size);
         let scale = output.current_scale().fractional_scale().max(0.1);
-        host.ensure_output(lp.inner.active_output_key(), &name, (size.w as f32 / scale as f32, size.h as f32 / scale as f32));
+        host.ensure_output(
+            lp.inner.active_output_key(),
+            &name,
+            (size.w as f32 / scale as f32, size.h as f32 / scale as f32),
+        );
         let corners = lp.inner.comp.corners.config();
         let config = edges::CornerDetectorConfig::new(
-            corners.deadzone_px as f32, std::time::Duration::from_millis(corners.dwell_ms), corners.velocity_max_px_s as f32,
-        ).ok()?;
+            corners.deadzone_px as f32,
+            std::time::Duration::from_millis(corners.dwell_ms),
+            corners.velocity_max_px_s as f32,
+        )
+        .ok()?;
         let point = point.filter(|_| corners.enabled && !world::comp::session_lock::active(lp));
-        host.host.panels.pointer(&name, point.map(|p| ((p.x / scale) as f32, (p.y / scale) as f32)), config);
+        host.host.panels.pointer(
+            &name,
+            point.map(|p| ((p.x / scale) as f32, (p.y / scale) as f32)),
+            config,
+        );
         Some(host.tick_panels(&name))
     });
     schedule_panel_wake(lp, wake);
@@ -125,9 +142,16 @@ pub fn pointer_button(lp: &mut Loop, button: u32, pressed: bool) -> bool {
     // camera-transformed seat location. Resample even without a motion event.
     let point = lp.inner.pointer_mut().motion;
     pointer_motion(lp, Some(Point::from((point.x, point.y))));
-    let shift = lp.state.seat.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().shift);
+    let shift = lp
+        .state
+        .seat
+        .seat
+        .get_keyboard()
+        .is_some_and(|keyboard| keyboard.modifier_state().shift);
     let (consumed, wake) = HOST.with_borrow_mut(|slot| {
-        let Some(host) = slot.as_mut() else { return (false, None) };
+        let Some(host) = slot.as_mut() else {
+            return (false, None);
+        };
         let consumed = host.host.panels.pointer_button(button, pressed, shift);
         if consumed {
             // Opening/closing a menu on an empty/static edge still needs a
@@ -168,13 +192,15 @@ fn arm_panel_wake(lp: &mut Loop, at: std::time::Instant) {
         return;
     }
     PANEL_WAKE.set(Some(at));
-    let armed = lp.loop_handle.insert_source(Timer::from_deadline(at), move |_, _, lp| {
-        if PANEL_WAKE.get() == Some(at) {
-            PANEL_WAKE.set(None);
-            lp.state.schedule_redraw(RedrawReason::Publish);
-        }
-        TimeoutAction::Drop
-    });
+    let armed = lp
+        .loop_handle
+        .insert_source(Timer::from_deadline(at), move |_, _, lp| {
+            if PANEL_WAKE.get() == Some(at) {
+                PANEL_WAKE.set(None);
+                lp.state.schedule_redraw(RedrawReason::Publish);
+            }
+            TimeoutAction::Drop
+        });
     if let Err(error) = armed {
         PANEL_WAKE.set(None);
         tracing::warn!("scene host: panel deadline timer not armed: {error}");
@@ -185,14 +211,22 @@ fn arm_panel_wake(lp: &mut Loop, at: std::time::Instant) {
 /// `(edge, logical px)` per DOCKED edge, as Quoin's exclusive zones.
 /// Empty with no host. For the usable-area math.
 pub fn exclusive_zones(output: &str) -> Vec<(seat::Edge, f32)> {
-    HOST.with_borrow(|slot| slot.as_ref().map(|host| host.host.panels.zones(host.output_name(output))).unwrap_or_default())
+    HOST.with_borrow(|slot| {
+        slot.as_ref()
+            .map(|host| host.host.panels.zones(host.output_name(output)))
+            .unwrap_or_default()
+    })
 }
 
 /// The scene surfaces drawn on `output` (compd's output key), shaped as
 /// layer surfaces for comp.props `surfaces` ([`SceneSurface::row`]). Empty
 /// with no host.
 pub fn surfaces(output: &str) -> Vec<SceneSurface> {
-    HOST.with_borrow(|slot| slot.as_ref().map(|host| host.surfaces(host.output_name(output))).unwrap_or_default())
+    HOST.with_borrow(|slot| {
+        slot.as_ref()
+            .map(|host| host.surfaces(host.output_name(output)))
+            .unwrap_or_default()
+    })
 }
 
 /// The comp.props id (`scene:<name>`) of the scene holding the keyboard: the

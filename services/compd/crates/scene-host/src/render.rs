@@ -19,14 +19,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use ui::{HandleId, IcedHandle};
-use world::scene::layer::base::Layer;
-use world::state::Loop;
-use world::surface::draw::handle::handle::{IcedSpace, load};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Point, Rectangle, Size};
+use ui::{HandleId, IcedHandle};
+use world::scene::layer::base::Layer;
+use world::state::Loop;
+use world::surface::draw::handle::handle::{IcedSpace, load};
 
 use crate::mount::{dialog_geometry, is_dialog, page_id, scene_edge};
 use crate::seat::Edge;
@@ -41,8 +41,18 @@ pub const EDGE_HEIGHT: f32 = 240.0;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Place {
     /// `offset` logical px in from `edge`, `extent` thick.
-    Edge { edge: Edge, offset: f32, extent: f32, top: f32, bottom: f32 },
-    Dialog { w: f32, h: f32, frame: Option<Frame> },
+    Edge {
+        edge: Edge,
+        offset: f32,
+        extent: f32,
+        top: f32,
+        bottom: f32,
+    },
+    Dialog {
+        w: f32,
+        h: f32,
+        frame: Option<Frame>,
+    },
 }
 
 /// One scene's target: the output it draws on and how.
@@ -64,7 +74,13 @@ impl Target {
 /// A logical rectangle `(x, y, w, h)` on an output of `w`×`h` logical px.
 pub fn rect(place: &Place, (out_w, out_h): (f32, f32)) -> (f32, f32, f32, f32) {
     match place {
-        Place::Edge { edge, offset, extent, top, bottom } => {
+        Place::Edge {
+            edge,
+            offset,
+            extent,
+            top,
+            bottom,
+        } => {
             let across = match edge {
                 Edge::Left | Edge::Right => out_w,
                 Edge::Top | Edge::Bottom => out_h,
@@ -74,7 +90,16 @@ pub fn rect(place: &Place, (out_w, out_h): (f32, f32)) -> (f32, f32, f32, f32) {
                 Edge::Left | Edge::Right => {
                     let top = top.clamp(0.0, out_h.max(0.0));
                     let height = (out_h - top - bottom.max(0.0)).max(0.0);
-                    (if *edge == Edge::Left { *offset } else { out_w - offset - extent }, top, extent, height)
+                    (
+                        if *edge == Edge::Left {
+                            *offset
+                        } else {
+                            out_w - offset - extent
+                        },
+                        top,
+                        extent,
+                        height,
+                    )
                 }
                 Edge::Top => (0.0, *offset, out_w, extent),
                 Edge::Bottom => (0.0, out_h - offset - extent, out_w, extent),
@@ -130,70 +155,151 @@ pub fn targets(store: &SceneStore, panels: &crate::panels::Panels) -> BTreeMap<S
     for (name, entry) in store.scenes() {
         let tree = entry.tree();
         if is_dialog(tree) {
-            let Some(seat) = store.dialog_seat().filter(|seat| seat.scene == name) else { continue };
+            let Some(seat) = store.dialog_seat().filter(|seat| seat.scene == name) else {
+                continue;
+            };
             if !entry.visible() {
                 continue;
             }
             let (w, h, title, chrome) = dialog_geometry(tree);
-            let frame = chrome.then(|| Frame { title: title.unwrap_or_default() });
-            targets.insert(name.to_owned(), Target { output: seat.output.clone(), place: Place::Dialog { w, h, frame } });
+            let frame = chrome.then(|| Frame {
+                title: title.unwrap_or_default(),
+            });
+            targets.insert(
+                name.to_owned(),
+                Target {
+                    output: seat.output.clone(),
+                    place: Place::Dialog { w, h, frame },
+                },
+            );
             continue;
         }
         let page = page_id(tree);
-        let Some(seat) = store.pages().seat(&page) else { continue };
+        let Some(seat) = store.pages().seat(&page) else {
+            continue;
+        };
         let edge = scene_edge(tree);
-        let Some(drawn) = panels.drawn(&seat.output, edge).filter(|drawn| drawn.page == page) else { continue };
+        let Some(drawn) = panels
+            .drawn(&seat.output, edge)
+            .filter(|drawn| drawn.page == page)
+        else {
+            continue;
+        };
         let offset = -(drawn.thickness * (1.0 - drawn.fraction));
         let zones = panels.zones(&seat.output);
-        let inset = |edge| zones.iter().find(|(e, _)| *e == edge).map_or(0.0, |(_, px)| *px);
+        let inset = |edge| {
+            zones
+                .iter()
+                .find(|(e, _)| *e == edge)
+                .map_or(0.0, |(_, px)| *px)
+        };
         targets.insert(
             name.to_owned(),
-            Target { output: seat.output.clone(), place: Place::Edge {
-                edge, offset, extent: drawn.thickness, top: inset(Edge::Top), bottom: inset(Edge::Bottom),
-            } },
+            Target {
+                output: seat.output.clone(),
+                place: Place::Edge {
+                    edge,
+                    offset,
+                    extent: drawn.thickness,
+                    top: inset(Edge::Top),
+                    bottom: inset(Edge::Bottom),
+                },
+            },
         );
     }
     targets
 }
 
-fn keep_surface(store: &SceneStore, targets: &BTreeMap<String, Target>, name: &str, output: &str) -> bool {
-    targets.get(name).is_some_and(|target| target.output == output)
-        || store.scene(name).filter(|entry| !is_dialog(entry.tree()))
+fn keep_surface(
+    store: &SceneStore,
+    targets: &BTreeMap<String, Target>,
+    name: &str,
+    output: &str,
+) -> bool {
+    targets
+        .get(name)
+        .is_some_and(|target| target.output == output)
+        || store
+            .scene(name)
+            .filter(|entry| !is_dialog(entry.tree()))
             .and_then(|entry| store.pages().seat(&page_id(entry.tree())))
             .is_some_and(|seat| seat.output == output)
 }
 
-fn resident_targets(store: &SceneStore, panels: &crate::panels::Panels, mapped: &BTreeMap<String, Target>) -> BTreeMap<String, Target> {
+fn resident_targets(
+    store: &SceneStore,
+    panels: &crate::panels::Panels,
+    mapped: &BTreeMap<String, Target>,
+) -> BTreeMap<String, Target> {
     let mut resident = mapped.clone();
     for (name, entry) in store.scenes() {
         let tree = entry.tree();
-        if is_dialog(tree) || resident.contains_key(name) { continue; }
+        if is_dialog(tree) || resident.contains_key(name) {
+            continue;
+        }
         let page = page_id(tree);
-        let Some(seat) = store.pages().seat(&page) else { continue };
+        let Some(seat) = store.pages().seat(&page) else {
+            continue;
+        };
         let edge = scene_edge(tree);
-        let extent = panels.page_thickness(&seat.output, edge, &page).unwrap_or(EDGE_WIDTH);
+        let extent = panels
+            .page_thickness(&seat.output, edge, &page)
+            .unwrap_or(EDGE_WIDTH);
         let zones = panels.zones(&seat.output);
-        let inset = |edge| zones.iter().find(|(e, _)| *e == edge).map_or(0.0, |(_, px)| *px);
-        resident.insert(name.into(), Target { output: seat.output.clone(), place: Place::Edge {
-            edge, offset: -extent, extent, top: inset(Edge::Top), bottom: inset(Edge::Bottom),
-        } });
+        let inset = |edge| {
+            zones
+                .iter()
+                .find(|(e, _)| *e == edge)
+                .map_or(0.0, |(_, px)| *px)
+        };
+        resident.insert(
+            name.into(),
+            Target {
+                output: seat.output.clone(),
+                place: Place::Edge {
+                    edge,
+                    offset: -extent,
+                    extent,
+                    top: inset(Edge::Top),
+                    bottom: inset(Edge::Bottom),
+                },
+            },
+        );
     }
     resident
 }
 
 fn first_field(tree: &scene::ResolvedScene) -> Option<&str> {
     fn visit<'a>(tree: &'a scene::ResolvedScene, id: &'a str, depth: usize) -> Option<&'a str> {
-        if depth > tree.nodes.len() { return None; }
+        if depth > tree.nodes.len() {
+            return None;
+        }
         let node = tree.nodes.get(id)?;
-        if node.ports.get("hidden").and_then(serde_json::Value::as_bool) == Some(true) { return None; }
-        if node.family == "field" { return Some(id); }
+        if node
+            .ports
+            .get("hidden")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return None;
+        }
+        if node.family == "field" {
+            return Some(id);
+        }
         crate::templates::children(node).find_map(|child| visit(tree, child, depth + 1))
     }
     visit(tree, "root", 0)
 }
 
-fn viewport_ready(actual: iced_core::Size<u32>, scale: f32, wanted: Size<i32, Physical>, factor: f32) -> bool {
-    actual.width == wanted.w.max(1) as u32 && actual.height == wanted.h.max(1) as u32 && scale == factor
+fn viewport_ready(
+    actual: iced_core::Size<u32>,
+    scale: f32,
+    wanted: Size<i32, Physical>,
+    factor: f32,
+) -> bool {
+    actual.width == wanted.w.max(1) as u32
+        && actual.height == wanted.h.max(1) as u32
+        && scale == factor
 }
 
 /// A scene's live iced surface.
@@ -243,24 +349,47 @@ pub enum Action {
     Menu(u64, crate::menu::Input),
 }
 
-fn panel_marks(store: &SceneStore, panels: &crate::panels::Panels, tree: &scene::ResolvedScene) -> Option<[bool; 3]> {
-    (tree.name == "panel").then(|| ["launcher", "calendar", "notes"].map(|name| {
-        let Some(entry) = store.scene(name) else { return false };
-        let page = page_id(entry.tree());
-        let Some(seat) = store.pages().seat(&page) else { return false };
-        let edge = scene_edge(entry.tree());
-        !panels.hidden(&seat.output, edge) && panels.state(&seat.output, edge)["page"].as_str() == Some(page.as_str())
-    }))
+fn panel_marks(
+    store: &SceneStore,
+    panels: &crate::panels::Panels,
+    tree: &scene::ResolvedScene,
+) -> Option<[bool; 3]> {
+    (tree.name == "panel").then(|| {
+        ["launcher", "calendar", "notes"].map(|name| {
+            let Some(entry) = store.scene(name) else {
+                return false;
+            };
+            let page = page_id(entry.tree());
+            let Some(seat) = store.pages().seat(&page) else {
+                return false;
+            };
+            let edge = scene_edge(entry.tree());
+            !panels.hidden(&seat.output, edge)
+                && panels.state(&seat.output, edge)["page"].as_str() == Some(page.as_str())
+        })
+    })
 }
 
-fn content(entry: &SceneEntry, frame: Option<Frame>, dialog: bool, marks: Option<[bool; 3]>) -> Arc<Content> {
+fn content(
+    entry: &SceneEntry,
+    frame: Option<Frame>,
+    dialog: bool,
+    marks: Option<[bool; 3]>,
+) -> Arc<Content> {
     let mut tree = entry.tree().clone();
     // Button feedback follows the applied page/visibility, including hotspot
     // reveals. Click events still go to the scenes loader, which owns pin/restore.
     if let Some(marks) = marks {
         for (id, open) in ["launcher_btn", "clock", "st_notes"].into_iter().zip(marks) {
             if let Some(node) = tree.nodes.get_mut(id) {
-                node.ports.insert("background".into(), if open { serde_json::json!("#3daee940") } else { serde_json::Value::Null });
+                node.ports.insert(
+                    "background".into(),
+                    if open {
+                        serde_json::json!("#3daee940")
+                    } else {
+                        serde_json::Value::Null
+                    },
+                );
             }
         }
     }
@@ -275,7 +404,10 @@ fn content(entry: &SceneEntry, frame: Option<Frame>, dialog: bool, marks: Option
 
 pub(crate) fn physical((x, y, w, h): (f32, f32, f32, f32), scale: f64) -> Rectangle<i32, Physical> {
     let s = |v: f32| (v as f64 * scale).round() as i32;
-    Rectangle::new(Point::from((s(x), s(y))), Size::from((s(w).max(1), s(h).max(1))))
+    Rectangle::new(
+        Point::from((s(x), s(y))),
+        Size::from((s(w).max(1), s(h).max(1))),
+    )
 }
 
 fn destroy(state: &mut Loop, handle: HandleId) {
@@ -315,14 +447,16 @@ pub(crate) fn reconcile(
     for (name, surface) in surfaces.iter_mut() {
         if let Some(entry) = store.scene(name)
             && !is_dialog(entry.tree())
-            && (panels.hidden(&surface.output, scene_edge(entry.tree())) || !targets.contains_key(name))
+            && (panels.hidden(&surface.output, scene_edge(entry.tree()))
+                || !targets.contains_key(name))
         {
             surface.autofocus_done = false;
             if panels.hidden(&surface.output, scene_edge(entry.tree())) {
                 release_edge_keyboard(state, name);
             }
             if panels.hidden(&surface.output, scene_edge(entry.tree()))
-                && panels.focused(&surface.output) == Some(scene_edge(entry.tree())) {
+                && panels.focused(&surface.output) == Some(scene_edge(entry.tree()))
+            {
                 panels.focus(&surface.output, None);
             }
         }
@@ -351,7 +485,11 @@ pub(crate) fn reconcile(
     }
     // The dialog that took the seat's keyboard is gone (hidden, unloaded,
     // moved): the window it took it from gets it back.
-    if DIALOG_PRIOR.with_borrow(|prior| prior.as_ref().is_some_and(|(scene, _)| !surfaces.contains_key(scene))) {
+    if DIALOG_PRIOR.with_borrow(|prior| {
+        prior
+            .as_ref()
+            .is_some_and(|(scene, _)| !surfaces.contains_key(scene))
+    }) {
         release_seat_keyboard(state);
     }
     // Content sources (F6): a scene is `scene_<name>` from its first placement
@@ -367,7 +505,12 @@ pub(crate) fn reconcile(
         });
         for (name, target) in &targets {
             if sourced.insert(name.clone()) {
-                let output = state.inner.space_state().state.outputs().find(|o| o.name() == target.output)
+                let output = state
+                    .inner
+                    .space_state()
+                    .state
+                    .outputs()
+                    .find(|o| o.name() == target.output)
                     .map(world::state::state::output_key);
                 ui::source::register(&source_id(name), output);
             }
@@ -381,7 +524,12 @@ pub(crate) fn reconcile(
     placed.retain(|name, _| store.scene(name).is_some());
     let output_key = state.inner.current_output_key();
     let output = state.inner.current_output().name();
-    let scale = state.inner.current_output().current_scale().fractional_scale().max(0.1);
+    let scale = state
+        .inner
+        .current_output()
+        .current_scale()
+        .fractional_scale()
+        .max(0.1);
     let world = state.inner.worlds.spawn_target().as_u128();
     let logical = (size.w as f32 / scale as f32, size.h as f32 / scale as f32);
     // An edge page's surface was created this pass: it is on top of the
@@ -391,11 +539,15 @@ pub(crate) fn reconcile(
         if !(target.output == output || target.output.is_empty()) {
             continue;
         }
-        let Some(entry) = store.scene(name) else { continue };
+        let Some(entry) = store.scene(name) else {
+            continue;
+        };
         // A dialog sits in what the docked edges leave, so it never lies under
         // (or over) a docked page.
         let logical_rect = match &target.place {
-            Place::Dialog { w, h, .. } => dialog_rect(*w, *h, usable_zone(&panels.zones(&target.output), logical)),
+            Place::Dialog { w, h, .. } => {
+                dialog_rect(*w, *h, usable_zone(&panels.zones(&target.output), logical))
+            }
             Place::Edge { .. } => rect(&target.place, logical),
         };
         placed.insert(name.clone(), logical_rect);
@@ -406,12 +558,35 @@ pub(crate) fn reconcile(
         let marks = panel_marks(store, panels, entry.tree());
         let live = surfaces.get(name).filter(|surface| {
             surface.world == world
-                && state.inner.surface().registry.as_ref().is_some_and(|registry| registry.contains(surface.handle))
+                && state
+                    .inner
+                    .surface()
+                    .registry
+                    .as_ref()
+                    .is_some_and(|registry| registry.contains(surface.handle))
         });
         let factor = scale as f32;
         let mut autofocus_done = live.is_some_and(|surface| surface.autofocus_done);
-        let handle = match live.map(|surface| (surface.handle, surface.rect, surface.factor, surface.revision, surface.frame.clone(), surface.panel_marks, surface.appearance_generation)) {
-            Some((handle, was, was_factor, applied, applied_frame, applied_marks, applied_appearance)) => {
+        let handle = match live.map(|surface| {
+            (
+                surface.handle,
+                surface.rect,
+                surface.factor,
+                surface.revision,
+                surface.frame.clone(),
+                surface.panel_marks,
+                surface.appearance_generation,
+            )
+        }) {
+            Some((
+                handle,
+                was,
+                was_factor,
+                applied,
+                applied_frame,
+                applied_marks,
+                applied_appearance,
+            )) => {
                 if let Some(registry) = state.inner.surface_mut().registry.as_mut() {
                     if was.size != rect.size || was_factor != factor {
                         if panels.focused(&target.output) == Some(scene_edge(entry.tree())) {
@@ -423,15 +598,23 @@ pub(crate) fn reconcile(
                         registry.set_location_by_id(handle, rect.loc);
                     }
                     if applied != revision || applied_frame != frame || applied_marks != marks {
-                        let message = SceneMessage::Replace(content(entry, frame.clone(), dialog, marks));
-                        let _ = registry.dispatch_message(IcedHandle::<SceneUi>::from_id(handle), message);
-                        registry.set_keyboard_transparent_by_id(handle, !takes_keyboard(entry.tree()));
+                        let message =
+                            SceneMessage::Replace(content(entry, frame.clone(), dialog, marks));
+                        let _ = registry
+                            .dispatch_message(IcedHandle::<SceneUi>::from_id(handle), message);
+                        registry
+                            .set_keyboard_transparent_by_id(handle, !takes_keyboard(entry.tree()));
                         // The whole surface redraws for new content; iced renders
                         // on the GPU, so nothing is uploaded.
                         ui::source::cost(&source_id(name), 0, area(rect));
                     }
-                    if applied_appearance != appearance_generation && let Some(prepared) = &prepared {
-                        let _ = registry.dispatch_message(IcedHandle::<SceneUi>::from_id(handle), SceneMessage::Appearance(Arc::clone(prepared)));
+                    if applied_appearance != appearance_generation
+                        && let Some(prepared) = &prepared
+                    {
+                        let _ = registry.dispatch_message(
+                            IcedHandle::<SceneUi>::from_id(handle),
+                            SceneMessage::Appearance(Arc::clone(prepared)),
+                        );
                     }
                 }
                 handle
@@ -439,24 +622,40 @@ pub(crate) fn reconcile(
             None => {
                 restack |= !dialog;
                 let mut ui = SceneUi::new(content(entry, frame.clone(), dialog, marks), palette);
-                if let Some(prepared) = &prepared { ui.apply_appearance(Arc::clone(prepared)); }
-                let handle = load(state, renderer, ui, rect, IcedSpace::Screen, Layer::SCENE.bits());
+                if let Some(prepared) = &prepared {
+                    ui.apply_appearance(Arc::clone(prepared));
+                }
+                let handle = load(
+                    state,
+                    renderer,
+                    ui,
+                    rect,
+                    IcedSpace::Screen,
+                    Layer::SCENE.bits(),
+                );
                 if let Some(registry) = state.inner.surface_mut().registry.as_mut() {
                     // Created at the registry's instance scale (1); laid out at the
                     // output's from its first frame.
                     registry.request_resize_scaled_by_id(handle.id, rect.size, factor);
-                    registry.set_keyboard_transparent_by_id(handle.id, !takes_keyboard(entry.tree()));
+                    registry
+                        .set_keyboard_transparent_by_id(handle.id, !takes_keyboard(entry.tree()));
                     ui::source::cost(&source_id(name), 0, area(rect));
                     if !target.output.is_empty() {
                         registry.set_output_affinity_by_id(handle.id, Some(output_key.clone()));
                     }
-                    let (sink, actions, waker, scene) =
-                        (wiring.sink.clone(), wiring.actions.clone(), Arc::clone(&wiring.waker), name.clone());
+                    let (sink, actions, waker, scene) = (
+                        wiring.sink.clone(),
+                        wiring.actions.clone(),
+                        Arc::clone(&wiring.waker),
+                        name.clone(),
+                    );
                     registry.set_message_handler(handle, move |message: &SceneMessage| {
                         let action = match message {
                             SceneMessage::Close => Some(Action::HideDialog(scene.clone())),
                             SceneMessage::EscapeEdge => Some(Action::EscapeEdge(scene.clone())),
-                            SceneMessage::EdgeFocus(focused) => Some(Action::EdgeFocus(scene.clone(), *focused)),
+                            SceneMessage::EdgeFocus(focused) => {
+                                Some(Action::EdgeFocus(scene.clone(), *focused))
+                            }
                             _ => None,
                         };
                         if let Some(action) = action {
@@ -487,27 +686,53 @@ pub(crate) fn reconcile(
             registry.set_visible_by_id(handle, mapped);
         }
         let requested = panels.focus_requested(&target.output) == Some(edge);
-        let field = crate::view::autofocus(entry.tree()).or_else(|| requested.then(|| first_field(entry.tree())).flatten());
+        let field = crate::view::autofocus(entry.tree())
+            .or_else(|| requested.then(|| first_field(entry.tree())).flatten());
         // A pending resize invalidates iced's widget cache (and its focus).
         // Wait until the instance has applied the final viewport, then focus.
-        let ready = state.inner.surface_mut().registry.as_mut()
+        let ready = state
+            .inner
+            .surface_mut()
+            .registry
+            .as_mut()
             .and_then(|registry| {
-                if registry.get(handle).is_some_and(|item| item.pending_resize().is_some()) { return None; }
+                if registry
+                    .get(handle)
+                    .is_some_and(|item| item.pending_resize().is_some())
+                {
+                    return None;
+                }
                 registry.instance_mut(IcedHandle::<SceneUi>::from_id(handle))
             })
-            .is_some_and(|instance| viewport_ready(instance.runtime().physical_size(), instance.runtime().scale_factor(), rect.size, factor));
-        if mapped && !dialog && (!autofocus_done || requested) && ready
+            .is_some_and(|instance| {
+                viewport_ready(
+                    instance.runtime().physical_size(),
+                    instance.runtime().scale_factor(),
+                    rect.size,
+                    factor,
+                )
+            });
+        if mapped
+            && !dialog
+            && (!autofocus_done || requested)
+            && ready
             && !world::comp::session_lock::active(state)
             && panels.menu().is_none()
-            && store.dialog_seat().is_none_or(|seat| !store.scene(&seat.scene).is_some_and(SceneEntry::visible))
+            && store
+                .dialog_seat()
+                .is_none_or(|seat| !store.scene(&seat.scene).is_some_and(SceneEntry::visible))
             && !panels.hidden(&target.output, scene_edge(entry.tree()))
-            && panels.drawn(&target.output, scene_edge(entry.tree())).is_some_and(|drawn| drawn.fraction >= 1.0)
+            && panels
+                .drawn(&target.output, scene_edge(entry.tree()))
+                .is_some_and(|drawn| drawn.fraction >= 1.0)
             && (field.is_some() || requested)
         {
             grab_edge_keyboard(state, name, handle);
             if let Some(registry) = state.inner.surface_mut().registry.as_mut() {
                 registry.set_keyboard_focus(Some(handle));
-                if let Some(instance) = registry.instance_mut(IcedHandle::<SceneUi>::from_id(handle)) {
+                if let Some(instance) =
+                    registry.instance_mut(IcedHandle::<SceneUi>::from_id(handle))
+                {
                     // Apply a Replace/Focused queued in this pass before
                     // visiting ids, so the operation targets the current tree.
                     instance.runtime_mut().tick();
@@ -515,24 +740,51 @@ pub(crate) fn reconcile(
                         let mut focus = crate::view::FocusField::new(id);
                         instance.runtime_mut().operate(&mut focus);
                         focus.found
-                    } else { true };
+                    } else {
+                        true
+                    };
                     instance.runtime_mut().request_redraw();
                 }
             }
             panels.focus(&target.output, Some(scene_edge(entry.tree())));
-            if autofocus_done { panels.focus_granted(&target.output); }
-            state.state.schedule_redraw(dispatcher::state::state::RedrawReason::Publish);
+            if autofocus_done {
+                panels.focus_granted(&target.output);
+            }
+            state
+                .state
+                .schedule_redraw(dispatcher::state::state::RedrawReason::Publish);
         }
         if mapped && !dialog && !autofocus_done && !ready && (field.is_some() || requested) {
-            state.state.schedule_redraw(dispatcher::state::state::RedrawReason::Publish);
+            state
+                .state
+                .schedule_redraw(dispatcher::state::state::RedrawReason::Publish);
         }
         surfaces.insert(
             name.clone(),
-            Surface { handle, world, output: target.output.clone(), revision, frame, rect, factor, autofocus_done, panel_marks: marks, appearance_generation },
+            Surface {
+                handle,
+                world,
+                output: target.output.clone(),
+                revision,
+                frame,
+                rect,
+                factor,
+                autofocus_done,
+                panel_marks: marks,
+                appearance_generation,
+            },
         );
-        store.set_mounted(name, mapped.then_some(Mounted { handle: handle.0, revision }));
+        store.set_mounted(
+            name,
+            mapped.then_some(Mounted {
+                handle: handle.0,
+                revision,
+            }),
+        );
         // Drawn on this output this frame.
-        if mapped { ui::source::shown(&source_id(name), &output_key); }
+        if mapped {
+            ui::source::shown(&source_id(name), &output_key);
+        }
     }
     // The dialog stacks above every edge page (Quoin: an Overlay layer over
     // the docked pages' Top), so a page created after it — an edge docked
@@ -545,7 +797,9 @@ pub(crate) fn reconcile(
         .filter(|(name, surface)| {
             restack
                 && surface.output == output
-                && targets.get(*name).is_some_and(|target| matches!(target.place, Place::Dialog { .. }))
+                && targets
+                    .get(*name)
+                    .is_some_and(|target| matches!(target.place, Place::Dialog { .. }))
         })
         .map(|(_, surface)| surface.handle)
         .collect();
@@ -553,8 +807,19 @@ pub(crate) fn reconcile(
         if restack {
             // Horizontal overlays sit above side content (§6.1), including
             // when a side page maps after an already pinned top/bottom page.
-            for (name, surface) in surfaces.iter().filter(|(_, surface)| surface.output == output) {
-                if targets.get(name).is_some_and(|target| matches!(target.place, Place::Edge { edge: Edge::Top | Edge::Bottom, .. })) {
+            for (name, surface) in surfaces
+                .iter()
+                .filter(|(_, surface)| surface.output == output)
+            {
+                if targets.get(name).is_some_and(|target| {
+                    matches!(
+                        target.place,
+                        Place::Edge {
+                            edge: Edge::Top | Edge::Bottom,
+                            ..
+                        }
+                    )
+                }) {
                     registry.raise(surface.handle);
                 }
             }
@@ -564,7 +829,11 @@ pub(crate) fn reconcile(
         }
     }
     // Seated pages not on screen here take their revision as it lands.
-    store.apply_offscreen(&output, |name| targets.get(name).is_some_and(|target| target.output == output || target.output.is_empty()));
+    store.apply_offscreen(&output, |name| {
+        targets
+            .get(name)
+            .is_some_and(|target| target.output == output || target.output.is_empty())
+    });
 }
 
 thread_local! {
@@ -586,31 +855,58 @@ thread_local! {
 }
 
 fn grab_edge_keyboard(state: &mut Loop, scene: &str, handle: HandleId) {
-    let iced = state.inner.surface().registry.as_ref().and_then(|registry| registry.keyboard_focus());
+    let iced = state
+        .inner
+        .surface()
+        .registry
+        .as_ref()
+        .and_then(|registry| registry.keyboard_focus());
     let keyboard = state.state.seat.seat.get_keyboard();
-    let client = keyboard.as_ref().and_then(|keyboard| keyboard.current_focus());
+    let client = keyboard
+        .as_ref()
+        .and_then(|keyboard| keyboard.current_focus());
     EDGE_PRIOR.with_borrow_mut(|prior| {
         // Moving between edge pages while held preserves the original client.
         if let Some(prior) = prior.as_mut().filter(|prior| iced == Some(prior.handle)) {
             prior.scene = scene.into();
             prior.handle = handle;
         } else {
-            *prior = Some(EdgePrior { scene: scene.into(), handle, iced: iced.filter(|id| *id != handle), client });
+            *prior = Some(EdgePrior {
+                scene: scene.into(),
+                handle,
+                iced: iced.filter(|id| *id != handle),
+                client,
+            });
         }
     });
     if let Some(keyboard) = keyboard {
-        keyboard.set_focus(&mut state.state, None, smithay::utils::SERIAL_COUNTER.next_serial());
+        keyboard.set_focus(
+            &mut state.state,
+            None,
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
     }
 }
 
 pub(crate) fn release_edge_keyboard(state: &mut Loop, scene: &str) {
     let prior = EDGE_PRIOR.with_borrow_mut(|prior| {
-        if prior.as_ref().is_some_and(|prior| prior.scene == scene) { prior.take() } else { None }
+        if prior.as_ref().is_some_and(|prior| prior.scene == scene) {
+            prior.take()
+        } else {
+            None
+        }
     });
     let Some(prior) = prior else { return };
-    let Some(registry) = state.inner.surface_mut().registry.as_mut() else { return };
+    let Some(registry) = state.inner.surface_mut().registry.as_mut() else {
+        return;
+    };
     // A click/activation elsewhere owns focus now; never steal it back.
-    if registry.keyboard_focus().is_some_and(|id| id != prior.handle) { return; }
+    if registry
+        .keyboard_focus()
+        .is_some_and(|id| id != prior.handle)
+    {
+        return;
+    }
     let iced = prior.iced.filter(|id| registry.contains(*id));
     registry.set_keyboard_focus(iced);
     if iced.is_none()
@@ -618,7 +914,11 @@ pub(crate) fn release_edge_keyboard(state: &mut Loop, scene: &str) {
         && keyboard.current_focus().is_none()
         && let Some(client) = prior.client.filter(|client| client.is_alive())
     {
-        keyboard.set_focus(&mut state.state, Some(client), smithay::utils::SERIAL_COUNTER.next_serial());
+        keyboard.set_focus(
+            &mut state.state,
+            Some(client),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
     }
 }
 
@@ -630,10 +930,16 @@ pub(crate) fn release_edge_keyboard(state: &mut Loop, scene: &str) {
 /// a real change, and that change clears the registry focus (world
 /// `surface_event`), so a stale iced focus never keeps a window's keys.
 fn grab_seat_keyboard(state: &mut Loop, scene: &str) {
-    let Some(keyboard) = state.state.seat.seat.get_keyboard() else { return };
+    let Some(keyboard) = state.state.seat.seat.get_keyboard() else {
+        return;
+    };
     let prior = keyboard.current_focus();
     if prior.is_some() {
-        keyboard.set_focus(&mut state.state, None, smithay::utils::SERIAL_COUNTER.next_serial());
+        keyboard.set_focus(
+            &mut state.state,
+            None,
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
     }
     // A re-map while still held keeps the window first taken from.
     DIALOG_PRIOR.with_borrow_mut(|held| match held {
@@ -646,12 +952,20 @@ fn grab_seat_keyboard(state: &mut Loop, scene: &str) {
 /// has taken it since (the seat's focus is still empty) and that window's
 /// surface is still alive.
 fn release_seat_keyboard(state: &mut Loop) {
-    let Some((_, prior)) = DIALOG_PRIOR.with_borrow_mut(Option::take) else { return };
-    let Some(keyboard) = state.state.seat.seat.get_keyboard() else { return };
+    let Some((_, prior)) = DIALOG_PRIOR.with_borrow_mut(Option::take) else {
+        return;
+    };
+    let Some(keyboard) = state.state.seat.seat.get_keyboard() else {
+        return;
+    };
     if keyboard.current_focus().is_none()
         && let Some(prior) = prior.filter(|surface| surface.is_alive())
     {
-        keyboard.set_focus(&mut state.state, Some(prior), smithay::utils::SERIAL_COUNTER.next_serial());
+        keyboard.set_focus(
+            &mut state.state,
+            Some(prior),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
     }
 }
 
@@ -699,19 +1013,31 @@ pub(crate) fn layout(
 ) -> Result<serde_json::Value, serde_json::Value> {
     use serde_json::json;
     let Some(entry) = store.scene(scene) else {
-        return Err(json!({"error_code":"NOT_FOUND", "message":format!("no scene named {scene} is loaded"), "scene":scene}));
+        return Err(
+            json!({"error_code":"NOT_FOUND", "message":format!("no scene named {scene} is loaded"), "scene":scene}),
+        );
     };
     let tree = entry.tree();
     let dialog = is_dialog(tree);
     let output = if dialog {
-        store.dialog_seat().filter(|seat| seat.scene == scene).map(|seat| seat.output.clone())
+        store
+            .dialog_seat()
+            .filter(|seat| seat.scene == scene)
+            .map(|seat| seat.output.clone())
     } else {
-        store.pages().seat(&page_id(tree)).map(|seat| seat.output.clone())
+        store
+            .pages()
+            .seat(&page_id(tree))
+            .map(|seat| seat.output.clone())
     };
     // Seats already use the connector name, as Quoin does.
     let (x, y, w, h) = placed.get(scene).copied().unwrap_or_else(|| {
         let (w, h, _, _) = dialog_geometry(tree);
-        if dialog { (0.0, 0.0, w, h) } else { (0.0, 0.0, 0.0, 0.0) }
+        if dialog {
+            (0.0, 0.0, w, h)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        }
     });
     let mut reply = json!({
         "scene": scene,
@@ -732,13 +1058,20 @@ pub(crate) fn layout(
         "instances": {},
         "chrome": {},
     });
-    let Some(surface) = surfaces.get(scene) else { return Ok(reply) };
-    if entry.mounted().is_none() { return Ok(reply); }
+    let Some(surface) = surfaces.get(scene) else {
+        return Ok(reply);
+    };
+    if entry.mounted().is_none() {
+        return Ok(reply);
+    }
     // Readback belongs to this scene's output, which may differ from the
     // cursor output selected for this Bus request.
     let scale = surface.factor;
-    let Some(registry) = state.inner.surface_mut().registry.as_mut() else { return Ok(reply) };
-    let Some(instance) = registry.instance_mut(IcedHandle::<SceneUi>::from_id(surface.handle)) else {
+    let Some(registry) = state.inner.surface_mut().registry.as_mut() else {
+        return Ok(reply);
+    };
+    let Some(instance) = registry.instance_mut(IcedHandle::<SceneUi>::from_id(surface.handle))
+    else {
         return Ok(reply);
     };
     let applied = instance.ui().revision();
@@ -768,12 +1101,22 @@ mod tests {
         let mut panels = panels_for(&store, "DP-1");
         let mapped = targets(&store, &panels);
         let resident = resident_targets(&store, &panels, &mapped);
-        assert_eq!(resident.len(), 2, "both pages prewarm before the first switch");
+        assert_eq!(
+            resident.len(),
+            2,
+            "both pages prewarm before the first switch"
+        );
         panels.page_set("DP-1", Edge::Right, "scene-notes").unwrap();
         let mapped = targets(&store, &panels);
         let switched = resident_targets(&store, &panels, &mapped);
-        assert_eq!(rect(&resident["calendar"].place, (1920.0, 1080.0)).2, rect(&switched["calendar"].place, (1920.0, 1080.0)).2);
-        assert_eq!(rect(&resident["notes"].place, (1920.0, 1080.0)).2, rect(&switched["notes"].place, (1920.0, 1080.0)).2);
+        assert_eq!(
+            rect(&resident["calendar"].place, (1920.0, 1080.0)).2,
+            rect(&switched["calendar"].place, (1920.0, 1080.0)).2
+        );
+        assert_eq!(
+            rect(&resident["notes"].place, (1920.0, 1080.0)).2,
+            rect(&switched["notes"].place, (1920.0, 1080.0)).2
+        );
         assert!(keep_surface(&store, &mapped, "calendar", "DP-1"));
         assert!(keep_surface(&store, &mapped, "notes", "DP-1"));
         assert!(!keep_surface(&store, &mapped, "calendar", "HDMI-1"));
@@ -783,9 +1126,24 @@ mod tests {
     #[test]
     fn autofocus_waits_for_physical_viewport_and_output_scale() {
         let wanted = Size::from((1100, 2030));
-        assert!(!viewport_ready(iced_core::Size::new(440, 812), 1.0, wanted, 2.5));
-        assert!(!viewport_ready(iced_core::Size::new(1100, 2030), 1.0, wanted, 2.5));
-        assert!(viewport_ready(iced_core::Size::new(1100, 2030), 2.5, wanted, 2.5));
+        assert!(!viewport_ready(
+            iced_core::Size::new(440, 812),
+            1.0,
+            wanted,
+            2.5
+        ));
+        assert!(!viewport_ready(
+            iced_core::Size::new(1100, 2030),
+            1.0,
+            wanted,
+            2.5
+        ));
+        assert!(viewport_ready(
+            iced_core::Size::new(1100, 2030),
+            2.5,
+            wanted,
+            2.5
+        ));
     }
     use crate::store::SceneMount;
     use crate::verb::SceneVerb;
@@ -799,8 +1157,17 @@ mod tests {
     }
 
     fn load(store: &mut SceneStore, source: &str, output: &str) {
-        let mut mount = SceneMount { output, owner: "loader", accepted_at: 1 };
-        let done = store.dispatch(SceneVerb::Load, source, &serde_json::Value::Null, &mut mount);
+        let mut mount = SceneMount {
+            output,
+            owner: "loader",
+            accepted_at: 1,
+        };
+        let done = store.dispatch(
+            SceneVerb::Load,
+            source,
+            &serde_json::Value::Null,
+            &mut mount,
+        );
         assert_eq!(done.rc, 0, "{}", done.body);
     }
 
@@ -826,7 +1193,10 @@ mod tests {
         let mut panels = panels_for(&store, "DP-1");
         panels.set_mode("DP-1", Edge::Right, "hidden").unwrap();
         settle(&mut panels);
-        assert!(targets(&store, &panels).is_empty(), "left and explicitly hidden right draw nothing");
+        assert!(
+            targets(&store, &panels).is_empty(),
+            "left and explicitly hidden right draw nothing"
+        );
         panels.set_mode("DP-1", Edge::Right, "pinned").unwrap();
         panels.set_mode("DP-1", Edge::Left, "pinned").unwrap();
         settle(&mut panels);
@@ -834,26 +1204,52 @@ mod tests {
         // Same receipt here, so page-id order: the right edge shows scene-aa,
         // and only it.
         assert_eq!(targets.keys().collect::<Vec<_>>(), ["aa", "cc"]);
-        let Place::Edge { edge, offset, extent, .. } = targets["cc"].place.clone() else { panic!() };
-        assert!(edge == Edge::Left && offset.abs() < 0.5, "settled in: {offset}");
-        assert!(extent >= 420.0, "the page's authored width is the edge's minimum: {extent}");
+        let Place::Edge {
+            edge,
+            offset,
+            extent,
+            ..
+        } = targets["cc"].place.clone()
+        else {
+            panic!()
+        };
+        assert!(
+            edge == Edge::Left && offset.abs() < 0.5,
+            "settled in: {offset}"
+        );
+        assert!(
+            extent >= 420.0,
+            "the page's authored width is the edge's minimum: {extent}"
+        );
         let (x, y, w, h) = rect(&targets["cc"].place, (1920.0, 1080.0));
         assert!(x.abs() < 0.5 && (y, w, h) == (0.0, extent, 1080.0));
         panels.page_set("DP-1", Edge::Right, "scene-bb").unwrap();
-        assert_eq!(super::targets(&store, &panels).keys().collect::<Vec<_>>(), ["bb", "cc"]);
+        assert_eq!(
+            super::targets(&store, &panels).keys().collect::<Vec<_>>(),
+            ["bb", "cc"]
+        );
     }
 
     #[test]
     fn a_dialog_is_fitted_and_centred_in_what_the_docked_edges_leave() {
         // Nothing docked: 880x620 centred on 1280x800.
-        assert_eq!(dialog_rect(880.0, 620.0, usable_zone(&[], (1280.0, 800.0))), (200.0, 90.0, 880.0, 620.0));
+        assert_eq!(
+            dialog_rect(880.0, 620.0, usable_zone(&[], (1280.0, 800.0))),
+            (200.0, 90.0, 880.0, 620.0)
+        );
         // The launcher docked left (440) and the panel at the bottom (52):
         // the zone is 840x748 at (440, 0); 880 does not fit 840 - 48.
-        let zone = usable_zone(&[(Edge::Left, 440.0), (Edge::Bottom, 52.0)], (1280.0, 800.0));
+        let zone = usable_zone(
+            &[(Edge::Left, 440.0), (Edge::Bottom, 52.0)],
+            (1280.0, 800.0),
+        );
         assert_eq!(zone, (440.0, 0.0, 840.0, 748.0));
         assert_eq!(dialog_rect(880.0, 620.0, zone), (464.0, 64.0, 792.0, 620.0));
         // Never below the least size.
-        assert_eq!(dialog_rect(880.0, 620.0, (0.0, 0.0, 100.0, 100.0)).2, DIALOG_MIN);
+        assert_eq!(
+            dialog_rect(880.0, 620.0, (0.0, 0.0, 100.0, 100.0)).2,
+            DIALOG_MIN
+        );
     }
 
     #[test]
@@ -875,29 +1271,54 @@ mod tests {
             let targets = targets(&store, &panels);
             let (_, y, _, h) = rect(&targets["side"].place, (1920.0, 1080.0));
             let zones = panels.zones("DP-1");
-            let inset = |edge| zones.iter().find(|(e, _)| *e == edge).map_or(0.0, |(_, px)| *px);
+            let inset = |edge| {
+                zones
+                    .iter()
+                    .find(|(e, _)| *e == edge)
+                    .map_or(0.0, |(_, px)| *px)
+            };
             assert_eq!(y, inset(Edge::Top));
             assert_eq!(h, 1080.0 - inset(Edge::Top) - inset(Edge::Bottom));
             assert_eq!(rect(&targets["other"].place, (1920.0, 1080.0)).3, 1080.0);
-            if mode != "docked" { assert_eq!((y, h), (0.0, 1080.0)); }
+            if mode != "docked" {
+                assert_eq!((y, h), (0.0, 1080.0));
+            }
         }
     }
 
     #[test]
     fn a_dialog_is_placed_only_while_shown_and_centred_as_frozen() {
-        let frozen: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/shell-verbs.json")).unwrap();
+        let frozen: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/shell-verbs.json")).unwrap();
         let mut store = SceneStore::default();
-        load(&mut store, frozen["shell.scene.load"]["request"]["source"].as_str().unwrap(), "DP-1");
+        load(
+            &mut store,
+            frozen["shell.scene.load"]["request"]["source"]
+                .as_str()
+                .unwrap(),
+            "DP-1",
+        );
         let panels = crate::panels::Panels::default();
-        assert!(targets(&store, &panels).is_empty(), "loaded dialogs wait unmapped");
+        assert!(
+            targets(&store, &panels).is_empty(),
+            "loaded dialogs wait unmapped"
+        );
         assert!(store.set_dialog_visible("editor", true));
         let target = &targets(&store, &panels)["editor"];
         assert_eq!(target.output, "DP-1");
-        assert_eq!(target.frame(), Some(Frame { title: "Scene Editor".into() }));
+        assert_eq!(
+            target.frame(),
+            Some(Frame {
+                title: "Scene Editor".into()
+            })
+        );
         // The frozen layout: an 880x620 dialog at 520,230 on 1920x1080.
         let surface = &frozen["shell.scene.layout"]["reply"]["surface"];
         let (x, y, w, h) = rect(&target.place, (1920.0, 1080.0));
-        assert_eq!(json!([x, y, w, h]), json!([surface["x"], surface["y"], surface["w"], surface["h"]]));
+        assert_eq!(
+            json!([x, y, w, h]),
+            json!([surface["x"], surface["y"], surface["w"], surface["h"]])
+        );
         store.set_dialog_visible("editor", false);
         assert!(targets(&store, &panels).is_empty());
     }
@@ -905,7 +1326,13 @@ mod tests {
     #[test]
     fn an_unseated_scene_is_not_drawn() {
         let mut store = SceneStore::default();
-        store.request(SceneVerb::Load, &edge("aa", "left", None), &serde_json::Value::Null).unwrap();
+        store
+            .request(
+                SceneVerb::Load,
+                &edge("aa", "left", None),
+                &serde_json::Value::Null,
+            )
+            .unwrap();
         let mut panels = panels_for(&store, "DP-1");
         let _ = panels.set_mode("DP-1", Edge::Left, "pinned");
         assert!(targets(&store, &panels).is_empty());
@@ -917,7 +1344,10 @@ mod tests {
         load(&mut store, &edge("bar", "bottom", None), "DP-1");
         let typed = "---\nscene: 1\nname: find\ncitizen: c\nwindow: {\"kind\":\"edge\",\"edge\":\"left\"}\n---\n```mix\nroot: {widget: \"column\", children: [\"q\"]}\nq: {widget: \"field\", value: \"\"}\n```\n";
         load(&mut store, typed, "DP-1");
-        assert!(!takes_keyboard(store.scene("bar").unwrap().tree()), "a panel click leaves the keyboard where it is");
+        assert!(
+            !takes_keyboard(store.scene("bar").unwrap().tree()),
+            "a panel click leaves the keyboard where it is"
+        );
         assert!(takes_keyboard(store.scene("find").unwrap().tree()));
         load(&mut store, &edge("calendar", "right", None), "DP-1");
         assert!(takes_keyboard(store.scene("calendar").unwrap().tree()));
@@ -939,9 +1369,18 @@ mod tests {
     #[test]
     fn right_edge_stays_on_the_right_at_fractional_kms_scale() {
         let logical = (3840.0 / 2.5, 2160.0 / 2.5);
-        let place = |fraction: f32| Place::Edge { edge: Edge::Right, offset: -440.0 * (1.0 - fraction), extent: 440.0, top: 0.0, bottom: 0.0 };
+        let place = |fraction: f32| Place::Edge {
+            edge: Edge::Right,
+            offset: -440.0 * (1.0 - fraction),
+            extent: 440.0,
+            top: 0.0,
+            bottom: 0.0,
+        };
         let settled = physical(rect(&place(1.0), logical), 2.5);
-        assert_eq!((settled.loc.x, settled.loc.y, settled.size.w, settled.size.h), (2740, 0, 1100, 2160));
+        assert_eq!(
+            (settled.loc.x, settled.loc.y, settled.size.w, settled.size.h),
+            (2740, 0, 1100, 2160)
+        );
         assert_eq!(settled.loc.x + settled.size.w, 3840);
         for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
             assert!(physical(rect(&place(fraction), logical), 2.5).loc.x >= settled.loc.x);

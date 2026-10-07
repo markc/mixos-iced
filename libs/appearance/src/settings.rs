@@ -412,7 +412,8 @@ impl Prepared {
         &self.projection.buttons[&key]
     }
     pub fn button_text(&self, key: design::ButtonCellKey, part: design::ButtonPart) -> TextStyle {
-        self.typography.get(&self.button(key).typography[part.name()])
+        self.typography
+            .get(&self.button(key).typography[part.name()])
             .expect("validated button typography was prepared")
     }
     pub fn density(&self) -> f32 {

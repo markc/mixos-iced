@@ -4,14 +4,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use decor::{Palette, Srgba};
-use ui::engine::ui::EventFlags;
-use ui::engine::{IcedUi, Renderer};
-use ui::{HandleId, IcedHandle};
-use world::scene::layer::base::Layer;
-use world::state::Loop;
-use world::surface::draw::handle::handle::{IcedSpace, load};
 use config::{Value as MixValue, parse as parse_mix_data};
+use decor::{Palette, Srgba};
 use edges::{Corner, PanelMode};
 use iced_core::{Background, Border, Color, Element, Length, Theme};
 use iced_widget::{Column, button, container, text};
@@ -19,6 +13,12 @@ use serde_json::{Value, json};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface};
 use smithay::utils::{Physical, Rectangle};
+use ui::engine::ui::EventFlags;
+use ui::engine::{IcedUi, Renderer};
+use ui::{HandleId, IcedHandle};
+use world::scene::layer::base::Layer;
+use world::state::Loop;
+use world::surface::draw::handle::handle::{IcedSpace, load};
 
 /// Underscores are outside the authored scene-name grammar: no id collision.
 pub const SCENE: &str = "__corner_menu";
@@ -333,8 +333,16 @@ impl IcedUi for MenuUi {
             let selected = self.menu.selected == index && item.enabled();
             let palette = self.palette;
             let enabled = item.enabled();
-            let label = self.prepared.as_ref().and_then(|prepared| prepared.typography().get("ui"))
-                .unwrap_or(toolkit::typography::TextStyle { font: iced_core::Font::DEFAULT, size: 13.0, line_height: None }).text(label);
+            let label = self
+                .prepared
+                .as_ref()
+                .and_then(|prepared| prepared.typography().get("ui"))
+                .unwrap_or(toolkit::typography::TextStyle {
+                    font: iced_core::Font::DEFAULT,
+                    size: 13.0,
+                    line_height: None,
+                })
+                .text(label);
             let mut row = button(label)
                 .width(Length::Fill)
                 .height(ROW_HEIGHT)
@@ -547,8 +555,13 @@ pub(crate) fn reconcile(
                 Message::Replace(menu.clone()),
             );
         }
-        if surface.appearance_generation != appearance_generation && let Some(prepared) = &prepared {
-            let _ = registry.dispatch_message(IcedHandle::<MenuUi>::from_id(surface.handle), Message::Appearance(Arc::clone(prepared)));
+        if surface.appearance_generation != appearance_generation
+            && let Some(prepared) = &prepared
+        {
+            let _ = registry.dispatch_message(
+                IcedHandle::<MenuUi>::from_id(surface.handle),
+                Message::Appearance(Arc::clone(prepared)),
+            );
             surface.appearance_generation = appearance_generation;
         }
         // Newly mapped furniture must stay below the menu. Static frames
@@ -584,7 +597,9 @@ pub(crate) fn reconcile(
         renderer,
         {
             let mut ui = MenuUi::new(menu.clone(), palette);
-            if let Some(prepared) = &prepared { ui.apply_appearance(Arc::clone(prepared)); }
+            if let Some(prepared) = &prepared {
+                ui.apply_appearance(Arc::clone(prepared));
+            }
             ui
         },
         rect,

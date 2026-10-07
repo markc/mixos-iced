@@ -6451,6 +6451,8 @@ dependencies = [
 name = "scene-host"
 version = "0.1.1"
 dependencies = [
+ "appearance",
+ "application",
  "bus",
  "config",
  "decor",
@@ -6464,6 +6466,7 @@ dependencies = [
  "resvg 0.45.1",
  "scene",
  "serde_json",
+ "settings",
  "sha2 0.10.9",
  "smithay",
  "tokio",

@@ -20,8 +20,8 @@ use crate::layout::{
     ButtonColors, ChromeStyle, DecoFontFamily, DecoFontWeight, DecoTheme, Srgba, presets,
 };
 use design::{
-    Contrast, DesignCompileResult, DesignContext, LinearRgba, ResolvedMetricKind, SourceIdentity,
-    TypographyRole, UnstampedResolvedDesign, ResolvedDictionary,
+    Contrast, DesignCompileResult, DesignContext, LinearRgba, ResolvedDictionary,
+    ResolvedMetricKind, SourceIdentity, TypographyRole, UnstampedResolvedDesign,
 };
 
 /// A theme colour as 8-bit straight-alpha sRGB `[r, g, b, a]`, as the truth
@@ -115,12 +115,20 @@ impl ChromeTheme {
         title_weight: DecoFontWeight,
         title_size: f32,
     ) -> ChromeTheme {
-        let mut deco = presets::resolve(style, crate::layout::Scheme::default(), dictionary_mode(dictionary));
+        let mut deco = presets::resolve(
+            style,
+            crate::layout::Scheme::default(),
+            dictionary_mode(dictionary),
+        );
         apply_dictionary(&mut deco, dictionary);
         deco.metrics.title_font_family = title_family;
         deco.metrics.title_font_weight = title_weight.resolved();
         deco.metrics.title_size_px = title_size;
-        ChromeTheme { deco, tokens: TokenSource::Prepared, palette: Palette::from_dictionary(dictionary) }
+        ChromeTheme {
+            deco,
+            tokens: TokenSource::Prepared,
+            palette: Palette::from_dictionary(dictionary),
+        }
     }
     /// `style`, themed from the shared `theme.conf.mix` (read once; a missing
     /// or broken file falls back to the embedded default tokens).
@@ -143,7 +151,11 @@ impl ChromeTheme {
         let mut deco = presets::resolve(style, scheme_of(&design), mode_of(&design));
         apply_tokens(&mut deco, &design);
         let palette = Palette::from_design(&design);
-        ChromeTheme { deco, tokens, palette }
+        ChromeTheme {
+            deco,
+            tokens,
+            palette,
+        }
     }
 }
 
@@ -159,27 +171,32 @@ fn compile(source: &str) -> Option<UnstampedResolvedDesign> {
     // Quoin/CTK also accepts the shared, selection-only {scheme, mode}
     // file. Resolve that selection against the embedded design, without
     // changing its legacy crosswalk (which the compiler validates separately).
-    let (document, selection) = match design::parse_design_source(SourceIdentity::new("compd:chrome"), source) {
-        Ok(document) => {
-            let selection = document.legacy.clone();
-            (document, selection)
-        }
-        Err(_) => {
-            let value = config::parse(source).ok()?;
-            let config::Value::Map(fields) = &value else { return None };
-            if fields.keys().any(|key| key != "scheme" && key != "mode") {
-                return None;
+    let (document, selection) =
+        match design::parse_design_source(SourceIdentity::new("compd:chrome"), source) {
+            Ok(document) => {
+                let selection = document.legacy.clone();
+                (document, selection)
             }
-            let selection = design::parse_legacy_v0_source(source).ok()?;
-            if !selection.is_selection_only() {
-                return None;
+            Err(_) => {
+                let value = config::parse(source).ok()?;
+                let config::Value::Map(fields) = &value else {
+                    return None;
+                };
+                if fields.keys().any(|key| key != "scheme" && key != "mode") {
+                    return None;
+                }
+                let selection = design::parse_legacy_v0_source(source).ok()?;
+                if !selection.is_selection_only() {
+                    return None;
+                }
+                let document = design::parse_design_source(
+                    SourceIdentity::new("compd:chrome:selection"),
+                    design::EMBEDDED_DEFAULT_SOURCE,
+                )
+                .ok()?;
+                (document, selection)
             }
-            let document = design::parse_design_source(
-                SourceIdentity::new("compd:chrome:selection"), design::EMBEDDED_DEFAULT_SOURCE,
-            ).ok()?;
-            (document, selection)
-        }
-    };
+        };
     let context = DesignContext {
         scheme: selection
             .scheme
@@ -338,7 +355,6 @@ fn apply_dictionary(theme: &mut DecoTheme, dictionary: &ResolvedDictionary) {
     {
         theme.metrics.corner_radius = radius.value as f32;
     }
-
 }
 
 #[cfg(test)]
@@ -369,31 +385,48 @@ mod tests {
     fn a_shared_selection_resolves_the_whole_design_pair_in_that_context() {
         for scheme in design::Scheme::ALL {
             for mode in design::Mode::ALL {
-                let source = format!("{{scheme: \"{}\", mode: \"{}\"}}", scheme.name(), mode.name());
+                let source = format!(
+                    "{{scheme: \"{}\", mode: \"{}\"}}",
+                    scheme.name(),
+                    mode.name()
+                );
                 let theme = ChromeTheme::from_source(ChromeStyle::Mac, Some(&source));
                 assert_eq!(theme.tokens, TokenSource::File);
                 let document = design::parse_design_source(
-                    SourceIdentity::new("test:selection"), design::EMBEDDED_DEFAULT_SOURCE,
-                ).unwrap();
-                let DesignCompileResult::Success(expected) = design::compile_design(&document, DesignContext {
-                    scheme, mode, contrast: Contrast::default(), app: None,
-                }) else { panic!("embedded design compiles") };
+                    SourceIdentity::new("test:selection"),
+                    design::EMBEDDED_DEFAULT_SOURCE,
+                )
+                .unwrap();
+                let DesignCompileResult::Success(expected) = design::compile_design(
+                    &document,
+                    DesignContext {
+                        scheme,
+                        mode,
+                        contrast: Contrast::default(),
+                        app: None,
+                    },
+                ) else {
+                    panic!("embedded design compiles")
+                };
                 assert_eq!(theme.palette, Palette::from_design(&expected.candidate));
                 let pair = &expected.candidate.dictionary().colours.pairs["base"];
-                assert_eq!(luminance(pair.rendered_surface) < luminance(pair.rendered_foreground), mode == design::Mode::Dark);
+                assert_eq!(
+                    luminance(pair.rendered_surface) < luminance(pair.rendered_foreground),
+                    mode == design::Mode::Dark
+                );
             }
         }
         assert!(compile("{scheme: \"invalid\", mode: \"dark\"}").is_none());
         assert!(compile("{scheme: \"ocean\", mode: \"invalid\"}").is_none());
-        assert!(compile("{scheme: \"ocean\", mode: \"dark\", design: {schema_version: 999}}").is_none());
+        assert!(
+            compile("{scheme: \"ocean\", mode: \"dark\", design: {schema_version: 999}}").is_none()
+        );
     }
 
     #[test]
     fn the_embedded_default_compiled_as_a_file_is_the_same_theme() {
-        let file = ChromeTheme::from_source(
-            ChromeStyle::Mixos,
-            Some(design::EMBEDDED_DEFAULT_SOURCE),
-        );
+        let file =
+            ChromeTheme::from_source(ChromeStyle::Mixos, Some(design::EMBEDDED_DEFAULT_SOURCE));
         assert_eq!(file.tokens, TokenSource::File);
         assert_eq!(
             file.deco,
@@ -486,11 +519,26 @@ mod tests {
             (palette.destructive, "destructive"),
             (palette.muted, "muted"),
         ] {
-            assert!(close(pair.surface, srgba(colours.pairs[name].rendered_surface)), "{name}");
-            assert!(close(pair.foreground, srgba(colours.pairs[name].rendered_foreground)), "{name}");
+            assert!(
+                close(pair.surface, srgba(colours.pairs[name].rendered_surface)),
+                "{name}"
+            );
+            assert!(
+                close(
+                    pair.foreground,
+                    srgba(colours.pairs[name].rendered_foreground)
+                ),
+                "{name}"
+            );
         }
-        assert!(close(palette.border, srgba(colours.non_text["border"].value)));
-        assert!(!close(palette.primary.surface, palette.base.surface), "a primary button is distinguishable");
+        assert!(close(
+            palette.border,
+            srgba(colours.non_text["border"].value)
+        ));
+        assert!(
+            !close(palette.primary.surface, palette.base.surface),
+            "a primary button is distinguishable"
+        );
     }
 
     #[test]
@@ -531,8 +579,11 @@ mod tests {
             radius
         );
         for style in [ChromeStyle::Mac, ChromeStyle::Win11] {
-            let preset =
-                presets::resolve(style, crate::layout::Scheme::Ocean, crate::layout::Mode::Light);
+            let preset = presets::resolve(
+                style,
+                crate::layout::Scheme::Ocean,
+                crate::layout::Mode::Light,
+            );
             assert_eq!(
                 ChromeTheme::from_source(style, None)
                     .deco
@@ -546,8 +597,7 @@ mod tests {
     #[test]
     fn the_title_face_is_the_ui_display_role() {
         let design = embedded();
-        let role =
-            design::active_typography(Some(design.typography()), TypographyRole::UiDisplay);
+        let role = design::active_typography(Some(design.typography()), TypographyRole::UiDisplay);
         let theme = ChromeTheme::from_source(ChromeStyle::Win11, None).deco;
         assert_eq!(
             theme.metrics.title_font_family,
