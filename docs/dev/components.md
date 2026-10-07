@@ -7,7 +7,7 @@ checked separately by the layering gate.
 
 | Package | Owner | Kind | Layer | Contract | Version |
 |---|---|---|---|---|---|
-| [busviewer](https://github.com/markc/mixos/blob/main/apps/busviewer/Cargo.toml) | busviewer | app | desktop | public | 0.1.2 |
+| [busviewer](https://github.com/markc/mixos/blob/main/apps/busviewer/Cargo.toml) | busviewer | app | desktop | public | 0.1.3 |
 | [cap](https://github.com/markc/mixos/blob/main/apps/cap/Cargo.toml) | cap | app | desktop | public | 0.1.3 |
 | [ced](https://github.com/markc/mixos/blob/main/apps/ced/Cargo.toml) | ced | app | desktop | public | 0.1.8 |
 | [editor-model](https://github.com/markc/mixos/blob/main/apps/ced/crates/editor-model/Cargo.toml) | ced | app | core | none | 0.1.1 |
@@ -17,7 +17,7 @@ checked separately by the layering gate.
 | [dopus-core](https://github.com/markc/mixos/blob/main/apps/dopus/crates/dopus-core/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [files](https://github.com/markc/mixos/blob/main/apps/dopus/crates/files/Cargo.toml) | dopus | app | core | none | 0.1.1 |
 | [scene-editor](https://github.com/markc/mixos/blob/main/apps/scene-editor/Cargo.toml) | scene-editor | app | desktop | public | 0.1.2 |
-| [term](https://github.com/markc/mixos/blob/main/apps/term/Cargo.toml) | term | app | desktop | public | 0.3.10 |
+| [term](https://github.com/markc/mixos/blob/main/apps/term/Cargo.toml) | term | app | desktop | public | 0.3.11 |
 | [term-core](https://github.com/markc/mixos/blob/main/apps/term/crates/term-core/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [term-test-broker](https://github.com/markc/mixos/blob/main/apps/term/crates/term-test-broker/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [mix-shell](https://github.com/markc/mixos/blob/main/cli/mix-shell/Cargo.toml) | mix-shell | cli | mix | public | 0.109.4 |

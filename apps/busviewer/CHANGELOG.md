@@ -1,5 +1,12 @@
 # BusViewer changelog
 
+## 0.1.3
+
+- Complete canonical descriptions from the shared presentation owner, including
+  installed resource, preparation and cache evidence and actual native identity.
+- Validate raw description requests before actor admission or whitespace
+  normalisation; invalid requests cannot change frontend state.
+
 ## 0.1.2
 
 - Adopt shared native task, reply and retained FIFO owners. Accepted credit

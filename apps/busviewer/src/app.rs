@@ -574,7 +574,15 @@ impl App {
         if !self.bus.is_current(&id) {
             return Task::none();
         }
-        let args = match serde_json::from_str::<Value>(body) {
+        if verb == application::describe::VERB
+            && let Err(violation) = application::describe::validate_request(body) {
+            self.bus.reply(id, 10, model::describe_refusal(&violation));
+            return Task::none();
+        }
+        let parsed = if verb == application::describe::VERB && body.trim().is_empty() {
+            Ok(json!({}))
+        } else { serde_json::from_str::<Value>(body) };
+        let args = match parsed {
             Ok(args) if args.is_object() => args,
             _ => {
                 self.error(id, "ARGUMENT", "arguments must be a JSON object");
@@ -598,10 +606,14 @@ impl App {
             "app.describe" => {
                 self.settings_ui.reconcile(self.bus.settings_generation());
                 let mut describe = model::describe();
-                describe["settings"] =
-                    json!(self.settings_ui.session().host().consumer().evidence());
-                describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
-                self.bus.reply(id, 0, describe);
+                let identity = application::describe::Identity {
+                    app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
+                    pid: std::process::id(), service: self.bus.service_name(&self.settings.service),
+                };
+                match application::describe::native::complete_native(&mut describe, identity, self.settings_ui.session()) {
+                    Ok(()) => self.bus.reply(id, 0, describe),
+                    Err(violation) => self.bus.reply(id, 10, model::describe_refusal(&violation)),
+                }
             }
             "busviewer.show" if !self.quitting => return self.show(Some(id)),
             "busviewer.refresh" if self.dialog.is_none() => return self.refresh(Some(id)),
@@ -1295,6 +1307,12 @@ mod tests {
             replies[3].2["settings_cache"].is_object(),
             "app.describe carries cache evidence"
         );
+        application::describe::validate(&replies[3].2).unwrap();
+        assert_eq!(replies[3].2["pid"], std::process::id());
+        assert_eq!(replies[3].2["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(replies[3].2["service"], app.settings.service);
+        assert!(replies[3].2["resources"].is_null());
+        assert_eq!(replies[3].2["preparation"]["current"], false);
         let _ = app.command(
             5,
             "busviewer.select",
@@ -1321,6 +1339,28 @@ mod tests {
             app.bus.responses().last().unwrap().2["error_code"],
             "ARGUMENT"
         );
+    }
+
+    #[test]
+    fn canonical_description_requests_are_pure_and_raw_bounds_are_enforced() {
+        let mut app = app();
+        app.settings.service = "busviewer-custom".into();
+        let before = app.info();
+        let preparation = serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap();
+        let oversized = " ".repeat(application::describe::MAX_REQUEST_BYTES + 1);
+        for (index, body) in ["", " \n ", "{}", "{", "[]", "null", r#"{"x":1}"#, oversized.as_str()].into_iter().enumerate() {
+            let _ = app.command(index as u64 + 1, "app.describe", body);
+            let responses = app.bus.responses();
+            let (_, rc, reply) = responses.last().unwrap();
+            if index < 3 {
+                assert_eq!(*rc, 0);
+                application::describe::validate(reply).unwrap();
+                assert_eq!(reply["service"], "busviewer-custom");
+            } else { assert_eq!(*rc, 10); }
+            assert_eq!(app.info(), before);
+            assert_eq!(serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap(), preparation);
+            assert!(app.settings_ui.session().frame_stamp().is_none());
+        }
     }
     #[test]
     fn failed_discovery_retains_last_snapshot_and_registry_events_coalesce() {

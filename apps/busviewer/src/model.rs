@@ -136,6 +136,7 @@ pub fn bounded(body: &str) -> String {
 }
 pub fn describe() -> Value {
     json!({"schema":"busviewer.v1","app_id":APP_ID,"verbs":[
+        {"name":"app.describe","description":"Describe the responding application and installed presentation","read_only":true},
         {"name":"busviewer.ping","description":"Probe BusViewer","read_only":true},
         {"name":"busviewer.info","description":"Inspect discovery, selection, reply and UI state","read_only":true},
         {"name":"busviewer.show","description":"Restore and focus the existing window","read_only":false},
@@ -144,6 +145,11 @@ pub fn describe() -> Value {
         {"name":"busviewer.call","args":{"service":"optional string","verb":"optional string","body":"optional JSON text"},"description":"Call exactly once; target's safety is unchanged","read_only":false},
         {"name":"busviewer.quit","description":"Close when idle","read_only":false}
     ]})
+}
+
+pub fn describe_refusal(violation: &application::describe::Violation) -> Value {
+    json!({"error_code":"ARGUMENT", "describe_code":violation.code,
+        "path":violation.path, "message":violation.to_string()})
 }
 #[cfg(test)]
 mod tests {

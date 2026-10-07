@@ -151,6 +151,9 @@ pub struct Handle {
     test_generation: Option<u64>,
 }
 impl Handle {
+    pub fn service_name<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.client.as_ref().map_or(fallback, |client| client.service_name())
+    }
     pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, CallError> {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let permit = self
@@ -861,6 +864,12 @@ async fn worker(
                     faults.push("stale queued command retired before frontend admission".into());
                     continue;
                 }
+                if command.command == application::describe::VERB
+                    && let Err(violation) = application::describe::validate_request(&command.body) {
+                    reply_refused(&client, &mut refusals, &refusal_admission, command,
+                        crate::model::describe_refusal(&violation).to_string());
+                    continue;
+                }
                 let Some(permit) = admission.try_acquire() else {
                     reply_refused(&client, &mut refusals, &refusal_admission, command,
                         "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands or accepted replies still flushing\"}".into());
@@ -1520,6 +1529,19 @@ mod tests {
             }
             let _stop = Stop(handle.clone());
             let mut state = observed(&mut observation, |state| state.connected).await;
+            // The GUI remains paused. Invalid raw descriptions must be
+            // answered by the actual actor before ordinary admission.
+            let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+            let oversized = " ".repeat(application::describe::MAX_REQUEST_BYTES + 1);
+            for body in ["{", "[]", "null", r#"{"x":1}"#, oversized.as_str()] {
+                let (rc, reply) = tokio::time::timeout(Duration::from_secs(5), caller.call_with_headers_raw("actor-viewer", "app.describe", &BTreeMap::new(), body)).await.unwrap().unwrap();
+                assert_eq!(rc, 10);
+                let refusal: Value = serde_json::from_str(&reply).unwrap();
+                assert_eq!(refusal["error_code"], "ARGUMENT");
+                assert!(refusal["describe_code"].is_string());
+            }
+            caller.close().await;
+            assert_eq!(observation.borrow().pending, 0);
             let mut final_calls = None;
             let mut final_caller = None;
             // With production64, several stale generations first occupy the
