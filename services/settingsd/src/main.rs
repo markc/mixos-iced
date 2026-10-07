@@ -66,7 +66,10 @@ fn main() -> anyhow::Result<()> {
         Command::Seed(profile) => {
             let (root, binding) = profile.resolve()?;
             let (_store, accepted) = settingsd::store::Store::seed(&root, binding)?;
-            println!("{}", serde_json::json!({"status":"seeded","binding":accepted.binding,"incarnation":accepted.incarnation,"revision":accepted.revision}));
+            println!(
+                "{}",
+                serde_json::json!({"status":"seeded","binding":accepted.binding,"incarnation":accepted.incarnation,"revision":accepted.revision})
+            );
             Ok(())
         }
         Command::Serve(profile) => {

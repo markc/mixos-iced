@@ -80,15 +80,27 @@ fn session_seed_is_idempotent_and_never_recreates_lost_or_foreign_state() {
     let root = parent.path().join("profile");
     let (store, accepted) = Store::seed(&root, binding()).unwrap();
     let initial = std::fs::read(root.join("desktop.conf.mix")).unwrap();
-    assert!(Store::seed(&root, binding()).is_err(), "active writer must exclude seed");
+    assert!(
+        Store::seed(&root, binding()).is_err(),
+        "active writer must exclude seed"
+    );
     drop(store);
     let (store, again) = Store::seed(&root, binding()).unwrap();
     assert_eq!(again.incarnation, accepted.incarnation);
-    assert_eq!(std::fs::read(root.join("desktop.conf.mix")).unwrap(), initial);
+    assert_eq!(
+        std::fs::read(root.join("desktop.conf.mix")).unwrap(),
+        initial
+    );
     drop(store);
-    let foreign = Binding { instance:"other".into(), ..binding() };
+    let foreign = Binding {
+        instance: "other".into(),
+        ..binding()
+    };
     assert!(Store::seed(&root, foreign).is_err());
-    assert_eq!(std::fs::read(root.join("desktop.conf.mix")).unwrap(), initial);
+    assert_eq!(
+        std::fs::read(root.join("desktop.conf.mix")).unwrap(),
+        initial
+    );
     std::fs::remove_file(root.join("desktop.conf.mix")).unwrap();
     assert!(Store::seed(&root, binding()).is_err());
     assert!(!root.join("desktop.conf.mix").exists());

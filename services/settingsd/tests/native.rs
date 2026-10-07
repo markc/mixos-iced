@@ -40,33 +40,69 @@ struct BrokerFixture {
 impl BrokerFixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let config = directory.path().join("node.conf.mix");
         std::fs::write(&config, serde_json::to_vec(&json!({"node":"settings-reconnect-gate","wg_ip":"","mesh":"settings-gate.invalid","noded":{"port":port,"admission":"off","unix_socket":directory.path().join("run/noded/bus.sock")}})).unwrap()).unwrap();
-        let mut fixture = Self { directory, daemon:Daemon(None), config, address:format!("127.0.0.1:{port}"), url:format!("ws://127.0.0.1:{port}/ws") };
+        let mut fixture = Self {
+            directory,
+            daemon: Daemon(None),
+            config,
+            address: format!("127.0.0.1:{port}"),
+            url: format!("ws://127.0.0.1:{port}/ws"),
+        };
         fixture.restart();
         fixture
     }
     fn stop(&mut self) {
-        if let Some(mut child) = self.daemon.0.take() { child.kill().unwrap(); child.wait().unwrap(); }
+        if let Some(mut child) = self.daemon.0.take() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
     }
     fn restart(&mut self) {
         assert!(self.daemon.0.is_none());
         let root = self.directory.path();
         let log = std::fs::File::create(root.join("broker.log")).unwrap();
-        self.daemon = Daemon(Some(Command::new(std::env::var("MIXOS_TEST_NODED").unwrap())
-            .args(["serve","--listen",&self.address,"--node","settings-reconnect-gate","--no-monitor","--no-log"])
-            .env("MIXOS_NODE_CONFIG",&self.config).env("MIXOS_ETC",root.join("etc"))
-            .env("MIXOS_RUN",root.join("run")).env("MIXOS_VAR",root.join("var"))
-            .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap()));
+        self.daemon = Daemon(Some(
+            Command::new(std::env::var("MIXOS_TEST_NODED").unwrap())
+                .args([
+                    "serve",
+                    "--listen",
+                    &self.address,
+                    "--node",
+                    "settings-reconnect-gate",
+                    "--no-monitor",
+                    "--no-log",
+                ])
+                .env("MIXOS_NODE_CONFIG", &self.config)
+                .env("MIXOS_ETC", root.join("etc"))
+                .env("MIXOS_RUN", root.join("run"))
+                .env("MIXOS_VAR", root.join("var"))
+                .stdout(Stdio::from(log.try_clone().unwrap()))
+                .stderr(Stdio::from(log))
+                .spawn()
+                .unwrap(),
+        ));
     }
     fn authority(&self, root: &std::path::Path) -> Daemon {
         let log = std::fs::File::create(root.join("settingsd.log")).unwrap();
-        Daemon(Some(Command::new(env!("CARGO_BIN_EXE_settingsd"))
-            .args(["serve","--instance","fixture","--root"]).arg(root)
-            .env("MIXOS_NODED_URL",&self.url).env("MIXOS_NODE_CONFIG",&self.config)
-            .env("COSMIX_NODED_URL",&self.url).env("COSMIX_NODE_CONFIG",&self.config)
-            .stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap()))
+        Daemon(Some(
+            Command::new(env!("CARGO_BIN_EXE_settingsd"))
+                .args(["serve", "--instance", "fixture", "--root"])
+                .arg(root)
+                .env("MIXOS_NODED_URL", &self.url)
+                .env("MIXOS_NODE_CONFIG", &self.config)
+                .env("COSMIX_NODED_URL", &self.url)
+                .env("COSMIX_NODE_CONFIG", &self.config)
+                .stdout(Stdio::from(log.try_clone().unwrap()))
+                .stderr(Stdio::from(log))
+                .spawn()
+                .unwrap(),
+        ))
     }
 }
 
@@ -74,21 +110,33 @@ impl BrokerFixture {
 #[ignore = "requires exact-revision noded from authority_test.mix"]
 fn broker_restart_republishes_without_authority_restart_and_shared_consumer_recovers() {
     use bus::native_client::{BoundedIncomingEvent, ConnState, SupervisedClient};
-    use settings::{consumer::{Consumer, Work}, native};
+    use settings::{
+        consumer::{Consumer, Work},
+        native,
+    };
     async fn drive(state: &mut Consumer, client: &SupervisedClient, mut work: Option<Work>) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
             if let Some(current) = work.take() {
-                let reply = native::execute(client,&current).await;
-                work = state.complete(&current,reply);
+                let reply = native::execute(client, &current).await;
+                work = state.complete(&current, reply);
             } else if let Some(delay) = state.retry_delay() {
-                assert!(tokio::time::Instant::now() + delay < deadline,"consumer never recovered: {:?}",state.fault());
+                assert!(
+                    tokio::time::Instant::now() + delay < deadline,
+                    "consumer never recovered: {:?}",
+                    state.fault()
+                );
                 tokio::time::sleep(delay).await;
                 work = state.retry();
-            } else { break; }
+            } else {
+                break;
+            }
         }
     }
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         let mut broker = BrokerFixture::new();
         let root = tempfile::tempdir().unwrap();

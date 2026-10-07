@@ -6642,14 +6642,16 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
+ "bus",
  "design",
  "serde",
  "serde_json",
  "strict",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
