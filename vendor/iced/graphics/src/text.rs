@@ -190,7 +190,7 @@ impl FontSystem {
 
         // Rebuild the derived indexes and clear the match cache after the
         // successful mutation; unparsable bytes leave the system untouched.
-        if loaded.is_some() {
+        if !loaded.is_empty() {
             self.raw.refresh_database();
 
             self.version = Version(self.version.0 + 1);

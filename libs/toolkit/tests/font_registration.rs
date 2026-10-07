@@ -85,6 +85,14 @@ fn registration_changes_version_and_noops_stay_stable() {
     );
 
     let mut system = font_system().write().expect("font system");
+    let unchanged = system.version();
+    let face_count = system.raw().db().len();
+    system.load_font(std::borrow::Cow::Owned(b"malformed font".to_vec()));
+    assert_eq!(system.version(), unchanged);
+    assert_eq!(system.raw().db().len(), face_count);
+    system.load_font(std::borrow::Cow::Owned(NOTO_SANS.to_vec()));
+    assert_eq!(system.version().value(), unchanged.value() + 1);
+    assert_eq!(system.raw().db().len(), face_count + 1);
     let before = system.version();
     let face = binary_face(NOTO_SANS);
     let weight = face.weight;

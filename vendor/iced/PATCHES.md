@@ -116,6 +116,10 @@ checked before the cosmic commit. `load_font` now refreshes the derived
 database indexes after a successful mutation instead of relying on the match
 cache clear alone.
 
+The fontdb 0.23 loader returns all inserted IDs (including collections), so
+`load_font` tests that this result is non-empty before refreshing indexes or
+advancing the version. Malformed input leaves the version unchanged.
+
 The guard tests live in the root-owned toolkit integration target
 (`libs/toolkit/tests/font_registration.rs`, feature
 `font-registration-guards`), which path-includes the cosmic seam sources
