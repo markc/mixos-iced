@@ -1138,8 +1138,13 @@ mod tests {
         ui.tap_key(Named::F10);
         ui.tap_key(Named::ArrowLeft);
         ui.tap_key(Named::Enter);
-        let messages:Vec<_>=ui.into_messages().collect();
-        assert!(messages.iter().any(|m|matches!(m,Message::Action(Action::Shortcuts))),"{messages:?}");
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::Action(Action::Shortcuts))),
+            "{messages:?}"
+        );
     }
     #[test]
     fn editing_limits_reply_readonly_and_call_freeze_are_enforced() {
@@ -1170,7 +1175,13 @@ mod tests {
         let _ = app.command(80, "busviewer.call", "{}");
         assert!(app.bus.responses().is_empty());
         let ticket = app.call.as_ref().unwrap().ticket;
-        let _ = app.update(Message::Completed(ticket, Ok(Reply { rc: 10, body: "permission denied".into() })));
+        let _ = app.update(Message::Completed(
+            ticket,
+            Ok(Reply {
+                rc: 10,
+                body: "permission denied".into(),
+            }),
+        ));
         let replies = app.bus.responses();
         assert_eq!(replies.len(), 1);
         assert_eq!((replies[0].0, replies[0].1), (80, 0));
