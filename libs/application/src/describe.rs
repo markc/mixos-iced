@@ -1147,7 +1147,8 @@ mod tests {
 
     #[test]
     fn read_legacy_reads_product_objects_and_keeps_missing_fields_missing() {
-        let ced = read_legacy(&fixture!("ced-legacy-describe.json")).unwrap();
+        let ced_value = fixture!("ced-legacy-describe.json");
+        let ced = read_legacy(&ced_value).unwrap();
         assert_eq!(
             ced.value()["contract"],
             "ctk-app-control.v0",
@@ -1159,17 +1160,20 @@ mod tests {
         assert_eq!(ced.app_id(), None);
         assert!(ced.verbs().any(|verb| verb.name == VERB));
 
-        let gui = read_legacy(&fixture!("ced-legacy-describe-gui.json")).unwrap();
+        let gui_value = fixture!("ced-legacy-describe-gui.json");
+        let gui = read_legacy(&gui_value).unwrap();
         assert_eq!(gui.pid(), None);
         assert!(gui.value()["settings"].is_object());
         assert!(gui.value()["settings_cache"].is_object());
 
-        let editor = read_legacy(&fixture!("scene-editor-legacy-describe.json")).unwrap();
+        let editor_value = fixture!("scene-editor-legacy-describe.json");
+        let editor = read_legacy(&editor_value).unwrap();
         assert_eq!(editor.app_id(), Some("dev.mixos.scene-editor"));
         assert_eq!(editor.version(), Some("0.1.1"));
         assert_eq!(editor.pid(), None);
 
-        let viewer = read_legacy(&fixture!("busviewer-legacy-describe.json")).unwrap();
+        let viewer_value = fixture!("busviewer-legacy-describe.json");
+        let viewer = read_legacy(&viewer_value).unwrap();
         let select = viewer
             .verbs()
             .find(|verb| verb.name == "busviewer.select")
@@ -1184,13 +1188,15 @@ mod tests {
             "not yet advertised"
         );
 
-        let dopus = read_legacy(&fixture!("dopus-legacy-describe.json")).unwrap();
+        let dopus_value = fixture!("dopus-legacy-describe.json");
+        let dopus = read_legacy(&dopus_value).unwrap();
         assert_eq!(dopus.version(), Some("0.4.4"));
         assert_eq!(dopus.pid(), None);
 
         // shell.info is a documented non-app.describe object: bare suffixes,
         // never converted into v1 names.
-        let shell = read_legacy(&fixture!("shell-info-legacy.json")).unwrap();
+        let shell_value = fixture!("shell-info-legacy.json");
+        let shell = read_legacy(&shell_value).unwrap();
         assert_eq!(shell.service(), Some("shell"));
         assert_eq!(shell.value()["contract"], "shell.v1");
         let names: Vec<&str> = shell.verbs().map(|verb| verb.name).collect();
