@@ -17,7 +17,7 @@ use iced_graphics::{Text as RenderText, Viewport};
 use iced_runtime::{UserInterface, user_interface};
 use iced_tiny_skia::Renderer;
 use toolkit::EditorPane;
-use toolkit::editor_pane::{self as pane, Source as _};
+use toolkit::editor_pane::{self as pane};
 
 #[derive(Default)]
 struct Counters {
@@ -51,7 +51,7 @@ impl Fixture {
         let mut body = String::new();
         let mut spans = Vec::new();
         for line in 0..44 {
-            let length = if line == 20 {
+            let length: usize = if line == 20 {
                 795
             } else {
                 80 + line * 17 % 154
