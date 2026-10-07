@@ -974,7 +974,10 @@ async fn run_instance<P>(
                                 pre_present_called = true;
                                 window.raw.pre_present_notify();
                                 #[cfg(feature = "native-frame-probe")]
-                                native_frame_probe::capacity::pre_present(&window.raw, drawn.as_ref());
+                                native_frame_probe::capacity::pre_present(
+                                    &window.raw,
+                                    drawn.as_ref(),
+                                );
                                 if binding.is_some() {
                                     feedback = Some(request_frame_feedback(&window.raw));
                                 }
@@ -983,7 +986,11 @@ async fn run_instance<P>(
                         #[cfg(feature = "native-frame-probe")]
                         let fault_consumed = scope.as_ref().map(|scope| scope.consumed());
                         #[cfg(feature = "native-frame-probe")]
-                        native_frame_probe::capacity::donor_submitted(window.raw.id(), result.is_ok(), pre_present_called);
+                        native_frame_probe::capacity::donor_submitted(
+                            window.raw.id(),
+                            result.is_ok(),
+                            pre_present_called,
+                        );
                         #[cfg(feature = "native-frame-probe")]
                         drop(scope);
                         #[cfg(feature = "native-frame-probe")]
@@ -1097,7 +1104,11 @@ async fn run_instance<P>(
                         window_id,
                     } => {
                         #[cfg(feature = "native-frame-probe")]
-                        let Some(feedback) = native_frame_probe::capacity::intercept(window_id, feedback) else { continue; };
+                        let Some(feedback) =
+                            native_frame_probe::capacity::intercept(window_id, feedback)
+                        else {
+                            continue;
+                        };
                         let Some((id, window)) = window_manager.get_mut_alias(window_id) else {
                             continue;
                         };
@@ -1210,12 +1221,16 @@ async fn run_instance<P>(
                                         && let Ok(capacity) =
                                             native_presentation::capacity(&window.raw)
                                     {
-                                        let retry = window.presentation.take_capacity_retry(capacity.available);
+                                        let retry = window
+                                            .presentation
+                                            .take_capacity_retry(capacity.available);
                                         #[cfg(feature = "native-frame-probe")]
                                         native_frame_probe::capacity::scanned(id, capacity, retry);
                                         #[cfg(not(feature = "native-frame-probe"))]
                                         let _ = id;
-                                        if retry { window.raw.request_redraw(); }
+                                        if retry {
+                                            window.raw.request_redraw();
+                                        }
                                     }
                                 }
                                 // CapacityEpoch retains the generation sampled before this

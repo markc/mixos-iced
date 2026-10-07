@@ -735,7 +735,8 @@ mod presentation_native_guards {
             #[cfg(x11_platform)]
             _ => unreachable!(),
         };
-        Window::new(target, crate::window::WindowAttributes::default()).expect("actual configured window")
+        Window::new(target, crate::window::WindowAttributes::default())
+            .expect("actual configured window")
     }
 
     fn retire_native_window(event_loop: &EventLoop<()>, window: Window) {
@@ -778,12 +779,17 @@ mod presentation_native_guards {
             for window in &windows {
                 for _ in 0..8 {
                     window.request_presentation_feedback().expect("real donor reservation");
-                    observations.push(window.take_native_request().expect("real native request tap"));
+                    observations
+                        .push(window.take_native_request().expect("real native request tap"));
                 }
             }
-            for window in windows { retire_native_window(&donor, window); }
+            for window in windows {
+                retire_native_window(&donor, window);
+            }
             let deadline = Instant::now() + timeout;
-            while observations.iter().any(|observation| !observation.discarded()) && Instant::now() < deadline {
+            while observations.iter().any(|observation| !observation.discarded())
+                && Instant::now() < deadline
+            {
                 connection.roundtrip().expect("backend-only terminal progress");
             }
             assert_eq!(observations.len(), 128);
@@ -805,14 +811,25 @@ mod presentation_native_guards {
         ready_rx.recv_timeout(timeout).expect("actual undrained foreign terminals");
         let blocked = window.presentation_capacity().expect("actual capacity snapshot");
         assert!(!blocked.available);
-        assert_eq!(window.request_presentation_feedback(), Err(crate::presentation::PresentationError::Capacity));
+        assert_eq!(
+            window.request_presentation_feedback(),
+            Err(crate::presentation::PresentationError::Capacity)
+        );
         // Process admission fails before any credit is reserved, creating no
         // process release. No fixture channel is registered as a native source.
-        let acknowledged = survivor._presentation_capacity_wake.as_ref().expect("actual wake subscriber").native_acknowledgements();
+        let acknowledged = survivor
+            ._presentation_capacity_wake
+            .as_ref()
+            .expect("actual wake subscriber")
+            .native_acknowledgements();
         release_tx.send(()).expect("one foreign retirement instruction");
         let deadline = Instant::now() + timeout;
-        while survivor._presentation_capacity_wake.as_ref().unwrap().native_acknowledgements() == acknowledged {
-            let remaining = deadline.checked_duration_since(Instant::now()).expect("actual capacity wake deadline");
+        while survivor._presentation_capacity_wake.as_ref().unwrap().native_acknowledgements()
+            == acknowledged
+        {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .expect("actual capacity wake deadline");
             survivor.loop_dispatch(Some(remaining)).expect("native readiness-driven wait");
         }
         let available = window.presentation_capacity().expect("actual post-wake capacity");
@@ -830,7 +847,9 @@ mod presentation_native_guards {
         drop(connection);
         assert!(!observation.charge_alive());
         assert_eq!(native_process_count(), baseline);
-        println!("WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true idle_native_wake=true real_readmission=true baseline_restored=true");
+        println!(
+            "WINIT_CAPACITY PASS actual_requests=128 undrained_foreign_queue=true idle_native_wake=true real_readmission=true baseline_restored=true"
+        );
     }
 }
 

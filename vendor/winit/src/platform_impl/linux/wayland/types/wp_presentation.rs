@@ -60,7 +60,9 @@ impl CapacityWake {
 
 impl ProcessBudget {
     fn subscribe(&self, ping: sctk::reexports::calloop::ping::Ping) -> Arc<CapacityWake> {
-        let wake = Arc::new(CapacityWake { ping, pending: AtomicBool::new(false),
+        let wake = Arc::new(CapacityWake {
+            ping,
+            pending: AtomicBool::new(false),
             #[cfg(test)]
             acknowledgements: AtomicUsize::new(0),
         });

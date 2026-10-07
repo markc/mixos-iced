@@ -11,8 +11,8 @@ use crate::futures::futures::channel::oneshot;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use winit::presentation::PresentationFeedback;
 
-mod recovery;
 pub(crate) mod capacity;
+mod recovery;
 pub use capacity::{CapacityGuard, CapacityHandle, CapacityReport, install_capacity};
 pub use recovery::{
     RecoveryGuard, RecoveryHandle, RecoveryPlan, RecoveryReport, install_after_commit_recovery,
