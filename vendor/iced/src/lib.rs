@@ -480,9 +480,9 @@ use iced_winit::runtime;
 
 pub use iced_futures::futures;
 
+pub use iced_futures::stream;
 #[cfg(feature = "native-frame-probe")]
 pub use iced_winit::native_frame_probe;
-pub use iced_futures::stream;
 
 #[cfg(not(any(
     target_arch = "wasm32",

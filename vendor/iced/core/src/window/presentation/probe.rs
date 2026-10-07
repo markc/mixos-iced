@@ -13,25 +13,31 @@ pub struct Scope(PhantomData<Rc<()>>);
 impl Scope {
     pub fn arm() -> Result<Self, &'static str> {
         AFTER_COMMIT.with(|slot| {
-            if slot.get().is_some() { return Err("native fault scope already occupied"); }
+            if slot.get().is_some() {
+                return Err("native fault scope already occupied");
+            }
             slot.set(Some(false));
             Ok(Self(PhantomData))
         })
     }
 
     pub fn consumed(&self) -> bool {
-        AFTER_COMMIT.with(|slot| slot.get()==Some(true))
+        AFTER_COMMIT.with(|slot| slot.get() == Some(true))
     }
 }
 
 impl Drop for Scope {
-    fn drop(&mut self) { AFTER_COMMIT.with(|slot| slot.set(None)); }
+    fn drop(&mut self) {
+        AFTER_COMMIT.with(|slot| slot.set(None));
+    }
 }
 
 /// Consume only after the real buffer commit succeeded, once in this draw.
 pub fn take_after_commit_failure() -> bool {
     AFTER_COMMIT.with(|slot| {
-        if slot.get()!=Some(false) { return false; }
+        if slot.get() != Some(false) {
+            return false;
+        }
         slot.set(Some(true));
         true
     })
@@ -46,7 +52,11 @@ mod tests {
         assert!(!take_after_commit_failure());
         let scope = Scope::arm().unwrap();
         assert!(Scope::arm().is_err());
-        assert!(!std::thread::spawn(take_after_commit_failure).join().unwrap());
+        assert!(
+            !std::thread::spawn(take_after_commit_failure)
+                .join()
+                .unwrap()
+        );
         assert!(take_after_commit_failure());
         assert!(scope.consumed());
         assert!(!take_after_commit_failure());

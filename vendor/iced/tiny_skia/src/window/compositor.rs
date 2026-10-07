@@ -176,7 +176,9 @@ pub fn present(
                     .present_with_damage(&physical_damage)
                     .map_err(|_| compositor::SurfaceError::Lost);
                 #[cfg(feature = "native-frame-probe")]
-                if result.is_ok() && crate::core::window::presentation::probe::take_after_commit_failure() {
+                if result.is_ok()
+                    && crate::core::window::presentation::probe::take_after_commit_failure()
+                {
                     return Err(compositor::SurfaceError::Other);
                 }
                 result

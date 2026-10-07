@@ -944,8 +944,14 @@ async fn run_instance<P>(
                         window.presentation.drawn(binding.clone());
                         let binding = binding.filter(|binding| window.presentation.needs(binding));
                         #[cfg(feature = "native-frame-probe")]
-                        let scope = window.native_frame_probe.begin(id,binding.as_ref())
-                            .then(|| core::window::presentation::probe::Scope::arm().expect("one native draw scope"));
+                        let scope =
+                            window
+                                .native_frame_probe
+                                .begin(id, binding.as_ref())
+                                .then(|| {
+                                    core::window::presentation::probe::Scope::arm()
+                                        .expect("one native draw scope")
+                                });
                         let mut feedback = None;
                         let result = current_compositor.present(
                             &mut window.renderer,
@@ -965,27 +971,36 @@ async fn run_instance<P>(
                         drop(scope);
                         if let Some(binding) = binding {
                             #[cfg(feature = "native-frame-probe")]
-                            let request = feedback.as_ref().and_then(|result| result.as_ref().ok()).copied();
+                            let request = feedback
+                                .as_ref()
+                                .and_then(|result| result.as_ref().ok())
+                                .copied();
                             match feedback {
                                 Some(feedback) => match feedback {
-                                Ok(request_id) => {
-                                    let successful = result.is_ok();
-                                    window.presentation.submitted(
-                                        request_id,
-                                        binding.clone(),
-                                        successful,
-                                    );
-                                    if !successful {
-                                        binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
+                                    Ok(request_id) => {
+                                        let successful = result.is_ok();
+                                        window.presentation.submitted(
+                                            request_id,
+                                            binding.clone(),
+                                            successful,
+                                        );
+                                        if !successful {
+                                            binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
+                                        }
                                     }
-                                }
-                                Err(reason) => binding.observe(id, None, reason),
+                                    Err(reason) => binding.observe(id, None, reason),
                                 },
-                                None => {},
+                                None => {}
                             }
                             #[cfg(feature = "native-frame-probe")]
-                            if let Some(held) = window.native_frame_probe.submitted(id,&binding,request,result.is_ok(),fault_consumed) {
-                                presentation::deliver(&mut window.presentation,id,held);
+                            if let Some(held) = window.native_frame_probe.submitted(
+                                id,
+                                &binding,
+                                request,
+                                result.is_ok(),
+                                fault_consumed,
+                            ) {
+                                presentation::deliver(&mut window.presentation, id, held);
                             }
                         }
                         match result {
@@ -1046,8 +1061,14 @@ async fn run_instance<P>(
                             continue;
                         };
                         #[cfg(feature = "native-frame-probe")]
-                        let Some(feedback) = window.native_frame_probe.intercept(id,&window.presentation,feedback) else { continue; };
-                        presentation::deliver(&mut window.presentation,id,feedback);
+                        let Some(feedback) =
+                            window
+                                .native_frame_probe
+                                .intercept(id, &window.presentation, feedback)
+                        else {
+                            continue;
+                        };
+                        presentation::deliver(&mut window.presentation, id, feedback);
                     }
                     event::Event::WindowEvent {
                         event: window_event,
