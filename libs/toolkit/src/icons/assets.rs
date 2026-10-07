@@ -3,6 +3,11 @@
 //! caller-owned worker, then put the ready pixels in the first rendered frame.
 //! Cache variants include physical size and symbolic tint; file changes are
 //! checked on each resolve. No timer, global cache or filesystem watcher.
+//!
+//! [`decode_owned`] is the one decoder shared by both paths: explicit
+//! prepared resources and the legacy [`Assets`] catalogue. It takes the exact
+//! verified bytes plus a declared format, owns no path, reopens nothing and
+//! never touches a freedesktop theme.
 
 use super::freedesktop::Lookup;
 use crate::Icon;
@@ -14,8 +19,12 @@ use iced_core::{
 };
 use std::{
     collections::BTreeMap,
+    fmt, io::Cursor,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::SystemTime,
 };
 
@@ -23,7 +32,16 @@ type Key = (PathBuf, u32, Option<[u8; 4]>);
 type Entry = (Option<SystemTime>, u64, Handle);
 const CAP: usize = 512;
 const MAX_SIDE: f32 = 2048.0;
-const MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Decoder process limits (image policy, toolkit scope).
+/// The largest physical side a decoded variant may request or hold.
+pub const MAX_PHYSICAL_SIDE: u32 = 2048;
+/// The largest encoded asset the decoder accepts.
+pub const MAX_ENCODED_BYTES: u64 = 8 * 1024 * 1024;
+/// The decoder's internal allocation cap (raster limits).
+pub const MAX_DECODER_ALLOC: u64 = 64 * 1024 * 1024;
+/// The largest retained decoded pixel charge (width × height × 4).
+pub const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A glyph, decoded image or visible icon-name fallback. Owns everything it
 /// needs to render, so a worker can return it without keeping the cache alive.
@@ -52,6 +70,260 @@ impl Ready {
                 .into(),
         }
     }
+}
+
+/// How the owned bytes are decoded. The caller derives it from the verified
+/// declared asset type or locked extension — never by reopening the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+    Svg,
+    Raster,
+}
+
+/// Why [`decode_owned`] refused the bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconDecodeError {
+    /// The encoded payload is empty.
+    Empty,
+    /// The encoded payload exceeds [`MAX_ENCODED_BYTES`].
+    EncodedTooLarge { bytes: u64 },
+    /// The requested physical side is outside 1..=[`MAX_PHYSICAL_SIDE`].
+    SideOutOfRange { side: u32 },
+    /// The SVG does not parse.
+    SvgParse,
+    /// The SVG references an external or data image href, which is refused.
+    SvgImageDependency,
+    /// The SVG contains text, which needs a font provider this decoder does
+    /// not have; a required asset must not render without its text.
+    SvgTextDependency,
+    /// The SVG could not be rendered at the requested side.
+    SvgRender,
+    /// The raster bytes do not decode within the configured limits.
+    RasterDecode,
+    /// The decoded pixels have no visible coverage.
+    Blank,
+    /// The decoded pixel charge (width × height × 4) exceeds
+    /// [`MAX_DECODED_BYTES`].
+    DecodedTooLarge { bytes: u64 },
+}
+
+impl fmt::Display for IconDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "encoded icon bytes are empty"),
+            Self::EncodedTooLarge { bytes } => write!(
+                f,
+                "encoded icon is {bytes} bytes; the limit is {MAX_ENCODED_BYTES}"
+            ),
+            Self::SideOutOfRange { side } => write!(
+                f,
+                "physical side {side} is outside 1..={MAX_PHYSICAL_SIDE}"
+            ),
+            Self::SvgParse => write!(f, "SVG does not parse"),
+            Self::SvgImageDependency => {
+                write!(f, "SVG references an external or data image href")
+            }
+            Self::SvgTextDependency => write!(f, "SVG contains text without a font provider"),
+            Self::SvgRender => write!(f, "SVG could not be rendered at the requested side"),
+            Self::RasterDecode => write!(f, "raster bytes do not decode within the limits"),
+            Self::Blank => write!(f, "decoded icon has no visible pixel"),
+            Self::DecodedTooLarge { bytes } => write!(
+                f,
+                "decoded pixels are {bytes} bytes; the limit is {MAX_DECODED_BYTES}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IconDecodeError {}
+
+/// Straight (unpremultiplied) RGBA pixels decoded from owned bytes, with the
+/// dimensions and the checked decoded-byte charge. Converting to an iced
+/// [`Handle`] performs no further decode and no file read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedIcon {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+impl DecodedIcon {
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// The straight-RGBA pixels.
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// The checked retained charge: width × height × 4.
+    pub fn byte_charge(&self) -> u64 {
+        self.pixels.len() as u64
+    }
+
+    /// A renderer-ready handle over a copy of these pixels.
+    pub fn handle(&self) -> Handle {
+        Handle::from_rgba(self.width, self.height, self.pixels.clone())
+    }
+
+    /// A renderer-ready handle owning these pixels.
+    pub fn into_handle(self) -> Handle {
+        Handle::from_rgba(self.width, self.height, self.pixels)
+    }
+}
+
+/// Decode owned bytes into straight-RGBA pixels. The bytes are the exact
+/// verified source; nothing is reopened or discovered from a path.
+///
+/// SVG is scaled into a `physical_side` × `physical_side` canvas and
+/// tiny-skia's premultiplied output is unpremultiplied for iced's eager RGBA
+/// handles. External and data image hrefs are refused outright, and any text
+/// element fails the decode: without a font provider a text-bearing required
+/// asset would silently render partially.
+///
+/// Raster is decoded over a [`Cursor`] on these bytes with bounded
+/// dimensions and allocation, EXIF orientation applied, at its intrinsic
+/// size; `physical_side` is not a raster resize.
+///
+/// A fully transparent result is [`IconDecodeError::Blank`], and the checked
+/// pixel charge (width × height × 4) must fit [`MAX_DECODED_BYTES`]. `tint`
+/// replaces the RGB and scales the alpha of symbolic assets; ordinary
+/// coloured assets pass `None`.
+pub fn decode_owned(
+    bytes: Arc<[u8]>,
+    format: ImageFormat,
+    physical_side: u32,
+    tint: Option<[u8; 4]>,
+) -> Result<DecodedIcon, IconDecodeError> {
+    if bytes.is_empty() {
+        return Err(IconDecodeError::Empty);
+    }
+    if bytes.len() as u64 > MAX_ENCODED_BYTES {
+        return Err(IconDecodeError::EncodedTooLarge {
+            bytes: bytes.len() as u64,
+        });
+    }
+    if !(1..=MAX_PHYSICAL_SIDE).contains(&physical_side) {
+        return Err(IconDecodeError::SideOutOfRange {
+            side: physical_side,
+        });
+    }
+    let (width, height, mut pixels) = match format {
+        ImageFormat::Svg => decode_svg(&bytes, physical_side)?,
+        ImageFormat::Raster => decode_raster(&bytes)?,
+    };
+    let charge = u64::from(width) * u64::from(height) * 4;
+    if charge > MAX_DECODED_BYTES {
+        return Err(IconDecodeError::DecodedTooLarge { bytes: charge });
+    }
+    if !pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+        return Err(IconDecodeError::Blank);
+    }
+    if let Some(tint) = tint {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[..3].copy_from_slice(&tint[..3]);
+            pixel[3] = ((u16::from(pixel[3]) * u16::from(tint[3]) + 127) / 255) as u8;
+        }
+    }
+    Ok(DecodedIcon {
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
+    // Scan with the same XML parser family usvg uses. A usvg build without
+    // its `text` feature silently drops text elements before the tree exists,
+    // so the tree cannot witness them: refuse them at the document level.
+    let document = roxmltree::Document::parse(std::str::from_utf8(bytes).map_err(|_| {
+        IconDecodeError::SvgParse
+    })?)
+    .map_err(|_| IconDecodeError::SvgParse)?;
+    if document.descendants().any(|node| {
+        node.is_element()
+            && matches!(node.tag_name().name(), "text" | "tspan" | "textPath")
+    }) {
+        return Err(IconDecodeError::SvgTextDependency);
+    }
+    // Every image href — external files and data URLs alike — is refused,
+    // and the attempt recorded so a referencing asset is rejected instead of
+    // silently rendering without it (usvg drops refused image elements).
+    // feImage hrefs inside filters go through the same resolvers.
+    let referenced = Arc::new(AtomicBool::new(false));
+    let data = referenced.clone();
+    let external = referenced.clone();
+    let options = resvg::usvg::Options {
+        image_href_resolver: resvg::usvg::ImageHrefResolver {
+            resolve_data: Box::new(move |_, _, _| {
+                data.store(true, Ordering::Relaxed);
+                None
+            }),
+            resolve_string: Box::new(move |_, _| {
+                external.store(true, Ordering::Relaxed);
+                None
+            }),
+        },
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_data(bytes, &options)
+        .map_err(|_| IconDecodeError::SvgParse)?;
+    if referenced.load(Ordering::Relaxed) {
+        return Err(IconDecodeError::SvgImageDependency);
+    }
+    let size = tree.size();
+    let factor = (side as f32 / size.width()).min(side as f32 / size.height());
+    let transform = resvg::tiny_skia::Transform::from_row(
+        factor,
+        0.0,
+        0.0,
+        factor,
+        (side as f32 - size.width() * factor) / 2.0,
+        (side as f32 - size.height() * factor) / 2.0,
+    );
+    let mut bitmap = resvg::tiny_skia::Pixmap::new(side, side).ok_or(IconDecodeError::SvgRender)?;
+    resvg::render(&tree, transform, &mut bitmap.as_mut());
+    let mut pixels = bitmap.take();
+    // tiny-skia is premultiplied; iced's eager RGBA handles are straight.
+    for pixel in pixels.chunks_exact_mut(4) {
+        for channel in 0..3 {
+            pixel[channel] = if pixel[3] == 0 {
+                0
+            } else {
+                ((u32::from(pixel[channel]) * 255 + u32::from(pixel[3]) / 2)
+                    / u32::from(pixel[3]))
+                .min(255) as u8
+            };
+        }
+    }
+    Ok((side, side, pixels))
+}
+
+fn decode_raster(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
+    // Decode over a cursor on these exact bytes: no path, no reopen, no
+    // metadata or mtime consultation. Limits bound dimensions and allocation;
+    // the pixel charge is checked again by the caller.
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| IconDecodeError::RasterDecode)?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_PHYSICAL_SIDE);
+    limits.max_image_height = Some(MAX_PHYSICAL_SIDE);
+    limits.max_alloc = Some(MAX_DECODER_ALLOC);
+    reader.limits(limits);
+    use image::ImageDecoder;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|_| IconDecodeError::RasterDecode)?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|_| IconDecodeError::RasterDecode)?;
+    let mut bitmap = image::DynamicImage::from_decoder(decoder)
+        .map_err(|_| IconDecodeError::RasterDecode)?;
+    bitmap.apply_orientation(orientation);
+    let bitmap = bitmap.into_rgba8();
+    Ok((bitmap.width(), bitmap.height(), bitmap.into_raw()))
 }
 
 /// Caller-owned fallback catalogue plus a bounded cache. Explicit assets are
@@ -143,7 +415,7 @@ impl Assets {
     }
     fn image(&self, path: &Path, side: u32, tint: Option<[u8; 4]>) -> Option<Handle> {
         let metadata = path.metadata().ok()?;
-        if !metadata.is_file() || metadata.len() > MAX_BYTES {
+        if !metadata.is_file() || metadata.len() > MAX_ENCODED_BYTES {
             return None;
         }
         let stamp = (metadata.modified().ok(), metadata.len());
@@ -155,72 +427,13 @@ impl Assets {
         {
             return Some(handle.clone());
         }
-        let (width, height, mut pixels) = if super::freedesktop::is_svg(path) {
-            let options = resvg::usvg::Options {
-                // Icons are self-contained vectors. Do not let SVG hrefs read
-                // neighbouring files or decode embedded raster payloads.
-                image_href_resolver: resvg::usvg::ImageHrefResolver {
-                    resolve_data: Box::new(|_, _, _| None),
-                    resolve_string: Box::new(|_, _| None),
-                },
-                ..Default::default()
-            };
-            let bytes = std::fs::read(path).ok()?;
-            let tree = resvg::usvg::Tree::from_data(&bytes, &options).ok()?;
-            let size = tree.size();
-            let factor = (side as f32 / size.width()).min(side as f32 / size.height());
-            let transform = resvg::tiny_skia::Transform::from_row(
-                factor,
-                0.0,
-                0.0,
-                factor,
-                (side as f32 - size.width() * factor) / 2.0,
-                (side as f32 - size.height() * factor) / 2.0,
-            );
-            let mut bitmap = resvg::tiny_skia::Pixmap::new(side, side)?;
-            resvg::render(&tree, transform, &mut bitmap.as_mut());
-            let mut pixels = bitmap.take();
-            // tiny-skia is premultiplied; iced's eager RGBA handles are straight.
-            for pixel in pixels.chunks_exact_mut(4) {
-                for channel in 0..3 {
-                    pixel[channel] = if pixel[3] == 0 {
-                        0
-                    } else {
-                        ((u32::from(pixel[channel]) * 255 + u32::from(pixel[3]) / 2)
-                            / u32::from(pixel[3]))
-                        .min(255) as u8
-                    };
-                }
-            }
-            (side, side, pixels)
+        let bytes: Arc<[u8]> = std::fs::read(path).ok()?.into();
+        let format = if super::freedesktop::is_svg(path) {
+            ImageFormat::Svg
         } else {
-            let mut reader = image::ImageReader::open(path)
-                .ok()?
-                .with_guessed_format()
-                .ok()?;
-            let mut limits = image::Limits::default();
-            limits.max_image_width = Some(MAX_SIDE as u32);
-            limits.max_image_height = Some(MAX_SIDE as u32);
-            limits.max_alloc = Some(64 * 1024 * 1024);
-            reader.limits(limits);
-            use image::ImageDecoder;
-            let mut decoder = reader.into_decoder().ok()?;
-            let orientation = decoder.orientation().ok()?;
-            let mut bitmap = image::DynamicImage::from_decoder(decoder).ok()?;
-            bitmap.apply_orientation(orientation);
-            let bitmap = bitmap.into_rgba8();
-            (bitmap.width(), bitmap.height(), bitmap.into_raw())
+            ImageFormat::Raster
         };
-        if !pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
-            return None;
-        }
-        if let Some(tint) = tint {
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel[..3].copy_from_slice(&tint[..3]);
-                pixel[3] = ((u16::from(pixel[3]) * u16::from(tint[3]) + 127) / 255) as u8;
-            }
-        }
-        let handle = Handle::from_rgba(width, height, pixels);
+        let handle = decode_owned(bytes, format, side, tint).ok()?.handle();
         if cache.len() >= CAP {
             cache.pop_first();
         }
@@ -448,6 +661,182 @@ mod tests {
         assert_eq!(
             &pixels[..3],
             &crate::Tokens::dark().palette.text.into_rgba8()[..3]
+        );
+    }
+
+    #[test]
+    fn explicitly_prepared_glyphs_resolve_without_the_installed_table() {
+        let icon = Icon::with_glyph("fixture-glyph", 'A', Font::DEFAULT);
+        match Assets::new().resolve(
+            icon.clone(),
+            16.0,
+            1.0,
+            crate::Tokens::dark().palette.text,
+        ) {
+            Ready::Text(ready) => assert_eq!(ready.glyph(), Some(('A', Font::DEFAULT))),
+            Ready::Image { .. } => panic!("a prepared glyph resolves to text"),
+        }
+    }
+
+    #[test]
+    fn decode_owned_scales_tints_and_charges_the_genuine_packaged_svg() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/terminal.svg");
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let tint = crate::Tokens::dark().palette.text.into_rgba8();
+        let plain = decode_owned(Arc::clone(&bytes), ImageFormat::Svg, 48, None).unwrap();
+        let tinted = decode_owned(Arc::clone(&bytes), ImageFormat::Svg, 48, Some(tint)).unwrap();
+        assert_eq!(plain.dimensions(), (48, 48));
+        assert_eq!(tinted.dimensions(), (48, 48));
+        assert_eq!(tinted.byte_charge(), 48 * 48 * 4);
+        assert!(plain.pixels().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        for (before, after) in plain.pixels().chunks_exact(4).zip(tinted.pixels().chunks_exact(4)) {
+            assert_eq!(&after[..3], &tint[..3]);
+            assert_eq!(
+                after[3],
+                ((u16::from(before[3]) * u16::from(tint[3]) + 127) / 255) as u8
+            );
+        }
+        // Deterministic for one source, side and tint.
+        assert_eq!(
+            tinted,
+            decode_owned(Arc::clone(&bytes), ImageFormat::Svg, 48, Some(tint)).unwrap()
+        );
+        // Converting to a handle performs no decode; the pixels carry over.
+        let Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        } = tinted.clone().into_handle()
+        else {
+            panic!("expected an RGBA handle");
+        };
+        assert_eq!((width, height), (48, 48));
+        assert_eq!(pixels.as_ref(), tinted.pixels());
+    }
+
+    #[test]
+    fn decode_owned_svg_refuses_external_data_text_and_blank_dependencies() {
+        let external = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" xlink:href="{}"/></svg>"#,
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/icon.png")
+                .display()
+        );
+        assert_eq!(
+            decode_owned(external.into_bytes().into(), ImageFormat::Svg, 10, None),
+            Err(IconDecodeError::SvgImageDependency)
+        );
+        let data = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image width="10" height="10" href="data:image/png;base64,iVBORw0KGgo="/></svg>"#;
+        assert_eq!(
+            decode_owned(data.as_bytes().to_vec().into(), ImageFormat::Svg, 10, None),
+            Err(IconDecodeError::SvgImageDependency)
+        );
+        let text = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/><text x="1" y="8">label</text></svg>"#;
+        assert_eq!(
+            decode_owned(text.as_bytes().to_vec().into(), ImageFormat::Svg, 10, None),
+            Err(IconDecodeError::SvgTextDependency)
+        );
+        // Text hidden inside a clip path is a text dependency all the same.
+        let clipped = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs><clipPath id="c"><text>label</text></clipPath></defs><rect width="10" height="10" fill="red" clip-path="url(#c)"/></svg>"#;
+        assert_eq!(
+            decode_owned(clipped.as_bytes().to_vec().into(), ImageFormat::Svg, 10, None),
+            Err(IconDecodeError::SvgTextDependency)
+        );
+        assert_eq!(
+            decode_owned(
+                "invalid SVG".as_bytes().to_vec().into(),
+                ImageFormat::Svg,
+                10,
+                None
+            ),
+            Err(IconDecodeError::SvgParse)
+        );
+        let blank = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="none"/></svg>"#;
+        assert_eq!(
+            decode_owned(blank.as_bytes().to_vec().into(), ImageFormat::Svg, 10, None),
+            Err(IconDecodeError::Blank)
+        );
+    }
+
+    #[test]
+    fn decode_owned_raster_uses_the_packaged_png_bytes_and_enforces_caps() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/icon.png");
+        let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+        let first = decode_owned(Arc::clone(&bytes), ImageFormat::Raster, 48, None).unwrap();
+        let (width, height) = first.dimensions();
+        assert!(width > 0 && height > 0);
+        assert_eq!(first.byte_charge(), u64::from(width) * u64::from(height) * 4);
+        assert!(first.pixels().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        // The physical side is not a raster resize: the intrinsic dimensions
+        // and pixels do not change with the requested side.
+        assert_eq!(
+            first,
+            decode_owned(Arc::clone(&bytes), ImageFormat::Raster, 24, None).unwrap()
+        );
+        let Handle::Rgba {
+            width: w,
+            height: h,
+            pixels,
+            ..
+        } = first.clone().into_handle()
+        else {
+            panic!("expected an RGBA handle");
+        };
+        assert_eq!((w, h), (width, height));
+        assert_eq!(pixels.as_ref(), first.pixels());
+        // Corrupt and truncated payloads, empty input and out-of-range sizes.
+        let truncated: Arc<[u8]> = bytes[..bytes.len() / 2].to_vec().into();
+        assert_eq!(
+            decode_owned(truncated, ImageFormat::Raster, 48, None),
+            Err(IconDecodeError::RasterDecode)
+        );
+        assert_eq!(
+            decode_owned(
+                "not a raster".as_bytes().to_vec().into(),
+                ImageFormat::Raster,
+                48,
+                None
+            ),
+            Err(IconDecodeError::RasterDecode)
+        );
+        assert_eq!(
+            decode_owned(Vec::new().into(), ImageFormat::Raster, 48, None),
+            Err(IconDecodeError::Empty)
+        );
+        assert_eq!(
+            decode_owned(
+                vec![0; 8 * 1024 * 1024 + 1].into(),
+                ImageFormat::Raster,
+                48,
+                None
+            ),
+            Err(IconDecodeError::EncodedTooLarge {
+                bytes: 8 * 1024 * 1024 + 1
+            })
+        );
+        for side in [0u32, 2049] {
+            assert_eq!(
+                decode_owned(Arc::clone(&bytes), ImageFormat::Raster, side, None),
+                Err(IconDecodeError::SideOutOfRange { side })
+            );
+        }
+    }
+
+    #[test]
+    fn decode_owned_raster_rejects_blank_pixels() {
+        let mut encoded = Vec::new();
+        {
+            let mut info = png::Info::with_size(1, 1);
+            info.color_type = png::ColorType::Rgba;
+            info.bit_depth = png::BitDepth::Eight;
+            let encoder = png::Encoder::with_info(&mut encoded, info).unwrap();
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0, 0, 0, 0]).unwrap();
+        }
+        assert_eq!(
+            decode_owned(encoded.into(), ImageFormat::Raster, 1, None),
+            Err(IconDecodeError::Blank)
         );
     }
 }

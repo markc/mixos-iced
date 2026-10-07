@@ -6,7 +6,8 @@
 //! an icon in a button follows the button's text colour under every theme.
 //! A name the installed table lacks (or no installed icon font) renders the
 //! name itself in the default font, so a missing icon is visible rather
-//! than blank.
+//! than blank. Prepared resources use [`Icon::with_glyph`], which owns the
+//! resolved glyph/font pair and never consults the installed table.
 
 use iced_core::widget::text::{Catalog, Style, StyleFn};
 use iced_core::{Color, Element, Font, Pixels, text};
@@ -18,6 +19,9 @@ pub struct Icon {
     name: String,
     size: Option<Pixels>,
     color: Option<Color>,
+    /// A glyph/font pair prepared by [`Icon::with_glyph`]. Legacy constructors
+    /// leave it unset and resolve through the installed icon font table.
+    explicit: Option<(char, Font)>,
 }
 
 /// [`Icon::new`].
@@ -31,6 +35,20 @@ impl Icon {
             name: name.into(),
             size: None,
             color: None,
+            explicit: None,
+        }
+    }
+
+    /// A named icon that owns an explicit glyph/font pair, so it never
+    /// consults the installed icon font table. The caller already resolved
+    /// the name in the selected catalogue and the glyph in its declared
+    /// face; the pair travels with the icon through clones and builders.
+    pub fn with_glyph(name: impl Into<String>, glyph: char, font: Font) -> Self {
+        Self {
+            name: name.into(),
+            size: None,
+            color: None,
+            explicit: Some((glyph, font)),
         }
     }
 
@@ -50,9 +68,10 @@ impl Icon {
         self
     }
 
-    /// The glyph and font, if the installed icon font names it.
+    /// The glyph and font: the explicit pair from [`Icon::with_glyph`] if one
+    /// was prepared, otherwise the installed icon font table.
     pub fn glyph(&self) -> Option<(char, Font)> {
-        crate::fonts::icon(&self.name)
+        self.explicit.or_else(|| crate::fonts::icon(&self.name))
     }
 
     /// The text widget: the glyph in the icon font, or the name.
@@ -107,5 +126,33 @@ mod tests {
         // shows the name (checked by the gallery snapshot, which installs
         // nothing either).
         assert!(Icon::new("no-such-icon").glyph().is_none() || crate::fonts::installed().is_some());
+    }
+
+    #[test]
+    fn with_glyph_owns_the_pair_and_never_consults_the_installed_table() {
+        use iced_core::font::Family;
+        // A real glyph from the packaged Inter face: like the catalogue-face
+        // check, the cmap must carry the codepoint as a nonzero glyph.
+        const INTER: &[u8] =
+            include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
+        let face = ttf_parser::Face::parse(INTER, 0).unwrap();
+        assert!(
+            matches!(face.glyph_index('A'), Some(glyph) if glyph != ttf_parser::GlyphId(0)),
+            "the packaged face must carry a nonzero cmap glyph"
+        );
+        let font = Font {
+            family: Family::Name("Inter"),
+            ..Font::DEFAULT
+        };
+        let prepared = Icon::with_glyph("fixture-glyph", 'A', font);
+        assert_eq!(prepared.glyph(), Some(('A', font)));
+        // The same name through the legacy constructor still consults only
+        // the installed table, which this harness has none of.
+        assert!(Icon::new("fixture-glyph").glyph().is_none() || crate::fonts::installed().is_some());
+        // The pair survives the size/colour builders and clones.
+        let styled = prepared.clone().size(20).color(Color::TRANSPARENT);
+        assert_eq!(styled.glyph(), Some(('A', font)));
+        assert_eq!(styled.size, Some(Pixels(20.0)));
+        assert_eq!(styled.color, Some(Color::TRANSPARENT));
     }
 }

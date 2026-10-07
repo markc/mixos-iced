@@ -70,6 +70,12 @@
   Preview/Commit/Cancel lifecycle; scrollable tabs and middle-click close.
 - Icons: PNG/SVG fallback assets with symbolic tint, scale-aware bounded
   metadata cache and external SVG resources disabled (`image` feature).
+- Icons: one owned-byte decoder (`icons::decode_owned`, `ImageFormat`,
+  `DecodedIcon`, `IconDecodeError`) shared by prepared resources and the
+  legacy `Assets` path, with bounded encoded/side/decoded caps, refused
+  external/data image hrefs and text dependencies, EXIF orientation,
+  symbolic tint and blank rejection. `Icon::with_glyph` owns a resolved
+  glyph/font pair that never consults the installed icon font table.
 - Native DnD: portable `dnd::native::Session` and MIME codecs with explicit
   target acknowledgement and source completion; failed/cancelled transfers
   cannot remove a Move source. Native window adapters remain host-owned.

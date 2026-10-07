@@ -154,6 +154,11 @@ per-file receipt and retained Apache-2.0 licence:
 - share/icons/material/200/screenshot_monitor.svg
 - share/icons/material/200/apps.svg
 
+A byte-identical copy of the pinned terminal.svg serves as the toolkit
+decoder's packaged SVG test fixture, with the same upstream revision,
+receipt and retained Apache-2.0 licence (annotated in REUSE.toml):
+- libs/toolkit/tests/fixtures/terminal.svg
+
 Third-party assets and licences in the compd binary
 ----------------------------------------------------
 
