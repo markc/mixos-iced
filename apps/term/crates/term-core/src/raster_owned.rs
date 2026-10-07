@@ -268,7 +268,7 @@ impl PreparedRaster {
     /// Construct the render-thread state. Cannot fail: the candidate was
     /// fully validated and measured in [`Self::prepare`].
     pub fn activate(self) -> super::Raster {
-        let data = self.fonts.primary.data.clone();
+        let data = self.fonts.primary.source();
         super::Raster {
             identity: Arc::new(()),
             cursor: self.cursor,

@@ -57,7 +57,7 @@ impl Face {
 
     fn from_parts(
         data: Arc<[u8]>,
-        index: u32,
+        _index: u32,
         offset: u32,
         key: CacheKey,
         variations: Vec<NormalizedCoord>,
@@ -65,7 +65,7 @@ impl Face {
         Self {
             data,
             #[cfg(test)]
-            index,
+            index: _index,
             offset,
             key,
             variations,
@@ -78,6 +78,10 @@ impl Face {
             offset: self.offset,
             key: self.key,
         }
+    }
+
+    pub(super) fn source(&self) -> Arc<[u8]> {
+        Arc::clone(&self.data)
     }
 
     #[cfg(test)]
