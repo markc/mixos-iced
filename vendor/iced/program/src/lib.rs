@@ -742,13 +742,14 @@ impl<P: Program> Instance<P> {
         self.program.update(&mut self.state, message)
     }
 
-    /// Produces the current widget tree of the [`Instance`].
+    /// Returns the immutable presentation binding for the current view.
     pub fn frame_presentation(
         &self,
         window: window::Id,
     ) -> Option<window::presentation::FrameBinding> {
         self.program.frame_presentation(&self.state, window)
     }
+    /// Produces the current widget tree of the [`Instance`].
     pub fn view(&self, window: window::Id) -> Element<'_, P::Message, P::Theme, P::Renderer> {
         self.program.view(&self.state, window)
     }

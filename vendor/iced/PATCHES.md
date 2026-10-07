@@ -304,6 +304,11 @@ transition continues requesting frames. Run `cargo test -p ui --lib`.
 Retire this patch when upstream handles idle same-instant retries.
 # Rendered-view presentation binding
 
+The ledger also retains one latest drawn binding, including request refusal or
+deduplicated proof, so unsupported-only windows notify their owner on retirement.
+Replacing or removing a host's observer requires explicitly closing that host;
+the ledger is bounded and cannot retain an archive of forgotten observers.
+
 `Program::frame_presentation` supplies an owned immutable stamp and metadata
 observer beside construction of each view. All standard decorators, application
 and daemon builders, devtools and the tester preserve that actual state/window

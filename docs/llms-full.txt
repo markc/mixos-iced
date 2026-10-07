@@ -288,6 +288,26 @@ add their own title, theme and subscriptions before running the event loop.
 The optional `test-support` feature exposes the pinned UI simulator through
 the host, so app tests need no direct iced-family manifest dependency.
 
+With `settings-native`, `application::frames::Handle` observes the actual native
+runtime without posting a widget message or requesting a redraw. Construct one
+handle for each window incarnation and retain it. Bind its stable observer using
+`Session::frame_stamp()` alongside the immutable view; this stamp describes the
+installed content, including LastGood while a replacement is pending or failed.
+The Iced builder's `frame_presentation` getter carries that binding through
+layout and the exact buffer submission. An aborted submission cannot become
+successful evidence when its native feedback later arrives.
+
+The handle retains two copied metadata slots: latest status and latest presented
+frame. `snapshot()` is read-only. `wait(Expected, deadline)` admits one waiter and
+matches the exact window, activation epoch and applied local revision under a
+caller-owned lifecycle fence and absolute deadline. It does not retry rendering.
+Unsupported evidence is explicit; a settings ACK alone cannot satisfy the wait.
+Native hosts must call `set_live_generation` before admitting requests and `close`
+before draining shutdown work or replacing/removing a binding. Receipt history
+does not prove current registration: Bus generation and settings authority are
+separate evidence. Nested receipts describe nested presentation; they do not
+attest physical scanout.
+
 Portable controls live in `libs/toolkit`. `EditorPane` takes a bounded document
 provider and emits editing intents; Ced adapts its editor engine to that
 interface. `FilePane` takes a borrowed listing and a transfer bridge; DOpus
