@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4
+
+- Box native preparation completions so queued events stay small when prepared
+  appearance data grows. Callers constructing `Event::Prepared` wrap their
+  completion in `Box::new`; session activation and fencing are unchanged.
+- Quoin uses the same borrowed native worker and presentation coordinator for
+  scene content, menus and decoration. Geometry and native frame proof remain
+  pending.
+
 ## 0.1.3
 
 - Opt-in `settings-native` centralises UI coordination and multiplexed jobs on

@@ -124,7 +124,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
     );
     assert!(change.is_none());
     assert!(jobs.prepare.is_some());
-    let (change, _) = session.handle(Event::Prepared(ready), Some(1));
+    let (change, _) = session.handle(Event::Prepared(Box::new(ready)), Some(1));
     assert!(change.is_some());
     assert_eq!(*session.host().presentation().unwrap().content(), 1);
 }
@@ -165,7 +165,7 @@ fn coalesced_jobs_retain_capture_and_atomic_loss_rejects_queued_ready() {
             .same_stage(repeated.prepare.as_ref().unwrap().update())
     );
     let result = ready(repeated.prepare.unwrap());
-    let (change, after_loss) = session.handle(Event::Prepared(result), None);
+    let (change, after_loss) = session.handle(Event::Prepared(Box::new(result)), None);
     assert!(change.is_none());
     assert!(session.host().presentation().is_none());
     assert!(after_loss.prepare.is_none());
@@ -174,7 +174,7 @@ fn coalesced_jobs_retain_capture_and_atomic_loss_rejects_queued_ready() {
 fn no_op_revision_advances_evidence_without_a_resource_job() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let (change, _) = session.handle(Event::Prepared(ready(jobs.prepare.unwrap())), Some(1));
+    let (change, _) = session.handle(Event::Prepared(Box::new(ready(jobs.prepare.unwrap()))), Some(1));
     assert!(change.is_some());
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let (change, jobs) = session.handle(Event::Wake, Some(1));
