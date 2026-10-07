@@ -2322,8 +2322,7 @@ async fn declared_unsubscribe_survives_reconnect_and_refused_unsubscribe_replays
     let error = client
         .unsubscribe_topic("decl.keep")
         .await
-        .err()
-        .expect("a refused unsubscribe errors");
+        .expect_err("a refused unsubscribe errors");
     assert!(
         matches!(error, SupervisedError::Transport(_)),
         "got {error}"
@@ -2354,8 +2353,7 @@ async fn stale_subscribe_ack_never_enters_the_reconnect_snapshot() {
     let error = client
         .subscribe_topic("dyn.slow")
         .await
-        .err()
-        .expect("the subscribe dies with the socket");
+        .expect_err("the subscribe dies with the socket");
     assert!(
         matches!(error, SupervisedError::Transport(_)),
         "got {error}"

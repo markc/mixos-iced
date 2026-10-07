@@ -1786,7 +1786,7 @@ mod tests {
         // One oversized topic.
         let big = "x".repeat(MAX_TOPIC_BYTES + 1);
         assert_eq!(
-            validate_declarations(&[big.clone()]).unwrap_err(),
+            validate_declarations(std::slice::from_ref(&big)).unwrap_err(),
             SubscriptionDeclarationError::Invalid {
                 index: Some(0),
                 message: format!("a topic exceeds {MAX_TOPIC_BYTES} UTF-8 bytes"),
@@ -1860,10 +1860,8 @@ mod tests {
                 if let Some(seen) = register_seen.take() {
                     let _ = seen.send(());
                 }
-            } else if command == "topic.subscribe" {
-                if let Some(seen) = subscribe_seen.take() {
-                    let _ = seen.send(());
-                }
+            } else if command == "topic.subscribe" && let Some(seen) = subscribe_seen.take() {
+                let _ = seen.send(());
             }
             if !send_ok {
                 break;
