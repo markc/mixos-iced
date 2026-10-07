@@ -4,7 +4,8 @@
 //! same tables the key router uses, so the list cannot drift.
 
 use application::iced::widget::{column, row, scrollable};
-use application::iced::{Element, Length};
+use application::Element;
+use application::iced::{Length};
 
 use super::{DialogMsg, frame};
 use crate::actions::{ActionId, Menu};

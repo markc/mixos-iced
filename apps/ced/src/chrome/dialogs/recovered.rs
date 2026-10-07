@@ -4,7 +4,8 @@
 //! Discard (`edit.close force:true`, which deletes their recovery files).
 
 use application::iced::widget::{column, row};
-use application::iced::{Alignment, Element, Length};
+use application::Element;
+use application::iced::{Alignment, Length};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;

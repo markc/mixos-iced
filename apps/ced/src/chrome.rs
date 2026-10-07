@@ -19,7 +19,8 @@ pub mod tabs;
 pub mod timer;
 
 use application::iced::widget::{button, container, text};
-use application::iced::{Background, Border, Color, Element, Length, Padding};
+use application::Element;
+use application::iced::{Background, Border, Color, Length, Padding};
 
 use crate::theme::{Chrome, Theme};
 

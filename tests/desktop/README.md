@@ -1,5 +1,13 @@
 # Desktop-tier gates
 
+`ced_settings_gate.mix REPO BUILD_BIN_DIR` checks real Ced settings frames,
+matching applied/cache receipts, document/caret preservation, cached and embedded
+cold startup, a 65-second offline broker interval and recovery on the same window.
+It uses separate owned compositor and app brokers, named candidate binaries,
+Weston/pixman and software GLES. `settings_geometry_gate.mix` checks composed
+shell reservations, native client configure/commit, captured palette pixels and
+stationary pointer routing, including a forced delayed-buffer ACK.
+
 `application_native_gate.mix --bin-dir PATH` exercises Ced, DOpus and Term
 using named candidate binaries, a private ABP broker and nested compositor.
 It checks editor layout/input, file copy/cancellation and real terminal PTY

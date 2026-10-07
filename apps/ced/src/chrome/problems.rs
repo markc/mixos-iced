@@ -5,7 +5,8 @@
 //! moves the caret to it.
 
 use application::iced::widget::{button, column, container, row, scrollable};
-use application::iced::{Alignment, Element, Length, Padding};
+use application::Element;
+use application::iced::{Alignment, Length, Padding};
 use editor_model::diag::{Diagnostic, Severity};
 
 use super::{Look, PANEL_H};

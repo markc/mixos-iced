@@ -6,7 +6,8 @@
 //! edit service is volatile or its recovery is degraded.
 
 use application::iced::widget::{button, container, row};
-use application::iced::{Alignment, Element, Length, Padding};
+use application::Element;
+use application::iced::{Alignment, Length, Padding};
 use edit::wire::{DiskState, Eol};
 use editor_model::mirror::{Mirror, Phase};
 

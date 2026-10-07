@@ -3,7 +3,8 @@
 //! to, the theme and fonts in use, and where the config lives.
 
 use application::iced::widget::{column, row};
-use application::iced::{Element, Length};
+use application::Element;
+use application::iced::{Length};
 
 use super::{DialogCtx, DialogMsg, frame};
 use crate::app::Msg;

@@ -5,7 +5,8 @@
 //! closes, the strip scrolls sideways on overflow.
 
 use application::iced::widget::{container, row};
-use application::iced::{Alignment, Element, Length};
+use application::Element;
+use application::iced::{Alignment, Length};
 use edit::wire::DiskState;
 use editor_model::mirror::{DetachReason, Phase};
 use editor_model::types::TabId;

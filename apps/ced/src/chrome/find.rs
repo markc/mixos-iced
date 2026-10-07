@@ -13,7 +13,8 @@
 //! arguments, so a Bus caller gets identical behaviour).
 
 use application::iced::widget::{button, container, row, text_input};
-use application::iced::{Alignment, Element, Length, Padding};
+use application::Element;
+use application::iced::{Alignment, Length, Padding};
 
 use super::Look;
 use crate::app::Msg;

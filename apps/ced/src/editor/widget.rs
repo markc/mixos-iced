@@ -3,7 +3,7 @@
 //! live here; the controller still consumes its established engine commands.
 
 use super::{EditorMsg, EditorView, Palette, source};
-use application::iced::Element;
+use application::Element;
 use editor_model::{diag::Diagnostics, highlight::Highlight, mirror::Mirror, model::EditorModel};
 
 pub struct EditorWidget;

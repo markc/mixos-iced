@@ -3,7 +3,7 @@
 use super::{DialogMsg, frame};
 use crate::app::Msg;
 use crate::chrome::Look;
-use application::iced::Element;
+use application::Element;
 use editor_model::types::{Intent, TabId};
 #[cfg(test)]
 use requester::list;

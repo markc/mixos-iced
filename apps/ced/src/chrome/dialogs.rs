@@ -13,8 +13,9 @@ pub mod keys;
 pub mod recovered;
 
 use application::iced::widget::{column, container, row};
+use application::Element;
 use application::iced::{
-    Alignment, Background, Border, Color, Element, Length, Padding, Shadow, Vector,
+    Alignment, Background, Border, Color, Length, Padding, Shadow, Vector,
 };
 
 use super::Look;

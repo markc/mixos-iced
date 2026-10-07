@@ -2,6 +2,9 @@
 
 ## 0.1.7
 
+- Share explicit native `Renderer`/`Element` defaults so software apps retain
+  tiny-skia when another workspace consumer enables the compositor's GPU path.
+
 - Expose the latest producer-fenced settings cache persistence identity.
   Written and unchanged saves provide a receipt; superseded or foreign work
   cannot claim the current presentation was persisted.

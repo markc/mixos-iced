@@ -3,7 +3,8 @@
 //! (scalars, 1-based) and optional.
 
 use application::iced::widget::{column, text_input};
-use application::iced::{Element, Padding};
+use application::Element;
+use application::iced::{Padding};
 
 use super::{DialogMsg, frame};
 use crate::app::Msg;

@@ -3,7 +3,8 @@
 //! text of yours that was not applied, with Copy and Re-insert.
 
 use application::iced::widget::{column, container, scrollable};
-use application::iced::{Element, Length};
+use application::Element;
+use application::iced::{Length};
 use editor_model::types::{Conflict, TabId};
 
 use super::{DialogMsg, frame};

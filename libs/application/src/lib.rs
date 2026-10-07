@@ -17,6 +17,17 @@ pub use iced_test as test;
 #[cfg(feature = "tiny-skia")]
 pub use iced_tiny_skia as cpu;
 
+/// Ordinary native applications keep the software renderer when unrelated
+/// workspace consumers also enable iced's GPU renderer. Hosts may still
+/// supply an explicit renderer to [`Element`] and [`start`].
+#[cfg(feature = "tiny-skia")]
+pub type Renderer = cpu::Renderer;
+#[cfg(not(feature = "tiny-skia"))]
+pub type Renderer = iced::Renderer;
+
+pub type Element<'a, Message, Theme = iced::Theme, Backend = Renderer> =
+    iced::Element<'a, Message, Theme, Backend>;
+
 #[cfg(feature = "settings")]
 pub mod presentation;
 

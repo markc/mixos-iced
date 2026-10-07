@@ -24,7 +24,8 @@ use std::time::Instant;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::keyboard::{Key, key::Named};
 use application::iced::widget::{column, container, stack};
-use application::iced::{Element, Length, Size, Subscription, Task};
+use application::Element;
+use application::iced::{Length, Size, Subscription, Task};
 use editor_model::diag::Diagnostics;
 use editor_model::model::{EditCommand, Motion};
 use editor_model::types::{Intent, Level, Notice, TabId};
@@ -193,8 +194,8 @@ static STREAMS: OnceLock<Mutex<Option<Streams>>> = OnceLock::new();
 /// Run the windowed app registered on the Bus as `service`, opening `paths`.
 pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<()> {
     let launched = Instant::now();
-    let (bus, deliveries) = bus::spawn_settings(service)
-        .map_err(|error| anyhow::anyhow!("Ced bootstrap: {error}"))?;
+    let (bus, deliveries) =
+        bus::spawn_settings(service).map_err(|error| anyhow::anyhow!("Ced bootstrap: {error}"))?;
     let (timers, fired) = Timers::start();
     let installed = STREAMS.set(Mutex::new(Some(Streams {
         deliveries,
@@ -346,8 +347,14 @@ impl App {
         }
         for pending in std::mem::take(&mut self.bootstrap_opens) {
             match pending {
-                BootstrapOpen::New => effects.extend(self.controller.on_action(None, ActionId::FileNew, Intent::ui(0))),
-                BootstrapOpen::Paths(paths) => effects.extend(self.controller.open_paths(&paths, Intent::ui(0))),
+                BootstrapOpen::New => effects.extend(self.controller.on_action(
+                    None,
+                    ActionId::FileNew,
+                    Intent::ui(0),
+                )),
+                BootstrapOpen::Paths(paths) => {
+                    effects.extend(self.controller.open_paths(&paths, Intent::ui(0)))
+                }
             }
         }
         self.perform(effects)
@@ -375,11 +382,20 @@ impl App {
             Some(PresentationKind::LastGood) => "settings-last-good",
             None => "settings-bootstrap",
         };
-        let connection = if self.bus.connected() { "bus-connected" }
-            else if self.registration_refused { "bus-refused" }
-            else if self.registered { "bus-disconnected" }
-            else { "bus-connecting" };
-        format!("{} · {}", crate::strings::label(kind), crate::strings::label(connection))
+        let connection = if self.bus.connected() {
+            "bus-connected"
+        } else if self.registration_refused {
+            "bus-refused"
+        } else if self.registered {
+            "bus-disconnected"
+        } else {
+            "bus-connecting"
+        };
+        format!(
+            "{} · {}",
+            crate::strings::label(kind),
+            crate::strings::label(connection)
+        )
     }
 
     fn title(&self) -> String {
@@ -419,13 +435,26 @@ impl App {
                 _ => Task::none(),
             };
         }
-        if !self.registered && matches!(&msg, Msg::Action(_) | Msg::Editor(..) | Msg::Dialog(_) | Msg::Paste(..) | Msg::RunMacro(_)) {
+        if !self.registered
+            && matches!(
+                &msg,
+                Msg::Action(_)
+                    | Msg::Editor(..)
+                    | Msg::Dialog(_)
+                    | Msg::Paste(..)
+                    | Msg::RunMacro(_)
+            )
+        {
             self.bootstrap_touched = true;
         }
         let registered = self.start_registered();
         let kind = msg_kind(&msg);
         let task = Task::batch([registered, self.dispatch(msg)]);
-        let task = if self.quitting { task } else { Task::batch([task, self.after_transition()]) };
+        let task = if self.quitting {
+            task
+        } else {
+            Task::batch([task, self.after_transition()])
+        };
         let spent = started.elapsed().as_micros() as u64;
         if spent > SLOW_US {
             // Evidence for the view_us budget: which message cost the frame.
@@ -615,7 +644,11 @@ impl App {
                 // whether this instance ever owned the name.
                 let start = self.start_registered();
                 self.registration_refused = true;
-                if !self.registered && !self.bootstrap_touched && !self.handoff_pending && matches!(error, bus::StartError::NameTaken) {
+                if !self.registered
+                    && !self.bootstrap_touched
+                    && !self.handoff_pending
+                    && matches!(error, bus::StartError::NameTaken)
+                {
                     self.handoff_pending = true;
                     self.bus.forward_bootstrap(self.bootstrap_paths.clone());
                 } else {
@@ -626,9 +659,18 @@ impl App {
             Delivery::HandoffFinished(result) => {
                 self.handoff_pending = false;
                 match result {
-                    Ok(()) if !self.registered && self.bus.registration_generation() == 0 && !self.bootstrap_touched => self.quit(),
+                    Ok(())
+                        if !self.registered
+                            && self.bus.registration_generation() == 0
+                            && !self.bootstrap_touched =>
+                    {
+                        self.quit()
+                    }
                     Ok(()) => Task::none(),
-                    Err(error) => { tracing::warn!(%error, "Ced initial handoff failed"); Task::none() }
+                    Err(error) => {
+                        tracing::warn!(%error, "Ced initial handoff failed");
+                        Task::none()
+                    }
                 }
             }
             Delivery::Incoming(incoming) => {
@@ -645,16 +687,25 @@ impl App {
                 if describe {
                     let evidence = self.settings.host().consumer().evidence();
                     for effect in &mut effects {
-                        if let Effect::Respond { id: reply, body, .. } = effect
+                        if let Effect::Respond {
+                            id: reply, body, ..
+                        } = effect
                             && *reply == id
-                            && let Ok(serde_json::Value::Object(mut object)) = serde_json::from_str(body)
+                            && let Ok(serde_json::Value::Object(mut object)) =
+                                serde_json::from_str(body)
                         {
-                            object.insert("settings".into(), serde_json::to_value(&evidence).expect("settings evidence"));
-                            object.insert("settings_cache".into(), serde_json::json!({
-                                "persisted": self.settings.cache_persisted(),
-                                "fault": self.settings.cache_fault(),
-                                "fallback_diagnostics": self.settings.fallback_diagnostics(),
-                            }));
+                            object.insert(
+                                "settings".into(),
+                                serde_json::to_value(&evidence).expect("settings evidence"),
+                            );
+                            object.insert(
+                                "settings_cache".into(),
+                                serde_json::json!({
+                                    "persisted": self.settings.cache_persisted(),
+                                    "fault": self.settings.cache_fault(),
+                                    "fallback_diagnostics": self.settings.fallback_diagnostics(),
+                                }),
+                            );
                             *body = serde_json::Value::Object(object).to_string();
                         }
                     }
@@ -672,15 +723,20 @@ impl App {
 
     fn on_settings_event(&mut self, event: SettingsEvent<Theme>) {
         let theme = &mut self.theme;
-        let (changed, jobs) = self.settings.handle_with(event, self.bus.settings_generation(), |presentation| {
-            *theme = presentation.content().clone();
-        });
+        let (changed, jobs) =
+            self.settings
+                .handle_with(event, self.bus.settings_generation(), |presentation| {
+                    *theme = presentation.content().clone();
+                });
         if changed.is_some() {
-            eprintln!("CED_SETTINGS {}", serde_json::json!({
-                "elapsed_ms": self.launched.elapsed().as_millis(),
-                "evidence": self.settings.host().consumer().evidence(),
-                "fallback_diagnostics": self.settings.fallback_diagnostics(),
-            }));
+            eprintln!(
+                "CED_SETTINGS {}",
+                serde_json::json!({
+                    "elapsed_ms": self.launched.elapsed().as_millis(),
+                    "evidence": self.settings.host().consumer().evidence(),
+                    "fallback_diagnostics": self.settings.fallback_diagnostics(),
+                })
+            );
         }
         self.bus.settings_jobs(jobs);
     }

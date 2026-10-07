@@ -25,7 +25,8 @@ use std::collections::HashMap;
 use application::iced::advanced::widget::{Operation, Tree, tree};
 use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
 use application::iced::keyboard::{self, Key, key::Named};
-use application::iced::{Element, Event, Length, Rectangle, Size, Vector};
+use application::Element;
+use application::iced::{Event, Length, Rectangle, Size, Vector};
 
 use crate::actions::{ActionId, Menu};
 use crate::keymap::{self, Chord};
