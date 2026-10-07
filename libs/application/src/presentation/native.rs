@@ -159,8 +159,8 @@ pub struct ResourceCompletion<T> {
 }
 enum ResourceOutcome<T> {
     Prepared(Completion<T>),
-    Fallback(settings::fallback::Request, Box<FallbackResult<T>>),
-    Reprepared(ActiveSource, Box<Result<Presentation<T>, Diagnostic>>),
+    Fallback(Box<settings::fallback::Request>, Box<FallbackResult<T>>),
+    Reprepared(Box<ActiveSource>, Box<Result<Presentation<T>, Diagnostic>>),
 }
 impl<T, C> Session<T, C> {
     pub fn with_context(consumer: Consumer, initial: C) -> Self {
@@ -257,7 +257,7 @@ impl<T, C> Session<T, C> {
             }
             Event::Fallback(request, result) if self.accepts_legacy() => {
                 changed = self
-                    .complete_resource(ResourceOutcome::Fallback(request, result), &mut activate);
+                    .complete_resource(ResourceOutcome::Fallback(Box::new(request), result), &mut activate);
             }
             Event::Prepared(_) | Event::Fallback(..) => {}
             Event::Resource(completion) => {
@@ -575,7 +575,7 @@ impl<T, C> Session<T, C> {
                                 })
                     })
                     .cloned()
-                    .map(ResourceKind::Reprepare)
+                    .map(|source| ResourceKind::Reprepare(Box::new(source)))
             }) };
         Jobs {
             work: self.host.consumer().current_work().cloned(),
@@ -620,7 +620,7 @@ type Requirements<C> = Arc<
 enum ResourceKind {
     Prepare(Request),
     Fallback(Box<settings::fallback::Request>),
-    Reprepare(ActiveSource),
+    Reprepare(Box<ActiveSource>),
 }
 struct Resource<C> {
     kind: ResourceKind,
@@ -688,7 +688,7 @@ impl<C> Resource<C> {
         let outcome = match self.kind {
             ResourceKind::Prepare(request) => ResourceOutcome::Prepared(request.failed(fault)),
             ResourceKind::Fallback(request) => {
-                ResourceOutcome::Fallback(*request, Box::new(Err(vec![fault])))
+                ResourceOutcome::Fallback(request, Box::new(Err(vec![fault])))
             }
             ResourceKind::Reprepare(source) => {
                 ResourceOutcome::Reprepared(source, Box::new(Err(fault)))
@@ -984,7 +984,7 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Worker<T, C> {
                         },
                     );
                     ResourceOutcome::Fallback(
-                        request,
+                        Box::new(request),
                         Box::new(prepared.map(|fallback| {
                             (fallback, presentation.expect("validated resources"))
                         })),
