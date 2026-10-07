@@ -108,7 +108,7 @@ pub(crate) fn fixture(mode: &str, scale: f64) -> Arc<Prepared> {
     desktop.ui.text_scale = scale;
     let effective = settings::resolve(&desktop)
         .unwrap()
-        .remove("shell")
+        .remove("desktop")
         .unwrap();
     Arc::new(
         ::appearance::settings::Projection::new(&effective)

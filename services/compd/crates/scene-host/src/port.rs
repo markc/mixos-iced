@@ -108,6 +108,11 @@ struct Event {
     body: Value,
 }
 
+struct PendingEvent(Arc<AtomicUsize>);
+impl Drop for PendingEvent {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+}
+
 /// The engine's end of the port.
 pub struct Port {
     inbound: Receiver<Inbound>,
@@ -556,12 +561,7 @@ async fn worker(
     let mut sends = tokio::task::JoinSet::new();
     let mut registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
     let mut registry_retries = 0;
-    let registry_client = Arc::clone(&client);
-    flights.spawn(async move {
-        if let Err(error) = registry_client.subscribe_topic(REGISTRY_TOPIC).await {
-            tracing::warn!(%error, "scene host: registry subscription failed; owner departures will not unload scenes");
-        }
-    });
+    let mut registry_subscription = Some(Box::pin(registry_subscribe(Arc::clone(&client))));
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -577,8 +577,18 @@ async fn worker(
                 if changed.is_err() { break; }
                 lifecycle.borrow_and_update();
                 settings_send(SettingsEvent::Wake);
-                registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+                registry = None;
+                registry_subscription = Some(Box::pin(registry_subscribe(Arc::clone(&client))));
                 registry_retries = 0;
+            }
+            subscribed = async { registry_subscription.as_mut().expect("guarded registry subscription").await }, if registry_subscription.is_some() => {
+                registry_subscription = None;
+                if subscribed {
+                    // Subscribe before read so a departure in the gap cannot
+                    // leave a successful but obsolete full-set baseline.
+                    registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+                    registry_retries = 0;
+                }
             }
             result = async { registry.as_mut().expect("guarded registry read").await }, if registry.is_some() => {
                 registry = None;
@@ -635,14 +645,15 @@ async fn worker(
             Some(event) = events.recv() => {
                 let client = Arc::clone(&client);
                 let pending = Arc::clone(&pending_events);
+                let pending = PendingEvent(pending);
                 flights.spawn(async move {
+                    let _pending = pending;
                     let call = client.call(&event.to, &event.verb, event.body);
                     match tokio::time::timeout(EVENT_TIMEOUT, call).await {
                         Ok(Ok(_)) => {}
                         Ok(Err(error)) => tracing::debug!(%error, to = %event.to, verb = %event.verb, "scene event failed"),
                         Err(_) => tracing::debug!(to = %event.to, verb = %event.verb, "scene event timed out"),
                     }
-                    pending.fetch_sub(1, Ordering::AcqRel);
                 });
             }
             Some(_) = flights.join_next(), if !flights.is_empty() => {}
@@ -650,10 +661,13 @@ async fn worker(
             Some(_) = sends.join_next(), if !sends.is_empty() => {}
         }
     }
-    // Answer what the engine already queued, then leave the name.
-    while let Ok(message) = outbound.try_recv() {
-        send(&client, &topics, message).await;
-    }
+    settings_send(SettingsEvent::Wake);
+    // Finish the earlier active send before later queued messages. A bounded
+    // drain that expires cancels the remaining sequence, preserving its order.
+    let _ = tokio::time::timeout(Duration::from_millis(50), async {
+        while sends.join_next().await.is_some() {}
+        while let Ok(message) = outbound.try_recv() { send(&client, &topics, message).await; }
+    }).await;
     flights.abort_all();
     replies.abort_all();
     sends.abort_all();
@@ -690,6 +704,18 @@ async fn registry_read(
         .map(|name| name.as_str().map(str::to_owned))
         .collect::<Option<BTreeSet<_>>>()?;
     Some((generation, services))
+}
+
+async fn registry_subscribe(client: Arc<SupervisedClient>) -> bool {
+    for attempt in 0..3 {
+        if settings::native::live_generation(&client).is_none() { return false; }
+        if matches!(tokio::time::timeout(SEND_TIMEOUT, client.subscribe_topic(REGISTRY_TOPIC)).await, Ok(Ok(()))) {
+            return true;
+        }
+        if attempt < 2 { tokio::time::sleep(RETRY_INITIAL * (1 << attempt)).await; }
+    }
+    tracing::warn!("scene host: registry subscription failed; retry waits for next lifecycle event");
+    false
 }
 
 /// Answer a request the engine never sees.

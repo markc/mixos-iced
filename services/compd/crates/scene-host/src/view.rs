@@ -1317,6 +1317,9 @@ impl IcedUi for SceneUi {
             SceneMessage::Replace(content) => {
                 self.forget_overridden(&content);
                 self.images = crate::images::prepare(&content.tree, &content.lists);
+                if let Some(prepared) = &self.prepared && self.content.dialog != content.dialog {
+                    (self.palette, self.theme) = crate::appearance::page(prepared, content.dialog);
+                }
                 self.content = content;
             }
             SceneMessage::Appearance(prepared) => self.apply_appearance(prepared),
@@ -1430,6 +1433,28 @@ mod tests {
         let newly_created = SceneUi::from_prepared(Arc::clone(&content), prepared);
         assert_eq!(newly_created.page(), ui.page());
         assert_eq!(newly_created.text_style(false), ui.text_style(false));
+        let replacement = Arc::new(Content { tree: content.tree.clone(), lists: content.lists.clone(), revision: 2, frame: None, dialog: true });
+        ui.update(SceneMessage::Replace(replacement));
+        assert_eq!(ui.palette.base, decor::Palette::from_dictionary(ui.prepared.as_ref().unwrap().dictionary()).base);
+        assert_eq!(ui.edits["/root/entry"], "unsaved edit");
+        assert!(ui.toggles["/root/enabled"]);
+    }
+
+    #[test]
+    fn read_button_colours_match_the_compiler_mapper_in_linear_space() {
+        let mut ui = test_ui("---\nscene: 1\nname: controls\ncitizen: test\n---\n```mix\nroot: {widget: \"column\", children: [\"default\", \"primary\", \"danger\"]}\ndefault: {widget: \"button\", label: \"Default\"}\nprimary: {widget: \"button\", label: \"Primary\", tone: \"primary\"}\ndanger: {widget: \"button\", label: \"Danger\", tone: \"danger\"}\n```\n");
+        let legacy = compile_scene_design(design::EMBEDDED_DEFAULT_SOURCE, true).unwrap();
+        ui.apply_appearance(crate::appearance::fixture("light", 1.0));
+        for id in ["default", "primary", "danger"] {
+            for status in [button::Status::Active, button::Status::Hovered, button::Status::Pressed, button::Status::Disabled] {
+                let node = &ui.content.tree.nodes[id];
+                let old = scene_button_style(&legacy.buttons, node, status);
+                let read = read_button_style(ui.prepared.as_ref().unwrap().button(scene_button_key(node, status)));
+                assert_eq!(read.background, old.background);
+                assert_eq!(read.text_color, old.text_color);
+                assert_eq!(read.border, old.border);
+            }
+        }
     }
 
     use crate::test_renderer::LayoutRenderer;
