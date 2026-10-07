@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -23,7 +23,8 @@ use crate::appearance::Look;
 use application::presentation::native::{
     Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker,
 };
-use bus::{BoundedIncomingEvent, IncomingCommand, SupervisedClient, SupervisedError};
+use bus::{IncomingCommand, SupervisedClient, SupervisedError};
+use bus::native_client::BoundedIncomingEvent;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
@@ -122,12 +123,16 @@ pub struct Port {
     binding: settings::Binding,
     settings_jobs: watch::Sender<Option<Jobs>>,
     settings_mailbox: Mailbox<Look>,
+    registry: RegistryMailbox,
 }
+
+type RegistryMailbox = Arc<Mutex<Option<(u64, BTreeSet<String>)>>>;
 
 struct SettingsLane {
     binding: settings::Binding,
     jobs: watch::Receiver<Option<Jobs>>,
     mailbox: Mailbox<Look>,
+    registry: RegistryMailbox,
 }
 
 /// The names to try, in order: `shell`, then the override when it differs.
@@ -150,10 +155,12 @@ impl Port {
             settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
         let (settings_jobs, jobs) = watch::channel(None);
         let settings_mailbox = Mailbox::default();
+        let registry = RegistryMailbox::default();
         let lane = SettingsLane {
             binding: binding.clone(),
             jobs,
             mailbox: settings_mailbox.clone(),
+            registry: Arc::clone(&registry),
         };
         let (inbound_tx, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (outbound, outbound_rx) = tokio_mpsc::unbounded_channel();
@@ -209,6 +216,7 @@ impl Port {
             binding,
             settings_jobs,
             settings_mailbox,
+            registry,
         })
     }
 
@@ -236,7 +244,10 @@ impl Port {
 
     /// The next message from the worker, without blocking.
     pub fn try_recv(&self) -> Option<Inbound> {
-        self.inbound.try_recv().ok()
+        self.inbound.try_recv().ok().or_else(|| {
+            let (generation, services) = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()?;
+            (self.settings_generation() == Some(generation)).then_some(Inbound::Live(services))
+        })
     }
 
     pub fn reply(&self, request: &Request, rc: u8, body: String) {
@@ -334,6 +345,7 @@ impl Drop for CompletionOnDrop {
     }
 }
 
+#[derive(Clone)]
 struct Delivery {
     sender: SyncSender<Inbound>,
     waker: Waker,
@@ -536,6 +548,9 @@ async fn worker(
         format!("{service}.panel.changed"),
     );
     let mut flights = tokio::task::JoinSet::new();
+    let mut replies = tokio::task::JoinSet::new();
+    let mut sends = tokio::task::JoinSet::new();
+    let mut registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
     let registry_client = Arc::clone(&client);
     flights.spawn(async move {
         if let Err(error) = registry_client.subscribe_topic(REGISTRY_TOPIC).await {
@@ -557,25 +572,55 @@ async fn worker(
                 if changed.is_err() { break; }
                 lifecycle.borrow_and_update();
                 settings_send(SettingsEvent::Wake);
+                registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+            }
+            result = async { registry.as_mut().expect("guarded registry read").await }, if registry.is_some() => {
+                registry = None;
+                if let Some((generation, services)) = result {
+                    if settings::native::live_generation(&client) == Some(generation) {
+                        *lane.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((generation, services));
+                        (delivery.waker)();
+                    }
+                } else {
+                    registry = Some(Box::pin(registry_read(Arc::clone(&client), RETRY_INITIAL)));
+                }
             }
             event = settings_worker.next() => {
                 if let Some(event) = event.take() { settings_send(event); }
             }
-            command = incoming.recv() => {
+            command = incoming.recv(), if replies.len() < INBOUND_CAPACITY => {
                 match command {
                     Some(BoundedIncomingEvent::Command(command)) => {
                         if let Some(decoded) = settings::native::Decoded::from_command(&lane.binding, &command) {
                             settings_send(SettingsEvent::Delivery(decoded));
-                        } else { admit(&service, &client, &delivery, command).await; }
+                        } else if let Route::Live(services) = route(&service, &command) {
+                            if settings::native::live_generation(&client) == Some(command.generation) {
+                                // Each registry notice is a full set. It supersedes
+                                // an older read and cannot be dropped by scene RPCs.
+                                registry = None;
+                                *lane.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((command.generation, services));
+                                (delivery.waker)();
+                            }
+                        } else {
+                            if let Some((command, rc, body)) = admit(&service, &delivery, command) {
+                                let client = Arc::clone(&client);
+                                replies.spawn(async move { refuse(&client, &command, rc, body).await; });
+                            }
+                        }
                     }
                     Some(BoundedIncomingEvent::Overflow { .. }) => {
                         settings_send(SettingsEvent::Lost);
-                        tracing::warn!("scene host: incoming queue overflow; refreshing settings, registry reconciliation required");
+                        registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+                        tracing::warn!("scene host: incoming queue overflow; recovering settings and registry");
                     }
                     None => break,
                 }
             }
-            Some(message) = outbound.recv() => send(&client, &topics, message).await,
+            Some(message) = outbound.recv(), if sends.is_empty() => {
+                let (client, topics) = (Arc::clone(&client), topics.clone());
+                // Preserve publish/reply order without blocking settings work.
+                sends.spawn(async move { send(&client, &topics, message).await; });
+            }
             Some(event) = events.recv() => {
                 let client = Arc::clone(&client);
                 let pending = Arc::clone(&pending_events);
@@ -590,6 +635,8 @@ async fn worker(
                 });
             }
             Some(_) = flights.join_next(), if !flights.is_empty() => {}
+            Some(_) = replies.join_next(), if !replies.is_empty() => {}
+            Some(_) = sends.join_next(), if !sends.is_empty() => {}
         }
     }
     // Answer what the engine already queued, then leave the name.
@@ -597,12 +644,22 @@ async fn worker(
         send(&client, &topics, message).await;
     }
     flights.abort_all();
+    replies.abort_all();
+    sends.abort_all();
     match tokio::time::timeout(DEREGISTER_BUDGET, client.deregister()).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::debug!(%error, "scene host deregister did not complete cleanly"),
         Err(_) => tracing::debug!("scene host deregister timed out"),
     }
     client.close().await;
+}
+
+async fn registry_read(client: Arc<SupervisedClient>, delay: Duration) -> Option<(u64, BTreeSet<String>)> {
+    if !delay.is_zero() { tokio::time::sleep(delay).await; }
+    let generation = settings::native::live_generation(&client)?;
+    let services = tokio::time::timeout(SEND_TIMEOUT, client.call("noded", "noded.props.get", json!({"path":"services.registered"}))).await.ok()?.ok()?;
+    let services = services.as_array()?.iter().map(|name| name.as_str().map(str::to_owned)).collect::<Option<BTreeSet<_>>>()?;
+    Some((generation, services))
 }
 
 /// Answer a request the engine never sees.
@@ -616,12 +673,11 @@ async fn refuse(client: &SupervisedClient, command: &IncomingCommand, rc: u8, bo
     }
 }
 
-async fn admit(
+fn admit(
     service: &str,
-    client: &SupervisedClient,
     delivery: &Delivery,
     command: IncomingCommand,
-) {
+) -> Option<(IncomingCommand, u8, Value)> {
     match route(service, &command) {
         Route::Scene(verb) => {
             let request = Request {
@@ -635,7 +691,7 @@ async fn admit(
             };
             if !delivery.send(Inbound::Request(request)) {
                 let body = json!({"error_code":"QUEUE_FULL","message":"scene host queue full"});
-                refuse(client, &command, 11, body).await;
+                return Some((command, 11, body));
             }
         }
         Route::Live(live) => {
@@ -648,16 +704,11 @@ async fn admit(
         }
         Route::Unknown => {
             let message = format!("{} is not a scene host verb", command.command);
-            refuse(
-                client,
-                &command,
-                10,
-                json!({"error_code":"UNKNOWN_VERB","message":message}),
-            )
-            .await;
+            return Some((command, 10, json!({"error_code":"UNKNOWN_VERB","message":message})));
         }
         Route::Ignore => {}
     }
+    None
 }
 
 async fn send(
