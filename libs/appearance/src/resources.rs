@@ -184,6 +184,7 @@ struct ImageStore {
 struct ImageAdmission {
     sources: BTreeMap<String, Arc<[u8]>>,
     variants: BTreeMap<VariantKey, Arc<VariantCharge>>,
+    usage_after: ImageUsage,
 }
 
 impl ImageStore {
@@ -271,7 +272,17 @@ impl ImageStore {
                 limit: MAX_RETAINED_DECODED_BYTES,
             });
         }
-        Ok(ImageAdmission { sources, variants })
+        let usage_after = ImageUsage {
+            sources: ledger.sources.len() + sources.len(),
+            encoded_bytes: ledger.encoded_bytes + encoded,
+            variants: ledger.variants.len() + variants.len(),
+            decoded_bytes: ledger.decoded_bytes + decoded,
+        };
+        Ok(ImageAdmission {
+            sources,
+            variants,
+            usage_after,
+        })
     }
 
     fn publish(&self, admission: ImageAdmission) {
@@ -1562,12 +1573,14 @@ fn reuse(
         icons.insert(key, ready);
         icon_evidence.push(evidence);
     }
+    let mut registry = compact.registry.clone();
+    registry.image = admission.usage_after;
     let evidence = ResourceEvidence {
         set_id: Some(compact.set_id.clone()),
         manifest_blake3: Some(hex::encode(compact.digest)),
         text: compact.text_evidence.clone(),
         icons: icon_evidence,
-        registry: compact.registry.clone().with_image_usage(),
+        registry,
     };
     check()?;
     let receipt = PreparedResources::assemble(
@@ -1697,7 +1710,7 @@ fn register(
         policies_reused: batch_evidence.policies_reused,
         usage_before: batch_evidence.usage_before,
         usage_after: batch_evidence.usage_after,
-        image: image_store().usage(),
+        image: admission.usage_after,
     };
     let evidence = ResourceEvidence {
         set_id: Some(compact.set_id.clone()),
@@ -2033,6 +2046,7 @@ mod tests {
             )
             .unwrap();
         let binding = first.resources().unwrap().binding().unwrap().clone();
+        assert_eq!(first.resources().unwrap().evidence().registry.image, image_usage());
         assert!(binding.icons.is_none());
         let first_handle = image_handle(first.resources().unwrap().icon("slot"));
         first_host.roots.clear();
@@ -2061,6 +2075,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cold.resources().unwrap().binding(), Some(&binding));
+        assert_eq!(cold.resources().unwrap().evidence().registry.image, image_usage());
         let cold_handle = image_handle(cold.resources().unwrap().icon("slot"));
         assert_eq!(
             cold_handle.id(),

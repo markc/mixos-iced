@@ -205,9 +205,12 @@ name = "application"
 version = "0.1.10"
 dependencies = [
  "appearance",
+ "assets",
+ "blake3",
  "bus",
  "config",
  "design",
+ "hex",
  "iced",
  "iced_program",
  "iced_runtime",
@@ -217,6 +220,8 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2 0.10.9",
+ "strict",
  "tempfile",
  "tokio",
  "toolkit",
@@ -7764,8 +7769,9 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toolkit"
-version = "0.2.6"
+version = "0.2.8"
 dependencies = [
+ "blake3",
  "cosmic-text",
  "edit",
  "fluent-bundle",

@@ -553,7 +553,7 @@ impl<T: Send + 'static> Worker<T> {
                     &cancelled,
                     &build,
                     host,
-                    requirements,
+                    &requirements,
                     None,
                 );
                 Event::Prepared(Completion {
@@ -579,7 +579,7 @@ impl<T: Send + 'static> Worker<T> {
                             &cancelled,
                             &build,
                             Arc::clone(&host),
-                            Arc::clone(&requirements),
+                            &requirements,
                             expected,
                         )?);
                         // The typed binding the fallback ladder records: exactly
