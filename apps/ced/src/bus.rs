@@ -21,7 +21,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ::bus::native_client::{BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient};
+use ::bus::native_client::{
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+};
 use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use editor_model::types::{Incoming, ParsedBody};
 
@@ -127,10 +129,15 @@ pub fn spawn(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), 
 }
 /// GUI bootstrap opts into settings; the headless controller keeps its existing
 /// subscriptions and does not require a desktop session binding.
-pub fn spawn_settings(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
+pub fn spawn_settings(
+    service: &str,
+) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
     spawn_inner(service, true)
 }
-fn spawn_inner(service: &str, desktop_settings: bool) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
+fn spawn_inner(
+    service: &str,
+    desktop_settings: bool,
+) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
     let (dtx, drx) = unbounded();
     let (etx, erx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -151,7 +158,15 @@ fn spawn_inner(service: &str, desktop_settings: bool) -> Result<(BusHandle, Unbo
                     return;
                 }
             };
-            runtime.block_on(run(service, url, dtx, erx, ready_tx, settings_rx, desktop_settings));
+            runtime.block_on(run(
+                service,
+                url,
+                dtx,
+                erx,
+                ready_tx,
+                settings_rx,
+                desktop_settings,
+            ));
         })
         .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
     match ready_rx.recv() {
@@ -174,11 +189,16 @@ async fn run(
     url: String,
     dtx: UnboundedSender<Delivery>,
     mut erx: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: std::sync::mpsc::Sender<Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>>,
+    ready: std::sync::mpsc::Sender<
+        Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>,
+    >,
     mut settings_rx: tokio::sync::watch::Receiver<Option<Jobs>>,
     desktop_settings: bool,
 ) {
-    let binding = match desktop_settings.then(settings::session::binding).transpose() {
+    let binding = match desktop_settings
+        .then(settings::session::binding)
+        .transpose()
+    {
         Ok(binding) => binding,
         Err(error) => {
             let _ = ready.send(Err(StartError::Rejected(error.message)));

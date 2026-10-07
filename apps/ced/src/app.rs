@@ -216,8 +216,11 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         Vec::new(),
     );
     let mut settings = SettingsSession::new(
-        settings::consumer::Consumer::for_app(bus.settings_binding().expect("GUI settings binding"), "ced")
-            .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?,
+        settings::consumer::Consumer::for_app(
+            bus.settings_binding().expect("GUI settings binding"),
+            "ced",
+        )
+        .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?,
     );
     let (_, jobs) = settings.handle(SettingsEvent::Wake, bus.settings_generation());
     bus.settings_jobs(jobs);

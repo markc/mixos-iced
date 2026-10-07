@@ -67,7 +67,10 @@ pub fn run(service: &str, config: Config) -> anyhow::Result<()> {
             work = match delivery {
                 Delivery::Incoming(i) => ctl.on_incoming(i),
                 Delivery::Command(c) => ctl.on_bus_command(c),
-                Delivery::Settings(mailbox) => { mailbox.take(); Vec::new() }
+                Delivery::Settings(mailbox) => {
+                    mailbox.take();
+                    Vec::new()
+                }
             };
         }
     });

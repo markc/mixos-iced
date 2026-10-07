@@ -127,7 +127,10 @@ impl<T> Session<T> {
         {
             self.fallback = None;
         }
-        if now >= self.bootstrap && !self.fallback_attempted && self.host.consumer().applied().is_none() {
+        if now >= self.bootstrap
+            && !self.fallback_attempted
+            && self.host.consumer().applied().is_none()
+        {
             let request = self.host.consumer_mut().fallback_request();
             if request.is_some() {
                 self.fallback_attempted = true;

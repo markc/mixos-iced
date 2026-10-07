@@ -172,8 +172,10 @@ impl Decoded {
     /// Exact same bounded broker payload on the same captured binding/socket.
     /// Revision equality alone cannot discard a contradiction or new authority.
     pub fn same_message(&self, other: &Self) -> bool {
-        self.binding == other.binding && self.generation == other.generation
-            && self.fingerprint.is_some() && self.fingerprint == other.fingerprint
+        self.binding == other.binding
+            && self.generation == other.generation
+            && self.fingerprint.is_some()
+            && self.fingerprint == other.fingerprint
     }
     pub fn from_command(binding: &Binding, command: &IncomingCommand) -> Option<Self> {
         if command.topic() != Some(topic(&binding.profile).as_str())
@@ -195,7 +197,8 @@ impl Decoded {
             binding: binding.clone(),
             generation: command.generation,
             result,
-            fingerprint: (command.body.len() <= MAX_SNAPSHOT_BYTES).then(|| *blake3::hash(command.body.as_bytes()).as_bytes()),
+            fingerprint: (command.body.len() <= MAX_SNAPSHOT_BYTES)
+                .then(|| *blake3::hash(command.body.as_bytes()).as_bytes()),
         })
     }
 }
