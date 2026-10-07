@@ -132,19 +132,18 @@ fn validate_resource_identity(
             "manifest_blake3 must be exactly 64 lowercase hex characters",
         ));
     }
-    if let Some(icons) = icons {
-        if icons.family.is_empty()
+    if let Some(icons) = icons
+        && (icons.family.is_empty()
             || icons.family.len() > 256
             || icons.style.is_empty()
             || icons.style.len() > 96
-            || !(1..=1000).contains(&icons.weight)
-        {
-            return Err(Diagnostic::new(
+            || !(1..=1000).contains(&icons.weight))
+    {
+        return Err(Diagnostic::new(
                 "invalid_resources",
                 path,
                 "icons needs family (1–256 bytes), style (1–96 bytes) and an exact weight 1–1000",
-            ));
-        }
+        ));
     }
     Ok(())
 }
