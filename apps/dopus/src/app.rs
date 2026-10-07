@@ -39,9 +39,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use application::Element;
 use application::cpu::Renderer;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
-use application::iced::{Element, Size, Subscription, Task};
+use application::iced::{Size, Subscription, Task};
 
 use actions::{ActionId, Keymap};
 use design::{Mode, Scheme};

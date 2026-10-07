@@ -4,9 +4,9 @@
 
 use crate::fallback::FontFallbackIter;
 use crate::{
-    math, Align, Attrs, AttrsList, CacheKeyFlags, Color, DecorationMetrics, DecorationSpan,
-    Ellipsize, EllipsizeHeightLimit, Family, Font, FontSystem, GlyphDecorationData, Hinting,
-    LayoutGlyph, LayoutLine, Metrics, Wrap,
+    Align, Attrs, AttrsList, CacheKeyFlags, Color, DecorationMetrics, DecorationSpan, Ellipsize,
+    EllipsizeHeightLimit, Family, Font, FontSystem, GlyphDecorationData, Hinting, LayoutGlyph,
+    LayoutLine, Metrics, Wrap, math,
 };
 #[cfg(not(feature = "std"))]
 use alloc::{format, vec, vec::Vec};
@@ -655,10 +655,7 @@ fn shape_skip_replace_missing(
 fn swash_variation_coords(font: &Font) -> Vec<swash::NormalizedCoord> {
     font.as_swash()
         .variations()
-        .normalized_coords([(
-            swash::Tag::from_be_bytes(*b"wght"),
-            font.weight().0 as f32,
-        )])
+        .normalized_coords([(swash::Tag::from_be_bytes(*b"wght"), font.weight().0 as f32)])
         .collect()
 }
 
@@ -1477,8 +1474,8 @@ impl ShapeLine {
                 attrs_list.defaults()
             } else {
                 attrs_list.get_span(0) // TODO: using the attrs from the first span for
-                                       // ellipsis even if it's at the end. Which for rich text may look weird if the first
-                                       // span has a different color or size than where ellipsizing is happening
+                // ellipsis even if it's at the end. Which for rich text may look weird if the first
+                // span has a different color or size than where ellipsizing is happening
             };
             let mut glyphs = shape_ellipsis(font_system, &attrs, shaping, rtl);
             if rtl {

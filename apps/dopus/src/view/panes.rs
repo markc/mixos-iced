@@ -12,8 +12,9 @@
 //! duplicates of core verbs). The listing is pane-agnostic: its messages are
 //! mapped onto [`Msg::PaneRows`] with the pane id riding the message.
 
+use application::Element;
 use application::iced::widget::container;
-use application::iced::{Element, Length, Rectangle};
+use application::iced::{Length, Rectangle};
 
 use application::cpu::Renderer;
 use dopus_core::{PaneId, PaneModel, VisibleRow};

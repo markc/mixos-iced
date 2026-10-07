@@ -7,8 +7,8 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 use fontdb::{FaceInfo, Family, Query, Style};
-use skrifa::raw::{ReadError, TableProvider as _};
 use skrifa::MetadataProvider;
+use skrifa::raw::{ReadError, TableProvider as _};
 
 // re-export fontdb and harfrust
 pub use fontdb;
@@ -576,7 +576,7 @@ impl FontSystem {
             let fontdb::Source::Binary(data) = &face.source else {
                 return Err(FontRegistrationError::NonBinarySource { face_index });
             };
-            if skrifa::FontRef::from_index((*data).as_ref(), face.index).is_err() {
+            if skrifa::FontRef::from_index(data.as_ref().as_ref(), face.index).is_err() {
                 return Err(FontRegistrationError::UnconstructibleFace { face_index });
             }
         }
@@ -654,7 +654,7 @@ impl FontSystem {
                                 });
                             };
                             face_data_supports_weight(
-                                (*data).as_ref(),
+                                data.as_ref().as_ref(),
                                 face.index,
                                 face.weight,
                                 policy.weight,
@@ -911,9 +911,8 @@ impl FontSystem {
                                         .map(|face| FontMatchKey::new(attrs, face, &self.db))
                                 })
                                 .collect::<Vec<_>>();
-                            group_keys.sort_by_key(|key| {
-                                (key.font_style_diff, key.font_stretch_diff)
-                            });
+                            group_keys
+                                .sort_by_key(|key| (key.font_style_diff, key.font_stretch_diff));
                             font_match_keys.extend(group_keys);
                         }
                         return Arc::new(font_match_keys);
@@ -1025,10 +1024,7 @@ fn face_data_supports_weight(
     let Ok(font_ref) = skrifa::FontRef::from_index(data, index) else {
         return false;
     };
-    let Some(axis) = font_ref
-        .axes()
-        .get_by_tag(skrifa::Tag::new(b"wght"))
-    else {
+    let Some(axis) = font_ref.axes().get_by_tag(skrifa::Tag::new(b"wght")) else {
         return false;
     };
     let weight = sealed.0 as f32;

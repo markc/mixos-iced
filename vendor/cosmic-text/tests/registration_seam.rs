@@ -21,9 +21,21 @@ use cosmic_text::{
     PinnedFaceRef, PinnedFontPolicy, Shaping, SwashCache, Weight,
 };
 
+/// The packaged font bytes, compiled in from the archived `fonts/` fixture
+/// files beside this test. The paths are source-relative, so the file builds
+/// unchanged from its own test target or when the root-owned guard target
+/// path-includes it; there is no manifest-directory lookup, no host-font
+/// path and no environment override. Unknown names fail loudly.
 fn repo_font(name: &str) -> Vec<u8> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fonts");
-    std::fs::read(dir.join(name)).expect("packaged font")
+    match name {
+        "NotoSans-Regular.ttf" => include_bytes!("../fonts/NotoSans-Regular.ttf").to_vec(),
+        "NotoSansArabic.ttf" => include_bytes!("../fonts/NotoSansArabic.ttf").to_vec(),
+        "NotoSansHebrew.ttf" => include_bytes!("../fonts/NotoSansHebrew.ttf").to_vec(),
+        "InterVariable-Italic.ttf" => include_bytes!("../fonts/InterVariable-Italic.ttf").to_vec(),
+        "FiraMono-Medium.ttf" => include_bytes!("../fonts/FiraMono-Medium.ttf").to_vec(),
+        "Inter-Regular.ttf" => include_bytes!("../fonts/Inter-Regular.ttf").to_vec(),
+        unknown => panic!("unknown packaged font: {unknown}"),
+    }
 }
 
 /// Parse the packaged font bytes into a binary `FaceInfo`: a scratch database
@@ -67,7 +79,7 @@ fn shape(
 ) -> Vec<(fontdb::ID, Weight, u16, f32)> {
     let metrics = Metrics::new(16.0, 20.0);
     let mut buffer = Buffer::new(font_system, metrics);
-    let glyphs = {
+    {
         let mut buffer = buffer.borrow_with(font_system);
         buffer.set_size(Some(300.0), Some(100.0));
         buffer.set_text(text, attrs, shaping, None);
@@ -77,8 +89,7 @@ fn shape(
             .flat_map(|run| run.glyphs.iter())
             .map(|glyph| (glyph.font_id, glyph.font_weight, glyph.glyph_id, glyph.w))
             .collect::<Vec<_>>()
-    };
-    glyphs
+    }
 }
 
 fn face_id(font_system: &FontSystem, family: &str) -> fontdb::ID {
@@ -480,7 +491,7 @@ fn missing_existing_face_is_rejected() {
 
     // Remove a face through the legacy escape hatch, then reference it.
     let removed = face_id(&font_system, "Noto Sans Hebrew");
-    let _ = font_system.db_mut().remove_face(removed);
+    font_system.db_mut().remove_face(removed);
     font_system.refresh_database();
     let before = snapshot(&font_system);
 
@@ -530,9 +541,11 @@ fn old_paragraph_survives_same_named_registration() {
     }
     let before = laid_out(&buffer);
     assert!(!before.is_empty());
-    assert!(before
-        .iter()
-        .all(|glyph| glyph.font_id == added_id && glyph.glyph_id != 0));
+    assert!(
+        before
+            .iter()
+            .all(|glyph| glyph.font_id == added_id && glyph.glyph_id != 0)
+    );
 
     // A second collection with the SAME public family name but truly
     // different bytes: a controlled metadata clone of the live "Noto Sans"
@@ -559,13 +572,15 @@ fn old_paragraph_survives_same_named_registration() {
 
     // The two faces share the public family name but hold distinct bytes.
     for id in [added_id, impostor_id] {
-        assert!(font_system
-            .db()
-            .face(id)
-            .expect("face")
-            .families
-            .iter()
-            .any(|(name, _)| name == "Noto Sans"));
+        assert!(
+            font_system
+                .db()
+                .face(id)
+                .expect("face")
+                .families
+                .iter()
+                .any(|(name, _)| name == "Noto Sans")
+        );
     }
     assert_eq!(
         source_bytes(&font_system, added_id),
@@ -614,9 +629,11 @@ fn old_paragraph_survives_same_named_registration() {
     let new_attrs = Attrs::new().family(Family::Name("pinned-new"));
     let new_glyphs = shape(&mut font_system, "שלום", &new_attrs, Shaping::Advanced);
     assert!(!new_glyphs.is_empty());
-    assert!(new_glyphs
-        .iter()
-        .all(|(id, _, glyph_id, _)| *id == impostor_id && *glyph_id != 0));
+    assert!(
+        new_glyphs
+            .iter()
+            .all(|(id, _, glyph_id, _)| *id == impostor_id && *glyph_id != 0)
+    );
 }
 
 #[test]
@@ -686,12 +703,16 @@ fn variable_policy_weights_change_basic_advanced_and_raster() {
         let glyphs_650 = shape(&mut font_system, "Hello", &attrs_650, shaping);
 
         assert_eq!(glyphs_350.len(), glyphs_650.len());
-        assert!(glyphs_350
-            .iter()
-            .all(|(_, weight, _, _)| *weight == fontdb::Weight(350)));
-        assert!(glyphs_650
-            .iter()
-            .all(|(_, weight, _, _)| *weight == fontdb::Weight(650)));
+        assert!(
+            glyphs_350
+                .iter()
+                .all(|(_, weight, _, _)| *weight == fontdb::Weight(350))
+        );
+        assert!(
+            glyphs_650
+                .iter()
+                .all(|(_, weight, _, _)| *weight == fontdb::Weight(650))
+        );
 
         let width_350: f32 = glyphs_350.iter().map(|(_, _, _, w)| w).sum();
         let width_650: f32 = glyphs_650.iter().map(|(_, _, _, w)| w).sum();
@@ -702,7 +723,7 @@ fn variable_policy_weights_change_basic_advanced_and_raster() {
     }
 
     // Raster output differs between the two sealed weights of the same face.
-    let raster = |font_system: &mut FontSystem, alias: &str| -> Option<Arc<[u8]>> {
+    let raster = |font_system: &mut FontSystem, alias: &str| -> Option<Vec<u8>> {
         let attrs = Attrs::new().family(Family::Name(alias));
         let metrics = Metrics::new(16.0, 20.0);
         let mut buffer = Buffer::new(font_system, metrics);
@@ -756,14 +777,22 @@ fn registered_monospace_faces_reach_derived_indexes() {
         let bytes = repo_font("FiraMono-Medium.ttf");
         let font_ref = skrifa::FontRef::from_index(&bytes, 0).expect("parse");
         let mut expected = Vec::new();
-        if let Some(gpos) = font_ref.gpos().ok().and_then(|table| table.script_list().ok()) {
+        if let Some(gpos) = font_ref
+            .gpos()
+            .ok()
+            .and_then(|table| table.script_list().ok())
+        {
             expected.extend(
                 gpos.script_records()
                     .iter()
                     .map(|script| script.script_tag().into_bytes()),
             );
         }
-        if let Some(gsub) = font_ref.gsub().ok().and_then(|table| table.script_list().ok()) {
+        if let Some(gsub) = font_ref
+            .gsub()
+            .ok()
+            .and_then(|table| table.script_list().ok())
+        {
             expected.extend(
                 gsub.script_records()
                     .iter()
@@ -801,9 +830,11 @@ fn registered_bytes_survive_source_drop() {
 
     let attrs = Attrs::new().family(Family::Name("pinned-bytes"));
     let glyphs = shape(&mut font_system, "Hello", &attrs, Shaping::Advanced);
-    assert!(glyphs.iter().all(|(id, _, glyph_id, _)| {
-        *id == added_id && *glyph_id != 0
-    }));
+    assert!(
+        glyphs
+            .iter()
+            .all(|(id, _, glyph_id, _)| { *id == added_id && *glyph_id != 0 })
+    );
 }
 
 #[test]
@@ -823,7 +854,11 @@ fn unpinned_families_keep_legacy_behaviour() {
         })
         .expect("registration");
 
-    for family in [Family::Name("Noto Sans"), Family::SansSerif, Family::Monospace] {
+    for family in [
+        Family::Name("Noto Sans"),
+        Family::SansSerif,
+        Family::Monospace,
+    ] {
         let attrs = Attrs::new().family(family);
         for shaping in [Shaping::Basic, Shaping::Advanced] {
             let glyphs = shape(&mut font_system, "Hello", &attrs, shaping);
@@ -921,10 +956,7 @@ fn staged_family_capture_is_rejected() {
             }],
         })
         .expect_err("staged family capture must fail");
-    assert!(matches!(
-        error,
-        FontRegistrationError::ConflictingAlias(_)
-    ));
+    assert!(matches!(error, FontRegistrationError::ConflictingAlias(_)));
     assert_eq!(snapshot(&font_system), before);
 }
 
@@ -952,7 +984,11 @@ fn single_layout_table_still_reaches_per_script_indexes() {
         "GSUB must be unreadable after the rename"
     );
     let mut expected = Vec::new();
-    if let Some(gpos) = font_ref.gpos().ok().and_then(|table| table.script_list().ok()) {
+    if let Some(gpos) = font_ref
+        .gpos()
+        .ok()
+        .and_then(|table| table.script_list().ok())
+    {
         expected.extend(
             gpos.script_records()
                 .iter()
@@ -985,18 +1021,31 @@ fn ttc_collection_faces_register_and_malformed_ttc_is_rejected() {
     let mut font_system = fonts();
     let before = snapshot(&font_system);
 
-    // A deterministic two-face TTC built from packaged bytes: the header
-    // declares two faces and each declared offset points at one font.
-    let arabic = repo_font("NotoSansArabic.ttf");
-    let hebrew = repo_font("NotoSansHebrew.ttf");
+    // TTC table directory offsets are absolute from the collection start,
+    // unlike the standalone fonts. Relocate every table and align the second
+    // face; concatenating unmodified TTF bytes produces an invalid collection.
+    let relocate = |mut font: Vec<u8>, base: u32| {
+        let tables = usize::from(u16::from_be_bytes([font[4], font[5]]));
+        for table in 0..tables {
+            let start = 12 + table * 16 + 8;
+            let offset = u32::from_be_bytes(font[start..start + 4].try_into().unwrap());
+            font[start..start + 4]
+                .copy_from_slice(&offset.checked_add(base).unwrap().to_be_bytes());
+        }
+        font
+    };
     let header_len = 12u32 + 2 * 4;
+    let arabic = relocate(repo_font("NotoSansArabic.ttf"), header_len);
+    let hebrew_offset = header_len + (arabic.len() as u32).div_ceil(4) * 4;
+    let hebrew = relocate(repo_font("NotoSansHebrew.ttf"), hebrew_offset);
     let mut ttc = Vec::new();
     ttc.extend_from_slice(b"ttcf");
     ttc.extend_from_slice(&0x0001_0000u32.to_be_bytes());
     ttc.extend_from_slice(&2u32.to_be_bytes());
     ttc.extend_from_slice(&header_len.to_be_bytes());
-    ttc.extend_from_slice(&(header_len + arabic.len() as u32).to_be_bytes());
+    ttc.extend_from_slice(&hebrew_offset.to_be_bytes());
     ttc.extend_from_slice(&arabic);
+    ttc.resize(hebrew_offset as usize, 0);
     ttc.extend_from_slice(&hebrew);
 
     // The declared collection parses into two faces; registering the second
@@ -1025,9 +1074,11 @@ fn ttc_collection_faces_register_and_malformed_ttc_is_rejected() {
 
     let attrs = Attrs::new().family(Family::Name("pinned-ttc"));
     let glyphs = shape(&mut font_system, "שלום", &attrs, Shaping::Advanced);
-    assert!(glyphs
-        .iter()
-        .all(|(id, _, glyph_id, _)| *id == added_id && *glyph_id != 0));
+    assert!(
+        glyphs
+            .iter()
+            .all(|(id, _, glyph_id, _)| *id == added_id && *glyph_id != 0)
+    );
 
     let state = snapshot(&font_system);
 

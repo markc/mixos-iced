@@ -2,8 +2,9 @@
 //! Plain Properties sidebar: all data comes from a non-blocking core snapshot.
 use super::{Look, elide::Label};
 use crate::app::Msg;
+use application::Element;
+use application::iced::Length;
 use application::iced::widget::{column, container, scrollable, text};
-use application::iced::{Element, Length};
 use dopus_core::{format_modified_at, format_size, properties::Properties};
 
 pub fn sidebar<'a>(

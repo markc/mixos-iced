@@ -50,6 +50,12 @@
 
 ## Unreleased
 
+- The opt-in `font-registration-guards` integration target owns the font
+  registration seam guards: the cosmic guard sources compile from their
+  single vendored owner and the iced wrapper assertions run through the
+  public font system, registration, version and paragraph APIs. Test-only;
+  no production feature branch.
+
 - Native drag areas carry the host's press token in the same widget message
   as the payload. `Session::start_with_gesture` avoids asynchronous subscription
   ordering races while retaining backend window, seat and liveness checks.
