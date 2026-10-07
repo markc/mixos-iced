@@ -427,7 +427,7 @@ impl Controller {
             match hold.state {
                 State::Armed => {}
                 State::Reached => return Ok(guard.retained.clone().unwrap()),
-                terminal => return Err(terminal_error(&hold, terminal)),
+                terminal => return Err(terminal_error(hold, terminal)),
             }
             let generation = hold.hold_generation;
             let deadline = hold.armed_at + self.shared.lifetime;
@@ -458,7 +458,7 @@ impl Controller {
                 match hold.state {
                     State::Reached => return Ok(guard.retained.clone().unwrap()),
                     State::Armed => {}
-                    terminal => return Err(terminal_error(&hold, terminal)),
+                    terminal => return Err(terminal_error(hold, terminal)),
                 }
             }
             tokio::select! {
