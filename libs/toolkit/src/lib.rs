@@ -102,7 +102,7 @@ pub use fonts::{
         CollectionId, FaceEvidence, FamilyGroup, FontBlob, FontCollection, FontRegistry,
         IconCatalogue, IconSelectionRequest, OwnedFace, OwnedSelection, Registration,
         RegistrationBatch, RegistrationError, RegistrationEvidence, RegistryUsage, Resource,
-        Selection, SelectionEvidence, SelectionRequest, SourceEvidence, SourceFace,
+        Selection as FontSelectionReceipt, SelectionEvidence, SelectionRequest, SourceEvidence, SourceFace,
         SubstitutionEvidence, WeightPolicy,
     },
 };

@@ -184,13 +184,13 @@ mod tests {
             iced_core::shell::Waker::noop(),
             &mut messages,
         );
-        Widget::<bool, iced_core::Theme, ()>::update(
+        Widget::<bool, iced_core::Theme, crate::test_renderer::LayoutRenderer>::update(
             toggle,
             &mut tree,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Layout::new(&node),
             mouse::Cursor::Available(at),
-            &(),
+            &crate::test_renderer::LayoutRenderer::new(),
             &mut shell,
             &Rectangle::with_size(Size::INFINITE),
         );

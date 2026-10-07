@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn tile_set_reuses_per_zoom_and_evicts_least_recent() {
-        let mut tiles = TileSet::<()>::new();
+        let mut tiles = TileSet::<iced_tiny_skia::Renderer>::new();
         let zoom_a = (1, 1);
         let zoom_b = (2, 1);
         assert!(!tiles.get(zoom_a, 0).1);
