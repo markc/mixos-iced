@@ -18,6 +18,7 @@ pub(crate) struct Ledger {
     window: Id,
     pending: BTreeMap<u64, Submission>,
     proven: Option<(u64, FrameBinding)>,
+    latest: Option<FrameBinding>,
 }
 
 impl Ledger {
@@ -26,7 +27,11 @@ impl Ledger {
             window,
             pending: BTreeMap::new(),
             proven: None,
+            latest: None,
         }
+    }
+    pub fn drawn(&mut self, binding: Option<FrameBinding>) {
+        self.latest = binding;
     }
     pub fn needs(&self, binding: &FrameBinding) -> bool {
         self.pending.len() < CAP
@@ -69,6 +74,9 @@ impl Ledger {
 
 impl Drop for Ledger {
     fn drop(&mut self) {
+        if let Some(binding) = self.latest.take() {
+            binding.observe(self.window, None, FrameOutcome::Closed);
+        }
         for (id, entry) in std::mem::take(&mut self.pending) {
             entry
                 .binding
@@ -84,6 +92,22 @@ impl Drop for Ledger {
 mod tests {
     use super::*;
     use crate::core::window::presentation::{FrameObserver, FrameStamp};
+
+    #[test]
+    fn an_unsupported_only_window_still_notifies_its_drawn_observer_on_retirement() {
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = closed.clone();
+        let observer = FrameObserver::new(move |receipt| {
+            if receipt.outcome == FrameOutcome::Closed { observed.store(true, std::sync::atomic::Ordering::SeqCst); }
+        });
+        let window = Id::unique();
+        let current = binding(1, observer);
+        current.observe(window, None, FrameOutcome::Unsupported);
+        let mut ledger = Ledger::new(window);
+        ledger.drawn(Some(current));
+        drop(ledger);
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
     fn binding(epoch: u64, observer: FrameObserver) -> FrameBinding {
         FrameBinding {
             stamp: FrameStamp {

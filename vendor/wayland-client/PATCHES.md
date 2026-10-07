@@ -9,7 +9,8 @@ for the authoritative full identifier).
 `src/event_queue.rs` closes EventQueue on drop and takes its queued events
 under the queue mutex, then retires userdata and wakers outside the mutex.
 Subsequent native events preserve child-data creation but cannot enter the
-closed queue. Rejected userdata is also dropped after unlocking.
+closed queue. Rejected userdata is also dropped after unlocking, including the
+registry-forwarding owner in `src/globals.rs`.
 
 Without this, an undrained queue retains QueueProxyData, which retains its
 QueueHandle and therefore the queue itself. Presentation request credits and

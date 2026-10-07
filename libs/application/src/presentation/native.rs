@@ -439,6 +439,14 @@ impl<T, C> Session<T, C> {
         changed
     }
 
+    /// The installed view's identity, retained while a replacement prepares.
+    pub fn frame_stamp(&self) -> Option<crate::frames::FrameStamp> {
+        Some(crate::frames::FrameStamp {
+            activation_epoch: self.active.as_ref()?.epoch,
+            local_revision: self.applied_revision?.get(),
+        })
+    }
+
     pub fn preparation_evidence(&self) -> PreparationEvidence<'_> {
         PreparationEvidence {
             desired: self.local.revision,

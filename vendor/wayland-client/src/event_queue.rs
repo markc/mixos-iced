@@ -195,7 +195,7 @@ type QueueCallback<State> = fn(
     &QueueHandle<State>,
 ) -> Result<(), DispatchError>;
 
-struct QueueEvent<State>(
+pub(crate) struct QueueEvent<State>(
     QueueCallback<State>,
     Message<ObjectId, OwnedFd>,
     Arc<dyn ObjectData>,
@@ -335,7 +335,7 @@ pub(crate) struct EventQueueInner<State> {
 }
 
 impl<State> EventQueueInner<State> {
-    fn enqueue_event<I, U>(
+    pub(crate) fn enqueue_event<I, U>(
         &mut self,
         msg: Message<ObjectId, OwnedFd>,
         odata: Arc<dyn ObjectData>,

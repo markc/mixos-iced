@@ -10,6 +10,33 @@ fn contextual() -> Session<u64, Context> {
     Session::with_context(session().host.consumer, Context(1))
 }
 
+#[test]
+fn frame_stamp_tracks_installed_content_through_pending_and_failed_preparation() {
+    let mut session = contextual();
+    assert!(session.frame_stamp().is_none());
+    activate_first(&mut session);
+    let installed = session.frame_stamp().unwrap();
+    assert_eq!(installed.activation_epoch, 1);
+    assert_eq!(installed.local_revision, 0);
+    let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
+    assert_eq!(session.frame_stamp(), Some(installed));
+    session.handle(local(captured(&jobs), Err(Diagnostic::new("fixture", "context", "held source failed"))), Some(1));
+    assert_eq!(session.frame_stamp(), Some(installed));
+    let (_, jobs) = session.set_context(Context(3), Some(1)).unwrap();
+    let appearance = session.host.presentation().unwrap().appearance.clone();
+    session.handle(local(captured(&jobs), Ok(Presentation {appearance, content:3})), Some(1));
+    let local = session.frame_stamp().unwrap();
+    assert_eq!(local.activation_epoch, installed.activation_epoch);
+    assert_eq!(local.local_revision, 2);
+    session.host.consumer_mut().observe(1, snapshot(2, true));
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    assert_eq!(session.frame_stamp(), Some(local));
+    session.handle(authority(captured(&jobs)), Some(1));
+    let next = session.frame_stamp().unwrap();
+    assert_eq!(next.activation_epoch, 2);
+    assert_eq!(next.local_revision, local.local_revision);
+}
+
 async fn next_context(worker: &mut Worker<u64, Context>) -> Event<u64> {
     tokio::time::timeout(Duration::from_secs(5), worker.next())
         .await

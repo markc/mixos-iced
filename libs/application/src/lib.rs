@@ -43,6 +43,9 @@ pub mod widget {
 #[cfg(feature = "settings")]
 pub mod presentation;
 
+#[cfg(feature = "settings-native")]
+pub mod frames;
+
 #[cfg(feature = "native-inspect")]
 pub mod inspect;
 

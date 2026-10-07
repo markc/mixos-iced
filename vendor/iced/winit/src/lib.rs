@@ -937,10 +937,9 @@ async fn run_instance<P>(
                         window.draw_preedit();
 
                         let present_span = debug::present(id);
-                        let binding = interface
-                            .frame_presentation()
-                            .cloned()
-                            .filter(|binding| window.presentation.needs(binding));
+                        let binding = interface.frame_presentation().cloned();
+                        window.presentation.drawn(binding.clone());
+                        let binding = binding.filter(|binding| window.presentation.needs(binding));
                         let mut feedback = None;
                         let result = current_compositor.present(
                             &mut window.renderer,

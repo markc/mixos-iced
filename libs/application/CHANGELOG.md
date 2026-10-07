@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13
+
+- Add a shared, bounded frame observation handle with a stable immutable view
+  binding, read-only snapshots and one cancellation-safe waiter. Native
+  registration changes fence waits without relabelling pixel history. Waiting
+  never requests a redraw or sends an application message.
+- Expose the installed preparation stamp while LastGood remains visible during
+  pending or failed replacement. Authority epochs and applied local revisions
+  remain separate from compositor timestamps and output sequences.
+
 ## 0.1.12
 
 - Capture typed, immutable local preparation context on the existing worker

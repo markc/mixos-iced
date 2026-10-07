@@ -396,11 +396,12 @@ where
 
         if let Some(msg) = to_forward {
             // forward the message to the event queue as normal
-            self.handle
+            let rejected = self.handle
                 .inner
                 .lock()
                 .unwrap()
-                .enqueue_event::<wl_registry::WlRegistry, GlobalListContents>(msg, self.clone())
+                .enqueue_event::<wl_registry::WlRegistry, GlobalListContents>(msg, self.clone());
+            drop(rejected);
         }
 
         // We do not create any objects in this event handler.
