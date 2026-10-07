@@ -35,6 +35,17 @@ use std::fmt;
 /// additive fields do NOT bump it).
 pub const SCHEMA_VERSION: u16 = 1;
 
+/// Schema marker of the structured `noded.register` rejection body. The
+/// body is additive to the `rc=10` reply (the return code and the
+/// `error` header are unchanged): `{"schema": "noded.registration-rejection.v1",
+/// "error_code": …, "message": …}`. Clients classify the refusal from
+/// this body and never from the diagnostic text.
+pub const REGISTRATION_REJECTION_SCHEMA: &str = "noded.registration-rejection.v1";
+
+/// The `error_code` in a v1 registration-rejection body naming a name
+/// collision: another live connection already holds the requested name.
+pub const REGISTRATION_REJECTION_NAME_TAKEN: &str = "NAME_TAKEN";
+
 fn default_schema_version() -> u16 {
     SCHEMA_VERSION
 }
