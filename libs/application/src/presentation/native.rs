@@ -351,7 +351,7 @@ impl<T, C> Session<T, C> {
                     epoch: source.epoch,
                     revision: self.local.revision,
                 };
-                let current = self.active.as_ref().is_some_and(|active| {
+                let current = !self.activation_exhausted && self.active.as_ref().is_some_and(|active| {
                     active.epoch == source.epoch
                         && active.request.update.same_stage(&source.request.update)
                         && active.request.context == source.request.context

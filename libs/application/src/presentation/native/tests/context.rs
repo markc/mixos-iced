@@ -49,6 +49,29 @@ fn exhausted_authority_activation_preserves_applied_state_and_stops_requeueing()
     }
 }
 
+#[test]
+fn buffered_local_success_after_exhaustion_and_disconnect_cannot_activate_or_clear_fault() {
+    let mut session = contextual();
+    activate_first(&mut session);
+    let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
+    let obsolete = captured(&jobs);
+    let appearance = session.host.presentation().unwrap().appearance.clone();
+    session.host.consumer_mut().observe(1, snapshot(2, true));
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    session.activation_epoch = u64::MAX;
+    session.handle(authority(captured(&jobs)), Some(1));
+    session.handle(Event::Wake, None);
+    let (change, jobs) = session.handle_with(
+        local(obsolete, Ok(Presentation { appearance, content: 99 })),
+        None,
+        |_| panic!("buffered local result escaped terminal exhaustion"),
+    );
+    assert!(change.is_none());
+    assert!(jobs.resource.is_none());
+    assert_eq!(*session.host.presentation().unwrap().content(), 1);
+    assert_eq!(session.preparation_evidence().fault.unwrap().code, "preparation_exhausted");
+}
+
 #[tokio::test]
 async fn exhausted_fallback_activation_does_not_stage_or_consume_its_capture() {
     install_fonts();
