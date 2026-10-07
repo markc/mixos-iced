@@ -173,7 +173,7 @@ pub struct Finder<S> {
     truncated: bool,
 }
 
-impl<S: Strategy> Finder<S> {
+impl<S> Finder<S> {
     pub fn new(strategy: S) -> Self {
         Self {
             strategy,
@@ -208,7 +208,9 @@ impl<S: Strategy> Finder<S> {
     pub fn truncated(&self) -> bool {
         self.truncated
     }
+}
 
+impl<S: Strategy> Finder<S> {
     fn is_done(&self) -> bool {
         self.truncated || self.strategy.is_done()
     }
