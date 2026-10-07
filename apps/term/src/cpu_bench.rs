@@ -16,6 +16,266 @@ use rgba_reference::RgbaBand;
 use std::time::Instant;
 use term_core::{config::Cursor, terminal::Cell};
 
+/// Use the same pane wrapper as main::pane, including both themed background
+/// quads. Grid-only benchmarks miss the cost of scanning those under damage.
+fn draw_terminal_pane(
+    renderer: &mut Renderer,
+    surface: &Surface,
+    scale: f32,
+    full: Rectangle,
+    focused: bool,
+) {
+    use application::iced::advanced::{Layout, layout::Limits, renderer, widget::Tree};
+    let border = crate::layout::border(scale);
+    let size = Size::new(
+        surface.width() as f32 / scale + 2.0 * border,
+        surface.height() as f32 / scale + 2.0 * border,
+    );
+    let grid = widget::Grid::new(surface.images(scale), scale)
+        .width(application::iced::Length::Fixed(
+            surface.width() as f32 / scale,
+        ))
+        .height(application::iced::Length::Fixed(
+            surface.height() as f32 / scale,
+        ));
+    let mut element: application::iced::Element<'_, (), application::iced::Theme, Renderer> =
+        toolkit::TerminalPane::new(grid, size, border, toolkit::Tokens::default())
+            .focus_ring(focused)
+            .into();
+    let mut tree = Tree::new(&element);
+    tree.diff(&mut element);
+    let node = element
+        .as_widget_mut()
+        .layout(&mut tree, renderer, &Limits::new(Size::ZERO, full.size()))
+        .move_to(application::iced::Point::new(17.0 / scale, 11.0 / scale));
+    renderer.reset(full);
+    element.as_widget().draw(
+        &tree,
+        renderer,
+        &application::iced::Theme::Dark,
+        &renderer::Style::default(),
+        Layout::new(&node),
+        application::iced::mouse::Cursor::Unavailable,
+        &full,
+    );
+}
+
+#[test]
+fn terminal_pane_retained_damage_matches_full_draw() {
+    use application::cpu::window::compositor::PresentHistory;
+    for scale in [1.0, 1.25, 2.5] {
+        let mut raster = Raster::for_test(scale, 13.0, Cursor::Block).unwrap();
+        let mut screen = term_core::terminal::Terminal::from_test_vt(
+            12,
+            11,
+            "\x1b[4;2H界\x1b[5;2H👍🏽\x1b[9;2H👩‍💻".as_bytes(),
+        )
+        .screen(false);
+        let mut surface = Surface::default();
+        let mut reference = Surface::default();
+        let viewport = Viewport::with_physical_size(
+            Size::new(400, 540),
+            application::iced::advanced::renderer::Scale {
+                window: scale,
+                application: 1.0,
+            },
+        );
+        let full = Rectangle::with_size(viewport.logical_size());
+        let mut renderer = Renderer::new(Default::default());
+        let mut oracle = Renderer::new(Default::default());
+        let mut history = PresentHistory::default();
+        let mut mask = tiny_skia::Mask::new(400, 540).unwrap();
+        let mut targets: Vec<_> = (0..3)
+            .map(|_| tiny_skia::Pixmap::new(400, 540).unwrap())
+            .collect();
+        let mut expected = tiny_skia::Pixmap::new(400, 540).unwrap();
+        for n in 0..36 {
+            let mut dirty = [false; 11];
+            screen.cursor = (2, if n % 2 == 0 { 3 } else { 4 });
+            screen.cursor_visible = n % 4 != 0;
+            if n % 7 == 0 {
+                screen.cells.rotate_left(screen.cols);
+                dirty.fill(true);
+            }
+            if n % 3 == 0 {
+                screen.cells[8 * screen.cols].bg[0] ^= 127;
+                dirty[8] = true;
+            }
+            if n == 18 {
+                screen.rows = 9;
+                screen.cells.truncate(screen.rows * screen.cols);
+            }
+            if n % 13 == 0 {
+                surface.invalidate();
+            }
+            surface.paint(&mut raster, &screen, &dirty[..screen.rows]);
+            surface.cache_handle(n);
+            reference.paint(&mut raster, &screen, &[]);
+            reference.cache_handle(n);
+            draw_terminal_pane(&mut renderer, &surface, scale, full, n % 9 < 4);
+            draw_terminal_pane(&mut oracle, &reference, scale, full, n % 9 < 4);
+            let age = if n < 3 || n == 23 { 0 } else { 3 };
+            let regions = history.damage(age, renderer.layers(), &viewport, Color::BLACK);
+            renderer.draw(
+                &mut targets[n as usize % 3].as_mut(),
+                &mut mask,
+                &viewport,
+                &regions,
+                Color::BLACK,
+            );
+            history
+                .submit(renderer.layers(), Color::BLACK, || {}, || Ok::<_, ()>(()))
+                .unwrap();
+            oracle.draw(
+                &mut expected.as_mut(),
+                &mut mask,
+                &viewport,
+                &[full],
+                Color::BLACK,
+            );
+            assert_eq!(
+                targets[n as usize % 3].data(),
+                expected.data(),
+                "scale={scale} frame={n}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "release-only actual terminal pane background/damage measurement"]
+fn tiny_skia_terminal_pane_bench() {
+    use application::cpu::window::compositor::PresentHistory;
+    for (case, label) in ["one-cell echo", "cursor only", "row echo", "scroll"]
+        .into_iter()
+        .enumerate()
+    {
+        let scale = 2.5;
+        let mut raster = Raster::for_test(scale, 13.0, Cursor::Underline).unwrap();
+        raster.width = 25;
+        raster.height = 50;
+        let mut screen = term_core::terminal::Terminal::from_test_vt(90, 25, b"").screen(false);
+        for (i, cell) in screen.cells.iter_mut().enumerate() {
+            cell.c = char::from(b'!' + (i % 90) as u8);
+            cell.bg = [20 + (i / 90) as u8, 25, 30];
+        }
+        screen.cursor_visible = true;
+        let mut surface = Surface::default();
+        let viewport = Viewport::with_physical_size(
+            Size::new(2300, 1320),
+            application::iced::advanced::renderer::Scale {
+                window: scale,
+                application: 1.0,
+            },
+        );
+        let full = Rectangle::with_size(viewport.logical_size());
+        let mut renderer = Renderer::new(Default::default());
+        let mut history = PresentHistory::default();
+        let mut mask = tiny_skia::Mask::new(2300, 1320).unwrap();
+        let mut targets: Vec<_> = (0..3)
+            .map(|_| tiny_skia::Pixmap::new(2300, 1320).unwrap())
+            .collect();
+        let mut samples = Vec::new();
+        let mut phases = [0.0; 3];
+        let mut area = 0.0;
+        for n in 0..220 {
+            let mut dirty = [false; 25];
+            screen.cursor = (
+                45,
+                if case == 3 {
+                    24
+                } else if n % 2 == 0 {
+                    11
+                } else {
+                    12
+                },
+            );
+            match case {
+                0 => {
+                    screen.cells[12 * 90 + 45].c = char::from(b'!' + (n % 90) as u8);
+                    dirty[12] = true;
+                }
+                2 => {
+                    for cell in &mut screen.cells[12 * 90..13 * 90] {
+                        cell.bg[0] ^= 31;
+                    }
+                    dirty[12] = true;
+                }
+                3 => {
+                    screen.cells.rotate_left(screen.cols);
+                    for cell in &mut screen.cells[24 * 90..] {
+                        cell.bg[0] = (n % 200 + 40) as u8;
+                    }
+                    dirty.fill(true);
+                }
+                _ => {}
+            }
+            let start = Instant::now();
+            surface.paint(&mut raster, &screen, &dirty);
+            surface.cache_handle(n);
+            let painted = start.elapsed().as_secs_f64() * 1000.0;
+            let prepare_start = Instant::now();
+            draw_terminal_pane(&mut renderer, &surface, scale, full, true);
+            let regions = history.damage(
+                if n < 3 { 0 } else { 3 },
+                renderer.layers(),
+                &viewport,
+                Color::BLACK,
+            );
+            let prepared = prepare_start.elapsed().as_secs_f64() * 1000.0;
+            let draw_start = Instant::now();
+            renderer.draw(
+                &mut targets[n as usize % 3].as_mut(),
+                &mut mask,
+                &viewport,
+                &regions,
+                Color::BLACK,
+            );
+            history
+                .submit(renderer.layers(), Color::BLACK, || {}, || Ok::<_, ()>(()))
+                .unwrap();
+            let drawn = draw_start.elapsed().as_secs_f64() * 1000.0;
+            if n >= 20 {
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                for (sum, time) in phases.iter_mut().zip([painted, prepared, drawn]) {
+                    *sum += time;
+                }
+                area += regions
+                    .iter()
+                    .map(|r| f64::from(r.width * r.height * scale * scale))
+                    .sum::<f64>();
+            }
+            std::hint::black_box(targets[n as usize % 3].data());
+        }
+        // Strict whole-pane oracle outside the timer, including both chrome
+        // backgrounds and the real native grid placement.
+        let mut reference = Surface::default();
+        reference.paint(&mut raster, &screen, &[]);
+        reference.cache_handle(220);
+        draw_terminal_pane(&mut renderer, &reference, scale, full, true);
+        let mut expected = tiny_skia::Pixmap::new(2300, 1320).unwrap();
+        renderer.draw(
+            &mut expected.as_mut(),
+            &mut mask,
+            &viewport,
+            &[full],
+            Color::BLACK,
+        );
+        assert_eq!(targets[219 % 3].data(), expected.data(), "{label}");
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "actual TerminalPane {label} grid=2250x1250 scale=2.5 age=3: mean={:.3} p50={:.3} p99={:.3} ms; paint+handle={:.3} prepare+damage={:.3} render+history={:.3} damaged_px={:.0}",
+            samples.iter().sum::<f64>() / 200.0,
+            samples[100],
+            samples[198],
+            phases[0] / 200.0,
+            phases[1] / 200.0,
+            phases[2] / 200.0,
+            area / 200.0
+        );
+    }
+}
+
 #[test]
 #[ignore = "release-only scrolling pixel-reuse measurement"]
 fn tiny_skia_scroll_bench() {
