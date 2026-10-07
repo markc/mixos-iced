@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BusViewer
+Comment=Browse native Bus services and call verbs
+Exec=/opt/mixos/bin/busviewer
+Icon=dev.mixos.busviewer-symbolic
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=dev.mixos.busviewer

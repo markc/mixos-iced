@@ -18,7 +18,7 @@ end
 $aliases={
   "apps/dev.mixos.term-symbolic":"terminal", "apps/dev.mixos.ced-symbolic":"edit_note",
   "apps/dev.mixos.dopus-symbolic":"folder_open", "apps/dev.mixos.cap-symbolic":"screenshot_monitor",
-  "apps/dev.mixos.scene-editor-symbolic":"desktop_windows",
+  "apps/dev.mixos.scene-editor-symbolic":"desktop_windows",\n  "apps/dev.mixos.busviewer-symbolic":"lan",
   "apps/application-x-executable-symbolic":"apps",
   "status/notification-active-symbolic":"notifications_active", "status/notification-inactive-symbolic":"notifications",
   "status/notifications-symbolic":"notifications", "status/audio-volume-muted-symbolic":"volume_off",
