@@ -2,9 +2,9 @@
 
 ## 0.1.4
 
-- Box native preparation completions so queued events stay small when prepared
-  appearance data grows. Callers constructing `Event::Prepared` wrap their
-  completion in `Box::new`; session activation and fencing are unchanged.
+- Box the private preparation result so queued events stay small when prepared
+  appearance data grows. Public completion/event constructors, activation and
+  fencing are unchanged.
 - Quoin uses the same borrowed native worker and presentation coordinator for
   scene content, menus and decoration. Geometry and native frame proof remain
   pending.

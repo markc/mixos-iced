@@ -32,7 +32,7 @@ pub enum Event<T> {
     Lost,
     Delivery(Decoded),
     Rpc(Work, Result<Option<Snapshot>, Diagnostic>),
-    Prepared(Box<Completion<T>>),
+    Prepared(Completion<T>),
     Fallback(settings::fallback::Request, Box<FallbackResult<T>>),
 }
 
@@ -89,7 +89,7 @@ impl<T> Session<T> {
                 self.host.consumer_mut().complete(&work, result);
             }
             Event::Prepared(ready) => {
-                changed = self.host.complete(*ready);
+                changed = self.host.complete(ready);
             }
             Event::Fallback(request, result) => match *result {
                 Ok((fallback, presentation)) => {
@@ -101,7 +101,7 @@ impl<T> Session<T> {
                         let capture = self.host.request().expect("staged fallback");
                         changed = self.host.complete(Completion {
                             update: capture.update,
-                            result: Ok(presentation),
+                            result: Box::new(Ok(presentation)),
                         });
                     }
                 }
@@ -337,10 +337,10 @@ impl<T: Send + 'static> Worker<T> {
             Resource::Prepare(request) => {
                 let snapshot = request.update().snapshot();
                 let result = prepare(snapshot, &request.context, &cancelled, &build);
-                Event::Prepared(Box::new(Completion {
+                Event::Prepared(Completion {
                     update: request.update,
-                    result,
-                }))
+                    result: Box::new(result),
+                })
             }
             Resource::Fallback(request) => {
                 let request = *request;
@@ -383,7 +383,7 @@ impl<T: Send + 'static> Worker<T> {
                     Err(error) => {
                         let fault = Diagnostic::new("preparation_failed", "worker", error.to_string());
                         match running.capture {
-                            Resource::Prepare(request) => Event::Prepared(Box::new(request.failed(fault))),
+                            Resource::Prepare(request) => Event::Prepared(request.failed(fault)),
                             Resource::Fallback(request) => Event::Fallback(*request, Box::new(Err(vec![fault]))),
                         }
                     }

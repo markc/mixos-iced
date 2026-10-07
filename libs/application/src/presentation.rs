@@ -30,7 +30,7 @@ pub struct Request {
 #[derive(Debug)]
 pub struct Completion<T> {
     update: Update,
-    result: Result<Presentation<T>, Diagnostic>,
+    result: Box<Result<Presentation<T>, Diagnostic>>,
 }
 
 impl<T> Host<T> {
@@ -79,7 +79,7 @@ impl<T> Host<T> {
             return None;
         }
         self.preparing = None;
-        match completion.result {
+        match *completion.result {
             Ok(presentation) => {
                 let changes = completion.update.changes();
                 self.presentation = Some(presentation);
@@ -105,7 +105,7 @@ impl Request {
     pub fn failed<T>(self, fault: Diagnostic) -> Completion<T> {
         Completion {
             update: self.update,
-            result: Err(fault),
+            result: Box::new(Err(fault)),
         }
     }
     /// Run on a host worker. Additional deliberate content styling/resources
@@ -141,7 +141,7 @@ impl Request {
             });
         Completion {
             update: self.update,
-            result,
+            result: Box::new(result),
         }
     }
     /// Same fence protocol with caller-owned renderer capability preparation.
@@ -177,7 +177,7 @@ impl Request {
             });
         Completion {
             update: self.update,
-            result,
+            result: Box::new(result),
         }
     }
 }
