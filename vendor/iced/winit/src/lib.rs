@@ -1293,9 +1293,19 @@ pub(crate) fn frame_feedback_outcome(
     use core::window::presentation::FrameOutcome;
     match feedback.outcome {
         winit::presentation::PresentationOutcome::Presented {
-            clock_id, seconds, nanoseconds, refresh_ns, output_sequence, flags,
+            clock_id,
+            seconds,
+            nanoseconds,
+            refresh_ns,
+            output_sequence,
+            flags,
         } => FrameOutcome::Presented {
-            clock_id, seconds, nanoseconds, refresh_ns, output_sequence, flags,
+            clock_id,
+            seconds,
+            nanoseconds,
+            refresh_ns,
+            output_sequence,
+            flags,
         },
         winit::presentation::PresentationOutcome::Discarded => FrameOutcome::Discarded,
     }
