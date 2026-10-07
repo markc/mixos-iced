@@ -203,7 +203,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "appearance",
  "assets",
@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "cap"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "appearance",
@@ -824,6 +824,7 @@ dependencies = [
  "serde_json",
  "settings",
  "tempfile",
+ "term-test-broker",
  "tiny-skia 0.12.0",
  "tokio",
  "toolkit",

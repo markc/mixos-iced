@@ -20,7 +20,9 @@ use ::bus::native_client::{
 };
 use application::iced::futures::channel::{mpsc, oneshot};
 use application::message::Once;
-use application::native_actor::{Accepted, Completed, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies};
+use application::native_actor::{
+    Accepted, Completed, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies,
+};
 use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
@@ -70,14 +72,32 @@ pub struct Command {
 
 /// Clones share one reply token and the receiving connection generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Request { pub id: u64, generation: u64, ticket: Once<u64> }
+pub struct Request {
+    pub id: u64,
+    generation: u64,
+    ticket: Once<u64>,
+}
 impl Request {
-    fn new(id: u64, generation: u64) -> Self { Self { id, generation, ticket: Once::new(id) } }
+    fn new(id: u64, generation: u64) -> Self {
+        Self {
+            id,
+            generation,
+            ticket: Once::new(id),
+        }
+    }
 }
 #[cfg(test)]
-impl From<u64> for Request { fn from(id: u64) -> Self { Self::new(id, 0) } }
+impl From<u64> for Request {
+    fn from(id: u64) -> Self {
+        Self::new(id, 0)
+    }
+}
 #[cfg(test)]
-impl From<i32> for Request { fn from(id: i32) -> Self { Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0) } }
+impl From<i32> for Request {
+    fn from(id: i32) -> Self {
+        Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0)
+    }
+}
 
 /// Effects the app sends back to the bus thread.
 pub enum Effect {
@@ -104,9 +124,18 @@ pub enum Effect {
 impl std::fmt::Debug for Effect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Respond { id, rc, .. } => f.debug_struct("Respond").field("id", id).field("rc", rc).finish(),
-            Self::Call { service, verb, .. } => f.debug_struct("Call").field("service", service).field("verb", verb).finish(),
-            Self::Delay { .. } => f.write_str("Delay(..)"), Self::Quit => f.write_str("Quit"),
+            Self::Respond { id, rc, .. } => f
+                .debug_struct("Respond")
+                .field("id", id)
+                .field("rc", rc)
+                .finish(),
+            Self::Call { service, verb, .. } => f
+                .debug_struct("Call")
+                .field("service", service)
+                .field("verb", verb)
+                .finish(),
+            Self::Delay { .. } => f.write_str("Delay(..)"),
+            Self::Quit => f.write_str("Quit"),
         }
     }
 }
@@ -126,7 +155,9 @@ pub struct BusHandle {
 
 impl BusHandle {
     pub fn is_current(&self, request: &Request) -> bool {
-        self.client.as_ref().is_none_or(|client| settings::native::live_generation(client) == Some(request.generation))
+        self.client.as_ref().is_none_or(|client| {
+            settings::native::live_generation(client) == Some(request.generation)
+        })
     }
     /// The actual supervised connection state, sampled now — never a queued
     /// edge that a later state change already invalidated.
@@ -152,32 +183,50 @@ impl BusHandle {
         args: Value,
         limit: Duration,
     ) -> Result<Value, String> {
-        if self.quitting.load(std::sync::atomic::Ordering::Acquire) { return Err("Bus worker stopped".into()); }
-        let admission = if matches!(verb, "comp.region.cancel" | "comp.window.restore") { &self.cleanup } else { &self.outgoing };
-        let deadline = Instant::now().checked_add(limit).ok_or("Bus deadline exhausted")?;
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Bus worker stopped".into());
+        }
+        let admission = if matches!(verb, "comp.region.cancel" | "comp.window.restore") {
+            &self.cleanup
+        } else {
+            &self.outgoing
+        };
+        let deadline = Instant::now()
+            .checked_add(limit)
+            .ok_or("Bus deadline exhausted")?;
         let permit = admission.try_acquire().ok_or("Bus worker busy")?;
         let (tx, rx) = oneshot::channel();
         if let Err(error) = self.tx.send(Effect::Call {
-                service: service.into(),
-                verb: verb.into(),
-                args,
-                deadline,
-                generation: self.settings_generation(),
-                permit,
-                reply: tx,
-            }) { actor::retire_unsent(error.0); return Err("Bus worker stopped".into()); }
+            service: service.into(),
+            verb: verb.into(),
+            args,
+            deadline,
+            generation: self.settings_generation(),
+            permit,
+            reply: tx,
+        }) {
+            actor::retire_unsent(error.0);
+            return Err("Bus worker stopped".into());
+        }
         rx.await.map_err(|_| "Bus request abandoned")?
     }
     pub async fn delay(&self, duration: Duration) -> Result<(), String> {
-        if self.quitting.load(std::sync::atomic::Ordering::Acquire) { return Err("Bus worker stopped".into()); }
-        let when = Instant::now().checked_add(duration).ok_or("Bus delay exhausted")?;
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Bus worker stopped".into());
+        }
+        let when = Instant::now()
+            .checked_add(duration)
+            .ok_or("Bus delay exhausted")?;
         let permit = self.outgoing.try_acquire().ok_or("Bus worker busy")?;
         let (tx, rx) = oneshot::channel();
         if let Err(error) = self.tx.send(Effect::Delay {
-                when,
-                permit,
-                reply: tx,
-            }) { actor::retire_unsent(error.0); return Err("Bus worker stopped".into()); }
+            when,
+            permit,
+            reply: tx,
+        }) {
+            actor::retire_unsent(error.0);
+            return Err("Bus worker stopped".into());
+        }
         rx.await.map_err(|_| "Bus delay abandoned".into())
     }
     /// Exercise the real window command performer without a broker connection.
@@ -189,7 +238,8 @@ impl BusHandle {
                 tx,
                 done: Arc::new((Mutex::new(true), Condvar::new())),
                 client: None,
-                outgoing: Admission::new(OPERATION_CAP), cleanup: Admission::new(CLEANUP_CAP),
+                outgoing: Admission::new(OPERATION_CAP),
+                cleanup: Admission::new(CLEANUP_CAP),
                 quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             rx,
@@ -197,12 +247,21 @@ impl BusHandle {
     }
     pub fn respond(&self, request: impl Into<Request>, rc: u8, body: String) {
         let request = request.into();
-        let Some(id) = request.ticket.take() else { return; };
-        if !self.is_current(&request) { return; }
+        let Some(id) = request.ticket.take() else {
+            return;
+        };
+        if !self.is_current(&request) {
+            return;
+        }
         let _ = self.tx.send(Effect::Respond { id, rc, body });
     }
     pub fn quit(&self) {
-        if self.quitting.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+        if self
+            .quitting
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
         let _ = self.tx.send(Effect::Quit);
     }
     /// Block until the bus thread is finished (bounded). Call after
@@ -274,20 +333,45 @@ pub fn start(
     ),
     String,
 > {
-    start_inner(service, url, handoff, OUTBOX_CAP, #[cfg(test)] None)
+    start_inner(
+        service,
+        url,
+        handoff,
+        OUTBOX_CAP,
+        #[cfg(test)]
+        None,
+    )
 }
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
 struct ActorProbe {
-    generation: u64, connected: bool, pending: usize, active: usize,
-    reliable: usize, replies: usize, reply_tasks: usize, operations: usize,
+    generation: u64,
+    connected: bool,
+    pending: usize,
+    active: usize,
+    reliable: usize,
+    replies: usize,
+    reply_tasks: usize,
+    operations: usize,
     invariant_faults: usize,
 }
 
-fn start_inner(service: &str, url: &str, handoff: Option<Vec<String>>, gui_capacity: usize,
+fn start_inner(
+    service: &str,
+    url: &str,
+    handoff: Option<Vec<String>>,
+    gui_capacity: usize,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
-) -> Result<(BusHandle, Ui<()>, appearance::settings::Prepared, mpsc::Receiver<Delivery>), String> {
+) -> Result<
+    (
+        BusHandle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
     let (send, receive) = mpsc::channel(gui_capacity);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
@@ -303,7 +387,16 @@ fn start_inner(service: &str, url: &str, handoff: Option<Vec<String>>, gui_capac
                 .build();
             match runtime {
                 Ok(runtime) => {
-                    runtime.block_on(worker(service, url, handoff, send, rx, ready_send, #[cfg(test)] probe));
+                    runtime.block_on(worker(
+                        service,
+                        url,
+                        handoff,
+                        send,
+                        rx,
+                        ready_send,
+                        #[cfg(test)]
+                        probe,
+                    ));
                     runtime.shutdown_timeout(Duration::from_millis(100));
                 }
                 Err(error) => {
@@ -325,7 +418,8 @@ fn start_inner(service: &str, url: &str, handoff: Option<Vec<String>>, gui_capac
             tx,
             done,
             client: Some(client),
-            outgoing: Admission::new(OPERATION_CAP), cleanup: Admission::new(CLEANUP_CAP),
+            outgoing: Admission::new(OPERATION_CAP),
+            cleanup: Admission::new(CLEANUP_CAP),
             quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
         ui,
@@ -464,5 +558,4 @@ mod tests {
             "no handoff payload, no forward"
         );
     }
-
 }

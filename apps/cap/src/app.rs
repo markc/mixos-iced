@@ -1191,7 +1191,9 @@ impl App {
         }
     }
     fn command(&mut self, command: crate::bus::Command) -> Task<Message> {
-        if !self.bus.is_current(&command.id) { return Task::none(); }
+        if !self.bus.is_current(&command.id) {
+            return Task::none();
+        }
         let id = command.id;
         let verb = command.verb.as_str();
         let value = match verbs::parse(verb, &command.body) {
@@ -1826,7 +1828,10 @@ mod tests {
         assert_eq!(app.zoom, 2.5);
         assert_eq!(app.pan, Point { x: 7.0, y: 9.0 });
         assert_eq!(app.revision, 4);
-        assert_eq!(app.pending_reply.as_ref().map(|request| request.id), Some(3));
+        assert_eq!(
+            app.pending_reply.as_ref().map(|request| request.id),
+            Some(3)
+        );
         assert!(app.preview.is_some());
         drop(app);
         driver.join().unwrap();
