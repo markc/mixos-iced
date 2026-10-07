@@ -10,7 +10,7 @@ fn bus_env($broker,$directory)
 end
 fn call($mix,$broker,$directory,$service,$verb,$body)
   $script = '$body = ' .. json_encode(json_encode($body)) .. "\nsend " .. json_encode($service) ..
-    " " .. $verb .. ' body=$body timeout=5' .. "\n" .. 'print($rc)' .. "\n" .. 'print(json_encode($result))' .. "\n"
+    " " .. json_encode($verb) .. ' body=$body timeout=5' .. "\n" .. 'print($rc)' .. "\n" .. 'print(json_encode($result))' .. "\n"
   $reply = run_argv([$mix,"-c",$script],{timeout:10,env:bus_env($broker,$directory),max_output:2000000})
   $lines = split(trim($reply.stdout),"\n")
   if not $reply.ok or $reply.stdout_truncated or len($lines) < 2 then return {rc:-9,result:trim($reply.stdout .. $reply.stderr)} end
