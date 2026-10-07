@@ -168,8 +168,8 @@ impl Port {
             settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
         let consumer = settings::consumer::Consumer::for_shell(binding)
             .map_err(|error| format!("shell settings: {error:?}"))?;
-        let worker = SettingsWorker::offline_with_cache(cache_directory, crate::appearance::build);
-        let (ui, lane) = bridge(Session::new(consumer), worker);
+        let settings_worker = SettingsWorker::offline_with_cache(cache_directory, crate::appearance::build);
+        let (ui, lane) = bridge(Session::new(consumer), settings_worker);
         let registry = RegistryMailbox::default();
         let worker_registry = Arc::clone(&registry);
         let (inbound_tx, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);

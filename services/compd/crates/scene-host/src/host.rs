@@ -966,6 +966,7 @@ impl SceneHost {
             });
         let prepared = self
             .settings
+            .session()
             .host()
             .presentation()
             .map(|presentation| Arc::clone(&presentation.content().prepared));
