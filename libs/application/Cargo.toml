@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.18"
+version = "0.1.19"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -29,7 +29,7 @@ raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
 native-frame-probe = ["iced/native-frame-probe"]
 test-support = ["dep:iced_test", "iced/selector"]
 settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit", "appearance/resources"]
-settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus", "dep:assets"]
+settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus", "dep:assets", "dep:serde"]
 settings-cache = ["settings-native", "settings/cache", "dep:config", "dep:serde"]
 # Read-only layout inspection; enables the narrow selector-only iced query
 # support. Not in defaults.
@@ -38,7 +38,7 @@ native-inspect = ["iced/selector"]
 # native-inspect, using the existing optional Bus, serde_json and tokio
 # dependencies. Does not force a GPU backend or a settings feature. Not in
 # defaults.
-acceptance = ["native-inspect", "dep:bus", "dep:tokio", "dep:serde_json"]
+acceptance = ["native-inspect", "dep:bus", "dep:tokio", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }

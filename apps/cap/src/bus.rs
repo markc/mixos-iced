@@ -7,22 +7,29 @@
 //! same worker — never from reply text, and only when no connection was ever
 //! established.
 //!
-//! The GUI outbox is bounded and reliable: commands await their slot, while
-//! settings wakes, lifecycle edges and refresh nudges coalesce. Accepted
-//! replies travel through one ordered writer with a fixed admission sum
-//! (pending + queued + in flight), so an accepted reply is never shed;
+//! The GUI outbox retains accepted commands without blocking the worker;
+//! settings wakes, lifecycle edges and refresh nudges coalesce in place. Accepted
+//! replies travel through one serial tracked task with a fixed admission sum
+//! (pending + queued + running + completed but unreaped), so replies are retained;
 //! refusals use a separate capped pool with diagnosed shedding. Quit drains
 //! the accepted writer, refusals, capture restoration calls, the settings
 //! cache and the client close against one shared deadline.
 use ::bus::native_client::{
     BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
-    SupervisedClient, SupervisedError,
+    SupervisedClient,
 };
-use application::iced::futures::SinkExt;
 use application::iced::futures::channel::{mpsc, oneshot};
+use application::message::Once;
+use application::native_actor::{Accepted, Completed, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies};
+use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
+
+mod actor;
+use actor::worker;
+#[cfg(test)]
+mod actor_tests;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -54,15 +61,25 @@ pub enum Delivery {
 /// still get one (an error reply at least).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
-    pub id: u64,
+    pub id: Request,
     pub verb: String,
     pub body: String,
     /// `local:<from>` / `mesh:<service>@<peer>` / `anon` (editd E0 §4.3).
     pub caller_key: String,
 }
 
+/// Clones share one reply token and the receiving connection generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request { pub id: u64, generation: u64, ticket: Once<u64> }
+impl Request {
+    fn new(id: u64, generation: u64) -> Self { Self { id, generation, ticket: Once::new(id) } }
+}
+#[cfg(test)]
+impl From<u64> for Request { fn from(id: u64) -> Self { Self::new(id, 0) } }
+#[cfg(test)]
+impl From<i32> for Request { fn from(id: i32) -> Self { Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0) } }
+
 /// Effects the app sends back to the bus thread.
-#[derive(Debug)]
 pub enum Effect {
     /// Reply to command `id` with `(rc, body)`.
     Respond { id: u64, rc: u8, body: String },
@@ -70,29 +87,47 @@ pub enum Effect {
         service: String,
         verb: String,
         args: Value,
-        limit: Duration,
+        deadline: Instant,
+        generation: Option<u64>,
+        permit: Permit,
         reply: oneshot::Sender<Result<Value, String>>,
     },
     Delay {
-        duration: Duration,
+        when: Instant,
+        permit: Permit,
         reply: oneshot::Sender<()>,
     },
     /// Stop the bus thread (the app is quitting).
     Quit,
 }
 
+impl std::fmt::Debug for Effect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Respond { id, rc, .. } => f.debug_struct("Respond").field("id", id).field("rc", rc).finish(),
+            Self::Call { service, verb, .. } => f.debug_struct("Call").field("service", service).field("verb", verb).finish(),
+            Self::Delay { .. } => f.write_str("Delay(..)"), Self::Quit => f.write_str("Quit"),
+        }
+    }
+}
+
 /// The handle the app uses to call, reply and quit.
 #[derive(Clone)]
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
-    /// Set + notified when the bus thread has finished (replies flushed,
-    /// client closed) — `wait_done` before process exit guarantees the
-    /// last reply reached the wire instead of racing it.
+    /// Set and notified after the bounded worker drain. The structured shutdown
+    /// receipt distinguishes completed replies from unsent/unconfirmed work.
     done: Arc<(Mutex<bool>, Condvar)>,
     client: Option<Arc<SupervisedClient>>,
+    outgoing: Admission,
+    cleanup: Admission,
+    quitting: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl BusHandle {
+    pub fn is_current(&self, request: &Request) -> bool {
+        self.client.as_ref().is_none_or(|client| settings::native::live_generation(client) == Some(request.generation))
+    }
     /// The actual supervised connection state, sampled now — never a queued
     /// edge that a later state change already invalidated.
     pub fn connected(&self) -> bool {
@@ -117,26 +152,32 @@ impl BusHandle {
         args: Value,
         limit: Duration,
     ) -> Result<Value, String> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) { return Err("Bus worker stopped".into()); }
+        let admission = if matches!(verb, "comp.region.cancel" | "comp.window.restore") { &self.cleanup } else { &self.outgoing };
+        let deadline = Instant::now().checked_add(limit).ok_or("Bus deadline exhausted")?;
+        let permit = admission.try_acquire().ok_or("Bus worker busy")?;
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Effect::Call {
+        if let Err(error) = self.tx.send(Effect::Call {
                 service: service.into(),
                 verb: verb.into(),
                 args,
-                limit,
+                deadline,
+                generation: self.settings_generation(),
+                permit,
                 reply: tx,
-            })
-            .map_err(|_| "Bus worker stopped")?;
+            }) { actor::retire_unsent(error.0); return Err("Bus worker stopped".into()); }
         rx.await.map_err(|_| "Bus request abandoned")?
     }
     pub async fn delay(&self, duration: Duration) -> Result<(), String> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) { return Err("Bus worker stopped".into()); }
+        let when = Instant::now().checked_add(duration).ok_or("Bus delay exhausted")?;
+        let permit = self.outgoing.try_acquire().ok_or("Bus worker busy")?;
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Effect::Delay {
-                duration,
+        if let Err(error) = self.tx.send(Effect::Delay {
+                when,
+                permit,
                 reply: tx,
-            })
-            .map_err(|_| "Bus worker stopped")?;
+            }) { actor::retire_unsent(error.0); return Err("Bus worker stopped".into()); }
         rx.await.map_err(|_| "Bus delay abandoned".into())
     }
     /// Exercise the real window command performer without a broker connection.
@@ -148,14 +189,20 @@ impl BusHandle {
                 tx,
                 done: Arc::new((Mutex::new(true), Condvar::new())),
                 client: None,
+                outgoing: Admission::new(OPERATION_CAP), cleanup: Admission::new(CLEANUP_CAP),
+                quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             rx,
         )
     }
-    pub fn respond(&self, id: u64, rc: u8, body: String) {
+    pub fn respond(&self, request: impl Into<Request>, rc: u8, body: String) {
+        let request = request.into();
+        let Some(id) = request.ticket.take() else { return; };
+        if !self.is_current(&request) { return; }
         let _ = self.tx.send(Effect::Respond { id, rc, body });
     }
     pub fn quit(&self) {
+        if self.quitting.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
         let _ = self.tx.send(Effect::Quit);
     }
     /// Block until the bus thread is finished (bounded). Call after
@@ -188,66 +235,13 @@ pub fn caller_key(cmd: &IncomingCommand) -> String {
     }
 }
 
-/// Accepted commands awaiting a reply, fenced to the connection generation
-/// each arrived on. Entries survive disconnects; a reply for a dead
-/// connection is never sent through its replacement.
-#[derive(Default)]
-struct Pending {
-    commands: HashMap<u64, IncomingCommand>,
-}
-impl Pending {
-    fn insert(&mut self, id: u64, command: IncomingCommand) {
-        self.commands.insert(id, command);
-    }
-    fn len(&self) -> usize {
-        self.commands.len()
-    }
-    /// Take a reply, fenced to `live`: `None` when the command belongs to
-    /// another connection or is unknown. The authoritative fence is the
-    /// client's own generation check at send time; this avoids enqueuing a
-    /// doomed reply at all.
-    fn take(&mut self, id: u64, live: u64) -> Option<IncomingCommand> {
-        match self.commands.get(&id) {
-            Some(command) if command.generation == live => self.commands.remove(&id),
-            _ => None,
-        }
-    }
-}
-
-/// The fixed sum across accepted work: pending commands plus replies queued
-/// or in flight. Admission refuses a new command before the sum can reach
-/// the cap, so an accepted reply is never shed and the accepted pipeline
-/// never exceeds its channel.
 const ACCEPTED_CAP: usize = 32;
-/// Separate capped pool for refusal replies; saturation is diagnosed.
 const REFUSAL_CAP: usize = 16;
-/// Outbound operations (calls, delays).
 const OPERATION_CAP: usize = 32;
-/// The GUI outbox: commands await a slot; edges coalesce or are dropped only
-/// when the app is already behind (they carry no exclusive data).
+const CLEANUP_CAP: usize = 4;
 const OUTBOX_CAP: usize = 64;
-
-/// Mirrors the accepted sum for admission and the truthful shutdown receipt.
-#[derive(Default)]
-struct AcceptedGate {
-    pending: usize,
-    queued: usize,
-}
-impl AcceptedGate {
-    fn admit(&self) -> bool {
-        self.pending + self.queued < ACCEPTED_CAP
-    }
-    fn accepted(&mut self) {
-        self.pending += 1;
-    }
-    fn replied(&mut self) {
-        self.pending -= 1;
-        self.queued += 1;
-    }
-    fn sent(&mut self) {
-        self.queued -= 1;
-    }
-}
+const BUSY_BODY: &str = "{\"error\":\"too many pending Cap commands\"}";
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
 /// The single-instance handoff gate: only an explicit typed name collision
 /// on a connection that never established, with launch paths to forward.
@@ -280,7 +274,21 @@ pub fn start(
     ),
     String,
 > {
-    let (send, receive) = mpsc::channel(OUTBOX_CAP);
+    start_inner(service, url, handoff, OUTBOX_CAP, #[cfg(test)] None)
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+struct ActorProbe {
+    generation: u64, connected: bool, pending: usize, active: usize,
+    reliable: usize, replies: usize, reply_tasks: usize, operations: usize,
+    invariant_faults: usize,
+}
+
+fn start_inner(service: &str, url: &str, handoff: Option<Vec<String>>, gui_capacity: usize,
+    #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
+) -> Result<(BusHandle, Ui<()>, appearance::settings::Prepared, mpsc::Receiver<Delivery>), String> {
+    let (send, receive) = mpsc::channel(gui_capacity);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
     let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -295,7 +303,7 @@ pub fn start(
                 .build();
             match runtime {
                 Ok(runtime) => {
-                    runtime.block_on(worker(service, url, handoff, send, rx, ready_send));
+                    runtime.block_on(worker(service, url, handoff, send, rx, ready_send, #[cfg(test)] probe));
                     runtime.shutdown_timeout(Duration::from_millis(100));
                 }
                 Err(error) => {
@@ -317,6 +325,8 @@ pub fn start(
             tx,
             done,
             client: Some(client),
+            outgoing: Admission::new(OPERATION_CAP), cleanup: Admission::new(CLEANUP_CAP),
+            quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
         ui,
         bootstrap,
@@ -333,478 +343,6 @@ type Ready = std::sync::mpsc::Sender<
         String,
     >,
 >;
-/// A settings wake is a poke, coalesced by the mailbox itself; it carries no
-/// exclusive data, so a full outbox only delays a wake the queued deliveries
-/// already imply.
-fn settings_wake(send: &mut mpsc::Sender<Delivery>, needed: bool) {
-    if needed {
-        let _ = send.try_send(Delivery::Settings);
-    }
-}
-
-/// Refusal for a saturated command queue.
-const BUSY_BODY: &str = "{\"error\":\"too many pending Cap commands\"}";
-/// The one total shutdown budget: accepted replies, refusals, capture
-/// restoration calls, the settings cache and the client close.
-const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Edge {
-    Connected,
-    Disconnected,
-}
-
-async fn worker(
-    service: String,
-    url: String,
-    mut handoff: Option<Vec<String>>,
-    mut send: mpsc::Sender<Delivery>,
-    mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: Ready,
-) {
-    let consumer = match settings::session::binding()
-        .and_then(|binding| settings::consumer::Consumer::for_app(binding, "cap"))
-    {
-        Ok(consumer) => consumer,
-        Err(error) => {
-            let _ = ready.send(Err(error.message));
-            return;
-        }
-    };
-    let bootstrap = match appearance::settings::bootstrap() {
-        Ok(bootstrap) => bootstrap,
-        Err(error) => {
-            let _ = ready.send(Err(error.message));
-            return;
-        }
-    };
-    let client = Arc::new(
-        SupervisedClient::connect_options(&service, &url)
-            .fatal_on_registration_rejection(true)
-            .bounded_incoming(64)
-            .start(),
-    );
-    let Some(mut incoming) = client.incoming_bounded() else {
-        let _ = ready.send(Err("no incoming Bus channel".into()));
-        return;
-    };
-    let mut connection = client.subscribe_state();
-    let build = |_: &appearance::settings::Prepared, _: &settings::Snapshot| Ok(());
-    let settings_worker = match config::AppDirs::resolve("cap") {
-        Some(dirs) => Worker::offline_with_cache(dirs.cache().join("settings"), build),
-        None => Worker::offline(build),
-    };
-    let (ui, mut lane) = bridge(Session::new(consumer), settings_worker);
-    settings_wake(&mut send, lane.connect(Arc::clone(&client)));
-    if ready
-        .send(Ok((Arc::clone(&client), ui, bootstrap)))
-        .is_err()
-    {
-        let _ = client.close().await;
-        return;
-    }
-    // Font files are installed on the existing worker, after UI readiness and
-    // before the Lane may prepare a checked presentation.
-    if let Err(error) = appearance::fonts::register_installed() {
-        eprintln!("cap: static assets: {error}");
-    }
-    let mut pending = Pending::default();
-    let mut gate = AcceptedGate::default();
-    // One ordered accepted-reply writer: a single serial task sends replies
-    // in admission order, so accepted capture and quit replies reach the
-    // wire in FIFO. The acks keep the admission sum exact.
-    let (accepted_tx, mut accepted_rx) =
-        tokio::sync::mpsc::channel::<(u8, String, IncomingCommand)>(ACCEPTED_CAP);
-    let (acks, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let faults = Arc::new(Mutex::new(Vec::<String>::new()));
-    let accepted_writer = tokio::spawn({
-        let client = client.clone();
-        let faults = faults.clone();
-        let acks = acks.clone();
-        async move {
-            while let Some((rc, body, command)) = accepted_rx.recv().await {
-                let result = client.respond(&command, rc, &body).await;
-                if let Err(error) = result {
-                    faults
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(format!("reply: {error}"));
-                }
-                let _ = acks.send(());
-            }
-        }
-    });
-    let mut refusals: tokio::task::JoinSet<Result<(), SupervisedError>> =
-        tokio::task::JoinSet::new();
-    let mut operations = tokio::task::JoinSet::new();
-    let mut shed_refusals = 0u64;
-    let mut busy_rejected = 0u64;
-    let mut next_id = 0;
-    let mut handoff_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut incoming_open = true;
-    let mut connection_open = true;
-    let mut lifecycle = None;
-    let mut last_edge = None;
-    let mut changed_out = false;
-    let mut deadline = None;
-    // Sample once before waiting: fast registration may already have completed.
-    loop {
-        while let Ok(()) = ack_rx.try_recv() {
-            gate.sent();
-        }
-        // Reap the finished single-instance handoff, its result already
-        // delivered; a panicked handoff is recorded, never silent.
-        if handoff_task.as_mut().is_some_and(|task| task.is_finished()) {
-            if let Err(error) = handoff_task.take().expect("finished handoff").await {
-                faults
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(error.to_string());
-                eprintln!("cap: handoff: {error}");
-            }
-        }
-        let now = *connection.borrow_and_update();
-        if lifecycle != Some(now) {
-            lifecycle = Some(now);
-            settings_wake(&mut send, lane.publish(SettingsEvent::Wake));
-            match now {
-                ConnState::Connected => {
-                    if last_edge != Some(Edge::Connected) {
-                        last_edge = Some(Edge::Connected);
-                        let _ = send.try_send(Delivery::Connected);
-                    }
-                }
-                ConnState::Fatal | ConnState::ShuttingDown => {
-                    let rejection = client.registration_rejection();
-                    let message = rejection
-                        .clone()
-                        .map_or_else(|| "connection stopped".into(), |reason| reason.message);
-                    let _ = send.try_send(Delivery::Refused { message });
-                    if rejection.as_ref().is_some_and(|reason| {
-                        handoff_gate(reason.kind(), client.connection_generation(), &handoff)
-                    }) && let Some(paths) = handoff.take()
-                    {
-                        let url = url.clone();
-                        let service = service.clone();
-                        let mut send = send.clone();
-                        handoff_task = Some(tokio::spawn(async move {
-                            let result = forward_async(&url, &service, &paths).await;
-                            let _ = send.send(Delivery::Forwarded(result)).await;
-                        }));
-                    }
-                }
-                ConnState::Disconnected => {
-                    if last_edge != Some(Edge::Disconnected) {
-                        last_edge = Some(Edge::Disconnected);
-                        let _ = send.try_send(Delivery::Disconnected);
-                    }
-                }
-                ConnState::Connecting => {}
-            }
-        }
-        tokio::select! {
-            biased;
-            result = refusals.join_next(), if !refusals.is_empty() => {
-                match result {
-                    Some(Ok(Ok(()))) => {}
-                    Some(Ok(Err(error))) => {
-                        faults
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(format!("refusal: {error}"));
-                        eprintln!("cap: Bus reply: {error}");
-                    }
-                    Some(Err(error)) => {
-                        faults
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(format!("refusal task: {error}"));
-                        eprintln!("cap: Bus reply task: {error}");
-                    }
-                    None => {}
-                }
-            }
-            result = operations.join_next(), if !operations.is_empty() => {
-                if let Some(Err(error)) = result {
-                    faults
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(error.to_string());
-                    eprintln!("cap: Bus work: {error}");
-                }
-            }
-            progress = lane.drive() => match progress {
-                Progress::Wake => settings_wake(&mut send, true),
-                Progress::UiClosed => break,
-                Progress::Updated => {}
-            },
-            effect = effects.recv() => {
-                let Some(effect) = effect else { break };
-                match effect {
-                    Effect::Respond { id, rc, body } => {
-                        if let Some(command) = pending.take(id, client.connection_generation()) {
-                            gate.replied();
-                            match accepted_tx.try_send((rc, body, command)) {
-                                Ok(()) => {}
-                                Err(_) => {
-                                    faults
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                        .push("accepted reply enqueue failed".into());
-                                }
-                            }
-                        }
-                    }
-                    Effect::Call { service, verb, args, limit, reply } => {
-                        // The app's refresh reaction releases the Changed
-                        // coalescing flag.
-                        if verb == "comp.windows.list" {
-                            changed_out = false;
-                        }
-                        if operations.len() >= OPERATION_CAP {
-                            busy_rejected += 1;
-                            let _ = reply.send(Err("Bus worker busy".into()));
-                        } else {
-                            let client = client.clone();
-                            operations.spawn(async move {
-                                let result = tokio::time::timeout(
-                                    limit,
-                                    client.call(&service, &verb, args),
-                                )
-                                .await
-                                .map_err(|_| "Bus request timed out".to_string())
-                                .and_then(|result| result.map_err(|error| error.to_string()));
-                                let _ = reply.send(result);
-                            });
-                        }
-                    }
-                    Effect::Delay { duration, reply } => {
-                        if operations.len() >= OPERATION_CAP {
-                            busy_rejected += 1;
-                            drop(reply);
-                        } else {
-                            operations.spawn(async move {
-                                tokio::time::sleep(duration).await;
-                                let _ = reply.send(());
-                            });
-                        }
-                    }
-                    Effect::Quit => {
-                        deadline = Some(Instant::now() + SHUTDOWN_BUDGET);
-                        // FIFO: replies accepted before this quit are queued
-                        // ahead of it, and the ordered accepted writer puts
-                        // every accepted reply — the quit reply above all —
-                        // on the wire before the client closes.
-                        for (_, rc, body, command) in take_queued_replies(
-                            &mut effects,
-                            &mut pending,
-                            client.connection_generation(),
-                        ) {
-                            gate.replied();
-                            let _ = accepted_tx.try_send((rc, body, command));
-                        }
-                        break;
-                    }
-                }
-            }
-            command = incoming.recv(), if incoming_open => {
-                match command {
-                    Some(BoundedIncomingEvent::Command(command)) => {
-                        // Native settings frames decode before ordinary traffic.
-                        if let Some(wake) = lane.delivery(&command) {
-                            settings_wake(&mut send, wake);
-                            continue;
-                        }
-                        if command.topic().is_some() || command.command.is_empty() {
-                            continue;
-                        }
-                        if !gate.admit() {
-                            if refusals.len() < REFUSAL_CAP {
-                                let client = client.clone();
-                                refusals.spawn(async move {
-                                    client.respond(&command, 10, BUSY_BODY).await
-                                });
-                            } else {
-                                shed_refusals += 1;
-                                eprintln!("cap: refusal shed: refusal pool saturated");
-                            }
-                            continue;
-                        }
-                        next_id += 1;
-                        let delivery = Delivery::Command(Command {
-                            id: next_id,
-                            verb: command.command.clone(),
-                            body: if command.body.trim().is_empty() {
-                                "{}".to_string()
-                            } else {
-                                command.body.clone()
-                            },
-                            caller_key: caller_key(&command),
-                        });
-                        pending.insert(next_id, command);
-                        gate.accepted();
-                        // Reliable: an accepted command awaits its outbox slot.
-                        let _ = send.send(delivery).await;
-                    }
-                    Some(BoundedIncomingEvent::Overflow { .. }) => {
-                        settings_wake(&mut send, lane.publish(SettingsEvent::Lost));
-                        if !changed_out
-                            && send.try_send(Delivery::Changed).is_ok()
-                        {
-                            changed_out = true;
-                        }
-                    }
-                    None => {
-                        incoming_open = false;
-                        settings_wake(&mut send, lane.publish(SettingsEvent::Wake));
-                    }
-                }
-            }
-            changed = connection.changed(), if connection_open => {
-                if changed.is_err() {
-                    connection_open = false;
-                }
-            }
-        }
-    }
-    let deadline = deadline.unwrap_or(Instant::now() + SHUTDOWN_BUDGET);
-    let at = || tokio::time::Instant::from_std(deadline);
-    // The ordered accepted writer drains the queue, then exits on channel
-    // close, against the one shared deadline.
-    drop(accepted_tx);
-    match tokio::time::timeout_at(at(), accepted_writer).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => faults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("accepted writer: {error}")),
-        Err(_) => faults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push("accepted reply drain timed out".into()),
-    }
-    // Every send is followed by its ack before the writer exits, so draining
-    // the acks now leaves only replies that never reached the wire.
-    while let Ok(()) = ack_rx.try_recv() {
-        gate.sent();
-    }
-    let queued_accepted = gate.queued;
-    // Refusals flush within the same budget.
-    while !refusals.is_empty() {
-        match tokio::time::timeout_at(at(), refusals.join_next()).await {
-            Ok(Some(Ok(Ok(())))) => {}
-            Ok(Some(Ok(Err(error)))) => faults
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(format!("refusal: {error}")),
-            Ok(Some(Err(error))) => faults
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(format!("refusal task: {error}")),
-            Ok(None) => break,
-            Err(_) => {
-                faults
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push("refusal drain timed out".into());
-                break;
-            }
-        }
-    }
-    refusals.abort_all();
-    // Accepted capture restoration and other calls complete within the same
-    // budget before being aborted.
-    while !operations.is_empty() {
-        match tokio::time::timeout_at(at(), operations.join_next()).await {
-            Ok(Some(Ok(()))) => {}
-            Ok(Some(Err(error))) => faults
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(format!("Bus work: {error}")),
-            Ok(None) => break,
-            Err(_) => {
-                faults
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(format!(
-                        "operation drain timed out with {} operations queued",
-                        operations.len()
-                    ));
-                break;
-            }
-        }
-    }
-    operations.abort_all();
-    // The one handoff permit drains within the same budget.
-    if let Some(mut task) = handoff_task.take() {
-        if !task.is_finished() {
-            match tokio::time::timeout_at(at(), &mut task).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => faults
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(format!("handoff task: {error}")),
-                Err(_) => {
-                    faults
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push("handoff drain timed out".into());
-                    task.abort();
-                }
-            }
-        }
-    }
-    if let Err(error) = lane.flush_cache(deadline).await {
-        faults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("settings cache: {}: {}", error.code, error.message));
-    }
-    if tokio::time::timeout_at(at(), client.close()).await.is_err() {
-        faults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push("Bus close timed out".into());
-    }
-    let faults = Arc::try_unwrap(faults)
-        .map(|lock| {
-            lock.into_inner()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        })
-        .unwrap_or_else(|faults| {
-            faults
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        });
-    eprintln!(
-        "CAP_SHUTDOWN {}",
-        json!({
-            "faults": faults,
-            "queued_accepted": queued_accepted,
-            "shed_refusals": shed_refusals,
-            "busy_rejected": busy_rejected,
-        })
-    );
-}
-
-/// Drain replies queued ahead of a quit, in FIFO order, fenced to `live`.
-fn take_queued_replies(
-    effects: &mut tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    pending: &mut Pending,
-    live: u64,
-) -> Vec<(u64, u8, String, IncomingCommand)> {
-    let mut replies = Vec::new();
-    while let Ok(effect) = effects.try_recv() {
-        if let Effect::Respond { id, rc, body } = effect
-            && let Some(command) = pending.take(id, live)
-        {
-            replies.push((id, rc, body, command));
-        }
-    }
-    replies
-}
-
 /// The single-instance handoff requests: open the first argv path, then show.
 fn forward_requests(paths: &[String]) -> Vec<(&'static str, Value)> {
     let mut requests = Vec::new();
@@ -871,79 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_replies_fence_stale_connection_generations() {
-        let mut pending = Pending::default();
-        pending.insert(1, command(2));
-        pending.insert(3, command(2));
-        assert!(pending.take(1, 2).is_some());
-        assert!(
-            pending.take(3, 1).is_none(),
-            "an old token never leaves through a new connection"
-        );
-        assert!(
-            pending.take(3, 2).is_some(),
-            "pending survives an attempted stale take and a disconnect"
-        );
-        assert!(pending.take(9, 2).is_none());
-        pending.insert(4, command(0));
-        assert!(
-            pending.take(4, 0).is_none(),
-            "generation-zero replies are refused like the client's own fence"
-        );
-        assert_eq!(pending.len(), 1);
-    }
-
-    #[test]
-    fn admission_keeps_the_accepted_sum_fixed_and_never_sheds_accepted() {
-        let mut gate = AcceptedGate::default();
-        for _ in 0..ACCEPTED_CAP {
-            assert!(gate.admit());
-            gate.accepted();
-        }
-        assert!(
-            !gate.admit(),
-            "the accepted pipeline admits no command beyond its fixed sum"
-        );
-        // A reply transfers the command from pending to the accepted queue;
-        // the sum is unchanged and still saturated.
-        gate.replied();
-        assert!(!gate.admit());
-        // Only a sent (acked) reply frees admission.
-        gate.sent();
-        assert!(gate.admit());
-        gate.accepted();
-        assert!(!gate.admit());
-    }
-
-    #[test]
-    fn quit_drains_accepted_replies_in_fifo_order_and_fences_the_rest() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut pending = Pending::default();
-        pending.insert(1, command(2));
-        pending.insert(2, command(2));
-        pending.insert(3, command(1));
-        tx.send(Effect::Respond {
-            id: 1,
-            rc: 0,
-            body: "one".into(),
-        })
-        .unwrap();
-        tx.send(Effect::Respond {
-            id: 2,
-            rc: 0,
-            body: "two".into(),
-        })
-        .unwrap();
-        tx.send(Effect::Quit).unwrap();
-        let drained = take_queued_replies(&mut rx, &mut pending, 2);
-        let ids: Vec<u64> = drained.iter().map(|(id, ..)| *id).collect();
-        assert_eq!(ids, [1, 2], "accepted replies keep their FIFO order");
-        assert_eq!(pending.len(), 1);
-        // The stale command was fenced, not sent through another generation.
-        assert!(pending.take(3, 1).is_some());
-    }
-
-    #[test]
     fn caller_keys_follow_editd_rules() {
         let mut headers = BTreeMap::new();
         headers.insert("broker_origin".into(), "local".into());
@@ -1000,154 +465,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn operation_cap_rejects_calls_busy_and_quit_bounds_stalled_work() {
-        let (send, _receive) = mpsc::channel(OUTBOX_CAP);
-        let (effects, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (ready, ready_rx) = std::sync::mpsc::channel();
-        let worker_thread = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(worker(
-                "cap-test".into(),
-                "ws://127.0.0.1:1/ws".into(),
-                None,
-                send,
-                effects_rx,
-                ready,
-            ));
-            runtime.shutdown_timeout(Duration::from_millis(100));
-        });
-        let (client, ui, _bootstrap) = ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
-        let _client = client;
-        let _ui = ui;
-        // Occupy every operation permit with stalled work.
-        for _ in 0..OPERATION_CAP {
-            let (reply, _rx) = oneshot::channel();
-            effects
-                .send(Effect::Delay {
-                    duration: Duration::from_secs(60),
-                    reply,
-                })
-                .unwrap();
-        }
-        let (reply, rx) = oneshot::channel();
-        effects
-            .send(Effect::Call {
-                service: "comp".into(),
-                verb: "comp.windows.list".into(),
-                args: json!({}),
-                limit: Duration::from_secs(5),
-                reply,
-            })
-            .unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            assert_eq!(
-                tokio::time::timeout(Duration::from_secs(5), rx)
-                    .await
-                    .unwrap()
-                    .expect("the actor must retain and complete the accepted reply channel")
-                    .unwrap_err(),
-                "Bus worker busy",
-                "an exhausted operation pool rejects the call immediately"
-            );
-        });
-        effects.send(Effect::Quit).unwrap();
-        worker_thread.join().unwrap();
-    }
-
-    #[test]
-    fn operation_permits_release_after_a_dynamic_wave() {
-        let (send, _receive) = mpsc::channel(OUTBOX_CAP);
-        let (effects, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (ready, ready_rx) = std::sync::mpsc::channel();
-        let worker_thread = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(worker(
-                "cap-test".into(),
-                "ws://127.0.0.1:1/ws".into(),
-                None,
-                send,
-                effects_rx,
-                ready,
-            ));
-            runtime.shutdown_timeout(Duration::from_millis(100));
-        });
-        let (client, ui, _bootstrap) = ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
-        let _client = client;
-        let _ui = ui;
-        // A wave of short operations saturates the pool...
-        for _ in 0..OPERATION_CAP {
-            let (reply, _rx) = oneshot::channel();
-            effects
-                .send(Effect::Delay {
-                    duration: Duration::from_millis(300),
-                    reply,
-                })
-                .unwrap();
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let (reply, rx) = oneshot::channel();
-            effects
-                .send(Effect::Call {
-                    service: "comp".into(),
-                    verb: "comp.windows.list".into(),
-                    args: json!({}),
-                    limit: Duration::from_secs(5),
-                    reply,
-                })
-                .unwrap();
-            assert_eq!(
-                tokio::time::timeout(Duration::from_secs(5), rx)
-                    .await
-                    .unwrap()
-                    .expect("the actor must retain and complete the accepted reply channel")
-                    .unwrap_err(),
-                "Bus worker busy",
-                "the wave saturates the pool"
-            );
-            // ...and the wave's completion releases real permits.
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            let (reply, rx) = oneshot::channel();
-            effects
-                .send(Effect::Call {
-                    service: "comp".into(),
-                    verb: "comp.windows.list".into(),
-                    args: json!({}),
-                    limit: Duration::from_secs(5),
-                    reply,
-                })
-                .unwrap();
-            let error = tokio::time::timeout(Duration::from_secs(5), rx)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap_err();
-            assert_ne!(
-                error, "Bus worker busy",
-                "the call left the pool instead of a busy rejection"
-            );
-        });
-        effects.send(Effect::Quit).unwrap();
-        worker_thread.join().unwrap();
-    }
 }

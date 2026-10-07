@@ -96,7 +96,7 @@ pub enum Message {
     Window(window::Id, window::Event),
     Refresh,
     Refreshed(Result<(Value, Value), String>),
-    Shown(u64, Result<Value, String>),
+    Shown(crate::bus::Request, Result<Value, String>),
     Mode(Mode),
     Output(String),
     Choose(Window),
@@ -184,7 +184,7 @@ pub struct App {
     status: String,
     busy: bool,
     cancel: Option<tokio::sync::watch::Sender<bool>>,
-    pending_reply: Option<u64>,
+    pending_reply: Option<crate::bus::Request>,
     picker: Option<requester::Requester>,
     picker_strings: requester::Strings,
     pending: Option<Pending>,
@@ -449,7 +449,7 @@ impl App {
             modal: self.modal(),
         }
     }
-    fn reply(&self, id: u64, result: Result<Value, String>) {
+    fn reply(&self, id: impl Into<crate::bus::Request>, result: Result<Value, String>) {
         match result {
             Ok(v) => self.bus.respond(id, 0, v.to_string()),
             Err(e) => self.bus.respond(id, 10, json!({"error":e}).to_string()),
@@ -1191,6 +1191,7 @@ impl App {
         }
     }
     fn command(&mut self, command: crate::bus::Command) -> Task<Message> {
+        if !self.bus.is_current(&command.id) { return Task::none(); }
         let id = command.id;
         let verb = command.verb.as_str();
         let value = match verbs::parse(verb, &command.body) {
@@ -1242,7 +1243,7 @@ impl App {
                         let target = capture::own_window(&bus, &comp).await?;
                         capture::show(&bus, &comp, target).await
                     },
-                    move |result| Message::Shown(id, result),
+                    move |result| Message::Shown(id.clone(), result),
                 )
             }
             Ok(Operation::Quit) => {
@@ -1257,7 +1258,7 @@ impl App {
                     .iter()
                     .find(|w| Some(&w.target) == self.request.window.as_ref())
                     .cloned();
-                self.pending_reply = Some(id);
+                self.pending_reply = Some(id.clone());
                 let task = self.take();
                 if !self.busy {
                     self.pending_reply = None;
@@ -1266,7 +1267,7 @@ impl App {
                 task
             }
             Ok(Operation::Open(path)) => {
-                self.pending_reply = Some(id);
+                self.pending_reply = Some(id.clone());
                 match capture::absolute(&path) {
                     Ok(p) => self.open_path(p),
                     Err(e) => {
@@ -1281,7 +1282,7 @@ impl App {
                     self.reply(id, Err("no image".into()));
                     return Task::none();
                 };
-                self.pending_reply = Some(id);
+                self.pending_reply = Some(id.clone());
                 match capture::absolute(&path) {
                     Ok(p) => self.save_path(p),
                     Err(e) => {
@@ -1602,7 +1603,7 @@ mod tests {
         let (bus, mut effects) = BusHandle::response_sink();
         app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1,
+            id: 1.into(),
             verb: "cap.open".into(),
             body: json!({"path":"/tmp/another.png"}).to_string(),
             caller_key: "local:test".into(),
@@ -1688,9 +1689,9 @@ mod tests {
         let mut app = test_app();
         let (bus, mut effects) = BusHandle::response_sink();
         app.bus = bus;
-        let command = |id, verb: &str| {
+        let command = |id: u64, verb: &str| {
             Message::Bus(Delivery::Command(crate::bus::Command {
-                id,
+                id: id.into(),
                 verb: verb.into(),
                 body: "{}".into(),
                 caller_key: "local:test".into(),
@@ -1704,7 +1705,7 @@ mod tests {
         };
         assert_eq!(id, 2);
         assert_ne!(rc, 0);
-        let _ = app.update(Message::Shown(1, Err("exclusive_layer".into())));
+        let _ = app.update(Message::Shown(1.into(), Err("exclusive_layer".into())));
         assert!(!app.busy);
         let Effect::Respond { id, rc, body } = effects.try_recv().unwrap() else {
             panic!("activation reply")
@@ -1770,7 +1771,7 @@ mod tests {
             1,
             vec![0, 0, 0, 255],
         ));
-        app.pending_reply = Some(3);
+        app.pending_reply = Some(3.into());
         let undo = app.document.as_ref().unwrap().can_undo();
         assert!(app.settings_ui.session().host().presentation().is_none());
         app.settings_ui.reconcile(None);
@@ -1825,7 +1826,7 @@ mod tests {
         assert_eq!(app.zoom, 2.5);
         assert_eq!(app.pan, Point { x: 7.0, y: 9.0 });
         assert_eq!(app.revision, 4);
-        assert_eq!(app.pending_reply, Some(3));
+        assert_eq!(app.pending_reply.as_ref().map(|request| request.id), Some(3));
         assert!(app.preview.is_some());
         drop(app);
         driver.join().unwrap();
@@ -1837,7 +1838,7 @@ mod tests {
         let (bus, mut effects) = BusHandle::response_sink();
         app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1,
+            id: 1.into(),
             verb: "app.describe".into(),
             body: "{}".into(),
             caller_key: "local:test".into(),
@@ -1900,12 +1901,12 @@ mod tests {
         let (bus, _) = BusHandle::response_sink();
         app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1,
+            id: 1.into(),
             verb: "cap.show".into(),
             body: "{}".into(),
             caller_key: "local:test".into(),
         })));
-        let _ = app.update(Message::Shown(1, Ok(json!({"focused":true}))));
+        let _ = app.update(Message::Shown(1.into(), Ok(json!({"focused":true}))));
         assert!(!app.confirm);
         assert!(matches!(app.pending, Some(Pending::Quit)));
         let outcome = app
@@ -1931,7 +1932,7 @@ mod tests {
         let (bus, _) = BusHandle::response_sink();
         app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1,
+            id: 1.into(),
             verb: "cap.show".into(),
             body: "{}".into(),
             caller_key: "local:test".into(),
@@ -1943,7 +1944,7 @@ mod tests {
             "activation must retain the pending save dialog"
         );
         assert!(app.busy);
-        let _ = app.update(Message::Shown(1, Ok(json!({"focused":true}))));
+        let _ = app.update(Message::Shown(1.into(), Ok(json!({"focused":true}))));
         let _ = app.update(Message::Request(requester::Event::Submit));
         assert!(app.picker.is_none());
         assert!(
@@ -1961,7 +1962,7 @@ mod tests {
         );
         app.selected_window = app.windows.first().cloned();
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1,
+            id: 1.into(),
             verb: "cap.capture".into(),
             body: json!({"mode":"window","window":{"id":7,"generation":3}}).to_string(),
             caller_key: "local:test".into(),
@@ -1983,7 +1984,7 @@ mod tests {
         let (bus, mut effects) = BusHandle::response_sink();
         app.bus = bus;
         let _ = app.update(Message::Bus(Delivery::Command(crate::bus::Command {
-            id: 1,
+            id: 1.into(),
             verb: "cap.open".into(),
             body: json!({"path":"/tmp/another.png"}).to_string(),
             caller_key: "local:test".into(),

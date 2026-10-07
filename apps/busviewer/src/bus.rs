@@ -9,7 +9,7 @@ use ::bus::native_client::{
 use application::iced::futures::channel::{mpsc, oneshot};
 use application::message::Once;
 use application::native_actor::{
-    Accepted, Completed, Reply as NativeReply, TaskSet, submit_replies,
+    Accepted, Completed, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies,
 };
 use application::native_queue::{Admission, Flush, Outbox as Queue, Permit, SendError};
 use application::presentation::native::{
@@ -17,7 +17,7 @@ use application::presentation::native::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Condvar, Mutex},
     time::Duration,
 };
@@ -496,29 +496,6 @@ impl Outbox {
     }
 }
 
-/// Runtime diagnostics cannot grow with repeated transport/refusal failures.
-#[derive(Default, serde::Serialize)]
-struct Faults {
-    count: u64,
-    recent: VecDeque<String>,
-}
-impl Faults {
-    fn push(&mut self, mut error: String) {
-        if error.len() > 4096 {
-            let mut end = 4096;
-            while !error.is_char_boundary(end) {
-                end -= 1;
-            }
-            error.truncate(end);
-        }
-        self.count = self.count.saturating_add(1);
-        if self.recent.len() == 32 {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(error);
-    }
-}
-
 fn reply_refused(
     client: &Arc<SupervisedClient>,
     replies: &mut TaskSet<Result<(), String>>,
@@ -546,38 +523,6 @@ fn reply_refused(
     }
 }
 
-fn reap<T>(
-    label: &str,
-    result: Result<Completed<T>, tokio::task::JoinError>,
-    faults: &mut Faults,
-    record: impl FnOnce(T, &mut Faults),
-) {
-    match result {
-        Ok(Completed { permit, value }) => {
-            record(value, faults);
-            permit.finish();
-        }
-        Err(error) => faults.push(format!("{label}: {error}")),
-    }
-}
-
-fn cancel<T: Send + 'static>(
-    label: &str,
-    tasks: TaskSet<T>,
-    faults: &mut Faults,
-    mut record: impl FnMut(T, &mut Faults),
-) {
-    let report = tasks.abort_and_report();
-    for result in report.ready {
-        reap(label, result, faults, |value, faults| record(value, faults));
-    }
-    if report.unconfirmed > 0 {
-        faults.push(format!(
-            "{label}: cancellation requested with {} unconfirmed tasks",
-            report.unconfirmed
-        ));
-    }
-}
 async fn worker(
     service: String,
     url: String,
@@ -740,7 +685,7 @@ async fn worker(
                 replies: accepted.len(),
                 reply_tasks: replies.len(),
                 invariant_faults: faults
-                    .recent
+                    .recent()
                     .iter()
                     .filter(|error| error.contains("invariant"))
                     .count(),
@@ -1474,8 +1419,8 @@ mod tests {
             started.await.unwrap();
             let mut faults = Faults::default();
             cancel("Bus call", calls, &mut faults, |(), _| {});
-            assert_eq!(faults.count, 1);
-            assert!(faults.recent[0].contains("unconfirmed"));
+            assert_eq!(faults.count(), 1);
+            assert!(faults.recent()[0].contains("unconfirmed"));
             assert_eq!(admission.counts().active, 1);
             release.closed().await;
             assert_eq!(admission.counts().abandoned, 1);
@@ -1757,9 +1702,9 @@ mod tests {
         for _ in 0..1024 {
             faults.push("é".repeat(5000));
         }
-        assert_eq!(faults.count, 1024);
-        assert_eq!(faults.recent.len(), 32);
-        assert!(faults.recent.iter().all(|message| message.len() <= 4096));
+        assert_eq!(faults.count(), 1024);
+        assert_eq!(faults.recent().len(), 32);
+        assert!(faults.recent().iter().all(|message| message.len() <= 4096));
     }
     /// One refusal and one handoff completion per lifetime: duplicates keep
     /// the first accepted value and never queue beyond the two slots.

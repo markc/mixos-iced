@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.19
+
+- Share bounded native actor diagnostics, task outcome recording and cancellation
+  reports for Cap and BusViewer. Preserve admission until the host records each
+  reaped outcome; report unconfirmed destruction separately.
+
 ## 0.1.18
 
 - Forward the opt-in `native-frame-probe` developer acceptance feature through

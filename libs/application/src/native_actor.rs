@@ -8,6 +8,45 @@ use bus::native_client::{ConnState, IncomingCommand, SupervisedClient};
 use std::{future::Future, sync::Arc, time::Instant};
 use tokio::task::{JoinError, JoinSet};
 
+/// Bounded lifetime diagnostics shared by native actors. UTF-8 truncation
+/// retains valid text; the total counter saturates independently of retention.
+#[derive(Default, serde::Serialize)]
+pub struct Faults {
+    count: u64,
+    recent: std::collections::VecDeque<String>,
+}
+
+impl Faults {
+    pub fn count(&self) -> u64 { self.count }
+    pub fn recent(&self) -> &std::collections::VecDeque<String> { &self.recent }
+    pub fn push(&mut self, mut error: String) {
+        if error.len() > 4096 {
+            let mut end = 4096;
+            while !error.is_char_boundary(end) { end -= 1; }
+            error.truncate(end);
+        }
+        self.count = self.count.saturating_add(1);
+        if self.recent.len() == 32 { self.recent.pop_front(); }
+        self.recent.push_back(error);
+    }
+}
+
+/// Record a reaped task's actual outcome before releasing its admission credit.
+pub fn reap<T>(label: &str, result: Result<Completed<T>, JoinError>, faults: &mut Faults, record: impl FnOnce(T, &mut Faults)) {
+    match result {
+        Ok(Completed { permit, value }) => { record(value, faults); permit.finish(); }
+        Err(error) => faults.push(format!("{label}: {error}")),
+    }
+}
+
+/// Request cancellation once and record ready outcomes separately from work
+/// whose destruction has not yet been observed. This never extends a deadline.
+pub fn cancel<T: Send + 'static>(label: &str, tasks: TaskSet<T>, faults: &mut Faults, mut record: impl FnMut(T, &mut Faults)) {
+    let report = tasks.abort_and_report();
+    for result in report.ready { reap(label, result, faults, |value, faults| record(value, faults)); }
+    if report.unconfirmed > 0 { faults.push(format!("{label}: cancellation requested with {} unconfirmed tasks", report.unconfirmed)); }
+}
+
 /// Credit remains owned by this output until the host reaps and records it.
 pub struct Completed<T> {
     pub permit: Permit,
@@ -216,6 +255,18 @@ mod tests {
     use super::*;
     use crate::native_queue::Admission;
     use std::{cell::Cell, time::Duration};
+
+    #[test]
+    fn diagnostics_bound_utf8_storage_and_saturate_the_lifetime_count() {
+        let mut faults = Faults { count: u64::MAX - 1, recent: Default::default() };
+        for _ in 0..40 { faults.push("€".repeat(2000)); }
+        assert_eq!(faults.count(), u64::MAX);
+        assert_eq!(faults.recent().len(), 32);
+        assert!(faults.recent().iter().all(|text| text.len() == 4095 && text.chars().all(|character| character == '€')));
+        faults.push("latest failure".into());
+        assert_eq!(faults.recent().back().unwrap(), "latest failure");
+        assert_eq!(faults.recent().len(), 32);
+    }
 
     #[tokio::test]
     async fn synchronous_abort_reports_unconfirmed_work_before_destruction() {

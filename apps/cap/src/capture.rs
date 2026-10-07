@@ -755,11 +755,13 @@ mod tests {
                 panic!("expected info")
             };
             assert_eq!(verb, "comp.info");
+            let before_delay = std::time::Instant::now();
             reply.send(Ok(json!({"instance": "itest"}))).unwrap();
-            let Some(crate::bus::Effect::Delay { duration, reply }) = effects.recv().await else {
+            let Some(crate::bus::Effect::Delay { when, reply, .. }) = effects.recv().await else {
                 panic!("expected delay first")
             };
-            assert_eq!(duration, Duration::from_secs(10));
+            assert!(when >= before_delay + Duration::from_secs(10));
+            assert!(when <= std::time::Instant::now() + Duration::from_secs(10));
             tx.send(true).unwrap();
             drop(reply);
             // The cancelled screen capture restores the unchanged window.

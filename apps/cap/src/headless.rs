@@ -17,7 +17,7 @@ enum Finished {
     Opened(PathBuf, Document),
     Exported(PathBuf),
 }
-type Job = BoxFuture<'static, (u64, Result<Finished, String>)>;
+type Job = BoxFuture<'static, (bus::Request, Result<Finished, String>)>;
 pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Result<(), String> {
     let directory = capture::media_directory()?;
     let (mut document, mut current_path) = match path {
@@ -53,6 +53,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
                     Delivery::Forwarded(_)=>continue,
                     Delivery::Connected|Delivery::Disconnected|Delivery::Changed|Delivery::Settings=>continue,
                 };
+                if !handle.is_current(&command.id){continue}
                 let id=command.id;let verb=command.verb.as_str();
                 let value=match verbs::parse(verb,&command.body){Ok(v)=>v,Err(e)=>{respond(&handle,id,Err(e));continue}};
                 if matches!(verb,"cap.ping"|"cap.info"){respond(&handle,id,Ok(info(&mut settings_ui,&handle,&document,&current_path,&metadata,!jobs.is_empty())));continue}
@@ -82,7 +83,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         }}
     })
 }
-fn respond(handle: &bus::BusHandle, id: u64, result: Result<Value, String>) {
+fn respond(handle: &bus::BusHandle, id: bus::Request, result: Result<Value, String>) {
     match result {
         Ok(v) => handle.respond(id, 0, v.to_string()),
         Err(e) => handle.respond(id, 10, json!({"error":e}).to_string()),

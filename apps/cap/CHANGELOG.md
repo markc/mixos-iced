@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+- Use shared native admission, retained outboxes, origin-owning replies and
+  bounded task sets on Cap's existing Bus worker. Reconnect retires stale
+  commands before replacement admission; cloned requests share one reply token.
+- Bound outgoing work through completion and reaping, with separate capacity
+  for region cancellation and window restoration. Reply send budgets start
+  when capture results exist, preserving long capture operations.
+- Share bounded shutdown diagnostics and task retirement with BusViewer.
+
 ## 0.1.2
 
 - Live settings over one nonblocking supervised connection with the shared
