@@ -638,7 +638,9 @@ pub struct ActiveEventLoop {
 #[cfg(test)]
 mod presentation_native_guards {
     use super::*;
-    use crate::platform_impl::wayland::types::wp_presentation::{NativeRequest, native_process_count};
+    use crate::platform_impl::wayland::types::wp_presentation::{
+        NativeRequest, native_process_count,
+    };
     use crate::platform_impl::wayland::window::Window;
 
     fn read_actual_terminal(connection: &Connection, observation: &NativeRequest) {
@@ -650,8 +652,11 @@ mod presentation_native_guards {
             connection.roundtrip().expect("native server progress");
             roundtrips += 1;
         }
-        assert!(observation.discarded(), "no real Discarded after {roundtrips} native roundtrips; object_alive={}",
-            connection.backend().info(observation.object_id()).is_ok());
+        assert!(
+            observation.discarded(),
+            "no real Discarded after {roundtrips} native roundtrips; object_alive={}",
+            connection.backend().info(observation.object_id()).is_ok()
+        );
         println!("WINIT_CHARGE native_roundtrips={roundtrips} terminal=discarded");
     }
 
