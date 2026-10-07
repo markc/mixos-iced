@@ -797,14 +797,14 @@ dependencies = [
 
 [[package]]
 name = "cap"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "appearance",
+ "application",
  "buildinfo",
  "bus",
  "config",
- "fluent-bundle",
  "iced",
  "iced_runtime",
  "iced_test",
@@ -813,6 +813,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings",
  "tempfile",
  "tiny-skia 0.12.0",
  "tokio",

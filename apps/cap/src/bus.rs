@@ -34,7 +34,9 @@ pub enum Delivery {
     Settings,
     /// The supervised connection was refused or stopped. The GUI keeps its
     /// offline UI; only an actual quit ends the process.
-    Refused { message: String },
+    Refused {
+        message: String,
+    },
     /// The launch paths were handed to the running instance (name collision).
     Forwarded(Result<(), String>),
     Connected,
@@ -616,10 +618,7 @@ mod tests {
     use super::*;
     #[test]
     fn handoff_requests_open_the_first_path_then_show() {
-        assert_eq!(
-            forward_requests(&[]),
-            vec![("cap.show", json!({}))]
-        );
+        assert_eq!(forward_requests(&[]), vec![("cap.show", json!({}))]);
         assert_eq!(
             forward_requests(&["/tmp/image.png".into()]),
             vec![

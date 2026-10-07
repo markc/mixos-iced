@@ -746,13 +746,12 @@ impl App {
                     Err(error) => self.error(error),
                 }
                 if let Some(id) = self.pending_reply.take() {
-                    let value = if self.document.is_some()
-                        && self.status == label("capture-complete")
-                    {
-                        Ok(self.info())
-                    } else {
-                        Err(self.status.clone())
-                    };
+                    let value =
+                        if self.document.is_some() && self.status == label("capture-complete") {
+                            Ok(self.info())
+                        } else {
+                            Err(self.status.clone())
+                        };
                     self.reply(id, value);
                 }
                 let task = self.preview();
@@ -1249,7 +1248,9 @@ impl App {
                 .into();
                 crate::preview::plane(canvas, image, doc.output_dimensions(), self.zoom, self.pan)
             } else {
-                container(self.text(label("empty"))).center(iced::Fill).into()
+                container(self.text(label("empty")))
+                    .center(iced::Fill)
+                    .into()
             };
         let status = column![
             row![
@@ -1321,10 +1322,8 @@ impl App {
                 widget::opaque(
                     container(
                         container(column![
-                            picker.view_for::<Message, Theme, Renderer>(
-                                tokens,
-                                &self.picker_strings
-                            ),
+                            picker
+                                .view_for::<Message, Theme, Renderer>(tokens, &self.picker_strings),
                             action("keep", Message::Keep, true)
                         ])
                         .padding(tokens.metrics.spacing.lg)
@@ -1678,7 +1677,11 @@ mod tests {
         app.zoom = 2.5;
         app.pan = Point { x: 7.0, y: 9.0 };
         app.revision = 4;
-        app.preview = Some(iced::advanced::image::Handle::from_rgba(1, 1, vec![0, 0, 0, 255]));
+        app.preview = Some(iced::advanced::image::Handle::from_rgba(
+            1,
+            1,
+            vec![0, 0, 0, 255],
+        ));
         app.pending_reply = Some(3);
         let undo = app.document.as_ref().unwrap().can_undo();
         assert!(app.settings_ui.session().host().presentation().is_none());
@@ -1722,12 +1725,7 @@ mod tests {
             "the app renders the activated appearance, not bootstrap"
         );
         assert_eq!(
-            app.settings_ui
-                .session()
-                .host()
-                .consumer()
-                .evidence()
-                .kind,
+            app.settings_ui.session().host().consumer().evidence().kind,
             Some(settings::fallback::PresentationKind::Embedded)
         );
         assert!(!app.busy);
