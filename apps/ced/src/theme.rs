@@ -499,17 +499,12 @@ impl Theme {
     /// An iced theme for the stock widgets (text inputs, scrollables,
     /// buttons), built from the same tokens.
     pub fn iced_theme(&self) -> application::iced::Theme {
-        application::iced::Theme::custom(
-            "mixos-ced",
-            application::iced::theme::palette::Seed {
-                background: self.tokens.palette.surface,
-                text: self.tokens.palette.text,
-                primary: self.tokens.palette.primary,
+        toolkit::Theme::new(self.tokens)
+            .with_semantic(toolkit::tokens::Semantic {
                 success: self.chrome.success,
                 warning: self.chrome.warning,
-                danger: self.tokens.palette.destructive,
-            },
-        )
+            })
+            .to_iced()
     }
 
     /// The Mono role at `px` (zoom), as `(font, size)`.

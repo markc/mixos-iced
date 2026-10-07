@@ -107,11 +107,13 @@ fn ced_chrome_uses_current_palette_tokens_and_scaled_fonts() {
         .metrics
         .spacing
         .md;
+    let identity = host.presentation().unwrap().content().iced_theme().to_string();
     host.consumer_mut().observe(1, snapshot(2, true));
     activate(&mut host);
     let theme = host.presentation().unwrap().content();
     assert_eq!(theme.ui.1, ui * 1.5);
     assert_eq!(theme.tokens.metrics.spacing.md, spacing * 0.5);
+    assert_ne!(theme.iced_theme().to_string(), identity);
     assert_ne!(initial, render(&host, "dark-scaled"));
     assert_eq!(host.consumer().applied().unwrap().revision, Revision(2));
     host.consumer_mut().observe(1, snapshot(3, true));
