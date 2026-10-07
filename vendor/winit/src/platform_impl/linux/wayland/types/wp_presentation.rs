@@ -79,7 +79,8 @@ impl sctk::reexports::client::backend::ObjectData for NativeTap {
         >,
     ) -> Option<Arc<dyn sctk::reexports::client::backend::ObjectData>> {
         if let Some(event) = wp_presentation_feedback::WpPresentationFeedback::interface()
-            .events.get(usize::from(msg.opcode))
+            .events
+            .get(usize::from(msg.opcode))
         {
             match event.name {
                 "presented" => self.seen.store(1, Ordering::Release),
@@ -171,31 +172,33 @@ impl PresentationState {
         let id = presentation::next_id()?;
         // Direct request on this surface's existing dispatch owner. The caller
         // performs its buffer commit immediately after this returns.
-        let _feedback = self.global.feedback(
-            surface,
-            queue,
-            FeedbackData {
-                id,
-                window_id,
-                clock: self.clock.clone(),
-                charge,
-                terminal: AtomicBool::new(false),
-            },
-        );
+        let data = FeedbackData {
+            id,
+            window_id,
+            clock: self.clock.clone(),
+            charge,
+            terminal: AtomicBool::new(false),
+        };
+        #[cfg(not(test))]
+        let _feedback = self.global.feedback(surface, queue, data);
         #[cfg(test)]
         {
-            let data = _feedback.data::<FeedbackData>().unwrap();
+            // Match the generated constructor exactly, adding the tap at
+            // construction rather than replacing data on a live backend.
+            let weak_charge = Arc::downgrade(&data.charge);
+            let window = data.charge.window.clone();
             let seen = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let inner = queue.make_data::<wp_presentation_feedback::WpPresentationFeedback, FeedbackData>(data);
+            let feedback: wp_presentation_feedback::WpPresentationFeedback = self.global.send_constructor(
+                wp_presentation::Request::Feedback { surface: surface.clone() },
+                Arc::new(NativeTap { inner, seen: seen.clone() }),
+            ).expect("new native presentation feedback");
             let observation = NativeRequest {
-                id: _feedback.id(),
-                charge: Arc::downgrade(&data.charge),
-                seen: seen.clone(),
+                id: feedback.id(),
+                charge: weak_charge,
+                seen,
             };
-            let inner = _feedback.object_data().unwrap().clone();
-            _feedback.backend().upgrade().expect("live native backend")
-                .set_data(_feedback.id(), Arc::new(NativeTap { inner, seen }))
-                .expect("new feedback still alive");
-            *data.charge.window.native_request.lock().unwrap() = Some(observation);
+            *window.native_request.lock().unwrap() = Some(observation);
         }
         Ok(id)
     }

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sctk::reexports::calloop::Error as CalloopError;
 use sctk::reexports::calloop_wayland_source::WaylandSource;
-use sctk::reexports::client::{globals, Connection, QueueHandle};
+use sctk::reexports::client::{Connection, QueueHandle, globals};
 
 use crate::cursor::OnlyCursorImage;
 use crate::dpi::LogicalSize;
@@ -34,7 +34,7 @@ use sink::EventSink;
 
 use super::state::{WindowCompositorUpdate, WinitState};
 use super::window::state::FrameCallbackState;
-use super::{logical_to_physical_rounded, DeviceId, WaylandError, WindowId};
+use super::{DeviceId, WaylandError, WindowId, logical_to_physical_rounded};
 
 type WaylandDispatcher = calloop::Dispatcher<'static, WaylandSource<WinitState>, WinitState>;
 
@@ -450,7 +450,9 @@ impl<T: 'static> EventLoop<T> {
         for window_id in window_ids.iter() {
             let event = self.with_state(|state| {
                 let closed = state.window_requests.get_mut().get(window_id).unwrap().take_closed();
-                if closed { state.drag_close_window(*window_id); }
+                if closed {
+                    state.drag_close_window(*window_id);
+                }
                 let window_requests = state.window_requests.get_mut();
                 if closed {
                     mem::drop(window_requests.remove(window_id));
