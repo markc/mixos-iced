@@ -480,6 +480,10 @@ mod tests {
     }
 
     impl Operation for Recorder {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
         fn clip(&mut self, bounds: Rectangle) {
             self.clips.lock().unwrap().push(bounds);
         }
@@ -510,7 +514,7 @@ mod tests {
 
         let recorder = Recorder::default();
         let mut owned = recorder.clone();
-        let mut erased: &mut dyn Operation = &mut owned;
+        let erased: &mut dyn Operation = &mut owned;
         let mut black = black_box::<(), ()>(erased);
         black.clip(rect);
         assert_eq!(recorded(&recorder), vec![rect]);
