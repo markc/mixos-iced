@@ -1732,9 +1732,10 @@ async fn finite_connect_waits_for_all_declarations() {
         let _ = result_tx.send(result);
     });
     entered.notified().await;
-    tokio::time::timeout(Duration::from_millis(200), &mut result_rx)
-        .await
-        .expect_err("connect must not return while an ACK is held");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut result_rx).await.is_err(),
+        "connect must not return while an ACK is held"
+    );
 
     release.notify_one();
     let client = result_rx
