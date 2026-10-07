@@ -212,6 +212,26 @@ Removal never deletes user data. A removed component's names are retired
 - **Colours and sizes** in GUI code come from design tokens through
   `toolkit::theme`. A gate rejects hard-coded colours.
 
+### 4.1 Application rendering and performance
+
+The [application rendering decision](docs/decisions/2026-10-07-application-rendering-and-performance.md)
+and [performance guide](docs/dev/application-performance.md) apply to existing
+and new GUI apps, and to shared application, toolkit and renderer code.
+
+- **Develop and refine ordinary 2D apps with tiny-skia for now.** Preserve
+  the software path when GPU acceleration is introduced. This does not
+  change compd's GLES compositor or its internal wgpu surfaces.
+- **Measure before optimising.** Separate input/model work, text shaping and
+  layout, painting, buffer presentation and compositor work. Record the
+  workload, environment and before/after evidence for performance changes.
+- **Keep application state and layout independent of pixel painting.**
+  Bound work to visible content; cache with explicit invalidation; track
+  damage correctly; keep backend-specific pixel reuse behind renderer APIs.
+- **Introduce GPU acceleration against measured rendering bottlenecks.**
+  Compare equivalent workloads and check correctness and software fallback.
+  Uploading CPU-painted pixels is not equivalent to GPU glyph compositing.
+  There is no calendar-triggered renderer switch or assumed speedup.
+
 ## 5. Contracts and versions
 
 - **Internal crates** inherit the workspace version (`version.workspace = true`),
@@ -293,3 +313,5 @@ are prerendered, and every page is also published as Markdown.
 6. SPDX headers; third-party attribution intact (§4).
 7. Gates pass (§6, §9); the component index regenerated.
 8. Manual page in `docs/`; a public decision record if it changes a rule.
+9. GUI apps follow §4.1 and document their representative performance
+   workloads using the [performance guide](docs/dev/application-performance.md).
