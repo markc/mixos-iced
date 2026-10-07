@@ -76,7 +76,11 @@ fn publish_v2(root: &Path, id: &str) -> PathBuf {
     let entries = vec![
         write_file(&dir, "fonts/Sans.ttf", b"font bytes"),
         write_file(&dir, "icons/Rounded.ttf", b"rounded font"),
-        write_file(&dir, "icons/Rounded.codepoints", b"delete e872\nfolder e2c7\n"),
+        write_file(
+            &dir,
+            "icons/Rounded.codepoints",
+            b"delete e872\nfolder e2c7\n",
+        ),
         write_file(&dir, "icons/Outlined.ttf", b"outlined font"),
         write_file(&dir, "icons/Outlined.codepoints", b"delete e900\n"),
         write_file(&dir, "icons/mark.svg", b"<svg/>"),
@@ -491,24 +495,37 @@ fn v1_verified_sets_derive_the_default_catalogue() {
     let set = verified(temp.path(), "one");
     let default = set.icon_default().unwrap();
     assert_eq!(
-        (default.family.as_str(), default.style.as_str(), default.weight),
+        (
+            default.family.as_str(),
+            default.style.as_str(),
+            default.weight
+        ),
         ("Fixture Symbols", "default", 400)
     );
     let catalogues = set.icon_catalogues();
     assert_eq!(catalogues.len(), 1);
     assert_eq!(catalogues[0].catalogue.font, "icons/Symbols.ttf");
     assert_eq!(catalogues[0].catalogue.face_index, 0);
-    assert_eq!(catalogues[0].catalogue.codepoints, "icons/Symbols.codepoints");
+    assert_eq!(
+        catalogues[0].catalogue.codepoints,
+        "icons/Symbols.codepoints"
+    );
     assert_eq!(catalogues[0].glyphs["delete"], '\u{e872}');
     assert!(set.icon_assets().is_empty());
     // The legacy table is the derived default catalogue.
     assert_eq!(set.icon("folder"), Some('\u{e2c7}'));
     assert_eq!(set.icons().len(), 2);
     // The v1 nondefault-style refusal holds on the verified side too.
-    let error = set.icon_catalogue("Fixture Symbols", "rounded").unwrap_err();
+    let error = set
+        .icon_catalogue("Fixture Symbols", "rounded")
+        .unwrap_err();
     assert!(matches!(error, assets::Error::Invalid(_)));
     assert!(error.to_string().contains("rounded"), "{error}");
-    assert!(set.icon_catalogue("Fixture Symbols", "default").unwrap().is_some());
+    assert!(
+        set.icon_catalogue("Fixture Symbols", "default")
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -518,7 +535,11 @@ fn v2_verified_sets_parse_every_catalogue_and_expose_owned_bytes() {
     let set = verified(temp.path(), "two");
     let default = set.icon_default().unwrap();
     assert_eq!(
-        (default.family.as_str(), default.style.as_str(), default.weight),
+        (
+            default.family.as_str(),
+            default.style.as_str(),
+            default.weight
+        ),
         ("Fixture Symbols", "rounded", 400)
     );
     let rounded = set
@@ -533,7 +554,11 @@ fn v2_verified_sets_parse_every_catalogue_and_expose_owned_bytes() {
         .unwrap();
     assert_eq!(outlined.catalogue.face_index, 1);
     assert_eq!(outlined.glyphs["delete"], '\u{e900}');
-    assert!(set.icon_catalogue("Fixture Symbols", "filled").unwrap().is_none());
+    assert!(
+        set.icon_catalogue("Fixture Symbols", "filled")
+            .unwrap()
+            .is_none()
+    );
     // The legacy table is the declared default catalogue.
     assert_eq!(set.icon("delete"), Some('\u{e872}'));
     assert_eq!(set.icons().len(), 2);
@@ -566,10 +591,8 @@ fn explicit_requests_resolve_by_descriptor_id_and_digest_never_current() {
         b"icon font",
         b"delete e872\nfolder e2c7\n",
     );
-    let digest: [u8; 32] =
-        blake3::hash(&fs::read(dir.join(MANIFEST_FILE)).unwrap()).into();
-    let second_digest: [u8; 32] =
-        blake3::hash(&fs::read(dir2.join(MANIFEST_FILE)).unwrap()).into();
+    let digest: [u8; 32] = blake3::hash(&fs::read(dir.join(MANIFEST_FILE)).unwrap()).into();
+    let second_digest: [u8; 32] = blake3::hash(&fs::read(dir2.join(MANIFEST_FILE)).unwrap()).into();
     let held = [
         config::atomic::open_directory(&first).unwrap(),
         config::atomic::open_directory(&second).unwrap(),
@@ -591,8 +614,7 @@ fn explicit_requests_resolve_by_descriptor_id_and_digest_never_current() {
         set_id: "one",
         manifest_blake3: Some([0u8; 32]),
     };
-    let error =
-        VerifiedSet::read_explicit(&held, &wrong, ReadLimits::default()).unwrap_err();
+    let error = VerifiedSet::read_explicit(&held, &wrong, ReadLimits::default()).unwrap_err();
     assert!(matches!(error, assets::Error::Mismatch(_)), "{error}");
     assert!(error.to_string().contains("digest"), "{error}");
     // The second root's digest selects the second root's copy.
@@ -647,8 +669,7 @@ fn explicit_requests_are_pinned_to_the_descriptor_and_refuse_substitution() {
     let temp = tempfile::tempdir().unwrap();
     let dir = fixture(temp.path(), "one");
     let root = config::atomic::open_directory(temp.path()).unwrap();
-    let digest: [u8; 32] =
-        blake3::hash(&fs::read(dir.join(MANIFEST_FILE)).unwrap()).into();
+    let digest: [u8; 32] = blake3::hash(&fs::read(dir.join(MANIFEST_FILE)).unwrap()).into();
     let request = ExplicitRequest {
         set_id: "one",
         manifest_blake3: Some(digest),

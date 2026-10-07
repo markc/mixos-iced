@@ -404,18 +404,13 @@ impl VerifiedSet {
     /// record. The declared default
     /// ([`icon_default`](Self::icon_default)) answers an omitted request
     /// instead.
-    pub fn icon_catalogue(
-        &self,
-        family: &str,
-        style: &str,
-    ) -> Result<Option<&ResolvedCatalogue>> {
+    pub fn icon_catalogue(&self, family: &str, style: &str) -> Result<Option<&ResolvedCatalogue>> {
         // Refuse what the metadata cannot express (a nondefault style on
         // a metadata-free v1 set), then answer by the resolved pair.
         self.icon_meta.select(family, style)?;
-        Ok(self
-            .catalogues
-            .iter()
-            .find(|resolved| resolved.catalogue.family == family && resolved.catalogue.style == style))
+        Ok(self.catalogues.iter().find(|resolved| {
+            resolved.catalogue.family == family && resolved.catalogue.style == style
+        }))
     }
 
     /// The owned, verified font bytes a catalogue's `face_index` selects

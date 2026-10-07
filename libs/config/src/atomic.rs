@@ -519,8 +519,7 @@ mod tests {
     #[test]
     fn open_nested_directory_walks_pins_and_refuses_links() {
         use std::io::Read;
-        let root =
-            std::env::temp_dir().join(format!("settings-nested-dir-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("settings-nested-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a/b")).unwrap();
         std::fs::write(root.join("a/b/file.txt"), b"pinned").unwrap();

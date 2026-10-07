@@ -249,10 +249,16 @@ fn validate_shared(manifest: &Manifest, id: &str) -> Result<()> {
             || file.path == MANIFEST_FILE
             || file.path == STYLESHEET_FILE
         {
-            return Err(invalid(format!("invalid locked asset path {:?}", file.path)));
+            return Err(invalid(format!(
+                "invalid locked asset path {:?}",
+                file.path
+            )));
         }
         if !paths.insert(file.path.as_str()) {
-            return Err(invalid(format!("duplicate locked asset path {:?}", file.path)));
+            return Err(invalid(format!(
+                "duplicate locked asset path {:?}",
+                file.path
+            )));
         }
         if file.bytes == 0 || file.bytes > MAX_FILE_BYTES {
             return Err(invalid(format!("invalid asset size for {:?}", file.path)));
@@ -267,7 +273,10 @@ fn validate_shared(manifest: &Manifest, id: &str) -> Result<()> {
             )));
         }
         if file.revision.is_empty() || file.licence.is_empty() {
-            return Err(invalid(format!("missing asset provenance for {:?}", file.path)));
+            return Err(invalid(format!(
+                "missing asset provenance for {:?}",
+                file.path
+            )));
         }
     }
     for (role, path) in &manifest.fonts {
@@ -277,12 +286,16 @@ fn validate_shared(manifest: &Manifest, id: &str) -> Result<()> {
             )));
         }
         if !path.ends_with(".ttf") && !path.ends_with(".otf") {
-            return Err(invalid(format!("font role {role:?} must name a font: {path:?}")));
+            return Err(invalid(format!(
+                "font role {role:?} must name a font: {path:?}"
+            )));
         }
     }
     for (role, family) in &manifest.font_families {
         if !manifest.fonts.contains_key(role) || !valid_family(family) {
-            return Err(invalid(format!("invalid font family metadata for role {role:?}")));
+            return Err(invalid(format!(
+                "invalid font family metadata for role {role:?}"
+            )));
         }
     }
     Ok(())
@@ -311,9 +324,7 @@ pub(crate) fn validate_v2(manifest: &ManifestV2, id: &str) -> Result<()> {
             default.weight
         )));
     }
-    if manifest.icon_catalogues.is_empty()
-        || manifest.icon_catalogues.len() > MAX_ICON_CATALOGUES
-    {
+    if manifest.icon_catalogues.is_empty() || manifest.icon_catalogues.len() > MAX_ICON_CATALOGUES {
         return Err(invalid("invalid icon catalogue count"));
     }
     let mut pairs = BTreeSet::new();
@@ -384,8 +395,7 @@ pub(crate) fn validate_v2(manifest: &ManifestV2, id: &str) -> Result<()> {
 
 /// A locked font file reference: a locked path naming a `.ttf`/`.otf` file.
 fn locked_font(files: &[AssetFile], path: &str) -> bool {
-    (path.ends_with(".ttf") || path.ends_with(".otf"))
-        && files.iter().any(|file| file.path == path)
+    (path.ends_with(".ttf") || path.ends_with(".otf")) && files.iter().any(|file| file.path == path)
 }
 
 /// A locked codepoints catalogue reference.
@@ -422,12 +432,11 @@ impl ParsedManifest {
         match value.get("schema").and_then(strict::Value::as_str) {
             Some(SCHEMA) => Ok(Self::V1(hydrate(&value)?)),
             Some(SCHEMA_V2) => {
-                let manifest: ManifestV2 = strict::from_value(&value).map_err(|source| {
-                    Error::Manifest {
+                let manifest: ManifestV2 =
+                    strict::from_value(&value).map_err(|source| Error::Manifest {
                         path: path.to_path_buf(),
                         source,
-                    }
-                })?;
+                    })?;
                 Ok(Self::V2(manifest))
             }
             Some(other) => Err(invalid(format!(
@@ -587,7 +596,9 @@ pub(crate) fn parse_codepoints(text: &str) -> Result<BTreeMap<String, char>> {
         let scalar = u32::from_str_radix(hex, 16)
             .map_err(|_| invalid(format!("invalid icon codepoint {hex:?} for {name:?}")))?;
         let character = char::from_u32(scalar).ok_or_else(|| {
-            invalid(format!("icon codepoint {hex:?} for {name:?} is not a Unicode scalar"))
+            invalid(format!(
+                "icon codepoint {hex:?} for {name:?} is not a Unicode scalar"
+            ))
         })?;
         if icons.insert(name.to_owned(), character).is_some() {
             return Err(invalid(format!("duplicate icon catalogue name {name:?}")));
@@ -671,7 +682,10 @@ mod tests {
             "fonts": { "sans": "fonts/a.ttf" }, "files": [entry("fonts/a.ttf")],
             "web_css": "x"
         }));
-        assert!(matches!(ParsedManifest::parse(&v1, path).unwrap(), ParsedManifest::V1(_)));
+        assert!(matches!(
+            ParsedManifest::parse(&v1, path).unwrap(),
+            ParsedManifest::V1(_)
+        ));
         let v2 = text(serde_json::json!({
             "schema": SCHEMA_V2, "set_id": "one",
             "fonts": { "sans": "fonts/a.ttf" }, "files": [entry("fonts/a.ttf")],
@@ -679,7 +693,10 @@ mod tests {
             "icon_default": { "family": "F", "style": "default", "weight": 400 },
             "icon_catalogues": []
         }));
-        assert!(matches!(ParsedManifest::parse(&v2, path).unwrap(), ParsedManifest::V2(_)));
+        assert!(matches!(
+            ParsedManifest::parse(&v2, path).unwrap(),
+            ParsedManifest::V2(_)
+        ));
         // An unsupported schema string is refused as an invalid manifest,
         // not hydrated as either struct.
         let other = text(serde_json::json!({
@@ -708,13 +725,25 @@ mod tests {
                 return text(json);
             }
             match key {
-                "default-not-declared" => json["icon_default"]["style"] = serde_json::json!("filled"),
+                "default-not-declared" => {
+                    json["icon_default"]["style"] = serde_json::json!("filled")
+                }
                 "weight-zero" => json["icon_default"]["weight"] = serde_json::json!(0),
                 "weight-too-big" => json["icon_default"]["weight"] = serde_json::json!(1001),
-                "face-too-big" => json["icon_catalogues"][0]["face_index"] = serde_json::json!(65536),
-                "unlocked-font" => json["icon_catalogues"][0]["font"] = serde_json::json!("fonts/Absent.ttf"),
-                "unlocked-codepoints" => json["icon_catalogues"][0]["codepoints"] = serde_json::json!("icons/Absent.codepoints"),
-                "bad-codepoints-suffix" => json["icon_catalogues"][0]["codepoints"] = serde_json::json!("icons/Rounded.ttf"),
+                "face-too-big" => {
+                    json["icon_catalogues"][0]["face_index"] = serde_json::json!(65536)
+                }
+                "unlocked-font" => {
+                    json["icon_catalogues"][0]["font"] = serde_json::json!("fonts/Absent.ttf")
+                }
+                "unlocked-codepoints" => {
+                    json["icon_catalogues"][0]["codepoints"] =
+                        serde_json::json!("icons/Absent.codepoints")
+                }
+                "bad-codepoints-suffix" => {
+                    json["icon_catalogues"][0]["codepoints"] =
+                        serde_json::json!("icons/Rounded.ttf")
+                }
                 _ => unreachable!("{key}"),
             }
             text(json)
@@ -745,7 +774,8 @@ mod tests {
             "unlocked-codepoints",
             "bad-codepoints-suffix",
         ] {
-            let parsed = ParsedManifest::parse(&v2(base.clone(), bad), Path::new("manifest.conf.mix"));
+            let parsed =
+                ParsedManifest::parse(&v2(base.clone(), bad), Path::new("manifest.conf.mix"));
             let error = match parsed {
                 Ok(parsed) => parsed.validate("one").unwrap_err(),
                 Err(error) => error,

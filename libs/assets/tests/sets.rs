@@ -298,11 +298,20 @@ fn select_skips_hashing_but_keeps_every_other_check() {
     // discover refuses.
     fs::write(root.join("sets/core/fonts/Sans.ttf"), b"font byteZ").unwrap();
     assert_eq!(lookup.select().unwrap().unwrap().set_id(), "core");
-    assert!(matches!(lookup.discover().unwrap_err(), assets::Error::Mismatch(_)));
+    assert!(matches!(
+        lookup.discover().unwrap_err(),
+        assets::Error::Mismatch(_)
+    ));
     // A size change fails both.
     fs::write(root.join("sets/core/fonts/Sans.ttf"), b"font bytes grown").unwrap();
-    assert!(matches!(lookup.select().unwrap_err(), assets::Error::Mismatch(_)));
-    assert!(matches!(lookup.discover().unwrap_err(), assets::Error::Mismatch(_)));
+    assert!(matches!(
+        lookup.select().unwrap_err(),
+        assets::Error::Mismatch(_)
+    ));
+    assert!(matches!(
+        lookup.discover().unwrap_err(),
+        assets::Error::Mismatch(_)
+    ));
     // No activated set falls through to None either way.
     let empty: Lookup = vec![temp.path().join("nothing")].into_iter().collect();
     assert!(empty.select().unwrap().is_none());
@@ -380,7 +389,11 @@ fn v2_declares_real_icon_metadata_and_selection() {
     // The declared default: an omitted icon request uses this.
     let default = set.icon_default().unwrap();
     assert_eq!(
-        (default.family.as_str(), default.style.as_str(), default.weight),
+        (
+            default.family.as_str(),
+            default.style.as_str(),
+            default.weight
+        ),
         ("Fixture Symbols", "rounded", 400)
     );
     // The catalogues carry the exact font/face_index/codepoints mapping.
@@ -406,7 +419,11 @@ fn v2_declares_real_icon_metadata_and_selection() {
             .face_index,
         1
     );
-    assert!(set.icon_catalogue("Fixture Symbols", "filled").unwrap().is_none());
+    assert!(
+        set.icon_catalogue("Fixture Symbols", "filled")
+            .unwrap()
+            .is_none()
+    );
     assert!(set.icon_catalogue("Other", "rounded").unwrap().is_none());
     // The declared non-font assets.
     let assets = set.icon_assets();
