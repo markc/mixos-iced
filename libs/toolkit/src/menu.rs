@@ -3000,9 +3000,10 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, Size::new(200.0, 200.0)),
         );
-        // Legacy geometry: rows 28/8/28.
-        assert_eq!(node.size().height, 64.0);
-        // The styled panel takes the prepared text: rows 30/8/30.
+        // Legacy geometry: every entry is a row, at the default 28px row
+        // height and the 8px separator: 28 + 8 + 28 + 28.
+        assert_eq!(node.size().height, 92.0);
+        // The styled panel takes the prepared text: rows 30/8/30/30.
         let mut panel = Panel::new(&items, Some(0)).text_style(TextStyle {
             font: Face(1),
             size: 14.0,
@@ -3016,7 +3017,7 @@ mod tests {
             &renderer,
             &layout::Limits::new(Size::ZERO, Size::new(200.0, 200.0)),
         );
-        assert_eq!(node.size().height, 68.0);
+        assert_eq!(node.size().height, 98.0);
     }
 
     #[test]
@@ -3054,6 +3055,19 @@ mod tests {
             cache,
             &mut renderer,
         );
+        // iced establishes overlays during the update pass, not the build:
+        // the rebuilt interface draws them after the next frame's event
+        // batch (a redraw request in a real loop). The cache keeps the open
+        // submenu and its selection, so no state is reset here.
+        update_ui(
+            &mut ui,
+            &[Event::Window(iced_core::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
         let mut draw = crate::test_renderer::LayoutRenderer::new();
         ui.draw(
             &mut draw,
@@ -3090,6 +3104,17 @@ mod tests {
             cache,
             &mut renderer,
         );
+        // The rebuilt interface draws the overlay after its update pass,
+        // exactly as a real frame does.
+        update_ui(
+            &mut ui,
+            &[Event::Window(iced_core::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
         let mut draw = crate::test_renderer::LayoutRenderer::new();
         ui.draw(
             &mut draw,
@@ -3104,14 +3129,15 @@ mod tests {
             "the retained submenu must relay the smaller rows: {:#?}",
             draw.quads
         );
-        // The same panel-relative press now lands on the separator row.
+        // A press that lands on the separator row (the small rows put it at
+        // window y 56..64) publishes nothing.
         messages.clear();
         update_ui(
             &mut ui,
             &[Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Left,
             ))],
-            mouse::Cursor::Available(Point::new(10.0, 65.0)),
+            mouse::Cursor::Available(Point::new(10.0, 60.0)),
             &mut renderer,
             &mut messages,
         );
