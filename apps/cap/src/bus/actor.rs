@@ -15,7 +15,7 @@ async fn long_capture_gets_its_reply_budget_when_the_answer_exists() {
     let call = tokio::spawn(async move {
         calling.call_with_headers_raw("cap-long-answer", "cap.capture", &BTreeMap::new(), "{}").await
     });
-    let Some(BoundedIncomingEvent::Command(command)) = incoming.recv().await else { panic!("actual capture command missing") };
+    let Some(BoundedIncomingEvent::Command(command)) = tokio::time::timeout(Duration::from_secs(5), incoming.recv()).await.expect("actual capture admission deadline") else { panic!("actual capture command missing") };
     let admission = Admission::new(1);
     let mut pending = HashMap::from([(1, Accepted::new(client.clone(), command, admission.try_acquire().unwrap(), Instant::now() - Duration::from_secs(60)))]);
     let mut retained = Outbox::new(1);
