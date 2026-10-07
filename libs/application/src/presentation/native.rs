@@ -17,9 +17,9 @@ use std::{
     },
     time::Instant,
 };
-mod mailbox;
 #[cfg(feature = "settings-cache")]
 mod cache;
+mod mailbox;
 pub use mailbox::Mailbox;
 #[cfg(test)]
 mod tests;
@@ -37,7 +37,10 @@ pub enum Event<T> {
     Prepared(Completion<T>),
     Fallback(settings::fallback::Request, Box<FallbackResult<T>>),
     #[cfg(feature = "settings-cache")]
-    Saved(settings::cache::Save, Result<settings::cache::WriteOutcome, Diagnostic>),
+    Saved(
+        settings::cache::Save,
+        Result<settings::cache::WriteOutcome, Diagnostic>,
+    ),
     /// Explicit retry of the latest activated cache capture; no retry timer.
     #[cfg(feature = "settings-cache")]
     RetryCache,
@@ -165,7 +168,11 @@ impl<T> Session<T> {
             },
             #[cfg(feature = "settings-cache")]
             Event::Saved(save, result) => {
-                if self.host.consumer().cache_save().as_ref()
+                if self
+                    .host
+                    .consumer()
+                    .cache_save()
+                    .as_ref()
                     .is_some_and(|current| current.same_capture(&save))
                 {
                     self.cache_fault = result.err();
@@ -190,9 +197,7 @@ impl<T> Session<T> {
         {
             self.fallback = None;
         }
-        if !self.fallback_attempted
-            && self.host.consumer().applied().is_none()
-        {
+        if !self.fallback_attempted && self.host.consumer().applied().is_none() {
             let request = self.host.consumer_mut().fallback_request();
             if request.is_some() {
                 self.fallback_attempted = true;
@@ -216,8 +221,10 @@ impl<T> Session<T> {
             .retry_deadline()
             .into_iter()
             .chain(
-                (now < self.bootstrap && !self.fallback_attempted && self.host.consumer().applied().is_none())
-                    .then_some(self.bootstrap),
+                (now < self.bootstrap
+                    && !self.fallback_attempted
+                    && self.host.consumer().applied().is_none())
+                .then_some(self.bootstrap),
             )
             .min();
         let deadline = if now < self.bootstrap && !self.host.consumer().is_confirmed() {
@@ -286,9 +293,9 @@ enum Running<T> {
     },
 }
 enum Done<T> {
-    Resource(Result<Event<T>, tokio::task::JoinError>),
+    Resource(Box<Result<Event<T>, tokio::task::JoinError>>),
     #[cfg(feature = "settings-cache")]
-    Save(Result<cache::Result, tokio::task::JoinError>),
+    Save(Box<Result<cache::Result, tokio::task::JoinError>>),
 }
 fn valid(resource: &Resource, jobs: &Jobs) -> bool {
     match resource {
@@ -378,7 +385,9 @@ impl<T: Send + 'static> Worker<T> {
         {
             self.queued = None;
         }
-        if let Some(Running::Resource { capture, cancel, .. }) = &self.running
+        if let Some(Running::Resource {
+            capture, cancel, ..
+        }) = &self.running
             && !valid(capture, &jobs)
         {
             cancel.store(true, Ordering::Release);
@@ -449,16 +458,19 @@ impl<T: Send + 'static> Worker<T> {
             Resource::Fallback(request) => {
                 let request = *request;
                 let mut presentation = None;
-                let prepared = request.prepare_with_cache(|| {
-                    #[cfg(feature = "settings-cache")]
-                    if let Some((directory, target)) = cache {
-                        return settings::cache::load_for(&directory, &target).map(Some);
-                    }
-                    Ok(None)
-                }, |snapshot, context, _| {
-                    presentation = Some(prepare(snapshot, context, &cancelled, &build)?);
-                    Ok(())
-                });
+                let prepared = request.prepare_with_cache(
+                    || {
+                        #[cfg(feature = "settings-cache")]
+                        if let Some((directory, target)) = cache {
+                            return settings::cache::load_for(&directory, &target).map(Some);
+                        }
+                        Ok(None)
+                    },
+                    |snapshot, context, _| {
+                        presentation = Some(prepare(snapshot, context, &cancelled, &build)?);
+                        Ok(())
+                    },
+                );
                 Event::Fallback(
                     request,
                     Box::new(
@@ -488,14 +500,14 @@ impl<T: Send + 'static> Worker<T> {
             }
             result = async {
                 match self.running.as_mut().expect("guarded job") {
-                    Running::Resource { task, .. } => Done::Resource(task.await),
+                    Running::Resource { task, .. } => Done::Resource(Box::new(task.await)),
                     #[cfg(feature = "settings-cache")]
-                    Running::Save { task, .. } => Done::Save(task.await),
+                    Running::Save { task, .. } => Done::Save(Box::new(task.await)),
                 }
             }, if self.running.is_some() => {
                 let running = self.running.take().unwrap();
                 let event = match (running, result) {
-                    (Running::Resource { capture, .. }, Done::Resource(result)) => match result {
+                    (Running::Resource { capture, .. }, Done::Resource(result)) => match *result {
                     Ok(event) => event,
                     Err(error) => {
                         let fault = Diagnostic::new("preparation_failed", "worker", error.to_string());
@@ -507,7 +519,7 @@ impl<T: Send + 'static> Worker<T> {
                     },
                     #[cfg(feature = "settings-cache")]
                     (Running::Save { save, target, .. }, Done::Save(result)) => {
-                        let result = match result {
+                        let result = match *result {
                             Ok(result) => {
                                 if let Some(cache) = &mut self.cache {
                                     cache.finish(&target, result.writer);
@@ -541,9 +553,14 @@ impl<T: Send + 'static> Worker<T> {
         }
         let mut fault = None;
         while self.running.is_some() || self.cache.as_ref().is_some_and(cache::Lane::pending) {
-            let event = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.next())
-                .await.map_err(|_| Diagnostic::new("cache_drain_timeout", "cache", "Shutdown budget expired"))?
-                .take().expect("worker event");
+            let event =
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.next())
+                    .await
+                    .map_err(|_| {
+                        Diagnostic::new("cache_drain_timeout", "cache", "Shutdown budget expired")
+                    })?
+                    .take()
+                    .expect("worker event");
             if let Event::Saved(_, result) = event {
                 fault = result.err();
             }

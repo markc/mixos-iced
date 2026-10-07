@@ -304,7 +304,10 @@ impl Consumer {
     #[cfg(feature = "cache")]
     pub fn cache_target(&self) -> crate::cache::Target {
         crate::cache::Target::capture(
-            self.owner, self.binding.clone(), self.context.clone(), self.shell,
+            self.owner,
+            self.binding.clone(),
+            self.context.clone(),
+            self.shell,
         )
     }
     #[cfg(feature = "cache")]

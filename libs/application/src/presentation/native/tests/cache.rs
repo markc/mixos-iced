@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
-use settings::{cache::{self, WriteOutcome, Writer}, fallback::PresentationKind};
+use settings::{
+    cache::{self, WriteOutcome, Writer},
+    fallback::PresentationKind,
+};
 use std::time::Duration;
 
 fn activated() -> Session<u64> {
@@ -10,14 +13,21 @@ fn activated() -> Session<u64> {
     session
 }
 async fn next(worker: &mut Worker<u64>) -> Event<u64> {
-    tokio::time::timeout(Duration::from_secs(5), worker.next()).await.unwrap().take().unwrap()
+    tokio::time::timeout(Duration::from_secs(5), worker.next())
+        .await
+        .unwrap()
+        .take()
+        .unwrap()
 }
 fn cache_worker(directory: &std::path::Path) -> Worker<u64> {
     install_fonts();
     Worker::offline_with_cache(directory.to_owned(), |_, snapshot| Ok(snapshot.revision.0))
 }
 fn cache_path(directory: &std::path::Path) -> std::path::PathBuf {
-    directory.join(format!("{}.json", settings::digest(&(binding(), "app:ced", false)).unwrap()))
+    directory.join(format!(
+        "{}.json",
+        settings::digest(&(binding(), "app:ced", false)).unwrap()
+    ))
 }
 
 #[tokio::test]
@@ -38,11 +48,20 @@ async fn applied_capture_survives_loss_and_cold_cache_does_not_seed_authority() 
     assert!(matches!(&saved, Event::Saved(_, Ok(WriteOutcome::Written))));
     session.handle(saved, None);
     assert!(session.cache_fault().is_none());
-    assert_eq!(cache::load(&root, session.host.consumer()).unwrap().snapshot().revision, Revision(1));
+    assert_eq!(
+        cache::load(&root, session.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(1)
+    );
     drop(worker);
 
     let mut cold = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
-    assert!(Instant::now() < cold.bootstrap, "resources start before authority budget expires");
+    assert!(
+        Instant::now() < cold.bootstrap,
+        "resources start before authority budget expires"
+    );
     let mut cold_worker = cache_worker(&root);
     let (_, jobs) = cold.handle(Event::Wake, None);
     assert!(jobs.fallback.is_some());
@@ -74,13 +93,21 @@ async fn unavailable_cached_resources_fall_through_to_prepared_embedded() {
     let dir = tempfile::tempdir().unwrap();
     let state = activated();
     let mut writer = Writer::open(dir.path(), state.host.consumer()).unwrap();
-    writer.write(&state.host.consumer().cache_save().unwrap()).unwrap();
+    writer
+        .write(&state.host.consumer().cache_save().unwrap())
+        .unwrap();
     drop(writer);
     install_fonts();
     let mut worker = Worker::offline_with_cache(dir.path().to_owned(), |_, snapshot| {
         if snapshot.revision == Revision(1) {
-            Err(Diagnostic::new("fixture_missing_resource", "resource", "missing"))
-        } else { Ok(snapshot.revision.0) }
+            Err(Diagnostic::new(
+                "fixture_missing_resource",
+                "resource",
+                "missing",
+            ))
+        } else {
+            Ok(snapshot.revision.0)
+        }
     });
     let mut cold = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     let (_, jobs) = cold.handle(Event::Wake, None);
@@ -88,7 +115,10 @@ async fn unavailable_cached_resources_fall_through_to_prepared_embedded() {
     cold.handle(next(&mut worker).await, None);
     assert_eq!(cold.host.kind(), Some(PresentationKind::Embedded));
     assert_eq!(*cold.host.presentation().unwrap().content(), 0);
-    assert_eq!(cold.fallback_diagnostics()[0].code, "fixture_missing_resource");
+    assert_eq!(
+        cold.fallback_diagnostics()[0].code,
+        "fixture_missing_resource"
+    );
 }
 
 #[tokio::test]
@@ -102,16 +132,30 @@ async fn failed_write_retains_lock_and_retries_only_on_explicit_request() {
     worker.replace(jobs);
     session.handle(next(&mut worker).await, Some(1));
     assert!(session.cache_fault().is_some());
-    assert!(Writer::open(dir.path(), session.host.consumer()).is_err(), "failed write must keep its lock");
+    assert!(
+        Writer::open(dir.path(), session.host.consumer()).is_err(),
+        "failed write must keep its lock"
+    );
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     worker.replace(jobs);
-    assert!(tokio::time::timeout(Duration::from_millis(30), worker.next()).await.is_err(), "no failure retry loop");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), worker.next())
+            .await
+            .is_err(),
+        "no failure retry loop"
+    );
     std::fs::remove_dir(&path).unwrap();
     let (_, jobs) = session.handle(Event::RetryCache, Some(1));
     worker.replace(jobs);
     session.handle(next(&mut worker).await, Some(1));
     assert!(session.cache_fault().is_none());
-    assert_eq!(cache::load(dir.path(), session.host.consumer()).unwrap().snapshot().revision, Revision(1));
+    assert_eq!(
+        cache::load(dir.path(), session.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(1)
+    );
 }
 
 #[test]
@@ -120,11 +164,23 @@ fn stale_save_reports_cannot_set_or_clear_current_diagnostics() {
     let old = session.host.consumer().cache_save().unwrap();
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let current = session.host.consumer().cache_save().unwrap();
-    session.handle(Event::Saved(current, Err(Diagnostic::new("current_fault", "cache", "failed"))), Some(1));
-    session.handle(Event::Saved(old.clone(), Ok(WriteOutcome::Written)), Some(1));
+    session.handle(
+        Event::Saved(
+            current,
+            Err(Diagnostic::new("current_fault", "cache", "failed")),
+        ),
+        Some(1),
+    );
+    session.handle(
+        Event::Saved(old.clone(), Ok(WriteOutcome::Written)),
+        Some(1),
+    );
     assert_eq!(session.cache_fault().unwrap().code, "current_fault");
     let mut replacement = activated();
-    replacement.handle(Event::Saved(old, Err(Diagnostic::new("old_fault", "cache", "stale"))), Some(1));
+    replacement.handle(
+        Event::Saved(old, Err(Diagnostic::new("old_fault", "cache", "stale"))),
+        Some(1),
+    );
     assert!(replacement.cache_fault().is_none());
 }
 
@@ -144,7 +200,13 @@ async fn producer_replacement_retires_writer_after_inflight_save() {
     let saved = next(&mut worker).await;
     assert!(matches!(&saved, Event::Saved(_, Ok(WriteOutcome::Written))));
     new.handle(saved, Some(1));
-    assert_eq!(cache::load(dir.path(), new.host.consumer()).unwrap().snapshot().revision, Revision(2));
+    assert_eq!(
+        cache::load(dir.path(), new.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(2)
+    );
 }
 
 #[tokio::test]
@@ -157,6 +219,15 @@ async fn bounded_shutdown_drains_the_latest_activated_capture() {
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     worker.replace(jobs);
-    worker.flush_cache(Instant::now() + Duration::from_secs(5)).await.unwrap();
-    assert_eq!(cache::load(dir.path(), session.host.consumer()).unwrap().snapshot().revision, Revision(2));
+    worker
+        .flush_cache(Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        cache::load(dir.path(), session.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(2)
+    );
 }

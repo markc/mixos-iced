@@ -10,9 +10,12 @@ fn install_fonts() {
     INSTALLED.call_once(|| {
         toolkit::fonts::install(
             FontSet::new().sans(
-                include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").as_slice(),
-            ), None,
-        ).unwrap();
+                include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf")
+                    .as_slice(),
+            ),
+            None,
+        )
+        .unwrap();
     });
 }
 

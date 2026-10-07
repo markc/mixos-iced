@@ -19,7 +19,14 @@ pub(super) struct Lane {
 }
 impl Lane {
     pub fn new(directory: PathBuf) -> Self {
-        Self { directory, target: None, writer: None, last: None, queued: None, retry: 0 }
+        Self {
+            directory,
+            target: None,
+            writer: None,
+            last: None,
+            queued: None,
+            retry: 0,
+        }
     }
 
     pub fn replace(&mut self, target: &Target, save: Option<&Save>, retry: u64) {
@@ -31,7 +38,11 @@ impl Lane {
         }
         self.target = Some(target.clone());
         if let Some(save) = save
-            && (self.retry != retry || self.last.as_ref().is_none_or(|last| !last.same_capture(save)))
+            && (self.retry != retry
+                || self
+                    .last
+                    .as_ref()
+                    .is_none_or(|last| !last.same_capture(save)))
         {
             self.last = Some(save.clone());
             self.queued = Some(save.clone());
@@ -56,18 +67,33 @@ impl Lane {
             let mut writer = match writer {
                 Some(writer) => writer,
                 None => match config::atomic::create_directory(&directory)
-                    .map_err(|error| Diagnostic::new("cache_provision_failed", "cache", error.to_string()))
-                    .and_then(|_| Writer::open_for(&directory, &open_target)) {
+                    .map_err(|error| {
+                        Diagnostic::new("cache_provision_failed", "cache", error.to_string())
+                    })
+                    .and_then(|_| Writer::open_for(&directory, &open_target))
+                {
                     Ok(writer) => writer,
-                    Err(error) => return Result { writer: None, outcome: Err(error) },
+                    Err(error) => {
+                        return Result {
+                            writer: None,
+                            outcome: Err(error),
+                        };
+                    }
                 },
             };
             let outcome = writer.write(&save);
             // Keep the lock and attempted-serial fence even on an ambiguous
             // or failed write. Only producer retirement releases them.
-            Result { writer: Some(writer), outcome }
+            Result {
+                writer: Some(writer),
+                outcome,
+            }
         });
-        Some(Running::Save { save: capture, target, task })
+        Some(Running::Save {
+            save: capture,
+            target,
+            task,
+        })
     }
 
     pub fn finish(&mut self, target: &Target, writer: Option<Writer>) {

@@ -75,7 +75,12 @@ fn retained_fallback_does_not_seed_revision_fences_and_live_read_supersedes_it()
         Err(Diagnostic::new("read_timeout", "native", "Deadline")),
     );
     let request = state.fallback_request().unwrap();
-    let prepared = request.prepare_with_cache(|| panic!("valid retained data must precede cache I/O"), resources).unwrap();
+    let prepared = request
+        .prepare_with_cache(
+            || panic!("valid retained data must precede cache I/O"),
+            resources,
+        )
+        .unwrap();
     assert_eq!(prepared.kind(), PresentationKind::Retained);
     assert!(state.complete_fallback(&request, Ok(prepared)));
     assert!(state.acknowledge(&state.pending().unwrap().clone()));

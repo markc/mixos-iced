@@ -97,7 +97,10 @@ impl Request {
         }
         let cached = match cache() {
             Ok(candidate) => candidate,
-            Err(error) => { diagnostics.push(error); None }
+            Err(error) => {
+                diagnostics.push(error);
+                None
+            }
         };
         if let Some(candidate) = cached {
             let check = if candidate.snapshot.binding == self.binding

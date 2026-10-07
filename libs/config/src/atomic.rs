@@ -51,7 +51,9 @@ fn directory(path: &Path, create: bool) -> io::Result<File> {
             }
             fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         }
-        if fd < 0 { return Err(io::Error::last_os_error()); }
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
         directory = unsafe { File::from_raw_fd(fd) };
     }
     Ok(directory)

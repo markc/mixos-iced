@@ -93,9 +93,13 @@ pub struct Target {
 }
 impl Target {
     pub(crate) fn capture(owner: u64, binding: Binding, context: String, shell: bool) -> Self {
-        Self { owner, binding, context, shell }
+        Self {
+            owner,
+            binding,
+            context,
+            shell,
+        }
     }
-
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
