@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Opt-in `settings` shares captured worker preparation and synchronous fenced
+  whole-presentation activation/acknowledgement, including deliberate app content.
+  Superseded work cannot swap; resource failures retain the last presentation.
+  The bridge owns no transport, runtime, receiver or timer.
+
 ## 0.1.1
 
 - Opt-in `test-support` exposes the pinned UI simulator to app tests through

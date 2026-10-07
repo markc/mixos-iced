@@ -493,6 +493,55 @@ pub fn font_for(
     }
 }
 
+/// A checked font selection for an immutable prepared presentation. This does
+/// not load files or mutate role bindings. A generic rescue is explicit evidence,
+/// and is allowed only when the host opts in (for example embedded defaults).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontChoice {
+    Declared,
+    InstalledRole,
+    Generic,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FontSelection {
+    pub font: Font,
+    pub choice: FontChoice,
+}
+pub fn try_font_for(
+    family: &str,
+    fallbacks: &[String],
+    requested_weight: u16,
+    monospace: bool,
+    preferred_role: Option<Role>,
+    allow_generic: bool,
+) -> Result<FontSelection, &'static str> {
+    if !(1..=1000).contains(&requested_weight) { return Err("font weight must be in 1..=1000"); }
+    let preferred = preferred_role.and_then(|role| installed().and_then(|fonts| fonts.family(role)));
+    let mut system = font_system().write().map_err(|_| "font system lock poisoned")?;
+    let raw = system.raw();
+    // Canonicalise to a name actually in the database before interning: varying
+    // case in repeated settings must not allocate unbounded duplicate names.
+    let canonical = |name: &str| {
+        raw.db().faces().flat_map(|face| &face.families)
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+            .map(|(candidate, _)| candidate.clone())
+    };
+    let selected = preferred.and_then(canonical).map(|name| (name, FontChoice::InstalledRole))
+        .or_else(|| std::iter::once(family).chain(fallbacks.iter().map(String::as_str))
+            .find_map(canonical).map(|name| (name, FontChoice::Declared)))
+        .or_else(|| {
+            if !allow_generic { return None; }
+            let generic = raw.db().family_name(&if monospace { fontdb::Family::Monospace } else { fontdb::Family::SansSerif });
+            canonical(generic).map(|name| (name, FontChoice::Generic))
+        });
+    let (name, choice) = selected.ok_or("no declared or permitted generic font family is available")?;
+    let has_light = family_has_light(raw, &name);
+    Ok(FontSelection {
+        font: Font { family: font::Family::Name(intern(&name)), weight: weight(effective_weight(requested_weight, has_light)), ..Font::DEFAULT },
+        choice,
+    })
+}
+
 /// fontdb indexes a variable face at its default weight, usually 400.
 /// Read its actual `wght` range before deciding that Light is unavailable.
 fn family_has_light(system: &mut cosmic_text::FontSystem, family: &str) -> bool {

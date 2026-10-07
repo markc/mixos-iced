@@ -32,6 +32,7 @@ design = { workspace = true }
 iced_core = { workspace = true }
 iced_widget = { workspace = true }
 toolkit = { workspace = true }
+settings = { workspace = true }
 
 [dev-dependencies]
 # Fixture asset sets are written the way the installer writes them: a

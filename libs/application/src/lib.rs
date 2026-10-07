@@ -16,6 +16,9 @@ pub use iced_test as test;
 #[cfg(feature = "tiny-skia")]
 pub use iced_tiny_skia as cpu;
 
+#[cfg(feature = "settings")]
+pub mod presentation;
+
 #[cfg(feature = "native-grid")]
 pub mod native_grid;
 

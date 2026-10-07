@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4
+
+- Prepared immutable typography defaults and shared text/input builders let
+  hosts change fonts, logical text size and line height without startup captures.
+- Checked registered-font selection reports declared, installed-role or explicit
+  generic choices, and refuses unavailable chains instead of hiding failure.
+
 ## 0.2.3
 
 - Honour Light (300) in variable fonts whose weight axis covers it, even when

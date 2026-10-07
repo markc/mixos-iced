@@ -54,9 +54,12 @@ pub fn tokens(design: &impl Resolved) -> Tokens {
 /// surface. Keep the authored hue where it already clears AA; otherwise blend
 /// towards the design's base foreground until the status is readable.
 pub fn semantic(design: &impl Resolved) -> toolkit::tokens::Semantic {
-    let colours = &design.dictionary().colours;
+    semantic_colours(&design.dictionary().colours)
+}
+
+pub(crate) fn semantic_colours(colours: &ResolvedColours) -> toolkit::tokens::Semantic {
     let palette = palette(colours);
-    let fallback = toolkit::Theme::new(tokens(design)).semantic();
+    let fallback = toolkit::Theme::new(Tokens::new(palette, Metrics::DEFAULT)).semantic();
     let status = |name: &str, default| {
         let Some(value) = colours.primitives.get(name) else {
             return default;
@@ -182,6 +185,25 @@ pub fn palette(colours: &ResolvedColours) -> Palette {
 /// The metrics. Every field the design does not author keeps toolkit's
 /// default or is derived from a field it does, as the module table says.
 pub fn metrics(dictionary: &ResolvedDictionary, typography: &ResolvedTypography) -> Metrics {
+    let ui = design::active_typography(Some(typography), TypographyRole::Ui);
+    let small = design::active_typography(Some(typography), TypographyRole::Small);
+    let label = typography
+        .button(ButtonTypographyKey {
+            variant: ButtonVariant::Default,
+            size: ButtonSize::Md,
+            part: ButtonPart::Label,
+        })
+        .record;
+    metrics_from_records(dictionary, ui, small, label.weight)
+}
+
+/// Shared metric mapping for compiler artifacts and authority read projections.
+pub(crate) fn metrics_from_records(
+    dictionary: &ResolvedDictionary,
+    ui: &design::ResolvedTypeRecord,
+    small: &design::ResolvedTypeRecord,
+    label_weight: u16,
+) -> Metrics {
     let default = Metrics::DEFAULT;
     let px = |name: &str| {
         dictionary
@@ -199,15 +221,6 @@ pub fn metrics(dictionary: &ResolvedDictionary, typography: &ResolvedTypography)
     };
     let [xs, sm, md, lg, xl] = SPACING_STEPS.map(|index| step("spacing", index));
     let radius = px("radius").unwrap_or(default.radius.md);
-    let ui = design::active_typography(Some(typography), TypographyRole::Ui);
-    let small = design::active_typography(Some(typography), TypographyRole::Small);
-    let label = typography
-        .button(ButtonTypographyKey {
-            variant: ButtonVariant::Default,
-            size: ButtonSize::Md,
-            part: ButtonPart::Label,
-        })
-        .record;
     let body = ui.font_size as f32;
     Metrics {
         spacing: Spacing {
@@ -236,7 +249,7 @@ pub fn metrics(dictionary: &ResolvedDictionary, typography: &ResolvedTypography)
         },
         weight: Weights {
             light: ui.weight,
-            regular: label.weight,
+            regular: label_weight,
             medium: default.weight.medium,
             bold: default.weight.bold,
         },

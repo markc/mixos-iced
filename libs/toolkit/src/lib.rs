@@ -69,6 +69,7 @@ pub mod toggle;
 pub mod tokens;
 pub mod tree;
 pub mod typed_input;
+pub mod typography;
 pub mod virtual_list;
 pub mod waveform;
 pub mod wrap;

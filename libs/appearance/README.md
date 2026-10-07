@@ -94,6 +94,34 @@ the `IconFont`. Without a set the sources are empty and `origin` says why
 set's italic roles (`serif_italic`, `mono_italic`) have no toolkit role and
 are not registered.
 
+## Settings projections
+
+`settings::Projection::new(&effective)` consumes settingsd's already compiled
+read projection. It validates the supported schema, required palette/metric/type
+inputs, finite ranges and complete unique button coordinates before preparing
+anything usable. It shares the existing palette, semantic and metric mapping;
+it does not compile source or reconstruct accepted design ownership. Its
+read-only dictionary has render values without recipes or source provenance.
+
+`Projection::prepare` asks the host to resolve every type record. The complete
+immutable `Prepared` result exposes toolkit tokens, a toolkit theme, prepared
+typography, motion preference and font-choice evidence. `prepare_registered`
+checks already registered process fonts off the UI loop, without loading an
+asset set or changing generic role bindings. Custom sources require an available
+declared chain; package data may use an explicitly reported generic rescue.
+
+Text scale multiplies logical text sizes and authored logical-pixel line heights;
+density multiplies spacing. Radii and border widths retain their design values.
+`toolkit::typography::TextStyle::text` and `input` apply current font/size/line
+height together. Views borrow the current roles, avoiding captured startup font
+defaults. The motion flag is available to host-owned animation policy.
+
+The initial adapter maps standard toolkit defaults. It validates compiled button
+assignments and resources, but does not claim to implement every authored button
+cell's geometry/interaction style. Dynamic font installation, artifact resources,
+all widget-role migrations, Ced/Quoin wiring and presentation evidence remain
+separate implementation work.
+
 ## Testing
 
 `cargo test -p appearance`: the mapping on every shipped scheme and mode,
