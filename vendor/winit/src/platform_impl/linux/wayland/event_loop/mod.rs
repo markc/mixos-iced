@@ -33,7 +33,6 @@ pub use proxy::EventLoopProxy;
 use sink::EventSink;
 
 use super::state::{WindowCompositorUpdate, WinitState};
-use super::window::state::FrameCallbackState;
 use super::{DeviceId, WaylandError, WindowId, logical_to_physical_rounded};
 
 type WaylandDispatcher = calloop::Dispatcher<'static, WaylandSource<WinitState>, WinitState>;
@@ -463,12 +462,10 @@ impl<T: 'static> EventLoop<T> {
                 let mut window =
                     state.windows.get_mut().get_mut(window_id).unwrap().lock().unwrap();
 
-                if window.frame_callback_state() == FrameCallbackState::Requested {
+                if !window.prepare_redraw() {
                     return None;
                 }
 
-                // Reset the frame callbacks state.
-                window.frame_callback_reset();
                 let mut redraw_requested =
                     window_requests.get(window_id).unwrap().take_redraw_requested();
 

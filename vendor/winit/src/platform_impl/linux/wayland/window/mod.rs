@@ -296,6 +296,23 @@ impl Window {
         self.window_state.lock().unwrap().request_frame_callback();
     }
 
+    pub fn request_redraw_after_present_failure(&self) {
+        let granted = {
+            let mut state = self.window_state.lock().unwrap();
+            let granted = state.grant_present_retry();
+            if granted {
+                // Publish permission and redraw together under the state lock.
+                // Dispatch must not consume permission before the bit is set.
+                self.window_requests.redraw_requested.store(true, Ordering::Relaxed);
+            }
+            granted
+        };
+        if granted {
+            // Wake even when an earlier redraw already waits at the throttle.
+            self.event_loop_awakener.ping();
+        }
+    }
+
     #[inline]
     pub fn outer_size(&self) -> PhysicalSize<u32> {
         let window_state = self.window_state.lock().unwrap();

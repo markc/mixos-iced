@@ -73,6 +73,10 @@ impl<T> EventLoopBuilderExtWayland for EventLoopBuilder<T> {
 
 /// Additional methods on [`Window`] that are specific to Wayland.
 pub trait WindowExtWayland {
+    /// Request one recovery redraw after a recoverable presentation failure
+    /// following `pre_present_notify`. Retains and reuses the outstanding
+    /// pacing callback; creates no callback, commit or presentation receipt.
+    fn request_redraw_after_present_failure(&self);
     /// Request feedback for the immediately following commit on this window's
     /// real surface. Call synchronously after painting and before buffer commit.
     /// Outstanding native objects and retained receipt copies share a bounded
@@ -112,6 +116,13 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn request_redraw_after_present_failure(&self) {
+        match &self.window {
+            crate::platform_impl::Window::Wayland(window) => window.request_redraw_after_present_failure(),
+            #[cfg(x11_platform)]
+            _ => self.request_redraw(),
+        }
+    }
     fn request_presentation_feedback(
         &self,
     ) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {
