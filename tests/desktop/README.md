@@ -83,3 +83,18 @@ mix tests/desktop/suite.mix [--only a,b] [--skip a,b] [--scales 1,2.5] [--bin PA
 ```
 
 Each script's header documents its checks and exit codes.
+
+The standalone `scene_editor_settings_gate.mix` owns separate compositor and
+application brokers. It checks actual light/dark frames, selection and dialogue
+retention, checked cache and embedded fallback, a 65-second cold outage with
+same-window recovery, initial collision forwarding and bounded shutdown. Run
+it with the repository root and a combined build's binary directory:
+
+```
+mix tests/desktop/scene_editor_settings_gate.mix /path/to/mixos /path/to/mixos/target/release-fast
+```
+
+It uses `settings_host_lib.mix` with the Ced settings gate. These settings gates
+run independently of `suite.mix`; they require `settingsd`, `noded`, the app,
+compd and the testkit binaries. Scene authority mutation and complete shell
+geometry are separate checks.

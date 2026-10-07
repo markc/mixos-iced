@@ -263,6 +263,7 @@ impl App {
     }
     fn start(&mut self, verb: &str, args: Value, kind: Kind, reply: Option<u64>) -> Task<Message> {
         if !self.bus.connected() {
+            self.status = label("waiting");
             if let Some(id) = reply {
                 self.reply_error(id, "TRANSPORT", "Bus is disconnected");
             }
@@ -522,7 +523,12 @@ impl App {
                 Task::batch([refresh, self.show(Some(id))])
             }
             "scene-editor.action" => {
-                if self.dialog.is_some() || self.operation.is_some() || !self.bus.connected() {
+                if !self.bus.connected() {
+                    self.status = label("waiting");
+                    self.reply_error(id, "TRANSPORT", "Bus is disconnected");
+                    return Task::none();
+                }
+                if self.dialog.is_some() || self.operation.is_some() {
                     self.reply_error(id, "BUSY", "an action or dialogue is already pending");
                     return Task::none();
                 }
@@ -765,9 +771,7 @@ impl App {
                     }
                 }
             }
-            Message::Bus(Delivery::Connected) => {
-                self.refresh()
-            }
+            Message::Bus(Delivery::Connected) => self.refresh(),
             Message::Bus(Delivery::Disconnected) => {
                 self.status = label("waiting");
                 Task::none()
@@ -1263,10 +1267,14 @@ mod tests {
         ))));
         assert!(!app.quitting);
         let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
-        assert!(!app.quitting, "unsolicited late completion must not close a window");
+        assert!(
+            !app.quitting,
+            "unsolicited late completion must not close a window"
+        );
         let mut untouched = super::tests::app();
         let _ = untouched.update(Message::Bus(Delivery::Refused {
-            name_taken: true, message: "already registered".into(),
+            name_taken: true,
+            message: "already registered".into(),
         }));
         let _ = untouched.update(Message::Bus(Delivery::Forwarded(Ok(()))));
         assert!(untouched.quitting);

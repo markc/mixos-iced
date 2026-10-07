@@ -57,7 +57,10 @@ pub fn enabled(action: &Action, c: &Context<'_>) -> bool {
     if c.modal {
         return false;
     }
-    if matches!(action, Action::View(_) | Action::Edge(_) | Action::Quit | Action::Shortcuts | Action::About) {
+    if matches!(
+        action,
+        Action::View(_) | Action::Edge(_) | Action::Quit | Action::Shortcuts | Action::About
+    ) {
         return true;
     }
     if c.busy {
