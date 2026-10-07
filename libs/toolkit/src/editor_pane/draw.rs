@@ -850,17 +850,14 @@ fn quad<R: iced_core::Renderer>(r: &mut R, bounds: Rectangle, colour: Color) {
 /// is handed: its own row box with a cell and half a line of slack on every
 /// side, cut to `layer` when the box lies inside it.
 ///
-/// iced_tiny_skia 0.14.1 (pinned in Cargo.toml) never pixel-clips a cached
-/// text by this rectangle; it tests it against layer ∩ damage. A text whose
-/// rectangle misses is skipped; one whose rectangle is not inside first
-/// clears and refills a window-sized clip mask. With the whole text area here
-/// every text on screen paid that on every partial frame (~150 ms a frame; a
-/// `ced.action` waited behind it — ced first save, 2026-09-26). Cut to the
-/// layer, a full-layer frame masks only the boxes that really cross its edge
-/// (the partial last row, a line running past the right edge), and the mask
-/// clips only those. Boxes flush with the text area's own edge (column 0, the
-/// top row) are inside it, so they are NOT layer-clipped: ink overhanging into
-/// the gutter padding or above the widget is drawn unclipped.
+/// The vendored tiny-skia renderer tests cached text against layer ∩ damage.
+/// A missing intersection skips the text; a rectangle outside those bounds
+/// uses the shared clip mask. That mask caches its bounds, so using a mask does
+/// not imply clearing a window-sized allocation for each text run. Row-sized
+/// boxes keep intersection decisions local to the damaged text. A full-layer
+/// frame masks boxes crossing its edge (the partial last row or a long line).
+/// Boxes inside the text area need no layer clip; ink can overhang into the
+/// gutter padding or above the widget.
 ///
 /// The slack is the whole budget for ink outside a text's box: each damage
 /// rectangle is filled with the background before drawing, so ink overhanging
@@ -1055,16 +1052,14 @@ mod tests {
         Palette::from(crate::Tokens::default())
     }
 
-    /// iced_tiny_skia 0.14.1's per-text decision for a damage rectangle
+    /// The vendored tiny-skia renderer's cached-text geometry decision
     /// (`Renderer::draw` → `Engine::draw_text`, `Text::Cached`): the clip
     /// rectangle is tested against layer ∩ damage; one that meets it is
-    /// drawn, and one that is not inside it first clears and refills a
-    /// window-sized clip mask. (drawn, masked)
+    /// drawn, and one that is not inside it uses the shared clip mask.
+    /// Returns (drawn, masked), without measuring mask rebuilding or time.
     ///
-    /// Mirrors iced_tiny_skia 0.14.1 `lib.rs` 79-114 (per damage rectangle:
-    /// background fill, layer ∩ damage) and `engine.rs` 418-430 (the
-    /// `Text::Cached` intersects / is_within test) with 836 (`adjust_clip_mask`).
-    /// Re-audit against those lines when the `=0.14.1` pin moves.
+    /// Mirrors `Renderer::draw`'s layer/damage intersection and
+    /// `Engine::draw_text`'s Text::Cached intersects/is_within decisions.
     fn decide(t: &Drawn, damage: &Rectangle) -> (bool, bool) {
         let Some(bounds) = t.layer.intersection(damage) else {
             return (false, false);
@@ -1080,11 +1075,9 @@ mod tests {
     /// Each text's clip rectangle is its own row box cut to its layer, so a
     /// frame masks only texts that must be clipped: none but the boxes that
     /// cross the layer edge on a full redraw, and only the damaged row's
-    /// neighbours on a one-row redraw. With the whole text area as the clip
-    /// every text on screen cleared a window-sized mask on every partial
-    /// frame (~150 ms a frame; ced first save, 2026-09-26); with the row box
-    /// uncut every text at column 0 and on the top row did so on every full
-    /// frame (review round 1).
+    /// neighbours on a one-row redraw. Whole-area or uncut row clips cause
+    /// additional mask use. This test checks those geometry decisions;
+    /// renderer mask caching and performance have their own owner checks.
     #[test]
     fn each_text_is_clipped_to_its_own_row_not_the_text_area() {
         let mut body = String::new();
