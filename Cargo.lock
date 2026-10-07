@@ -4549,7 +4549,7 @@ dependencies = [
 
 [[package]]
 name = "noded"
-version = "0.18.2"
+version = "0.18.3"
 dependencies = [
  "anyhow",
  "arc-swap",
