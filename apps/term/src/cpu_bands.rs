@@ -161,10 +161,23 @@ impl Surface {
         }
         // Prefer small shifts and retain at least half the viewport. Exact
         // row checks make ambiguous duplicate/blank rows harmless.
+        // Anchors reject most candidates in O(rows * cols). Repetitive rows
+        // can pass anchors then fail late, so bound expensive overlap scans;
+        // falling back to normal painting is always correct.
+        let mut overlap_scans = 0;
         for amount in 1..=rows / 2 {
             for shift in [amount as isize, -(amount as isize)] {
                 let first = if shift < 0 { amount } else { 0 };
                 let end = if shift > 0 { rows - amount } else { rows };
+                if !matches((first as isize + shift) as usize, first)
+                    || !matches(((end - 1) as isize + shift) as usize, end - 1)
+                {
+                    continue;
+                }
+                if overlap_scans == 16 {
+                    return None;
+                }
+                overlap_scans += 1;
                 if (first..end).all(|new| matches((new as isize + shift) as usize, new)) {
                     return Some(shift);
                 }
@@ -210,6 +223,38 @@ mod tests {
     use super::*;
     use std::time::Instant;
     use term_core::{config::Cursor, terminal::Cell};
+
+    #[test]
+    fn repetitive_redraw_with_late_mismatch_falls_back_to_exact_pixels() {
+        let mut raster = Raster::for_test(1.0, 13.0, Cursor::Underline).unwrap();
+        let mut surface = Surface::default();
+        let mut screen = term_core::terminal::Terminal::from_test_vt(2, 513, b"").screen(false);
+        screen.cursor_visible = false;
+        for (row, cells) in screen.cells.chunks_mut(2).enumerate() {
+            for cell in cells {
+                cell.c = if row % 2 == 0 { 'A' } else { 'B' };
+            }
+        }
+        surface.paint(&mut raster, &screen, &[]);
+        for (row, cells) in screen.cells.chunks_mut(2).enumerate() {
+            for cell in cells {
+                cell.c = if row == 400 {
+                    'X'
+                } else if row % 2 == 0 {
+                    'B'
+                } else {
+                    'A'
+                };
+            }
+        }
+        let dirty = vec![true; 513];
+        assert_eq!(
+            surface.scroll_shift(&raster, &screen, &dirty, surface.width, surface.height, 513),
+            None
+        );
+        surface.paint(&mut raster, &screen, &dirty);
+        assert_eq!(surface.rgba(), raster.render(&screen));
+    }
 
     #[test]
     fn scrolling_reuses_pixels_across_bands_and_preserves_retained_generations() {

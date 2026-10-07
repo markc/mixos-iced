@@ -65,12 +65,15 @@ impl PixelBand {
     ) -> &[DamageBand] {
         let (width, height) = raster.target_size(screen);
         let row_bytes = width as usize * raster.height as usize * 4;
-        let mut pixels = BytesMut::zeroed(width as usize * height as usize * 4);
+        // Append initialized source rows directly. Zeroing the entire new
+        // allocation before copying would write the moved region twice.
+        let mut pixels = BytesMut::with_capacity(width as usize * height as usize * 4);
         let mut reused = [false; bands::ROWS_PER_BAND];
         let reused = &mut reused[..screen.rows];
         for (row, copied) in reused.iter_mut().enumerate() {
             let old = (first + row) as isize + shift;
             if old < 0 || old >= rows as isize {
+                pixels.resize(pixels.len() + row_bytes, 0);
                 continue;
             }
             let old = old as usize;
@@ -79,10 +82,10 @@ impl PixelBand {
             if *cursor == Some(local) {
                 // Cursor pixels are baked into the source. Restore its whole
                 // row instead of moving the old cursor with the text.
+                pixels.resize(pixels.len() + row_bytes, 0);
                 continue;
             }
-            pixels[row * row_bytes..(row + 1) * row_bytes]
-                .copy_from_slice(&source[local * row_bytes..(local + 1) * row_bytes]);
+            pixels.extend_from_slice(&source[local * row_bytes..(local + 1) * row_bytes]);
             *copied = true;
         }
         self.cached = None;

@@ -80,6 +80,46 @@ fn tiny_skia_scroll_bench() {
 }
 
 #[test]
+#[ignore = "release-only adversarial non-scroll redraw measurement"]
+fn tiny_skia_repetitive_redraw_bench() {
+    for reuse in [false, true] {
+        let mut raster = Raster::for_test(1.0, 13.0, Cursor::Underline).unwrap();
+        let mut screen = term_core::terminal::Terminal::from_test_vt(90, 129, b"").screen(false);
+        screen.cursor_visible = false;
+        let mut surface = Surface::default();
+        surface.disable_scroll = !reuse;
+        let mut samples = Vec::new();
+        for n in 0..120 {
+            for (row, cells) in screen.cells.chunks_mut(90).enumerate() {
+                for cell in cells {
+                    cell.c = if row == 100 && n % 2 == 1 {
+                        'X'
+                    } else if (row + n) % 2 == 0 {
+                        'A'
+                    } else {
+                        'B'
+                    };
+                }
+            }
+            let start = Instant::now();
+            surface.paint(&mut raster, &screen, &[true; 129]);
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            if n >= 20 {
+                samples.push(ms);
+            }
+        }
+        assert_eq!(surface.rgba(), raster.render(&screen));
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "repetitive full redraw reuse={reuse} 90x129: mean={:.3} p50={:.3} p99={:.3} ms",
+            samples.iter().sum::<f64>() / samples.len() as f64,
+            samples[50],
+            samples[99]
+        );
+    }
+}
+
+#[test]
 fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
     for (scale, cell_height) in [
         (1.0, 20),
