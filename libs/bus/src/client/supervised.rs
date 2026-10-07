@@ -1296,7 +1296,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
         biased;
         _ = ctx.out_tx.closed() => return EstablishOutcome::Stop,
         _ = ctx.shutdown_rx.changed() => return EstablishOutcome::Stop,
-        _ = tokio::time::sleep_until(deadline) => {
+        _ = tokio::time::sleep_until(deadline.into()) => {
             return retry_or_fail(
                 ctx, attempt,
                 ClientError::Timeout { to: "noded".to_string() },
@@ -1342,7 +1342,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
             owner.abort().await;
             return EstablishOutcome::Stop;
         }
-        _ = tokio::time::sleep_until(deadline) => {
+        _ = tokio::time::sleep_until(deadline.into()) => {
             owner.abort().await;
             return retry_or_fail(
                 ctx, attempt,
@@ -1375,7 +1375,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
                 owner.abort().await;
                 return EstablishOutcome::Stop;
             }
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = tokio::time::sleep_until(deadline.into()) => {
                 owner.abort().await;
                 return retry_or_fail(
                     ctx, attempt,
@@ -1466,7 +1466,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
             owner.abort().await;
             return EstablishOutcome::Stop;
         }
-        _ = tokio::time::sleep_until(deadline) => {
+        _ = tokio::time::sleep_until(deadline.into()) => {
             owner.abort().await;
             return retry_or_fail(
                 ctx, attempt,
@@ -1815,12 +1815,13 @@ mod tests {
     // the cancellation is exercised deterministically rather than raced.
 
     /// A one-connection native stub: ACK `noded.register` and each
-    /// `topic.subscribe` with rc 0, signal each receipt, and signal the
-    /// socket's close/EOF so the tests observe the owner's teardown.
+    /// `topic.subscribe` with rc 0, signal the first register and the first
+    /// subscribe receipt, and signal the socket's close/EOF so the tests
+    /// observe the owner's teardown.
     async fn mini_stub(
         listener: tokio::net::TcpListener,
-        register_seen: oneshot::Sender<()>,
-        subscribe_seen: Option<oneshot::Sender<()>>,
+        mut register_seen: Option<oneshot::Sender<()>>,
+        mut subscribe_seen: Option<oneshot::Sender<()>>,
         eof: oneshot::Sender<()>,
     ) {
         use futures_util::{SinkExt, StreamExt};
@@ -1852,9 +1853,11 @@ mod tests {
                 .await
                 .is_ok();
             if command == "noded.register" {
-                let _ = register_seen.send(());
+                if let Some(seen) = register_seen.take() {
+                    let _ = seen.send(());
+                }
             } else if command == "topic.subscribe" {
-                if let Some(seen) = &subscribe_seen {
+                if let Some(seen) = subscribe_seen.take() {
                     let _ = seen.send(());
                 }
             }
@@ -1909,7 +1912,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let (register_seen_tx, register_seen_rx) = oneshot::channel();
         let (eof_tx, eof_rx) = oneshot::channel();
-        let stub = tokio::spawn(mini_stub(listener, register_seen_tx, None, eof_tx));
+        let stub = tokio::spawn(mini_stub(listener, Some(register_seen_tx), None, eof_tx));
 
         let (mut ctx, shutdown_tx, _out_rx) =
             guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
@@ -1958,7 +1961,7 @@ mod tests {
         let (eof_tx, eof_rx) = oneshot::channel();
         let stub = tokio::spawn(mini_stub(
             listener,
-            register_seen_tx,
+            Some(register_seen_tx),
             Some(subscribe_seen_tx),
             eof_tx,
         ));
@@ -2010,7 +2013,7 @@ mod tests {
         let (eof_tx, eof_rx) = oneshot::channel();
         let stub = tokio::spawn(mini_stub(
             listener,
-            register_seen_tx,
+            Some(register_seen_tx),
             Some(subscribe_seen_tx),
             eof_tx,
         ));
