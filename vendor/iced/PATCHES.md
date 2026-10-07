@@ -133,7 +133,9 @@ transformed geometry to the outward-rounded integer damage rectangle. The
 original clip mask and tiny-skia antialiasing still determine pixel coverage;
 transformed fractional quad edges are retained exactly. This bounds masked
 colour-pipeline work during narrow caret redraws. Gradients and decorated
-quads keep the upstream path. Guards: `engine::quad_tests` (full-path pixel
+quads keep the upstream path. Original transformed coordinates outside the
+conservative ±8191 supersampling envelope also retain upstream behaviour,
+including its rejection of extreme finite geometry. Guards: `engine::quad_tests` (full-path pixel
 oracle across fractional scales, clips, negative positions and alpha; actual
 path-area bound; decorated fallback; ignored release comparison benchmark).
 

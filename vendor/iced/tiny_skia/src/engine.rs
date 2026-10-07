@@ -754,6 +754,18 @@ fn damage_rectangle(
     )?)
     .transform(transform)?;
     let original = path.bounds();
+    // Keep the original geometry within tiny-skia's signed-short
+    // supersampling envelope. Extreme finite paths can be rejected or
+    // saturated by the original rasteriser; clipping them first must not
+    // turn those no-op paths into visible pixels or change AA fallback.
+    const MAX_COORD: f32 = 8191.0;
+    if original.left() < -MAX_COORD
+        || original.top() < -MAX_COORD
+        || original.right() > MAX_COORD
+        || original.bottom() > MAX_COORD
+    {
+        return None;
+    }
     let clipped = tiny_skia::Rect::from_ltrb(
         original.left().max(clip.x.floor()),
         original.top().max(clip.y.floor()),
@@ -948,6 +960,83 @@ mod quad_tests {
             (500.0, 300.0, 503.0, 328.0)
         );
         assert_eq!(path.width() * path.height(), 84.0);
+    }
+
+    #[test]
+    fn extreme_finite_quad_geometry_preserves_original_no_op() {
+        let clip = Rectangle {
+            x: 10.0,
+            y: 10.0,
+            width: 3.0,
+            height: 28.0,
+        };
+        for magnitude in [1e20, 1e38] {
+            let quad = Quad {
+                bounds: Rectangle {
+                    x: -magnitude,
+                    y: -magnitude,
+                    width: 2.0 * magnitude,
+                    height: 2.0 * magnitude,
+                },
+                ..Quad::default()
+            };
+            let mut expected = tiny_skia::Pixmap::new(64, 64).unwrap();
+            expected.fill(tiny_skia::Color::from_rgba8(30, 60, 90, 150));
+            let untouched = expected.clone();
+            let mut actual = expected.clone();
+            let mut original = Engine::new();
+            original.reference_quad = true;
+            let mut engine = Engine::new();
+            for (renderer, target) in [(&mut original, &mut expected), (&mut engine, &mut actual)] {
+                draw(
+                    renderer,
+                    target,
+                    &quad,
+                    Color::WHITE.into(),
+                    Transformation::IDENTITY,
+                    &[clip],
+                );
+            }
+            assert_eq!(
+                expected.data(),
+                untouched.data(),
+                "original no-op magnitude={magnitude}"
+            );
+            assert_eq!(
+                actual.data(),
+                expected.data(),
+                "fallback magnitude={magnitude}"
+            );
+            assert!(engine.quad_path_bounds.is_none());
+        }
+        for bounds in [
+            Rectangle {
+                x: -8192.0,
+                y: 0.0,
+                width: 9000.0,
+                height: 40.0,
+            },
+            Rectangle {
+                x: 0.0,
+                y: -8192.0,
+                width: 40.0,
+                height: 9000.0,
+            },
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 8192.0,
+                height: 40.0,
+            },
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 8192.0,
+            },
+        ] {
+            assert!(damage_rectangle(bounds, tiny_skia::Transform::identity(), clip).is_none());
+        }
     }
 
     #[test]
