@@ -23,7 +23,7 @@ use scene::{Node, ResolvedScene};
 use iced_core::alignment::{Horizontal, Vertical};
 use iced_core::text::{Ellipsis, Wrapping};
 use iced_core::{Background, Border, Color, Element, Font, Length, Padding, Theme, font};
-use iced_widget::{Column, Row, Space, button, container, scrollable, text, text_input, toggler};
+use iced_widget::{Column, Row, Space, button, container, scrollable, text, toggler};
 use serde_json::{Value, json};
 
 use crate::templates::{PreparedLists, children, rows, text as port_text};
@@ -100,6 +100,8 @@ impl Route {
 pub enum SceneMessage {
     /// A new revision to draw.
     Replace(Arc<Content>),
+    /// Restyle the existing widget tree without altering local edits or focus.
+    Appearance(Arc<::appearance::settings::Prepared>),
     Click(Arc<Route>),
     Toggle(Arc<Route>, String, bool),
     Input(Arc<Route>, String, String),
@@ -116,6 +118,7 @@ pub struct SceneUi {
     palette: Palette,
     theme: Theme,
     buttons: Arc<ResolvedButtonTable>,
+    prepared: Option<Arc<::appearance::settings::Prepared>>,
     /// Local text of the fields being edited, by instance key, until the
     /// scene's own `value` port changes.
     edits: BTreeMap<String, String>,
@@ -143,11 +146,8 @@ fn scene_design(dialog: bool) -> SceneDesign {
     let design = if dialog { &DIALOG } else { &EDGE };
     design
         .get_or_init(|| {
-            let source = std::fs::read_to_string(decor::theme::theme_path()).ok();
-            source.as_deref().and_then(|source| compile_scene_design(source, dialog)).unwrap_or_else(|| {
-                compile_scene_design(design::EMBEDDED_DEFAULT_SOURCE, dialog)
-                    .expect("the design library's embedded scene design compiles")
-            })
+            compile_scene_design(design::EMBEDDED_DEFAULT_SOURCE, dialog)
+                .expect("the design library's embedded scene design compiles")
         })
         .clone()
 }
@@ -204,6 +204,20 @@ fn design_color(c: LinearRgba) -> Color {
 /// not override a button (those belong to rows/columns and text respectively).
 /// Do not pass this pair through iced's generated contrast palette.
 fn scene_button_style(buttons: &ResolvedButtonTable, node: &Node, status: button::Status) -> button::Style {
+    let cell = buttons.cell(scene_button_key(node, status));
+    button::Style {
+        background: Some(Background::Color(design_color(cell.pair.surface))),
+        text_color: design_color(cell.pair.foreground),
+        border: Border {
+            color: cell.border.map(design_color).unwrap_or(Color::TRANSPARENT),
+            width: cell.border_width as f32,
+            radius: (cell.radius as f32).into(),
+        },
+        ..button::Style::default()
+    }
+}
+
+fn scene_button_key(node: &Node, status: button::Status) -> ButtonCellKey {
     let variant = match port_text(node, "tone") {
         "primary" => ButtonVariant::Primary,
         "danger" => ButtonVariant::Destructive,
@@ -215,12 +229,16 @@ fn scene_button_style(buttons: &ResolvedButtonTable, node: &Node, status: button
         button::Status::Pressed => InteractionState::Pressed,
         button::Status::Disabled => InteractionState::Disabled,
     };
-    let cell = buttons.cell(ButtonCellKey { variant, size: ButtonSize::default(), interaction, focus_visible: false });
+    ButtonCellKey { variant, size: ButtonSize::default(), interaction, focus_visible: false }
+}
+
+fn read_button_style(cell: &design::ReadButton) -> button::Style {
+    let color = |[r, g, b, a]: [f64; 4]| Color::from_linear_rgba(r as f32, g as f32, b as f32, a as f32);
     button::Style {
-        background: Some(Background::Color(design_color(cell.pair.surface))),
-        text_color: design_color(cell.pair.foreground),
+        background: Some(Background::Color(color(cell.pair.surface))),
+        text_color: color(cell.pair.foreground),
         border: Border {
-            color: cell.border.map(design_color).unwrap_or(Color::TRANSPARENT),
+            color: cell.border.map(color).unwrap_or(Color::TRANSPARENT),
             width: cell.border_width as f32,
             radius: (cell.radius as f32).into(),
         },
@@ -428,6 +446,7 @@ impl SceneUi {
             palette,
             theme: Theme::custom("design", seed),
             buttons: design.buttons,
+            prepared: None,
             edits: BTreeMap::new(),
             toggles: BTreeMap::new(),
         }
@@ -438,6 +457,16 @@ impl SceneUi {
     /// `shell.scene.layout` reports it as `page`.
     pub fn page(&self) -> Color {
         color(self.palette.base.surface)
+    }
+
+    pub(crate) fn apply_appearance(&mut self, prepared: Arc<::appearance::settings::Prepared>) {
+        (self.palette, self.theme) = crate::appearance::page(&prepared, self.content.dialog);
+        self.prepared = Some(prepared);
+    }
+
+    fn text_style(&self, mono: bool) -> toolkit::typography::TextStyle {
+        self.prepared.as_ref().and_then(|prepared| prepared.typography().get(if mono { "mono" } else { "ui" }))
+            .unwrap_or(toolkit::typography::TextStyle { font: if mono { Font::MONOSPACE } else { ui::font::BODY }, size: TEXT_SIZE, line_height: None })
     }
 
     /// The matching design foreground for text that declares none.
@@ -522,9 +551,10 @@ impl SceneUi {
         let element: El<'a, R> = match node.family.as_str() {
             "column" | "row" => self.container(nodes, id, node, parent, row, &key, route())?,
             "text" => {
-                let size = number(node, "size").unwrap_or(TEXT_SIZE);
+                let style = self.text_style(flag(node, "mono"));
+                let size = number(node, "size").unwrap_or(style.size);
                 // Body text is Light (ui::font::BODY); mono keeps its normal weight.
-                let mut font = if flag(node, "mono") { Font::MONOSPACE } else { ui::font::BODY };
+                let mut font = style.font;
                 if flag(node, "bold") {
                     font.weight = font::Weight::Bold;
                 }
@@ -536,7 +566,7 @@ impl SceneUi {
                 };
                 let mut label = text(port_text(node, "text").to_owned())
                     .size(size)
-                    .line_height(iced_core::text::LineHeight::Relative(1.2))
+                    .line_height(style.line_height.map_or(iced_core::text::LineHeight::Relative(1.2), |height| iced_core::text::LineHeight::Absolute(height.into())))
                     .font(font)
                     .color(colour)
                     .wrapping(Wrapping::None)
@@ -551,10 +581,9 @@ impl SceneUi {
                 let route = route();
                 let value = self.edits.get(&key).map(String::as_str).unwrap_or(port_text(node, "value"));
                 let (input_route, input_key) = (Arc::clone(&route), key.clone());
-                text_input(port_text(node, "placeholder"), value)
+                self.text_style(false).input(port_text(node, "placeholder"), value)
                     .id(field_id(id))
                     .secure(flag(node, "password"))
-                    .size(TEXT_SIZE)
                     .padding(Padding { top: 4.0, right: 7.0, bottom: 4.0, left: 7.0 })
                     .width(width)
                     .on_input(move |value| SceneMessage::Input(Arc::clone(&input_route), input_key.clone(), value))
@@ -562,10 +591,15 @@ impl SceneUi {
                     .into()
             }
             "button" => {
-                button(text(port_text(node, "label").to_owned()).size(TEXT_SIZE))
+                let key = scene_button_key(node, button::Status::Active);
+                let label = self.prepared.as_ref().map_or(self.text_style(false), |prepared| prepared.button_text(key, design::ButtonPart::Label));
+                button(label.text(port_text(node, "label").to_owned()))
                     .padding(Padding { top: 4.0, right: 10.0, bottom: 4.0, left: 10.0 })
                     .width(width)
-                    .style(move |_theme: &Theme, status| scene_button_style(&self.buttons, node, status))
+                    .style(move |_theme: &Theme, status| self.prepared.as_ref().map_or_else(
+                        || scene_button_style(&self.buttons, node, status),
+                        |prepared| read_button_style(prepared.button(scene_button_key(node, status))),
+                    ))
                     .on_press(SceneMessage::Click(route()))
                     .into()
             }
@@ -575,7 +609,8 @@ impl SceneUi {
                 let toggle_key = key.clone();
                 toggler(value)
                     .label(port_text(node, "label").to_owned())
-                    .text_size(TEXT_SIZE)
+                    .text_size(self.text_style(false).size)
+                    .font(self.text_style(false).font)
                     .on_toggle(move |on| SceneMessage::Toggle(Arc::clone(&route), toggle_key.clone(), on))
                     .into()
             }
@@ -942,6 +977,7 @@ impl IcedUi for SceneUi {
                 self.images = crate::images::prepare(&content.tree, &content.lists);
                 self.content = content;
             }
+            SceneMessage::Appearance(prepared) => self.apply_appearance(prepared),
             SceneMessage::Input(_, key, value) => {
                 self.edits.insert(key, value);
             }
@@ -988,7 +1024,7 @@ pub fn event_of(message: &SceneMessage) -> Option<(&str, &str, Value)> {
         SceneMessage::Toggle(route, _, on) => route.event("change", Some(json!(on))),
         SceneMessage::Input(route, _, value) => route.event("change", Some(json!(value))),
         SceneMessage::Submit(route, value) => route.event("submit", Some(json!(value))),
-        SceneMessage::Replace(_) | SceneMessage::Close | SceneMessage::EscapeEdge | SceneMessage::EdgeFocus(_) => None,
+        SceneMessage::Replace(_) | SceneMessage::Appearance(_) | SceneMessage::Close | SceneMessage::EscapeEdge | SceneMessage::EdgeFocus(_) => None,
     }
 }
 

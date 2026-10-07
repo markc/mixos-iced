@@ -19,7 +19,9 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::Duration;
 
-use bus::{IncomingCommand, SupervisedClient, SupervisedError};
+use bus::{BoundedIncomingEvent, IncomingCommand, SupervisedClient, SupervisedError};
+use application::presentation::native::{Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker};
+use crate::appearance::Look;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
@@ -108,6 +110,15 @@ pub struct Port {
     /// connection generation from it directly (an atomic load), so a
     /// reconnect the worker has not yet reported still fences.
     client: Arc<OnceLock<Arc<SupervisedClient>>>,
+    binding: settings::Binding,
+    settings_jobs: watch::Sender<Option<Jobs>>,
+    settings_mailbox: Mailbox<Look>,
+}
+
+struct SettingsLane {
+    binding: settings::Binding,
+    jobs: watch::Receiver<Option<Jobs>>,
+    mailbox: Mailbox<Look>,
 }
 
 /// The names to try, in order: `shell`, then the override when it differs.
@@ -123,6 +134,10 @@ impl Port {
     /// Start the worker. The broker connection is the worker's: a missing
     /// noded is retried with backoff and never blocks the compositor.
     pub fn start(config: HostConfig, waker: Waker) -> Result<Self, String> {
+        let binding = settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
+        let (settings_jobs, jobs) = watch::channel(None);
+        let settings_mailbox = Mailbox::default();
+        let lane = SettingsLane { binding: binding.clone(), jobs, mailbox: settings_mailbox.clone() };
         let (inbound_tx, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (outbound, outbound_rx) = tokio_mpsc::unbounded_channel();
         let (events, events_rx) = tokio_mpsc::unbounded_channel();
@@ -144,11 +159,18 @@ impl Port {
                     }
                 };
                 let delivery = Delivery { sender: inbound_tx, waker };
-                runtime.block_on(worker(config, delivery, outbound_rx, events_rx, pending, shutdown_rx, published));
+                runtime.block_on(worker(config, delivery, outbound_rx, events_rx, pending, shutdown_rx, published, lane));
             })
             .map_err(|error| format!("failed to spawn the scene host's Bus worker: {error}"))?;
         let sink = EventSink { events, pending: pending_events };
-        Ok(Self { inbound, outbound, sink, shutdown, completion, thread: Some(thread), client })
+        Ok(Self { inbound, outbound, sink, shutdown, completion, thread: Some(thread), client, binding, settings_jobs, settings_mailbox })
+    }
+
+    pub(crate) fn settings_binding(&self) -> settings::Binding { self.binding.clone() }
+    pub(crate) fn settings_jobs(&self, jobs: Jobs) { self.settings_jobs.send_replace(Some(jobs)); }
+    pub(crate) fn take_settings(&self) -> Vec<SettingsEvent<Look>> { self.settings_mailbox.take() }
+    pub(crate) fn settings_generation(&self) -> Option<u64> {
+        self.client.get().and_then(|client| settings::native::live_generation(client))
     }
 
     /// The live broker connection's generation; `None` before registering.
@@ -327,6 +349,7 @@ async fn connect(config: &HostConfig, shutdown: &mut watch::Receiver<bool>) -> C
         loop {
             let attempt = SupervisedClient::connect_options(name, &config.noded_url)
                 .fatal_on_registration_rejection(true)
+                .bounded_incoming(INBOUND_CAPACITY)
                 .connect();
             let result = tokio::select! {
                 result = attempt => result,
@@ -371,6 +394,7 @@ fn registration_refusal(error: &SupervisedError) -> Option<String> {
     error.registration_rejection().map(|(rc, message)| format!("rc {rc}: {message}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn worker(
     config: HostConfig,
     delivery: Delivery,
@@ -379,34 +403,60 @@ async fn worker(
     pending_events: Arc<AtomicUsize>,
     mut shutdown: watch::Receiver<bool>,
     published: Arc<OnceLock<Arc<SupervisedClient>>>,
+    mut lane: SettingsLane,
 ) {
-    let (client, service) = match connect(&config, &mut shutdown).await {
-        Connected::Client(client, service) => {
-            let _ = published.set(Arc::clone(&client));
-            (client, service)
-        }
-        Connected::Refused(reason) => {
-            let _ = delivery.send(Inbound::Refused(reason));
-            return;
-        }
-        Connected::Stopped => return,
+    let settings_send = |event| {
+        if lane.mailbox.publish(event) { (delivery.waker)(); }
     };
+    let mut settings_worker = SettingsWorker::offline(crate::appearance::build);
+    let mut connect_shutdown = shutdown.clone();
+    let mut connecting = Some(Box::pin(connect(&config, &mut connect_shutdown)));
+    // The existing connection attempt must not stop the resource worker. A
+    // refused service still receives offline presentation work until shutdown.
+    let (client, service) = loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { return; }
+            }
+            changed = lane.jobs.changed() => {
+                if changed.is_err() { return; }
+                if let Some(jobs) = lane.jobs.borrow_and_update().clone() { settings_worker.replace(jobs); }
+            }
+            event = settings_worker.next() => {
+                if let Some(event) = event.take() { settings_send(event); }
+            }
+            result = async { connecting.as_mut().expect("guarded connection").await }, if connecting.is_some() => {
+                connecting = None;
+                match result {
+                    Connected::Client(client, service) => break (client, service),
+                    Connected::Refused(reason) => { let _ = delivery.send(Inbound::Refused(reason)); }
+                    Connected::Stopped => return,
+                }
+            }
+        }
+    };
+    let _ = published.set(Arc::clone(&client));
+    settings_worker.connect(Arc::clone(&client));
+    if let Some(jobs) = lane.jobs.borrow_and_update().clone() { settings_worker.replace(jobs); }
+    settings_send(SettingsEvent::Wake);
     tracing::info!("scene host: registered as `{service}` via {}", config.noded_url);
     if !delivery.send(Inbound::Registered(service.clone())) {
         tracing::warn!("scene host: the engine's queue refused the registration notice");
     }
-    let Some(mut incoming) = client.incoming() else {
+    let Some(mut incoming) = client.incoming_bounded() else {
         tracing::error!("scene host: the Bus client has no incoming lane; the host is OFF");
         let _ = delivery.send(Inbound::Refused("no incoming lane".into()));
         return;
     };
-    if let Err(error) = client.subscribe_topic(REGISTRY_TOPIC).await {
-        // The supervised client replays recorded subscriptions only; a
-        // refused first subscribe means owner departures are not seen.
-        tracing::warn!(%error, "scene host: registry subscription failed; owner departures will not unload scenes");
-    }
+    let mut lifecycle = client.subscribe_state();
     let topics = (format!("{service}.scene.changed"), format!("{service}.panel.changed"));
     let mut flights = tokio::task::JoinSet::new();
+    let registry_client = Arc::clone(&client);
+    flights.spawn(async move {
+        if let Err(error) = registry_client.subscribe_topic(REGISTRY_TOPIC).await {
+            tracing::warn!(%error, "scene host: registry subscription failed; owner departures will not unload scenes");
+        }
+    });
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -414,7 +464,32 @@ async fn worker(
                     break;
                 }
             }
-            Some(command) = incoming.recv() => admit(&service, &client, &delivery, command).await,
+            changed = lane.jobs.changed() => {
+                if changed.is_err() { break; }
+                if let Some(jobs) = lane.jobs.borrow_and_update().clone() { settings_worker.replace(jobs); }
+            }
+            changed = lifecycle.changed() => {
+                if changed.is_err() { break; }
+                lifecycle.borrow_and_update();
+                settings_send(SettingsEvent::Wake);
+            }
+            event = settings_worker.next() => {
+                if let Some(event) = event.take() { settings_send(event); }
+            }
+            command = incoming.recv() => {
+                match command {
+                    Some(BoundedIncomingEvent::Command(command)) => {
+                        if let Some(decoded) = settings::native::Decoded::from_command(&lane.binding, &command) {
+                            settings_send(SettingsEvent::Delivery(decoded));
+                        } else { admit(&service, &client, &delivery, command).await; }
+                    }
+                    Some(BoundedIncomingEvent::Overflow { .. }) => {
+                        settings_send(SettingsEvent::Lost);
+                        tracing::warn!("scene host: incoming queue overflow; refreshing settings, registry reconciliation required");
+                    }
+                    None => break,
+                }
+            }
             Some(message) = outbound.recv() => send(&client, &topics, message).await,
             Some(event) = events.recv() => {
                 let client = Arc::clone(&client);

@@ -62,6 +62,7 @@ pub fn title_mask(
         let family = match family {
             DecoFontFamily::Named(name) => Family::Name(name.as_str()),
             DecoFontFamily::SystemUi => Family::SansSerif,
+            DecoFontFamily::Monospace => Family::Monospace,
         };
         let attrs = Attrs::new().family(family).weight(Weight(weight));
         {

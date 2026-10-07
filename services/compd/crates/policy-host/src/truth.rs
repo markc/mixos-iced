@@ -297,6 +297,7 @@ fn chrome(windows: BTreeMap<u64, Value>) -> Value {
         "tokens": match theme.tokens {
             decor::TokenSource::File => "file",
             decor::TokenSource::Embedded => "embedded",
+            decor::TokenSource::Prepared => "prepared",
         },
         "titlebar_focused": decor::theme::rgba8(deco.colors.titlebar_focused),
         "titlebar_unfocused": decor::theme::rgba8(deco.colors.titlebar_unfocused),

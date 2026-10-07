@@ -152,6 +152,8 @@ pub enum DecoFontFamily {
     /// The platform's default user-interface family.
     #[default]
     SystemUi,
+    /// The process font system's generic monospace rescue.
+    Monospace,
     /// A font family by its advertised name. A name the host does not have
     /// is not fatal: the rasteriser degrades to the platform UI family and
     /// finally to the embedded face.

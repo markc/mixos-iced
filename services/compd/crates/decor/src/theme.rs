@@ -21,7 +21,7 @@ use crate::layout::{
 };
 use design::{
     Contrast, DesignCompileResult, DesignContext, LinearRgba, ResolvedMetricKind, SourceIdentity,
-    TypographyRole, UnstampedResolvedDesign,
+    TypographyRole, UnstampedResolvedDesign, ResolvedDictionary,
 };
 
 /// A theme colour as 8-bit straight-alpha sRGB `[r, g, b, a]`, as the truth
@@ -38,6 +38,8 @@ pub enum TokenSource {
     File,
     /// the design library's embedded default (no file, or it did not compile).
     Embedded,
+    /// Validated, prepared settings read data (including embedded fallback).
+    Prepared,
 }
 
 /// A resolved chrome theme.
@@ -77,7 +79,12 @@ impl Palette {
     /// falls back to the base pair (or its foreground, for the non-text
     /// tokens), never to a literal colour.
     pub fn from_design(design: &UnstampedResolvedDesign) -> Palette {
-        let colours = &design.dictionary().colours;
+        Self::from_dictionary(design.dictionary())
+    }
+
+    /// Borrow colour read data without reconstructing accepted compiler objects.
+    pub fn from_dictionary(dictionary: &ResolvedDictionary) -> Palette {
+        let colours = &dictionary.colours;
         let pair = |name: &str| {
             colours.pairs.get(name).map(|p| Pair {
                 surface: srgba(p.rendered_surface),
@@ -99,6 +106,22 @@ impl Palette {
 }
 
 impl ChromeTheme {
+    /// Renderer-ready settings read data. Font selection and validation belong
+    /// to the host resource worker, using the process's existing font system.
+    pub fn from_read(
+        style: ChromeStyle,
+        dictionary: &ResolvedDictionary,
+        title_family: DecoFontFamily,
+        title_weight: DecoFontWeight,
+        title_size: f32,
+    ) -> ChromeTheme {
+        let mut deco = presets::resolve(style, crate::layout::Scheme::default(), dictionary_mode(dictionary));
+        apply_dictionary(&mut deco, dictionary);
+        deco.metrics.title_font_family = title_family;
+        deco.metrics.title_font_weight = title_weight.resolved();
+        deco.metrics.title_size_px = title_size;
+        ChromeTheme { deco, tokens: TokenSource::Prepared, palette: Palette::from_dictionary(dictionary) }
+    }
     /// `style`, themed from the shared `theme.conf.mix` (read once; a missing
     /// or broken file falls back to the embedded default tokens).
     pub fn load(style: ChromeStyle) -> ChromeTheme {
@@ -184,9 +207,13 @@ fn scheme_of(_design: &UnstampedResolvedDesign) -> crate::layout::Scheme {
 }
 
 fn mode_of(design: &UnstampedResolvedDesign) -> crate::layout::Mode {
+    dictionary_mode(design.dictionary())
+}
+
+fn dictionary_mode(dictionary: &ResolvedDictionary) -> crate::layout::Mode {
     // Light or dark preset metrics are identical; pick by the base surface's
     // lightness so a preset slot the tokens do not cover still matches.
-    match design.dictionary().colours.pairs.get("base") {
+    match dictionary.colours.pairs.get("base") {
         Some(base) if luminance(base.rendered_surface) < 0.18 => crate::layout::Mode::Dark,
         _ => crate::layout::Mode::Light,
     }
@@ -233,7 +260,15 @@ fn recolour_button(button: &mut ButtonColors, fill: Option<Srgba>, glyph: Option
 /// (close), `accent`; non-text `border` and `ring` (focus); primitives
 /// `status.{danger,warning,success}` (mac's three lights).
 pub fn apply_tokens(theme: &mut DecoTheme, design: &UnstampedResolvedDesign) {
-    let colours = &design.dictionary().colours;
+    apply_dictionary(theme, design.dictionary());
+    let title = design::active_typography(Some(design.typography()), TypographyRole::UiDisplay);
+    theme.metrics.title_font_family = DecoFontFamily::Named(title.family.clone());
+    theme.metrics.title_size_px = title.font_size as f32;
+    theme.metrics.title_font_weight = DecoFontWeight(title.weight).resolved();
+}
+
+fn apply_dictionary(theme: &mut DecoTheme, dictionary: &ResolvedDictionary) {
+    let colours = &dictionary.colours;
     let surface = |name: &str| colours.pairs.get(name).map(|p| srgba(p.rendered_surface));
     let foreground = |name: &str| {
         colours
@@ -298,17 +333,12 @@ pub fn apply_tokens(theme: &mut DecoTheme, design: &UnstampedResolvedDesign) {
     // The preset picks the shape family; the theme's radius wins for the
     // mixos style (mac and win11 keep their platform radius).
     if theme.style == ChromeStyle::Mixos
-        && let Some(radius) = design.dictionary().metrics.get("radius")
+        && let Some(radius) = dictionary.metrics.get("radius")
         && radius.kind == ResolvedMetricKind::Px
     {
         theme.metrics.corner_radius = radius.value as f32;
     }
 
-    let title =
-        design::active_typography(Some(design.typography()), TypographyRole::UiDisplay);
-    theme.metrics.title_font_family = DecoFontFamily::Named(title.family.clone());
-    theme.metrics.title_size_px = title.font_size as f32;
-    theme.metrics.title_font_weight = DecoFontWeight(title.weight).resolved();
 }
 
 #[cfg(test)]

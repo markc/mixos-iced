@@ -410,6 +410,8 @@ pub struct SceneHost {
     wiring: Wiring,
     actions: Receiver<Action>,
     menu_surface: Option<crate::menu::Surface>,
+    settings: application::presentation::native::Session<crate::appearance::Look>,
+    appearance_generation: u64,
 }
 
 impl SceneHost {
@@ -417,6 +419,11 @@ impl SceneHost {
     /// is on; the caller decides).
     pub fn start(config: HostConfig, waker: Waker) -> Result<Self, String> {
         let port = Port::start(config, Arc::clone(&waker))?;
+        let consumer = settings::consumer::Consumer::for_shell(port.settings_binding())
+            .map_err(|error| format!("shell settings: {error:?}"))?;
+        let mut settings = application::presentation::native::Session::new(consumer);
+        let (_, jobs) = settings.handle(application::presentation::native::Event::Wake, port.settings_generation());
+        port.settings_jobs(jobs);
         let (sender, actions) = std::sync::mpsc::channel();
         let wiring = Wiring { sink: port.event_sink(), actions: sender, waker };
         // conf.mix's page order, as Quoin reads it at start.
@@ -435,6 +442,8 @@ impl SceneHost {
             wiring,
             actions,
             menu_surface: None,
+            settings,
+            appearance_generation: 0,
         })
     }
 
@@ -478,6 +487,17 @@ impl SceneHost {
         let name = output.name();
         let output = name.as_str();
         let mut serviced = Serviced::default();
+        for event in self.port.take_settings() {
+            let (changed, jobs) = self.settings.handle(event, self.port.settings_generation());
+            self.port.settings_jobs(jobs);
+            if changed.is_some() {
+                let look = self.settings.host().presentation().expect("activated presentation").content();
+                let style = decor::window::installed().map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
+                decor::window::install(look.chrome(style));
+                self.appearance_generation = self.appearance_generation.wrapping_add(1);
+                serviced.changed = true;
+            }
+        }
         // The panel model for this output, at its logical size.
         {
             let monitor = lp.inner.active_output();
@@ -632,15 +652,16 @@ impl SceneHost {
         let palette = decor::window::installed().map(|theme| theme.palette).unwrap_or_else(|| {
             decor::ChromeTheme::from_source(decor::ChromeStyle::Mac, None).palette
         });
+        let prepared = self.settings.host().presentation().map(|presentation| Arc::clone(&presentation.content().prepared));
         // Return the old menu's keyboard before a newly shown dialog grabs
         // it, so that dialog remembers the application's original focus.
         if self.host.panels.menu().is_none() {
-            crate::menu::reconcile(&mut self.host.panels, &mut self.menu_surface, palette, &self.wiring, state, renderer, false);
+            crate::menu::reconcile(&mut self.host.panels, &mut self.menu_surface, palette, prepared.clone(), self.appearance_generation, &self.wiring, state, renderer, false);
         }
         let prior: BTreeSet<_> = self.surfaces.values().map(Surface::handle).collect();
-        crate::render::reconcile(&mut self.host.store, &mut self.host.panels, &mut self.surfaces, &mut self.placed, palette, &self.wiring, state, renderer, size);
+        crate::render::reconcile(&mut self.host.store, &mut self.host.panels, &mut self.surfaces, &mut self.placed, palette, prepared.clone(), self.appearance_generation, &self.wiring, state, renderer, size);
         let restack = self.surfaces.values().any(|surface| !prior.contains(&surface.handle()));
-        crate::menu::reconcile(&mut self.host.panels, &mut self.menu_surface, palette, &self.wiring, state, renderer, restack);
+        crate::menu::reconcile(&mut self.host.panels, &mut self.menu_surface, palette, prepared, self.appearance_generation, &self.wiring, state, renderer, restack);
         let seat = self.host.store.dialog_seat().map(|seat| seat.scene.clone());
         self.host.dialog_fit =
             seat.and_then(|scene| self.placed.get(&scene).map(|&(_, _, w, h)| (scene, w, h)));

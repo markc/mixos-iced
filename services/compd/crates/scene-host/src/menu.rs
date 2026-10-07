@@ -2,6 +2,7 @@
 //! extras use the host's existing Bus worker, never a separate transport.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use decor::{Palette, Srgba};
 use ui::engine::ui::EventFlags;
@@ -279,6 +280,7 @@ pub enum Input {
 #[derive(Clone, Debug)]
 pub enum Message {
     Replace(Menu),
+    Appearance(Arc<::appearance::settings::Prepared>),
     Input(u64, Input),
 }
 
@@ -286,6 +288,7 @@ struct MenuUi {
     menu: Menu,
     palette: Palette,
     theme: Theme,
+    prepared: Option<Arc<::appearance::settings::Prepared>>,
 }
 
 fn color(c: Srgba) -> Color {
@@ -306,7 +309,13 @@ impl MenuUi {
             menu,
             palette,
             theme: Theme::custom("design", seed),
+            prepared: None,
         }
+    }
+
+    fn apply_appearance(&mut self, prepared: Arc<::appearance::settings::Prepared>) {
+        (self.palette, self.theme) = crate::appearance::page(&prepared, true);
+        self.prepared = Some(prepared);
     }
 }
 
@@ -324,7 +333,9 @@ impl IcedUi for MenuUi {
             let selected = self.menu.selected == index && item.enabled();
             let palette = self.palette;
             let enabled = item.enabled();
-            let mut row = button(text(label).size(13))
+            let label = self.prepared.as_ref().and_then(|prepared| prepared.typography().get("ui"))
+                .unwrap_or(toolkit::typography::TextStyle { font: iced_core::Font::DEFAULT, size: 13.0, line_height: None }).text(label);
+            let mut row = button(label)
                 .width(Length::Fill)
                 .height(ROW_HEIGHT)
                 .padding([4, 8])
@@ -397,6 +408,7 @@ impl IcedUi for MenuUi {
     fn update(&mut self, message: Message) {
         match message {
             Message::Replace(menu) => self.menu = menu,
+            Message::Appearance(prepared) => self.apply_appearance(prepared),
             Message::Input(serial, Input::Move(direction)) if serial == self.menu.serial => {
                 self.menu.navigate(direction.signum())
             }
@@ -438,13 +450,17 @@ pub(crate) struct Surface {
     factor: f32,
     prior_iced: Option<HandleId>,
     prior_client: Option<WlSurface>,
+    appearance_generation: u64,
 }
 
 /// Shares the scene host's registry, scale, output affinity and action channel.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconcile(
     panels: &mut crate::panels::Panels,
     live: &mut Option<Surface>,
     palette: Palette,
+    prepared: Option<Arc<::appearance::settings::Prepared>>,
+    appearance_generation: u64,
     wiring: &crate::render::Wiring,
     state: &mut Loop,
     renderer: &mut GlesRenderer,
@@ -531,6 +547,10 @@ pub(crate) fn reconcile(
                 Message::Replace(menu.clone()),
             );
         }
+        if surface.appearance_generation != appearance_generation && let Some(prepared) = &prepared {
+            let _ = registry.dispatch_message(IcedHandle::<MenuUi>::from_id(surface.handle), Message::Appearance(Arc::clone(prepared)));
+            surface.appearance_generation = appearance_generation;
+        }
         // Newly mapped furniture must stay below the menu. Static frames
         // leave newer compositor overlays (such as capture) above it.
         if restack {
@@ -562,7 +582,11 @@ pub(crate) fn reconcile(
     let handle = load(
         state,
         renderer,
-        MenuUi::new(menu.clone(), palette),
+        {
+            let mut ui = MenuUi::new(menu.clone(), palette);
+            if let Some(prepared) = &prepared { ui.apply_appearance(Arc::clone(prepared)); }
+            ui
+        },
         rect,
         IcedSpace::Screen,
         Layer::SCENE.bits(),
@@ -587,6 +611,7 @@ pub(crate) fn reconcile(
         factor,
         prior_iced,
         prior_client,
+        appearance_generation,
     });
 }
 

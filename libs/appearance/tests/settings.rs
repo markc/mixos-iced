@@ -75,6 +75,37 @@ fn common_preferences_change_only_their_shared_defaults() {
     );
     assert!(after.reduced_motion());
 }
+
+#[test]
+fn every_read_button_key_survives_wire_order_and_uses_prepared_typography() {
+    let mut effective = effective();
+    effective.design.buttons.reverse();
+    effective.ui.text_scale = 1.5;
+    effective.ui.density = 0.75;
+    let prepared = Projection::new(&effective).unwrap().prepare(checked_font).unwrap();
+    for variant in design::ButtonVariant::ALL {
+        for size in design::ButtonSize::ALL {
+            for interaction in design::InteractionState::ALL {
+                for focus_visible in [false, true] {
+                    let key = design::ButtonCellKey { variant, size, interaction, focus_visible };
+                    let expected = effective.design.buttons.iter().find(|cell|
+                        cell.variant == variant.name() && cell.size == size.name()
+                        && cell.interaction == interaction.name() && cell.focus_visible == focus_visible
+                    ).unwrap();
+                    assert_eq!(prepared.button(key), expected);
+                    for part in design::ButtonPart::ALL {
+                        assert_eq!(prepared.button_text(key, part).size,
+                            effective.design.typography[&expected.typography[part.name()]].font_size as f32 * 1.5);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(prepared.density(), 0.75);
+    let duplicate = effective.design.buttons[0].clone();
+    effective.design.buttons[1] = duplicate;
+    assert!(Projection::new(&effective).is_err());
+}
 #[test]
 fn partial_wrong_unit_nonfinite_and_future_projection_fail_visibly() {
     let cases: Vec<fn(&mut settings::Effective)> = vec![

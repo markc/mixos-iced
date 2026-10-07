@@ -9,7 +9,6 @@ use design::{
 };
 use settings::{Diagnostic, Effective};
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use toolkit::{
     Tokens,
     fonts::{FontChoice, FontSelection, Role},
@@ -27,6 +26,8 @@ pub struct Projection {
     semantic: toolkit::tokens::Semantic,
     text_scale: f32,
     reduced_motion: bool,
+    buttons: BTreeMap<design::ButtonCellKey, design::ReadButton>,
+    density: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -211,18 +212,18 @@ impl Projection {
                 return Err(fault(role.name(), "Required typography role is missing"));
             }
         }
-        let mut keys = BTreeSet::new();
+        let mut buttons = BTreeMap::new();
         for cell in &d.buttons {
-            if !design::ButtonVariant::NAMES.contains(&cell.variant.as_str())
-                || !design::ButtonSize::NAMES.contains(&cell.size.as_str())
-                || !design::InteractionState::NAMES.contains(&cell.interaction.as_str())
-                || !keys.insert((
-                    &cell.variant,
-                    &cell.size,
-                    &cell.interaction,
-                    cell.focus_visible,
-                ))
-            {
+            let key = design::ButtonCellKey {
+                variant: design::ButtonVariant::from_name(&cell.variant)
+                    .ok_or_else(|| fault("button.variant", "Unsupported button variant"))?,
+                size: design::ButtonSize::from_name(&cell.size)
+                    .ok_or_else(|| fault("button.size", "Unsupported button size"))?,
+                interaction: design::InteractionState::from_name(&cell.interaction)
+                    .ok_or_else(|| fault("button.interaction", "Unsupported button interaction"))?,
+                focus_visible: cell.focus_visible,
+            };
+            if buttons.insert(key, cell.clone()).is_some() {
                 return Err(fault("button", "Invalid or duplicate compiled button cell"));
             }
             for part in design::ButtonPart::ALL {
@@ -315,6 +316,8 @@ impl Projection {
             semantic,
             text_scale,
             reduced_motion: effective.ui.reduced_motion,
+            buttons,
+            density,
         })
     }
     pub fn dictionary(&self) -> &ResolvedDictionary {
@@ -403,6 +406,18 @@ impl Projection {
     }
 }
 impl Prepared {
+    /// A validated compiler read cell. This does not recreate accepted design
+    /// ownership. Every closed-axis key is present after projection validation.
+    pub fn button(&self, key: design::ButtonCellKey) -> &design::ReadButton {
+        &self.projection.buttons[&key]
+    }
+    pub fn button_text(&self, key: design::ButtonCellKey, part: design::ButtonPart) -> TextStyle {
+        self.typography.get(&self.button(key).typography[part.name()])
+            .expect("validated button typography was prepared")
+    }
+    pub fn density(&self) -> f32 {
+        self.projection.density
+    }
     pub fn tokens(&self) -> Tokens {
         self.projection.tokens
     }

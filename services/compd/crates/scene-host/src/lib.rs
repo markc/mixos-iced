@@ -22,6 +22,7 @@ use world::state::Loop;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Point, Size};
 
+mod appearance;
 pub mod conf;
 pub mod host;
 mod icons;

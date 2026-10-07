@@ -210,6 +210,7 @@ pub(crate) struct Surface {
     factor: f32,
     autofocus_done: bool,
     panel_marks: Option<[bool; 3]>,
+    appearance_generation: u64,
 }
 
 impl Surface {
@@ -294,6 +295,8 @@ pub(crate) fn reconcile(
     surfaces: &mut BTreeMap<String, Surface>,
     placed: &mut BTreeMap<String, (f32, f32, f32, f32)>,
     palette: decor::Palette,
+    prepared: Option<Arc<::appearance::settings::Prepared>>,
+    appearance_generation: u64,
     wiring: &Wiring,
     state: &mut Loop,
     renderer: &mut GlesRenderer,
@@ -407,8 +410,8 @@ pub(crate) fn reconcile(
         });
         let factor = scale as f32;
         let mut autofocus_done = live.is_some_and(|surface| surface.autofocus_done);
-        let handle = match live.map(|surface| (surface.handle, surface.rect, surface.factor, surface.revision, surface.frame.clone(), surface.panel_marks)) {
-            Some((handle, was, was_factor, applied, applied_frame, applied_marks)) => {
+        let handle = match live.map(|surface| (surface.handle, surface.rect, surface.factor, surface.revision, surface.frame.clone(), surface.panel_marks, surface.appearance_generation)) {
+            Some((handle, was, was_factor, applied, applied_frame, applied_marks, applied_appearance)) => {
                 if let Some(registry) = state.inner.surface_mut().registry.as_mut() {
                     if was.size != rect.size || was_factor != factor {
                         if panels.focused(&target.output) == Some(scene_edge(entry.tree())) {
@@ -427,12 +430,16 @@ pub(crate) fn reconcile(
                         // on the GPU, so nothing is uploaded.
                         ui::source::cost(&source_id(name), 0, area(rect));
                     }
+                    if applied_appearance != appearance_generation && let Some(prepared) = &prepared {
+                        let _ = registry.dispatch_message(IcedHandle::<SceneUi>::from_id(handle), SceneMessage::Appearance(Arc::clone(prepared)));
+                    }
                 }
                 handle
             }
             None => {
                 restack |= !dialog;
-                let ui = SceneUi::new(content(entry, frame.clone(), dialog, marks), palette);
+                let mut ui = SceneUi::new(content(entry, frame.clone(), dialog, marks), palette);
+                if let Some(prepared) = &prepared { ui.apply_appearance(Arc::clone(prepared)); }
                 let handle = load(state, renderer, ui, rect, IcedSpace::Screen, Layer::SCENE.bits());
                 if let Some(registry) = state.inner.surface_mut().registry.as_mut() {
                     // Created at the registry's instance scale (1); laid out at the
@@ -521,7 +528,7 @@ pub(crate) fn reconcile(
         }
         surfaces.insert(
             name.clone(),
-            Surface { handle, world, output: target.output.clone(), revision, frame, rect, factor, autofocus_done, panel_marks: marks },
+            Surface { handle, world, output: target.output.clone(), revision, frame, rect, factor, autofocus_done, panel_marks: marks, appearance_generation },
         );
         store.set_mounted(name, mapped.then_some(Mounted { handle: handle.0, revision }));
         // Drawn on this output this frame.
