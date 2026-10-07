@@ -10,6 +10,206 @@ fn contextual() -> Session<u64, Context> {
     Session::with_context(session().host.consumer, Context(1))
 }
 
+async fn next_context(worker: &mut Worker<u64, Context>) -> Event<u64> {
+    tokio::time::timeout(Duration::from_secs(5), worker.next())
+        .await.unwrap().take().unwrap()
+}
+
+#[test]
+fn exhausted_authority_activation_preserves_applied_state_and_stops_requeueing() {
+    for has_applied in [false, true] {
+        let mut session = contextual();
+        if has_applied {
+            activate_first(&mut session);
+            session.host.consumer_mut().observe(1, snapshot(2, true));
+        }
+        let (_, jobs) = session.handle(Event::Wake, Some(1));
+        let event = authority(captured(&jobs));
+        session.activation_epoch = u64::MAX;
+        let before = session.applied_revision;
+        let (change, jobs) = session.handle_with(event, Some(1), |_| panic!("exhausted activation"));
+        assert!(change.is_none());
+        assert!(jobs.resource.is_none());
+        assert_eq!(session.applied_revision, before);
+        assert_eq!(session.activation_epoch, u64::MAX);
+        assert_eq!(session.preparation_evidence().fault.unwrap().code, "preparation_exhausted");
+        if has_applied {
+            assert_eq!(*session.host.presentation().unwrap().content(), 1);
+            assert_eq!(session.host.consumer().applied().unwrap().revision, Revision(1));
+        } else {
+            assert!(session.host.presentation().is_none());
+            assert!(session.host.consumer().applied().is_none());
+        }
+        for _ in 0..4 {
+            assert!(session.handle(Event::Wake, Some(1)).1.resource.is_none());
+        }
+        assert!(session.retry_preparation(Some(1)).is_err());
+        assert!(session.set_context(Context(2), Some(1)).is_err());
+        assert_eq!(session.local.value.0, 1);
+    }
+}
+
+#[tokio::test]
+async fn exhausted_fallback_activation_does_not_stage_or_consume_its_capture() {
+    install_fonts();
+    let mut session = Session::with_context(Consumer::for_app(binding(), "ced").unwrap(), Context(1));
+    let mut worker = Worker::contextual_with_host(|_, _, context: &Context| Ok(context.0), hermetic_host());
+    let (_, jobs) = session.handle(Event::Wake, None);
+    let original = jobs.fallback_request().unwrap();
+    worker.replace(jobs);
+    let event = next_context(&mut worker).await;
+    session.activation_epoch = u64::MAX;
+    let (change, jobs) = session.handle_with(event, None, |_| panic!("exhausted fallback activated"));
+    assert!(change.is_none());
+    assert!(jobs.resource.is_none());
+    assert!(session.host.presentation().is_none());
+    assert!(session.host.consumer().applied().is_none());
+    assert!(session.fallback_diagnostics().is_empty());
+    assert!(session.fallback.as_ref().unwrap().same_request(&original));
+    assert_eq!(session.preparation_evidence().fault.unwrap().code, "preparation_exhausted");
+    #[cfg(feature = "settings-cache")]
+    assert!(session.host.consumer().cache_save().is_none());
+}
+
+#[test]
+fn stale_revision_is_discarded_before_exhaustion_and_no_op_authority_keeps_its_source_epoch() {
+    let mut stale = contextual();
+    let (_, jobs) = stale.handle(Event::Wake, Some(1));
+    let event = authority(captured(&jobs));
+    stale.set_context(Context(2), Some(1)).unwrap();
+    stale.activation_epoch = u64::MAX;
+    stale.handle_with(event, Some(1), |_| panic!("stale exhausted activation"));
+    assert!(stale.preparation_evidence().fault.is_none());
+    assert!(!stale.activation_exhausted);
+
+    let mut session = contextual();
+    activate_first(&mut session);
+    let epoch = session.activation_epoch;
+    session.host.consumer_mut().observe(1, snapshot(2, false));
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    assert!(jobs.resource.is_none(), "unchanged projection needs no preparation");
+    assert_eq!(session.host.consumer().applied().unwrap().revision, Revision(2));
+    assert_eq!(session.activation_epoch, epoch);
+    let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
+    let capture = captured(&jobs);
+    let ResourceKind::Reprepare(source) = &capture.kind else { panic!("local source") };
+    assert_eq!(source.epoch, epoch);
+    assert_eq!(source.request.update.snapshot().revision, Revision(1));
+    let appearance = source.generic.as_ref().unwrap().clone();
+    assert!(session.handle(local(capture, Ok(Presentation { appearance, content: 22 })), Some(1)).0.is_some());
+    assert_eq!(session.host.consumer().applied().unwrap().revision, Revision(2));
+    assert_eq!(session.activation_epoch, epoch);
+    assert_eq!(*session.host.presentation().unwrap().content(), 22);
+}
+
+#[cfg(feature = "settings-cache")]
+#[tokio::test]
+async fn cold_cache_and_local_rebuild_keep_verified_a_while_current_selects_b() {
+    install_fonts();
+    for unavailable in [false, true] {
+        let assets = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let host = || ResourceHost::new(vec![assets.path().to_owned()].into_iter().collect());
+        publish_set(assets.path(), "a");
+        let mut producer = contextual();
+        let mut worker = Worker::contextual_with_host(|_, _, context: &Context| Ok(context.0), host());
+        let (_, jobs) = producer.handle(Event::Wake, Some(1));
+        worker.replace(jobs);
+        let event = next_context(&mut worker).await;
+        assert!(producer.handle(event, Some(1)).0.is_some());
+        let binding_a = producer.host.presentation().unwrap().appearance().resources()
+            .unwrap().binding().unwrap().clone();
+        assert_eq!(binding_a.set_id, "a");
+        let save = producer.host.consumer().cache_save().unwrap();
+        let mut writer = settings::cache::Writer::open(cache.path(), producer.host.consumer()).unwrap();
+        assert_eq!(writer.write(&save).unwrap(), settings::cache::WriteOutcome::Written);
+        drop(writer);
+        drop(worker);
+        drop(producer);
+
+        std::fs::remove_file(assets.path().join(assets::CURRENT_LINK)).unwrap();
+        publish_set(assets.path(), "b");
+        let sample = snapshot(0, false);
+        let fresh = host().prepare(
+            Projection::new(&sample.effective["app:ced"]).unwrap(),
+            None, None, ResourceRequirements::empty(), &mut || Ok(()),
+        ).unwrap();
+        assert_eq!(fresh.resources().unwrap().binding().unwrap().set_id, "b",
+            "an unconstrained fresh reader really sees B");
+        if unavailable {
+            std::fs::remove_file(assets.path().join("sets/a/fonts/Sans.ttf")).unwrap();
+        }
+        let mut cold = Session::with_context(Consumer::for_app(binding(), "ced").unwrap(), Context(1));
+        let mut worker = Worker::contextual_with_host(|_, _, context: &Context| Ok(context.0), host())
+            .with_cache_directory(cache.path().to_owned());
+        let (_, jobs) = cold.handle(Event::Wake, None);
+        worker.replace(jobs);
+        let event = next_context(&mut worker).await;
+        assert!(cold.handle(event, None).0.is_some());
+        assert!(!cold.host.consumer().is_confirmed());
+        assert!(cold.host.consumer().current().is_none());
+        assert!(cold.host.consumer().cache_save().is_none());
+        let actual = cold.host.presentation().unwrap().appearance().resources()
+            .unwrap().binding().unwrap().clone();
+        if unavailable {
+            assert_eq!(cold.host.kind(), Some(settings::fallback::PresentationKind::Embedded));
+            assert_eq!(actual.set_id, "b");
+            assert!(!cold.fallback_diagnostics().is_empty(), "missing cached A stays visible");
+        } else {
+            assert_eq!(cold.host.kind(), Some(settings::fallback::PresentationKind::Cached));
+            assert_eq!(actual, binding_a);
+        }
+        let applied = cold.host.consumer().applied().unwrap().clone();
+        let (_, jobs) = cold.set_context(Context(2), None).unwrap();
+        assert!(jobs.work.is_none());
+        assert!(jobs.save.is_none());
+        worker.replace(jobs);
+        let event = next_context(&mut worker).await;
+        assert!(cold.handle(event, None).0.is_some());
+        assert_eq!(*cold.host.presentation().unwrap().content(), 2);
+        assert_eq!(cold.host.presentation().unwrap().appearance().resources()
+            .unwrap().binding().unwrap(), &actual);
+        assert_eq!(cold.host.consumer().applied().unwrap().revision, applied.revision);
+        assert!(cold.host.consumer().cache_save().is_none());
+        assert!(cold.preparation_evidence().current);
+    }
+}
+
+#[cfg(feature = "settings-cache")]
+#[tokio::test]
+async fn in_flight_activated_save_survives_local_revision_without_duplicate_write() {
+    install_fonts();
+    let directory = tempfile::tempdir().unwrap();
+    let mut session = contextual();
+    activate_first(&mut session);
+    let mut worker = Worker::contextual_with_host(|_, _, context: &Context| Ok(context.0), hermetic_host())
+        .with_cache_directory(directory.path().to_owned());
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    let save = jobs.save.clone().unwrap();
+    worker.replace(jobs);
+    worker.start();
+    assert!(matches!(&worker.running, Some(Running::Save { .. })));
+    let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
+    assert!(save.same_capture(jobs.save.as_ref().unwrap()));
+    worker.replace(jobs);
+    assert!(matches!(&worker.running, Some(Running::Save { .. })), "local change retains the in-flight slot");
+    let event = next_context(&mut worker).await;
+    assert!(matches!(&event, Event::Saved(_, Ok(settings::cache::WriteOutcome::Written))));
+    session.handle(event, Some(1));
+    assert_eq!(session.cache_persisted(), Some(&save.identity()));
+    assert!(session.cache_fault().is_none());
+    let event = next_context(&mut worker).await;
+    assert!(session.handle(event, Some(1)).0.is_some());
+    assert_eq!(*session.host.presentation().unwrap().content(), 2);
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    assert!(save.same_capture(jobs.save.as_ref().unwrap()));
+    worker.replace(jobs);
+    assert!(!worker.cache.as_ref().unwrap().pending(), "no duplicate activated write");
+    assert_eq!(settings::cache::load(directory.path(), session.host.consumer()).unwrap().snapshot().revision,
+        save.identity().revision);
+    assert!(session.preparation_evidence().current);
+}
+
 fn captured(jobs: &Jobs<Context>) -> Resource<Context> {
     jobs.resource.as_ref().expect("resource selected").clone()
 }

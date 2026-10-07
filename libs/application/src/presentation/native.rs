@@ -77,6 +77,7 @@ pub struct Session<T, C = ()> {
     applied_revision: Option<PreparationRevision>,
     active: Option<ActiveSource>,
     activation_epoch: u64,
+    activation_exhausted: bool,
     local_fault: Option<Diagnostic>,
     failed_local: Option<LocalKey>,
     legacy_completion: bool,
@@ -177,6 +178,7 @@ impl<T, C> Session<T, C> {
             applied_revision: None,
             active: None,
             activation_epoch: 0,
+            activation_exhausted: false,
             local_fault: None,
             failed_local: None,
             legacy_completion: false,
@@ -314,6 +316,7 @@ impl<T, C> Session<T, C> {
                     }
                     // Check the activation identity before staging or acknowledging.
                     if self.activation_epoch.checked_add(1).is_none() {
+                        self.activation_exhausted = true;
                         self.local_fault = Some(exhausted("activation"));
                         return None;
                     }
@@ -406,6 +409,7 @@ impl<T, C> Session<T, C> {
             && completion.result.is_ok()
             && self.host.consumer().is_current(&completion.update)
         {
+            self.activation_exhausted = true;
             self.local_fault = Some(exhausted("activation"));
             return None;
         }
@@ -479,6 +483,9 @@ impl<T, C> Session<T, C> {
     }
 
     fn next_revision(&self) -> Result<PreparationRevision, Diagnostic> {
+        if self.activation_exhausted {
+            return Err(exhausted("activation"));
+        }
         self.local
             .revision
             .0
@@ -545,7 +552,7 @@ impl<T, C> Session<T, C> {
         } else {
             now + BOOTSTRAP_BUDGET
         };
-        let kind = self
+        let kind = if self.activation_exhausted { None } else { self
             .prepare
             .clone()
             .map(ResourceKind::Prepare)
@@ -569,7 +576,7 @@ impl<T, C> Session<T, C> {
                     })
                     .cloned()
                     .map(ResourceKind::Reprepare)
-            });
+            }) };
         Jobs {
             work: self.host.consumer().current_work().cloned(),
             deadline,
