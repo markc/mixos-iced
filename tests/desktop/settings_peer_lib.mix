@@ -1,0 +1,120 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- settings_peer_lib.mix — native roster-mode peer fixture support for the
+-- settings acceptance gates. Every call names its broker record explicitly
+-- (no exported or inherited broker environment is consulted), matching the
+-- explicit broker/root discipline of settings_host_lib. All observations
+-- are bounded; nothing here waits without a budget.
+--
+--   $p = require("settings_peer_lib.mix")
+--   $p.call($mix, $broker, service, verb, body, timeout) -> {rc, result}
+--   $p.rpc($mix, $broker, service, verb, body, timeout) -> result | raise
+--   $p.qualified($mix, $broker, node, service, verb, body, timeout)
+--   $p.verify_owner($mix, $broker)         exact node + spawned PID | raise
+--   $p.verify_peers($mix, $broker, $other) exact roster + source | raise
+--   $p.verify_unverified($mix, $broker)    honest Unverified posture | raise
+--   $p.qualified_owner($mix, $from, $target, timeout)
+--   $p.stop($child)                        bounded stop + reap | raise
+
+-- The explicit per-operation environment for one broker record.
+fn bus_env($broker)
+  return {MIXOS_NODED_URL:$broker.url,COSMIX_NODED_URL:$broker.url,
+    MIXOS_NODE_CONFIG:$broker.conf,COSMIX_NODE_CONFIG:$broker.conf,
+    MIXOS_RUN:$broker.dir .. "/run",MIXOS_ETC:$broker.dir .. "/etc",MIXOS_VAR:$broker.dir .. "/var",
+    HOME:$broker.dir .. "/home",MIXOS_BROKER_ACCOUNT:$broker.account}
+end
+
+-- One Bus request against one explicit broker record. Pass 5 (or nil) for
+-- the ordinary send deadline; routed operations pass an explicit bounded
+-- timeout instead of raising every quick deadline.
+fn call($mix, $broker, $service, $verb, $body, $timeout)
+  $seconds = $timeout ?? 5
+  $script = '$body = ' .. json_encode(json_encode($body)) .. "\nsend " .. json_encode($service) ..
+    " " .. json_encode($verb) .. ' body=$body timeout=' .. to_string($seconds) .. "\n" ..
+    'print($rc)' .. "\n" .. 'print(json_encode($result))' .. "\n"
+  $reply = run_argv([$mix,"-c",$script],{timeout:$seconds + 5,env:bus_env($broker),max_output:2000000})
+  $lines = split(trim($reply.stdout),"\n")
+  if not $reply.ok or $reply.stdout_truncated or len($lines) < 2 then return {rc:-9,result:trim($reply.stdout .. $reply.stderr)} end
+  $value = json_parse(join(slice($lines,1),"\n"))
+  if type($value) == "string" and starts_with($value,"{") then $value=json_parse($value) end
+  return {rc:to_number($lines[0]),result:$value}
+end
+
+fn rpc($mix, $broker, $service, $verb, $body, $timeout)
+  $reply = call($mix, $broker, $service, $verb, $body, $timeout)
+  if $reply.rc != 0 then raise("PEER_RPC",$verb .. ": " .. json_encode($reply)) end
+  return $reply.result
+end
+
+-- Route to a service on another node: the qualified address changes, the
+-- verb stays the wire verb (noded.info, never noded.<node>.info).
+fn qualified($mix, $broker, $node, $service, $verb, $body, $timeout)
+  return call($mix, $broker, $service .. "." .. $node .. ".bus", $verb, $body, $timeout)
+end
+
+-- noded.info must match the configured node and the exact spawned PID. A
+-- pong-only readiness result is rejected, never accepted.
+fn verify_owner($mix, $broker)
+  $info = rpc($mix, $broker, "noded", "noded.info", {}, 5)
+  if $info.node != $broker.node or $info.noded == nil or $info.noded.pid != $broker.pid then
+    raise("PEER_OWNER","noded.info identity mismatch: " .. json_encode($info))
+  end
+  return $info
+end
+
+-- noded.peers must report this node, the etc-roster-fallback source, and
+-- exactly the intended other node/IP/port. An unexpected source means the
+-- routes did not come from the owned roster, so refuse to proceed.
+fn verify_peers($mix, $broker, $other)
+  $peers = rpc($mix, $broker, "noded", "noded.peers", {}, 5)
+  if $peers.source != "etc-roster-fallback" or $peers.node != $broker.node then
+    raise("PEER_ROSTER","unexpected roster source/identity: " .. json_encode($peers))
+  end
+  if len($peers.peers) != 1 then
+    raise("PEER_ROSTER","expected exactly the intended peer: " .. json_encode($peers.peers))
+  end
+  $peer = $peers.peers[0]
+  if $peer.name != $other.node or $peer.wg_ip != $other.listen_ip or $peer.port != $other.port then
+    raise("PEER_ROSTER","peer entry mismatch: " .. json_encode($peer))
+  end
+  return $peers
+end
+
+-- Honest Unverified posture: an unexpected Verified root means fixture
+-- contamination and must not be silently reinterpreted.
+fn verify_unverified($mix, $broker)
+  $inv = rpc($mix, $broker, "noded", "noded.inventory", {}, 5)
+  if $inv.posture != "unverified" or $inv.reason == nil then
+    raise("PEER_POSTURE","unexpected inventory posture: " .. json_encode($inv))
+  end
+  return $inv
+end
+
+-- Qualified noded.info through the native mesh in one direction: from
+-- `$from`'s broker, target noded.<$target.node>.bus, and require
+-- $target's exact PID/node in the answer.
+fn qualified_owner($mix, $from, $target, $timeout)
+  $reply = qualified($mix, $from, $target.node, "noded", "noded.info", {}, $timeout ?? 10)
+  if $reply.rc != 0 then raise("PEER_ROUTE","qualified noded.info refused: " .. json_encode($reply)) end
+  if $reply.result.node != $target.node or $reply.result.noded == nil or $reply.result.noded.pid != $target.pid then
+    raise("PEER_ROUTE","qualified identity mismatch: " .. json_encode($reply.result))
+  end
+  return $reply.result
+end
+
+-- Bounded stop + reap; a child that survives SIGTERM and SIGKILL is a
+-- teardown failure, never evidence of successful shutdown.
+fn stop($child)
+  if not process_alive($child) then return end
+  $sent = kill($child, 15)
+  for $attempt = 1 to 40
+    if not process_alive($child) then return end
+    sleep(0.05)
+  end
+  $sent = kill($child, 9)
+  for $attempt = 1 to 40
+    if not process_alive($child) then return end
+    sleep(0.05)
+  end
+  raise("TEARDOWN","Owned child did not stop")
+end

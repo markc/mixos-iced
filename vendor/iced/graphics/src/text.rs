@@ -181,14 +181,46 @@ impl FontSystem {
             }
         }
 
-        let _ = self
+        let loaded = self
             .raw
             .db_mut()
             .load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(
                 bytes.into_owned(),
             )));
 
-        self.version = Version(self.version.0 + 1);
+        // Rebuild the derived indexes and clear the match cache after the
+        // successful mutation; unparsable bytes leave the system untouched.
+        if !loaded.is_empty() {
+            self.raw.refresh_database();
+
+            self.version = Version(self.version.0 + 1);
+        }
+    }
+
+    /// Registers new font faces and pinned alias policies in one atomic
+    /// cosmic-text transaction, and bumps the [`FontSystem::version`] exactly
+    /// once when faces or policies were actually added. A transaction that is
+    /// empty or identical to an already installed policy is a no-op and does
+    /// not change the version.
+    pub fn register_fonts(
+        &mut self,
+        registration: cosmic_text::FontRegistration,
+    ) -> Result<cosmic_text::FontRegistrationResult, cosmic_text::FontRegistrationError> {
+        // The version must be able to advance before the cosmic transaction
+        // commits; the hypothetical overflow is caught up front rather than
+        // reported as an error after the mutation.
+        assert!(
+            self.version.0 != u32::MAX,
+            "iced_graphics font system version overflow"
+        );
+
+        let result = self.raw.register_fonts(registration)?;
+
+        if !result.added_faces.is_empty() || result.policies_added > 0 {
+            self.version = Version(self.version.0 + 1);
+        }
+
+        Ok(result)
     }
 
     /// Returns an iterator over the family names of all font faces
@@ -212,6 +244,13 @@ impl FontSystem {
 /// A version number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Version(u32);
+
+impl Version {
+    /// Returns the font database revision for bounded registration evidence.
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
 
 /// A weak reference to a [`cosmic_text::Buffer`] that can be drawn.
 #[derive(Debug, Clone)]
@@ -312,17 +351,7 @@ fn to_family(family: font::Family) -> cosmic_text::Family<'static> {
 }
 
 fn to_weight(weight: font::Weight) -> cosmic_text::Weight {
-    match weight {
-        font::Weight::Thin => cosmic_text::Weight::THIN,
-        font::Weight::ExtraLight => cosmic_text::Weight::EXTRA_LIGHT,
-        font::Weight::Light => cosmic_text::Weight::LIGHT,
-        font::Weight::Normal => cosmic_text::Weight::NORMAL,
-        font::Weight::Medium => cosmic_text::Weight::MEDIUM,
-        font::Weight::Semibold => cosmic_text::Weight::SEMIBOLD,
-        font::Weight::Bold => cosmic_text::Weight::BOLD,
-        font::Weight::ExtraBold => cosmic_text::Weight::EXTRA_BOLD,
-        font::Weight::Black => cosmic_text::Weight::BLACK,
-    }
+    cosmic_text::Weight(weight.value())
 }
 
 fn to_stretch(stretch: font::Stretch) -> cosmic_text::Stretch {

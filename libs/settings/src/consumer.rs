@@ -94,6 +94,11 @@ pub struct Update {
     kind: PresentationKind,
     snapshot: Arc<Snapshot>,
     changes: ChangePlan,
+    /// The renderer-neutral binding this stage's preparation verified.
+    /// Fallback stages carry it and a plain `acknowledge` preserves it
+    /// verbatim; current stages carry none and the host computes the binding
+    /// through `acknowledge_resources`.
+    resources: Option<crate::ResourceBinding>,
 }
 impl Update {
     /// Compare a stage capture without walking its potentially large snapshot.
@@ -110,6 +115,11 @@ impl Update {
     }
     pub fn changes(&self) -> ChangePlan {
         self.changes
+    }
+    /// The resource binding this stage's preparation verified, carried so the
+    /// ordinary acknowledgement preserves it without a manual host pairing.
+    pub fn resources(&self) -> Option<&crate::ResourceBinding> {
+        self.resources.as_ref()
     }
 }
 
@@ -136,6 +146,7 @@ pub struct Consumer {
     applied_kind: PresentationKind,
     #[cfg(feature = "cache")]
     applied_serial: u64,
+    applied_binding: Option<crate::ResourceBinding>,
     fallback_serial: u64,
     fault: Option<Diagnostic>,
     fallback_fault: Option<Diagnostic>,
@@ -190,6 +201,7 @@ impl Consumer {
             applied_kind: PresentationKind::Embedded,
             #[cfg(feature = "cache")]
             applied_serial: 0,
+            applied_binding: None,
             fallback_serial: 0,
             fault: None,
             fallback_fault: None,
@@ -253,6 +265,7 @@ impl Consumer {
             context: self.context.clone(),
             shell: self.shell,
             retained: self.buffered.clone(),
+            retained_binding: self.applied_binding.clone(),
         })
     }
     pub fn complete_fallback(
@@ -291,6 +304,7 @@ impl Consumer {
             snapshot: prepared.snapshot,
             changes,
             kind: prepared.kind,
+            resources: prepared.resources.clone(),
         });
         true
     }
@@ -319,12 +333,13 @@ impl Consumer {
         ) {
             return None;
         }
-        Some(crate::cache::Save::capture(
+        Some(crate::cache::Save::capture_resources(
             self.owner,
             self.applied_serial,
             snapshot.clone(),
             self.context.clone(),
             self.shell,
+            self.applied_binding.clone(),
         ))
     }
     pub fn pending(&self) -> Option<&Update> {
@@ -612,6 +627,15 @@ impl Consumer {
                 "Unsupported settings/design schema",
             ));
         }
+        if let Some(resources) = &snapshot.desktop.appearance.resources
+            && let Err(error) = resources.validate("appearance.resources")
+        {
+            return Err(Diagnostic::new(
+                "invalid_snapshot",
+                "appearance.resources",
+                error.message,
+            ));
+        }
         if snapshot.incarnation.is_empty()
             || snapshot.incarnation.len() > 128
             || !snapshot.effective.contains_key(&self.context)
@@ -729,6 +753,7 @@ impl Consumer {
                 kind: PresentationKind::Current,
                 snapshot,
                 changes,
+                resources: None,
             });
         }
     }
@@ -744,8 +769,30 @@ impl Consumer {
                 .is_some_and(|p| p.serial == update.serial)
     }
     /// Invoke after the host atomically activated all staged resources/defaults.
+    /// The prepared binding of a fallback stage is carried on the update and
+    /// preserved verbatim; current stages carry none, so a resource-aware host
+    /// computes their binding through `acknowledge_resources`.
     pub fn acknowledge(&mut self, update: &Update) -> bool {
+        self.acknowledge_resources(update, update.resources.clone())
+    }
+    /// Resource-aware activation acknowledgement: the host passes the
+    /// renderer-neutral binding of the resources it prepared for this exact
+    /// update. The binding shares the update's serial and becomes the cache
+    /// capture's binding; a serial cannot change its resource binding. A
+    /// fallback stage whose preparation recorded a binding refuses any other
+    /// binding rather than silently replacing the prepared identity.
+    pub fn acknowledge_resources(
+        &mut self,
+        update: &Update,
+        resources: Option<crate::ResourceBinding>,
+    ) -> bool {
         if !self.is_current(update) {
+            return false;
+        }
+        if update.kind != PresentationKind::Current
+            && update.resources.is_some()
+            && resources != update.resources
+        {
             return false;
         }
         self.applied = Some(update.snapshot.clone());
@@ -754,6 +801,7 @@ impl Consumer {
         {
             self.applied_serial = self.serial();
         }
+        self.applied_binding = resources;
         self.pending = None;
         if update.kind == PresentationKind::Current {
             self.fault = None;

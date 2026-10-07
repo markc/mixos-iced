@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-pub const HELP: &str = "term: tabbed Wayland Mix terminal\nMesh-open surface (2026-09-15 law): under the default posture (MIXOS_MESH_OPEN unset or != \"0\") this global name serves every verb below to any mesh or local caller, no grant required. Verbs are TARGETLESS — unless explicit pane/tab selectors are supplied, they act on the active tab/pane of the instance holding this name at delivery time (term.type excepted: it requires pane or tab); both iced term and Bevy bterm also start target-bound control (instance/incarnation/pane_generation) on the allocated native-session route: list/session/tabs/panes/snapshot/type, execute, exec.result/cancel, task.submit/result/cancel, operation, props.get/set and tab/pane mutations. Use the allocated route HELP for target envelopes. These are not targetless verbs on this global name. Requires local noded >= 0.16.8 native ingress, MIXOS_RUN=/run/mixos and socket directory 0755; unavailable ingress leaves graphics working. MIXOS_MESH_OPEN=0 restores the strict diagnostic-only lane (INFO/HELP; everything else FORBIDDEN).\nINFO / HELP\nterm.tabs {}: list id, active, title, cols, rows, child_pid, revision, instance (this process's token)\nterm.tab.new {cwd?:<absolute existing directory>, title?:<string>}: open and activate a tab; the reply adds binding=granted (native launch grant delivered, enrolment async), graphics-only (no usable grant) or unavailable (no native session)\nterm.tab.select {\"id\":<integer>}: select tab\nterm.tab.close {\"id\":<integer>}: close tab; last tab quits\nterm.panes {tab?:<integer>}: list selected tab (default active tab) pane ids, focus, dimensions, child pids, logical geometry, tab, revision and instance (last layout only; hidden tabs may be stale or zero)\nterm.pane.split {\"dir\":\"h|horizontal|v|vertical\"}\nterm.pane.close {}: close active pane; last pane closes tab\nterm.pane.select {\"id\":<integer>}: select pane in active tab\nterm.snapshot {pane?:<integer>, tab?:<integer>, contents?:<boolean=true>, scrollback_lines?:<integer=0, max 10000>}: read-only selected live screen (offset zero, default active); buffered history above the live screen is capped at available lines; text has a 512 KiB encoded-byte budget, returns complete oldest-first rows with truncated and lines_returned; formatting happens after releasing capture locks; pane+tab must agree; contents=false omits text but keeps dimensions, cursor, child pid, byte counters and DIAGNOSTIC timings\nterm.scroll {pane?:<integer>, lines?:<signed integer>, page?:<signed integer>, to?:top|bottom}: exactly one of lines/page/to; positive lines or pages move up into history; pages overlap by one row; viewport only, snapshots stay live; returns JSON {pane,display_offset,history_lines}; stale pane is not-found; changed offsets publish pane.changed kind=scrolled when watching\nterm.type {pane:<integer> | tab:<integer>, instance?:<integer>, \"text\":\"<string>\"}: ASCII synthetic keys without changing focus; pane or tab is REQUIRED, neither is refused {error_code:INVALID_ARGUMENT} and never defaults to the active pane. pane is the SAFE selector; tab means that tab's active pane AT DELIVERY, so it still follows focus within the tab; both must agree. Pane/tab ids are per-process counters, so pass back the instance that term.tabs/term.panes/INFO reported: a different process refuses INVALID_ARGUMENT instead of typing into its own pane of that id. Keys go through the keyboard encoder, max 8192 bytes including JSON envelope; newline=Enter, tab, backspace, Ctrl+C/D supported; revokes any delegated control writer like real keys.\nterm.tab.title {id:<integer>, title:<string>}: pin a user title (controls stripped, max 256 UTF-8 bytes); empty after sanitising clears the pin and restores the active pane OSC title\nterm.tab.move {id:<integer>, index:<integer>}: reorder tab, clamping index to 0..len-1; focus is preserved\nterm.props.watch {}: first subscribe through noded topic.subscribe to term.tabs.changed, term.pane.changed and term.title.changed; then call this verb to enable caller-free publishing and return JSON {topics,revision}; then read current state. Bodies are {tab,pane,kind,revision}; revision is a separate monotonic event sequence, not the legacy layout revision. Bounded best-effort delivery; on a gap or reconnect read current state.\nBefore the first tab attaches, mutating verbs return non-zero rc with error starting. Retry after attach, including with the same request_id; starting refusals are not cached.\nEmpty body is {} for no-arg verbs; all term.* bodies must be JSON objects.\nAny MUTATING verb's body (tab.*, pane.*, type, scroll) may add \"request_id\":\"<string>\": a resend of the same request (same verb and arguments, key order free) replays the recorded reply instead of re-executing (last 128 remembered) — use it on every mutation you might resend. NOT recorded (the same id may be retried with the request fixed): starting, an oversized body, and every validation refusal — malformed JSON, unexpected/missing/mistyped arguments and any invalid-argument or INVALID_ARGUMENT reply (e.g. term.type without pane/tab, a pane/tab disagreement, a foreign instance). Recorded and replayed: successes and state refusals such as not-found, non-ASCII text and the tab limit. A reused id whose first attempt WAS recorded, sent with a different verb or arguments, is refused as a conflict. The replay is the recorded outcome of the ORIGINAL attempt; retrying after changing state (e.g. after freeing the tab limit) needs a fresh id. Reads never consult the cache and always answer current state.\nReplies echo the identity acted on as key=value tokens — tab=<id> pane=<id> revision=<tab-set revision> (tab.close: revision only; pane.close: tab and revision; list lines: revision, panes also tab) — so a caller can detect drift after the fact; it is detection, not binding.\nDIAGNOSTIC timings are process-side, never presented-frame evidence.";
+pub const HELP: &str = "term: tabbed Wayland Mix terminal\nMesh-open surface (2026-09-15 law): under the default posture (MIXOS_MESH_OPEN unset or != \"0\") this global name serves every verb below to any mesh or local caller, no grant required. Verbs are TARGETLESS — unless explicit pane/tab selectors are supplied, they act on the active tab/pane of the instance holding this name at delivery time (term.type excepted: it requires pane or tab); both iced term and Bevy bterm also start target-bound control (instance/incarnation/pane_generation) on the allocated native-session route: list/session/tabs/panes/snapshot/type, execute, exec.result/cancel, task.submit/result/cancel, operation, props.get/set and tab/pane mutations. Use the allocated route HELP for target envelopes. These are not targetless verbs on this global name. Requires local noded >= 0.16.8 native ingress, MIXOS_RUN=/run/mixos and socket directory 0755; unavailable ingress leaves graphics working. MIXOS_MESH_OPEN=0 restores the strict diagnostic-only lane (INFO/HELP; everything else FORBIDDEN).\nINFO / HELP\nterm.tabs {}: list id, active, title, cols, rows, child_pid, revision, instance (this process's token)\nterm.tab.new {cwd?:<absolute existing directory>, title?:<string>}: open and activate a tab; the reply adds binding=granted (native launch grant delivered, enrolment async), graphics-only (no usable grant) or unavailable (no native session)\nterm.tab.select {\"id\":<integer>}: select tab\nterm.tab.close {\"id\":<integer>}: close tab; last tab quits\nterm.panes {tab?:<integer>}: list selected tab (default active tab) pane ids, focus, dimensions, child pids, logical geometry, tab, revision and instance (last layout only; hidden tabs may be stale or zero)\nterm.pane.split {\"dir\":\"h|horizontal|v|vertical\"}\nterm.pane.close {}: close active pane; last pane closes tab\nterm.pane.select {\"id\":<integer>}: select pane in active tab\nterm.snapshot {pane?:<integer>, tab?:<integer>, contents?:<boolean=true>, scrollback_lines?:<integer=0, max 10000>}: read-only selected live screen (offset zero, default active); buffered history above the live screen is capped at available lines; text has a 512 KiB encoded-byte budget, returns complete oldest-first rows with truncated and lines_returned; formatting happens after releasing capture locks; pane+tab must agree; contents=false omits text but keeps dimensions, cursor, child pid, byte counters and DIAGNOSTIC timings\nterm.scroll {pane?:<integer>, lines?:<signed integer>, page?:<signed integer>, to?:top|bottom}: exactly one of lines/page/to; positive lines or pages move up into history; pages overlap by one row; viewport only, snapshots stay live; returns JSON {pane,display_offset,history_lines}; stale pane is not-found; changed offsets publish pane.changed kind=scrolled when watching\nterm.type {pane:<integer> | tab:<integer>, instance?:<integer>, \"text\":\"<string>\"}: ASCII synthetic keys without changing focus; pane or tab is REQUIRED, neither is refused {error_code:INVALID_ARGUMENT} and never defaults to the active pane. pane is the SAFE selector; tab means that tab's active pane AT DELIVERY, so it still follows focus within the tab; both must agree. Pane/tab ids are per-process counters, so pass back the instance that term.tabs/term.panes/INFO reported: a different process refuses INVALID_ARGUMENT instead of typing into its own pane of that id. Keys go through the keyboard encoder, max 8192 bytes including JSON envelope; newline=Enter, tab, backspace, Ctrl+C/D supported; revokes any delegated control writer like real keys.\nterm.tab.title {id:<integer>, title:<string>}: pin a user title (controls stripped, max 256 UTF-8 bytes); empty after sanitising clears the pin and restores the active pane OSC title\nterm.tab.move {id:<integer>, index:<integer>}: reorder tab, clamping index to 0..len-1; focus is preserved\nterm.props.watch {}: first subscribe through noded topic.subscribe to term.tabs.changed, term.pane.changed and term.title.changed; then call this verb to enable caller-free publishing and return JSON {topics,revision}; then read current state. Bodies are {tab,pane,kind,revision}; revision is a separate monotonic event sequence, not the legacy layout revision. Bounded best-effort delivery; on a gap or reconnect read current state.\napp.describe {}: frontend-answered over this same name, not by a core handler — serialized settings evidence and cache state, the actual served name, the computed chrome extent and the prepared UI typography. INFO and HELP remain the core's own answers.\nBefore the first tab attaches, mutating verbs return non-zero rc with error starting. Retry after attach, including with the same request_id; starting refusals are not cached.\nEmpty body is {} for no-arg verbs; all term.* bodies must be JSON objects.\nAny MUTATING verb's body (tab.*, pane.*, type, scroll) may add \"request_id\":\"<string>\": a resend of the same request (same verb and arguments, key order free) replays the recorded reply instead of re-executing (last 128 remembered) — use it on every mutation you might resend. NOT recorded (the same id may be retried with the request fixed): starting, an oversized body, and every validation refusal — malformed JSON, unexpected/missing/mistyped arguments and any invalid-argument or INVALID_ARGUMENT reply (e.g. term.type without pane/tab, a pane/tab disagreement, a foreign instance). Recorded and replayed: successes and state refusals such as not-found, non-ASCII text and the tab limit. A reused id whose first attempt WAS recorded, sent with a different verb or arguments, is refused as a conflict. The replay is the recorded outcome of the ORIGINAL attempt; retrying after changing state (e.g. after freeing the tab limit) needs a fresh id. Reads never consult the cache and always answer current state.\nReplies echo the identity acted on as key=value tokens — tab=<id> pane=<id> revision=<tab-set revision> (tab.close: revision only; pane.close: tab and revision; list lines: revision, panes also tab) — so a caller can detect drift after the fact; it is detection, not binding.\nDIAGNOSTIC timings are process-side, never presented-frame evidence.";
 /// The one spelling the handlers in this crate are written in.
 ///
 /// D1 (TODO-term, 2026-09-21): two binaries cannot both own the global Bus
@@ -227,26 +227,60 @@ fn next_name(base: &str, refused: &str) -> Option<String> {
     (refused == base).then(|| format!("{base}-{}", std::process::id()))
 }
 
+/// T10's fallback ladder re-gated for the adapter's nonblocking start: only
+/// the BASE name's explicit name-taken refusal — and only while nothing has
+/// connected yet (`generation` zero) — earns one retry as `<base>-<pid>`. The
+/// pid names the one process that can own the name, so no other live process
+/// can claim the result. A refusal of the suffixed name, a refusal after the
+/// first connection, or any non-name-taken failure answers None: final, never
+/// a third name, never a retry over a connection that once worked. The caller
+/// decides "explicit name taken" from the broker's refusal message.
+pub fn pid_fallback(
+    base: &str,
+    current: &str,
+    name_taken: bool,
+    generation: u64,
+) -> Option<String> {
+    (generation == 0 && name_taken && current == base)
+        .then(|| format!("{base}-{}", std::process::id()))
+}
+
 /// Where the serving loop's commands come from. The broker's bounded lane in
 /// production; a plain channel under test, so the loop itself runs without a
 /// broker.
-trait Incoming {
-    fn next(&mut self) -> impl std::future::Future<Output = Option<BoundedIncomingEvent>>;
+///
+/// PUBLIC so the desktop adapter can feed the serve loop through its own
+/// bounded queue while multiplexing the settings lane on the same worker and
+/// connection. `next` must be cancellation-safe: the loop polls it inside
+/// `tokio::select!`, so a dropped poll must not lose the awaited command —
+/// both impls below (`mpsc::recv`) satisfy that, and never separate consuming
+/// a command from an await. The adapter runs the loop as a spawned task, so
+/// the implementor and the awaited future must both be `Send`.
+pub trait Incoming: Send {
+    fn next(&mut self) -> impl std::future::Future<Output = Option<BoundedIncomingEvent>> + Send;
 }
 impl Incoming for ::bus::native_client::BoundedIncomingReceiver {
-    fn next(&mut self) -> impl std::future::Future<Output = Option<BoundedIncomingEvent>> {
+    fn next(&mut self) -> impl std::future::Future<Output = Option<BoundedIncomingEvent>> + Send {
+        self.recv()
+    }
+}
+/// The adapter's bounded command queue: `mpsc::recv` is cancellation-safe.
+impl Incoming for tokio::sync::mpsc::Receiver<BoundedIncomingEvent> {
+    fn next(&mut self) -> impl std::future::Future<Output = Option<BoundedIncomingEvent>> + Send {
         self.recv()
     }
 }
 
-/// Where the serving loop's replies and completion notes go.
-trait Peer {
+/// Where the serving loop's replies and completion notes go. `Sync` so the
+/// shared `Arc<SupervisedClient>` peer can be borrowed across a spawned serve
+/// task, and every awaited future is `Send` for the same reason.
+trait Peer: Sync {
     fn reply(
         &self,
         command: &IncomingCommand,
         rc: u8,
         body: &str,
-    ) -> impl std::future::Future<Output = ()>;
+    ) -> impl std::future::Future<Output = ()> + Send;
     fn completed(
         &self,
         note: CompletionNote,
@@ -475,6 +509,52 @@ async fn drain_notifications<F, Fut>(
     })
     .await;
     tasks.abort_all();
+}
+
+/// The narrow production entry the desktop adapter calls: serve the verb lane
+/// over `incoming` against the already-registered `client`, then drain the
+/// final reap's completion notes — each phase under its existing 2 s budget.
+///
+/// Deliberately the only loop entry exposed alongside [`Incoming`]: the panic
+/// guard, the dispatch and the reply cache stay private, so the adapter cannot
+/// bypass the replay rules or the abort-on-torn-state boundary. The caller
+/// owns the notification [`tokio::task::JoinSet`], exactly as `start_at` does:
+/// the drain above has already aborted every task still in it when this
+/// returns, and the caller may still abort it if an outer deadline cuts this
+/// whole future short.
+pub async fn serve_registered(
+    service: &str,
+    terminal: &Mutex<TabSet>,
+    cleanup: &Cleanup,
+    notify_rx: &mut tokio::sync::mpsc::UnboundedReceiver<CompletionNote>,
+    notifications: &mut tokio::task::JoinSet<()>,
+    incoming: &mut impl Incoming,
+    client: &Arc<SupervisedClient>,
+) -> usize {
+    let turns = serve(
+        service,
+        terminal,
+        cleanup,
+        notify_rx,
+        notifications,
+        incoming,
+        client,
+    )
+    .await;
+    // The final reap can queue notes just after the TabSet becomes empty.
+    // Wait for channel closure and outstanding sends together, under one total
+    // deadline (not two seconds per pane), before the client is closed.
+    drain_notifications(
+        notify_rx,
+        notifications,
+        |note| {
+            let client = client.clone();
+            async move { notify_complete(&client, &note).await }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+    turns
 }
 
 /// Emit one `interact.notify` (notify.v1) for a self-exited pane. Best-effort:
@@ -2999,5 +3079,58 @@ mod tests {
         assert_eq!(fallback, format!("{base}-{}", std::process::id()));
         assert_ne!(fallback, base);
         assert_eq!(next_name(base, &fallback), None);
+    }
+
+    /// T10, re-gated for the nonblocking start: exactly one rung, and only
+    /// for an explicit name-taken refusal of the base name before anything
+    /// connected. The suffixed name, a later generation, or a non-name-taken
+    /// failure answer None — never a third name, never a retry over a
+    /// connection that once worked.
+    #[test]
+    fn a_refused_base_name_gets_exactly_one_pid_suffixed_retry_at_generation_zero() {
+        let base = "term";
+        let fallback = pid_fallback(base, base, true, 0).expect("the base name retries once");
+        assert_eq!(fallback, format!("{base}-{}", std::process::id()));
+        assert_ne!(fallback, base);
+        assert_eq!(pid_fallback(base, &fallback, true, 0), None);
+        assert_eq!(pid_fallback(base, base, true, 1), None);
+        assert_eq!(pid_fallback(base, base, false, 0), None);
+    }
+
+    /// The adapter polls `Incoming::next` inside `tokio::select!` alongside
+    /// ready branches: a poll that is dropped mid-await must not lose the
+    /// awaited command. This pins the property on the queue impl the adapter
+    /// feeds — an EMPTY queue polled once to `Pending`, the future dropped,
+    /// the command enqueued afterwards, then received exactly once.
+    #[test]
+    fn a_dropped_incoming_next_poll_does_not_lose_its_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let mut pending = Box::pin(Incoming::next(&mut rx));
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(std::future::poll_fn(|cx| {
+                assert!(
+                    pending.as_mut().poll(cx).is_pending(),
+                    "the empty queue must not be ready"
+                );
+                std::task::Poll::Ready(())
+            }));
+        drop(pending);
+        tx.blocking_send(command("term.tabs", "")).unwrap();
+        let next = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(Incoming::next(&mut rx));
+        assert!(matches!(
+            next,
+            Some(BoundedIncomingEvent::Command(command)) if command.command == "term.tabs"
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "the enqueued command is received exactly once"
+        );
     }
 }

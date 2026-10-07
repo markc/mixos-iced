@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.2.9
+
+- `typography::TextStyle` gains `minimum_height()` (the text size grown to the
+  requested line box), the allocation floor of one control row; the renderer
+  still receives the requested line height. New `typography::Glyph` carries an
+  explicit character and its resolved `TextStyle` for prepared icon text.
+- New `controls::Metrics` centralises the repeated spacing arithmetic:
+  `from_tokens`, `padding` (vertical 6, horizontal 10 at the default scale),
+  `row_padding` (vertical 2, horizontal 8), `gap`, `inset`, `row_height` and
+  `indent`. Prepared spacing is never multiplied a second time, and
+  `Metrics::default()` freezes the default-token geometry the legacy views
+  keep.
+- `TextField` gains `font`, `line_height` and `text_style` builders (last
+  explicit write wins; `text_style` resets the line height to the default
+  when the supplied style has none). Undo reconstruction replays the new
+  typography, so a presentation change cannot silently lose it.
+- `suspended_ime`'s contract is documented: clearing a suspended composition
+  needs the runtime's `InputMethod(Closed)` acknowledgement; without it the
+  field keeps dropping later input-method events.
+- The requester gains `requester::TextStyles` and `view_styled`/
+  `view_styled_for`: ui for the path field, small for path/list/recent/error
+  labels, a button style for action labels, and padding, row height, gaps
+  and list inset from the shared control metrics. The legacy `view`/
+  `view_for` geometry is frozen at `Metrics::default()`: it keeps its exact
+  default-scale geometry and no longer follows a custom token's spacing.
+- `TabBar` gains prepared `icon_style`, `text_style` and `close_text_style`.
+  One resolved label-then-close row hierarchy serves measurement, layout,
+  drawing, hit testing and operations. Prepared text tabs keep the legacy
+  5-pixel label padding, and a role without a prepared style keeps its
+  legacy geometry (the `+1.0` measurement allowance and the
+  `close_size * 1.3 + 1.0` close slot), so a partially prepared bar never
+  silently tightens an unset role. Prepared roles measure their exact
+  resolved font/size/line height; the prepared close glyph keeps stable
+  geometry with colour-only hover and never grows past its allocated hit
+  region.
+- `Toggle::text_style` returns the new `StyledToggle` wrapper for
+  `Renderer<Font = F>` hosts, sharing the existing toggle engine. The label
+  is measured with the supplied paragraph style; intrinsic text bounds plus
+  padding (`.size` a minimum, parent limits authoritative) drive both drawing
+  and click routing. The legacy `Toggle` stays any-font compatible.
+- `TreeView` gains `.expanders(Expanders)` with explicit collapsed/expanded
+  `Glyph`s. A supplied value draws each glyph at its own resolved style
+  inside the allocated expander rectangle (the same rectangle used for
+  clicking), and an explicit `None` glyph selects the geometric fallback with
+  no global icon-font lookup.
+- `TreeView` gains `.metrics(Metrics, TextStyle)`: the per-depth indent
+  derives from the shared control metrics (`Metrics::indent` of the caller's
+  row text style — at least `lg + sm` and at least the row height, so the
+  expander and a guide always fit). The legacy default indent and the
+  explicit `.indent` builder are unchanged. Right on an expanded node now
+  verifies the target row is actually its child, so an expanded node with
+  zero loaded children no longer jumps onto its sibling.
+- `Spinner` gains `animated(bool)`. Effective animation requires animation, a
+  nonzero rate, nonempty bounds and viewport intersection; disable or rate
+  change clears the time origin without clearing phase, inactive updates
+  schedule no future frame, the first active frame after resume advances
+  zero from its event timestamp, and no paused or clipped time is integrated.
+  Wiring `animated` from `Prepared::reduced_motion` is the host's
+  responsibility, not the widget's.
+
+## 0.2.8
+
+- Add `fonts::registry`: one `FontRegistry` per process registers caller-supplied
+  font collections and immutable role/icon selections against iced's shared font
+  system in single atomic batches. Sources are re-digested, faces parsed in
+  scratch databases, every selection resolved — all eligible declared fallback
+  groups reach the renderer in declaration order, weights are sealed exact or
+  explicitly substituted, styles and stretches are validated against the faces,
+  and icon catalogue family claims must match the parsed intrinsic family —
+  with all process-wide capacities checked in checked arithmetic before one
+  renderer transaction commits. Every error is produced before that call, so
+  registry and renderer are left exactly as they were. Selections render
+  through private digest aliases; two roles making the same selection share
+  one alias; identical or collection-only batches leave the numeric
+  font-system version in the evidence unchanged; and `Selection::owned()`
+  hands back the selected policy's source bytes, face indices, intrinsic
+  evidence and exact effective weight without re-registering anything.
+  Legacy `fonts::install` never replaces faces pinned by the registry;
+  `font_for` and `try_font_for` behaviour is unchanged.
+
+## 0.2.6
+
+- `typography::TextStyle` is generic over the font (`TextStyle<F = Font>`), so
+  a prepared role applies to any renderer's font. The `text` and `input`
+  builders plus new `line_box` and `line_height_or_default` helpers use one
+  source for font, size and line height.
+- `Menu` and its popup accept an optional prepared `.text_style`, overriding
+  `MenuStyle::text_size` and the renderer's default font regardless of
+  builder order. Prepared rows are never shorter than the content height
+  (the text size and the requested line height, whichever is larger — the
+  1.3 default factor without one), consistently across layout, hit testing,
+  anchors and sizing, while the renderer still receives the requested line
+  height. `panel_size_text`, `row_at_text` and `row_bounds_text` give
+  external hosts the same typed geometry, while `panel_size`, `row_at` and
+  `row_bounds` keep their default-based behaviour. `Panel<'a, Message>` is
+  unchanged and stays renderer-neutral; `Panel::text_style(text)` returns
+  the new `StyledPanel<'a, Message, F>`.
+- `SelectionList` gains `.text_style` and `.line_height`; one prepared row
+  height drives layout, hit testing, visible rows and virtual operations.
+  The original `List` literal and its legacy `text_size + padding` rows are
+  unchanged; the consuming `List::line_height` and `List::text_style`
+  builders return the new `StyledList` wrapper, sharing the same `ListState`
+  tree and row engine.
+
 ## 0.2.5
 
 - Share the gallery's real Fluent formatter as optional `catalogue::Catalogue`
@@ -50,6 +154,22 @@
 
 ## Unreleased
 
+- Owned icon decoding supports PNG, JPEG, GIF, WebP, BMP and ICO with strict
+  dimensions and checked source allocation before pixels are materialised.
+  Ready images retain their intrinsic aspect ratio. The bounded SVG subset
+  accepts filled shapes and bounded gradients, refuses DTDs, CSS, strokes,
+  indirect painting and image/text dependencies before constructing the tree,
+  and caps XML/depth, path/points bytes and gradient expansion. Converted
+  groups cannot require isolation. Final pixel accounting is distinct from
+  structural conversion budgets and advisory codec scratch limits.
+  Zero-alpha tints fail visibly.
+
+- The opt-in `font-registration-guards` integration target owns the font
+  registration seam guards: the cosmic guard sources compile from their
+  single vendored owner and the iced wrapper assertions run through the
+  public font system, registration, version and paragraph APIs. Test-only;
+  no production feature branch.
+
 - Native drag areas carry the host's press token in the same widget message
   as the payload. `Session::start_with_gesture` avoids asynchronous subscription
   ordering races while retaining backend window, seat and liveness checks.
@@ -70,6 +190,12 @@
   Preview/Commit/Cancel lifecycle; scrollable tabs and middle-click close.
 - Icons: PNG/SVG fallback assets with symbolic tint, scale-aware bounded
   metadata cache and external SVG resources disabled (`image` feature).
+- Icons: one owned-byte decoder (`icons::decode_owned`, `ImageFormat`,
+  `DecodedIcon`, `IconDecodeError`) shared by prepared resources and the
+  legacy `Assets` path, with bounded encoded/side/decoded caps, refused
+  external/data image hrefs and text dependencies, EXIF orientation,
+  symbolic tint and blank rejection. `Icon::with_glyph` owns a resolved
+  glyph/font pair that never consults the installed icon font table.
 - Native DnD: portable `dnd::native::Session` and MIME codecs with explicit
   target acknowledgement and source completion; failed/cancelled transfers
   cannot remove a Move source. Native window adapters remain host-owned.

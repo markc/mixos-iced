@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 {
-  status:"accepted", version:"0.1.0", schema:1,
+  status:"accepted", version:"0.1.1", schema:1,
   service:"settingsd", topic:"settingsd.desktop.changed.default",
   revision_encoding:"canonical_decimal_u64_string",
   limits:{receipts:128,source_bytes:262144,request_bytes:393216,snapshot_bytes:983040},
@@ -9,7 +9,16 @@
     {name:"appearance_layout",changes:{"appearance.mode":"dark","ui.text_scale":1.1,"shell.panels.bottom.thickness":48},reset:[]},
     {name:"unknown_field",changes:{"appearance.typo":"dark"},expected:"validation_failed"},
     {name:"invalid_layout",changes:{"appearance.mode":"dark","shell.panels.bottom.thickness":999},expected:"validation_failed"},
+    {name:"set_resources",changes:{"appearance.resources":{schema:1,set_id:"core-icons",manifest_blake3:"0000000000000000000000000000000000000000000000000000000000000000",icons:{family:"Symbols",style:"rounded",weight:400}}},reset:[]},
+    {name:"reset_resources",changes:{},reset:["appearance.resources"]},
+    {name:"set_resources_float_numbers",changes:{"appearance.resources":{schema:1.0,set_id:"core-icons",manifest_blake3:"0000000000000000000000000000000000000000000000000000000000000000",icons:{family:"Symbols",style:"rounded",weight:400.0}}},reset:[]},
+    {name:"reset_resources_after_float",changes:{},reset:["appearance.resources"]},
+    {name:"fractional_resource_weight",changes:{"appearance.resources":{schema:1,set_id:"core-icons",manifest_blake3:"0000000000000000000000000000000000000000000000000000000000000000",icons:{family:"Symbols",style:"rounded",weight:400.5}}},expected:"validation_failed"},
+    {name:"unknown_nested_resource_path",changes:{"appearance.resources.set_id":"core-icons"},expected:"validation_failed"},
+    {name:"unsupported_resource_schema",changes:{"appearance.resources":{schema:2,set_id:"core-icons",manifest_blake3:"0000000000000000000000000000000000000000000000000000000000000000"}},expected:"validation_failed"},
+    {name:"unknown_resource_field",changes:{"appearance.resources":{schema:1,set_id:"core-icons",manifest_blake3:"0000000000000000000000000000000000000000000000000000000000000000",typo:true}},expected:"validation_failed"},
+    {name:"invalid_resource_identity",changes:{"appearance.resources":{schema:1,set_id:"a/b",manifest_blake3:"0000000000000000000000000000000000000000000000000000000000000000"}},expected:"validation_failed"},
     {name:"reset_app",changes:{},reset:["apps.term"]}
   ],
-  deferred:["gui_delivery","candidate_import","artifacts","preview","replication"]
+  deferred:["gui_delivery","candidate_import","artifacts","preview","replication","resource_hosting"]
 }

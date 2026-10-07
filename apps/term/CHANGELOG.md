@@ -13,6 +13,32 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.7
+
+Prepare settings-owned terminal fonts, exact weights, scale and zoom on the
+shared contextual worker. Install the complete painter and reconcile the
+current pane tree and window geometry before acknowledging activation. Local
+zoom and output scale reuse the activated source binding. Refused or stale
+preparations retain the applied raster and terminal state. Compare PTY pixel
+extents as well as rows and columns, and report desired and applied preparation
+separately through `app.describe`.
+
+## 0.3.6
+
+Adopt the shared desktop settings on the existing supervised Bus connection.
+One client serves the `term.*` verb lane and the settings lane together; the
+connection starts without blocking, so an offline bus leaves the terminal
+working. An explicit name-taken refusal of the base name before anything
+connects earns exactly one `<name>-<pid>` retry, and the suffixed name is the
+one served. The tab strip's height follows the prepared UI line box plus the
+strip paddings, computed once per wake and shared by the widgets, the PTY
+grids and the IME cursor; token (colour) changes restyle without reflowing or
+re-rasterising, and PTY fonts, zoom and ANSI colours are untouched. The
+`term.*` wire verbs, the completion-note drain and the tabs-first shutdown
+ordering are unchanged. `app.describe` now reports the actual served name,
+the full serialized settings evidence and cache state, the chrome extent and
+the prepared UI typography.
+
 ## 0.3.5
 
 Share the native application bootstrap and task worker. CPU/GPU selection and

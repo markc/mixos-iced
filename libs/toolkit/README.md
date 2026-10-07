@@ -469,7 +469,11 @@ Tests: `cargo test -p toolkit` (no window, no GPU, no host font: text is
 shaped with iced's embedded Fira Sans). `tests/feature_graph.rs` checks the
 feature arms against the lock; `tests/generic.rs` is the gate described
 above; `tests/colours.rs` is the colour-literal gate; `tests/snapshots.rs`
-the offscreen gallery (see Examples).
+the offscreen gallery (see Examples). The opt-in font registration guard
+suite (`cargo test -p toolkit --features font-registration-guards --test
+font_registration`) owns the registration seam guards against the crate's
+own resolved dependency graph, including the cosmic per-script monospace
+index guards.
 
 ## Licence
 

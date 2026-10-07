@@ -11,8 +11,8 @@ use iced_core::layout::{Limits, Node};
 use iced_core::mouse::Cursor;
 use iced_core::renderer;
 use iced_core::time::{Duration, Instant};
-use iced_core::widget::tree::{State, Tag};
 use iced_core::widget::Tree;
+use iced_core::widget::tree::{State, Tag};
 use iced_core::window::{self, RedrawRequest};
 use iced_core::{
     Border, Color, Element, Event, Layout, Length, Rectangle, Shell, Size, Vector, Widget,
@@ -29,6 +29,11 @@ pub struct Spinner {
     rate: Duration,
     /// The radius of the spinning circle.
     circle_radius: f32,
+    /// Whether the spinner animates. Effective animation also needs a
+    /// nonzero rate, nonempty bounds and viewport intersection. Hosts are
+    /// expected to set this from `Prepared::reduced_motion` on each view;
+    /// the widget itself never applies that preference.
+    animated: bool,
 }
 
 impl Default for Spinner {
@@ -38,6 +43,7 @@ impl Default for Spinner {
             height: Length::Fixed(20.0),
             rate: Duration::from_secs_f32(1.0),
             circle_radius: 2.0,
+            animated: true,
         }
     }
 }
@@ -76,18 +82,39 @@ impl Spinner {
         self.circle_radius = radius;
         self
     }
+
+    /// Whether the spinner drives its own animation. When false (or when
+    /// the rate is zero or the bounds are empty or clipped) it draws its
+    /// retained phase but schedules no future frame.
+    #[must_use]
+    pub fn animated(mut self, animated: bool) -> Self {
+        self.animated = animated;
+        self
+    }
 }
 
 struct SpinnerState {
-    last_update: Instant,
+    /// The timestamp of the last advancing frame; `None` until the first
+    /// active frame after creation, resume, disable or a rate change.
+    last_update: Option<Instant>,
+    /// The retained orbit phase, in turns (0.0..1.0).
     t: f32,
+    /// The animation and rate the state last saw, so `diff` can clear the
+    /// time origin when either changes.
+    animated: bool,
+    rate: Duration,
 }
 
-fn is_visible(bounds: &Rectangle) -> bool {
-    bounds.width > 0.0 && bounds.height > 0.0
+fn is_visible(bounds: &Rectangle, viewport: &Rectangle) -> bool {
+    bounds.width > 0.0 && bounds.height > 0.0 && bounds.intersects(viewport)
 }
 
-fn fill_circle(renderer: &mut impl renderer::Renderer, position: Vector, radius: f32, color: Color) {
+fn fill_circle(
+    renderer: &mut impl renderer::Renderer,
+    position: Vector,
+    radius: f32,
+    color: Color,
+) {
     if radius > 0. {
         renderer.fill_quad(
             renderer::Quad {
@@ -118,12 +145,11 @@ where
     }
 
     fn layout(&mut self, _tree: &mut Tree, _renderer: &Renderer, limits: &Limits) -> Node {
-        Node::new(
-            limits
-                .width(self.width)
-                .height(self.height)
-                .resolve(self.width, self.height, Size::new(f32::INFINITY, f32::INFINITY)),
-        )
+        Node::new(limits.width(self.width).height(self.height).resolve(
+            self.width,
+            self.height,
+            Size::new(f32::INFINITY, f32::INFINITY),
+        ))
     }
 
     fn draw(
@@ -134,11 +160,11 @@ where
         style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: Cursor,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
 
-        if !is_visible(&bounds) {
+        if !is_visible(&bounds, viewport) {
             return;
         }
 
@@ -165,9 +191,23 @@ where
 
     fn state(&self) -> State {
         State::new(SpinnerState {
-            last_update: Instant::now(),
+            last_update: None,
             t: 0.0,
+            animated: self.animated,
+            rate: self.rate,
         })
+    }
+
+    fn diff(&mut self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<SpinnerState>();
+        if state.animated != self.animated || state.rate != self.rate {
+            // Disable, resume or rate change: clear the time origin so no
+            // paused, clipped or zero-rate time is integrated. The phase
+            // stays for the resumed first frame.
+            state.last_update = None;
+            state.animated = self.animated;
+            state.rate = self.rate;
+        }
     }
 
     fn update(
@@ -178,29 +218,35 @@ where
         _cursor: Cursor,
         _renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
         const FRAMES_PER_SECOND: u64 = 60;
 
         let bounds = layout.bounds();
 
-        if let Event::Window(window::Event::RedrawRequested(now)) = event
-            && is_visible(&bounds)
-        {
+        if let Event::Window(window::Event::RedrawRequested(now)) = event {
             let state = state.state.downcast_mut::<SpinnerState>();
-            let duration = (*now - state.last_update).as_secs_f32();
-            let increment = if self.rate == Duration::ZERO {
-                0.0
-            } else {
-                duration / self.rate.as_secs_f32()
-            };
-
-            state.t = (state.t + increment) % 1.0;
-
+            // Inactive (disabled, zero rate, or empty/clipped bounds):
+            // clear the time origin and schedule nothing. A host redraw
+            // queued before the change may still arrive once; no new
+            // future frame comes from this widget.
+            if !self.animated || self.rate == Duration::ZERO || !is_visible(&bounds, viewport) {
+                state.last_update = None;
+                return;
+            }
+            if let Some(last) = state.last_update {
+                // A subsequent frame: advance by the elapsed event time.
+                let duration = (*now - last).as_secs_f32();
+                let increment = duration / self.rate.as_secs_f32();
+                state.t = (state.t + increment) % 1.0;
+            }
+            // The first active frame after creation, resume or disable:
+            // adopt this event's timestamp as the origin, advance zero
+            // and schedule the next frame.
+            state.last_update = Some(*now);
             shell.request_redraw_at(RedrawRequest::At(
                 *now + Duration::from_millis(1000 / FRAMES_PER_SECOND),
             ));
-            state.last_update = *now;
         }
     }
 }
@@ -217,6 +263,46 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_renderer::LayoutRenderer;
+    use iced_core::mouse;
+
+    fn frame<Message: 'static>(
+        spinner: &mut Spinner,
+        tree: &mut Tree,
+        now: Instant,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let node = Node::new(Size::new(20.0, 20.0));
+        let layout = Layout::new(&node);
+        Widget::<Message, iced_core::Theme, LayoutRenderer>::update(
+            spinner,
+            tree,
+            &Event::Window(window::Event::RedrawRequested(now)),
+            layout,
+            mouse::Cursor::Unavailable,
+            &LayoutRenderer::new(),
+            shell,
+            &Rectangle::with_size(Size::new(20.0, 20.0)),
+        );
+    }
+
+    fn make_spinner<Message: 'static>() -> (Spinner, Tree) {
+        let mut spinner = Spinner::new();
+        let mut tree =
+            Tree::new(&spinner as &dyn Widget<Message, iced_core::Theme, LayoutRenderer>);
+        Widget::<Message, iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
+        (spinner, tree)
+    }
+
+    fn make_shell<Message: 'static>() -> Shell<'static, Message> {
+        let bus: &'static mut iced_core::shell::Bus<Message> =
+            Box::leak(Box::new(iced_core::shell::Bus::new()));
+        Shell::new(
+            &iced_core::window::Headless,
+            iced_core::shell::Waker::noop(),
+            bus,
+        )
+    }
 
     #[test]
     fn defaults_are_a_small_one_second_spinner() {
@@ -225,5 +311,161 @@ mod tests {
         assert_eq!(spinner.height, Length::Fixed(20.0));
         assert_eq!(spinner.rate, Duration::from_secs(1));
         assert_eq!(spinner.circle_radius, 2.0);
+        assert!(spinner.animated);
+    }
+
+    #[test]
+    fn the_first_active_frame_adopts_the_event_time_and_advances_zero() {
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        let origin = Instant::now();
+        frame(&mut spinner, &mut tree, origin, &mut shell);
+        assert_eq!(
+            tree.state.downcast_ref::<SpinnerState>().t,
+            0.0,
+            "the first frame advances zero"
+        );
+        let next = origin + Duration::from_millis(1000 / 60);
+        assert!(matches!(
+            shell.redraw_request(),
+            RedrawRequest::At(at) if at == next
+        ));
+        // A later frame advances by the elapsed event time only.
+        frame(&mut spinner, &mut tree, next, &mut shell);
+        let t = tree.state.downcast_ref::<SpinnerState>().t;
+        let expected = (next - origin).as_secs_f32() / 1.0;
+        assert!((t - expected).abs() < f32::EPSILON, "{t} vs {expected}");
+    }
+
+    #[test]
+    fn disabled_zero_rate_and_clipped_bounds_schedule_no_future_frame() {
+        let now = Instant::now();
+        // Disabled.
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        spinner = spinner.animated(false);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
+        frame(&mut spinner, &mut tree, now, &mut shell);
+        assert!(matches!(shell.redraw_request(), RedrawRequest::Wait));
+        assert!(
+            tree.state
+                .downcast_ref::<SpinnerState>()
+                .last_update
+                .is_none()
+        );
+        // Zero rate.
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        spinner = spinner.rate(Duration::ZERO);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
+        frame(&mut spinner, &mut tree, now, &mut shell);
+        assert!(matches!(shell.redraw_request(), RedrawRequest::Wait));
+        // Bounds clipped by the viewport.
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        let node = Node::new(Size::new(20.0, 20.0));
+        Widget::<(), iced_core::Theme, LayoutRenderer>::update(
+            &mut spinner,
+            &mut tree,
+            &Event::Window(window::Event::RedrawRequested(now)),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &LayoutRenderer::new(),
+            &mut shell,
+            &Rectangle::new(iced_core::Point::new(100.0, 100.0), Size::new(20.0, 20.0)),
+        );
+        assert!(matches!(shell.redraw_request(), RedrawRequest::Wait));
+    }
+
+    #[test]
+    fn an_inactive_update_clears_the_origin_and_keeps_an_earlier_deadline() {
+        let now = Instant::now();
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        // An independent earlier deadline exists.
+        let deadline = now + Duration::from_millis(5);
+        shell.request_redraw_at(RedrawRequest::At(deadline));
+        // Advance once, then disable.
+        frame(&mut spinner, &mut tree, now, &mut shell);
+        let t = tree.state.downcast_ref::<SpinnerState>().t;
+        spinner = spinner.animated(false);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
+        frame(
+            &mut spinner,
+            &mut tree,
+            now + Duration::from_secs(5),
+            &mut shell,
+        );
+        // The phase survives; the widget schedules nothing of its own and
+        // never replaces the independently supplied earlier deadline.
+        assert_eq!(tree.state.downcast_ref::<SpinnerState>().t, t);
+        assert!(
+            tree.state
+                .downcast_ref::<SpinnerState>()
+                .last_update
+                .is_none()
+        );
+        assert!(matches!(
+            shell.redraw_request(),
+            RedrawRequest::At(at) if at == deadline
+        ));
+    }
+
+    #[test]
+    fn a_pause_never_integrates_and_resume_preserves_phase_on_its_first_frame() {
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        let origin = Instant::now();
+        frame(&mut spinner, &mut tree, origin, &mut shell);
+        let next = origin + Duration::from_millis(500);
+        frame(&mut spinner, &mut tree, next, &mut shell);
+        let phase = tree.state.downcast_ref::<SpinnerState>().t;
+        assert!(phase > 0.0);
+        // A long pause without animation: the origin clears.
+        spinner = spinner.animated(false);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
+        frame(
+            &mut spinner,
+            &mut tree,
+            next + Duration::from_secs(60),
+            &mut shell,
+        );
+        // Resume: the first active frame advances zero and keeps the phase.
+        spinner = spinner.animated(true);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
+        let resumed = next + Duration::from_secs(61);
+        frame(&mut spinner, &mut tree, resumed, &mut shell);
+        assert_eq!(
+            tree.state.downcast_ref::<SpinnerState>().t,
+            phase,
+            "the paused minute must not be integrated"
+        );
+        // Only the next frame advances, by its own elapsed time.
+        frame(
+            &mut spinner,
+            &mut tree,
+            resumed + Duration::from_millis(250),
+            &mut shell,
+        );
+        let t = tree.state.downcast_ref::<SpinnerState>().t;
+        assert!((t - (phase + 0.25) % 1.0).abs() < 1e-6, "{t}");
+    }
+
+    #[test]
+    fn the_state_tag_survives_a_retained_rebuild() {
+        let (mut spinner, mut tree) = make_spinner::<()>();
+        let mut shell = make_shell::<()>();
+        let origin = Instant::now();
+        frame(&mut spinner, &mut tree, origin, &mut shell);
+        let phase = tree.state.downcast_ref::<SpinnerState>().t;
+        // A fresh spinner diffed into the retained tree keeps the tag and
+        // therefore the phase.
+        let mut rebuilt = Spinner::new();
+        assert_eq!(
+            Widget::<(), iced_core::Theme, LayoutRenderer>::tag(&rebuilt),
+            Widget::<(), iced_core::Theme, LayoutRenderer>::tag(&spinner)
+        );
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut rebuilt, &mut tree);
+        assert_eq!(tree.state.downcast_ref::<SpinnerState>().t, phase);
     }
 }

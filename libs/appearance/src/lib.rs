@@ -23,6 +23,11 @@
 
 pub mod conversion;
 pub mod fonts;
+/// The central verified resource host, behind the `resources` feature: it
+/// reads verified sets and drives toolkit's atomic batch registry, and is
+/// therefore only compiled where those dependencies exist.
+#[cfg(feature = "resources")]
+pub mod resources;
 pub mod settings;
 pub mod theme;
 pub mod tokens;

@@ -24,6 +24,9 @@ mod input;
 mod layout;
 #[cfg(test)]
 mod native_tests;
+mod presentation;
+mod settings_bus;
+mod strings;
 mod theme;
 
 #[cfg(feature = "wgpu")]
@@ -35,18 +38,23 @@ mod cpu_grid;
 #[cfg(not(any(feature = "wgpu", feature = "tiny-skia")))]
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
-use application::iced::widget::{Row, column, container, row, space, text};
-use application::iced::{Element, Length, Size, Subscription, Task};
+use ::bus::native_client::ConnState;
+use application::Element;
+use application::iced::widget::{Row, column, container, row, space};
+use application::iced::{Length, Size, Subscription, Task};
+use application::presentation::native::Ui;
 use frame::Painter;
 use input::Action;
 use layout::{Node, Shape};
+use presentation::{Content, LocalContext, PtyExtent, RasterKey};
+use settings_bus::{Describe, Handle};
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use term_core::{
-    bus, config,
+    config as core_config,
     font::FontSize,
     native_lane::NativeLane,
     panes::{Geometry, SplitDir},
@@ -103,11 +111,11 @@ fn main() {
         return;
     }
     let settings = resolve_config(
-        config::load(Some(
+        core_config::load(Some(
             &::config::path(::config::Dir::Etc).join("term.conf.mix"),
         )),
         std::env::var("TERM_FONT_PX").ok().as_deref(),
-        config::selected_term(),
+        core_config::selected_term(),
     );
     if std::env::args().any(|arg| arg == "--print-config") {
         println!(
@@ -127,20 +135,20 @@ fn main() {
 }
 
 fn resolve_config(
-    mut config: config::Config,
+    mut config: core_config::Config,
     env_font: Option<&str>,
     term: &'static str,
-) -> config::Settings {
+) -> core_config::Settings {
     if let Some(px) = env_font
         .and_then(|value| value.parse().ok())
-        .filter(|px| config::valid_font(*px))
+        .filter(|px| core_config::valid_font(*px))
     {
         config.font_px = px;
     }
-    config::Settings { config, term }
+    core_config::Settings { config, term }
 }
 
-fn run(settings: config::Settings) -> Result<(), String> {
+fn run(settings: core_config::Settings) -> Result<(), String> {
     // Scale 1.0 to start; the raster is rebuilt at the surface's real
     // fractional scale on the first `Rescaled`, so glyphs are rasterised at
     // physical resolution and the compositor never upscales them.
@@ -149,6 +157,9 @@ fn run(settings: config::Settings) -> Result<(), String> {
         FontSize::new(settings.config.font_px),
         settings.config.cursor,
     )?;
+    let local = LocalContext::new(1.0, settings.config.cursor)?;
+    let baseline = settings.config.font_px;
+    let bootstrap_raster = painter.bootstrap_raster();
     let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
     let (cleanup, reaper) = tabs::Cleanup::start().map_err(|e| format!("cleanup worker: {e}"))?;
 
@@ -176,16 +187,49 @@ fn run(settings: config::Settings) -> Result<(), String> {
         .map(|value| value != "0")
         .unwrap_or(true);
     let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
-    // The `term.*` surface (D1). With no broker the thread says so once and
-    // returns; the terminal works either way.
-    let bus = bus::start(SERVICE, tabs.clone(), cleanup.clone(), notify_rx);
+    // The desktop adapter: one supervised client serves the `term.*` lane AND
+    // the shared settings traffic (no second connection); it starts without
+    // blocking, so an offline bus leaves the terminal working. It publishes
+    // into the same WakeFd every PTY does.
+    let started = settings_bus::start(
+        SERVICE,
+        ::bus::client_helpers::resolve_noded_url(),
+        tabs.clone(),
+        cleanup.clone(),
+        notify_rx,
+        waker.fd.waker(),
+        settings_bus::PreparationSeed {
+            local,
+            raster: bootstrap_raster,
+        },
+    )
+    .map_err(|e| format!("Bus startup: {e}"))?;
+    let ui = started
+        .bootstrap
+        .typography()
+        .get("ui")
+        .expect("UI typography");
+    // A clone lives outside the State so teardown below can still quit the
+    // adapter after the handle was moved in.
+    let handle = started.handle.clone();
 
     let state = State {
         painter,
         tabs: tabs.clone(),
         cleanup: cleanup.clone(),
         notify: notify_enabled.then_some(notify_tx),
-        tokens: theme::tokens(),
+        tokens: started.bootstrap.tokens(),
+        ui,
+        chrome: layout::strip_height(1.0, ui),
+        settings: started.ui,
+        local,
+        baseline,
+        applied_raster: None,
+        applied_context: None,
+        #[cfg(test)]
+        fixture_lane: None,
+        bus: started.handle,
+        describes: started.describes,
         waker,
         window: Size::new(900.0, 560.0),
         shape: Shape::default(),
@@ -206,7 +250,7 @@ fn run(settings: config::Settings) -> Result<(), String> {
         paint_requested: true,
     };
 
-    let ui_font = toolkit::fonts::font_for("sans-serif", &[], 400, false, true);
+    let ui_font = ui.font;
     let result = application::start(
         (state, Task::none()),
         update,
@@ -226,12 +270,25 @@ fn run(settings: config::Settings) -> Result<(), String> {
     })
     .run();
 
-    // Same teardown ordering as bterm: shut the tabs (which releases the Bus
-    // loop through `emptied`), finish bounded Bus replies, then reap each
-    // pane while the native actor is still serving its revoke acknowledgements.
+    // Same teardown ordering as bterm, and the design contract: tabs close
+    // first, then the global Bus finishes (verb-lane drain, tracked replies,
+    // 2 s cache flush and client close inside the adapter), then native
+    // cleanup is released, then the cleanup worker and reaper join. The
+    // settings Lane drops with the adapter thread, last.
     let removed = tabs.lock().expect("tabs").shutdown();
     cleanup.submit(removed);
-    let _ = bus.join();
+    handle.quit();
+    let mut shutdown = Ok(());
+    if let Err(fault) = handle.wait_done() {
+        // The worker prints TERM_SHUTDOWN with its own faults on the normal
+        // path; this is the rare one where it cannot confirm done at all —
+        // a blocking resource job in the settings worker cannot be cancelled,
+        // so its thread is left unjoined rather than hanging this shutdown.
+        eprintln!("term: {fault}");
+        shutdown = Err(fault);
+    } else {
+        let _ = started.worker.join();
+    }
     let native = native
         .join()
         .map_err(|_| "native startup worker panicked")?;
@@ -241,6 +298,7 @@ fn run(settings: config::Settings) -> Result<(), String> {
     let startup = native.startup_result();
     drop(native);
     startup?;
+    shutdown?;
     result.map_err(|error| error.to_string())
 }
 
@@ -270,7 +328,26 @@ struct State {
     cleanup: tabs::Cleanup,
     notify: Option<tokio::sync::mpsc::UnboundedSender<CompletionNote>>,
     painter: Painter,
+    /// Window chrome. Tokens restyle the surface only; `ui`/`chrome` drive
+    /// the one computed strip height (extent). Colours never reflow or
+    /// re-rasterise.
     tokens: toolkit::Tokens,
+    ui: toolkit::typography::TextStyle,
+    chrome: f32,
+    /// The settings session's UI half, reconciled on every wake against the
+    /// generation sampled from the actual shared client.
+    settings: Ui<Content, LocalContext>,
+    local: LocalContext,
+    baseline: f32,
+    applied_raster: Option<RasterKey>,
+    applied_context: Option<LocalContext>,
+    #[cfg(test)]
+    fixture_lane: Option<application::presentation::native::Lane<Content, LocalContext>>,
+    /// The desktop adapter: one client for the verb lane and the settings lane.
+    bus: Handle,
+    /// Queued `app.describe` requests, answered on the UI thread after the
+    /// settings reconcile; bounded upstream (the adapter refuses beyond 32).
+    describes: tokio::sync::mpsc::Receiver<Describe>,
     waker: Arc<Waker>,
     /// Logical inner size of the window, as the compositor last reported it.
     window: Size,
@@ -278,7 +355,7 @@ struct State {
     shape: Shape,
     /// Columns and rows each visible pane's PTY has been told about. A pane
     /// missing here has not been sized yet, which forces its first resize.
-    grids: HashMap<u64, (u16, u16)>,
+    grids: HashMap<u64, PtyExtent>,
     /// Tracked for Ctrl+wheel: a mouse event carries no modifier state.
     modifiers: application::iced::keyboard::Modifiers,
     right_shift: std::cell::Cell<bool>,
@@ -453,6 +530,9 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::Wake => {
             state.paint_requested = true;
+            // Clear the wake flag BEFORE draining: everything sync() drains —
+            // PTY damage, the settings reconcile, describe requests — must
+            // publish a fresh wake if it lands after this clear.
             state.waker.pending.store(false, Ordering::Release);
             return state.sync();
         }
@@ -654,8 +734,9 @@ fn on_key_context(
 
 fn view(state: &State) -> Element<'_, Message> {
     let tokens = state.tokens;
+    let ui = state.ui;
     let scale = state.painter.scale();
-    let bounds = layout::content(state.window.width, state.window.height, scale);
+    let bounds = layout::content(state.window.width, state.window.height, state.chrome);
     let panes: Element<'_, Message> = match &state.shape.tree {
         Some(tree) => pane_tree(state, tree, bounds, scale),
         None => space().into(),
@@ -679,7 +760,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .and_then(|frame| frame.lock().expect("frame").cursor())
                 .unwrap_or((0, 0));
             let (cw, ch) = state.painter.logical_cell();
-            let &(columns, rows) = state.grids.get(id)?;
+            let (columns, rows) = state.grids.get(id)?.grid();
             toolkit::GridGeometry {
                 cell: Size::new(cw, ch),
                 columns,
@@ -701,7 +782,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 && position.y >= pane.y
                 && position.y < pane.y + pane.h
         })?;
-        let grid = *state.grids.get(id)?;
+        let grid = state.grids.get(id)?.grid();
         let (col, row) = input::pointer_cell(
             application::iced::Point::new(position.x - pane.x, position.y - pane.y),
             layout::border(scale),
@@ -712,46 +793,47 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     let last = std::cell::Cell::new(state.pointer.get().and_then(&hovered));
     let mouse = clipboard::MouseEvents::new(state);
-    let mut content = toolkit::keys::keys(column![tab_strip(state, scale), panes], move |event| {
-        state
-            .right_shift
-            .set(input::right_shift_after(event, state.right_shift.get()));
-        let message = on_key_context(event, false, state.right_shift.get());
-        // Ordinary typing must not acquire an extra terminal/grid lock just
-        // to decide who owns a scrollback chord.
-        if matches!(message, Some(Message::Action(Action::Scroll(_)))) {
-            let tabs = state.tabs.lock().expect("tabs");
-            if !tabs.is_empty()
-                && tabs
-                    .active_terminal()
-                    .lock()
-                    .expect("terminal")
-                    .alternate_screen()
-            {
-                return on_key_context(event, true, state.right_shift.get());
-            }
-        }
-        message
-    })
-    .on_pointer(move |position| {
-        let cell = hovered(position);
-        pointer_message(&state.pointer, &last, cell, position)
-    })
-    .on_mouse(move |event, position| mouse.message(state, event, position))
-    .input_method(
-        match ime_cursor {
-            Some(cursor) if state.keyboard_focus && state.ime.enabled() => {
-                application::iced::advanced::input_method::InputMethod::Enabled {
-                    // Runtime composition overlay; only Commit goes to the PTY.
-                    cursor,
-                    purpose: application::iced::advanced::input_method::Purpose::Terminal,
-                    preedit: state.ime_preedit.clone(),
+    let mut content =
+        toolkit::keys::keys(column![tab_strip(state, scale, ui), panes], move |event| {
+            state
+                .right_shift
+                .set(input::right_shift_after(event, state.right_shift.get()));
+            let message = on_key_context(event, false, state.right_shift.get());
+            // Ordinary typing must not acquire an extra terminal/grid lock just
+            // to decide who owns a scrollback chord.
+            if matches!(message, Some(Message::Action(Action::Scroll(_)))) {
+                let tabs = state.tabs.lock().expect("tabs");
+                if !tabs.is_empty()
+                    && tabs
+                        .active_terminal()
+                        .lock()
+                        .expect("terminal")
+                        .alternate_screen()
+                {
+                    return on_key_context(event, true, state.right_shift.get());
                 }
             }
-            _ => application::iced::advanced::input_method::InputMethod::Disabled,
-        },
-        |event| Message::Ime(event.clone()),
-    );
+            message
+        })
+        .on_pointer(move |position| {
+            let cell = hovered(position);
+            pointer_message(&state.pointer, &last, cell, position)
+        })
+        .on_mouse(move |event, position| mouse.message(state, event, position))
+        .input_method(
+            match ime_cursor {
+                Some(cursor) if state.keyboard_focus && state.ime.enabled() => {
+                    application::iced::advanced::input_method::InputMethod::Enabled {
+                        // Runtime composition overlay; only Commit goes to the PTY.
+                        cursor,
+                        purpose: application::iced::advanced::input_method::Purpose::Terminal,
+                        preedit: state.ime_preedit.clone(),
+                    }
+                }
+                _ => application::iced::advanced::input_method::InputMethod::Disabled,
+            },
+            |event| Message::Ime(event.clone()),
+        );
     // Clean chrome redraws must not publish Paint: iced would rebuild the UI
     // and dispatch RedrawRequested a second time for no terminal change.
     if state.needs_paint() {
@@ -781,8 +863,14 @@ fn pointer_message(
     (last.replace(hovered) != hovered).then_some(Message::Pointer)
 }
 
-/// One button per tab and a `+`, as bterm. Every colour is a design token.
-fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
+/// One button per tab and a `+`, as bterm. Every colour is a design token;
+/// the labels carry the complete prepared UI font, size and line height through
+/// the shared TabBar style and its single layout path.
+fn tab_strip(
+    state: &State,
+    scale: f32,
+    ui: toolkit::typography::TextStyle,
+) -> Element<'_, Message> {
     let tokens = state.tokens;
     let mut tabs = toolkit::TabBar::with_tab_labels(
         state
@@ -793,9 +881,9 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
             .collect(),
         Message::SelectTab,
     )
-    .text_size(13.0)
+    .text_style(ui)
     .tab_width(Length::Shrink)
-    .padding([3.0, 12.0])
+    .padding([layout::TAB_V_PADDING, 12.0])
     .spacing(4.0)
     .style(move |_, status| {
         let mut style = toolkit::theme::tab_bar::default(&toolkit::Theme::new(tokens), status);
@@ -810,24 +898,32 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
     if let Some(active) = state.shape.tabs.iter().find(|tab| tab.active) {
         tabs = tabs.set_active_tab(&active.id);
     }
-    let new_tab = toolkit::CenteredButton::new(text("+").size(13.0))
-        .padding([3.0, 12.0])
+    let new_tab = toolkit::CenteredButton::new(ui.text("+"))
+        .padding([layout::TAB_V_PADDING, 12.0])
         .on_press(Message::Action(Action::NewTab))
         .style(move |_, status| {
             let mut style = toolkit::theme::button::text(&toolkit::Theme::new(tokens), status);
             style.text_color = tokens.palette.muted_text;
             style
         });
-    let mut strip = Row::new().spacing(4.0).padding([3.0, 6.0]);
+    let mut strip = Row::new()
+        .spacing(4.0)
+        .padding([layout::STRIP_V_PADDING, 6.0]);
+    // The labelled chrome: the Bus connection provenance while it is not
+    // connected, and the settings-presentation kind while the appearance is
+    // not Current.
+    if let Some(label) = state.chrome_label() {
+        strip = strip.push(ui.text(label).color(tokens.palette.muted_text));
+    }
     if let Some(notice) = &state.paste_notice {
-        strip = strip.push(text(notice).size(13.0).color(tokens.palette.text));
+        strip = strip.push(ui.text(notice).color(tokens.palette.text));
     }
     strip = strip
         .push(tabs.scrollable().width(Length::Fill))
         .push(new_tab);
     container(strip)
         .width(Length::Fill)
-        .height(Length::Fixed(layout::strip_height(scale)))
+        .height(Length::Fixed(layout::strip_height(scale, ui)))
         .style(move |_| container::Style {
             background: Some(tokens.palette.card.into()),
             ..Default::default()
@@ -870,7 +966,7 @@ fn pane(state: &State, id: u64, bounds: Geometry, scale: f32) -> Element<'_, Mes
     let tokens = state.tokens;
     let (cell_width, cell_height) = state.painter.logical_cell();
     let grid: Element<'_, Message> = match (state.painter.existing(id), state.grids.get(&id)) {
-        (Some(frame), Some(&(cols, rows))) => renderer(state, id, frame)
+        (Some(frame), Some(&PtyExtent(cols, rows, _, _))) => renderer(state, id, frame)
             .width(Length::Fixed(f32::from(cols) * cell_width))
             .height(Length::Fixed(f32::from(rows) * cell_height))
             .into(),
@@ -982,7 +1078,7 @@ impl State {
             return;
         };
         let scale = self.painter.scale();
-        let bounds = layout::content(self.window.width, self.window.height, scale);
+        let bounds = layout::content(self.window.width, self.window.height, self.chrome);
         let Some((_, pane)) = layout::panes(tree, bounds, scale)
             .into_iter()
             .find(|(pane, _)| *pane == id)
@@ -1001,7 +1097,7 @@ impl State {
             application::iced::Point::new(position.x - pane.x, position.y - pane.y),
             layout::border(scale),
             self.painter.logical_cell(),
-            grid,
+            grid.grid(),
         );
         let tabs = self.tabs.lock().expect("tabs");
         let Some(terminal) = tabs.pane_by_id(id) else {
@@ -1022,10 +1118,49 @@ impl State {
         }
     }
 
-    /// Everything a wake can mean, in one place: reap exited shells, follow
-    /// the tab set's shape (a Bus verb may have changed it), size any pane
-    /// that needs it. Painting waits for the widget's redraw event.
+    /// Everything a wake can mean, in one place: reconcile the settings lane
+    /// first, reap exited shells, follow the tab set's shape (a Bus verb may
+    /// have changed it), size any pane that needs it. Painting waits for the
+    /// widget's redraw event.
     fn sync(&mut self) -> Task<Message> {
+        // Settings first: reconcile the generation sampled from the actual
+        // shared client, drain every queued lane event (the pending wake flag
+        // was cleared BEFORE this ran), then adopt chrome and answer
+        // describes — so every later reader sees live evidence, not a queued
+        // lifecycle notice.
+        let generation = self.bus.settings_generation();
+        self.settings.reconcile(generation);
+        let mut target = presentation::ActivationTarget {
+            painter: &mut self.painter,
+            tokens: &mut self.tokens,
+            ui: &mut self.ui,
+            chrome: &mut self.chrome,
+            baseline: &mut self.baseline,
+            applied_context: &mut self.applied_context,
+            applied_key: &mut self.applied_raster,
+            force_paint: &mut self.force_paint,
+            paint_requested: &mut self.paint_requested,
+            tabs: &self.tabs,
+            shape: &mut self.shape,
+            window: self.window,
+            grids: &mut self.grids,
+        };
+        let changes = self
+            .settings
+            .drain_with(|| self.bus.settings_generation(), |p| target.activate(p));
+        if !changes.is_empty() {
+            // The settings activation receipt, same shape the other hosts
+            // print: live evidence, cache state and fallback diagnostics.
+            eprintln!(
+                "TERM_SETTINGS {}",
+                serde_json::json!({
+                    "service": self.bus.service_name(),
+                    "evidence": self.settings.session().host().consumer().evidence(),
+                    "settings_cache": self.settings.session().cache_evidence(),
+                    "fallback_diagnostics": self.settings.session().fallback_diagnostics(),
+                })
+            );
+        }
         let (removed, notes) = self.tabs.lock().expect("tabs").reap_exited();
         self.sync_ime();
         self.cancel_hidden_gesture();
@@ -1050,7 +1185,123 @@ impl State {
         self.grids.retain(|id, _| visible.contains(id));
         self.shape = shape;
         self.relayout();
+        self.answer_describes();
         Task::none()
+    }
+
+    /// The extent-change boundary, split out so tests can drive it directly:
+    /// tokens never reflow; a changed strip height relayouts once.
+    #[cfg(test)]
+    fn apply_chrome(&mut self, ui: toolkit::typography::TextStyle, tokens: toolkit::Tokens) {
+        self.tokens = tokens;
+        self.ui = ui;
+        let chrome = layout::strip_height(self.painter.scale(), ui);
+        if self.chrome != chrome {
+            self.chrome = chrome;
+            self.relayout();
+        }
+    }
+
+    /// Every queued `app.describe` is answered on the UI thread AFTER the
+    /// settings reconcile above, so the evidence describes the live
+    /// presentation. Bounded: the adapter refuses beyond 32 pending.
+    fn answer_describes(&mut self) {
+        while let Ok(describe) = self.describes.try_recv() {
+            let value = self.describe();
+            self.bus.reply(&describe, 0, value);
+        }
+    }
+
+    /// The full describe evidence: canonical serialized consumer evidence and
+    /// cache state, the ACTUAL served name (post-fallback), the computed
+    /// chrome extent and the prepared UI typography — never a partial or
+    /// fabricated picture.
+    fn describe(&self) -> serde_json::Value {
+        let service = self.bus.service_name();
+        let ui = self.ui;
+        let mut describe = serde_json::json!({
+            "schema": "term.v1",
+            "app_id": format!("dev.mixos.{SERVICE}"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "transport": "native",
+            "service": service,
+            "verbs": [
+                "term.tabs", "term.tab.new", "term.tab.select", "term.tab.close",
+                "term.tab.title", "term.tab.move", "term.panes", "term.pane.split",
+                "term.pane.select", "term.pane.close", "term.snapshot",
+                "term.scroll", "term.type", "term.props.watch", "term.session",
+                "app.describe"
+            ],
+            "chrome": {"height": self.chrome},
+            "ui": {
+                "font": ui.font.family.to_string(),
+                "size": ui.size,
+                "line_height": ui.line_height,
+            },
+        });
+        describe["settings"] =
+            serde_json::json!(self.settings.session().host().consumer().evidence());
+        describe["settings_cache"] = serde_json::json!(self.settings.session().cache_evidence());
+        describe["fallback_diagnostics"] =
+            serde_json::json!(self.settings.session().fallback_diagnostics());
+        let preparation = self.settings.preparation_evidence();
+        describe["preparation"] = serde_json::json!({
+            "desired": preparation.desired.get(),
+            "applied": preparation.applied.map(|revision| revision.get()),
+            "current": preparation.current,
+            "fault": preparation.fault,
+            "cell": self.painter.cell(),
+            "scale": self.painter.scale(),
+            "baseline_px": self.baseline,
+            "desired_zoom_steps": self.local.zoom_steps,
+            "applied_zoom_steps": self.applied_context.map(|context| context.zoom_steps),
+            "desired_scale": self.local.scale,
+            "raster": self.applied_raster.as_ref().map(|key| serde_json::json!({
+                "source": match &key.source {
+                    presentation::RasterSource::Bootstrap => serde_json::json!({"kind":"bootstrap"}),
+                    presentation::RasterSource::Verified(groups) => serde_json::json!({"kind":"verified", "groups":groups}),
+                },
+                "weight":key.weight,
+                "scale":f32::from_bits(key.scale),
+                "logical_px":f32::from_bits(key.logical_px),
+                "cursor":key.cursor,
+            })),
+        });
+        describe
+    }
+
+    /// The label the chrome wears, sampled from the shared handle — the Bus
+    /// connection provenance whenever it is not Connected (with the broker's
+    /// refusal words when refused), and the settings-presentation kind while
+    /// the appearance is not Current. Persistent UI evidence, independent of
+    /// the transient log lines. No extra worker.
+    fn chrome_label(&self) -> Option<String> {
+        let connection = self.bus.connection();
+        match connection.state {
+            ConnState::Connected => self.settings_label(),
+            ConnState::Connecting => Some(strings::label("bus-connecting")),
+            ConnState::Disconnected | ConnState::ShuttingDown => {
+                Some(strings::label("bus-disconnected"))
+            }
+            ConnState::Fatal => match connection.refused {
+                Some(reason) => Some(strings::format("bus-refused", &[("reason", reason)])),
+                None => Some(strings::label("bus-unavailable")),
+            },
+        }
+    }
+
+    /// The settings kind label: every non-Current presentation kind, from the
+    /// Fluent catalogue, and nothing once the appearance is Current.
+    fn settings_label(&self) -> Option<String> {
+        use settings::fallback::PresentationKind;
+        match self.settings.session().host().consumer().evidence().kind {
+            Some(PresentationKind::Current) => None,
+            Some(PresentationKind::Cached) => Some(strings::label("settings-cached")),
+            Some(PresentationKind::Retained) => Some(strings::label("settings-retained")),
+            Some(PresentationKind::LastGood) => Some(strings::label("settings-last-good")),
+            Some(PresentationKind::Embedded) => Some(strings::label("settings-embedded")),
+            None => Some(strings::label("settings-bootstrap")),
+        }
     }
 
     fn needs_paint(&self) -> bool {
@@ -1127,13 +1378,21 @@ impl State {
     /// the new cell. Every visible pane is re-rasterised (they share the
     /// glyph cache) and every PTY is told its new size.
     fn zoom(&mut self, change: impl FnOnce(&mut FontSize) -> bool) {
-        match self.painter.zoom(change) {
-            Ok(true) => self.reflow(),
-            Ok(false) => {}
-            // Keep the old raster: a terminal at the old size is legible, and
-            // a terminal with no raster is not a terminal.
-            Err(error) => eprintln!("term: font resize: {error}"),
+        let mut font = match FontSize::from_steps(self.baseline, self.local.zoom_steps) {
+            Ok(font) => font,
+            Err(error) => {
+                eprintln!("term: font zoom: {error}");
+                return;
+            }
+        };
+        if !change(&mut font) {
+            return;
         }
+        let next = LocalContext {
+            zoom_steps: font.steps(),
+            ..self.local
+        };
+        self.publish_context(next);
     }
 
     fn resize(&mut self, window: Size) {
@@ -1150,83 +1409,35 @@ impl State {
     }
 
     fn rescale(&mut self, scale: f32) {
-        match self.painter.set_scale(scale) {
-            Ok(true) => self.reflow(),
-            Ok(false) => {}
-            // Keep the old raster: a terminal at the wrong scale is legible,
-            // and a terminal with no raster is not a terminal.
-            Err(error) => eprintln!("term: raster rebuild at scale {scale}: {error}"),
+        match self.local.with_scale(scale) {
+            Ok(next) => self.publish_context(next),
+            Err(error) => eprintln!("term: output scale: {error}"),
         }
     }
 
-    /// The cell size changed under the same window: forget every pane's
-    /// grid so `relayout` resizes them all. The redraw widget repaints before
-    /// iced draws the rebuilt view, so no stretched intermediate is presented.
-    fn reflow(&mut self) {
-        self.grids.clear();
-        self.relayout();
-        self.force_paint = true;
-    }
-
-    /// Size every visible pane from the window and tell each PTY that moved.
-    fn relayout(&mut self) {
-        let Some(tree) = &self.shape.tree else {
-            return; // Nothing synced yet; the first wake lays out.
-        };
-        let scale = self.painter.scale();
-        let cell = self.painter.cell();
-        if cell.0 == 0 || cell.1 == 0 {
-            return;
-        }
-        let bounds = layout::content(self.window.width, self.window.height, scale);
-        let placed = layout::panes(tree, bounds, scale);
-        let mut resize = Vec::new();
+    fn publish_context(&mut self, next: LocalContext) {
+        match self
+            .settings
+            .set_context(next, self.bus.settings_generation())
         {
-            let mut tabs = self.tabs.lock().expect("tabs");
-            if tabs.is_empty() {
-                return;
-            }
-            for (id, geometry) in &placed {
-                // Logical px relative to the pane area — the frame bterm
-                // reports through `term.panes`, and what `focus_dir` reads.
-                tabs.geometry(
-                    *id,
-                    Geometry {
-                        x: geometry.x - bounds.x,
-                        y: geometry.y - bounds.y,
-                        ..*geometry
-                    },
-                );
-                let grid = layout::grid(*geometry, cell, scale);
-                if self.grids.get(id) != Some(&grid)
-                    && let Some(terminal) = tabs.pane_by_id(*id)
-                {
-                    resize.push((*id, grid, terminal));
-                }
-            }
-        }
-        // Record a grid only once it has reached its PTY: recording first and
-        // then failing to find the pane would leave `grids` describing a
-        // resize nothing was told about, and the equality check would
-        // suppress the retry. Terminal locks are taken without the set lock,
-        // as everywhere else in this frontend.
-        for (id, (cols, rows), terminal) in resize {
-            // Do not wait for the asynchronous resize wake to paint geometry
-            // already changed by this UI turn.
-            self.paint_requested = true;
-            // Physical pixels to the PTY: ioctl TIOCSWINSZ's ws_xpixel is
-            // what a full-screen program asks for when it wants real geometry.
-            terminal.lock().expect("terminal").resize(
-                cols,
-                rows,
-                cols * cell.0 as u16,
-                rows * cell.1 as u16,
-            );
-            self.tabs.lock().expect("tabs").resized(id, cols, rows);
-            self.grids.insert(id, (cols, rows));
+            Ok(_) => self.local = next,
+            Err(error) => eprintln!("term: local preparation: {}", error.message),
         }
     }
 
+    /// Compare complete PTY extents using the applied painter geometry.
+    fn relayout(&mut self) {
+        presentation::LayoutTarget {
+            painter: &self.painter,
+            tabs: &self.tabs,
+            shape: &mut self.shape,
+            window: self.window,
+            chrome: self.chrome,
+            grids: &mut self.grids,
+            paint_requested: &mut self.paint_requested,
+        }
+        .relayout();
+    }
     fn sync_ime(&mut self) {
         if !self.ime.has_owner() {
             return;
@@ -1265,9 +1476,9 @@ mod tests {
 
     #[test]
     fn an_env_font_size_overrides_the_config_only_when_it_is_valid() {
-        let base = config::Config {
+        let base = core_config::Config {
             font_px: 13.0,
-            ..config::Config::default()
+            ..core_config::Config::default()
         };
         assert_eq!(
             resolve_config(base, Some("18.5"), "xterm").config.font_px,
@@ -1642,7 +1853,9 @@ mod tests {
         assert!(!show_focus_ring(&split, 8));
     }
 
-    /// A real `State` with a PTY-backed tab set, no window and no Bus.
+    /// A real `State` with a PTY-backed tab set, no window and no Bus: the
+    /// settings session owns an explicit fixture binding, and the adapter
+    /// handle is a sink, so no live lane is behind the fixture.
     fn test_state() -> (State, std::thread::JoinHandle<()>) {
         let (cleanup, reaper) = tabs::Cleanup::start().expect("cleanup worker");
         let waker = Arc::new(Waker {
@@ -1653,13 +1866,47 @@ mod tests {
         });
         let tabs = Arc::new(Mutex::new(layout::test_tabs()));
         tabs.lock().unwrap().set_wake(waker.fd.waker());
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "term",
+        )
+        .unwrap();
+        let painter = Painter::for_test(1.0, FontSize::new(13.0), core_config::Cursor::Underline)
+            .expect("a monospace font");
+        let raster = painter.bootstrap_raster();
+        let local = LocalContext::new(1.0, core_config::Cursor::Underline).unwrap();
+        let (settings, lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::with_context(consumer, local),
+            application::presentation::native::Worker::contextual_with_host(
+                move |appearance, snapshot, local| {
+                    presentation::prepare(appearance, snapshot, local, &raster)
+                },
+                appearance::resources::ResourceHost::new(assets::Lookup::new()),
+            ),
+        );
+        let bootstrap = appearance::settings::bootstrap().unwrap();
+        let ui = bootstrap.typography().get("ui").expect("UI typography");
+        let (describe_tx, describes) = tokio::sync::mpsc::channel(32);
+        drop(describe_tx); // no adapter behind the fixture
         let state = State {
-            painter: Painter::for_test(1.0, FontSize::new(13.0), config::Cursor::Underline)
-                .expect("a monospace font"),
+            painter,
             tabs,
             cleanup,
             notify: None,
-            tokens: theme::tokens(),
+            tokens: bootstrap.tokens(),
+            ui,
+            chrome: layout::strip_height(1.0, ui),
+            settings,
+            local,
+            baseline: 13.0,
+            applied_raster: None,
+            applied_context: None,
+            fixture_lane: Some(lane),
+            bus: Handle::sink(),
+            describes,
             waker,
             window: Size::new(900.0, 560.0),
             shape: Shape::default(),
@@ -1680,6 +1927,231 @@ mod tests {
             paint_requested: true,
         };
         (state, reaper)
+    }
+
+    /// Complete the actual contextual worker and activate through State::sync.
+    /// No direct builder call or elapsed-time assumption substitutes for it.
+    fn finish_preparation(state: &mut State) {
+        static FONTS: std::sync::Once = std::sync::Once::new();
+        FONTS.call_once(|| {
+            toolkit::fonts::install(
+                toolkit::fonts::FontSet::new().sans(
+                    include_bytes!("../../../vendor/font/Inter-VariableFont_opsz,wght.ttf")
+                        .as_slice(),
+                ),
+                None,
+            )
+            .unwrap();
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut lane = state.fixture_lane.take().expect("real fixture lane");
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !state.settings.preparation_evidence().current {
+                    assert_ne!(
+                        lane.drive().await,
+                        application::presentation::native::Progress::UiClosed
+                    );
+                    let _ = state.sync();
+                    assert!(
+                        state.settings.preparation_evidence().fault.is_none(),
+                        "{:?}",
+                        state.settings.preparation_evidence().fault
+                    );
+                }
+            })
+            .await
+            .expect("contextual preparation did not finish");
+        });
+        state.fixture_lane = Some(lane);
+    }
+
+    /// The design boundary, colour side: a token change restyles the chrome
+    /// on the next redraw without touching PTY geometry or any pane's raster.
+    #[test]
+    fn colour_changes_restyle_without_reflow_or_raster_replacement() {
+        use term_core::terminal::Terminal;
+        let (mut state, reaper) = test_state();
+        let _ = state.sync();
+        let _ = state.act(Action::Split(SplitDir::Vertical));
+        let _ = state.sync();
+        let visible = state.shape.visible();
+        assert_eq!(visible.len(), 2);
+        // Quiet fixture content, so no PTY damage races the assertions.
+        for pane in &visible {
+            let terminal = state.tabs.lock().unwrap().pane_by_id(*pane).unwrap();
+            *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
+        }
+        let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
+        let generation = |state: &State, id| {
+            state
+                .painter
+                .existing(id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .generation()
+        };
+        let grids = state.grids.clone();
+        let force_paint = state.force_paint;
+        let before = [
+            generation(&state, visible[0]),
+            generation(&state, visible[1]),
+        ];
+        let mut tokens = state.tokens;
+        tokens.palette.surface = tokens.palette.text;
+        state.apply_chrome(state.ui, tokens);
+        assert_eq!(
+            state.grids, grids,
+            "a colour change must not reflow the PTYs"
+        );
+        assert_eq!(
+            state.force_paint, force_paint,
+            "a colour change must not replace the raster"
+        );
+        let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
+        assert_eq!(
+            [
+                generation(&state, visible[0]),
+                generation(&state, visible[1])
+            ],
+            before,
+            "a colour change must not repaint any pane"
+        );
+        let removed = state.tabs.lock().unwrap().shutdown();
+        state.cleanup.submit(removed);
+        drop(state);
+        reaper.join().unwrap();
+    }
+
+    /// The design boundary, extent side. The window is first tuned so the pane
+    /// interior sits mid-bucket (rows·cell + cell/2), which makes every leg
+    /// exact whatever the cell metrics: a sub-cell growth moves the pixel
+    /// chrome without moving the integer rows (the PTY grid quantises into
+    /// cells), a growth crossing the cell boundary resizes each PTY and its
+    /// content follows, and repeating the same extent resizes nothing.
+    #[test]
+    fn extent_changes_relayout_once_and_unchanged_extents_stay_put() {
+        use term_core::terminal::Terminal;
+        let (mut state, reaper) = test_state();
+        let _ = state.sync();
+        let _ = state.act(Action::Split(SplitDir::Vertical));
+        let _ = state.sync();
+        let visible = state.shape.visible();
+        assert_eq!(visible.len(), 2);
+        // Quiet fixture content, so no PTY damage races the assertions.
+        for pane in &visible {
+            let terminal = state.tabs.lock().unwrap().pane_by_id(*pane).unwrap();
+            *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
+        }
+        // Mid-bucket window: interior = rows·cell + cell/2, so a growth of up
+        // to half a cell provably stays inside the same quantisation bucket.
+        let scale = state.painter.scale();
+        let ch = state.painter.logical_cell().1;
+        let rows = f32::from(state.grids[&visible[0]].1);
+        let interior = rows * ch + ch / 2.0;
+        state.resize(Size::new(
+            state.window.width,
+            state.chrome + 2.0 * layout::border(scale) + interior,
+        ));
+        assert_eq!(
+            state.grids[&visible[0]].1 as f32, rows,
+            "the tuned window stays in the same row bucket"
+        );
+        let base = state.ui.line_height.unwrap_or(state.ui.size * 1.4);
+        let grow = |ui: &mut toolkit::typography::TextStyle, delta: f32| {
+            ui.line_height = Some(base + delta);
+        };
+
+        // A sub-cell growth moves the pixel extent only: the chrome value
+        // changes while every pane's integer rows stay put.
+        let grids = state.grids.clone();
+        let chrome = state.chrome;
+        let mut ui = state.ui;
+        grow(&mut ui, ch / 4.0);
+        state.apply_chrome(ui, state.tokens);
+        assert!(
+            state.chrome > chrome,
+            "a sub-cell extent change must move the pixel chrome"
+        );
+        assert_eq!(
+            state.grids, grids,
+            "a sub-cell extent change stays inside the row bucket"
+        );
+
+        // Crossing the cell boundary resizes each PTY once, and the pane
+        // content follows the new grid.
+        let grids = state.grids.clone();
+        grow(&mut ui, 2.0 * ch);
+        state.apply_chrome(ui, state.tokens);
+        for id in &visible {
+            assert!(
+                state.grids[id].1 < grids[id].1,
+                "crossing the cell boundary must shrink pane {id}"
+            );
+            let terminal = state.tabs.lock().unwrap().pane_by_id(*id).unwrap();
+            assert_eq!(
+                terminal.lock().unwrap().screen(false).rows,
+                state.grids[id].1 as usize,
+                "pane {id} content must follow the relaid-out grid"
+            );
+        }
+
+        // The same extent again: no resize.
+        let settled = state.grids.clone();
+        state.apply_chrome(ui, state.tokens);
+        assert_eq!(
+            state.grids, settled,
+            "an unchanged extent must not relayout"
+        );
+        let removed = state.tabs.lock().unwrap().shutdown();
+        state.cleanup.submit(removed);
+        drop(state);
+        reaper.join().unwrap();
+    }
+
+    /// The stored chrome extent follows a rescale: after `set_scale` succeeds
+    /// the strip is recomputed at the new scale BEFORE the reflow, so the
+    /// pane area and the IME origin read the same extent the live view
+    /// computes. No settings wake is involved — nothing may hide a stale
+    /// extent behind a later reconcile.
+    #[test]
+    fn a_rescale_updates_the_stored_chrome_before_reflow() {
+        let (mut state, reaper) = test_state();
+        let _ = state.sync();
+        finish_preparation(&mut state);
+        state.rescale(2.0);
+        assert_eq!(
+            state.painter.scale(),
+            1.0,
+            "old complete raster remains active while preparing"
+        );
+        finish_preparation(&mut state);
+        let scale = state.painter.scale();
+        assert_eq!(scale, 2.0);
+        let live = layout::strip_height(scale, state.ui);
+        assert_eq!(
+            state.chrome, live,
+            "the stored extent follows the new scale"
+        );
+        let bounds = layout::content(state.window.width, state.window.height, state.chrome);
+        assert_eq!(
+            bounds.y, live,
+            "the pane and IME origin starts below the live strip extent"
+        );
+        for id in state.shape.visible() {
+            assert!(
+                state.grids.contains_key(&id),
+                "pane {id} was relaid out at the new scale"
+            );
+        }
+        let removed = state.tabs.lock().unwrap().shutdown();
+        state.cleanup.submit(removed);
+        drop(state);
+        reaper.join().unwrap();
     }
 
     #[test]
@@ -1882,10 +2354,12 @@ mod tests {
         let id = state.shape.active_pane;
         let terminal = state.tabs.lock().unwrap().pane_by_id(id).unwrap();
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh\r\nijklmnop");
-        state.grids.insert(id, (8, 3));
+        state
+            .grids
+            .insert(id, PtyExtent::new((8, 3), state.painter.cell()));
         let (cw, ch) = state.painter.logical_cell();
         let border = layout::border(state.painter.scale());
-        let top = layout::strip_height(state.painter.scale()) + border;
+        let top = layout::strip_height(state.painter.scale(), state.ui) + border;
         let start = Point::new(border + cw * 0.1, top + ch * 0.5);
         let end = Point::new(border + cw * 3.9, start.y);
         let events = clipboard::MouseEvents::new(&state);
@@ -1959,12 +2433,14 @@ mod tests {
         let terminal = state.tabs.lock().unwrap().pane_by_id(original).unwrap();
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"\x1b[?1002;1006h");
         let input = terminal.lock().unwrap().listener.test_input_reader();
-        state.grids.insert(original, (8, 3));
+        state
+            .grids
+            .insert(original, PtyExtent::new((8, 3), state.painter.cell()));
         let (cw, ch) = state.painter.logical_cell();
         let border = layout::border(state.painter.scale());
         let start = Point::new(
             border + cw * 0.1,
-            layout::strip_height(state.painter.scale()) + border + ch * 0.5,
+            layout::strip_height(state.painter.scale(), state.ui) + border + ch * 0.5,
         );
         let end = Point::new(start.x + cw * 3.0, start.y + ch);
         let begin = |state: &mut State| {
@@ -2071,7 +2547,9 @@ mod tests {
             .map(|id| {
                 let terminal = state.tabs.lock().unwrap().pane_by_id(id).unwrap();
                 *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
-                state.grids.insert(id, (8, 3));
+                state
+                    .grids
+                    .insert(id, PtyExtent::new((8, 3), state.painter.cell()));
                 terminal
             })
             .collect();
@@ -2083,7 +2561,7 @@ mod tests {
         );
         assert!(terminals[0].lock().unwrap().selection_text().is_some());
         let scale = state.painter.scale();
-        let bounds = layout::content(state.window.width, state.window.height, scale);
+        let bounds = layout::content(state.window.width, state.window.height, state.chrome);
         let rect = layout::panes(state.shape.tree.as_ref().unwrap(), bounds, scale)
             .into_iter()
             .find(|(id, _)| *id == second)
@@ -2159,8 +2637,13 @@ mod tests {
         let terminal = state.tabs.lock().unwrap().pane_by_id(id).unwrap();
         // No PTY sender: a failed report must still NEVER fall back to paste.
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"\x1b[?9hword");
-        state.grids.insert(id, (8, 3));
-        let position = Point::new(4.0, layout::strip_height(state.painter.scale()) + 4.0);
+        state
+            .grids
+            .insert(id, PtyExtent::new((8, 3), state.painter.cell()));
+        let position = Point::new(
+            4.0,
+            layout::strip_height(state.painter.scale(), state.ui) + 4.0,
+        );
         let now = Instant::now();
         assert_eq!(
             state
@@ -2214,17 +2697,24 @@ mod tests {
     fn a_zoom_repaints_before_the_next_draw() {
         let (mut state, reaper) = test_state();
         let _ = state.sync();
+        finish_preparation(&mut state);
         let _ = state.act(Action::Split(SplitDir::Vertical));
         let _ = state.sync();
         assert_eq!(state.shape.visible().len(), 2);
 
         let before = state.painter.cell();
         state.zoom(|font| font.step_by(6));
+        assert_eq!(
+            state.painter.cell(),
+            before,
+            "pending zoom retains the applied raster"
+        );
+        finish_preparation(&mut state);
         let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
         let cell = state.painter.cell();
         assert_ne!(cell, before, "six steps must change the cell");
         for id in state.shape.visible() {
-            let (cols, rows) = state.grids[&id];
+            let (cols, rows) = state.grids[&id].grid();
             let frame = state
                 .painter
                 .existing(id)
@@ -2290,7 +2780,7 @@ mod tests {
         assert!(!state.needs_paint(), "painting consumes the request");
         let before = [generation(&state, ids[0]), generation(&state, ids[1])];
         let terminal = state.tabs.lock().unwrap().pane_by_id(ids[0]).unwrap();
-        let (cols, rows) = state.grids[&ids[0]];
+        let (cols, rows) = state.grids[&ids[0]].grid();
         terminal.lock().unwrap().resize(cols - 1, rows, 0, 0);
         for _ in 0..20 {
             let _ = update(&mut state, Message::Wake);
@@ -2339,6 +2829,7 @@ mod tests {
         use application::iced::mouse::ScrollDelta;
         let (mut state, reaper) = test_state();
         let _ = state.sync();
+        finish_preparation(&mut state);
         let start = state.painter.font().current();
         let travel = |fraction: f32| {
             Message::Wheel(
@@ -2366,6 +2857,8 @@ mod tests {
             "a new gesture of half a step zoomed: the old three quarters carried over"
         );
         let _ = update(&mut state, travel(0.5));
+        assert_eq!(state.local.zoom_steps, 1);
+        finish_preparation(&mut state);
         assert_ne!(
             state.painter.font().current(),
             start,
@@ -2541,7 +3034,7 @@ mod tests {
             let mut fresh = Painter::for_test(
                 state.painter.scale(),
                 state.painter.font(),
-                config::Cursor::Underline,
+                core_config::Cursor::Underline,
             )
             .unwrap();
             fresh.repaint(id, &screen, &vec![true; screen.rows]);

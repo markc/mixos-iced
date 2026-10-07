@@ -55,6 +55,29 @@ fn write_manifest(dir: &Path, json: &serde_json::Value) {
     fs::write(dir.join(MANIFEST_FILE), text).unwrap();
 }
 
+/// Write a JSON tree as compact strict data. The icon-asset boundary
+/// fixture declares thousands of entries, which pretty-printed exceed the
+/// manifest byte bound the reader enforces before the asset cap is ever
+/// checked; both layouts are strict data.
+fn write_manifest_compact(dir: &Path, json: &serde_json::Value) {
+    let text = strict::encode(&strict::from_json(json)).unwrap();
+    fs::write(dir.join(MANIFEST_FILE), text).unwrap();
+}
+
+/// One locked-file entry for the manifest, with the bytes written.
+fn write_file(dir: &Path, relative: &str, bytes: &[u8]) -> serde_json::Value {
+    let path = dir.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, bytes).unwrap();
+    serde_json::json!({
+        "path": relative, "bytes": bytes.len(),
+        "url": "https://example.org/font", "upstream": "https://example.org/",
+        "revision": "pinned", "licence": "OFL-1.1",
+        "sha256": hex::encode(sha2::Sha256::digest(bytes)),
+        "blake3": blake3::hash(bytes).to_hex().to_string(),
+    })
+}
+
 fn activate(root: &Path, id: &str) {
     let current = root.join("current");
     if fs::symlink_metadata(&current).is_ok() {
@@ -284,13 +307,364 @@ fn select_skips_hashing_but_keeps_every_other_check() {
     // discover refuses.
     fs::write(root.join("sets/core/fonts/Sans.ttf"), b"font byteZ").unwrap();
     assert_eq!(lookup.select().unwrap().unwrap().set_id(), "core");
-    assert!(matches!(lookup.discover().unwrap_err(), assets::Error::Mismatch(_)));
+    assert!(matches!(
+        lookup.discover().unwrap_err(),
+        assets::Error::Mismatch(_)
+    ));
     // A size change fails both.
     fs::write(root.join("sets/core/fonts/Sans.ttf"), b"font bytes grown").unwrap();
-    assert!(matches!(lookup.select().unwrap_err(), assets::Error::Mismatch(_)));
-    assert!(matches!(lookup.discover().unwrap_err(), assets::Error::Mismatch(_)));
+    assert!(matches!(
+        lookup.select().unwrap_err(),
+        assets::Error::Mismatch(_)
+    ));
+    assert!(matches!(
+        lookup.discover().unwrap_err(),
+        assets::Error::Mismatch(_)
+    ));
     // No activated set falls through to None either way.
     let empty: Lookup = vec![temp.path().join("nothing")].into_iter().collect();
     assert!(empty.select().unwrap().is_none());
     assert!(empty.discover().unwrap().is_none());
+}
+
+/// A v2 set: one sans font, two icon catalogues (rounded default, plus
+/// outlined) with distinct codepoints files, and one symbolic SVG asset.
+fn fixture_v2(root: &Path, id: &str) -> PathBuf {
+    let dir = root.join("sets").join(id);
+    let mut entries = Vec::new();
+    for (path, bytes) in [
+        ("fonts/Sans.ttf", b"font bytes".as_slice()),
+        ("icons/Rounded.ttf", b"rounded font".as_slice()),
+        (
+            "icons/Rounded.codepoints",
+            b"delete e872\nfolder e2c7\n".as_slice(),
+        ),
+        ("icons/Outlined.ttf", b"outlined font".as_slice()),
+        ("icons/Outlined.codepoints", b"delete e900\n".as_slice()),
+        ("icons/mark.svg", b"<svg/>".as_slice()),
+    ] {
+        fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+        fs::write(dir.join(path), bytes).unwrap();
+        entries.push(serde_json::json!({
+            "path": path, "bytes": bytes.len(),
+            "url": "https://example.org/font", "upstream": "https://example.org/",
+            "revision": "pinned", "licence": "OFL-1.1",
+            "sha256": hex::encode(sha2::Sha256::digest(bytes)),
+            "blake3": blake3::hash(bytes).to_hex().to_string()
+        }));
+    }
+    write_manifest(
+        &dir,
+        &serde_json::json!({
+            "schema": assets::SCHEMA_V2, "set_id": id,
+            "fonts": { "sans": "fonts/Sans.ttf" },
+            "font_families": { "sans": "Fixture Sans" },
+            "files": entries, "web_css": "/* fixture */\n",
+            "icon_default": { "family": "Fixture Symbols", "style": "rounded", "weight": 400 },
+            "icon_catalogues": [
+                { "family": "Fixture Symbols", "style": "rounded",
+                  "font": "icons/Rounded.ttf", "face_index": 0,
+                  "codepoints": "icons/Rounded.codepoints" },
+                { "family": "Fixture Symbols", "style": "outlined",
+                  "font": "icons/Outlined.ttf", "face_index": 1,
+                  "codepoints": "icons/Outlined.codepoints" }
+            ],
+            "icon_assets": [
+                { "name": "mark", "style": "rounded",
+                  "path": "icons/mark.svg", "symbolic": true }
+            ]
+        }),
+    );
+    fs::write(dir.join("fonts.css"), "/* fixture */\n").unwrap();
+    dir
+}
+
+#[test]
+fn v2_declares_real_icon_metadata_and_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture_v2(temp.path(), "two");
+    let set = AssetSet::open(temp.path(), "two").unwrap();
+    set.verify().unwrap();
+    // The legacy v1 accessors read the shared fields unchanged.
+    assert_eq!(set.set_id(), "two");
+    assert_eq!(set.family("sans"), Some("Fixture Sans"));
+    assert_eq!(
+        set.font_path("sans"),
+        Some(set.root().join("fonts/Sans.ttf"))
+    );
+    assert_eq!(set.manifest().schema, assets::SCHEMA_V2);
+    assert_eq!(set.manifest().files.len(), 6);
+    assert_eq!(set.manifest().web_css, "/* fixture */\n");
+    // The versioned DTO is retained whole behind the typed accessor; the
+    // legacy projection stays read-only (its schema is SCHEMA_V2 and it
+    // cannot revalidate as v1).
+    let v2 = set.manifest_v2().unwrap();
+    assert_eq!(v2.schema, assets::SCHEMA_V2);
+    assert_eq!(v2.icon_default.weight, 400);
+    assert_eq!(v2.icon_catalogues.len(), 2);
+    assert_eq!(v2.icon_assets.len(), 1);
+    // The declared default: an omitted icon request uses this.
+    let default = set.icon_default().unwrap();
+    assert_eq!(
+        (
+            default.family.as_str(),
+            default.style.as_str(),
+            default.weight
+        ),
+        ("Fixture Symbols", "rounded", 400)
+    );
+    // The catalogues carry the exact font/face_index/codepoints mapping.
+    let catalogues = set.icon_catalogues();
+    assert_eq!(catalogues.len(), 2);
+    assert_eq!(catalogues[0].family, "Fixture Symbols");
+    assert_eq!(catalogues[0].style, "rounded");
+    assert_eq!(catalogues[0].font, "icons/Rounded.ttf");
+    assert_eq!(catalogues[0].face_index, 0);
+    assert_eq!(catalogues[0].codepoints, "icons/Rounded.codepoints");
+    assert_eq!(catalogues[1].style, "outlined");
+    assert_eq!(catalogues[1].face_index, 1);
+    // Explicit selection: declared pairs resolve, absent pairs are None.
+    assert!(
+        set.icon_catalogue("Fixture Symbols", "rounded")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        set.icon_catalogue("Fixture Symbols", "outlined")
+            .unwrap()
+            .unwrap()
+            .face_index,
+        1
+    );
+    assert!(
+        set.icon_catalogue("Fixture Symbols", "filled")
+            .unwrap()
+            .is_none()
+    );
+    assert!(set.icon_catalogue("Other", "rounded").unwrap().is_none());
+    // The declared non-font assets.
+    let assets = set.icon_assets();
+    assert_eq!(assets.len(), 1);
+    assert_eq!(assets[0].name, "mark");
+    assert_eq!(assets[0].path, "icons/mark.svg");
+    assert!(assets[0].symbolic);
+    // The legacy icon table is the default catalogue.
+    assert_eq!(set.icon("delete"), Some('\u{e872}'));
+    assert_eq!(set.icon("folder"), Some('\u{e2c7}'));
+    assert_eq!(set.icons().len(), 2);
+}
+
+#[test]
+fn v1_derives_default_icon_metadata_and_refuses_nondefault_styles() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture(temp.path(), "one");
+    let set = AssetSet::open(temp.path(), "one").unwrap();
+    // The v1 set derives its one default catalogue from the icons role.
+    let default = set.icon_default().unwrap();
+    assert_eq!(default.family, "Fixture Symbols");
+    assert_eq!(default.style, assets::DEFAULT_ICON_STYLE);
+    assert_eq!(default.weight, 400);
+    let catalogues = set.icon_catalogues();
+    assert_eq!(catalogues.len(), 1);
+    assert_eq!(catalogues[0].font, "icons/Symbols.ttf");
+    assert_eq!(catalogues[0].face_index, 0);
+    assert_eq!(catalogues[0].codepoints, "icons/Symbols.codepoints");
+    assert!(set.icon_assets().is_empty());
+    // A v1 set retains no versioned DTO; the legacy projection is all
+    // there is.
+    assert!(set.manifest_v2().is_none());
+    // The default style selects the one catalogue.
+    assert!(
+        set.icon_catalogue("Fixture Symbols", "default")
+            .unwrap()
+            .is_some()
+    );
+    assert!(set.icon_catalogue("Other", "default").unwrap().is_none());
+    // A nondefault style request is refused, not silently mapped.
+    let error = set
+        .icon_catalogue("Fixture Symbols", "rounded")
+        .unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)));
+    assert!(error.to_string().contains("rounded"), "{error}");
+    // The legacy table and roles are untouched.
+    assert_eq!(set.icon("folder"), Some('\u{e2c7}'));
+    assert_eq!(set.roles().collect::<Vec<_>>(), ["icons", "sans"]);
+}
+
+#[test]
+fn v1_without_family_claims_labels_the_default_but_matches_no_family() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("sets/one");
+    let entries = vec![
+        write_file(&dir, "fonts/Sans.ttf", b"font bytes"),
+        write_file(&dir, "icons/Symbols.ttf", b"icon font"),
+        write_file(&dir, "icons/Symbols.codepoints", b"delete e872\n"),
+    ];
+    write_manifest(
+        &dir,
+        &serde_json::json!({
+            "schema": SCHEMA, "set_id": "one",
+            "fonts": { "sans": "fonts/Sans.ttf", "icons": "icons/Symbols.ttf" },
+            "files": entries, "web_css": "/* fixture */\n"
+        }),
+    );
+    fs::write(dir.join("fonts.css"), "/* fixture */\n").unwrap();
+    let set = AssetSet::open(temp.path(), "one").unwrap();
+    // v1 records no family claim: the default stays usable, but a family
+    // request cannot be confirmed against metadata.
+    let default = set.icon_default().unwrap();
+    assert_eq!(default.family, "");
+    assert_eq!(default.style, "default");
+    assert!(
+        set.icon_catalogue("Material Symbols", "default")
+            .unwrap()
+            .is_none()
+    );
+    assert!(set.icon_catalogue("", "default").unwrap().is_some());
+}
+
+#[test]
+fn v2_refuses_incomplete_duplicate_and_unknown_icon_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture_v2(temp.path(), "two");
+    let dir = temp.path().join("sets/two");
+    let original = strict::to_json(&strict::parse_file(&dir.join(MANIFEST_FILE)).unwrap());
+    for bad in [
+        "missing-default",
+        "empty-catalogues",
+        "duplicate-pair",
+        "default-not-declared",
+        "weight-zero",
+        "weight-too-big",
+        "face-too-big",
+        "unlocked-font",
+        "unlocked-codepoints",
+        "unknown-default-field",
+        "unknown-catalogue-field",
+        "unknown-asset-field",
+        "unknown-top-field",
+        "duplicate-asset",
+        "unlocked-asset",
+        "bad-asset-name",
+        "too-many-catalogues",
+    ] {
+        let mut json = original.clone();
+        match bad {
+            "missing-default" => {
+                json.as_object_mut().unwrap().remove("icon_default");
+            }
+            "empty-catalogues" => json["icon_catalogues"] = serde_json::json!([]),
+            "duplicate-pair" => {
+                let duplicate = json["icon_catalogues"][0].clone();
+                json["icon_catalogues"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "default-not-declared" => {
+                json["icon_default"]["style"] = serde_json::json!("filled");
+            }
+            "weight-zero" => json["icon_default"]["weight"] = serde_json::json!(0),
+            "weight-too-big" => json["icon_default"]["weight"] = serde_json::json!(1001),
+            "face-too-big" => {
+                json["icon_catalogues"][0]["face_index"] = serde_json::json!(65536);
+            }
+            "unlocked-font" => {
+                json["icon_catalogues"][0]["font"] = serde_json::json!("fonts/Absent.ttf");
+            }
+            "unlocked-codepoints" => {
+                json["icon_catalogues"][0]["codepoints"] =
+                    serde_json::json!("icons/Absent.codepoints");
+            }
+            "unknown-default-field" => {
+                json["icon_default"]["fill_axis"] = serde_json::json!(true);
+            }
+            "unknown-catalogue-field" => {
+                json["icon_catalogues"][0]["fill_axis"] = serde_json::json!(true);
+            }
+            "unknown-asset-field" => {
+                json["icon_assets"][0]["tint"] = serde_json::json!(true);
+            }
+            "unknown-top-field" => json["icon_extra"] = serde_json::json!(true),
+            "duplicate-asset" => {
+                let duplicate = json["icon_assets"][0].clone();
+                json["icon_assets"].as_array_mut().unwrap().push(duplicate);
+            }
+            "unlocked-asset" => {
+                json["icon_assets"][0]["path"] = serde_json::json!("icons/Absent.svg");
+            }
+            "bad-asset-name" => {
+                json["icon_assets"][0]["name"] = serde_json::json!("bad name!");
+            }
+            "too-many-catalogues" => {
+                let base = json["icon_catalogues"][0].clone();
+                let many: Vec<serde_json::Value> = (0..33)
+                    .map(|i| {
+                        let mut catalogue = base.clone();
+                        catalogue["style"] = serde_json::json!(format!("style{i}"));
+                        catalogue
+                    })
+                    .collect();
+                json["icon_catalogues"] = serde_json::json!(many);
+            }
+            _ => unreachable!("{bad}"),
+        }
+        write_manifest(&dir, &json);
+        assert!(AssetSet::open(temp.path(), "two").is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn the_icon_asset_cap_accepts_its_bound_and_refuses_one_more() {
+    let temp = tempfile::tempdir().unwrap();
+    fixture_v2(temp.path(), "two");
+    let dir = temp.path().join("sets/two");
+    let original = strict::to_json(&strict::parse_file(&dir.join(MANIFEST_FILE)).unwrap());
+    // The cap counts declarations, not files: every declared asset may
+    // share the one locked SVG path.
+    let assets = |count: usize| {
+        (0..count)
+            .map(|i| {
+                serde_json::json!({
+                    "name": i.to_string(), "style": "r",
+                    "path": "icons/mark.svg"
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut at_bound = original.clone();
+    at_bound["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS));
+    write_manifest_compact(&dir, &at_bound);
+    let set =
+        AssetSet::open(temp.path(), "two").expect("the count-bound fixture fits the byte cap");
+    assert_eq!(set.icon_assets().len(), assets::MAX_ICON_ASSETS);
+    let mut over = original;
+    over["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS + 1));
+    write_manifest_compact(&dir, &over);
+    let error = AssetSet::open(temp.path(), "two").unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    assert!(
+        error.to_string().contains("too many icon assets"),
+        "{error}"
+    );
+}
+
+#[test]
+fn invalid_utf8_manifests_and_catalogues_keep_the_invalid_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = fixture(temp.path(), "one");
+    // A manifest that is not UTF-8 is an invalid manifest, not an I/O
+    // error — the same classification the verified path uses.
+    fs::write(dir.join(MANIFEST_FILE), b"\x80\x81 not utf-8\n").unwrap();
+    let error = AssetSet::open(temp.path(), "one").unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    assert!(error.to_string().contains("UTF-8"), "{error}");
+    // The same for a locked icon catalogue. The corrupted bytes keep the
+    // locked size so the size check passes and the content defect is what
+    // is reported.
+    fixture(temp.path(), "one");
+    fs::write(dir.join("icons/Symbols.codepoints"), vec![0xffu8; 24]).unwrap();
+    let error = AssetSet::open(temp.path(), "one").unwrap_err();
+    assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
+    assert!(error.to_string().contains("UTF-8"), "{error}");
 }

@@ -4,11 +4,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use application::Element;
 use application::cpu::Renderer;
 use application::iced::advanced::text::Renderer as _;
 use application::iced::advanced::widget::{Operation, Tree, tree};
 use application::iced::advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer};
-use application::iced::{Element, Event, Length, Point, Rectangle, Size, Vector, keyboard};
+use application::iced::{Event, Length, Point, Rectangle, Size, Vector, keyboard};
 use dopus_core::{DropAction, PaneId, sanitise_display_path};
 
 use super::Look;

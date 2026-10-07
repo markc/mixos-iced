@@ -258,8 +258,26 @@ impl App {
         self.bus
             .reply(id, 10, json!({"error_code":code,"message":message}));
     }
+    /// Read-only confirmation diagnostic: the action request, captured
+    /// selection and captured state token a pending `Dialog::Confirm` froze,
+    /// so an acceptance can prove those values survived without a mutation verb.
+    fn confirmation(&self) -> Option<Value> {
+        let Dialog::Confirm {
+            action,
+            selection,
+            token,
+        } = self.dialog.as_ref()?
+        else {
+            return None;
+        };
+        Some(json!({
+            "action": action.request(),
+            "selection": selection,
+            "state_token": token,
+        }))
+    }
     fn info(&self) -> Value {
-        json!({"schema":"scene-editor.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.bus.connected(),"busy":self.operation.is_some(),"selection":self.selection,"edge":self.edge,"epoch":self.epoch,"status":self.status,"state_token":self.snapshot.0["state_token"],"ui":{"menu_bar":true,"dialog":match self.dialog{Some(Dialog::Confirm{..})=>Some("confirm"),Some(Dialog::Shortcuts)=>Some("shortcuts"),Some(Dialog::About)=>Some("about"),None=>None}},"snapshot":self.snapshot.0})
+        json!({"schema":"scene-editor.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.bus.connected(),"busy":self.operation.is_some(),"selection":self.selection,"edge":self.edge,"epoch":self.epoch,"status":self.status,"state_token":self.snapshot.0["state_token"],"ui":{"menu_bar":true,"dialog":match self.dialog{Some(Dialog::Confirm{..})=>Some("confirm"),Some(Dialog::Shortcuts)=>Some("shortcuts"),Some(Dialog::About)=>Some("about"),None=>None},"confirmation":self.confirmation()},"snapshot":self.snapshot.0})
     }
     fn start(&mut self, verb: &str, args: Value, kind: Kind, reply: Option<u64>) -> Task<Message> {
         if !self.bus.connected() {
@@ -1224,6 +1242,15 @@ mod tests {
         app.snapshot.0["state_token"] = json!("b".repeat(64));
         assert!(
             matches!(&app.dialog,Some(Dialog::Confirm{selection,token,..}) if selection.scene.as_deref()==Some("panel")&&*token=="a".repeat(64))
+        );
+        assert_eq!(
+            app.confirmation(),
+            Some(json!({
+                "action":{"action":"reset"},
+                "selection":{"view":"gallery","template":null,"scene":"panel","page":null},
+                "state_token":"a".repeat(64),
+            })),
+            "the read-only diagnostic reports the frozen action, selection and token"
         );
         let mut ui = application::test::Simulator::with_size(
             iced::Settings::default(),

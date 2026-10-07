@@ -1,70 +1,34 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Every colour this frontend chooses, resolved from `mixos-design`.
-//!
-//! Desktop-wide theming is mandatory (Mark 2026-09-18): a colour literal in an
-//! app is a bug, including in a skeleton. There is exactly one literal-free
-//! path here — compile the embedded default design for the app's context and
-//! read the token dictionary — and one fallback, which is the SHARED preview
-//! palette in `mixos-iced-widgets`, not a local invention.
+//! The window's colours and text now come from the SHARED appearance
+//! settings, borrowed from the settings session's prepared presentation (or
+//! the immediate bootstrap before the first preparation). No per-app design
+//! compilation: a colour literal in an app is still a bug, and the shared
+//! path is the one that satisfies the desktop theming rule for every app.
 //!
 //! What this does NOT colour is the grid. A terminal's cell colours belong to
 //! the program running in it (rio's ANSI palette, resolved in
-//! `term_core::terminal::capture`); repainting those from the desktop
-//! theme would make `ls --color` lie. The tokens own the window: the surface
-//! behind and around the grid texture.
+//! `term_core::terminal::capture`); repainting those from the desktop theme
+//! would make `ls --color` lie. The tokens own the window: the surface behind
+//! and around the grid texture.
 
-use design::{DesignCompileResult, DesignContext, Mode, SourceIdentity};
+use appearance::settings::Prepared;
 use toolkit::Tokens;
 
-/// The app identity the design compiler selects a per-app overlay by.
-const APP: &str = "term";
-
-/// Resolved tokens for the terminal window.
-///
-/// A design that fails to compile is reported once and falls back to the
-/// shared preview palette rather than killing a terminal over a colour — but
-/// it is never silent, because a fleet running on the fallback palette looks
-/// exactly like a fleet running on the design until someone reads the log.
-pub fn tokens() -> Tokens {
-    match resolve() {
-        Ok(tokens) => tokens,
-        Err(error) => {
-            eprintln!("term theme: {error}; using the shared preview palette");
-            Tokens::default()
-        }
-    }
-}
-
-fn resolve() -> Result<Tokens, String> {
-    let document = design::parse_design_source(
-        SourceIdentity::new("embedded:mixos-design-default"),
-        design::EMBEDDED_DEFAULT_SOURCE,
-    )
-    .map_err(|error| format!("embedded design source: {error:?}"))?;
-    let context = DesignContext {
-        mode: Mode::Dark,
-        app: Some(APP.to_owned()),
-        ..DesignContext::default()
-    };
-    let DesignCompileResult::Success(compiled) = design::compile_design(&document, context) else {
-        return Err("embedded design does not compile".into());
-    };
-    appearance::conversion::from_dictionary(compiled.candidate.dictionary())
-        .map_err(|error| format!("design dictionary: {error}"))
+/// Resolved tokens for the terminal window, from the prepared presentation.
+pub fn tokens(prepared: &Prepared) -> Tokens {
+    prepared.tokens()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The embedded design must actually resolve, or every terminal silently
-    /// runs on the preview palette and the theming rule is decoration.
+    /// The immediate bootstrap must resolve, or every terminal runs on the
+    /// preview palette and the theming rule is decoration.
     #[test]
-    fn the_embedded_design_resolves_for_this_app() {
-        let resolved = resolve().expect("the embedded design compiles for term");
-        // Not a colour assertion — a contrast one. Surface and text coming
-        // back equal would render an invisible window and still be "tokens".
+    fn the_shared_bootstrap_resolves_tokens_for_this_app() {
+        let prepared = appearance::settings::bootstrap().expect("shared bootstrap");
+        let resolved = tokens(&prepared);
         assert_ne!(resolved.palette.surface, resolved.palette.text);
-        assert_ne!(resolved.palette.surface, Tokens::default().palette.surface);
     }
 }

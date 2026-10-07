@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.10"
+version = "0.1.12"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,8 +26,8 @@ wgpu = ["iced/wgpu"]
 wgpu-bare = ["iced/wgpu-bare"]
 raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
 test-support = ["dep:iced_test"]
-settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit"]
-settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus"]
+settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit", "appearance/resources"]
+settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus", "dep:assets"]
 settings-cache = ["settings-native", "settings/cache", "dep:config", "dep:serde"]
 # Read-only layout inspection; enables the narrow selector-only iced query
 # support. Not in defaults.
@@ -48,6 +48,8 @@ settings = { workspace = true, optional = true }
 appearance = { workspace = true, optional = true }
 design = { workspace = true, optional = true }
 toolkit = { workspace = true, optional = true }
+# The resource host's captured lookup policy on the worker lane.
+assets = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 bus = { workspace = true, optional = true, features = ["native"] }
 config = { workspace = true, optional = true }
@@ -59,3 +61,7 @@ tempfile.workspace = true
 png = "=0.18.1"
 bus = { workspace = true, features = ["native"] }
 serde_json.workspace = true
+blake3 = "=1.8.6"
+hex = "=0.4.3"
+sha2 = { workspace = true }
+strict = { path = "../strict" }

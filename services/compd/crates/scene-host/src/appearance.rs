@@ -6,10 +6,7 @@ use decor::{
     ChromeTheme, Palette,
     layout::{ChromeStyle, DecoFontFamily, DecoFontWeight},
 };
-use iced_core::{
-    Theme,
-    font::{Family, Weight},
-};
+use iced_core::{Theme, font::Family};
 use settings::{Diagnostic, Snapshot};
 use std::sync::Arc;
 
@@ -41,17 +38,7 @@ pub(crate) fn build(prepared: &Prepared, snapshot: &Snapshot) -> Result<Look, Di
             ));
         }
     };
-    let weight = match title.font.weight {
-        Weight::Thin => 100,
-        Weight::ExtraLight => 200,
-        Weight::Light => 300,
-        Weight::Normal => 400,
-        Weight::Medium => 500,
-        Weight::Semibold => 600,
-        Weight::Bold => 700,
-        Weight::ExtraBold => 800,
-        Weight::Black => 900,
-    };
+    let weight = title.font.weight.value();
     Ok(Look {
         prepared: Arc::new(prepared.clone()),
         preferences,
@@ -119,11 +106,7 @@ pub(crate) fn fixture(mode: &str, scale: f64) -> Arc<Prepared> {
             .prepare(|_, record| {
                 Ok(toolkit::fonts::FontSelection {
                     font: iced_core::Font {
-                        weight: if record.weight >= 600 {
-                            Weight::Bold
-                        } else {
-                            Weight::Normal
-                        },
+                        weight: toolkit::fonts::weight(record.weight),
                         ..iced_core::Font::DEFAULT
                     },
                     choice: toolkit::fonts::FontChoice::Declared,

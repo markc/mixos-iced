@@ -1,5 +1,15 @@
 # settingsd contract changes
 
+## 0.1.1
+
+Accept the optional versioned `appearance.resources` reference with structural
+authority validation only: no local file, font or asset I/O, and renderer-local
+availability stays a consumer preparation fault (LastGood), never authority
+rollback. Whole-object change/reset only; unknown nested paths fail.
+Describe/contract advertises versioned resource support; authority verbs are
+unchanged and the top-level snapshot schema remains 1. Omission keeps old
+accepted profile bytes and effective digests exact.
+
 ## 0.1.0
 
 Serve describe/get/validate/apply/reset/status through native ABP; durable

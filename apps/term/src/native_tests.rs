@@ -86,8 +86,8 @@ fn native_lane_round_trip() {
         return;
     }
 
-    let settings = config::Settings {
-        config: config::Config::default(),
+    let settings = core_config::Settings {
+        config: core_config::Config::default(),
         term: "xterm-256color",
     };
     let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
@@ -244,8 +244,8 @@ fn native_start_failure_keeps_graphics_tabs() {
     if !mix_available() {
         return;
     }
-    let settings = config::Settings {
-        config: config::Config::default(),
+    let settings = core_config::Settings {
+        config: core_config::Config::default(),
         term: "xterm-256color",
     };
     let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
@@ -360,8 +360,8 @@ fn unavailable_ingress_logs_once_across_retries() {
         "ws://127.0.0.1:1/ws".into(),
     ));
     let mut tabs = lane
-        .open_tabs(config::Settings {
-            config: config::Config::default(),
+        .open_tabs(core_config::Settings {
+            config: core_config::Config::default(),
             term: "xterm-256color",
         })
         .unwrap();

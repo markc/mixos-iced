@@ -98,6 +98,7 @@ fn view(effective: &Effective) -> &DesignReadProjection {
         ui,
         design,
         provenance: _,
+        resources: _,
     } = effective;
     let CommonUi {
         density: _,
@@ -115,18 +116,24 @@ fn view(effective: &Effective) -> &DesignReadProjection {
         typography: _,
         buttons: _,
     } = design;
-    // Source/provenance/schema identify and validate evidence; all remaining
-    // fields feed the domains below. No wildcard permits an unnoticed addition.
+    // Source/provenance/schema identify and validate evidence; the resource
+    // reference is classified by `compare` below. All remaining fields feed
+    // the domains. No wildcard permits an unnoticed addition.
     design
 }
 fn compare(old: &Effective, new: &Effective) -> ChangePlan {
     let a = view(old);
     let b = view(new);
-    let resources = !a
-        .typography
-        .iter()
-        .map(|(k, r)| (k, font_key(r)))
-        .eq(b.typography.iter().map(|(k, r)| (k, font_key(r))));
+    // An icon family/style/weight change can alter glyphs even when the public
+    // font family names are identical, so any reference change conservatively
+    // invalidates resources, text, layout and paint.
+    let reference_changed = old.resources != new.resources;
+    let resources = reference_changed
+        || !a
+            .typography
+            .iter()
+            .map(|(k, r)| (k, font_key(r)))
+            .eq(b.typography.iter().map(|(k, r)| (k, font_key(r))));
     let text = resources
         || old.ui.text_scale != new.ui.text_scale
         || !a
@@ -142,7 +149,8 @@ fn compare(old: &Effective, new: &Effective) -> ChangePlan {
             .iter()
             .map(|c| (button_key(c), &c.typography))
             .eq(b.buttons.iter().map(|c| (button_key(c), &c.typography)));
-    let paint = old.scheme != new.scheme
+    let paint = reference_changed
+        || old.scheme != new.scheme
         || old.mode != new.mode
         || old.contrast != new.contrast
         || a.primitives != b.primitives

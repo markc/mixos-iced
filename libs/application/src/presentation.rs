@@ -51,6 +51,15 @@ impl<T> Host<T> {
     pub fn presentation(&self) -> Option<&Presentation<T>> {
         self.presentation.as_ref()
     }
+    #[cfg(feature = "settings-native")]
+    fn replace_local(
+        &mut self,
+        presentation: Presentation<T>,
+        activate: impl FnOnce(&Presentation<T>),
+    ) {
+        activate(&presentation);
+        self.presentation = Some(presentation);
+    }
     pub fn kind(&self) -> Option<PresentationKind> {
         self.consumer.presentation_kind()
     }
@@ -95,10 +104,18 @@ impl<T> Host<T> {
         match *completion.result {
             Ok(presentation) => {
                 let changes = completion.update.changes();
+                // Capture the exact verified binding before the presentation
+                // moves into the host: the acknowledgement and the cache save
+                // it later captures must record precisely what was activated.
+                let resources = presentation
+                    .appearance()
+                    .resources()
+                    .and_then(|resources| resources.binding().cloned());
                 activate(&presentation);
                 self.presentation = Some(presentation);
                 assert!(
-                    self.consumer.acknowledge(&completion.update),
+                    self.consumer
+                        .acknowledge_resources(&completion.update, resources),
                     "synchronous activation fence"
                 );
                 Some(changes)

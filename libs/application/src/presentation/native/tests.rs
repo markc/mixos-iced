@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::*;
+use appearance::resources::{IconRequirement, ResourceHost, ResourceRequirements};
 use settings::{Binding, Desktop, Revision};
+use sha2::Digest;
 use toolkit::fonts::{FontChoice, FontSelection, FontSet};
 mod bridge;
 #[cfg(feature = "settings-cache")]
 mod cache;
+mod context;
 
 fn install_fonts() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
@@ -18,6 +21,111 @@ fn install_fonts() {
         )
         .unwrap();
     });
+}
+
+/// A resource host with no approved roots: deterministic in every test
+/// environment, exercising the honest no-set rescue path.
+fn hermetic_host() -> ResourceHost {
+    ResourceHost::new(assets::Lookup::new())
+}
+
+/// Write one locked-file entry and its bytes, as the installer does.
+fn write_file(dir: &std::path::Path, relative: &str, bytes: &[u8]) -> serde_json::Value {
+    let path = dir.join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    serde_json::json!({
+        "path": relative, "bytes": bytes.len(),
+        "url": "https://example.org/font", "upstream": "https://example.org/",
+        "revision": "pinned", "licence": "OFL-1.1",
+        "sha256": hex::encode(sha2::Sha256::digest(bytes)),
+        "blake3": blake3::hash(bytes).to_hex().to_string(),
+    })
+}
+
+fn write_manifest(dir: &std::path::Path, json: &serde_json::Value) {
+    let text = strict::encode_pretty(&strict::from_json(json)).unwrap();
+    std::fs::write(dir.join(assets::MANIFEST_FILE), text).unwrap();
+}
+
+/// A real verified set under `root`, activated through `current`, using the
+/// real variable Inter, Noto Sans and JetBrains Mono fonts so the toolkit registry
+/// parses actual bytes and every embedded design record resolves (Inter
+/// supplies sans/display, JetBrains Mono supplies mono, and Noto Sans covers
+/// button records and declared UI fallbacks).
+fn publish_set(root: &std::path::Path, id: &str) {
+    let dir = root.join("sets").join(id);
+    let inter = include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
+    let noto = include_bytes!("../../../../appearance/assets/test-fonts/NotoSans.ttf");
+    let mono = include_bytes!("../../../../appearance/assets/test-fonts/JetBrainsMono.ttf");
+    let entries = vec![
+        write_file(&dir, "fonts/Sans.ttf", inter),
+        write_file(&dir, "fonts/Noto.ttf", noto),
+        write_file(&dir, "fonts/Mono.ttf", mono),
+    ];
+    write_manifest(
+        &dir,
+        &serde_json::json!({
+            "schema": assets::SCHEMA, "set_id": id,
+            "fonts": {
+                "sans": "fonts/Sans.ttf", "display": "fonts/Sans.ttf",
+                "mono": "fonts/Mono.ttf", "extra": "fonts/Noto.ttf"
+            },
+            "font_families": {
+                "sans": "Inter", "display": "Inter", "mono": "JetBrains Mono", "extra": "Noto Sans"
+            },
+            "files": entries, "web_css": "/* fixture */\n"
+        }),
+    );
+    std::fs::write(dir.join(assets::STYLESHEET_FILE), "/* fixture */\n").unwrap();
+    std::os::unix::fs::symlink(
+        std::path::Path::new("sets").join(id),
+        root.join(assets::CURRENT_LINK),
+    )
+    .unwrap();
+}
+
+/// The same fonts plus one v2 icon catalogue whose declared family is the
+/// true intrinsic Inter family: `home` maps to a real glyph ('a') and `emoji`
+/// maps to U+1F600, absent from Inter's cmap, so a late icon requirement can
+/// fail the atomic batch after the fonts preflight.
+fn publish_icon_set(root: &std::path::Path, id: &str) {
+    let dir = root.join("sets").join(id);
+    let inter = include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
+    let noto = include_bytes!("../../../../appearance/assets/test-fonts/NotoSans.ttf");
+    let mono = include_bytes!("../../../../appearance/assets/test-fonts/JetBrainsMono.ttf");
+    let entries = vec![
+        write_file(&dir, "fonts/Sans.ttf", inter),
+        write_file(&dir, "fonts/Noto.ttf", noto),
+        write_file(&dir, "fonts/Mono.ttf", mono),
+        write_file(&dir, "icons/Symbols.codepoints", b"home 61\nemoji 1F600\n"),
+    ];
+    write_manifest(
+        &dir,
+        &serde_json::json!({
+            "schema": assets::SCHEMA_V2, "set_id": id,
+            "fonts": {
+                "sans": "fonts/Sans.ttf", "display": "fonts/Sans.ttf",
+                "mono": "fonts/Mono.ttf", "extra": "fonts/Noto.ttf"
+            },
+            "font_families": {
+                "sans": "Inter", "display": "Inter", "mono": "JetBrains Mono", "extra": "Noto Sans"
+            },
+            "files": entries, "web_css": "/* fixture */\n",
+            "icon_default": { "family": "Inter", "style": "default", "weight": 400 },
+            "icon_catalogues": [{
+                "family": "Inter", "style": "default", "font": "fonts/Sans.ttf",
+                "face_index": 0, "codepoints": "icons/Symbols.codepoints"
+            }],
+            "icon_assets": []
+        }),
+    );
+    std::fs::write(dir.join(assets::STYLESHEET_FILE), "/* fixture */\n").unwrap();
+    std::os::unix::fs::symlink(
+        std::path::Path::new("sets").join(id),
+        root.join(assets::CURRENT_LINK),
+    )
+    .unwrap();
 }
 
 fn binding() -> Binding {
@@ -99,7 +207,7 @@ fn foreign_snapshot_binding_cannot_activate_despite_matching_broker_stamp() {
     foreign.binding.instance = "other".into();
     let (change, jobs) = session.handle(Event::Delivery(decoded_snapshot(foreign)), Some(1));
     assert!(change.is_none());
-    assert!(jobs.prepare.is_none());
+    assert!(jobs.prepare_request().is_none());
     assert_eq!(
         session.host().consumer().fault().unwrap().code,
         "wrong_target"
@@ -111,10 +219,10 @@ fn foreign_snapshot_binding_cannot_activate_despite_matching_broker_stamp() {
 fn session_activation_hook_fences_stale_and_failed_preparations() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let stale = ready(jobs.prepare.unwrap());
+    let stale = ready(jobs.prepare_request().unwrap());
     session.host.consumer_mut().observe(1, snapshot(2, true));
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let current = ready(jobs.prepare.unwrap());
+    let current = ready(jobs.prepare_request().unwrap());
     let mut activated = Vec::new();
     assert!(
         session
@@ -135,7 +243,7 @@ fn session_activation_hook_fences_stale_and_failed_preparations() {
     session.host.consumer_mut().observe(1, snapshot(3, false));
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     let failed = jobs
-        .prepare
+        .prepare_request()
         .unwrap()
         .failed(Diagnostic::new("fixture", "policy", "invalid"));
     assert!(
@@ -157,7 +265,7 @@ fn current_embedded_fallback_runs_activation_hook_once() {
     let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     session.bootstrap = Instant::now();
     let (_, jobs) = session.handle(Event::Wake, None);
-    let request = jobs.fallback.unwrap();
+    let request = jobs.fallback_request().unwrap();
     let mut presentation = None;
     let fallback = request
         .prepare(None, |snapshot, context, _| {
@@ -195,7 +303,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
     let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     session.bootstrap = Instant::now();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let request = jobs.fallback.unwrap();
+    let request = jobs.fallback_request().unwrap();
     let mut presentation = None;
     let fallback = request
         .prepare(None, |snapshot, context, _| {
@@ -218,7 +326,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
         Event::Rpc(jobs.work.unwrap(), Ok(Some(snapshot(1, false)))),
         Some(1),
     );
-    let ready = ready(jobs.prepare.unwrap());
+    let ready = ready(jobs.prepare_request().unwrap());
     let mut activated = Vec::new();
     let (change, jobs) = session.handle_with(
         Event::Fallback(request, Box::new(Ok((fallback, presentation.unwrap())))),
@@ -227,7 +335,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
     );
     assert!(change.is_none());
     assert!(activated.is_empty());
-    assert!(jobs.prepare.is_some());
+    assert!(jobs.prepare_request().is_some());
     let (change, _) = session.handle(Event::Prepared(ready), Some(1));
     assert!(change.is_some());
     assert_eq!(*session.host().presentation().unwrap().content(), 1);
@@ -263,27 +371,30 @@ fn coalesced_jobs_retain_capture_and_atomic_loss_rejects_queued_ready() {
     let (_, repeated) = session.handle(Event::Wake, Some(1));
     assert!(
         first
-            .prepare
+            .prepare_request()
             .unwrap()
             .update()
-            .same_stage(repeated.prepare.as_ref().unwrap().update())
+            .same_stage(repeated.prepare_request().as_ref().unwrap().update())
     );
-    let result = ready(repeated.prepare.unwrap());
+    let result = ready(repeated.prepare_request().unwrap());
     let (change, after_loss) = session.handle(Event::Prepared(result), None);
     assert!(change.is_none());
     assert!(session.host().presentation().is_none());
-    assert!(after_loss.prepare.is_none());
+    assert!(after_loss.prepare_request().is_none());
 }
 #[test]
 fn no_op_revision_advances_evidence_without_a_resource_job() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let (change, _) = session.handle(Event::Prepared(ready(jobs.prepare.unwrap())), Some(1));
+    let (change, _) = session.handle(
+        Event::Prepared(ready(jobs.prepare_request().unwrap())),
+        Some(1),
+    );
     assert!(change.is_some());
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let (change, jobs) = session.handle(Event::Wake, Some(1));
     assert!(change.is_none());
-    assert!(jobs.prepare.is_none());
+    assert!(jobs.prepare_request().is_none());
     assert_eq!(
         session.host().consumer().applied().unwrap().revision,
         Revision(2)
@@ -295,7 +406,7 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
     let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     session.bootstrap = Instant::now();
     let (_, jobs) = session.handle(Event::Wake, None);
-    let request = jobs.fallback.unwrap();
+    let request = jobs.fallback_request().unwrap();
     let mut activated = false;
     session.handle_with(
         Event::Fallback(
@@ -311,17 +422,17 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
     );
     assert!(!activated);
     let (_, jobs) = session.handle(Event::Wake, None);
-    assert!(jobs.fallback.is_none());
+    assert!(jobs.fallback_request().is_none());
     assert!(jobs.wake.is_none());
     assert!(session.host().consumer().fallback_fault().is_some());
     for _ in 0..100 {
         let (_, jobs) = session.handle(Event::Wake, None);
-        assert!(jobs.fallback.is_none());
+        assert!(jobs.fallback_request().is_none());
         assert!(jobs.wake.is_none());
     }
     let (_, jobs) = session.handle(Event::Refresh, None);
     assert!(
-        jobs.fallback.is_some(),
+        jobs.fallback_request().is_some(),
         "explicit refresh can heal offline resource failure"
     );
 }
@@ -331,11 +442,14 @@ async fn superseded_blocking_jobs_are_physically_serial_and_keep_only_latest() {
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let release_rx = std::sync::Mutex::new(release_rx);
-    let mut worker = Worker::offline(move |_, snapshot| {
-        entered_tx.send(snapshot.revision.0).unwrap();
-        release_rx.lock().unwrap().recv().unwrap();
-        Ok(snapshot.revision.0)
-    });
+    let mut worker = Worker::offline_with_host(
+        move |_, snapshot| {
+            entered_tx.send(snapshot.revision.0).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            Ok(snapshot.revision.0)
+        },
+        hermetic_host(),
+    );
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     worker.replace(jobs);
@@ -377,4 +491,130 @@ async fn superseded_blocking_jobs_are_physically_serial_and_keep_only_latest() {
     worker.replace(jobs);
     assert!(worker.running.is_none() && worker.queued.is_none());
     assert!(entered_rx.try_recv().is_err());
+}
+
+/// The central worker path: a real verified set is read and registered, and
+/// the exact binding it produced is what the activation acknowledges, so the
+/// captured cache save records precisely what was prepared.
+#[cfg(feature = "settings-cache")]
+#[tokio::test]
+async fn verified_omission_binding_is_acknowledged_and_captured_by_the_save() {
+    let directory = tempfile::tempdir().unwrap();
+    publish_set(directory.path(), "binding-set");
+    let mut session = session();
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    let host = ResourceHost::new(
+        std::iter::once(directory.path().to_path_buf()).collect::<assets::Lookup>(),
+    );
+    let mut worker = Worker::offline_with_cache_and_host(
+        directory.path().join("cache"),
+        |_, snapshot| Ok(snapshot.revision.0),
+        host,
+    );
+    worker.replace(jobs);
+    let event = tokio::time::timeout(std::time::Duration::from_secs(10), worker.next())
+        .await
+        .unwrap()
+        .take()
+        .unwrap();
+    let change = session.handle(event, Some(1)).0;
+    assert!(change.is_some());
+    let resources = session
+        .host()
+        .presentation()
+        .unwrap()
+        .appearance()
+        .resources()
+        .unwrap();
+    assert_eq!(resources.binding().unwrap().set_id, "binding-set");
+    let save = session.host().consumer().cache_save().unwrap();
+    assert_eq!(
+        save.binding().map(|binding| binding.set_id.as_str()),
+        Some("binding-set")
+    );
+    assert_eq!(
+        save.binding()
+            .map(|binding| binding.manifest_blake3.as_str()),
+        resources
+            .binding()
+            .map(|binding| binding.manifest_blake3.as_str()),
+        "the save captures exactly the activated binding"
+    );
+}
+
+/// A late icon failure after the fonts preflight is all-or-nothing: the
+/// failing batch registers no fonts and no aliases, so applied state, the
+/// activation ACK and the captured cache save all stay exactly where the last
+/// successful preparation left them.
+#[cfg(feature = "settings-cache")]
+#[tokio::test]
+async fn late_icon_failure_keeps_applied_ack_and_cache_capture_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    publish_icon_set(directory.path(), "icons");
+    let mut session = session();
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    let host = ResourceHost::new(
+        std::iter::once(directory.path().to_path_buf()).collect::<assets::Lookup>(),
+    );
+    let tint = crate::iced::Color::from_rgba8(255, 255, 255, 1.0);
+    let worker = Worker::offline_with_cache_and_host(
+        directory.path().join("cache"),
+        |_, snapshot| Ok(snapshot.revision.0),
+        host,
+    )
+    .with_resource_requirements(move |_, snapshot| {
+        if snapshot.revision == Revision(1) {
+            return Ok(ResourceRequirements::empty());
+        }
+        ResourceRequirements::new(vec![IconRequirement {
+            key: "emoji".into(),
+            name: "emoji".into(),
+            logical_size: 16.0,
+            scale: 1.0,
+            tint,
+        }])
+    });
+    let mut worker = worker;
+    worker.replace(jobs);
+    let event = tokio::time::timeout(std::time::Duration::from_secs(10), worker.next())
+        .await
+        .unwrap()
+        .take()
+        .unwrap();
+    assert!(session.handle(event, Some(1)).0.is_some());
+    assert_eq!(
+        session.host().consumer().applied().unwrap().revision,
+        Revision(1)
+    );
+    let saved = session.host().consumer().cache_save().unwrap();
+    // A newer snapshot whose required icon is declared by the catalogue but
+    // absent from the face's cmap fails the atomic batch: no activation, no
+    // ACK, no new cache capture.
+    // Change the actual appearance: an identical projection intentionally
+    // advances its authority revision without requesting resource work.
+    session.host.consumer_mut().observe(1, snapshot(2, true));
+    let (change, jobs) = session.handle(Event::Wake, Some(1));
+    assert!(change.is_none());
+    worker.replace(jobs);
+    let event = tokio::time::timeout(std::time::Duration::from_secs(10), worker.next())
+        .await
+        .unwrap()
+        .take()
+        .unwrap();
+    let (change, _) = session.handle(event, Some(1));
+    assert!(change.is_none());
+    assert_eq!(
+        session.host().consumer().applied().unwrap().revision,
+        Revision(1),
+        "a failed late icon cannot replace LastGood"
+    );
+    assert!(
+        session.host().consumer().fault().is_some(),
+        "the failure is reported"
+    );
+    let after = session.host().consumer().cache_save().unwrap();
+    assert!(
+        after.same_capture(&saved),
+        "no new capture: a failed preparation cannot ACK"
+    );
 }

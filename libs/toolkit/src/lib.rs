@@ -18,6 +18,7 @@ pub mod centered;
 pub mod collapsible;
 pub mod color_picker;
 pub mod command_palette;
+pub mod controls;
 pub mod date_picker;
 pub mod dialog;
 pub mod dnd;
@@ -96,7 +97,16 @@ pub use fader::Fader;
 pub use file_pane::FilePane;
 pub use fit_text::FitText;
 pub use flush_column::FlushColumn;
-pub use fonts::{FontSet, FontSource, Fonts, IconFont, Role};
+pub use fonts::{
+    FontSet, FontSource, Fonts, IconFont, Role,
+    registry::{
+        CollectionId, FaceEvidence, FamilyGroup, FontBlob, FontCollection, FontRegistry,
+        IconCatalogue, IconSelectionRequest, OwnedFace, OwnedSelection, Registration,
+        RegistrationBatch, RegistrationError, RegistrationEvidence, RegistryUsage, Resource,
+        Selection as FontSelectionReceipt, SelectionEvidence, SelectionRequest, SourceEvidence,
+        SourceFace, SubstitutionEvidence, WeightPolicy,
+    },
+};
 pub use grip::Grip;
 pub use icon::{Icon, icon};
 #[cfg(feature = "image")]
@@ -106,7 +116,7 @@ pub use keys::{Bindings, Chord, KeyRouter};
 pub use knob::Knob;
 pub use labeled_frame::LabeledFrame;
 pub use measure::Measure;
-pub use menu::{Item, Menu, MenuState, MenuStyle, NavOutcome, Navigator, Panel};
+pub use menu::{Item, Menu, MenuState, MenuStyle, NavOutcome, Navigator, Panel, StyledPanel};
 pub use meter::LevelMeter;
 pub use number_input::NumberInput;
 pub use piano_roll::{Note, PianoRoll, RollNotes, RollView};
