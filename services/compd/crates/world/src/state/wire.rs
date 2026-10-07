@@ -1,25 +1,25 @@
+use crate::camera::transform::translate::transform::Transform;
 use crate::state::Loop;
 use crate::state::state::{Orchestrator, StateDRMBinding};
-use smithay::backend::renderer::ImportDma;
-use smithay::desktop::{Space, Window};
-use smithay::utils::{Logical, Physical, Point, Rectangle};
-use smithay::wayland::compositor::with_states;
-use smithay::wayland::shell::xdg::ToplevelSurface;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::IsAlive;
-use std::ops::DerefMut;
-use std::sync::{Arc, Mutex};
-use crate::camera::transform::translate::transform::Transform;
-use dispatcher::state::state::Dispatch;
-use dispatcher::wire::wire::Wire;
-use dispatcher::wire::trait_::wire_trait::{ActivationOrigin, WireTrait};
-use smithay::xwayland::X11Surface;
-use protocols::window::find::find;
-use protocols::window::ident::ident;
-use dispatcher::wayland::xdg::activation::dispatch::wire::ActivationDetails;
 use crate::window::interface::record::data::{DiscardPlaceholder, WindowData};
 use crate::window::lifecycle::event::event::WindowLifecycleEvent;
 use crate::window::lifecycle::state::lifecycle::WindowLifecycle;
+use dispatcher::state::state::Dispatch;
+use dispatcher::wayland::xdg::activation::dispatch::wire::ActivationDetails;
+use dispatcher::wire::trait_::wire_trait::{ActivationOrigin, WireTrait};
+use dispatcher::wire::wire::Wire;
+use protocols::window::find::find;
+use protocols::window::ident::ident;
+use smithay::backend::renderer::ImportDma;
+use smithay::desktop::{Space, Window};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::IsAlive;
+use smithay::utils::{Logical, Physical, Point, Rectangle};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::ToplevelSurface;
+use smithay::xwayland::X11Surface;
+use std::ops::DerefMut;
+use std::sync::{Arc, Mutex};
 
 impl WireTrait for Orchestrator {
     fn host_space(&self) -> &protocols::space::state::SpaceState {
@@ -30,13 +30,30 @@ impl WireTrait for Orchestrator {
     }
     fn owning_space(&self, surface: &WlSurface) -> &protocols::space::state::SpaceState {
         match self.surface_world(surface) {
-            Some(world) => &self.worlds.get(world).storage().get(&crate::host::space::base::SPACE).inner,
+            Some(world) => {
+                &self
+                    .worlds
+                    .get(world)
+                    .storage()
+                    .get(&crate::host::space::base::SPACE)
+                    .inner
+            }
             None => self.space_state(),
         }
     }
-    fn owning_space_mut(&mut self, surface: &WlSurface) -> &mut protocols::space::state::SpaceState {
+    fn owning_space_mut(
+        &mut self,
+        surface: &WlSurface,
+    ) -> &mut protocols::space::state::SpaceState {
         match self.surface_world(surface) {
-            Some(world) => &mut self.worlds.get_mut(world).storage_mut().get_mut(&crate::host::space::base::SPACE_MUT).inner,
+            Some(world) => {
+                &mut self
+                    .worlds
+                    .get_mut(world)
+                    .storage_mut()
+                    .get_mut(&crate::host::space::base::SPACE_MUT)
+                    .inner
+            }
             None => self.space_state_mut(),
         }
     }
@@ -129,7 +146,9 @@ impl WireTrait for Orchestrator {
             .insert_if_missing_threadsafe(|| WindowData { UUID: uuid });
         // The comp registry record took its role earlier this drain; bind the uuid
         // to it (a changed uuid mints a new generation there).
-        if let Some(handle) = dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(&window) {
+        if let Some(handle) =
+            dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(&window)
+        {
             let pid = ident::pid(&window, &self.loader.display_handle);
             self.comp.bind_uuid(&handle, uuid, pid);
         }
@@ -208,7 +227,11 @@ impl WireTrait for Orchestrator {
                 || protocols::ephemeral::mark::mark::is_marked(states);
             self.window_lifecycle_mut()
                 .incoming
-                .push(WindowLifecycleEvent::Destroyed(data, activation_details, discard_placeholder));
+                .push(WindowLifecycleEvent::Destroyed(
+                    data,
+                    activation_details,
+                    discard_placeholder,
+                ));
         });
     }
 
@@ -258,7 +281,11 @@ impl WireTrait for Orchestrator {
             || protocols::ephemeral::mark::mark::is_window_marked(&window);
         self.window_lifecycle_mut()
             .incoming
-            .push(WindowLifecycleEvent::Destroyed(uuid, Vec::new(), discard_placeholder));
+            .push(WindowLifecycleEvent::Destroyed(
+                uuid,
+                Vec::new(),
+                discard_placeholder,
+            ));
     }
 
     fn withdraw_x11(&mut self, world: uuid::Uuid, window: Window) {
@@ -272,7 +299,8 @@ impl WireTrait for Orchestrator {
             .element_location(&window)
             .unwrap_or_default();
         if let Some(x11) = window.x11_surface() {
-            self.withdrawn_x11.insert(x11.window_id(), (world, window.clone(), at));
+            self.withdrawn_x11
+                .insert(x11.window_id(), (world, window.clone(), at));
         }
         // Out of the Space only NOW: the location above had to be read while it was still
         // an element, and `element_location` answers from the Space.
@@ -295,17 +323,25 @@ impl WireTrait for Orchestrator {
     fn readmit_x11(&mut self, window: Window) {
         use crate::window::interface::record::window::LoopWindow;
         let Some(uuid) = window.uuid() else { return };
-        let Some(x11) = window.x11_surface().map(|s| s.window_id()) else { return };
-        let Some((world, _, at)) = self.withdrawn_x11.remove(&x11) else { return };
+        let Some(x11) = window.x11_surface().map(|s| s.window_id()) else {
+            return;
+        };
+        let Some((world, _, at)) = self.withdrawn_x11.remove(&x11) else {
+            return;
+        };
         // Back in its own world at its own position — not `host_space`, and not centred.
         // A window that hid while the user was elsewhere returns where it left.
-        let override_redirect = window.x11_surface().is_some_and(|s| s.is_override_redirect());
+        let override_redirect = window
+            .x11_surface()
+            .is_some_and(|s| s.is_override_redirect());
         let pid = ident::pid(&window, &self.loader.display_handle);
         // A role take clears the names; the X window still has them.
         let names = window
             .x11_surface()
             .map(dispatcher::wire::trait_::surface_event::SurfaceEvent::x11_names);
-        self.space_of_mut(world).state.map_element(window, at, false);
+        self.space_of_mut(world)
+            .state
+            .map_element(window, at, false);
         self.comp.readmit(
             dispatcher::wire::trait_::surface_event::SurfaceHandle::X11(x11),
             override_redirect,
@@ -408,10 +444,15 @@ impl WireTrait for Orchestrator {
             // a pointer warp onto a secondary monitor must project through THAT
             // monitor's mode/scale to land at the right physical position.
             let output = self.current_output();
-            let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
+            let mode = output
+                .current_mode()
+                .unwrap_or_else(|| abort!("output has a current mode"));
             (mode.size, output.current_scale().fractional_scale())
         };
-        let mode = smithay::output::Mode { size: mode_size, refresh: 0 };
+        let mode = smithay::output::Mode {
+            size: mode_size,
+            refresh: 0,
+        };
         let camera = &self.camera().transform;
 
         let ctx = crate::camera::transform::translate::transform::Context::new(
@@ -481,7 +522,8 @@ impl WireTrait for Orchestrator {
             // INVALID entry per fourcc, so an implicit buffer still passes there. One rule,
             // no renderer detection — the published set answers for whoever is compositing.
             if !render_gles::format::resolve::resolve::importable_pair(
-                self.kernel.get(&render_gles::format::registrar::registrar::FORMATS),
+                self.kernel
+                    .get(&render_gles::format::registrar::registrar::FORMATS),
                 code,
                 modifier,
             ) {
@@ -534,8 +576,9 @@ impl WireTrait for Orchestrator {
                 // GPU, there is legitimately no GL device here for it. The buffer still gets
                 // smithay's default import, and the fourcc-level refusal above has already
                 // applied the compositing renderer's own answer.
-                static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
-                    std::sync::OnceLock::new();
+                static WARNED: std::sync::OnceLock<
+                    std::sync::Mutex<std::collections::HashSet<i64>>,
+                > = std::sync::OnceLock::new();
                 let seen = WARNED.get_or_init(Default::default);
                 let first = seen
                     .lock()
@@ -550,7 +593,10 @@ impl WireTrait for Orchestrator {
                         node.dev_path()
                     );
                 } else {
-                    trace!("dmabuf import: still no GLES renderer for {:?}", node.dev_path());
+                    trace!(
+                        "dmabuf import: still no GLES renderer for {:?}",
+                        node.dev_path()
+                    );
                 }
                 // Already moved..
                 return Some((_dmabuf, notifier));
@@ -593,7 +639,9 @@ impl Orchestrator {
         // the cursor is screen-space content, not pane content.
         let (mode_size, scale) = {
             let output = self.current_output();
-            let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
+            let mode = output
+                .current_mode()
+                .unwrap_or_else(|| abort!("output has a current mode"));
             (mode.size, output.current_scale().fractional_scale())
         };
         let (pw, ph) = (mode_size.w as f64, mode_size.h as f64);

@@ -43,14 +43,18 @@ pub(crate) fn observe(window: &Window) -> bool {
     let shape = Shape {
         drawn: protocols::window::ident::ident::is_drawn(window),
         geometry: window.geometry(),
-        root_destination: window.wl_surface().as_deref()
+        root_destination: window
+            .wl_surface()
+            .as_deref()
             .and_then(crate::surface::interface::core::hit::root_dst),
         bounds: window.bbox(),
         decorated: decor::window::decorated(window),
     };
     // Window-owned state also survives an X11 surface re-association; window
     // destruction retires it without a separate cleanup table.
-    window.user_data().insert_if_missing_threadsafe(Observed::default);
+    window
+        .user_data()
+        .insert_if_missing_threadsafe(Observed::default);
     let Some(observed) = window.user_data().get::<Observed>() else {
         return false;
     };

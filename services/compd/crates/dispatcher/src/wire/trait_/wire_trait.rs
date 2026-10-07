@@ -1,12 +1,12 @@
+use crate::state::state::Dispatch;
+use protocols::space::state::SpaceState;
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::xwayland::X11Surface;
 use smithay::desktop::{Space, Window};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::dmabuf::{DmabufGlobal, ImportNotifier};
 use smithay::wayland::shell::xdg::ToplevelSurface;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use crate::state::state::Dispatch;
-use protocols::space::state::SpaceState;
+use smithay::xwayland::X11Surface;
 
 /// Where a window-activation request came from. Activation may be treated differently by
 /// source; extensible — more origins (xdg-activation, urgency, etc.) will be added.
@@ -82,7 +82,6 @@ pub trait WireTrait {
     /// server says a window is gone, the association may already be.
     fn owning_x11_window(&self, surface: &X11Surface) -> Option<(uuid::Uuid, Window)>;
 
-
     /// A NAMED world's window Space, mutably — the counterpart to `all_world_spaces`
     /// the X11 teardown needs once [`Self::owning_x11_window`] has said which world its
     /// window is in.
@@ -130,7 +129,11 @@ pub trait WireTrait {
     fn apply_pointer(&mut self, storage_point: Point<f64, Logical>);
     /// Where a surface-local point of `surface` (root or subsurface) is displayed in the
     /// world, through the window's fit (world side). `None` when no window owns it.
-    fn surface_point_to_world(&self, surface: &WlSurface, local: Point<f64, Logical>) -> Option<Point<f64, Logical>>;
+    fn surface_point_to_world(
+        &self,
+        surface: &WlSurface,
+        local: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>>;
     /// The inverse of [`apply_pointer`]: pin the cursor's own hardware position into
     /// the output and return where it lands in the FOCUSED world, so the caller can
     /// re-state the seat's location there. Re-seats the camera's pan accumulator on

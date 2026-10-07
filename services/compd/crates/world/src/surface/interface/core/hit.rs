@@ -29,19 +29,17 @@
 //! at the boundary. Both sides of any single callback invocation are in
 //! the same space.
 
-use smithay::desktop::{PopupManager, Window, WindowSurfaceType, layer_map_for_output};
+use crate::camera::transform::translate::fit::{self, WindowFit, window_fit};
+use crate::camera::transform::translate::slot;
+use crate::camera::transform::translate::transform::{Context as XformCtx, Transform as Xform};
+use smithay::backend::renderer::utils::{RendererSurfaceStateUserData, SurfaceView};
 use smithay::desktop::utils::under_from_surface_tree;
+use smithay::desktop::{PopupManager, Window, WindowSurfaceType, layer_map_for_output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
-use smithay::wayland::shell::wlr_layer::Layer;
-use smithay::backend::renderer::utils::{RendererSurfaceStateUserData, SurfaceView};
 use smithay::wayland::compositor::{SurfaceData, with_states};
 use smithay::wayland::seat::WaylandFocus;
-use crate::camera::transform::translate::slot;
-use crate::camera::transform::translate::fit::{self, WindowFit, window_fit};
-use crate::camera::transform::translate::transform::{
-    Context as XformCtx, Transform as Xform,
-};
+use smithay::wayland::shell::wlr_layer::Layer;
 
 /// Read a surface's [`SurfaceView`] logical destination size (reflects viewport / buffer-scale).
 pub(crate) fn root_dst(surface: &WlSurface) -> Option<smithay::utils::Size<i32, Logical>> {
@@ -53,9 +51,9 @@ pub(crate) fn root_dst(surface: &WlSurface) -> Option<smithay::utils::Size<i32, 
             .map(|v: SurfaceView| v.dst)
     })
 }
-use ui::{HandleId, IcedSpace, Transform as IcedTransform};
-use slots::storage::slot::base::Storage;
 use protocols::window::shell::shell;
+use slots::storage::slot::base::Storage;
+use ui::{HandleId, IcedSpace, Transform as IcedTransform};
 
 // ─── Hit context ────────────────────────────────────────────────────
 //
@@ -87,7 +85,10 @@ impl<'a> HitCx<'a> {
     /// cursor's output) by matching the same "make model serial" `output_key` the
     /// render/input paths use; falls back to the first output pre-identity.
     fn current_output(&self) -> &smithay::output::Output {
-        let key = &self.storage.get(&crate::viewport::state::state::OUTPUT_VIEWS).current;
+        let key = &self
+            .storage
+            .get(&crate::viewport::state::state::OUTPUT_VIEWS)
+            .current;
         self.space_state()
             .state
             .outputs()
@@ -108,7 +109,10 @@ impl<'a> HitCx<'a> {
     }
 
     fn camera(&self) -> &crate::camera::state::state::Camera {
-        self.storage.get(&crate::viewport::state::state::OUTPUT_VIEWS).current_views().focus_camera()
+        self.storage
+            .get(&crate::viewport::state::state::OUTPUT_VIEWS)
+            .current_views()
+            .focus_camera()
     }
 
     fn surface(&self) -> &crate::surface::state::state::SurfaceState {
@@ -127,7 +131,9 @@ impl<'a> HitCx<'a> {
 
     fn size_ctx_all(&self) -> XformCtx {
         let output = self.current_output();
-        let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
+        let mode = output
+            .current_mode()
+            .unwrap_or_else(|| abort!("output has a current mode"));
         let scale = output.current_scale().fractional_scale();
         let camera = &self.camera().transform;
         XformCtx::new(
@@ -144,12 +150,22 @@ impl<'a> HitCx<'a> {
     /// (iced screen, layer-shell) lands where the cursor actually is when split.
     fn pane_context(&self) -> XformCtx {
         let output = self.current_output();
-        let mode = output.current_mode().unwrap_or_else(|| abort!("output has a current mode"));
+        let mode = output
+            .current_mode()
+            .unwrap_or_else(|| abort!("output has a current mode"));
         let scale = output.current_scale().fractional_scale();
-        let viewports = self.storage.get(&crate::viewport::state::state::OUTPUT_VIEWS).current_views();
+        let viewports = self
+            .storage
+            .get(&crate::viewport::state::state::OUTPUT_VIEWS)
+            .current_views();
         let bounds = smithay::utils::Rectangle::new(smithay::utils::Point::from((0, 0)), mode.size);
         let computed = crate::viewport::layout::layout::compute(viewports, bounds);
-        let rect = computed.regions.iter().find(|r| r.slot == viewports.pointer).map(|r| r.rect).unwrap_or(bounds);
+        let rect = computed
+            .regions
+            .iter()
+            .find(|r| r.slot == viewports.pointer)
+            .map(|r| r.rect)
+            .unwrap_or(bounds);
         let camera = &self.camera().transform;
         XformCtx::new_region(
             (camera.position.x, camera.position.y),
@@ -304,7 +320,9 @@ pub fn pass_all(_: &SurfaceHit) -> bool {
 
 pub fn iced_camera_hcx(hcx: &HitCx) -> (IcedTransform, Size<f64, Physical>) {
     let output = hcx.current_output();
-    let mode = output.current_mode().unwrap_or_else(|| abort!("output has mode"));
+    let mode = output
+        .current_mode()
+        .unwrap_or_else(|| abort!("output has mode"));
     let scale = output.current_scale().fractional_scale();
 
     let cam = &hcx.camera().transform;
@@ -380,7 +398,12 @@ fn hit_iced_one(
     if !item.contains_screen_point(screen_point, transform, output_size) {
         return None;
     }
-    let hit = SurfaceHit::Iced { layer: item.layer, handle: item.handle_id(), space: IcedSpace::World, screen_point };
+    let hit = SurfaceHit::Iced {
+        layer: item.layer,
+        handle: item.handle_id(),
+        space: IcedSpace::World,
+        screen_point,
+    };
     filter(&hit).then_some(hit)
 }
 
@@ -394,7 +417,11 @@ fn hit_window(
     filter: HitFilter,
 ) -> Option<SurfaceHit> {
     let cfg = model::environment::config::base::get();
-    let elem_loc = hcx.space_state().state.element_location(window).unwrap_or_default();
+    let elem_loc = hcx
+        .space_state()
+        .state
+        .element_location(window)
+        .unwrap_or_default();
     let geom = window.geometry();
     let gloc = geom.loc;
 
@@ -407,7 +434,11 @@ fn hit_window(
             position_world.x - surface_local.x,
             position_world.y - surface_local.y,
         ));
-        SurfaceHit::Window { window: window.clone(), surface, position }
+        SurfaceHit::Window {
+            window: window.clone(),
+            surface,
+            position,
+        }
     };
 
     let slot_size = slot::expected_size(window);
@@ -427,16 +458,19 @@ fn hit_window(
             }
         }
         Some(slot_size) => {
-            let view_dst = root_surface.as_ref().and_then(root_dst).unwrap_or(geom.size);
+            let view_dst = root_surface
+                .as_ref()
+                .and_then(root_dst)
+                .unwrap_or(geom.size);
             let stretch = slot::resize_stretching(window, geom.size);
-            let fit = window_fit(
-                elem_loc,
-                geom,
-                view_dst,
-                slot_size,
-                stretch,
-            );
-            let WindowFit { fit_sx, fit_sy, fit_surf, ref_size, cover: _ } = fit;
+            let fit = window_fit(elem_loc, geom, view_dst, slot_size, stretch);
+            let WindowFit {
+                fit_sx,
+                fit_sy,
+                fit_surf,
+                ref_size,
+                cover: _,
+            } = fit;
             let local = Point::<f64, Logical>::from((
                 (position_world.x - fit_surf.0) / fit_sx,
                 (position_world.y - fit_surf.1) / fit_sy,
@@ -465,10 +499,8 @@ fn hit_window(
             if let Some(root) = &root_surface {
                 for (popup, pop_loc) in PopupManager::popups_for_surface(root) {
                     let off = fit::popup_offset(&fit, geom, pop_loc, popup.geometry().loc);
-                    let off = Point::<i32, Logical>::from((
-                        off.x.round() as i32,
-                        off.y.round() as i32,
-                    ));
+                    let off =
+                        Point::<i32, Logical>::from((off.x.round() as i32, off.y.round() as i32));
                     if let Some((surface, sub_pos)) = under_from_surface_tree(
                         popup.wl_surface(),
                         local,
@@ -483,9 +515,10 @@ fn hit_window(
                 }
             }
 
-            if let Some((surface, sub_pos)) =
-                window.surface_under(local, WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE)
-            {
+            if let Some((surface, sub_pos)) = window.surface_under(
+                local,
+                WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+            ) {
                 let hit = deliver(surface, sub_pos, local);
                 if filter(&hit) {
                     return Some(hit);
@@ -527,7 +560,10 @@ fn hit_window(
                 && slot_rect.contains(position_world)
                 && !content.contains(position_world)
             {
-                let hit = SurfaceHit::WindowChrome { window: window.clone(), chrome: None };
+                let hit = SurfaceHit::WindowChrome {
+                    window: window.clone(),
+                    chrome: None,
+                };
                 if filter(&hit) {
                     return Some(hit);
                 }
@@ -544,7 +580,10 @@ fn hit_window(
                 position_world.y - elem_loc.y as f64,
             );
             if let Some(chrome) = decor::window::hit(window, relative, slot_size) {
-                let hit = SurfaceHit::WindowChrome { window: window.clone(), chrome: Some(chrome) };
+                let hit = SurfaceHit::WindowChrome {
+                    window: window.clone(),
+                    chrome: Some(chrome),
+                };
                 if filter(&hit) {
                     return Some(hit);
                 }
@@ -576,9 +615,14 @@ impl Drawable {
     ) -> Option<SurfaceHit> {
         match self {
             Drawable::Window(w) => hit_window(hcx, w, position_world, filter),
-            Drawable::IcedWorld(h) => {
-                hit_iced_one(hcx, *h, cursor_phys, iced_transform, iced_output_size, filter)
-            }
+            Drawable::IcedWorld(h) => hit_iced_one(
+                hcx,
+                *h,
+                cursor_phys,
+                iced_transform,
+                iced_output_size,
+                filter,
+            ),
         }
     }
 }
@@ -742,7 +786,9 @@ pub fn surface_under_filtered_cx(
     // current workspace), stamped by `comp::visibility`. The render cull already skips
     // those; reading the stamp here closes touch, tablet and the canvas press, which
     // reached hidden windows through this driver.
-    let by_uuid: std::collections::HashMap<uuid::Uuid, Window> = hcx.space_state().state
+    let by_uuid: std::collections::HashMap<uuid::Uuid, Window> = hcx
+        .space_state()
+        .state
         .elements()
         .filter_map(|w| {
             if !protocols::window::ident::ident::is_shown(w) {
@@ -757,13 +803,27 @@ pub fn surface_under_filtered_cx(
             Some(w) => Drawable::Window(w.clone()),
             None => Drawable::IcedWorld(HandleId(id.as_u128() as u64)),
         };
-        if let Some(hit) = drawable.hit(&hcx, position_world, cursor_phys_world, &iced_transform, iced_output_size, filter) {
+        if let Some(hit) = drawable.hit(
+            &hcx,
+            position_world,
+            cursor_phys_world,
+            &iced_transform,
+            iced_output_size,
+            filter,
+        ) {
             return Some(hit);
         }
     }
     for (u, w) in &by_uuid {
         if !in_order.contains(u) {
-            if let Some(hit) = Drawable::Window(w.clone()).hit(&hcx, position_world, cursor_phys_world, &iced_transform, iced_output_size, filter) {
+            if let Some(hit) = Drawable::Window(w.clone()).hit(
+                &hcx,
+                position_world,
+                cursor_phys_world,
+                &iced_transform,
+                iced_output_size,
+                filter,
+            ) {
                 return Some(hit);
             }
         }

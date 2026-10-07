@@ -114,7 +114,11 @@ impl<A: WireTrait + 'static> Wire<A> {
         // feature at all. A client binds whichever it knows; both land in the
         // same store, so the placeholder path cannot tell them apart.
         crate::wire::session::session::create_legacy_global::<Dispatch>(display_handle);
-        Self { state: dispatch, inner, loop_handle }
+        Self {
+            state: dispatch,
+            inner,
+            loop_handle,
+        }
     }
 }
 
@@ -131,28 +135,38 @@ pub fn new_dispatch(
     // Primary selection first — both data-control
     // managers take it to serve the primary target too. All three are open to
     // every client (agentic-first: a lock is a later opt-in, not the default).
-    let primary_selection = smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Dispatch>(display_handle);
-    let wlr_data_control = smithay::wayland::selection::wlr_data_control::DataControlState::new::<Dispatch, _>(
-        display_handle,
-        Some(&primary_selection),
-        |_| true,
-    );
-    let ext_data_control = smithay::wayland::selection::ext_data_control::DataControlState::new::<Dispatch, _>(
-        display_handle,
-        Some(&primary_selection),
-        |_| true,
-    );
+    let primary_selection =
+        smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Dispatch>(
+            display_handle,
+        );
+    let wlr_data_control = smithay::wayland::selection::wlr_data_control::DataControlState::new::<
+        Dispatch,
+        _,
+    >(display_handle, Some(&primary_selection), |_| true);
+    let ext_data_control = smithay::wayland::selection::ext_data_control::DataControlState::new::<
+        Dispatch,
+        _,
+    >(display_handle, Some(&primary_selection), |_| true);
     Dispatch {
         primary_selection,
         wlr_data_control,
         ext_data_control,
-        xdg_activation: crate::wayland::xdg::activation::factory::factory::new::<Dispatch>(display_handle),
-        dmabuf: crate::wayland::dmabuf::factory::factory::new::<Dispatch>(display_handle, drm_device),
+        xdg_activation: crate::wayland::xdg::activation::factory::factory::new::<Dispatch>(
+            display_handle,
+        ),
+        dmabuf: crate::wayland::dmabuf::factory::factory::new::<Dispatch>(
+            display_handle,
+            drm_device,
+        ),
         clipboard: crate::wayland::clipboard::factory::factory::new::<Dispatch>(display_handle),
         seat: crate::wayland::seat::factory::factory::new::<Dispatch>(display_handle),
         xdg_shell: crate::wayland::xdg::shell::factory::factory::new::<Dispatch>(display_handle),
-        xdg_decoration: crate::wayland::xdg::decoration::factory::factory::new::<Dispatch>(display_handle),
-        xdg_foreign_state: crate::wayland::xdg::foreign::factory::factory::new::<Dispatch>(display_handle),
+        xdg_decoration: crate::wayland::xdg::decoration::factory::factory::new::<Dispatch>(
+            display_handle,
+        ),
+        xdg_foreign_state: crate::wayland::xdg::foreign::factory::factory::new::<Dispatch>(
+            display_handle,
+        ),
         xdg_dialog: crate::wayland::xdg::dialog::factory::factory::new::<Dispatch>(display_handle),
         shm: crate::wayland::shm::factory::factory::new::<Dispatch>(display_handle),
         output: crate::wayland::output::factory::factory::new::<Dispatch>(display_handle),
@@ -167,14 +181,25 @@ pub fn new_dispatch(
             let prefs = model::environment::preference::base::load();
             let enabled = prefs.protocol_foreign == "enabled";
             let all_worlds = prefs.protocol_foreign_all_worlds;
-            crate::wayland::foreign::factory::factory::new::<Dispatch>(display_handle, enabled, all_worlds)
+            crate::wayland::foreign::factory::factory::new::<Dispatch>(
+                display_handle,
+                enabled,
+                all_worlds,
+            )
         },
         compositor: crate::wayland::compositor::factory::factory::new::<Dispatch>(display_handle),
-        presentation: crate::wayland::presentation::factory::factory::new::<Dispatch>(display_handle),
+        presentation: crate::wayland::presentation::factory::factory::new::<Dispatch>(
+            display_handle,
+        ),
         viewporter: crate::wayland::viewporter::factory::factory::new::<Dispatch>(display_handle),
         fractional: crate::wayland::fractional::factory::factory::new::<Dispatch>(display_handle),
-        idle_notifier: smithay::wayland::idle_notify::IdleNotifierState::new(display_handle, idle_timers),
-        cursor_shape: crate::wayland::cursor::shape::factory::factory::new::<Dispatch>(display_handle),
+        idle_notifier: smithay::wayland::idle_notify::IdleNotifierState::new(
+            display_handle,
+            idle_timers,
+        ),
+        cursor_shape: crate::wayland::cursor::shape::factory::factory::new::<Dispatch>(
+            display_handle,
+        ),
         text_input: crate::wayland::text::input::factory::factory::new::<Dispatch>(display_handle),
         dnd: protocols::dnd::factory::factory::new(),
         singlepixel: crate::wayland::singlepixel::factory::factory::new::<Dispatch>(display_handle),
@@ -209,10 +234,22 @@ pub fn new_dispatch(
 
 // ── Inherent helpers (on Wire<A>: they bridge `state` (seat) + `inner` (world)) ─
 impl<A: WireTrait + 'static> Wire<A> {
-    #[inline] pub fn schedule_redraw_post_vblank(&mut self, reason: RedrawReason) { self.state.schedule_redraw_post_vblank(reason); }
-    #[inline] pub fn bump_redraw_epoch(&mut self, reason: RedrawReason) { self.state.bump_redraw_epoch(reason); }
-    #[inline] pub fn schedule_redraw(&mut self, reason: RedrawReason) { self.state.schedule_redraw(reason); }
-    #[inline] pub fn force_redraw(&mut self, reason: RedrawReason) { self.state.force_redraw(reason); }
+    #[inline]
+    pub fn schedule_redraw_post_vblank(&mut self, reason: RedrawReason) {
+        self.state.schedule_redraw_post_vblank(reason);
+    }
+    #[inline]
+    pub fn bump_redraw_epoch(&mut self, reason: RedrawReason) {
+        self.state.bump_redraw_epoch(reason);
+    }
+    #[inline]
+    pub fn schedule_redraw(&mut self, reason: RedrawReason) {
+        self.state.schedule_redraw(reason);
+    }
+    #[inline]
+    pub fn force_redraw(&mut self, reason: RedrawReason) {
+        self.state.force_redraw(reason);
+    }
     /// Apply a control request a dock sent through wlr-foreign-toplevel-management.
     /// `close` asks the client to close; `fullscreen` routes through the world; `activate`
     /// queues a view+activate (see `request_activation`). maximize/minimize have no model here
@@ -247,7 +284,8 @@ impl<A: WireTrait + 'static> Wire<A> {
             ForeignRequest::Activate => {
                 // Queue a view+activate; the window-lifecycle drainer (higher crate, has the
                 // camera `view`) applies it. `Foreign` records the source for later.
-                self.inner.request_activation(window, ActivationOrigin::Foreign);
+                self.inner
+                    .request_activation(window, ActivationOrigin::Foreign);
             }
         }
     }
@@ -300,7 +338,15 @@ impl<A: WireTrait + 'static> Wire<A> {
         let location = self.inner.reanchor_pointer();
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.state.compositor.clock.now().as_millis() as u32;
-        pointer.motion(&mut self.state, None, &MotionEvent { location, serial, time });
+        pointer.motion(
+            &mut self.state,
+            None,
+            &MotionEvent {
+                location,
+                serial,
+                time,
+            },
+        );
         pointer.frame(&mut self.state);
     }
 
@@ -362,7 +408,9 @@ impl<A: WireTrait + 'static> Wire<A> {
             let spaces: Vec<_> = states.iter().map(|s| &s.state).collect();
             self.state.foreign.reconcile::<Dispatch>(&spaces);
         } else {
-            self.state.foreign.reconcile::<Dispatch>(&[&self.inner.host_space().state]);
+            self.state
+                .foreign
+                .reconcile::<Dispatch>(&[&self.inner.host_space().state]);
         }
     }
 
@@ -392,7 +440,9 @@ impl<A: WireTrait + 'static> Wire<A> {
 
     pub fn apply_constraint_restoration(&mut self, token: (WlSurface, Point<f64, Logical>)) {
         let (hint_surface, hint_surface_local) = token;
-        let Some(pointer) = self.state.seat.seat.get_pointer() else { return; };
+        let Some(pointer) = self.state.seat.seat.get_pointer() else {
+            return;
+        };
         // The hint is surface-local; where it SHOWS is through the window's fit
         // (world side). Fall back to the raw geometry origin only for a surface no
         // window owns.
@@ -400,14 +450,25 @@ impl<A: WireTrait + 'static> Wire<A> {
             .inner
             .surface_point_to_world(&hint_surface, hint_surface_local)
             .unwrap_or_else(|| {
-                self.inner.host_space().element_location_for_surface(&hint_surface).to_f64()
+                self.inner
+                    .host_space()
+                    .element_location_for_surface(&hint_surface)
+                    .to_f64()
                     + hint_surface_local
             });
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.state.compositor.clock.now().as_millis() as u32;
         // Smithay derives the client's local coordinate as `location - focus_origin`,
         // so hand it the origin that yields exactly the hint (`hit.rs` does the same).
-        pointer.motion(&mut self.state, Some((hint_surface, warp_world - hint_surface_local)), &MotionEvent { location: warp_world, serial, time });
+        pointer.motion(
+            &mut self.state,
+            Some((hint_surface, warp_world - hint_surface_local)),
+            &MotionEvent {
+                location: warp_world,
+                serial,
+                time,
+            },
+        );
         pointer.frame(&mut self.state);
         self.inner.apply_pointer(warp_world);
         self.state.schedule_redraw(RedrawReason::Cursor);
@@ -443,265 +504,306 @@ impl<A: WireTrait + 'static> Wire<A> {
         // destroyed window out of the dock in the same frame it died.
         for event in std::mem::take(&mut self.state.deferred) {
             match event {
-        // A window asked to be mapped. X11 windows arrive here too
-        // (`XwmHandler::map_window_request` and `mapped_override_redirect_window`), so
-        // this one arm gives all three kinds their uuid, their Space slot and
-        // everything keyed off those.
-        Deferred::WindowMapped(mapped) => {
-            // Resolve the window's IDENTITY before anything else touches it. For X11 that
-            // means asking the Space, which is the authority: an `X11Surface` may be
-            // reported as mapped more than once (see `Mapped`), and constructing here
-            // would mint a second identity for a window already on the canvas. An
-            // already-mapped window is not an error — its placement, uuid and slot are
-            // already correct, so there is nothing further to apply. A re-map after an
-            // unmap is exactly this case: the unmap kept the element
-            // (`XwmHandler::unmapped_window`), so the window resumes its slot, uuid and
-            // position with a fresh surface, as an xdg toplevel does.
-            //
-            // Across every world, because the unmap left the element in its own — a
-            // host-only lookup would mint a second identity for a remap off-screen.
-            //
-            // A tracked POPUP is not a Space element, so the Space cannot answer for it;
-            // its surface can. Without this, a map and its association arriving in the
-            // same drain minted a second popup node for one menu.
-            let window = match mapped {
-                deferred::Mapped::Xdg(window) => window,
-                deferred::Mapped::X11(x11) => match self.inner.owning_x11_window(&x11) {
-                    // Already a live Space element: a second entry for one map, or a
-                    // window that mapped anyway. Its placement, uuid and slot are correct.
-                    Some((_, window)) if self.inner.is_space_element(&window) => continue,
-                    // WITHDRAWN and mapping again. Put it back where it left, under the
-                    // uuid it left with, and retire the placeholder that stood in for it.
-                    // This is the case that makes a Wine/SDL fullscreen toggle and a
-                    // GTK/Qt hide()/show() land where they were instead of coming back as
-                    // a new window in the middle of the camera.
-                    Some((_, window)) => {
-                        self.inner.readmit_x11(window);
+                // A window asked to be mapped. X11 windows arrive here too
+                // (`XwmHandler::map_window_request` and `mapped_override_redirect_window`), so
+                // this one arm gives all three kinds their uuid, their Space slot and
+                // everything keyed off those.
+                Deferred::WindowMapped(mapped) => {
+                    // Resolve the window's IDENTITY before anything else touches it. For X11 that
+                    // means asking the Space, which is the authority: an `X11Surface` may be
+                    // reported as mapped more than once (see `Mapped`), and constructing here
+                    // would mint a second identity for a window already on the canvas. An
+                    // already-mapped window is not an error — its placement, uuid and slot are
+                    // already correct, so there is nothing further to apply. A re-map after an
+                    // unmap is exactly this case: the unmap kept the element
+                    // (`XwmHandler::unmapped_window`), so the window resumes its slot, uuid and
+                    // position with a fresh surface, as an xdg toplevel does.
+                    //
+                    // Across every world, because the unmap left the element in its own — a
+                    // host-only lookup would mint a second identity for a remap off-screen.
+                    //
+                    // A tracked POPUP is not a Space element, so the Space cannot answer for it;
+                    // its surface can. Without this, a map and its association arriving in the
+                    // same drain minted a second popup node for one menu.
+                    let window = match mapped {
+                        deferred::Mapped::Xdg(window) => window,
+                        deferred::Mapped::X11(x11) => match self.inner.owning_x11_window(&x11) {
+                            // Already a live Space element: a second entry for one map, or a
+                            // window that mapped anyway. Its placement, uuid and slot are correct.
+                            Some((_, window)) if self.inner.is_space_element(&window) => continue,
+                            // WITHDRAWN and mapping again. Put it back where it left, under the
+                            // uuid it left with, and retire the placeholder that stood in for it.
+                            // This is the case that makes a Wine/SDL fullscreen toggle and a
+                            // GTK/Qt hide()/show() land where they were instead of coming back as
+                            // a new window in the middle of the camera.
+                            Some((_, window)) => {
+                                self.inner.readmit_x11(window);
+                                continue;
+                            }
+                            None => {
+                                let tracked = x11.wl_surface().is_some_and(|s| {
+                                    self.state.popup.state.find_popup(&s).is_some()
+                                });
+                                if tracked {
+                                    continue;
+                                }
+                                smithay::desktop::Window::new_x11_window(x11)
+                            }
+                        },
+                    };
+                    // An EPHEMERAL X11 window that names a parent is a menu, tooltip or drag
+                    // icon, and becomes a popup rather than a window — see `child::as_popup`.
+                    // Tracked and nothing else: it gets no uuid, no Space slot, no decoration
+                    // and no placeholder, and is drawn and hit-tested through the paths that
+                    // already walk `popups_for_surface`. Anything that does not qualify falls
+                    // through to the window path below, which is still the right answer for a
+                    // transient dialog and the only one available to a menu that sets no
+                    // `WM_TRANSIENT_FOR`.
+                    // HELD until Xwayland associates a wl_surface. `child::as_popup` cannot answer
+                    // without one — a `PopupKind` carries the popup's surface and its parent's —
+                    // and Xwayland associates only after the map request, so asking here would
+                    // answer `None` for EVERY X11 window and no menu, tooltip or dropdown could
+                    // ever be a popup. Only CANDIDATES wait; an ordinary window maps immediately,
+                    // which the placement below depends on. The map handlers skip a candidate
+                    // that has no surface yet (`queue_x11_map`) and `surface_associated` queues
+                    // it once it does; this check is the safety net for a surface that vanished
+                    // in between, and the identity resolution above makes a second entry safe.
+                    if window.is_x11()
+                        && window.wl_surface().is_none()
+                        && ident::is_popup_x11(&window)
+                    {
                         continue;
                     }
-                    None => {
-                        let tracked = x11
-                            .wl_surface()
-                            .is_some_and(|s| self.state.popup.state.find_popup(&s).is_some());
-                        if tracked {
-                            continue;
+                    // A new X11 window takes its role here, once its identity is resolved (an
+                    // already-mapped or readmitted window never reaches this point).
+                    if let Some(x11) = window.x11_surface() {
+                        self.inner.surface_event(SurfaceEvent::RoleTaken {
+                            handle: SurfaceHandle::x11(x11),
+                            role: surfaces::SurfaceRole::X11 {
+                                override_redirect: x11.is_override_redirect(),
+                            },
+                            parent: None,
+                        });
+                        self.inner.surface_event(SurfaceEvent::x11_names(x11));
+                        // compd (integration E4): the WM_TRANSIENT_FOR owner, which a
+                        // move follows to its override-redirect children.
+                        self.inner
+                            .surface_event(SurfaceEvent::x11_transient_for(x11));
+                    }
+                    if window.is_x11() {
+                        // Every world's windows, not the focused one's. The parent mapped into
+                        // whichever world was focused when IT mapped, and this child maps into
+                        // whichever is focused now — so an app that opens a menu while the user
+                        // is looking elsewhere resolved no parent, and the failure is not a
+                        // misplacement but a change of KIND: the menu became a window, with a
+                        // uuid, a Space slot, a decoration and a placeholder.
+                        //
+                        // Widening cannot mis-resolve: `parent_offset` matches on `window_id()`,
+                        // which is unique across the X server, so more candidates can only find
+                        // the right parent or none. And a popup needs no world of its own —
+                        // `PopupManager` is world-free and the draw and hit paths reach it by
+                        // walking `popups_for_surface` from the parent, so one whose parent is in
+                        // another world is tracked once and drawn there.
+                        //
+                        // Same shape as `Deferred::WindowFullscreen` below, for the same reason.
+                        let mapped: Vec<smithay::desktop::Window> = self
+                            .inner
+                            .all_world_spaces()
+                            .iter()
+                            .flat_map(|s| s.state.elements())
+                            .cloned()
+                            .collect();
+                        // The fallback parent for a menu that names none: the window the user was
+                        // last pointing at, then the last focused one.
+                        let fallback = self
+                            .state
+                            .xwayland
+                            .map_position_parent_hover
+                            .or(self.state.xwayland.map_position_parent_focus);
+                        // The popup registry is the SECOND place a parent can live, and the only
+                        // one that can answer for a submenu: its parent is the menu, which is
+                        // deliberately kept out of the Space.
+                        let popups = &self.state.popup.state;
+                        if let Some(popup) = protocols::window::child::child::as_popup(
+                            mapped.iter(),
+                            &window,
+                            fallback,
+                            self.state
+                                .outputs_snapshot
+                                .iter()
+                                .map(|(_, geometry)| geometry.size),
+                            |id| popups.find_x11_popup(id),
+                        ) {
+                            match self.state.popup.state.track_popup(popup) {
+                                Ok(()) => {
+                                    // A popup has no frame-time placement: tracked is mapped.
+                                    if let Some(handle) = SurfaceHandle::of_window(&window) {
+                                        self.inner.surface_event(SurfaceEvent::Placed(handle));
+                                    }
+                                    self.state.schedule_redraw(RedrawReason::Popup);
+                                    continue;
+                                }
+                                // The parent died between the map request and this drain. Fall
+                                // through: as a window it is at least reachable and closable,
+                                // where an untracked popup would be neither drawn nor destroyed.
+                                Err(err) => {
+                                    warn!("x11 popup track failed, mapping as a window: {err:?}")
+                                }
+                            }
+                        } else if ident::is_popup_x11(&window) && !ident::states(&window).fullscreen
+                        {
+                            // `as_popup` declines for more than `is_popup_x11` can see: fullscreen,
+                            // an output-sized override-redirect window that names no parent, a
+                            // parent that resolves to nothing, and a `wl_surface` missing on either
+                            // side. Only the last two are worth hearing about — the window path
+                            // then centres the thing on the CAMERA, so a menu lands mid-view
+                            // instead of beside its owner.
+                            //
+                            // Fullscreen is filtered out here because it is the COMMON path, not a
+                            // problem: a fullscreen game is override-redirect, so `is_popup_x11`
+                            // says yes and the size guard in `as_popup` says no. Reporting that as
+                            // a parenting failure warned on every game launch.
+                            warn!(
+                                "x11 popup candidate has no resolvable parent, mapping as a window"
+                            );
                         }
-                        smithay::desktop::Window::new_x11_window(x11)
+                    }
+                    self.inner.initialize_surface_data(window.clone());
+                    self.inner
+                        .host_space_mut()
+                        .state
+                        .map_element(window.clone(), (0, 0), false);
+                    // ...but the commit-driven initial placement below cannot serve an X11
+                    // window. An X client sizes itself BEFORE asking to be mapped, and the
+                    // wl_surface Xwayland backs it with may have been committing since before
+                    // this `Window` existed — so waiting for "the first commit that finds a
+                    // window with a non-degenerate geometry" can wait forever. The geometry is
+                    // already final here, so place it now and mark it placed.
+                    if window.is_x11() {
+                        let mut geometry = window.geometry();
+                        geometry.size = shell::configured_size(&window);
+                        window.user_data().insert_if_missing(|| {
+                            crate::wayland::compositor::place::WindowPlacedMarker
+                        });
+                        self.inner.place_window(window, geometry);
+                    }
+                }
+                Deferred::WindowFullscreen { window, on } => {
+                    let spaces: Vec<smithay::desktop::Window> = self
+                        .inner
+                        .all_world_spaces()
+                        .iter()
+                        .flat_map(|s| s.state.elements())
+                        .cloned()
+                        .collect();
+                    if let Some(w) = find::window_of(spaces.iter(), &window) {
+                        self.inner.fullscreen_request(w, on);
+                    }
+                }
+                // Layer shell map / unmap. A NULL-output surface goes to the monitor the
+                // user is on (active_output), not always the first output.
+                Deferred::LayerMapped {
+                    surface,
+                    output,
+                    layer,
+                    namespace,
+                } => {
+                    let current_output = self.inner.active_output();
+                    crate::wayland::layershell::dispatch::wire::new_layer_surface(
+                        self.inner.host_space(),
+                        surface,
+                        output,
+                        layer,
+                        namespace,
+                        current_output,
+                    );
+                }
+                Deferred::LayerDestroyed(surface) => {
+                    crate::wayland::layershell::dispatch::wire::layer_destroyed(
+                        self.inner.host_space(),
+                        surface,
+                    );
+                }
+                // The two teardowns differ in shape, not in timing: an xdg toplevel is keyed by
+                // its surface (the uuid lives in that surface's data map), while an X11 window
+                // is keyed by the window itself — its surface association may already be gone by
+                // the time the X server says it died — and has to be unmapped from its Space
+                // here, which the xdg path leaves to `refresh_alive`.
+                // Out of the Space, identity kept. The Space is the truth about what windows
+                // exist, and a withdrawn window is not one of them — it has no surface, is not
+                // drawn and is not hit. What survives is the record `withdraw_x11` parks, so a
+                // remap resolves the same uuid, world and position.
+                Deferred::WindowWithdrawn(surface) => {
+                    // The X window lives on, unmapped: its record goes dormant (an ephemeral one
+                    // retired below included; a re-show is a new role take).
+                    self.inner
+                        .surface_event(SurfaceEvent::Dormant(SurfaceHandle::x11(&surface)));
+                    if let Some((world, window)) = self.inner.owning_x11_window(&surface) {
+                        // Guard against a second withdrawal for one window: the record already
+                        // holds it, so `owning_x11_window` answered from there and the Space has
+                        // nothing left to unmap.
+                        if self.inner.is_space_element(&window) {
+                            // NOT unmapped first: `withdraw_x11` reads the window's location out
+                            // of the Space to park it, and an element that has already been
+                            // unmapped has no location to read — it came back at (0,0), which in
+                            // centre-anchored world coordinates is nowhere near where it left.
+                            // The window remapped correctly and landed off-camera, which reads as
+                            // "it never came back".
+                            //
+                            // An EPHEMERAL window is RETIRED, not withdrawn: no record, so a
+                            // re-show is a fresh map that resolves its parent again.
+                            //
+                            // Identity across a hide is for windows the user arranged — a Wine
+                            // fullscreen toggle, a GTK hide()/show() — where coming back anywhere
+                            // else is the bug. A menu is the opposite: its position belongs to
+                            // whatever it is opening off, and restoring the slot it had last time
+                            // makes the stored location a CACHE. Unity's submenus showed it —
+                            // hover away, hover back, and the submenu reappeared where it was
+                            // rather than beside the item that opened it.
+                            if protocols::window::ident::ident::is_ephemeral_x11(&window) {
+                                self.inner
+                                    .space_of_world_mut(world)
+                                    .state
+                                    .unmap_elem(&window);
+                                self.inner.destroy_x11_data(window);
+                            } else {
+                                // Takes the location, then unmaps, in that order.
+                                self.inner.withdraw_x11(world, window);
+                            }
+                        }
+                    }
+                }
+                Deferred::WindowDestroyed {
+                    window,
+                    drag_discard,
+                } => match window {
+                    find::Shell::Xdg(surface) => {
+                        self.inner.destroy_surface_data(surface, drag_discard)
+                    }
+                    find::Shell::X11(surface) => {
+                        self.inner
+                            .surface_event(SurfaceEvent::Destroyed(SurfaceHandle::x11(&surface)));
+                        if let Some((world, window)) = self.inner.owning_x11_window(&surface) {
+                            // A window that WITHDREW first is already out of the Space and has
+                            // already left its placeholder, so the teardown would run twice.
+                            // Dropping its record is the whole job: the placeholder stops being
+                            // one a remap could reclaim and becomes an ordinary launch
+                            // placeholder, which is exactly what a destroy means.
+                            if self.inner.is_space_element(&window) {
+                                self.inner
+                                    .space_of_world_mut(world)
+                                    .state
+                                    .unmap_elem(&window);
+                                self.inner.destroy_x11_data(window);
+                            }
+                            self.inner.forget_withdrawn_x11(&surface);
+                        }
                     }
                 },
-            };
-            // An EPHEMERAL X11 window that names a parent is a menu, tooltip or drag
-            // icon, and becomes a popup rather than a window — see `child::as_popup`.
-            // Tracked and nothing else: it gets no uuid, no Space slot, no decoration
-            // and no placeholder, and is drawn and hit-tested through the paths that
-            // already walk `popups_for_surface`. Anything that does not qualify falls
-            // through to the window path below, which is still the right answer for a
-            // transient dialog and the only one available to a menu that sets no
-            // `WM_TRANSIENT_FOR`.
-            // HELD until Xwayland associates a wl_surface. `child::as_popup` cannot answer
-            // without one — a `PopupKind` carries the popup's surface and its parent's —
-            // and Xwayland associates only after the map request, so asking here would
-            // answer `None` for EVERY X11 window and no menu, tooltip or dropdown could
-            // ever be a popup. Only CANDIDATES wait; an ordinary window maps immediately,
-            // which the placement below depends on. The map handlers skip a candidate
-            // that has no surface yet (`queue_x11_map`) and `surface_associated` queues
-            // it once it does; this check is the safety net for a surface that vanished
-            // in between, and the identity resolution above makes a second entry safe.
-            if window.is_x11()
-                && window.wl_surface().is_none()
-                && ident::is_popup_x11(&window)
-            {
-                continue;
-            }
-            // A new X11 window takes its role here, once its identity is resolved (an
-            // already-mapped or readmitted window never reaches this point).
-            if let Some(x11) = window.x11_surface() {
-                self.inner.surface_event(SurfaceEvent::RoleTaken {
-                    handle: SurfaceHandle::x11(x11),
-                    role: surfaces::SurfaceRole::X11 { override_redirect: x11.is_override_redirect() },
-                    parent: None,
-                });
-                self.inner.surface_event(SurfaceEvent::x11_names(x11));
-                // compd (integration E4): the WM_TRANSIENT_FOR owner, which a
-                // move follows to its override-redirect children.
-                self.inner.surface_event(SurfaceEvent::x11_transient_for(x11));
-            }
-            if window.is_x11() {
-                // Every world's windows, not the focused one's. The parent mapped into
-                // whichever world was focused when IT mapped, and this child maps into
-                // whichever is focused now — so an app that opens a menu while the user
-                // is looking elsewhere resolved no parent, and the failure is not a
-                // misplacement but a change of KIND: the menu became a window, with a
-                // uuid, a Space slot, a decoration and a placeholder.
-                //
-                // Widening cannot mis-resolve: `parent_offset` matches on `window_id()`,
-                // which is unique across the X server, so more candidates can only find
-                // the right parent or none. And a popup needs no world of its own —
-                // `PopupManager` is world-free and the draw and hit paths reach it by
-                // walking `popups_for_surface` from the parent, so one whose parent is in
-                // another world is tracked once and drawn there.
-                //
-                // Same shape as `Deferred::WindowFullscreen` below, for the same reason.
-                let mapped: Vec<smithay::desktop::Window> = self
-                    .inner
-                    .all_world_spaces()
-                    .iter()
-                    .flat_map(|s| s.state.elements())
-                    .cloned()
-                    .collect();
-                // The fallback parent for a menu that names none: the window the user was
-                // last pointing at, then the last focused one.
-                let fallback = self
-                    .state
-                    .xwayland
-                    .map_position_parent_hover
-                    .or(self.state.xwayland.map_position_parent_focus);
-                // The popup registry is the SECOND place a parent can live, and the only
-                // one that can answer for a submenu: its parent is the menu, which is
-                // deliberately kept out of the Space.
-                let popups = &self.state.popup.state;
-                if let Some(popup) = protocols::window::child::child::as_popup(
-                    mapped.iter(),
-                    &window,
-                    fallback,
-                    self.state.outputs_snapshot.iter().map(|(_, geometry)| geometry.size),
-                    |id| popups.find_x11_popup(id),
-                ) {
-                    match self.state.popup.state.track_popup(popup) {
-                        Ok(()) => {
-                            // A popup has no frame-time placement: tracked is mapped.
-                            if let Some(handle) = SurfaceHandle::of_window(&window) {
-                                self.inner.surface_event(SurfaceEvent::Placed(handle));
-                            }
-                            self.state.schedule_redraw(RedrawReason::Popup);
-                            continue;
-                        }
-                        // The parent died between the map request and this drain. Fall
-                        // through: as a window it is at least reachable and closable,
-                        // where an untracked popup would be neither drawn nor destroyed.
-                        Err(err) => warn!("x11 popup track failed, mapping as a window: {err:?}"),
-                    }
-                } else if ident::is_popup_x11(&window)
-                    && !ident::states(&window).fullscreen
-                {
-                    // `as_popup` declines for more than `is_popup_x11` can see: fullscreen,
-                    // an output-sized override-redirect window that names no parent, a
-                    // parent that resolves to nothing, and a `wl_surface` missing on either
-                    // side. Only the last two are worth hearing about — the window path
-                    // then centres the thing on the CAMERA, so a menu lands mid-view
-                    // instead of beside its owner.
-                    //
-                    // Fullscreen is filtered out here because it is the COMMON path, not a
-                    // problem: a fullscreen game is override-redirect, so `is_popup_x11`
-                    // says yes and the size guard in `as_popup` says no. Reporting that as
-                    // a parenting failure warned on every game launch.
-                    warn!("x11 popup candidate has no resolvable parent, mapping as a window");
+                // Pointer-constraint restorations (seat warp + space read).
+                Deferred::PointerRestore { surface, at } => {
+                    self.apply_constraint_restoration((surface, at));
                 }
-            }
-            self.inner.initialize_surface_data(window.clone());
-            self.inner.host_space_mut().state.map_element(window.clone(), (0, 0), false);
-            // ...but the commit-driven initial placement below cannot serve an X11
-            // window. An X client sizes itself BEFORE asking to be mapped, and the
-            // wl_surface Xwayland backs it with may have been committing since before
-            // this `Window` existed — so waiting for "the first commit that finds a
-            // window with a non-degenerate geometry" can wait forever. The geometry is
-            // already final here, so place it now and mark it placed.
-            if window.is_x11() {
-                let mut geometry = window.geometry();
-                geometry.size = shell::configured_size(&window);
-                window
-                    .user_data()
-                    .insert_if_missing(|| crate::wayland::compositor::place::WindowPlacedMarker);
-                self.inner.place_window(window, geometry);
-            }
-        }
-        Deferred::WindowFullscreen { window, on } => {
-            let spaces: Vec<smithay::desktop::Window> =
-                self.inner.all_world_spaces().iter().flat_map(|s| s.state.elements()).cloned().collect();
-            if let Some(w) = find::window_of(spaces.iter(), &window) {
-                self.inner.fullscreen_request(w, on);
-            }
-        }
-        // Layer shell map / unmap. A NULL-output surface goes to the monitor the
-        // user is on (active_output), not always the first output.
-        Deferred::LayerMapped { surface, output, layer, namespace } => {
-            let current_output = self.inner.active_output();
-            crate::wayland::layershell::dispatch::wire::new_layer_surface(
-                self.inner.host_space(), surface, output, layer, namespace, current_output,
-            );
-        }
-        Deferred::LayerDestroyed(surface) => {
-            crate::wayland::layershell::dispatch::wire::layer_destroyed(
-                self.inner.host_space(), surface,
-            );
-        }
-        // The two teardowns differ in shape, not in timing: an xdg toplevel is keyed by
-        // its surface (the uuid lives in that surface's data map), while an X11 window
-        // is keyed by the window itself — its surface association may already be gone by
-        // the time the X server says it died — and has to be unmapped from its Space
-        // here, which the xdg path leaves to `refresh_alive`.
-        // Out of the Space, identity kept. The Space is the truth about what windows
-        // exist, and a withdrawn window is not one of them — it has no surface, is not
-        // drawn and is not hit. What survives is the record `withdraw_x11` parks, so a
-        // remap resolves the same uuid, world and position.
-        Deferred::WindowWithdrawn(surface) => {
-            // The X window lives on, unmapped: its record goes dormant (an ephemeral one
-            // retired below included; a re-show is a new role take).
-            self.inner.surface_event(SurfaceEvent::Dormant(SurfaceHandle::x11(&surface)));
-            if let Some((world, window)) = self.inner.owning_x11_window(&surface) {
-                // Guard against a second withdrawal for one window: the record already
-                // holds it, so `owning_x11_window` answered from there and the Space has
-                // nothing left to unmap.
-                if self.inner.is_space_element(&window) {
-                    // NOT unmapped first: `withdraw_x11` reads the window's location out
-                    // of the Space to park it, and an element that has already been
-                    // unmapped has no location to read — it came back at (0,0), which in
-                    // centre-anchored world coordinates is nowhere near where it left.
-                    // The window remapped correctly and landed off-camera, which reads as
-                    // "it never came back".
-                    //
-                    // An EPHEMERAL window is RETIRED, not withdrawn: no record, so a
-                    // re-show is a fresh map that resolves its parent again.
-                    //
-                    // Identity across a hide is for windows the user arranged — a Wine
-                    // fullscreen toggle, a GTK hide()/show() — where coming back anywhere
-                    // else is the bug. A menu is the opposite: its position belongs to
-                    // whatever it is opening off, and restoring the slot it had last time
-                    // makes the stored location a CACHE. Unity's submenus showed it —
-                    // hover away, hover back, and the submenu reappeared where it was
-                    // rather than beside the item that opened it.
-                    if protocols::window::ident::ident::is_ephemeral_x11(&window) {
-                        self.inner.space_of_world_mut(world).state.unmap_elem(&window);
-                        self.inner.destroy_x11_data(window);
-                    } else {
-                        // Takes the location, then unmaps, in that order.
-                        self.inner.withdraw_x11(world, window);
-                    }
-                }
-            }
-        }
-        Deferred::WindowDestroyed { window, drag_discard } => match window {
-            find::Shell::Xdg(surface) => self.inner.destroy_surface_data(surface, drag_discard),
-            find::Shell::X11(surface) => {
-                self.inner.surface_event(SurfaceEvent::Destroyed(SurfaceHandle::x11(&surface)));
-                if let Some((world, window)) = self.inner.owning_x11_window(&surface) {
-                    // A window that WITHDREW first is already out of the Space and has
-                    // already left its placeholder, so the teardown would run twice.
-                    // Dropping its record is the whole job: the placeholder stops being
-                    // one a remap could reclaim and becomes an ordinary launch
-                    // placeholder, which is exactly what a destroy means.
-                    if self.inner.is_space_element(&window) {
-                        self.inner.space_of_world_mut(world).state.unmap_elem(&window);
-                        self.inner.destroy_x11_data(window);
-                    }
-                    self.inner.forget_withdrawn_x11(&surface);
-                }
-            }
-        },
-        // Pointer-constraint restorations (seat warp + space read).
-        Deferred::PointerRestore { surface, at } => {
-            self.apply_constraint_restoration((surface, at));
-        }
             }
         }
         // Commits: on_commit, initial configure + placement, resize.
@@ -721,15 +823,16 @@ impl<A: WireTrait + 'static> Wire<A> {
             use crate::wayland::compositor::dispatch::wire as commit;
             let committed = find::in_space(&self.inner.owning_space(surface).state, surface);
             let initial = committed.is_some() && commit::awaits_initial_configure(surface);
-            let restore_size = initial.then(|| self.inner.session_restore_size(surface)).flatten();
+            let restore_size = initial
+                .then(|| self.inner.session_restore_size(surface))
+                .flatten();
             if let Some((window, geometry)) = commit::apply_commit(
                 &mut self.inner.owning_space_mut(surface).state,
                 surface,
                 committed,
                 initial,
                 restore_size,
-            )
-            {
+            ) {
                 self.inner.place_window(window, geometry);
             }
         }
@@ -737,11 +840,11 @@ impl<A: WireTrait + 'static> Wire<A> {
         // commits it made: the registry maps buffer-mapped roles and unmaps on a null
         // attach (a toplevel's map is its placement, from the frame hook).
         for surface in &committed {
-            let attached = smithay::backend::renderer::utils::with_renderer_surface_state(
-                surface,
-                |state| state.buffer().is_some(),
-            )
-            .unwrap_or(false);
+            let attached =
+                smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| {
+                    state.buffer().is_some()
+                })
+                .unwrap_or(false);
             // xdg-shell: a null attach UNMAPS a toplevel, and its next commit is an
             // initial commit answered with a configure. smithay resets the role on
             // the unmap (`got_unmapped`), but `apply_commit` above then sees
@@ -753,17 +856,28 @@ impl<A: WireTrait + 'static> Wire<A> {
             // the attached -> null EDGE: a new toplevel's first bufferless commit was
             // just configured and must stay that way.
             let had_buffer = compositor::with_states(surface, |states| {
-                states.data_map.insert_if_missing(|| HadBuffer(std::cell::Cell::new(false)));
-                states.data_map.get::<HadBuffer>().is_some_and(|had| had.0.replace(attached))
+                states
+                    .data_map
+                    .insert_if_missing(|| HadBuffer(std::cell::Cell::new(false)));
+                states
+                    .data_map
+                    .get::<HadBuffer>()
+                    .is_some_and(|had| had.0.replace(attached))
             });
             if had_buffer && !attached {
                 compositor::with_states(surface, |states| {
-                    if let Some(data) = states.data_map.get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>() {
+                    if let Some(data) = states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>(
+                    ) {
                         data.lock().unwrap().initial_configure_sent = false;
                     }
                 });
             }
-            self.inner.surface_event(SurfaceEvent::Buffer { handle: SurfaceHandle::wl(surface), attached });
+            self.inner.surface_event(SurfaceEvent::Buffer {
+                handle: SurfaceHandle::wl(surface),
+                attached,
+            });
             self.inner.committed_input_geometry(surface);
         }
         // Live layer-shell reconfiguration: if a committed surface is a mapped layer
@@ -797,7 +911,9 @@ impl<A: WireTrait + 'static> Wire<A> {
         // `is_pointer_over` → `current_focus()` query can't re-lock a held pointer mutex.
         if let Some(surface) = self.state.pending_constraint_activation.take() {
             if let Some(pointer) = self.state.seat.seat.get_pointer() {
-                if self.state.seat.is_pointer_over(&pointer, &surface) && !self.state.seat.constraints_suspended {
+                if self.state.seat.is_pointer_over(&pointer, &surface)
+                    && !self.state.seat.constraints_suspended
+                {
                     with_pointer_constraint(&surface, &pointer, |c| {
                         if let Some(c) = c {
                             if !c.is_active() {
@@ -828,10 +944,15 @@ impl<A: WireTrait + 'static> Wire<A> {
         }
         // Dmabuf imports (GPU binding lives in the kernel; resolves the notifier).
         for (global, dmabuf, notifier) in std::mem::take(&mut self.state.pending_dmabuf) {
-            let bound = self.inner.dmabuf_import(&mut self.state, &global, dmabuf, notifier);
+            let bound = self
+                .inner
+                .dmabuf_import(&mut self.state, &global, dmabuf, notifier);
             if let Some((dmabuf, notifier)) = bound {
                 crate::wayland::dmabuf::dispatch::wire::dmabuf_imported::<Dispatch>(
-                    &mut self.state, &global, dmabuf, notifier,
+                    &mut self.state,
+                    &global,
+                    dmabuf,
+                    notifier,
                 );
             }
         }
@@ -839,45 +960,55 @@ impl<A: WireTrait + 'static> Wire<A> {
         // (the hook has no loop_handle; the rim does). When the fence fires, clear
         // the blocker on the client's compositor state + schedule a redraw.
         for (surface_weak, source) in std::mem::take(&mut self.state.pending_blockers) {
-            let result = self.loop_handle.insert_source(source, move |_event, _meta, wire| {
-                let dh = wire.state.output.display_handle.clone();
-                let Ok(surface) = surface_weak.upgrade() else {
-                    warn!("blocker Surface destroyed before fence fired."); return Ok(());
-                };
-                let Some(client) = surface.client() else {
-                    warn!("blocker Surface alive but client gone."); return Ok(());
-                };
-                let client_state = wire.state.client_compositor_state(&client);
-                client_state.blocker_cleared(&mut wire.state, &dh);
-                // `blocker_cleared` re-applies the held commit (CompositorHandler::
-                // commit pushes the surface into `committed`), but only
-                // `drain_protocol` turns a commit into its world effects (initial
-                // placement → InitialMap → map).
-                //
-                // Flushed here rather than left to the loop's end-of-iteration drain,
-                // which now runs unconditionally and would reach it in this same
-                // iteration anyway. What is left is ordering WITHIN the iteration: a
-                // render is ping-driven and a ping raised earlier can be dispatched
-                // after this source, so leaving the map to the tail can hand that render
-                // pre-drain state and cost the client's first buffer a frame. Doing it
-                // here puts the map ahead of anything else this dispatch runs.
-                //
-                // Ordering between queues is unaffected: this takes whatever is queued
-                // so far, in arrival order, and the end-of-iteration drain takes the rest.
-                wire.drain_protocol();
-                wire.state.schedule_redraw(RedrawReason::Commit);
-                Ok(())
-            });
+            let result = self
+                .loop_handle
+                .insert_source(source, move |_event, _meta, wire| {
+                    let dh = wire.state.output.display_handle.clone();
+                    let Ok(surface) = surface_weak.upgrade() else {
+                        warn!("blocker Surface destroyed before fence fired.");
+                        return Ok(());
+                    };
+                    let Some(client) = surface.client() else {
+                        warn!("blocker Surface alive but client gone.");
+                        return Ok(());
+                    };
+                    let client_state = wire.state.client_compositor_state(&client);
+                    client_state.blocker_cleared(&mut wire.state, &dh);
+                    // `blocker_cleared` re-applies the held commit (CompositorHandler::
+                    // commit pushes the surface into `committed`), but only
+                    // `drain_protocol` turns a commit into its world effects (initial
+                    // placement → InitialMap → map).
+                    //
+                    // Flushed here rather than left to the loop's end-of-iteration drain,
+                    // which now runs unconditionally and would reach it in this same
+                    // iteration anyway. What is left is ordering WITHIN the iteration: a
+                    // render is ping-driven and a ping raised earlier can be dispatched
+                    // after this source, so leaving the map to the tail can hand that render
+                    // pre-drain state and cost the client's first buffer a frame. Doing it
+                    // here puts the map ahead of anything else this dispatch runs.
+                    //
+                    // Ordering between queues is unaffected: this takes whatever is queued
+                    // so far, in arrival order, and the end-of-iteration drain takes the rest.
+                    wire.drain_protocol();
+                    wire.state.schedule_redraw(RedrawReason::Commit);
+                    Ok(())
+                });
             if let Err(err) = result {
                 // The blocker is already on the surface and nothing will clear
                 // it: that commit never applies (compd F6: an explicit-sync fault).
                 warn!("failed to insert syncobj source err={err:?}");
-                crate::wayland::dmabuf::explicit_sync::fault(format!("syncobj fence source not inserted: {err:?}"));
+                crate::wayland::dmabuf::explicit_sync::fault(format!(
+                    "syncobj fence source not inserted: {err:?}"
+                ));
             }
         }
         // Deferred data-device focus (needs DataDeviceHandler, available here).
         if let Some(client) = self.state.clipboard.pending_focus.take() {
-            set_data_device_focus(&self.state.output.display_handle, &self.state.seat.seat, client.clone());
+            set_data_device_focus(
+                &self.state.output.display_handle,
+                &self.state.seat.seat,
+                client.clone(),
+            );
             // Primary selection follows the same keyboard focus.
             smithay::wayland::selection::primary_selection::set_primary_focus(
                 &self.state.output.display_handle,
@@ -912,10 +1043,16 @@ impl<A: WireTrait + 'static> Wire<A> {
         // decides which X client an ungrabbed pointer event reaches, and the pointer is
         // the only thing entitled to move it.
         // Refresh the geometry mirror for synchronous handler reads.
-        let geoms: Vec<(WlSurface, smithay::utils::Rectangle<i32, smithay::utils::Logical>)> =
-            self.inner.host_space().state.elements()
-                .filter_map(|w| ident::surface(w).map(|s| (s, w.geometry())))
-                .collect();
+        let geoms: Vec<(
+            WlSurface,
+            smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        )> = self
+            .inner
+            .host_space()
+            .state
+            .elements()
+            .filter_map(|w| ident::surface(w).map(|s| (s, w.geometry())))
+            .collect();
         self.state.geometries = geoms.into_iter().collect();
     }
 }

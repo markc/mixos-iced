@@ -265,9 +265,11 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
             "--ssd" => options.ssd = true,
             "--delay-size-commit" => {
                 let input = value()?;
-                let (size, millis) = input.split_once(':')
+                let (size, millis) = input
+                    .split_once(':')
                     .ok_or("--delay-size-commit expects WxH:MS")?;
-                let (width, height) = size.split_once('x')
+                let (width, height) = size
+                    .split_once('x')
                     .ok_or("--delay-size-commit expects WxH:MS")?;
                 let width: i32 = width.parse().map_err(|_| "invalid delayed width")?;
                 let height: i32 = height.parse().map_err(|_| "invalid delayed height")?;
@@ -523,11 +525,15 @@ fn run() -> Result<(), String> {
             xdg.ack_configure(serial);
             let width = if width > 0 { width } else { options.width };
             let height = if height > 0 { height } else { options.height };
+            if delayed_commit.is_some_and(|(w, h, _)| (w, h) != (width, height)) {
+                delayed_commit = None;
+            }
             let resizing = current
                 .as_ref()
                 .is_none_or(|canvas| (canvas.width, canvas.height) != (width, height));
-            let delay = options.delay_size_commit.filter(|(w, h, _)|
-                (*w, *h) == (width, height) && current.is_some() && resizing);
+            let delay = options
+                .delay_size_commit
+                .filter(|(w, h, _)| (*w, *h) == (width, height) && current.is_some() && resizing);
             if let Some((_, _, interval)) = delay {
                 if delayed_commit.is_none() {
                     delayed_commit = Some((width, height, Instant::now() + interval));
@@ -1039,14 +1045,29 @@ mod tests {
 
     #[test]
     fn delayed_size_commit_is_bounded_and_does_not_change_default_timing() {
-        assert!(parse_options(std::iter::empty()).unwrap().delay_size_commit.is_none());
-        let parse = |value: &str| parse_options([
-            "--delay-size-commit".to_string(), value.to_string(),
-        ].into_iter());
-        assert_eq!(parse("1280x736:3000").unwrap().delay_size_commit,
-            Some((1280, 736, Duration::from_secs(3))));
-        for value in ["0x736:3000", "1280x-1:3000", "1280x736:0",
-            "1280x736:60001", "1280x736", "1280:3000", "x736:10", "1280x736:bad"] {
+        assert!(
+            parse_options(std::iter::empty())
+                .unwrap()
+                .delay_size_commit
+                .is_none()
+        );
+        let parse = |value: &str| {
+            parse_options(["--delay-size-commit".to_string(), value.to_string()].into_iter())
+        };
+        assert_eq!(
+            parse("1280x736:3000").unwrap().delay_size_commit,
+            Some((1280, 736, Duration::from_secs(3)))
+        );
+        for value in [
+            "0x736:3000",
+            "1280x-1:3000",
+            "1280x736:0",
+            "1280x736:60001",
+            "1280x736",
+            "1280:3000",
+            "x736:10",
+            "1280x736:bad",
+        ] {
             assert!(parse(value).is_err(), "{value}");
         }
     }
