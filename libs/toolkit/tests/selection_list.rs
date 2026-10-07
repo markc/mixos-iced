@@ -44,8 +44,8 @@ impl renderer::Renderer for Recorder {
 
 impl text::Renderer for Recorder {
     type Font = Font;
-    type Paragraph = toolkit::iced_graphics::text::Paragraph;
-    type Editor = toolkit::iced_graphics::text::Editor;
+    type Paragraph = iced_graphics::text::Paragraph;
+    type Editor = iced_graphics::text::Editor;
     const ICON_FONT: Font = Font::DEFAULT;
     const CHECKMARK_ICON: char = 'x';
     const ARROW_DOWN_ICON: char = 'v';
