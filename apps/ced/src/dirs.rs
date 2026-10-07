@@ -1,93 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Per-app directories, ctk's `AppDirs` convention (ced E1 plan D17) —
-//! copied from `src/desktop/ctk/src/app_dirs.rs` (the source of truth; keep in
-//! step) so ced needs no ctk/Bevy dependency.
-//!
-//! Root resolution, first match wins, absolute values only:
-//!   1. `$MIXOS_APP_HOME`
-//!   2. `$MIXOS_APPS_HOME/<component>`
-//!   3. `$XDG_STATE_HOME/mixos/apps/<component>`
-//!   4. `$HOME/.local/state/mixos/apps/<component>`
-//!
-//! ced's layout: `config/{ced.conf.mix, theme.conf.mix, macros/}`,
-//! `state/session.json`, `cache/`.
+//! App-owned filenames over config's shared per-application directories.
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 
-use std::path::{Component, Path, PathBuf};
-
-/// ced's component slug (`desktop/APPS.md`).
 pub const COMPONENT: &str = "ced";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppDirs {
-    root: PathBuf,
-}
+pub struct AppDirs(config::AppDirs);
 
-fn is_valid_component(component: &str) -> bool {
-    if component.is_empty()
-        || component == "."
-        || component == ".."
-        || component.contains(['/', '\\'])
-    {
-        return false;
-    }
-    let mut comps = Path::new(component).components();
-    matches!(
-        (comps.next(), comps.next()),
-        (Some(Component::Normal(_)), None)
-    )
+impl std::ops::Deref for AppDirs {
+    type Target = config::AppDirs;
+    fn deref(&self) -> &Self::Target { &self.0 }
 }
 
 impl AppDirs {
-    /// Resolve from the process environment.
     pub fn resolve(component: &str) -> Option<Self> {
-        Self::resolve_with(component, |k| std::env::var_os(k).map(PathBuf::from))
+        config::AppDirs::resolve(component).map(Self)
     }
-
-    /// Resolve with an injected environment (tests).
     pub fn resolve_with(component: &str, get: impl Fn(&str) -> Option<PathBuf>) -> Option<Self> {
-        if !is_valid_component(component) {
-            return None;
-        }
-        let absolute = |p: PathBuf| p.is_absolute().then_some(p);
-        let root = get("MIXOS_APP_HOME")
-            .and_then(absolute)
-            .or_else(|| {
-                get("MIXOS_APPS_HOME")
-                    .and_then(absolute)
-                    .map(|b| b.join(component))
-            })
-            .or_else(|| {
-                get("MIXOS_VAR")
-                    .and_then(absolute)
-                    .or_else(|| get("MIXOS").and_then(absolute).map(|root| root.join("var")))
-                    .map(|var| var.join("apps").join(component))
-            })
-            .or_else(|| {
-                get("XDG_STATE_HOME")
-                    .and_then(absolute)
-                    .map(|b| b.join("mixos/apps").join(component))
-            })
-            .or_else(|| {
-                get("HOME")
-                    .and_then(absolute)
-                    .map(|h| h.join(".local/state/mixos/apps").join(component))
-            })?;
-        Some(Self { root })
+        config::AppDirs::resolve_with(component, get).map(Self)
     }
-
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-    pub fn config(&self) -> PathBuf {
-        self.root.join("config")
-    }
-    pub fn state(&self) -> PathBuf {
-        self.root.join("state")
-    }
-    pub fn cache(&self) -> PathBuf {
-        self.root.join("cache")
-    }
-
     pub fn config_file(&self) -> PathBuf {
         self.config().join("ced.conf.mix")
     }

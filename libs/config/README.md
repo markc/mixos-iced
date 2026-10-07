@@ -17,6 +17,16 @@ Where MixOS keeps its files, and how a `*.conf.mix` file is read.
 
 No dependency on the Mix language. Test with `cargo test -p config`.
 
+`AppDirs` shares the existing Ced/Dopus per-application root, config, state
+and cache rules. First absolute root wins: `MIXOS_APP_HOME`, then
+`MIXOS_APPS_HOME/<component>`, `MIXOS_VAR/apps/<component>` (or
+`MIXOS/var/apps/<component>`), `XDG_STATE_HOME/mixos/apps/<component>`,
+then `HOME/.local/state/mixos/apps/<component>`. An invalid component or
+absent absolute root returns `None`. Resolution performs no I/O. App-owned
+filenames stay in their owners; this promotion preserves existing paths and
+lets other native settings consumers use the same isolated cache policy.
+`resolve_with` injects inputs for tests without mutating process environment.
+
 `atomic::open_directory` refuses symlinks in every component.
 `atomic::create_directory` uses the same held-descriptor walk and provisions
 missing components with mode 0700. It validates the entire absolute path before
