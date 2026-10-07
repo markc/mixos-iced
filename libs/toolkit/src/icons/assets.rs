@@ -19,7 +19,8 @@ use iced_core::{
 };
 use std::{
     collections::BTreeMap,
-    fmt, io::Cursor,
+    fmt,
+    io::Cursor,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -115,10 +116,9 @@ impl fmt::Display for IconDecodeError {
                 f,
                 "encoded icon is {bytes} bytes; the limit is {MAX_ENCODED_BYTES}"
             ),
-            Self::SideOutOfRange { side } => write!(
-                f,
-                "physical side {side} is outside 1..={MAX_PHYSICAL_SIDE}"
-            ),
+            Self::SideOutOfRange { side } => {
+                write!(f, "physical side {side} is outside 1..={MAX_PHYSICAL_SIDE}")
+            }
             Self::SvgParse => write!(f, "SVG does not parse"),
             Self::SvgImageDependency => {
                 write!(f, "SVG references an external or data image href")
@@ -237,13 +237,12 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
     // Scan with the same XML parser family usvg uses. A usvg build without
     // its `text` feature silently drops text elements before the tree exists,
     // so the tree cannot witness them: refuse them at the document level.
-    let document = roxmltree::Document::parse(std::str::from_utf8(bytes).map_err(|_| {
-        IconDecodeError::SvgParse
-    })?)
+    let document = roxmltree::Document::parse(
+        std::str::from_utf8(bytes).map_err(|_| IconDecodeError::SvgParse)?,
+    )
     .map_err(|_| IconDecodeError::SvgParse)?;
     if document.descendants().any(|node| {
-        node.is_element()
-            && matches!(node.tag_name().name(), "text" | "tspan" | "textPath")
+        node.is_element() && matches!(node.tag_name().name(), "text" | "tspan" | "textPath")
     }) {
         return Err(IconDecodeError::SvgTextDependency);
     }
@@ -267,8 +266,8 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
         },
         ..Default::default()
     };
-    let tree = resvg::usvg::Tree::from_data(bytes, &options)
-        .map_err(|_| IconDecodeError::SvgParse)?;
+    let tree =
+        resvg::usvg::Tree::from_data(bytes, &options).map_err(|_| IconDecodeError::SvgParse)?;
     if referenced.load(Ordering::Relaxed) {
         return Err(IconDecodeError::SvgImageDependency);
     }
@@ -291,9 +290,8 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
             pixel[channel] = if pixel[3] == 0 {
                 0
             } else {
-                ((u32::from(pixel[channel]) * 255 + u32::from(pixel[3]) / 2)
-                    / u32::from(pixel[3]))
-                .min(255) as u8
+                ((u32::from(pixel[channel]) * 255 + u32::from(pixel[3]) / 2) / u32::from(pixel[3]))
+                    .min(255) as u8
             };
         }
     }
@@ -319,8 +317,8 @@ fn decode_raster(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
     let orientation = decoder
         .orientation()
         .map_err(|_| IconDecodeError::RasterDecode)?;
-    let mut bitmap = image::DynamicImage::from_decoder(decoder)
-        .map_err(|_| IconDecodeError::RasterDecode)?;
+    let mut bitmap =
+        image::DynamicImage::from_decoder(decoder).map_err(|_| IconDecodeError::RasterDecode)?;
     bitmap.apply_orientation(orientation);
     let bitmap = bitmap.into_rgba8();
     Ok((bitmap.width(), bitmap.height(), bitmap.into_raw()))
@@ -667,12 +665,7 @@ mod tests {
     #[test]
     fn explicitly_prepared_glyphs_resolve_without_the_installed_table() {
         let icon = Icon::with_glyph("fixture-glyph", 'A', Font::DEFAULT);
-        match Assets::new().resolve(
-            icon.clone(),
-            16.0,
-            1.0,
-            crate::Tokens::dark().palette.text,
-        ) {
+        match Assets::new().resolve(icon.clone(), 16.0, 1.0, crate::Tokens::dark().palette.text) {
             Ready::Text(ready) => assert_eq!(ready.glyph(), Some(('A', Font::DEFAULT))),
             Ready::Image { .. } => panic!("a prepared glyph resolves to text"),
         }
@@ -689,7 +682,11 @@ mod tests {
         assert_eq!(tinted.dimensions(), (48, 48));
         assert_eq!(tinted.byte_charge(), 48 * 48 * 4);
         assert!(plain.pixels().chunks_exact(4).any(|pixel| pixel[3] != 0));
-        for (before, after) in plain.pixels().chunks_exact(4).zip(tinted.pixels().chunks_exact(4)) {
+        for (before, after) in plain
+            .pixels()
+            .chunks_exact(4)
+            .zip(tinted.pixels().chunks_exact(4))
+        {
             assert_eq!(&after[..3], &tint[..3]);
             assert_eq!(
                 after[3],
@@ -740,7 +737,12 @@ mod tests {
         // Text hidden inside a clip path is a text dependency all the same.
         let clipped = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs><clipPath id="c"><text>label</text></clipPath></defs><rect width="10" height="10" fill="red" clip-path="url(#c)"/></svg>"#;
         assert_eq!(
-            decode_owned(clipped.as_bytes().to_vec().into(), ImageFormat::Svg, 10, None),
+            decode_owned(
+                clipped.as_bytes().to_vec().into(),
+                ImageFormat::Svg,
+                10,
+                None
+            ),
             Err(IconDecodeError::SvgTextDependency)
         );
         assert_eq!(
@@ -766,7 +768,10 @@ mod tests {
         let first = decode_owned(Arc::clone(&bytes), ImageFormat::Raster, 48, None).unwrap();
         let (width, height) = first.dimensions();
         assert!(width > 0 && height > 0);
-        assert_eq!(first.byte_charge(), u64::from(width) * u64::from(height) * 4);
+        assert_eq!(
+            first.byte_charge(),
+            u64::from(width) * u64::from(height) * 4
+        );
         assert!(first.pixels().chunks_exact(4).any(|pixel| pixel[3] != 0));
         // The physical side is not a raster resize: the intrinsic dimensions
         // and pixels do not change with the requested side.

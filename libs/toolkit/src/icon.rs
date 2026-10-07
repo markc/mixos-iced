@@ -148,7 +148,9 @@ mod tests {
         assert_eq!(prepared.glyph(), Some(('A', font)));
         // The same name through the legacy constructor still consults only
         // the installed table, which this harness has none of.
-        assert!(Icon::new("fixture-glyph").glyph().is_none() || crate::fonts::installed().is_some());
+        assert!(
+            Icon::new("fixture-glyph").glyph().is_none() || crate::fonts::installed().is_some()
+        );
         // The pair survives the size/colour builders and clones.
         let styled = prepared.clone().size(20).color(Color::TRANSPARENT);
         assert_eq!(styled.glyph(), Some(('A', font)));
