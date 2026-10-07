@@ -836,8 +836,7 @@ impl App {
                         self.status = format!("{}: cleanup failed: {error}", label("error"));
                         if self.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS {
                             self.failed_cleanup = None;
-                            self.status =
-                                format!("{}: cleanup abandoned: {error}", label("error"));
+                            self.status = format!("{}: cleanup abandoned: {error}", label("error"));
                         }
                     }
                 }
@@ -1872,7 +1871,7 @@ mod tests {
         // A failed forward leaves the refusal visible and never quits.
         let mut app = test_app();
         let _ = app.update(Message::Bus(Delivery::Forwarded(Err(
-            "the running instance refused the handoff".into()
+            "the running instance refused the handoff".into(),
         ))));
         assert_eq!(app.status, "the running instance refused the handoff");
         assert!(app.pending.is_none());
@@ -2058,7 +2057,10 @@ mod tests {
         app.cancel = Some(cancel);
         let _ = app.update(Message::Quit);
         assert!(*rx.borrow());
-        let _ = app.update(Message::Captured(0, Err(capture::CaptureError::cancelled(None))));
+        let _ = app.update(Message::Captured(
+            0,
+            Err(capture::CaptureError::cancelled(None)),
+        ));
         assert!(app.confirm);
         assert!(matches!(app.pending, Some(Pending::Quit)));
         assert!(app.document.as_ref().unwrap().dirty());
@@ -2132,7 +2134,9 @@ mod tests {
                 generation: 2,
             }),
         });
-        let _ = app.update(Message::CleanupRetried(Ok(capture::CleanupOutcome::StaleInstance)));
+        let _ = app.update(Message::CleanupRetried(Ok(
+            capture::CleanupOutcome::StaleInstance,
+        )));
         assert!(app.failed_cleanup.is_none());
         assert_eq!(app.status, label("ready"));
     }

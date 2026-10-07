@@ -57,9 +57,7 @@ impl FakeClient {
 }
 
 impl WorkerClient for FakeClient {
-    fn incoming(
-        &self,
-    ) -> Option<tokio_mpsc::UnboundedReceiver<bus::IncomingCommand>> {
+    fn incoming(&self) -> Option<tokio_mpsc::UnboundedReceiver<bus::IncomingCommand>> {
         self.incoming
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -146,7 +144,8 @@ fn test_ingress() -> (PortIngress, CommandSource, Arc<AtomicUsize>) {
 
 fn test_observation_args() -> (Arc<AtomicU64>, ObservationOutbox, Arc<AtomicU64>) {
     let lost = Arc::new(AtomicU64::new(0));
-    let (_producer, receiver) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (_producer, receiver) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     (Arc::new(AtomicU64::new(0)), receiver, lost)
 }
 
@@ -365,8 +364,7 @@ fn measured_wire_overflow_becomes_too_large() {
     };
     assert!(reply_wire_bytes("comp-nested", &reply) > MAX_REPLY_WIRE_BYTES);
 
-    let checked =
-        enforce_reply_wire_limit("comp-nested", reply).expect("too_large response fits");
+    let checked = enforce_reply_wire_limit("comp-nested", reply).expect("too_large response fits");
     assert_eq!(checked.rc, 10);
     assert_eq!(
         serde_json::from_str::<Value>(&checked.body).expect("too_large JSON"),
@@ -618,7 +616,11 @@ async fn region_cancel_admits_while_the_long_pool_is_saturated() {
         panic!("cancel is a short command, never a long admission");
     };
     assert_eq!(request.selection.generation, 7);
-    assert_eq!(long_permits.available_permits(), 0, "no long permit was spent");
+    assert_eq!(
+        long_permits.available_permits(),
+        0,
+        "no long permit was spent"
+    );
     request
         .reply
         .take()
@@ -701,10 +703,19 @@ async fn registry_diffs_reach_the_compositor_as_the_live_set() {
     // stamped as `broker_service`, origin local. A delivery stamped as some
     // other publisher is not the registry.
     for (index, (publisher, body)) in [
-        ("noded", json!({"path":"services.registered","old":["quoin"],"new":["noded","comp-nested"]})),
+        (
+            "noded",
+            json!({"path":"services.registered","old":["quoin"],"new":["noded","comp-nested"]}),
+        ),
         ("noded", json!({"path":"mesh.peers","old":[],"new":["x"]})),
-        ("noded", json!({"path":"services.registered","old":[],"new":["noded", 7]})),
-        ("shell", json!({"path":"services.registered","old":[],"new":["shell"]})),
+        (
+            "noded",
+            json!({"path":"services.registered","old":[],"new":["noded", 7]}),
+        ),
+        (
+            "shell",
+            json!({"path":"services.registered","old":[],"new":["shell"]}),
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -714,9 +725,15 @@ async fn registry_diffs_reach_the_compositor_as_the_live_set() {
         delivery.id = None;
         delivery.body = body.to_string();
         delivery.args = body;
-        delivery.headers.insert("topic".into(), REGISTRY_TOPIC.into());
-        delivery.headers.insert("broker_service".into(), publisher.into());
-        delivery.headers.insert("broker_origin".into(), "local".into());
+        delivery
+            .headers
+            .insert("topic".into(), REGISTRY_TOPIC.into());
+        delivery
+            .headers
+            .insert("broker_service".into(), publisher.into());
+        delivery
+            .headers
+            .insert("broker_origin".into(), "local".into());
         dispatch_incoming(
             &ingress,
             &mut responders,
@@ -731,9 +748,15 @@ async fn registry_diffs_reach_the_compositor_as_the_live_set() {
     let Ok(PortCommand::ServicesLive(live)) = source.try_recv() else {
         panic!("the registry diff reaches the compositor");
     };
-    assert_eq!(live, std::collections::BTreeSet::from(["noded".to_owned(), "comp-nested".to_owned()]));
+    assert_eq!(
+        live,
+        std::collections::BTreeSet::from(["noded".to_owned(), "comp-nested".to_owned()])
+    );
     assert!(source.try_recv().is_err(), "nothing else is admitted");
-    assert!(replies.try_recv().is_err(), "a topic delivery is never answered");
+    assert!(
+        replies.try_recv().is_err(),
+        "a topic delivery is never answered"
+    );
 }
 
 #[tokio::test]
@@ -790,12 +813,17 @@ async fn panel_verbs_dispatch_by_literal_command_under_a_non_default_service() {
     };
     assert_eq!(request.op.surface, "quoin.panel.1");
     assert_eq!(request.op.acquire, Some(true));
-    assert!(source.try_recv().is_err(), "refused requests are never admitted");
+    assert!(
+        source.try_recv().is_err(),
+        "refused requests are never admitted"
+    );
     request
         .reply
         .take()
         .unwrap()
-        .send(ControlReply::Body(json!({"accepted":true,"surface":"quoin.panel.1"})))
+        .send(ControlReply::Body(
+            json!({"accepted":true,"surface":"quoin.panel.1"}),
+        ))
         .unwrap();
     responders.join_next().await.unwrap().unwrap();
     let reply = replies.try_recv().unwrap();
@@ -966,10 +994,13 @@ async fn input_verbs_cross_ingress_in_order_and_long_verbs_release_their_slot() 
         panic!("text admitted");
     };
     assert!(first.order < second.order && second.order < third.order);
-    assert_eq!(third.op, InputOp::OnSeat {
-        seat: SeatKind::Agent,
-        op: Box::new(InputOp::Text("ok".into())),
-    });
+    assert_eq!(
+        third.op,
+        InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            op: Box::new(InputOp::Text("ok".into())),
+        }
+    );
     assert!(matches!(source.try_recv(), Err(mpsc::TryRecvError::Empty)));
     assert_eq!(depth.load(Ordering::Acquire), 3);
     // Taking the long request off the queue frees its slot while the
@@ -1150,8 +1181,12 @@ async fn exact_noded_topic_lifecycle_notices_cross_as_watch_state_only() {
         let mut command = command(verb, 1);
         if stamped {
             command.from = String::new();
-            command.headers.insert("broker_service".into(), "noded".into());
-            command.headers.insert("broker_origin".into(), "local".into());
+            command
+                .headers
+                .insert("broker_service".into(), "noded".into());
+            command
+                .headers
+                .insert("broker_origin".into(), "local".into());
         } else {
             command.from = "noded".into();
         }
@@ -1178,8 +1213,12 @@ async fn exact_noded_topic_lifecycle_notices_cross_as_watch_state_only() {
     // Another service's `topic.idle` (stamped as itself) is not the broker's.
     let mut forged = command("topic.idle", 2);
     forged.from = "shell".into();
-    forged.headers.insert("broker_service".into(), "shell".into());
-    forged.headers.insert("broker_origin".into(), "local".into());
+    forged
+        .headers
+        .insert("broker_service".into(), "shell".into());
+    forged
+        .headers
+        .insert("broker_origin".into(), "local".into());
     forged
         .headers
         .insert("name".into(), "comp-nested.props.changed".into());
@@ -1371,8 +1410,7 @@ async fn publisher_gaps_each_topic_no_later_than_its_next_record_or_idle_flush()
     let published = publications
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let first_survivor =
-        bus::parse(&published[0].1).expect("first survivor parses");
+    let first_survivor = bus::parse(&published[0].1).expect("first survivor parses");
     assert_eq!(
         published[0].0.get("name").map(String::as_str),
         Some("comp-nested.focus.changed")
@@ -1391,8 +1429,7 @@ async fn publisher_gaps_each_topic_no_later_than_its_next_record_or_idle_flush()
         json!({"gap": true, "lost_count": 2, "cause": "outbox.overflow"})
     );
 
-    let second_survivor =
-        bus::parse(&published[2].1).expect("second survivor parses");
+    let second_survivor = bus::parse(&published[2].1).expect("second survivor parses");
     assert_eq!(second_survivor.get("event_seq"), Some("4"));
 
     let props_gap = bus::parse(&published[3].1).expect("props gap parses");
@@ -1655,7 +1692,8 @@ async fn failed_gap_after_event_sequence_exhaustion_retries_on_backoff_without_d
 #[should_panic(expected = "observation producer disconnected before port shutdown")]
 async fn observation_lane_disconnect_without_shutdown_violates_lifecycle() {
     let lost = Arc::new(AtomicU64::new(0));
-    let (producer, receiver) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (producer, receiver) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     let notifier = producer.notifier();
     drop(producer);
     let (client, _commands, _states) = FakeClient::new(ConnState::Connected, false);
@@ -1765,11 +1803,9 @@ async fn successful_gap_topics_are_not_republished_after_a_later_gap_fails() {
         "the successful props gap is acknowledged before the focus gap fails"
     );
     assert_eq!(lost.load(Ordering::Acquire), 2);
-    let first_survivor =
-        bus::parse(&published[0].1).expect("first survivor parses");
+    let first_survivor = bus::parse(&published[0].1).expect("first survivor parses");
     assert_eq!(first_survivor.get("event_seq"), Some("3"));
-    let second_survivor =
-        bus::parse(&published[1].1).expect("second survivor parses");
+    let second_survivor = bus::parse(&published[1].1).expect("second survivor parses");
     assert_eq!(second_survivor.get("event_seq"), Some("4"));
     let props_gap = bus::parse(&published[2].1).expect("props gap parses");
     assert_eq!(props_gap.get("event_seq"), Some("2"));
@@ -1787,7 +1823,8 @@ async fn successful_gap_topics_are_not_republished_after_a_later_gap_fails() {
 #[tokio::test(start_paused = true)]
 async fn idle_publisher_has_no_retry_timer_when_nothing_is_pending() {
     let lost = Arc::new(AtomicU64::new(0));
-    let (mut producer, receiver) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (mut producer, receiver) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     let notifier = producer.notifier();
     let (client, _commands, _states) = FakeClient::new(ConnState::Connected, false);
     let publish_attempts = Arc::clone(&client.publish_attempts);
@@ -1851,7 +1888,8 @@ async fn idle_publisher_has_no_retry_timer_when_nothing_is_pending() {
 #[tokio::test]
 async fn rejected_publication_gaps_every_topic_in_the_discarded_backlog() {
     let lost = Arc::new(AtomicU64::new(0));
-    let (mut producer, receiver) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (mut producer, receiver) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     let notifier = producer.notifier();
     producer.offer(ObservationRecord::PropsChanged {
         path: "input.corners.enabled".into(),
@@ -2028,8 +2066,7 @@ async fn overflow_after_failed_backlog_drain_still_gaps_its_topics() {
     );
     let first_survivor = bus::parse(&published[1].1).expect("survivor parses");
     assert_eq!(first_survivor.get("event_seq"), Some("4"));
-    let second_survivor =
-        bus::parse(&published[2].1).expect("second survivor parses");
+    let second_survivor = bus::parse(&published[2].1).expect("second survivor parses");
     assert_eq!(second_survivor.get("event_seq"), Some("5"));
     let props_gap = bus::parse(&published[3].1).expect("props gap parses");
     assert_eq!(props_gap.get("command"), Some("props.changed"));
@@ -2044,7 +2081,8 @@ async fn overflow_after_failed_backlog_drain_still_gaps_its_topics() {
 #[tokio::test]
 async fn rejected_gap_discards_its_survivor_and_recovers_as_publisher_loss() {
     let lost = Arc::new(AtomicU64::new(0));
-    let (mut producer, receiver) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (mut producer, receiver) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     let notifier = producer.notifier();
     for sequence in 1..=3 {
         producer.offer(ObservationRecord::FocusChanged {
@@ -2112,7 +2150,8 @@ async fn rejected_gap_discards_its_survivor_and_recovers_as_publisher_loss() {
 #[tokio::test(start_paused = true)]
 async fn stalled_publication_times_out_without_blocking_shutdown() {
     let lost = Arc::new(AtomicU64::new(0));
-    let (mut producer, receiver) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (mut producer, receiver) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     let notifier = producer.notifier();
     producer.offer(ObservationRecord::FocusChanged {
         keyboard: None,
@@ -2152,7 +2191,8 @@ async fn stalled_publisher_does_not_block_commands_and_worker_shutdown_is_bounde
     let reply_timeouts = Arc::new(AtomicU64::new(0));
     let publish_timeouts = Arc::new(AtomicU64::new(0));
     let lost = Arc::new(AtomicU64::new(0));
-    let (mut producer, observations) = crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
+    let (mut producer, observations) =
+        crate::outbox::outbox(Arc::clone(&lost), Arc::new(AtomicU64::new(0)));
     let notifier = producer.notifier();
     producer.offer(ObservationRecord::FocusChanged {
         keyboard: Some(1),
@@ -2405,7 +2445,9 @@ async fn compd_truth_is_admitted_as_a_control_and_near_misses_stay_unknown() {
     let Ok(PortCommand::Truth(request)) = source.try_recv() else {
         panic!("compd.truth was not admitted as a truth control");
     };
-    let _ = request.reply.send(ControlReply::Body(json!({"revision": 3})));
+    let _ = request
+        .reply
+        .send(ControlReply::Body(json!({"revision": 3})));
     let reply = replies.recv().await.expect("truth reply queued");
     assert_eq!(reply.rc, 0);
     assert_eq!(reply.body.as_ref(), "{\"revision\":3}");

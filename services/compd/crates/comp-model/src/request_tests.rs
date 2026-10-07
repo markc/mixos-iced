@@ -21,8 +21,7 @@ fn region_arguments_are_strict_and_leave_reply_margin() {
     let op = parse_region_select(&json!({"output":"Output-1","timeout_ms":55_000})).unwrap();
     assert_eq!(op.budget(), Duration::from_secs(59));
     assert!(op.budget() < LONG_VERB_MAX);
-    let reply_budget =
-        Duration::from_secs(55) + REGION_CLEANUP_BUDGET;
+    let reply_budget = Duration::from_secs(55) + REGION_CLEANUP_BUDGET;
     assert_eq!(reply_budget, Duration::from_secs(58));
     assert_eq!(op.budget(), reply_budget + Duration::from_secs(1));
     assert_eq!(
@@ -42,15 +41,24 @@ fn region_selection_identity_is_strict_positive_and_echoed() {
         "generation": 7,
     });
     let op = parse_region_select(&json!({"selection": identity.clone()})).unwrap();
-    let LongOp::RegionSelect { selection: Some(selection), .. } = op else {
+    let LongOp::RegionSelect {
+        selection: Some(selection),
+        ..
+    } = op
+    else {
         panic!("the identity parses");
     };
     assert_eq!(selection.instance, "ab12");
     assert_eq!(selection.generation, 7);
-    assert_eq!(selection.wire_value(), identity, "the reply echoes the wire object");
+    assert_eq!(
+        selection.wire_value(),
+        identity,
+        "the reply echoes the wire object"
+    );
     // A null selection reads as absent: the legacy identity-less select.
-    let LongOp::RegionSelect { selection: None, .. } =
-        parse_region_select(&json!({"selection": null})).unwrap()
+    let LongOp::RegionSelect {
+        selection: None, ..
+    } = parse_region_select(&json!({"selection": null})).unwrap()
     else {
         panic!("null reads as legacy");
     };
@@ -108,7 +116,11 @@ fn region_selection_identity_is_strict_positive_and_echoed() {
     let max = json!({
         "selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": u64::MAX},
     });
-    let Ok(LongOp::RegionSelect { selection: Some(max), .. }) = parse_region_select(&max) else {
+    let Ok(LongOp::RegionSelect {
+        selection: Some(max),
+        ..
+    }) = parse_region_select(&max)
+    else {
         panic!("u64::MAX parses");
     };
     assert_eq!(max.generation, u64::MAX);
@@ -137,7 +149,12 @@ fn region_cancel_is_a_discoverable_strict_short_verb() {
     );
     let body = refused_body(classify("comp.region.cancel", &Value::Null, true).unwrap_err());
     assert_eq!(body["range"], "{selection}");
-    for args in [Value::Null, json!({}), json!({"selection": null}), json!({"selection": 3})] {
+    for args in [
+        Value::Null,
+        json!({}),
+        json!({"selection": null}),
+        json!({"selection": 3}),
+    ] {
         assert!(parse_region_cancel(&args).is_err(), "{args}");
     }
 }
@@ -151,21 +168,47 @@ fn state_verbs_are_registered_fenced_and_strict() {
         ("comp.window.unfullscreen", WindowState::Fullscreen, false),
     ] {
         assert_eq!(window_verb(verb), Some(verb));
-        assert_eq!(parse_window_verb(verb, &json!({"id":7,"generation":3})),
-            Ok(WindowVerb::Op(WindowOp::State { id:7, generation:3, state, enabled, output:None })));
-        for args in [json!({}), json!({"id":7}), json!({"id":7,"generation":null}),
-            json!({"id":7,"generation":3,"typo":true})] {
+        assert_eq!(
+            parse_window_verb(verb, &json!({"id":7,"generation":3})),
+            Ok(WindowVerb::Op(WindowOp::State {
+                id: 7,
+                generation: 3,
+                state,
+                enabled,
+                output: None
+            }))
+        );
+        for args in [
+            json!({}),
+            json!({"id":7}),
+            json!({"id":7,"generation":null}),
+            json!({"id":7,"generation":3,"typo":true}),
+        ] {
             assert!(parse_window_verb(verb, &args).is_err(), "{verb}: {args}");
         }
         let output = json!({"id":7,"generation":3,"output":"Output-1"});
-        assert_eq!(parse_window_verb(verb, &output).is_ok(), verb == "comp.window.fullscreen");
+        assert_eq!(
+            parse_window_verb(verb, &output).is_ok(),
+            verb == "comp.window.fullscreen"
+        );
     }
-    assert!(parse_window_verb("comp.window.fullscreen", &json!({"id":7,"generation":3,"output":""})).is_err());
+    assert!(
+        parse_window_verb(
+            "comp.window.fullscreen",
+            &json!({"id":7,"generation":3,"output":""})
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn state_waits_parse_and_name_the_committed_condition() {
-    for until in [WaitUntil::Maximized, WaitUntil::Unmaximized, WaitUntil::Fullscreen, WaitUntil::Unfullscreen] {
+    for until in [
+        WaitUntil::Maximized,
+        WaitUntil::Unmaximized,
+        WaitUntil::Fullscreen,
+        WaitUntil::Unfullscreen,
+    ] {
         assert!(matches!(parse_window_verb("comp.window.wait", &json!({
             "match":{"id":7,"generation":3}, "until":until.name(),
         })), Ok(WindowVerb::Long(LongOp::Wait(spec))) if spec.until == until));
@@ -181,13 +224,27 @@ fn targeted_input_is_strict_and_sequences_share_the_parser() {
     ] {
         args["seat"] = json!("human");
         args["window"] = json!({"id":7,"generation":3});
-        assert!(matches!(parse_input_op(verb, &args), Ok(InputOp::Targeted {
-            id:7, generation:3, raise:true, ..
-        })));
+        assert!(matches!(
+            parse_input_op(verb, &args),
+            Ok(InputOp::Targeted {
+                id: 7,
+                generation: 3,
+                raise: true,
+                ..
+            })
+        ));
         args["raise"] = json!(false);
-        assert!(matches!(parse_input_op(verb, &args), Ok(InputOp::Targeted { raise:false, .. })));
+        assert!(matches!(
+            parse_input_op(verb, &args),
+            Ok(InputOp::Targeted { raise: false, .. })
+        ));
         assert!(parse_sequence(&json!({"steps":[{"verb":verb,"args":args}]})).is_ok());
-        for window in [json!({"id":7}), json!({"generation":3}), json!({"id":7,"generation":3,"raise":true}), json!(7)] {
+        for window in [
+            json!({"id":7}),
+            json!({"generation":3}),
+            json!({"id":7,"generation":3,"raise":true}),
+            json!(7),
+        ] {
             args["window"] = window;
             assert!(parse_input_op(verb, &args).is_err(), "{verb}: {args}");
         }
@@ -198,27 +255,81 @@ fn targeted_input_is_strict_and_sequences_share_the_parser() {
 
 #[test]
 fn seat_defaults_raise_policy_and_release_all_are_explicit() {
-    let bare = parse_input_op("comp.input.key", &json!({"key":"a","raise":true})).unwrap_err().wire_json();
-    let human = parse_input_op("comp.input.key", &json!({"seat":"human","key":"a","raise":true})).unwrap_err().wire_json();
+    let bare = parse_input_op("comp.input.key", &json!({"key":"a","raise":true}))
+        .unwrap_err()
+        .wire_json();
+    let human = parse_input_op(
+        "comp.input.key",
+        &json!({"seat":"human","key":"a","raise":true}),
+    )
+    .unwrap_err()
+    .wire_json();
     assert_eq!(bare, human);
     assert_eq!(bare["range"], "requires window");
     let window = json!({"id":1,"generation":2});
-    assert!(matches!(parse_input_op("comp.input.key", &json!({"window":window,"key":"a","seat":"human"})).unwrap(), InputOp::Targeted { raise:true, .. }));
-    let InputOp::OnSeat { seat, op } = parse_input_op("comp.input.key", &json!({"window":window,"key":"a"})).unwrap() else { panic!("default agent wrapper") };
+    assert!(matches!(
+        parse_input_op(
+            "comp.input.key",
+            &json!({"window":window,"key":"a","seat":"human"})
+        )
+        .unwrap(),
+        InputOp::Targeted { raise: true, .. }
+    ));
+    let InputOp::OnSeat { seat, op } =
+        parse_input_op("comp.input.key", &json!({"window":window,"key":"a"})).unwrap()
+    else {
+        panic!("default agent wrapper")
+    };
     assert_eq!(seat, SeatKind::Agent);
-    assert!(matches!(*op, InputOp::Targeted { raise:false, .. }));
-    assert!(parse_input_op("comp.input.key", &json!({"window":window,"key":"a","raise":true})).is_err());
-    let InputOp::OnSeat { seat, op } = parse_input_op("comp.input.key", &json!({"window":window,"key":"a","seat":"agent"})).unwrap() else { panic!("agent wrapper") };
+    assert!(matches!(*op, InputOp::Targeted { raise: false, .. }));
+    assert!(
+        parse_input_op(
+            "comp.input.key",
+            &json!({"window":window,"key":"a","raise":true})
+        )
+        .is_err()
+    );
+    let InputOp::OnSeat { seat, op } = parse_input_op(
+        "comp.input.key",
+        &json!({"window":window,"key":"a","seat":"agent"}),
+    )
+    .unwrap() else {
+        panic!("agent wrapper")
+    };
     assert_eq!(seat, SeatKind::Agent);
-    assert!(matches!(*op, InputOp::Targeted { raise:false, .. }));
-    assert!(parse_input_op("comp.input.key", &json!({"window":window,"key":"a","seat":"agent","raise":true})).is_err());
+    assert!(matches!(*op, InputOp::Targeted { raise: false, .. }));
+    assert!(
+        parse_input_op(
+            "comp.input.key",
+            &json!({"window":window,"key":"a","seat":"agent","raise":true})
+        )
+        .is_err()
+    );
     for seat in [json!(null), json!(false), json!("other")] {
         assert!(parse_input_op("comp.input.key", &json!({"key":"a","seat":seat})).is_err());
     }
-    assert_eq!(parse_input_op("comp.input.release_all", &json!({})).unwrap(), InputOp::ReleaseAll);
-    assert_eq!(parse_input_op("comp.input.release_all", &json!({"seat":"human"})).unwrap(), InputOp::OnSeat { seat: SeatKind::Human, op: Box::new(InputOp::ReleaseAll) });
-    assert_eq!(parse_input_op("comp.input.release_all", &json!({"seat":"agent"})).unwrap(), InputOp::OnSeat { seat: SeatKind::Agent, op: Box::new(InputOp::ReleaseAll) });
-    assert_eq!(parse_input_op("comp.input.release_all", &Value::Null).unwrap(), InputOp::ReleaseAll);
+    assert_eq!(
+        parse_input_op("comp.input.release_all", &json!({})).unwrap(),
+        InputOp::ReleaseAll
+    );
+    assert_eq!(
+        parse_input_op("comp.input.release_all", &json!({"seat":"human"})).unwrap(),
+        InputOp::OnSeat {
+            seat: SeatKind::Human,
+            op: Box::new(InputOp::ReleaseAll)
+        }
+    );
+    assert_eq!(
+        parse_input_op("comp.input.release_all", &json!({"seat":"agent"})).unwrap(),
+        InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            op: Box::new(InputOp::ReleaseAll)
+        }
+    );
+    assert_eq!(
+        parse_input_op("comp.input.release_all", &Value::Null).unwrap(),
+        InputOp::ReleaseAll
+    );
 }
 
 #[test]
@@ -231,14 +342,32 @@ fn every_delivery_verb_defaults_to_agent_and_bare_sequence_cleanup_stays_both() 
         ("comp.input.pointer.button", Value::Null),
         ("comp.input.pointer.scroll", json!({"dy":15})),
     ] {
-        assert!(matches!(parse_input_op(verb, &args).unwrap(), InputOp::OnSeat { seat: SeatKind::Agent, .. }), "{verb}");
+        assert!(
+            matches!(
+                parse_input_op(verb, &args).unwrap(),
+                InputOp::OnSeat {
+                    seat: SeatKind::Agent,
+                    ..
+                }
+            ),
+            "{verb}"
+        );
     }
     let LongOp::Sequence(steps) = parse_sequence(&json!({"steps":[
         {"verb":"comp.input.key","args":{"text":"a"}},
         {"verb":"comp.input.key","args":{"text":"b","seat":"human"}},
         {"verb":"comp.input.release_all"}
-    ]})).unwrap() else { panic!("default sequence") };
-    assert!(matches!(steps[0].op, InputOp::OnSeat { seat: SeatKind::Agent, .. }));
+    ]}))
+    .unwrap() else {
+        panic!("default sequence")
+    };
+    assert!(matches!(
+        steps[0].op,
+        InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            ..
+        }
+    ));
     assert_eq!(steps[1].op, InputOp::Text("b".into()));
     assert_eq!(steps[2].op, InputOp::ReleaseAll);
 }
@@ -249,11 +378,26 @@ fn sequence_seat_is_inherited_and_each_step_can_override_it() {
         {"verb":"comp.input.key","args":{"text":"a"}},
         {"verb":"comp.input.key","args":{"text":"b","seat":"human"}},
         {"verb":"comp.input.release_all"}
-    ]})).unwrap() else { panic!("seated sequence") };
+    ]}))
+    .unwrap() else {
+        panic!("seated sequence")
+    };
     assert_eq!(seat, SeatKind::Agent);
-    assert!(matches!(steps[0].op, InputOp::OnSeat { seat:SeatKind::Agent, .. }));
+    assert!(matches!(
+        steps[0].op,
+        InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            ..
+        }
+    ));
     assert_eq!(steps[1].op, InputOp::Text("b".into()));
-    assert!(matches!(steps[2].op, InputOp::OnSeat { seat:SeatKind::Agent, .. }));
+    assert!(matches!(
+        steps[2].op,
+        InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            ..
+        }
+    ));
 }
 
 /// The verb-to-scope mapping is the only production path into the
@@ -853,7 +997,10 @@ fn refusal(reply: ControlReply) -> Value {
 #[test]
 fn input_verbs_parse_every_documented_form() {
     assert_eq!(
-        parse_input_op("comp.input.pointer.move", &json!({"seat": "human", "x": 40, "y": 30.5})),
+        parse_input_op(
+            "comp.input.pointer.move",
+            &json!({"seat": "human", "x": 40, "y": 30.5})
+        ),
         Ok(move_op(PointerMoveTarget::Output {
             output: None,
             x: 40.0,
@@ -872,7 +1019,10 @@ fn input_verbs_parse_every_documented_form() {
         }))
     );
     assert_eq!(
-        parse_input_op("comp.input.pointer.move", &json!({"seat": "human", "dx": -3})),
+        parse_input_op(
+            "comp.input.pointer.move",
+            &json!({"seat": "human", "dx": -3})
+        ),
         Ok(move_op(PointerMoveTarget::Relative { dx: -3.0, dy: 0.0 }))
     );
     assert_eq!(
@@ -918,7 +1068,10 @@ fn input_verbs_parse_every_documented_form() {
     // A wheel derives detents (15 units = 120); a finger has none and a
     // missing axis stays missing.
     assert_eq!(
-        parse_input_op("comp.input.pointer.scroll", &json!({"seat": "human", "dy": 15})),
+        parse_input_op(
+            "comp.input.pointer.scroll",
+            &json!({"seat": "human", "dy": 15})
+        ),
         Ok(InputOp::PointerScroll {
             dx: None,
             dy: Some(15.0),
@@ -965,7 +1118,10 @@ fn input_verbs_parse_every_documented_form() {
         })
     );
     assert_eq!(
-        parse_input_op("comp.input.key", &json!({"seat": "human", "key": 28, "action": "press"})),
+        parse_input_op(
+            "comp.input.key",
+            &json!({"seat": "human", "key": 28, "action": "press"})
+        ),
         Ok(InputOp::Key {
             key: KeySpec::Evdev(28),
             action: PressAction::Press,
@@ -1252,9 +1408,17 @@ fn classify_refuses_a_malformed_body_per_family_and_ping_ignores_it() {
     assert!(body_is_malformed("{"));
     assert!(!body_is_malformed(""));
     assert!(!body_is_malformed("{}"));
-    assert!(matches!(classify("comp.ping", &Value::Null, true), Ok(Request::Ping)));
+    assert!(matches!(
+        classify("comp.ping", &Value::Null, true),
+        Ok(Request::Ping)
+    ));
     assert_eq!(PING_BODY, r#"{"pong":true}"#);
-    for verb in ["comp.props.watch", "comp.pointer.watch", "comp.props.get", "comp.windows.list"] {
+    for verb in [
+        "comp.props.watch",
+        "comp.pointer.watch",
+        "comp.props.get",
+        "comp.windows.list",
+    ] {
         let body = refused_body(classify(verb, &Value::Null, true).unwrap_err());
         assert_eq!(body, json!({"error": "unknown_path"}), "{verb}");
     }
@@ -1281,11 +1445,23 @@ fn classify_refuses_a_malformed_body_per_family_and_ping_ignores_it() {
 #[test]
 fn classify_routes_every_family_and_keeps_verbs_literal() {
     assert!(matches!(
-        classify("comp.window.focus", &json!({"id": 7, "generation": 3}), false),
-        Ok(Request::Window(WindowOp::Focus { id: 7, generation: 3, raise: true }))
+        classify(
+            "comp.window.focus",
+            &json!({"id": 7, "generation": 3}),
+            false
+        ),
+        Ok(Request::Window(WindowOp::Focus {
+            id: 7,
+            generation: 3,
+            raise: true
+        }))
     ));
     assert!(matches!(
-        classify("comp.window.wait", &json!({"match": {"id": 7}, "until": "mapped"}), false),
+        classify(
+            "comp.window.wait",
+            &json!({"match": {"id": 7}, "until": "mapped"}),
+            false
+        ),
         Ok(Request::Long(LongOp::Wait(_)))
     ));
     assert!(matches!(
@@ -1293,12 +1469,19 @@ fn classify_routes_every_family_and_keeps_verbs_literal() {
         Ok(Request::Long(LongOp::RegionSelect { .. }))
     ));
     assert!(matches!(
-        classify("comp.input.sequence", &json!({"steps": [{"verb": "comp.input.release_all"}]}), false),
+        classify(
+            "comp.input.sequence",
+            &json!({"steps": [{"verb": "comp.input.release_all"}]}),
+            false
+        ),
         Ok(Request::Long(LongOp::Sequence(_)))
     ));
     assert!(matches!(
         classify("comp.input.key", &json!({"key": "a"}), false),
-        Ok(Request::Input(InputOp::OnSeat { seat: SeatKind::Agent, .. }))
+        Ok(Request::Input(InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            ..
+        }))
     ));
     let Ok(Request::Panel(panel)) = classify(
         "comp.panel.mode",
@@ -1308,27 +1491,47 @@ fn classify_routes_every_family_and_keeps_verbs_literal() {
         panic!("panel mode routes");
     };
     assert_eq!(panel.sender, "", "the transport stamps the sender");
-    let Ok(Request::Set { path, generation, .. }) = classify(
+    let Ok(Request::Set {
+        path, generation, ..
+    }) = classify(
         "comp.props.set",
         &json!({"path": "windows.s7.minimized", "value": true, "generation": 3}),
         false,
-    ) else {
+    )
+    else {
         panic!("a fenced set routes");
     };
-    assert_eq!((path.as_str(), generation), ("windows.s7.minimized", Some(3)));
+    assert_eq!(
+        (path.as_str(), generation),
+        ("windows.s7.minimized", Some(3))
+    );
     // The ingress gate runs before admission.
     let body = refused_body(
-        classify("comp.props.set", &json!({"path": "windows.s7.title", "value": "x"}), false)
-            .unwrap_err(),
+        classify(
+            "comp.props.set",
+            &json!({"path": "windows.s7.title", "value": "x"}),
+            false,
+        )
+        .unwrap_err(),
     );
     assert_eq!(body, json!({"error": "read_only"}));
-    let Ok(Request::Read { verb, scope }) =
-        classify("comp.props.get", &json!({"path": "windows.s3.visible"}), false)
-    else {
+    let Ok(Request::Read { verb, scope }) = classify(
+        "comp.props.get",
+        &json!({"path": "windows.s3.visible"}),
+        false,
+    ) else {
         panic!("reads route");
     };
-    assert_eq!((verb, scope.as_deref()), ("comp.props.get", Some("windows.s3.visible")));
-    for unknown in ["comp-nested.panel.hold", "comp.nope", "noded.props.get", "comp.input.sequence.x"] {
+    assert_eq!(
+        (verb, scope.as_deref()),
+        ("comp.props.get", Some("windows.s3.visible"))
+    );
+    for unknown in [
+        "comp-nested.panel.hold",
+        "comp.nope",
+        "noded.props.get",
+        "comp.input.sequence.x",
+    ] {
         assert_eq!(
             refused_body(classify(unknown, &Value::Null, false).unwrap_err()),
             json!({"error": "unknown_verb"}),
@@ -1341,7 +1544,10 @@ fn classify_routes_every_family_and_keeps_verbs_literal() {
 fn every_refusal_gains_error_code_and_success_is_untouched() {
     let (rc, body) = with_error_code(10, Arc::from(r#"{"error":"stale_target","id":7}"#));
     assert_eq!(rc, 10);
-    assert_eq!(body.as_ref(), r#"{"error":"stale_target","error_code":"stale_target","id":7}"#);
+    assert_eq!(
+        body.as_ref(),
+        r#"{"error":"stale_target","error_code":"stale_target","id":7}"#
+    );
     let ok: Arc<str> = Arc::from(r#"{"error":"not a refusal"}"#);
     assert!(Arc::ptr_eq(&with_error_code(0, Arc::clone(&ok)).1, &ok));
     let already: Arc<str> = Arc::from(r#"{"error":"a","error_code":"b"}"#);
@@ -1351,7 +1557,10 @@ fn every_refusal_gains_error_code_and_success_is_untouched() {
     assert_eq!(
         ControlReply::WindowTarget {
             id: 7,
-            error: WindowTargetError::StaleTarget { requested: 3, current: 4 },
+            error: WindowTargetError::StaleTarget {
+                requested: 3,
+                current: 4
+            },
         }
         .wire_json(),
         json!({"error": "stale_target", "error_code": "stale_target", "id": 7, "generation": 3, "current": 4})
@@ -1392,7 +1601,10 @@ fn wire_object_keys_stay_sorted() {
         allowed: &["id", "generation"],
     }
     .into_wire();
-    assert_eq!(body.as_ref(), r#"{"allowed":["id","generation"],"error":"invalid_args","field":"gen"}"#);
+    assert_eq!(
+        body.as_ref(),
+        r#"{"allowed":["id","generation"],"error":"invalid_args","field":"gen"}"#
+    );
 }
 
 /// The wire-limit rule alone (the byte measurement itself needs the Bus
@@ -1404,7 +1616,8 @@ fn an_oversized_reply_becomes_too_large_with_its_code() {
         crate::reply::enforce_wire_limit(crate::reply::MAX_REPLY_WIRE_BYTES, 0, Arc::clone(&body)),
         (0, body)
     );
-    let (rc, body) = crate::reply::enforce_wire_limit(crate::reply::MAX_REPLY_WIRE_BYTES + 1, 0, Arc::from("x"));
+    let (rc, body) =
+        crate::reply::enforce_wire_limit(crate::reply::MAX_REPLY_WIRE_BYTES + 1, 0, Arc::from("x"));
     assert_eq!(rc, 10);
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
@@ -1420,17 +1633,36 @@ fn an_oversized_reply_becomes_too_large_with_its_code() {
 
 #[test]
 fn agent_admissions_are_recognised_for_the_epoch_fence() {
-    assert!(parse_input_op("comp.input.key", &json!({"key": "a"})).unwrap().uses_agent());
-    assert!(!parse_input_op("comp.input.key", &json!({"key": "a", "seat": "human"})).unwrap().uses_agent());
-    assert!(!parse_input_op("comp.input.release_all", &Value::Null).unwrap().uses_agent());
-    assert!(parse_sequence(&json!({"steps": [{"verb": "comp.input.key", "args": {"text": "a"}}]}))
-        .unwrap()
-        .uses_agent());
-    assert!(!parse_sequence(&json!({"steps": [{"verb": "comp.input.release_all"}]}))
-        .unwrap()
-        .uses_agent());
+    assert!(
+        parse_input_op("comp.input.key", &json!({"key": "a"}))
+            .unwrap()
+            .uses_agent()
+    );
+    assert!(
+        !parse_input_op("comp.input.key", &json!({"key": "a", "seat": "human"}))
+            .unwrap()
+            .uses_agent()
+    );
+    assert!(
+        !parse_input_op("comp.input.release_all", &Value::Null)
+            .unwrap()
+            .uses_agent()
+    );
+    assert!(
+        parse_sequence(&json!({"steps": [{"verb": "comp.input.key", "args": {"text": "a"}}]}))
+            .unwrap()
+            .uses_agent()
+    );
+    assert!(
+        !parse_sequence(&json!({"steps": [{"verb": "comp.input.release_all"}]}))
+            .unwrap()
+            .uses_agent()
+    );
     assert_eq!(
         input_cleared_reply().into_wire(),
-        (10, Arc::from(r#"{"error":"input_cleared","released":true,"seat":"agent"}"#))
+        (
+            10,
+            Arc::from(r#"{"error":"input_cleared","released":true,"seat":"agent"}"#)
+        )
     );
 }

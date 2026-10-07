@@ -55,15 +55,22 @@ pub fn start(
     let busy = !lp.inner.comp.region.idle()
         || sequences_running
         || lp.inner.comp.interactive.is_some()
-        || pointer.as_ref().is_some_and(|pointer| pointer.is_grabbed() || !pointer.current_pressed().is_empty())
-        || keyboard.as_ref().is_some_and(|keyboard| keyboard.is_grabbed())
+        || pointer
+            .as_ref()
+            .is_some_and(|pointer| pointer.is_grabbed() || !pointer.current_pressed().is_empty())
+        || keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.is_grabbed())
         || seat.input_method().keyboard_grabbed();
     if busy {
         return Err(ControlReply::Busy);
     }
     let space = &lp.inner.space_state().state;
     let chosen = match output {
-        Some(name) => space.outputs().find(|candidate| candidate.name() == name).cloned(),
+        Some(name) => space
+            .outputs()
+            .find(|candidate| candidate.name() == name)
+            .cloned(),
         None => {
             let key = lp.inner.cursor_output.clone();
             space
@@ -77,13 +84,20 @@ pub fn start(
         return Err(ControlReply::refused("unknown_output", json!({})));
     };
     if Instant::now() >= admitted + timeout {
-        return Err(ControlReply::Body(json!({"version": 1, "status": "timeout"})));
+        return Err(ControlReply::Body(
+            json!({"version": 1, "status": "timeout"}),
+        ));
     }
     // An accepted select reserves its generation before the run begins: a
     // cancel that raced ahead (or a reordered mesh delivery) retired it, and
     // a new owner at the limit is refused before anything changes.
     if let Some(identity) = &selection {
-        match lp.inner.comp.region.reserve(&identity.owner, identity.generation) {
+        match lp
+            .inner
+            .comp
+            .region
+            .reserve(&identity.owner, identity.generation)
+        {
             Reserve::Accepted => {}
             Reserve::Retired => {
                 return Err(ControlReply::refused(
@@ -101,7 +115,10 @@ pub fn start(
     }
     let scale = chosen.current_scale().fractional_scale();
     let (width, height) = chosen.current_mode().map_or((0.0, 0.0), |mode| {
-        (f64::from(mode.size.w) / scale, f64::from(mode.size.h) / scale)
+        (
+            f64::from(mode.size.w) / scale,
+            f64::from(mode.size.h) / scale,
+        )
     });
     let motion = lp.inner.pointer().motion;
     let pointer_at = (motion.x / scale, motion.y / scale);
@@ -219,17 +236,25 @@ pub fn cancel(lp: &mut Loop, selection: &SelectionIdentity) -> ControlReply {
             finish(lp, Outcome::Cancelled("requested"));
         }
         return cancel_reply(
-            if suspended { "cancelled" } else { "already_finished" },
+            if suspended {
+                "cancelled"
+            } else {
+                "already_finished"
+            },
             selection,
         );
     }
-    match lp.inner.comp.region.retire(&selection.owner, selection.generation) {
+    match lp
+        .inner
+        .comp
+        .region
+        .retire(&selection.owner, selection.generation)
+    {
         Retire::AlreadyFinished => cancel_reply("already_finished", selection),
         Retire::Retired => cancel_reply("retired", selection),
-        Retire::Capacity => ControlReply::refused(
-            "region_owner_capacity",
-            json!({"limit": OWNER_LIMIT}),
-        ),
+        Retire::Capacity => {
+            ControlReply::refused("region_owner_capacity", json!({"limit": OWNER_LIMIT}))
+        }
     }
 }
 

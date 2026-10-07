@@ -43,11 +43,17 @@ fn agent_refusals_carry_the_human_seat_hint() {
     assert_eq!(body["error"], "agent_seat_unbound");
     assert_eq!(body["error_code"], "agent_seat_unbound");
     assert_eq!(body["hint"]["seat"], "human");
-    assert_eq!(body["message"], "target client is currently unbound on the agent seat");
+    assert_eq!(
+        body["message"],
+        "target client is currently unbound on the agent seat"
+    );
     for reason in ["x11_unsupported", "chrome_target"] {
         assert_eq!(error(agent_refusal(reason))["hint"]["seat"], "human");
     }
-    assert_eq!(error(agent_refusal("session_lock")), json!({"error": "session_lock", "error_code": "session_lock"}));
+    assert_eq!(
+        error(agent_refusal("session_lock")),
+        json!({"error": "session_lock", "error_code": "session_lock"})
+    );
 }
 
 /// An unbound client is refused with the hint, and the lock wins first.
@@ -65,10 +71,16 @@ fn unbound_clients_and_the_lock_refuse_before_anything_is_injected() {
         ..AgentSeatFacts::default()
     };
     for op in [key(PressAction::Both), button(PressAction::Both)] {
-        assert_eq!(error(agent_preflight(&op, &facts).unwrap_err())["error"], "agent_seat_unbound");
+        assert_eq!(
+            error(agent_preflight(&op, &facts).unwrap_err())["error"],
+            "agent_seat_unbound"
+        );
     }
     facts.session_lock = true;
-    assert_eq!(error(agent_preflight(&key(PressAction::Both), &facts).unwrap_err())["error"], "session_lock");
+    assert_eq!(
+        error(agent_preflight(&key(PressAction::Both), &facts).unwrap_err())["error"],
+        "session_lock"
+    );
     // Even cleanup is refused under the lock (the lock is checked first).
     assert!(agent_preflight(&InputOp::ReleaseAll, &facts).is_err());
 }
@@ -91,25 +103,43 @@ fn preflight_refuses_in_comps_order_and_releases_always_pass() {
         pointer_target: None,
         ..open
     };
-    for op in [key(PressAction::Release), button(PressAction::Release), InputOp::ReleaseAll] {
+    for op in [
+        key(PressAction::Release),
+        button(PressAction::Release),
+        InputOp::ReleaseAll,
+    ] {
         assert!(agent_preflight(&op, &grabbed).is_ok(), "{op:?}");
     }
-    assert_eq!(error(agent_preflight(&key(PressAction::Press), &grabbed).unwrap_err())["error"], "keyboard_grab");
-    assert_eq!(error(agent_preflight(&button(PressAction::Press), &grabbed).unwrap_err())["error"], "pointer_grab");
+    assert_eq!(
+        error(agent_preflight(&key(PressAction::Press), &grabbed).unwrap_err())["error"],
+        "keyboard_grab"
+    );
+    assert_eq!(
+        error(agent_preflight(&button(PressAction::Press), &grabbed).unwrap_err())["error"],
+        "pointer_grab"
+    );
     let targetless = AgentSeatFacts {
         keyboard_target: None,
         pointer_target: None,
         ..open
     };
-    assert_eq!(error(agent_preflight(&key(PressAction::Both), &targetless).unwrap_err())["error"], "no_keyboard_target");
     assert_eq!(
-        error(agent_preflight(&InputOp::PointerScroll {
-            dx: None,
-            dy: Some(1.0),
-            source: comp_model::request::ScrollSource::Wheel,
-            v120: (None, Some(8)),
-        }, &targetless)
-        .unwrap_err())["error"],
+        error(agent_preflight(&key(PressAction::Both), &targetless).unwrap_err())["error"],
+        "no_keyboard_target"
+    );
+    assert_eq!(
+        error(
+            agent_preflight(
+                &InputOp::PointerScroll {
+                    dx: None,
+                    dy: Some(1.0),
+                    source: comp_model::request::ScrollSource::Wheel,
+                    v120: (None, Some(8)),
+                },
+                &targetless
+            )
+            .unwrap_err()
+        )["error"],
         "no_pointer_target"
     );
     // A press outside a popup is delivered to its grab to dismiss it.
@@ -128,16 +158,65 @@ fn preflight_refuses_in_comps_order_and_releases_always_pass() {
     // clientless, unbound.
     for (target, reason) in [
         (None, "unmapped"),
-        (Some(AgentTarget { x11: true, ..bound() }), "x11_unsupported"),
-        (Some(AgentTarget { root_mapped: false, ..bound() }), "unmapped"),
-        (Some(AgentTarget { tree_mapped: false, ..bound() }), "unmapped"),
-        (Some(AgentTarget { input_presentable: false, ..bound() }), "not_presentable"),
-        (Some(AgentTarget { has_client: false, ..bound() }), "unmapped"),
-        (Some(AgentTarget { keyboard_bound: false, ..bound() }), "agent_seat_unbound"),
+        (
+            Some(AgentTarget {
+                x11: true,
+                ..bound()
+            }),
+            "x11_unsupported",
+        ),
+        (
+            Some(AgentTarget {
+                root_mapped: false,
+                ..bound()
+            }),
+            "unmapped",
+        ),
+        (
+            Some(AgentTarget {
+                tree_mapped: false,
+                ..bound()
+            }),
+            "unmapped",
+        ),
+        (
+            Some(AgentTarget {
+                input_presentable: false,
+                ..bound()
+            }),
+            "not_presentable",
+        ),
+        (
+            Some(AgentTarget {
+                has_client: false,
+                ..bound()
+            }),
+            "unmapped",
+        ),
+        (
+            Some(AgentTarget {
+                keyboard_bound: false,
+                ..bound()
+            }),
+            "agent_seat_unbound",
+        ),
     ] {
-        assert_eq!(error(validate_agent_surface(target, true, false).unwrap_err())["error"], reason);
+        assert_eq!(
+            error(validate_agent_surface(target, true, false).unwrap_err())["error"],
+            reason
+        );
     }
-    assert!(validate_agent_surface(Some(AgentTarget { keyboard_bound: false, ..bound() }), false, false).is_ok());
+    assert!(
+        validate_agent_surface(
+            Some(AgentTarget {
+                keyboard_bound: false,
+                ..bound()
+            }),
+            false,
+            false
+        )
+        .is_ok()
+    );
 }
 
 fn mapped_window(registry: &mut Registry<u32>) -> (u64, u64) {
@@ -161,42 +240,101 @@ fn targeted_agent_input_is_fenced_and_never_raises() {
     let plan = |op: &InputOp, raise, facts: &AgentTargetedFacts| {
         agent_targeted_preflight(&registry, id, generation, raise, op, facts)
     };
-    assert_eq!(error(plan(&key(PressAction::Both), true, &open).unwrap_err())["error"], "invalid_argument");
-    let locked = AgentTargetedFacts { session_lock: true, ..open };
-    assert_eq!(error(plan(&key(PressAction::Both), false, &locked).unwrap_err())["error"], "session_lock");
+    assert_eq!(
+        error(plan(&key(PressAction::Both), true, &open).unwrap_err())["error"],
+        "invalid_argument"
+    );
+    let locked = AgentTargetedFacts {
+        session_lock: true,
+        ..open
+    };
+    assert_eq!(
+        error(plan(&key(PressAction::Both), false, &locked).unwrap_err())["error"],
+        "session_lock"
+    );
     // A release retires the hold even if the window is gone.
     assert_eq!(
-        agent_targeted_preflight(&registry, 999, 1, false, &button(PressAction::Release), &open),
+        agent_targeted_preflight(
+            &registry,
+            999,
+            1,
+            false,
+            &button(PressAction::Release),
+            &open
+        ),
         Ok(AgentTargetedPlan::Release)
     );
     assert_eq!(
-        error(agent_targeted_preflight(&registry, id, generation + 1, false, &key(PressAction::Both), &open).unwrap_err())["error"],
+        error(
+            agent_targeted_preflight(
+                &registry,
+                id,
+                generation + 1,
+                false,
+                &key(PressAction::Both),
+                &open
+            )
+            .unwrap_err()
+        )["error"],
         "stale_target"
     );
     assert_eq!(
         plan(&key(PressAction::Both), false, &open),
-        Ok(AgentTargetedPlan::Deliver { focus_keyboard: true, move_pointer: false })
+        Ok(AgentTargetedPlan::Deliver {
+            focus_keyboard: true,
+            move_pointer: false
+        })
     );
     assert_eq!(
         plan(&button(PressAction::Both), false, &open),
-        Ok(AgentTargetedPlan::Deliver { focus_keyboard: true, move_pointer: true })
+        Ok(AgentTargetedPlan::Deliver {
+            focus_keyboard: true,
+            move_pointer: true
+        })
     );
-    let grabbed = AgentTargetedFacts { keyboard_grabbed: true, ..open };
-    assert_eq!(error(plan(&key(PressAction::Both), false, &grabbed).unwrap_err())["error"], "keyboard_grab");
-    let popup = AgentTargetedFacts { matching_popup: true, ..grabbed };
+    let grabbed = AgentTargetedFacts {
+        keyboard_grabbed: true,
+        ..open
+    };
+    assert_eq!(
+        error(plan(&key(PressAction::Both), false, &grabbed).unwrap_err())["error"],
+        "keyboard_grab"
+    );
+    let popup = AgentTargetedFacts {
+        matching_popup: true,
+        ..grabbed
+    };
     assert_eq!(
         plan(&key(PressAction::Both), false, &popup),
-        Ok(AgentTargetedPlan::Deliver { focus_keyboard: false, move_pointer: false }),
+        Ok(AgentTargetedPlan::Deliver {
+            focus_keyboard: false,
+            move_pointer: false
+        }),
         "a popup of the named window keeps its grab"
     );
-    let elsewhere = AgentTargetedFacts { pointer_grabbed: true, ..open };
-    assert_eq!(error(plan(&button(PressAction::Both), false, &elsewhere).unwrap_err())["error"], "pointer_grab");
-    let on_target = AgentTargetedFacts { pointer_on_target: true, ..elsewhere };
+    let elsewhere = AgentTargetedFacts {
+        pointer_grabbed: true,
+        ..open
+    };
+    assert_eq!(
+        error(plan(&button(PressAction::Both), false, &elsewhere).unwrap_err())["error"],
+        "pointer_grab"
+    );
+    let on_target = AgentTargetedFacts {
+        pointer_on_target: true,
+        ..elsewhere
+    };
     assert!(plan(&button(PressAction::Both), false, &on_target).is_ok());
     let chrome = AgentTargetedFacts { hit: None, ..open };
     let body = error(plan(&button(PressAction::Both), false, &chrome).unwrap_err());
-    assert_eq!((body["error"].clone(), body["hint"]["seat"].clone()), (json!("chrome_target"), json!("human")));
-    assert!(plan(&key(PressAction::Both), false, &chrome).is_ok(), "keys never hit-test");
+    assert_eq!(
+        (body["error"].clone(), body["hint"]["seat"].clone()),
+        (json!("chrome_target"), json!("human"))
+    );
+    assert!(
+        plan(&key(PressAction::Both), false, &chrome).is_ok(),
+        "keys never hit-test"
+    );
 }
 
 /// Targeted-input refusals inject nothing and do not switch workspaces:
@@ -217,34 +355,107 @@ fn targeted_human_refusals_name_their_reason() {
             .unwrap_err()
             .wire_json()
     };
-    assert_eq!(human_targeted_preflight(&registry, id, generation, &text, &open), Ok(HumanTargetedPlan::FocusThenDeliver));
     assert_eq!(
-        human_targeted_preflight(&registry, id, generation + 1, &text, &open).unwrap_err().wire_json()["error"],
+        human_targeted_preflight(&registry, id, generation, &text, &open),
+        Ok(HumanTargetedPlan::FocusThenDeliver)
+    );
+    assert_eq!(
+        human_targeted_preflight(&registry, id, generation + 1, &text, &open)
+            .unwrap_err()
+            .wire_json()["error"],
         "stale_target"
     );
     for (facts, expected) in [
-        (HumanTargetedFacts { region_select: true, session_lock: true, ..open }, "region_select"),
-        (HumanTargetedFacts { session_lock: true, exclusive_layer: true, ..open }, "session_lock"),
-        (HumanTargetedFacts { exclusive_layer: true, ..open }, "exclusive_layer"),
-        (HumanTargetedFacts { current_workspace: 2, ..open }, "other_workspace"),
-        (HumanTargetedFacts { input_presentable: false, visible: false, ..open }, "not_presentable"),
-        (HumanTargetedFacts { visible: false, ..open }, "not_visible"),
-        (HumanTargetedFacts { keyboard_grab: true, ..open }, "keyboard_grab"),
+        (
+            HumanTargetedFacts {
+                region_select: true,
+                session_lock: true,
+                ..open
+            },
+            "region_select",
+        ),
+        (
+            HumanTargetedFacts {
+                session_lock: true,
+                exclusive_layer: true,
+                ..open
+            },
+            "session_lock",
+        ),
+        (
+            HumanTargetedFacts {
+                exclusive_layer: true,
+                ..open
+            },
+            "exclusive_layer",
+        ),
+        (
+            HumanTargetedFacts {
+                current_workspace: 2,
+                ..open
+            },
+            "other_workspace",
+        ),
+        (
+            HumanTargetedFacts {
+                input_presentable: false,
+                visible: false,
+                ..open
+            },
+            "not_presentable",
+        ),
+        (
+            HumanTargetedFacts {
+                visible: false,
+                ..open
+            },
+            "not_visible",
+        ),
+        (
+            HumanTargetedFacts {
+                keyboard_grab: true,
+                ..open
+            },
+            "keyboard_grab",
+        ),
     ] {
         let body = reason(&registry, &text, &facts);
         assert_eq!(body["error"], "target_unfocusable");
         assert_eq!(body["reason"], expected);
-        assert_eq!((body["id"].clone(), body["generation"].clone()), (json!(id), json!(generation)));
+        assert_eq!(
+            (body["id"].clone(), body["generation"].clone()),
+            (json!(id), json!(generation))
+        );
     }
-    let grabbed = HumanTargetedFacts { pointer_grab: true, ..open };
-    assert!(human_targeted_preflight(&registry, id, generation, &text, &grabbed).is_ok(), "only buttons");
-    assert_eq!(reason(&registry, &button(PressAction::Both), &grabbed)["reason"], "pointer_grab");
+    let grabbed = HumanTargetedFacts {
+        pointer_grab: true,
+        ..open
+    };
+    assert!(
+        human_targeted_preflight(&registry, id, generation, &text, &grabbed).is_ok(),
+        "only buttons"
+    );
+    assert_eq!(
+        reason(&registry, &button(PressAction::Both), &grabbed)["reason"],
+        "pointer_grab"
+    );
     // A key release skips the ladder; minimised and unmapped are named.
     assert_eq!(
-        human_targeted_preflight(&registry, id, generation, &key(PressAction::Release), &HumanTargetedFacts { session_lock: true, ..open }),
+        human_targeted_preflight(
+            &registry,
+            id,
+            generation,
+            &key(PressAction::Release),
+            &HumanTargetedFacts {
+                session_lock: true,
+                ..open
+            }
+        ),
         Ok(HumanTargetedPlan::Release)
     );
-    registry.set_minimized(surfaces::SurfaceId(id), true).unwrap();
+    registry
+        .set_minimized(surfaces::SurfaceId(id), true)
+        .unwrap();
     assert_eq!(reason(&registry, &text, &open)["reason"], "minimized");
     registry.set_mapped(surfaces::SurfaceId(id), false).unwrap();
     assert_eq!(reason(&registry, &text, &open)["reason"], "unmapped");
@@ -256,8 +467,16 @@ fn targeted_human_refusals_name_their_reason() {
 fn release_all_scope_follows_the_seat_argument() {
     for (args, scope, reply) in [
         (json!({}), ReleaseScope::Both, "both"),
-        (json!({"seat": "human"}), ReleaseScope::Seat(SeatKind::Human), "human"),
-        (json!({"seat": "agent"}), ReleaseScope::Seat(SeatKind::Agent), "agent"),
+        (
+            json!({"seat": "human"}),
+            ReleaseScope::Seat(SeatKind::Human),
+            "human",
+        ),
+        (
+            json!({"seat": "agent"}),
+            ReleaseScope::Seat(SeatKind::Agent),
+            "agent",
+        ),
     ] {
         let op = parse_input_op("comp.input.release_all", &args).unwrap();
         let parsed = ReleaseScope::of(&op).expect("a release_all");
@@ -278,7 +497,11 @@ fn shared_holds_are_released_by_their_last_owner() {
     holds.note(Some(1), key_a, true);
     holds.note(Some(2), key_a, true);
     assert_eq!(holds.owners_of(key_a), 2);
-    assert_eq!(holds.drop_owner(Some(2)), Vec::<Hold>::new(), "the keeper still holds A");
+    assert_eq!(
+        holds.drop_owner(Some(2)),
+        Vec::<Hold>::new(),
+        "the keeper still holds A"
+    );
     assert_eq!(holds.owners_of(key_a), 1);
     assert_eq!(holds.drop_owner(Some(1)), [key_a]);
     assert!(holds.is_empty());
@@ -287,7 +510,11 @@ fn shared_holds_are_released_by_their_last_owner() {
     holds.note(None, key_a, false);
     holds.note(None, key_a, true);
     assert_eq!(holds.owners_of(key_a), 1);
-    assert_eq!(holds.drop_owner(Some(3)), Vec::<Hold>::new(), "the verb's hold survives");
+    assert_eq!(
+        holds.drop_owner(Some(3)),
+        Vec::<Hold>::new(),
+        "the verb's hold survives"
+    );
     assert_eq!(holds.take_all(), [key_a]);
     assert!(holds.is_empty());
 }
@@ -295,10 +522,20 @@ fn shared_holds_are_released_by_their_last_owner() {
 /// input_injection.rs `release_holds` and `release_agent_device_holds`.
 #[test]
 fn releases_go_newest_key_first_then_buttons_and_spare_physical_holds() {
-    let holds = [Hold::Key(30), Hold::Button(0x110), Hold::Key(42), Hold::Key(31)];
+    let holds = [
+        Hold::Key(30),
+        Hold::Button(0x110),
+        Hold::Key(42),
+        Hold::Key(31),
+    ];
     assert_eq!(
         release_order(&holds, |_| false),
-        [Hold::Key(31), Hold::Key(42), Hold::Key(30), Hold::Button(0x110)]
+        [
+            Hold::Key(31),
+            Hold::Key(42),
+            Hold::Key(30),
+            Hold::Button(0x110)
+        ]
     );
     assert_eq!(
         release_order(&holds, |hold| hold == Hold::Key(42)),
@@ -370,13 +607,33 @@ fn a_run_waits_each_delay_once_then_runs_the_step() {
         step("comp.input.key", key(PressAction::Release), 80),
     ]))
     .unwrap();
-    assert!(matches!(run.next_action(), SequenceNext::Run { index: 0, .. }));
-    assert_eq!(run.next_action(), SequenceNext::Wait(Duration::from_millis(80)));
-    assert_eq!(run.next_action(), SequenceNext::Wait(Duration::from_millis(80)), "until it elapses");
+    assert!(matches!(
+        run.next_action(),
+        SequenceNext::Run { index: 0, .. }
+    ));
+    assert_eq!(
+        run.next_action(),
+        SequenceNext::Wait(Duration::from_millis(80))
+    );
+    assert_eq!(
+        run.next_action(),
+        SequenceNext::Wait(Duration::from_millis(80)),
+        "until it elapses"
+    );
     run.delay_elapsed();
-    assert!(matches!(run.next_action(), SequenceNext::Run { index: 1, .. }));
+    assert!(matches!(
+        run.next_action(),
+        SequenceNext::Run { index: 1, .. }
+    ));
     assert_eq!(run.next_action(), SequenceNext::Done);
-    assert!(SequenceRun::new(LongOp::RegionSelect { output: None, timeout: Duration::from_secs(1), selection: None }).is_none());
+    assert!(
+        SequenceRun::new(LongOp::RegionSelect {
+            output: None,
+            timeout: Duration::from_secs(1),
+            selection: None
+        })
+        .is_none()
+    );
 }
 
 /// An unseated sequence reports human or mixed, on success and on failure.
@@ -386,31 +643,46 @@ fn an_unseated_run_reports_human_or_mixed() {
         for fail in [false, true] {
             let mut steps = vec![step("comp.input.key", key(PressAction::Both), 0)];
             if mixed {
-                steps.push(step("comp.input.key", on(SeatKind::Agent, key(PressAction::Both)), 0));
+                steps.push(step(
+                    "comp.input.key",
+                    on(SeatKind::Agent, key(PressAction::Both)),
+                    0,
+                ));
             }
             if fail {
-                steps.push(step("comp.input.key", InputOp::Key {
-                    key: KeySpec::Name("not_a_real_keysym".into()),
-                    action: PressAction::Both,
-                    modifiers: Vec::new(),
-                }, 0));
+                steps.push(step(
+                    "comp.input.key",
+                    InputOp::Key {
+                        key: KeySpec::Name("not_a_real_keysym".into()),
+                        action: PressAction::Both,
+                        modifiers: Vec::new(),
+                    },
+                    0,
+                ));
             }
             let mut run = SequenceRun::new(LongOp::Sequence(steps)).unwrap();
             assert_eq!(run.uses_agent(), mixed);
             let failed = drive(&mut run, |op| match op {
-                InputOp::Key { key: KeySpec::Name(_), .. } => {
-                    ControlReply::refused("unknown_key", json!({"key": "not_a_real_keysym"}))
-                }
+                InputOp::Key {
+                    key: KeySpec::Name(_),
+                    ..
+                } => ControlReply::refused("unknown_key", json!({"key": "not_a_real_keysym"})),
                 op => ok(op),
             });
-            let body = failed.map_or_else(|| run.clone().finish(5).wire_json(), ControlReply::wire_json);
+            let body = failed.map_or_else(
+                || run.clone().finish(5).wire_json(),
+                ControlReply::wire_json,
+            );
             assert_eq!(body.get("error").is_some(), fail, "{body}");
             assert_eq!(body["seat"], if mixed { "mixed" } else { "human" });
             if fail {
                 assert_eq!(body["error"], "step_failed");
                 assert_eq!(body["released"], true);
                 assert_eq!(body["step"]["error"], "unknown_key");
-                assert_eq!(body["completed"].as_array().unwrap().len(), if mixed { 2 } else { 1 });
+                assert_eq!(
+                    body["completed"].as_array().unwrap().len(),
+                    if mixed { 2 } else { 1 }
+                );
             } else {
                 assert_eq!(body["elapsed_ms"], 5);
             }
@@ -422,7 +694,11 @@ fn an_unseated_run_reports_human_or_mixed() {
 #[test]
 fn an_agent_run_counts_a_refusing_human_step_as_mixed() {
     let mut run = SequenceRun::new(LongOp::Sequence(vec![
-        step("comp.input.key", on(SeatKind::Agent, key(PressAction::Both)), 0),
+        step(
+            "comp.input.key",
+            on(SeatKind::Agent, key(PressAction::Both)),
+            0,
+        ),
         step("comp.input.key", key(PressAction::Both), 0),
     ]))
     .unwrap();
@@ -460,18 +736,32 @@ fn a_seated_run_names_its_seat_and_each_step_its_own() {
 #[test]
 fn a_cleared_run_reports_what_it_completed() {
     let mut run = SequenceRun::new(LongOp::Sequence(vec![
-        step("comp.input.pointer.move", on(SeatKind::Agent, InputOp::ReleaseAll), 0),
-        step("comp.input.key", on(SeatKind::Agent, key(PressAction::Both)), 50),
+        step(
+            "comp.input.pointer.move",
+            on(SeatKind::Agent, InputOp::ReleaseAll),
+            0,
+        ),
+        step(
+            "comp.input.key",
+            on(SeatKind::Agent, key(PressAction::Both)),
+            50,
+        ),
     ]))
     .unwrap();
     let SequenceNext::Run { index, step } = run.next_action() else {
         panic!("first step runs");
     };
     assert!(run.record(index, step.verb, ok(&step.op), 2).is_none());
-    assert_eq!(run.next_action(), SequenceNext::Wait(Duration::from_millis(50)));
+    assert_eq!(
+        run.next_action(),
+        SequenceNext::Wait(Duration::from_millis(50))
+    );
     let body = run.cleared().wire_json();
     assert_eq!(body["error"], "input_cleared");
     assert_eq!(body["seat"], "agent");
     assert_eq!(body["released"], true);
-    assert_eq!(body["completed"], json!([{"injected": 1, "coalesced": 2}, {"injected": 1, "coalesced": 2}]));
+    assert_eq!(
+        body["completed"],
+        json!([{"injected": 1, "coalesced": 2}, {"injected": 1, "coalesced": 2}])
+    );
 }

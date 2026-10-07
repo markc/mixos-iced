@@ -97,7 +97,10 @@ pub enum PortCommand {
     /// `comp.region.cancel`: a short owner operation, admitted under the
     /// ordinary responder capacity, never the long pool.
     RegionCancel(PortRegionCancelRequest),
-    WatchState { active: bool, order: u64 },
+    WatchState {
+        active: bool,
+        order: u64,
+    },
     /// [`TRUTH_VERB`].
     Truth(PortReply),
 }
@@ -178,10 +181,25 @@ pub enum PortControl {
 impl PortControl {
     pub fn uses_agent(&self) -> bool {
         match self {
-            Self::Input(request) => matches!(request.op, InputOp::OnSeat { seat: SeatKind::Agent, .. }),
+            Self::Input(request) => matches!(
+                request.op,
+                InputOp::OnSeat {
+                    seat: SeatKind::Agent,
+                    ..
+                }
+            ),
             Self::Long(request) => match request.op.as_ref() {
-                Some(LongOp::Sequence(steps) | LongOp::SeatedSequence { steps, .. }) => steps.iter().any(|step|
-                    matches!(step.op, InputOp::OnSeat { seat: SeatKind::Agent, .. })),
+                Some(LongOp::Sequence(steps) | LongOp::SeatedSequence { steps, .. }) => {
+                    steps.iter().any(|step| {
+                        matches!(
+                            step.op,
+                            InputOp::OnSeat {
+                                seat: SeatKind::Agent,
+                                ..
+                            }
+                        )
+                    })
+                }
                 _ => false,
             },
             _ => false,
@@ -191,7 +209,9 @@ impl PortControl {
     /// Refuse old admissions even if they were still in the ingress channel at
     /// the lifecycle boundary. Other controls keep their relative order.
     pub fn refuse_cleared_agent(&mut self, epoch: u64) -> bool {
-        if !self.uses_agent() { return false; }
+        if !self.uses_agent() {
+            return false;
+        }
         let reply = match self {
             Self::Input(request) if request.agent_epoch != epoch => request.reply.take(),
             Self::Long(request) if request.agent_epoch != epoch => {
@@ -201,7 +221,10 @@ impl PortControl {
             _ => return false,
         };
         if let Some(reply) = reply {
-            let _ = reply.send(ControlReply::refused("input_cleared", json!({"seat":"agent", "released":true})));
+            let _ = reply.send(ControlReply::refused(
+                "input_cleared",
+                json!({"seat":"agent", "released":true}),
+            ));
         }
         true
     }
@@ -240,9 +263,14 @@ pub struct PortIngress {
 impl PortIngress {
     pub fn request_panel(&self, op: PanelRequest) -> Result<ControlAdmission, QueueFull> {
         let (reply, receive) = tokio::sync::oneshot::channel();
-        self.admit(PortCommand::Panel(PortPanelRequest {
-            order: self.next_control_order(), op, reply: Some(reply),
-        }), receive)
+        self.admit(
+            PortCommand::Panel(PortPanelRequest {
+                order: self.next_control_order(),
+                op,
+                reply: Some(reply),
+            }),
+            receive,
+        )
     }
     /// Whole-tree snapshot; production reads go through the scoped form.
     pub fn request_snapshot(&self) -> Result<SnapshotAdmission, QueueFull> {
@@ -257,10 +285,15 @@ impl PortIngress {
         scope: Option<String>,
     ) -> Result<SnapshotAdmission, QueueFull> {
         let (reply, receive) = tokio::sync::oneshot::channel();
-        self.admit(PortCommand::Snapshot(PortRequest {
-            order: self.next_control_order(), reply, scope,
-        }), receive)
-            .map(SnapshotAdmission)
+        self.admit(
+            PortCommand::Snapshot(PortRequest {
+                order: self.next_control_order(),
+                reply,
+                scope,
+            }),
+            receive,
+        )
+        .map(SnapshotAdmission)
     }
 
     pub fn request_watch(&self) -> Result<ControlAdmission, QueueFull> {
@@ -371,7 +404,11 @@ impl PortIngress {
     /// Best effort: a full queue drops the set, and the next registry diff or
     /// the liveness probe on the holder's layers repair it.
     pub fn services_live(&self, live: std::collections::BTreeSet<String>) {
-        if self.sender.try_send(PortCommand::ServicesLive(live)).is_err() {
+        if self
+            .sender
+            .try_send(PortCommand::ServicesLive(live))
+            .is_err()
+        {
             tracing::debug!("registry update dropped: compositor port queue full");
         }
     }
@@ -536,7 +573,14 @@ pub fn prepare(identity: PortIdentity, waker: Waker) -> Result<(PortWiring, Port
         &random_instance_id()?,
     ));
     let (sender, source) = command_channel(PORT_QUEUE_CAPACITY, waker.clone());
-    let (wiring, starter) = wire(identity.service, identity.noded_url, context, sender, source, waker);
+    let (wiring, starter) = wire(
+        identity.service,
+        identity.noded_url,
+        context,
+        sender,
+        source,
+        waker,
+    );
     Ok((wiring, starter))
 }
 
@@ -548,8 +592,10 @@ fn wire(
     source: CommandSource,
     waker: Waker,
 ) -> (PortWiring, PortStarter) {
-    let (observation_producer, observations) =
-        outbox(Arc::clone(&context.lost_count), Arc::clone(&context.event_seq));
+    let (observation_producer, observations) = outbox(
+        Arc::clone(&context.lost_count),
+        Arc::clone(&context.event_seq),
+    );
     let observation_notifier = observation_producer.notifier();
     let ingress = PortIngress {
         sender,
@@ -586,7 +632,13 @@ fn wire(
 /// Both halves wired to an in-memory channel, for tests and for an engine
 /// that drives the worker loop itself.
 pub fn test_wiring(service: &str) -> (PortWiring, PortStarter) {
-    let context = Arc::new(PortContext::new(service, "0.0.0-test", "nested", "test", "fixture"));
+    let context = Arc::new(PortContext::new(
+        service,
+        "0.0.0-test",
+        "nested",
+        "test",
+        "fixture",
+    ));
     let (sender, source) = command_channel(PORT_QUEUE_CAPACITY, crate::channel::no_waker());
     wire(
         service.to_string(),
@@ -965,7 +1017,9 @@ async fn worker_loop<F, Fut, C>(
         tokio::spawn(async move {
             match client.subscribe_topic(REGISTRY_TOPIC).await {
                 Ok(()) => subscribed.store(true, Ordering::Release),
-                Err(error) => tracing::warn!(%error, "registry subscription failed; retried on the next connect"),
+                Err(error) => {
+                    tracing::warn!(%error, "registry subscription failed; retried on the next connect")
+                }
             }
         })
     };
@@ -1225,7 +1279,11 @@ fn dispatch_incoming(
     // routed before `classify` (which answers every other name `unknown_verb`).
     if command.command == TRUTH_VERB {
         let Ok(permit) = Arc::clone(responder_permits).try_acquire_owned() else {
-            queue_reply(reply_sender, reply_timeouts, PendingReply::new(command, error("busy")));
+            queue_reply(
+                reply_sender,
+                reply_timeouts,
+                PendingReply::new(command, error("busy")),
+            );
             return;
         };
         match ingress.request_truth() {
@@ -1237,16 +1295,22 @@ fn dispatch_incoming(
                 admission,
                 permit,
             ),
-            Err(QueueFull) => {
-                queue_reply(reply_sender, reply_timeouts, PendingReply::new(command, error("busy")))
-            }
+            Err(QueueFull) => queue_reply(
+                reply_sender,
+                reply_timeouts,
+                PendingReply::new(command, error("busy")),
+            ),
         }
         return;
     }
     let request = match classify(&command.command, &command.args, malformed) {
         Ok(request) => request,
         Err(reply) => {
-            queue_reply(reply_sender, reply_timeouts, PendingReply::new(command, reply));
+            queue_reply(
+                reply_sender,
+                reply_timeouts,
+                PendingReply::new(command, reply),
+            );
             return;
         }
     };
@@ -1292,7 +1356,11 @@ fn dispatch_incoming(
                     }
                     Err(()) => error("busy"),
                 };
-                queue_reply(&reply_sender, &reply_timeouts, PendingReply::new(command, reply));
+                queue_reply(
+                    &reply_sender,
+                    &reply_timeouts,
+                    PendingReply::new(command, reply),
+                );
             });
         }
         request => {

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use comp_service::{CompEngine, LongReply, PortContext, PortIdentity, default_noded_url, prepare};
+use bus::SupervisedClient;
 use comp_model::observation::{CornerConfig, ObservationRecord, PanelRequest, PropValue};
 use comp_model::reply::ControlReply;
 use comp_model::request::{InputOp, LongOp, SelectionIdentity, WindowOp};
@@ -23,7 +23,7 @@ use comp_model::snapshot::{
     BindingsSnapshot, CompSnapshot, DecorationSnapshot, FocusSnapshot, FocusWindowSnapshot,
     FullTreeCache, InfoSnapshot, InputSnapshot, ReadScopes, WorkspacesSnapshot, XwaylandSnapshot,
 };
-use bus::SupervisedClient;
+use comp_service::{CompEngine, LongReply, PortContext, PortIdentity, default_noded_url, prepare};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -126,7 +126,10 @@ where
         if let Some(value) = attempt().await {
             return value;
         }
-        assert!(start.elapsed() < DEADLINE, "{what}: no answer within {DEADLINE:?}");
+        assert!(
+            start.elapsed() < DEADLINE,
+            "{what}: no answer within {DEADLINE:?}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -163,7 +166,9 @@ async fn comp_port_registers_answers_and_publishes_through_noded() {
     let engine_stop = Arc::clone(&stop);
     let engine_context = Arc::clone(&context);
     let engine_thread = thread::spawn(move || {
-        let mut engine = Engine { context: engine_context };
+        let mut engine = Engine {
+            context: engine_context,
+        };
         while !engine_stop.load(Ordering::Acquire) {
             match woken.recv_timeout(Duration::from_millis(200)) {
                 Ok(()) => {
@@ -188,7 +193,10 @@ async fn comp_port_registers_answers_and_publishes_through_noded() {
     .await;
     assert_eq!(pong, json!({"pong": true}));
 
-    let info = client.call(&service, "comp.info", json!({})).await.expect("comp.info");
+    let info = client
+        .call(&service, "comp.info", json!({}))
+        .await
+        .expect("comp.info");
     assert_eq!(info["service"], json!(service), "comp.info: {info}");
     assert_eq!(info["engine"], "itest", "comp.info: {info}");
 
@@ -210,7 +218,10 @@ async fn comp_port_registers_answers_and_publishes_through_noded() {
     let topic = format!("{service}.props.changed");
     let mut incoming = client.incoming().expect("the client's incoming stream");
     client.subscribe_topic(&topic).await.expect("subscribe");
-    let watch = client.call(&service, "comp.props.watch", json!({})).await.expect("comp.props.watch");
+    let watch = client
+        .call(&service, "comp.props.watch", json!({}))
+        .await
+        .expect("comp.props.watch");
     assert_eq!(watch["topic"], json!(topic), "comp.props.watch: {watch}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     let seq = producer
@@ -233,8 +244,16 @@ async fn comp_port_registers_answers_and_publishes_through_noded() {
     })
     .await
     .expect("a props.changed delivery within the deadline");
-    assert!(delivery.body.contains("decoration.style"), "{}", delivery.body);
-    assert!(delivery.body.contains(&seq.to_string()), "{}", delivery.body);
+    assert!(
+        delivery.body.contains("decoration.style"),
+        "{}",
+        delivery.body
+    );
+    assert!(
+        delivery.body.contains(&seq.to_string()),
+        "{}",
+        delivery.body
+    );
 
     // Graceful shutdown deregisters; the name is free again.
     worker.begin_shutdown();
@@ -245,7 +264,10 @@ async fn comp_port_registers_answers_and_publishes_through_noded() {
         // `noded.list` answers a list of service names or `{name, …}` records.
         let listed = caller.call("noded", "noded.list", Value::Null).await.ok()?;
         let live = listed.as_array()?.iter().any(|entry| {
-            entry.as_str().or_else(|| entry.get("name").and_then(Value::as_str)) == Some(name)
+            entry
+                .as_str()
+                .or_else(|| entry.get("name").and_then(Value::as_str))
+                == Some(name)
         });
         (!live).then_some(Value::Null)
     })

@@ -2,9 +2,9 @@
 
 pub use crate::observation::{
     CORNER_CLICKED_TOPIC_SUFFIX, CORNER_CLICKED_V2_TOPIC_SUFFIX, CORNER_ENTERED_TOPIC_SUFFIX,
-    CORNER_LEFT_TOPIC_SUFFIX, FOCUS_TOPIC_SUFFIX, OUTPUT_TOPIC_SUFFIX,
-    PANEL_COMMAND_TOPIC_SUFFIX, POINTER_TOPIC_SUFFIX, PROPS_TOPIC_SUFFIX,
-    SURFACE_MAPPED_TOPIC_SUFFIX, SURFACE_UNMAPPED_TOPIC_SUFFIX, TOPIC_SUFFIXES, topic_name,
+    CORNER_LEFT_TOPIC_SUFFIX, FOCUS_TOPIC_SUFFIX, OUTPUT_TOPIC_SUFFIX, PANEL_COMMAND_TOPIC_SUFFIX,
+    POINTER_TOPIC_SUFFIX, PROPS_TOPIC_SUFFIX, SURFACE_MAPPED_TOPIC_SUFFIX,
+    SURFACE_UNMAPPED_TOPIC_SUFFIX, TOPIC_SUFFIXES, topic_name,
 };
 
 /// The service name on KMS.
@@ -122,14 +122,23 @@ mod tests {
         assert!(READ_VERBS.iter().all(|verb| DIRECT_VERBS.contains(verb)));
         assert_eq!(TOPIC_SUFFIXES.len(), 11);
         assert_eq!(
-            TOPIC_SUFFIXES.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            TOPIC_SUFFIXES
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
             11
         );
         assert_eq!(verb_family("comp.window.focus"), Some(VerbFamily::Window));
         assert_eq!(verb_family("comp.input.key"), Some(VerbFamily::Input));
         assert_eq!(verb_family("comp.ping"), Some(VerbFamily::Direct));
         assert_eq!(verb_family("comp-nested.panel.hold"), None);
-        assert_eq!(topic_name(NESTED_SERVICE, FOCUS_TOPIC_SUFFIX), "comp-nested.focus.changed");
-        assert_eq!(topic_name(SERVICE, PROPS_TOPIC_SUFFIX), "comp.props.changed");
+        assert_eq!(
+            topic_name(NESTED_SERVICE, FOCUS_TOPIC_SUFFIX),
+            "comp-nested.focus.changed"
+        );
+        assert_eq!(
+            topic_name(SERVICE, PROPS_TOPIC_SUFFIX),
+            "comp.props.changed"
+        );
     }
 }

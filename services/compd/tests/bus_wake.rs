@@ -7,19 +7,19 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use comp_service::{CompEngine, LongReply, PortService};
 use comp_model::observation::PanelRequest;
 use comp_model::reply::ControlReply;
 use comp_model::request::{InputOp, LongOp, SelectionIdentity, WindowOp, WorkspaceIndex};
 use comp_model::snapshot::{CompSnapshot, ReadScopes};
+use comp_service::{CompEngine, LongReply, PortService};
 use dispatcher::state::state::{Dispatch, RedrawReason};
 use policy::workspaces::{DefaultOutput, WorkspaceState, service_switch};
-use surfaces::Registry;
 use protocols::tearing::gate::gate::{self, Gate};
 use serde_json::Value;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::calloop::ping::make_ping;
 use smithay::reexports::wayland_server::Display;
+use surfaces::Registry;
 
 struct Engine {
     dispatch: Dispatch,

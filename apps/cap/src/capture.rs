@@ -261,22 +261,24 @@ pub struct Cleanup {
 pub async fn cleanup(bus: &BusHandle, comp: &str, target: &Cleanup) -> Result<(), String> {
     let cancel = async {
         match &target.selection {
-            Some(selection) => bus
-                .call(
+            Some(selection) => {
+                bus.call(
                     comp,
                     "comp.region.cancel",
                     json!({"selection": selection}),
                     CLEANUP_BUDGET,
                 )
-                .await,
+                .await
+            }
             None => Ok(json!({})),
         }
     };
     let restore = async {
         match &target.window {
-            Some(window) => bus
-                .call(comp, "comp.window.restore", json!(window), CLEANUP_BUDGET)
-                .await,
+            Some(window) => {
+                bus.call(comp, "comp.window.restore", json!(window), CLEANUP_BUDGET)
+                    .await
+            }
             None => Ok(json!({})),
         }
     };
@@ -405,7 +407,7 @@ pub async fn take(
             match select(timer, cancelled).await {
                 Either::Left((done, _)) => done.map_err(CaptureError::plain)?,
                 Either::Right(_) => {
-                    return Err(CaptureError::cancelled(Some(cleanup_target.clone())))
+                    return Err(CaptureError::cancelled(Some(cleanup_target.clone())));
                 }
             }
         }
@@ -457,12 +459,8 @@ pub async fn take(
         }
         if request.mode == Mode::Region {
             let selection_args = request.output.as_ref().map_or_else(
-                || {
-                    json!({"timeout_ms": REGION_TIMEOUT_MS, "selection": selection})
-                },
-                |o| {
-                    json!({"output":o,"timeout_ms": REGION_TIMEOUT_MS, "selection": selection})
-                },
+                || json!({"timeout_ms": REGION_TIMEOUT_MS, "selection": selection}),
+                |o| json!({"output":o,"timeout_ms": REGION_TIMEOUT_MS, "selection": selection}),
             );
             let select = async {
                 let selection = bus
@@ -912,10 +910,12 @@ mod tests {
             assert_eq!(select_args["timeout_ms"], 20_000);
             assert_eq!(select_args["selection"]["instance"], "itest");
             assert_eq!(select_args["selection"]["generation"], 7);
-            assert!(!select_args["selection"]["owner"]
-                .as_str()
-                .unwrap()
-                .is_empty());
+            assert!(
+                !select_args["selection"]["owner"]
+                    .as_str()
+                    .unwrap()
+                    .is_empty()
+            );
             // Cancel while the selection is held: both cleanup calls arrive
             // before the held select completes.
             tx.send(true).unwrap();

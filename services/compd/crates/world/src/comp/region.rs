@@ -26,8 +26,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
-    PointerMotionEvent,
+    AbsolutePositionEvent, ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::element::Kind;
@@ -258,12 +258,24 @@ pub fn begin(lp: &mut Loop, mut run: Run) {
     if let Some(keyboard) = seat.get_keyboard() {
         run.prior_focus = keyboard.current_focus();
         keyboard.set_focus(&mut lp.state, None, SERIAL_COUNTER.next_serial());
-        let held: Vec<u32> = keyboard.pressed_keys().into_iter().map(|key| key.raw()).collect();
+        let held: Vec<u32> = keyboard
+            .pressed_keys()
+            .into_iter()
+            .map(|key| key.raw())
+            .collect();
         lp.inner.comp.region.hold_keys(held);
     }
     if let Some(pointer) = seat.get_pointer() {
         let location = pointer.current_location();
-        pointer.motion(&mut lp.state, None, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.motion(
+            &mut lp.state,
+            None,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
         pointer.frame(&mut lp.state);
     }
     lp.inner.comp.corners.reset();
@@ -275,7 +287,9 @@ pub fn begin(lp: &mut Loop, mut run: Run) {
 /// back (keyboard focus restored if its surface still lives). A selected run
 /// still waits for a clean frame before the host replies.
 pub fn finish(lp: &mut Loop, outcome: Outcome) {
-    let Some(run) = lp.inner.comp.region.run.as_mut() else { return };
+    let Some(run) = lp.inner.comp.region.run.as_mut() else {
+        return;
+    };
     if run.result.is_some() {
         return;
     }
@@ -304,7 +318,10 @@ pub fn normalise(bounds: (f64, f64), a: (f64, f64), b: (f64, f64)) -> Option<[i3
         return None;
     }
     let (x, y) = (ax.min(bx).floor(), ay.min(by).floor());
-    let (right, bottom) = (ax.max(bx).ceil().min(bounds.0), ay.max(by).ceil().min(bounds.1));
+    let (right, bottom) = (
+        ax.max(bx).ceil().min(bounds.0),
+        ay.max(by).ceil().min(bounds.1),
+    );
     if right > f64::from(i32::MAX) || bottom > f64::from(i32::MAX) {
         return None;
     }
@@ -315,8 +332,13 @@ pub fn normalise(bounds: (f64, f64), a: (f64, f64), b: (f64, f64)) -> Option<[i3
 /// The pointer moved to `position` (output-local logical) during a run: the
 /// cursor follows with no client focus.
 pub fn motion(lp: &mut Loop, position: (f64, f64)) {
-    let Some(run) = lp.inner.comp.region.run.as_mut() else { return };
-    let position = (position.0.clamp(0.0, run.bounds.0), position.1.clamp(0.0, run.bounds.1));
+    let Some(run) = lp.inner.comp.region.run.as_mut() else {
+        return;
+    };
+    let position = (
+        position.0.clamp(0.0, run.bounds.0),
+        position.1.clamp(0.0, run.bounds.1),
+    );
     run.pointer = position;
     let physical = Point::<f64, Physical>::from((position.0 * run.scale, position.1 * run.scale));
     lp.inner.pointer_mut().motion.x = physical.x;
@@ -326,7 +348,15 @@ pub fn motion(lp: &mut Loop, position: (f64, f64)) {
     let location = transform.into_storage_point_f64();
     let time = lp.inner.start_time.elapsed().as_millis() as u32;
     if let Some(pointer) = lp.state.seat.seat.get_pointer() {
-        pointer.motion(&mut lp.state, None, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.motion(
+            &mut lp.state,
+            None,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
         pointer.frame(&mut lp.state);
     }
     lp.state.schedule_redraw(RedrawReason::Cursor);
@@ -345,7 +375,9 @@ pub fn button(lp: &mut Loop, button: u32, pressed: bool) -> bool {
     } else {
         region.buttons.remove(&button);
     }
-    let Some(run) = region.run.as_mut() else { return true };
+    let Some(run) = region.run.as_mut() else {
+        return true;
+    };
     let decided = match (button, pressed) {
         (0x111, true) => Some(Outcome::Cancelled("right_button")),
         (0x110, true) => {
@@ -355,7 +387,10 @@ pub fn button(lp: &mut Loop, button: u32, pressed: bool) -> bool {
             }
             None
         }
-        (0x110, false) => match run.start.map(|start| normalise(run.bounds, start, run.pointer)) {
+        (0x110, false) => match run
+            .start
+            .map(|start| normalise(run.bounds, start, run.pointer))
+        {
             Some(Some(rect)) => Some(Outcome::Selected(rect)),
             Some(None) => {
                 // A click or a line keeps the selection armed for another drag.
@@ -399,19 +434,38 @@ pub fn key(lp: &mut Loop, keycode: u32, pressed: bool) -> bool {
 /// Returns whether the region consumed it.
 pub fn device_input<I: InputBackend>(lp: &mut Loop, event: &InputEvent<I>) -> bool {
     match event {
-        InputEvent::Keyboard { event } => key(lp, event.key_code().raw(), event.state() == KeyState::Pressed),
-        InputEvent::PointerButton { event } => button(lp, event.button_code(), event.state() == ButtonState::Pressed),
+        InputEvent::Keyboard { event } => key(
+            lp,
+            event.key_code().raw(),
+            event.state() == KeyState::Pressed,
+        ),
+        InputEvent::PointerButton { event } => button(
+            lp,
+            event.button_code(),
+            event.state() == ButtonState::Pressed,
+        ),
         _ if !lp.inner.comp.region.suspended() => false,
         InputEvent::PointerMotionAbsolute { event } => {
             let (width, height) = lp.size_ctx_all().screen_size_physical;
-            let size = smithay::utils::Size::<i32, smithay::utils::Logical>::from((width.round() as i32, height.round() as i32));
+            let size = smithay::utils::Size::<i32, smithay::utils::Logical>::from((
+                width.round() as i32,
+                height.round() as i32,
+            ));
             let at = event.position_transformed(size);
-            let scale = lp.inner.comp.region.run.as_ref().map_or(1.0, |run| run.scale);
+            let scale = lp
+                .inner
+                .comp
+                .region
+                .run
+                .as_ref()
+                .map_or(1.0, |run| run.scale);
             motion(lp, (at.x / scale, at.y / scale));
             true
         }
         InputEvent::PointerMotion { event } => {
-            let Some(run) = lp.inner.comp.region.run.as_ref() else { return true };
+            let Some(run) = lp.inner.comp.region.run.as_ref() else {
+                return true;
+            };
             let delta = event.delta();
             let at = (run.pointer.0 + delta.x, run.pointer.1 + delta.y);
             motion(lp, at);
@@ -455,11 +509,18 @@ pub fn overlay(lp: &mut Loop, _size: Size<i32, Physical>) -> Vec<SolidColorRende
         Some(start) => {
             let (left, top) = (start.0.min(run.pointer.0), start.1.min(run.pointer.1));
             let (right, bottom) = (start.0.max(run.pointer.0), start.1.max(run.pointer.1));
-            (px(left), px(top), px(right - left).max(1), px(bottom - top).max(1))
+            (
+                px(left),
+                px(top),
+                px(right - left).max(1),
+                px(bottom - top).max(1),
+            )
         }
         None => (0, 0, px(run.bounds.0), px(run.bounds.1)),
     };
-    let rect = |x: i32, y: i32, w: i32, h: i32| Rectangle::new(Point::from((x, y)), Size::from((w.max(1), h.max(1))));
+    let rect = |x: i32, y: i32, w: i32, h: i32| {
+        Rectangle::new(Point::from((x, y)), Size::from((w.max(1), h.max(1))))
+    };
     let edges = [
         rect(x, y, w, line),
         rect(x, y + h - line, w, line),
@@ -470,7 +531,15 @@ pub fn overlay(lp: &mut Loop, _size: Size<i32, Physical>) -> Vec<SolidColorRende
         let mut elements: Vec<SolidColorRenderElement> = edges
             .into_iter()
             .zip(ids.iter())
-            .map(|(edge, id)| SolidColorRenderElement::new(id.clone(), edge, CommitCounter::default(), OUTLINE, Kind::Unspecified))
+            .map(|(edge, id)| {
+                SolidColorRenderElement::new(
+                    id.clone(),
+                    edge,
+                    CommitCounter::default(),
+                    OUTLINE,
+                    Kind::Unspecified,
+                )
+            })
             .collect();
         if run.start.is_some() {
             elements.push(SolidColorRenderElement::new(

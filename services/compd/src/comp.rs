@@ -796,7 +796,11 @@ impl CompEngine for Engine<'_> {
                     reply.send(answer)
                 });
             }
-            LongOp::RegionSelect { output, timeout, selection } => {
+            LongOp::RegionSelect {
+                output,
+                timeout,
+                selection,
+            } => {
                 if self.region_reply.is_some() {
                     reply.send(ControlReply::Busy);
                     return;

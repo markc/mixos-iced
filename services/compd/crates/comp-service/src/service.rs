@@ -19,7 +19,9 @@ use serde_json::{Value, json};
 use comp_model::observation::{POINTER_TOPIC_SUFFIX, PROPS_TOPIC_SUFFIX, PanelRequest, topic_name};
 use comp_model::reply::ControlReply;
 use comp_model::request::{InputOp, LongOp, SelectionIdentity, WindowOp};
-use comp_model::snapshot::{BROKER_CONNECTED, BROKER_RETRYING, CompSnapshot, PortSnapshot, ReadScopes};
+use comp_model::snapshot::{
+    BROKER_CONNECTED, BROKER_RETRYING, CompSnapshot, PortSnapshot, ReadScopes,
+};
 
 use crate::channel::{CommandSource, Waker};
 use crate::port::{PORT_QUEUE_CAPACITY, PortCommand, PortControl, PortRequest};
@@ -52,7 +54,13 @@ pub struct PortContext {
 }
 
 impl PortContext {
-    pub fn new(service: &str, version: &str, backend: &'static str, engine: &'static str, instance: &str) -> Self {
+    pub fn new(
+        service: &str,
+        version: &str,
+        backend: &'static str,
+        engine: &'static str,
+        instance: &str,
+    ) -> Self {
         Self {
             service: Arc::from(service),
             version: Arc::from(version),
@@ -222,11 +230,16 @@ impl PortService {
                 PortCommand::Truth(request) => self.push(PortControl::Truth(request)),
                 PortCommand::WatchState { active, order } => {
                     if self.controls.len() < PORT_QUEUE_CAPACITY {
-                        self.controls.push(PortControl::WatchState { active, order });
+                        self.controls
+                            .push(PortControl::WatchState { active, order });
                     } else if active {
-                        self.context.pending_active_order.fetch_max(order, Ordering::AcqRel);
+                        self.context
+                            .pending_active_order
+                            .fetch_max(order, Ordering::AcqRel);
                     } else {
-                        self.context.pending_idle_order.fetch_max(order, Ordering::AcqRel);
+                        self.context
+                            .pending_idle_order
+                            .fetch_max(order, Ordering::AcqRel);
                     }
                 }
             }
@@ -245,8 +258,14 @@ impl PortService {
     fn service_controls<E: CompEngine>(&mut self, engine: &mut E) {
         let mut controls = std::mem::take(&mut self.controls);
         for (active, order) in [
-            (false, self.context.pending_idle_order.swap(0, Ordering::AcqRel)),
-            (true, self.context.pending_active_order.swap(0, Ordering::AcqRel)),
+            (
+                false,
+                self.context.pending_idle_order.swap(0, Ordering::AcqRel),
+            ),
+            (
+                true,
+                self.context.pending_active_order.swap(0, Ordering::AcqRel),
+            ),
         ] {
             if order != 0 {
                 controls.push(PortControl::WatchState { active, order });
@@ -278,7 +297,9 @@ impl PortService {
         // restore -> click lands in the order it was sent.
         let mut cursor = 0;
         while cursor < controls.len() {
-            if controls[cursor].refuse_cleared_agent(self.context.agent_epoch.load(Ordering::Acquire)) {
+            if controls[cursor]
+                .refuse_cleared_agent(self.context.agent_epoch.load(Ordering::Acquire))
+            {
                 cursor += 1;
                 continue;
             }
@@ -288,7 +309,9 @@ impl PortService {
                 let mut op = request.op.clone();
                 let mut end = cursor + 1;
                 while let Some(PortControl::Input(next)) = controls.get(end) {
-                    let Some(combined) = engine.coalesce_input(&op, &next.op) else { break };
+                    let Some(combined) = engine.coalesce_input(&op, &next.op) else {
+                        break;
+                    };
                     op = combined;
                     end += 1;
                 }

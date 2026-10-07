@@ -251,7 +251,10 @@ pub enum KeySpec {
 /// One `comp.input.*` operation, parsed and bounded on the worker.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputOp {
-    OnSeat { seat: SeatKind, op: Box<InputOp> },
+    OnSeat {
+        seat: SeatKind,
+        op: Box<InputOp>,
+    },
     /// Focus and inject in one compositor-thread dispatch.
     Targeted {
         id: u64,
@@ -290,7 +293,9 @@ impl InputOp {
     pub fn event_bound(&self) -> usize {
         match self {
             Self::OnSeat { op, .. } => op.event_bound(),
-            Self::Targeted { op, .. } => op.event_bound() + usize::from(matches!(op.as_ref(), Self::PointerButton { .. })),
+            Self::Targeted { op, .. } => {
+                op.event_bound() + usize::from(matches!(op.as_ref(), Self::PointerButton { .. }))
+            }
             Self::PointerMove { .. } | Self::PointerScroll { .. } | Self::ReleaseAll => 1,
             Self::PointerButton { .. } => 2,
             Self::Key { modifiers, .. } => 2 * (modifiers.len() + 2),
@@ -301,7 +306,13 @@ impl InputOp {
     /// Whether this op drives the agent seat: such admissions are refused
     /// when the agent epoch moved on.
     pub fn uses_agent(&self) -> bool {
-        matches!(self, Self::OnSeat { seat: SeatKind::Agent, .. })
+        matches!(
+            self,
+            Self::OnSeat {
+                seat: SeatKind::Agent,
+                ..
+            }
+        )
     }
 }
 
@@ -325,7 +336,10 @@ pub enum LongOp {
         selection: Option<SelectionIdentity>,
     },
     Sequence(Vec<SequenceStep>),
-    SeatedSequence { seat: SeatKind, steps: Vec<SequenceStep> },
+    SeatedSequence {
+        seat: SeatKind,
+        steps: Vec<SequenceStep>,
+    },
     Wait(WaitSpec),
     /// Polite close now; if the same `{id, generation}` is still alive at
     /// the deadline, kill its client.
@@ -346,7 +360,9 @@ impl LongOp {
             Self::RegionSelect { timeout, .. } => {
                 *timeout + REGION_CLEANUP_BUDGET + Duration::from_secs(1)
             }
-            Self::Sequence(steps) | Self::SeatedSequence { steps, .. } => steps.iter().map(|step| step.delay).sum(),
+            Self::Sequence(steps) | Self::SeatedSequence { steps, .. } => {
+                steps.iter().map(|step| step.delay).sum()
+            }
             Self::Wait(spec) => spec.timeout,
             Self::ForceClose { timeout, .. } => *timeout,
         }
@@ -558,14 +574,19 @@ fn selection_arg(
             ));
         }
     };
-    if let Some(field) = object.keys().find(|field| !SELECTION.contains(&field.as_str())) {
+    if let Some(field) = object
+        .keys()
+        .find(|field| !SELECTION.contains(&field.as_str()))
+    {
         return Err(ControlReply::InvalidArgs {
             field: format!("selection.{field}"),
             allowed: SELECTION,
         });
     }
     let instance = match object.get("instance") {
-        Some(Value::String(instance)) if !instance.is_empty() && instance.is_ascii() && instance.len() <= 128 => {
+        Some(Value::String(instance))
+            if !instance.is_empty() && instance.is_ascii() && instance.len() <= 128 =>
+        {
             instance.clone()
         }
         _ => {
@@ -614,7 +635,9 @@ pub const CLOSE_FORCE_DEFAULT: Duration = Duration::from_secs(3);
 
 /// The required `{id, generation}` window target: both unsigned integers,
 /// `null` reads as absent, and the refusal names the missing field.
-pub fn required_target(object: &serde_json::Map<String, Value>) -> Result<(u64, u64), ControlReply> {
+pub fn required_target(
+    object: &serde_json::Map<String, Value>,
+) -> Result<(u64, u64), ControlReply> {
     let id = window_arg(object, "id")?
         .ok_or_else(|| invalid_argument("id", "unsigned integer", "required"))?;
     let generation = window_arg(object, "generation")?.ok_or_else(|| {
@@ -722,8 +745,10 @@ fn timeout_arg(
 pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, ControlReply> {
     let empty = serde_json::Map::new();
     match verb {
-        "comp.window.maximize" | "comp.window.unmaximize"
-        | "comp.window.fullscreen" | "comp.window.unfullscreen" => {
+        "comp.window.maximize"
+        | "comp.window.unmaximize"
+        | "comp.window.fullscreen"
+        | "comp.window.unfullscreen" => {
             let allowed: &'static [&'static str] = if verb == "comp.window.fullscreen" {
                 &["id", "generation", "output"]
             } else {
@@ -734,7 +759,11 @@ pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, Control
             Ok(WindowVerb::Op(WindowOp::State {
                 id,
                 generation,
-                state: if verb.ends_with("maximize") { WindowState::Maximized } else { WindowState::Fullscreen },
+                state: if verb.ends_with("maximize") {
+                    WindowState::Maximized
+                } else {
+                    WindowState::Fullscreen
+                },
                 enabled: matches!(verb, "comp.window.maximize" | "comp.window.fullscreen"),
                 output: output_arg(object)?,
             }))
@@ -1066,9 +1095,17 @@ pub fn parse_input_op(verb: &str, args: &Value) -> Result<InputOp, ControlReply>
         return Ok(op);
     }
     // Keep the internal human operation shape stable for existing call sites.
-    Ok(if seat == SeatKind::Human && !(verb == "comp.input.release_all" && explicit_seat.is_some()) {
-        op
-    } else { InputOp::OnSeat { seat, op: Box::new(op) } })
+    Ok(
+        if seat == SeatKind::Human && !(verb == "comp.input.release_all" && explicit_seat.is_some())
+        {
+            op
+        } else {
+            InputOp::OnSeat {
+                seat,
+                op: Box::new(op),
+            }
+        },
+    )
 }
 
 // Human-semantic callers must select human explicitly; the hub gates migrate
@@ -1084,7 +1121,11 @@ fn parse_input_seat(value: Option<&Value>) -> Result<Option<SeatKind>, ControlRe
     }
 }
 
-fn parse_seated_input_op(verb: &str, args: &Value, seat: SeatKind) -> Result<InputOp, ControlReply> {
+fn parse_seated_input_op(
+    verb: &str,
+    args: &Value,
+    seat: SeatKind,
+) -> Result<InputOp, ControlReply> {
     let op = parse_input_payload(verb, args)?;
     if !matches!(verb, "comp.input.key" | "comp.input.pointer.button") {
         return Ok(op);
@@ -1101,7 +1142,10 @@ fn parse_seated_input_op(verb: &str, args: &Value, seat: SeatKind) -> Result<Inp
     let Value::Object(window) = window else {
         return Err(invalid_argument("window", "object", "{id, generation}"));
     };
-    if let Some(field) = window.keys().find(|field| !WINDOW.contains(&field.as_str())) {
+    if let Some(field) = window
+        .keys()
+        .find(|field| !WINDOW.contains(&field.as_str()))
+    {
         return Err(ControlReply::InvalidArgs {
             field: format!("window.{field}"),
             allowed: WINDOW,
@@ -1113,9 +1157,12 @@ fn parse_seated_input_op(verb: &str, args: &Value, seat: SeatKind) -> Result<Inp
         .ok_or_else(|| invalid_argument("window.generation", "unsigned integer", "required"))?;
     let raise = bool_arg(object, "raise", seat == SeatKind::Human)?;
     if seat == SeatKind::Agent && raise {
-        return Err(ControlReply::refused("invalid_argument", json!({
-            "field":"raise", "seat":"agent", "message":"agent input never raises a window",
-        })));
+        return Err(ControlReply::refused(
+            "invalid_argument",
+            json!({
+                "field":"raise", "seat":"agent", "message":"agent input never raises a window",
+            }),
+        ));
     }
     Ok(InputOp::Targeted {
         id,
@@ -1497,30 +1544,29 @@ pub fn parse_sequence(args: &Value) -> Result<LongOp, ControlReply> {
             })?;
         let mut args = step.get("args").cloned().unwrap_or(Value::Null);
         if let Some(seat) = seat {
-            if args.is_null() { args = json!({}); }
+            if args.is_null() {
+                args = json!({});
+            }
             if let Some(object) = args.as_object_mut() {
                 object.entry("seat").or_insert_with(|| json!(seat.name()));
             }
         }
-        let op =
-            parse_input_op(verb, &args).map_err(|reply| {
-                match reply {
-                    ControlReply::Validation(SetValidationError::InvalidValue {
-                        path,
-                        expected,
-                        range,
-                    }) => ControlReply::Validation(SetValidationError::InvalidValue {
-                        path: format!("steps[{index}].args.{path}"),
-                        expected,
-                        range,
-                    }),
-                    ControlReply::InvalidArgs { field, allowed } => ControlReply::InvalidArgs {
-                        field: format!("steps[{index}].args.{field}"),
-                        allowed,
-                    },
-                    other => other,
-                }
-            })?;
+        let op = parse_input_op(verb, &args).map_err(|reply| match reply {
+            ControlReply::Validation(SetValidationError::InvalidValue {
+                path,
+                expected,
+                range,
+            }) => ControlReply::Validation(SetValidationError::InvalidValue {
+                path: format!("steps[{index}].args.{path}"),
+                expected,
+                range,
+            }),
+            ControlReply::InvalidArgs { field, allowed } => ControlReply::InvalidArgs {
+                field: format!("steps[{index}].args.{field}"),
+                allowed,
+            },
+            other => other,
+        })?;
         events += op.event_bound();
         if events > MAX_EVENTS_PER_VERB {
             return Err(invalid_argument(
@@ -1541,7 +1587,10 @@ pub fn parse_sequence(args: &Value) -> Result<LongOp, ControlReply> {
         parsed.push(SequenceStep { verb, op, delay });
     }
     Ok(match seat {
-        Some(seat) => LongOp::SeatedSequence { seat, steps: parsed },
+        Some(seat) => LongOp::SeatedSequence {
+            seat,
+            steps: parsed,
+        },
         None => LongOp::Sequence(parsed),
     })
 }
@@ -1588,11 +1637,7 @@ pub fn parse_stats_op(verb: &str, args: &Value) -> Result<WindowOp, ControlReply
     let registration = window_arg(object, "registration")?;
     let source = match object.get("source") {
         None | Some(Value::Null) => None,
-        Some(Value::String(source))
-            if valid_content_source_id(source) =>
-        {
-            Some(source.clone())
-        }
+        Some(Value::String(source)) if valid_content_source_id(source) => Some(source.clone()),
         Some(_) => {
             return Err(invalid_argument("source", "string", "[a-z0-9_-]{1,64}"));
         }
@@ -1700,7 +1745,6 @@ pub fn invalid_set_shape(path: Option<&str>) -> (u8, Arc<str>) {
     )
 }
 
-
 /// Whether a non-empty request body failed to parse as JSON. Computed once
 /// per command; each verb family refuses it its own way.
 pub fn body_is_malformed(body: &str) -> bool {
@@ -1756,9 +1800,12 @@ pub enum Request {
 pub fn classify(command: &str, args: &Value, malformed: bool) -> Result<Request, (u8, Arc<str>)> {
     if command == "comp.capture.frame" {
         if malformed {
-            return Err(invalid_argument("args", "JSON object", "{output?, path, format?}").into_wire());
+            return Err(
+                invalid_argument("args", "JSON object", "{output?, path, format?}").into_wire(),
+            );
         }
-        return crate::capture::parse(args).map(|spec| Request::Long(LongOp::CaptureFrame(spec)))
+        return crate::capture::parse(args)
+            .map(|spec| Request::Long(LongOp::CaptureFrame(spec)))
             .map_err(ControlReply::into_wire);
     }
     if command == "comp.ping" {
@@ -1819,7 +1866,9 @@ pub fn classify(command: &str, args: &Value, malformed: bool) -> Result<Request,
         } else {
             parse_region_cancel(args)
         };
-        return parsed.map(Request::RegionCancel).map_err(ControlReply::into_wire);
+        return parsed
+            .map(Request::RegionCancel)
+            .map_err(ControlReply::into_wire);
     }
     if command == "comp.input.sequence" {
         let parsed = if malformed {
@@ -1843,7 +1892,11 @@ pub fn classify(command: &str, args: &Value, malformed: bool) -> Result<Request,
     }
     if matches!(command, "comp.panel.hold" | "comp.panel.mode") {
         let parsed = if malformed {
-            Err(invalid_argument("args", "JSON object", "{output, edge, surface, ...}"))
+            Err(invalid_argument(
+                "args",
+                "JSON object",
+                "{output, edge, surface, ...}",
+            ))
         } else {
             PanelRequest::parse(command, args)
         };

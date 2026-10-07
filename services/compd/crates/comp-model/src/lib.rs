@@ -21,8 +21,8 @@
 //! sibling cores (surfaces for ids, seats and target refusals,
 //! ledger for the presentation leaves).
 
-pub mod catalogue;
 pub mod capture;
+pub mod catalogue;
 pub mod diff;
 pub mod observation;
 pub mod prop_path;
@@ -30,6 +30,6 @@ pub mod reply;
 pub mod request;
 pub mod snapshot;
 
-pub use surfaces::{SeatKind, WindowTargetError};
 pub use prop_path::PropPath;
 pub use reply::ControlReply;
+pub use surfaces::{SeatKind, WindowTargetError};
