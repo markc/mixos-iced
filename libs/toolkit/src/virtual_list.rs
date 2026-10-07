@@ -1044,11 +1044,12 @@ where
         });
         // The header draws with the list clip, not the body clip.
         if let Some(header) = &mut self.header
-            && let (Some(child), Some(node)) =
-                (tree.children.last_mut(), layout.children().last())
+            && let (Some(child), Some(node)) = (tree.children.last_mut(), layout.children().last())
         {
             operation.traverse(&mut |operation| {
-                header.as_widget_mut().operate(child, node, renderer, operation);
+                header
+                    .as_widget_mut()
+                    .operate(child, node, renderer, operation);
             });
         }
     }

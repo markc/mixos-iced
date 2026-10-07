@@ -4,10 +4,10 @@
 //! the candidate kind and raw layout and clipped visible bounds, and never
 //! text, editor state, unique id debug strings or reconstructed rectangles.
 
+use crate::Selector;
 use crate::core::Rectangle;
 use crate::find::{Finder, Strategy};
 use crate::target::Candidate;
-use crate::Selector;
 
 /// The widget kind a [`Record`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,15 +157,11 @@ mod tests {
 
     #[test]
     fn clip_intersects_the_viewport_and_never_leaks_siblings() {
-        let mut finder =
-            query(any()).with_viewport(Rectangle::with_size(Size::new(100.0, 100.0)));
+        let mut finder = query(any()).with_viewport(Rectangle::with_size(Size::new(100.0, 100.0)));
 
         // The parent container, which will restore its viewport when its
         // traversal scope ends.
-        finder.container(
-            None,
-            Rectangle::new(Point::ORIGIN, Size::new(100.0, 100.0)),
-        );
+        finder.container(None, Rectangle::new(Point::ORIGIN, Size::new(100.0, 100.0)));
         finder.traverse(&mut |operation| {
             // A clipped container inside the parent's scope: its children
             // see only the top-left quarter.
@@ -204,7 +200,10 @@ mod tests {
         let record = |index: usize| traversal.records[index];
         assert_eq!(
             record(1).visible_bounds,
-            Some(Rectangle::new(Point::new(10.0, 10.0), Size::new(30.0, 30.0)))
+            Some(Rectangle::new(
+                Point::new(10.0, 10.0),
+                Size::new(30.0, 30.0)
+            ))
         );
         assert_eq!(record(2).kind, Kind::Container);
         assert_eq!(record(2).visible_bounds, None, "below the clip");
@@ -217,13 +216,15 @@ mod tests {
 
     #[test]
     fn nested_clips_intersect_and_restore() {
-        let mut finder =
-            query(any()).with_viewport(Rectangle::with_size(Size::new(100.0, 100.0)));
+        let mut finder = query(any()).with_viewport(Rectangle::with_size(Size::new(100.0, 100.0)));
 
         // Outer clip 0..80, inner clip 20..100 => 20..80.
         finder.clip(Rectangle::new(Point::ORIGIN, Size::new(80.0, 80.0)));
         finder.traverse(&mut |operation| {
-            operation.clip(Rectangle::new(Point::new(20.0, 20.0), Size::new(80.0, 80.0)));
+            operation.clip(Rectangle::new(
+                Point::new(20.0, 20.0),
+                Size::new(80.0, 80.0),
+            ));
             let nested = Id::unique();
             operation.container(
                 Some(&nested),
@@ -246,7 +247,10 @@ mod tests {
         assert_eq!(traversal.records.len(), 2);
         assert_eq!(
             traversal.records[0].visible_bounds,
-            Some(Rectangle::new(Point::new(20.0, 20.0), Size::new(60.0, 60.0)))
+            Some(Rectangle::new(
+                Point::new(20.0, 20.0),
+                Size::new(60.0, 60.0)
+            ))
         );
         assert_eq!(
             traversal.records[1].visible_bounds,

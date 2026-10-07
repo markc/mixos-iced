@@ -3,11 +3,11 @@ pub use iced_selector::{
     Bounded, Candidate, Kind, Limits, Record, Selector, Target, Text, Traversal, id, is_focused,
 };
 
-use crate::core::window;
-use crate::core::widget::operation;
-use crate::task;
 use crate::Action;
 use crate::Task;
+use crate::core::widget::operation;
+use crate::core::window;
+use crate::task;
 
 use std::sync::{Arc, Mutex};
 

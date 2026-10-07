@@ -220,8 +220,7 @@ impl<S> Finder<S> {
         }
 
         self.visited += 1;
-        if self.visited > self.limits.max_visited
-            || self.strategy.len() >= self.limits.max_results
+        if self.visited > self.limits.max_visited || self.strategy.len() >= self.limits.max_results
         {
             self.truncated = true;
             return;

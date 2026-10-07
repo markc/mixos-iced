@@ -454,14 +454,12 @@ impl Controller {
     pub async fn drive(&mut self) {
         let deadline = {
             let guard = self.shared.core.lock().unwrap();
-            self.shared
-                .deadline(&guard)
-                .filter(|_| {
-                    guard
-                        .hold
-                        .as_ref()
-                        .is_some_and(|hold| matches!(hold.state, State::Armed | State::Reached))
-                })
+            self.shared.deadline(&guard).filter(|_| {
+                guard
+                    .hold
+                    .as_ref()
+                    .is_some_and(|hold| matches!(hold.state, State::Armed | State::Reached))
+            })
         };
         let Some(deadline) = deadline else {
             return;
@@ -740,8 +738,11 @@ mod tests {
 
     fn pair() -> (Controller, Hook, Run) {
         let run = Run::new("fixture-run", 7).unwrap();
-        let (controller, hook) =
-            barrier_with(&["dopus.before_execute"], run.clone(), Duration::from_secs(10));
+        let (controller, hook) = barrier_with(
+            &["dopus.before_execute"],
+            run.clone(),
+            Duration::from_secs(10),
+        );
         (controller, hook, run)
     }
 
@@ -811,7 +812,10 @@ mod tests {
 
         let released = controller.release(&token).unwrap();
         assert_eq!(released.state, State::Released);
-        assert_eq!(released.observation.as_ref().unwrap().as_str(), "copy a -> b");
+        assert_eq!(
+            released.observation.as_ref().unwrap().as_str(),
+            "copy a -> b"
+        );
         // Duplicate release of the retained terminal token is idempotent.
         assert_eq!(controller.release(&token).unwrap(), released);
 
@@ -839,7 +843,9 @@ mod tests {
             .arm(arm(&run, "dopus.before_execute", "first"))
             .unwrap();
         let permit = hook.reach("dopus.before_execute", observation()).unwrap();
-        controller.release(&Token::try_new("first").unwrap()).unwrap();
+        controller
+            .release(&Token::try_new("first").unwrap())
+            .unwrap();
         assert_eq!(permit.unwrap().wait_blocking(), Ok(()));
 
         // A fresh arm holds a fresh operation; the old token is stale.
@@ -851,7 +857,9 @@ mod tests {
             Err(Error::UnknownToken)
         );
         let permit = hook.reach("dopus.before_execute", observation()).unwrap();
-        controller.release(&Token::try_new("second").unwrap()).unwrap();
+        controller
+            .release(&Token::try_new("second").unwrap())
+            .unwrap();
         assert_eq!(permit.unwrap().wait_blocking(), Ok(()));
     }
 
@@ -878,8 +886,11 @@ mod tests {
     #[test]
     fn an_absolute_lifetime_expires_a_held_operation() {
         let run = Run::new("fixture-run", 7).unwrap();
-        let (controller, hook) =
-            barrier_with(&["dopus.before_execute"], run.clone(), Duration::from_millis(60));
+        let (controller, hook) = barrier_with(
+            &["dopus.before_execute"],
+            run.clone(),
+            Duration::from_millis(60),
+        );
         controller
             .arm(arm(&run, "dopus.before_execute", "hold-1"))
             .unwrap();
@@ -947,8 +958,11 @@ mod tests {
     #[test]
     fn dropped_controller_closes_an_active_hold() {
         let run = Run::new("fixture-run", 7).unwrap();
-        let (controller, hook) =
-            barrier_with(&["dopus.before_execute"], run.clone(), Duration::from_secs(10));
+        let (controller, hook) = barrier_with(
+            &["dopus.before_execute"],
+            run.clone(),
+            Duration::from_secs(10),
+        );
         controller
             .arm(arm(&run, "dopus.before_execute", "hold-1"))
             .unwrap();

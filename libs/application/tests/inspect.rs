@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![cfg(all(feature = "native-inspect", feature = "test-support", feature = "tiny-skia"))]
+#![cfg(all(
+    feature = "native-inspect",
+    feature = "test-support",
+    feature = "tiny-skia"
+))]
 //! Native layout queries run through the headless test runtime: they read the
 //! retained cached layout, produce no application message, and report real
 //! geometry with per-alias outcomes. The no-redraw guarantee is structural on
@@ -17,8 +21,8 @@ use application::iced::futures::executor::{ThreadPool, block_on};
 use application::iced::futures::task::noop_waker_ref;
 use application::iced::{Element, Length, Rectangle, Size, Task, Theme, widget};
 use application::inspect::{
-    AliasResult, AliasStatus, Error, Handle, Kind, Layer, Limits, Request, Snapshot, Target, Window,
-    channel,
+    AliasResult, AliasStatus, Error, Handle, Kind, Layer, Limits, Request, Snapshot, Target,
+    Window, channel,
 };
 use application::test::core::{Point, Settings, window};
 use application::test::emulator::{self, Emulator};
@@ -169,13 +173,18 @@ fn retained_queries_preserve_tree_geometry() {
 
     let mut first = Box::pin(app.handle.query(Request::new(Window::Only)));
     assert!(matches!(first.as_mut().poll(&mut context), Poll::Pending));
-    let first =
-        drive(&mut emulator, &app, &mut receiver, &mut first, &mut context).expect("query");
+    let first = drive(&mut emulator, &app, &mut receiver, &mut first, &mut context).expect("query");
 
     let mut second = Box::pin(app.handle.query(Request::new(Window::Only)));
     assert!(matches!(second.as_mut().poll(&mut context), Poll::Pending));
-    let second = drive(&mut emulator, &app, &mut receiver, &mut second, &mut context)
-        .expect("query");
+    let second = drive(
+        &mut emulator,
+        &app,
+        &mut receiver,
+        &mut second,
+        &mut context,
+    )
+    .expect("query");
 
     assert_eq!(first, second);
     assert_eq!(app.updates.load(Ordering::SeqCst), 0);

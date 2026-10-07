@@ -16,13 +16,13 @@
 //! unique id debug strings or reconstructed rectangles.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use iced::{Rectangle, Size, Task, widget};
 use iced_runtime::core::window;
 use iced_runtime::futures::futures::channel::{mpsc, oneshot};
-use iced_runtime::widget::selector::{Candidate, QueryTarget, self as select};
+use iced_runtime::widget::selector::{self as select, Candidate, QueryTarget};
 
 /// The widget kind a [`Target`] selects, and a [`Record`] reports.
 pub type Kind = select::Kind;
@@ -402,9 +402,8 @@ pub fn channel<Message: Send + 'static>(
     *inner.request_tx.lock().unwrap() = Some(request_tx);
 
     let task_inner = Arc::clone(&inner);
-    let task = Task::stream(request_rx).then(move |(request, reply)| {
-        run_request(Arc::clone(&task_inner), request, reply)
-    });
+    let task = Task::stream(request_rx)
+        .then(move |(request, reply)| run_request(Arc::clone(&task_inner), request, reply));
 
     Ok((Handle { inner }, task))
 }
@@ -527,7 +526,11 @@ fn run_request<Message: Send + 'static>(
     })
 }
 
-fn assemble(inner: &Inner, selected: &[usize], report: select::QueryReport) -> Result<Snapshot, Error> {
+fn assemble(
+    inner: &Inner,
+    selected: &[usize],
+    report: select::QueryReport,
+) -> Result<Snapshot, Error> {
     let records = report
         .records
         .iter()
@@ -626,14 +629,16 @@ mod tests {
             })
         );
         // Disjoint kind filters under one id are unambiguous.
-        assert!(channel::<()>(
-            vec![
-                Target::new("a", widget::Id::new("probe")).kind(Kind::Focusable),
-                Target::new("b", widget::Id::new("probe")).kind(Kind::TextInput),
-            ],
-            limits
-        )
-        .is_ok());
+        assert!(
+            channel::<()>(
+                vec![
+                    Target::new("a", widget::Id::new("probe")).kind(Kind::Focusable),
+                    Target::new("b", widget::Id::new("probe")).kind(Kind::TextInput),
+                ],
+                limits
+            )
+            .is_ok()
+        );
         assert!(matches!(
             channel::<()>(vec![target("toolong")], limits.alias_bytes(4)),
             Err(Error::AliasTooLong { .. })
@@ -659,7 +664,10 @@ mod tests {
 
     #[test]
     fn snapshots_map_records_and_alias_outcomes() {
-        let inner = inner(vec![target("probe"), Target::new("other", widget::Id::new("other"))]);
+        let inner = inner(vec![
+            target("probe"),
+            Target::new("other", widget::Id::new("other")),
+        ]);
         let snapshot = assemble(&inner, &[0, 1], report()).unwrap();
 
         assert_eq!(snapshot.window_id, 9);
@@ -702,10 +710,16 @@ mod tests {
 
     #[test]
     fn unknown_aliases_are_rejected_and_empty_selects_all() {
-        let inner = inner(vec![target("probe"), Target::new("other", widget::Id::new("other"))]);
+        let inner = inner(vec![
+            target("probe"),
+            Target::new("other", widget::Id::new("other")),
+        ]);
 
         assert_eq!(
-            select_aliases(&inner, &Request::new(Window::Only).aliases(["nope".to_owned()])),
+            select_aliases(
+                &inner,
+                &Request::new(Window::Only).aliases(["nope".to_owned()])
+            ),
             Err(Error::UnknownAlias("nope".to_owned()))
         );
         assert_eq!(

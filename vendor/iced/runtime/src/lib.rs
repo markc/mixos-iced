@@ -50,9 +50,7 @@ pub enum Action<T> {
         /// captured into the shared slot when it finishes.
         operation: Box<dyn core::widget::Operation>,
         /// Where the finished traversal lands.
-        traversal: std::sync::Arc<
-            std::sync::Mutex<Option<widget::selector::Traversal>>,
-        >,
+        traversal: std::sync::Arc<std::sync::Mutex<Option<widget::selector::Traversal>>>,
         /// The reply channel for the query report.
         reply: crate::futures::futures::channel::oneshot::Sender<
             Result<widget::selector::QueryReport, widget::selector::QueryError>,
@@ -148,7 +146,10 @@ where
             }
             #[cfg(feature = "selector")]
             Action::Query { target, layer, .. } => {
-                write!(f, "Action::Query {{ target: {target:?}, layer: {layer:?} }}")
+                write!(
+                    f,
+                    "Action::Query {{ target: {target:?}, layer: {layer:?} }}"
+                )
             }
             Action::Clipboard(action) => {
                 write!(f, "Action::Clipboard({action:?})")

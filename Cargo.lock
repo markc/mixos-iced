@@ -2929,6 +2929,7 @@ dependencies = [
  "bytes",
  "iced_core",
  "iced_futures",
+ "iced_selector",
  "thiserror 2.0.20",
 ]
 

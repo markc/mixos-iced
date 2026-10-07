@@ -1723,7 +1723,13 @@ fn run_action<'a, P, C>(
             }
         }
         #[cfg(feature = "selector")]
-        Action::Query { target, layer, operation, traversal, reply } => {
+        Action::Query {
+            target,
+            layer,
+            operation,
+            traversal,
+            reply,
+        } => {
             use crate::runtime::widget::selector::{QueryError, QueryReport, QueryTarget};
 
             let window = match target {
