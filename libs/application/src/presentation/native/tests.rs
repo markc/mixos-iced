@@ -45,19 +45,67 @@ fn ready(request: Request) -> Completion<u64> {
     )
 }
 fn decoded(rev: u64) -> Decoded {
+    decoded_snapshot(snapshot(rev, false))
+}
+fn decoded_snapshot(snapshot: Snapshot) -> Decoded {
     let command = bus::native_client::IncomingCommand {
         generation: 1,
         from: "settingsd".into(),
         command: String::new(),
         id: None,
         args: serde_json::Value::Null,
-        body: serde_json::to_string(&snapshot(rev, false)).unwrap(),
+        body: serde_json::to_string(&snapshot).unwrap(),
         headers: std::collections::BTreeMap::from([
             ("topic".into(), settings::topic("default")),
             ("broker_service".into(), "settingsd".into()),
         ]),
     };
     Decoded::from_command(&binding(), &command).unwrap()
+}
+#[test]
+fn exact_replay_does_not_mark_a_gap_but_same_revision_contradiction_does() {
+    let mailbox = Mailbox::<u64>::default();
+    mailbox.publish(Event::Delivery(decoded(1)));
+    for _ in 0..100 { assert!(!mailbox.publish(Event::Delivery(decoded(1)))); }
+    assert_eq!(mailbox.take().len(), 1);
+    mailbox.publish(Event::Delivery(decoded(1)));
+    mailbox.publish(Event::Delivery(decoded_snapshot(snapshot(1, true))));
+    let events = mailbox.take();
+    assert!(matches!(events[0], Event::Lost));
+}
+#[test]
+fn foreign_snapshot_binding_cannot_activate_despite_matching_broker_stamp() {
+    let mut session = session();
+    let mut foreign = snapshot(2, true);
+    foreign.binding.instance = "other".into();
+    let (change, jobs) = session.handle(Event::Delivery(decoded_snapshot(foreign)), Some(1));
+    assert!(change.is_none());
+    assert!(jobs.prepare.is_none());
+    assert_eq!(session.host().consumer().fault().unwrap().code, "wrong_target");
+    assert!(session.host().presentation().is_none());
+}
+#[test]
+fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
+    let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
+    session.bootstrap = Instant::now();
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    let request = jobs.fallback.unwrap();
+    let mut presentation = None;
+    let fallback = request.prepare(None, |snapshot, context, _| {
+        let appearance = Projection::new(&snapshot.effective[context])?.prepare(|_, _| Ok(FontSelection { font: crate::iced::Font::DEFAULT, choice: FontChoice::Declared }))?;
+        presentation = Some(Presentation { appearance, content: 77 });
+        Ok(())
+    }).unwrap();
+    let subscribe = session.host.consumer().current_work().unwrap().clone();
+    let (_, jobs) = session.handle(Event::Rpc(subscribe, Ok(None)), Some(1));
+    let (_, jobs) = session.handle(Event::Rpc(jobs.work.unwrap(), Ok(Some(snapshot(1, false)))), Some(1));
+    let ready = ready(jobs.prepare.unwrap());
+    let (change, jobs) = session.handle(Event::Fallback(request, Ok((fallback, presentation.unwrap()))), Some(1));
+    assert!(change.is_none());
+    assert!(jobs.prepare.is_some());
+    let (change, _) = session.handle(Event::Prepared(ready), Some(1));
+    assert!(change.is_some());
+    assert_eq!(*session.host().presentation().unwrap().content(), 1);
 }
 #[test]
 fn mailbox_bounds_a_delivery_storm_and_marks_the_gap_before_latest() {
