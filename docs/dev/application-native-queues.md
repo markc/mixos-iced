@@ -70,7 +70,9 @@ Ordering rules:
   actor's explicit retirement path.
 
 Flush only after the transport reports readiness, and never hold a taken
-item across an await point:
+item across an await point. Drive the sender's `poll_ready` through
+`std::future::poll_fn` in the actor's select, and recover `try_send` failures
+with `is_full()`/`into_inner()`:
 
 ```ignore
 ready = std::future::poll_fn(|cx| gui.poll_ready(cx)),
@@ -78,8 +80,8 @@ ready = std::future::poll_fn(|cx| gui.poll_ready(cx)),
     match ready {
         Ok(()) => match outbox.flush_with(|item| match gui.try_send(item) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(item)) => Err(SendError::Full(item)),
-            Err(TrySendError::Closed(item)) => Err(SendError::Closed(item)),
+            Err(err) if err.is_full() => Err(SendError::Full(err.into_inner())),
+            Err(err) => Err(SendError::Closed(err.into_inner())),
         }) {
             Flush::Empty | Flush::Full => {}
             Flush::Closed => { /* owned shutdown; retire via drain */ }

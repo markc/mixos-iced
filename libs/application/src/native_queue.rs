@@ -11,8 +11,9 @@
 //!
 //! An outbox is mutated by one owner after the transport reports readiness.
 //! No item is ever parked inside an async send future, where cancelling that
-//! future inside `select` could destroy the sole retained value. A local
-//! adapter is sufficient:
+//! future inside `select` could destroy the sole retained value. The actor
+//! drives the sender's `poll_ready` through `std::future::poll_fn` in its own
+//! select, and recovers `try_send` failures with `is_full()`/`into_inner()`:
 //!
 //! ```ignore
 //! ready = std::future::poll_fn(|cx| gui.poll_ready(cx)),
@@ -20,8 +21,8 @@
 //!     match ready {
 //!         Ok(()) => match outbox.flush_with(|item| match gui.try_send(item) {
 //!             Ok(()) => Ok(()),
-//!             Err(TrySendError::Full(item)) => Err(SendError::Full(item)),
-//!             Err(TrySendError::Closed(item)) => Err(SendError::Closed(item)),
+//!             Err(err) if err.is_full() => Err(SendError::Full(err.into_inner())),
+//!             Err(err) => Err(SendError::Closed(err.into_inner())),
 //!         }) {
 //!             Flush::Empty | Flush::Full => {}
 //!             Flush::Closed => { /* owned shutdown; retire via drain */ }
@@ -207,7 +208,11 @@ impl<T, const SLOTS: usize> Iterator for Drain<'_, T, SLOTS> {
                 self.outbox.reliable -= 1;
                 Some(value)
             }
-            Entry::Slot(slot) => self.outbox.slots[slot].take(),
+            Entry::Slot(slot) => Some(
+                self.outbox.slots[slot]
+                    .take()
+                    .expect("an occupied slot marker names an occupied slot"),
+            ),
         }
     }
 }
@@ -328,7 +333,7 @@ impl Permit {
             .expect("an acquired permit is finished exactly once");
         let mut state = admission.lock();
         state.active -= 1;
-        state.finished += 1;
+        state.finished = state.finished.saturating_add(1);
     }
 }
 
@@ -339,7 +344,7 @@ impl Drop for Permit {
         if let Some(admission) = self.admission.take() {
             let mut state = admission.lock();
             state.active -= 1;
-            state.abandoned += 1;
+            state.abandoned = state.abandoned.saturating_add(1);
         }
     }
 }
@@ -462,14 +467,40 @@ mod tests {
     }
 
     #[test]
+    fn rejected_reliable_and_slot_inputs_return_ownership_unchanged() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut outbox = Outbox::<Tracked, 1>::new(0);
+        // A full reliable FIFO hands a non-Clone input back to its owner.
+        let reliable = outbox
+            .push(Tracked::new(1, &drops))
+            .expect_err("the reliable capacity is zero");
+        assert_eq!(reliable.value(), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        // An invalid slot index hands a non-Clone input back too; neither
+        // rejection is load-shedding.
+        let slotted = outbox
+            .replace(1, Tracked::new(2, &drops))
+            .expect_err("only slot 0 exists");
+        assert_eq!(slotted.value(), 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        // The owner still holds both values and retires them itself.
+        drop(reliable);
+        drop(slotted);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn sustained_traffic_cannot_starve_an_already_queued_wake() {
         let mut outbox = Outbox::<u32, 1>::new(4);
         assert_eq!(outbox.replace(0, 1), Ok(None)); // the retained Settings wake
         for value in 2..=5 {
             assert_eq!(outbox.push(value), Ok(()));
         }
-        // Continuous replacement never pushes the wake back...
-        for wake in 6..=20 {
+        // Continuous replacement never pushes the wake back: the first
+        // replacement supersedes the initially retained wake, and each later
+        // one supersedes its immediate predecessor in place.
+        assert_eq!(outbox.replace(0, 6), Ok(Some(1)));
+        for wake in 7..=20 {
             assert_eq!(outbox.replace(0, wake), Ok(Some(wake - 1)));
         }
         assert_eq!(outbox.len(), 5);
@@ -612,6 +643,27 @@ mod tests {
     }
 
     #[test]
+    fn closed_restores_a_slot_front_value_and_drain_retires_it_once() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut outbox = Outbox::<Tracked, 1>::new(1);
+        assert_eq!(outbox.replace(0, Tracked::new(1, &drops)), Ok(None));
+        assert!(outbox.push(Tracked::new(2, &drops)).is_ok());
+        // The slot marker is the front entry and the receiver is closed: the
+        // slot value is restored in place and nothing is dropped or lost.
+        assert_eq!(
+            outbox.flush_with(|item| Err(SendError::Closed(item))),
+            Flush::Closed
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert_eq!(outbox.len(), 2);
+        assert_eq!(outbox.reliable_len(), 1);
+        let retired = outbox.drain().map(|item| item.value()).collect::<Vec<_>>();
+        assert_eq!(retired, [1, 2]);
+        assert!(outbox.is_empty());
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn reliable_and_slotted_items_deliver_in_queue_order() {
         let mut outbox = Outbox::<u32, 1>::new(2);
         assert_eq!(outbox.push(1), Ok(()));
@@ -732,5 +784,30 @@ mod tests {
         assert_eq!(admission.counts(), Counts { limit: 4, active: 1, finished: 0, abandoned: 0 });
         permit.finish();
         assert_eq!(admission.counts(), Counts { limit: 4, active: 0, finished: 1, abandoned: 0 });
+    }
+
+    #[test]
+    fn finished_and_abandoned_counters_saturate_instead_of_wrapping() {
+        let admission = Admission::new(2);
+        {
+            let mut state =
+                admission.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.finished = u64::MAX;
+        }
+        let permit = admission.try_acquire().expect("capacity remains");
+        permit.finish();
+        assert_eq!(admission.counts().finished, u64::MAX);
+        // The abandoned counter saturates the same way.
+        {
+            let mut state =
+                admission.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.abandoned = u64::MAX;
+        }
+        let permit = admission.try_acquire().expect("capacity remains");
+        drop(permit);
+        assert_eq!(
+            admission.counts(),
+            Counts { limit: 2, active: 0, finished: u64::MAX, abandoned: u64::MAX }
+        );
     }
 }

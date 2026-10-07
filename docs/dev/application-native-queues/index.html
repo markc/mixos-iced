@@ -306,14 +306,16 @@ discards an item because the receiver is full or gone; <code>drain</code> is the
 actor's explicit retirement path.</li>
 </ul>
 <p>Flush only after the transport reports readiness, and never hold a taken
-item across an await point:</p>
+item across an await point. Drive the sender's <code>poll_ready</code> through
+<code>std::future::poll_fn</code> in the actor's select, and recover <code>try_send</code> failures
+with <code>is_full()</code>/<code>into_inner()</code>:</p>
 <pre><code class="language-ignore">ready = std::future::poll_fn(|cx| gui.poll_ready(cx)),
     if !outbox.is_empty() =&gt; {
     match ready {
         Ok(()) =&gt; match outbox.flush_with(|item| match gui.try_send(item) {
             Ok(()) =&gt; Ok(()),
-            Err(TrySendError::Full(item)) =&gt; Err(SendError::Full(item)),
-            Err(TrySendError::Closed(item)) =&gt; Err(SendError::Closed(item)),
+            Err(err) if err.is_full() =&gt; Err(SendError::Full(err.into_inner())),
+            Err(err) =&gt; Err(SendError::Closed(err.into_inner())),
         }) {
             Flush::Empty | Flush::Full =&gt; {}
             Flush::Closed =&gt; { /* owned shutdown; retire via drain */ }
