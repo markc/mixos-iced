@@ -17,10 +17,12 @@
 //! alongside its other responses.
 
 pub mod barrier;
+pub mod frames;
 
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use bus::native_client::{ConnState, IncomingCommand, SupervisedClient};
 use serde_json::{Value, json};
@@ -31,8 +33,74 @@ use crate::inspect::AliasStatus;
 /// The verb prefix of the diagnostic acceptance commands.
 pub const VERB_PREFIX: &str = "app.acceptance.";
 
+/// Exact fixture verbs. Unknown prefix matches belong to the caller.
+pub const VERBS: &[&str] = &[
+    "app.acceptance.describe",
+    "app.acceptance.layout",
+    "app.acceptance.barrier.arm",
+    "app.acceptance.barrier.wait",
+    "app.acceptance.barrier.release",
+    "app.acceptance.barrier.state",
+    "app.acceptance.frame.state",
+    "app.acceptance.frame.wait",
+];
+
+pub fn recognises(verb: &str) -> bool {
+    VERBS.contains(&verb)
+}
+
+/// Final sends have their own bound; the actor retains admission through reap.
+pub const REPLY_DEADLINE: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackError {
+    Retired,
+    ReplyTimedOut,
+    ReplyFailed(String),
+}
+
 /// The bounded reply deadline the Bus worker applies to a layout query.
 pub const QUERY_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Explicit owned fixture launch identity. Ordinary launches have neither
+/// variable set. Partial, invalid or non-Unicode identities fail startup.
+#[derive(Debug, Clone)]
+pub struct Launch {
+    pub run: String,
+    pub instance: u64,
+}
+
+impl Launch {
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let read = |name| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be Unicode")),
+        };
+        Self::parse(
+            read("MIXOS_ACCEPTANCE_RUN")?.as_deref(),
+            read("MIXOS_ACCEPTANCE_INSTANCE")?.as_deref(),
+        )
+    }
+
+    fn parse(run: Option<&str>, instance: Option<&str>) -> Result<Option<Self>, String> {
+        match (run, instance) {
+            (None, None) => Ok(None),
+            (Some(run), Some(instance)) if !run.is_empty() && run.len() <= barrier::MAX_STRING => {
+                let instance = instance
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value != 0)
+                    .ok_or_else(|| "fixture instance must be a nonzero u64".to_owned())?;
+                Ok(Some(Self {
+                    run: run.to_owned(),
+                    instance,
+                }))
+            }
+            _ => Err("fixture launch requires bounded run and nonzero instance together".into()),
+        }
+    }
+}
 
 /// The per-process acceptance identity, from the fixture launch
 /// configuration. It is shared by the describe verb and the fence
@@ -100,42 +168,82 @@ pub fn track(
     inspector: &inspect::Handle,
     controller: &barrier::Controller,
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
+    let future = track_result(client, incoming, describe, inspector, controller, None)?;
+    Some(async move {
+        let _ = future.await;
+    })
+}
+
+/// Result-bearing tracked operation. The existing actor owns admission,
+/// cancellation and reaping; this facade owns no tasks or connection.
+pub fn track_result(
+    client: Arc<SupervisedClient>,
+    incoming: IncomingCommand,
+    describe: &Describe,
+    inspector: &inspect::Handle,
+    controller: &barrier::Controller,
+    frames: Option<&frames::Endpoint>,
+) -> Option<impl Future<Output = Result<(), TrackError>> + Send + 'static> {
+    if !recognises(&incoming.command) {
+        return None;
+    }
     let verb = incoming.command.strip_prefix(VERB_PREFIX)?.to_owned();
     let describe = describe.clone();
     let inspector = inspector.clone();
     let controller = controller.clone();
+    let frames = frames.cloned();
+    // Capture on native admission, before a queued task is first polled.
+    let frame_fence = frames.as_ref().map(|endpoint| endpoint.handle().fence());
+    let admitted_at = Instant::now();
 
     Some(async move {
         // Queued work may first be polled after the receiving socket retired.
         // This is a live sample; the owning worker also cancels its controller
         // on lifecycle changes. The reply remains socket-fenced by Bus.
         if !live_generation(&client, incoming.generation) {
-            return;
+            return Err(TrackError::Retired);
         }
-        let body = match verb.as_str() {
-            "describe" => Ok(describe_json(&describe)),
-            "layout" => layout_verb(&describe, &inspector, &incoming).await,
-            "barrier.arm" => barrier_arm_verb(&controller, &incoming),
-            "barrier.wait" => barrier_wait_verb(&controller, &incoming).await,
-            "barrier.release" => barrier_release_verb(&controller, &incoming),
-            "barrier.state" => barrier_state_verb(&controller, &incoming),
-            _ => return,
+        let body = match validate_fixture(&describe, &incoming) {
+            Err(error) => Err(error),
+            Ok(()) => match verb.as_str() {
+                "describe" => Ok(describe_json(&describe, frames.is_some())),
+                "layout" => layout_verb(&describe, &inspector, &incoming, admitted_at).await,
+                "barrier.arm" => barrier_arm_verb(&controller, &incoming),
+                "barrier.wait" => barrier_wait_verb(&controller, &incoming).await,
+                "barrier.release" => barrier_release_verb(&controller, &incoming),
+                "barrier.state" => barrier_state_verb(&controller, &incoming),
+                "frame.state" => frames
+                    .as_ref()
+                    .ok_or_else(|| "frame evidence unsupported".to_owned())
+                    .and_then(|endpoint| endpoint.state(&incoming)),
+                "frame.wait" => match (&frames, frame_fence) {
+                    (Some(endpoint), Some(fence)) => {
+                        endpoint.wait(&incoming, fence, admitted_at).await
+                    }
+                    _ => Err("frame evidence unsupported".to_owned()),
+                },
+                _ => unreachable!("exact registered verb"),
+            },
         };
 
         if !live_generation(&client, incoming.generation) {
-            return;
+            return Err(TrackError::Retired);
         }
         let body = body.unwrap_or_else(error_json);
-        let _ = client
-            .respond_parts(
+        tokio::time::timeout(
+            REPLY_DEADLINE,
+            client.respond_parts(
                 incoming.generation,
                 &incoming.from,
                 &incoming.command,
                 incoming.id.as_deref(),
                 0,
                 &body,
-            )
-            .await;
+            ),
+        )
+        .await
+        .map_err(|_| TrackError::ReplyTimedOut)?
+        .map_err(|error| TrackError::ReplyFailed(error.to_string()))
     })
 }
 
@@ -146,7 +254,7 @@ fn live_generation(client: &SupervisedClient, generation: u64) -> bool {
         && client.connection_generation() == generation
 }
 
-fn parse_body(body: &str) -> Result<Value, String> {
+pub(super) fn parse_body(body: &str) -> Result<Value, String> {
     if body.len() > 16_384 {
         return Err("request body exceeds 16384 bytes".into());
     }
@@ -163,7 +271,7 @@ fn error_json(error: String) -> String {
         .unwrap_or_else(|_| "{\"ok\":false}".to_owned())
 }
 
-fn describe_json(describe: &Describe) -> String {
+fn describe_json(describe: &Describe, frames: bool) -> String {
     serde_json::to_string(&json!({
         "ok": true,
         "pid": describe.pid,
@@ -171,6 +279,8 @@ fn describe_json(describe: &Describe) -> String {
         "instance": describe.instance,
         "points": describe.points,
         "aliases": describe.aliases,
+        "protocol": 1,
+        "frames": {"enabled":frames,"waiters":1,"default_timeout_ms":2000,"max_timeout_ms":10000,"retained_records":2},
         "limits": {
             "aliases": describe.limits.max_aliases(),
             "alias_bytes": describe.limits.max_alias_bytes(),
@@ -186,8 +296,33 @@ async fn layout_verb(
     describe: &Describe,
     inspector: &inspect::Handle,
     incoming: &IncomingCommand,
+    admitted_at: Instant,
 ) -> Result<String, String> {
+    let deadline = admitted_at + QUERY_DEADLINE;
+    if Instant::now() >= deadline {
+        return Err("layout query timed out before dispatch".into());
+    }
     let body = parse_body(&incoming.body)?;
+    check_barrier_fields(
+        &body,
+        &[
+            "run",
+            "instance",
+            "generation",
+            "window",
+            "layer",
+            "aliases",
+        ],
+    )?;
+    if body.get("layer").is_some_and(|layer| !layer.is_string()) {
+        return Err("layer must be a string".into());
+    }
+    if body
+        .get("aliases")
+        .is_some_and(|aliases| !aliases.is_array())
+    {
+        return Err("aliases must be an array".into());
+    }
 
     let window = match body.get("window") {
         None => inspect::Window::Only,
@@ -219,10 +354,16 @@ async fn layout_verb(
         request = request.aliases(aliases);
     }
 
-    let snapshot = tokio::time::timeout(QUERY_DEADLINE, inspector.query(request))
-        .await
-        .map_err(|_| "layout query timed out".to_owned())?
-        .map_err(|error| format!("layout query: {error:?}"))?;
+    if Instant::now() >= deadline {
+        return Err("layout query timed out before dispatch".into());
+    }
+    let snapshot = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        inspector.query(request),
+    )
+    .await
+    .map_err(|_| "layout query timed out".to_owned())?
+    .map_err(|error| format!("layout query: {error:?}"))?;
 
     snapshot_json(&snapshot, &describe.limits)
 }
@@ -378,7 +519,7 @@ fn parse_reference(incoming: &IncomingCommand) -> Result<barrier::Reference, Str
     })
 }
 
-fn check_request_generation(body: &Value, generation: u64) -> Result<(), String> {
+pub(super) fn check_request_generation(body: &Value, generation: u64) -> Result<(), String> {
     if let Some(requested) = body.get("generation")
         && requested.as_u64() != Some(generation)
     {
@@ -387,14 +528,28 @@ fn check_request_generation(body: &Value, generation: u64) -> Result<(), String>
     Ok(())
 }
 
-fn check_barrier_fields(body: &Value, allowed: &[&str]) -> Result<(), String> {
+pub(super) fn check_barrier_fields(body: &Value, allowed: &[&str]) -> Result<(), String> {
     if body
         .as_object()
         .expect("validated object")
         .keys()
         .any(|key| !allowed.contains(&key.as_str()))
     {
-        return Err("unknown barrier request field".into());
+        return Err("unknown request field".into());
+    }
+    Ok(())
+}
+
+fn validate_fixture(describe: &Describe, incoming: &IncomingCommand) -> Result<(), String> {
+    let body = parse_body(&incoming.body)?;
+    if body.get("run").and_then(Value::as_str) != Some(describe.run.as_str())
+        || body.get("instance").and_then(Value::as_u64) != Some(describe.instance)
+    {
+        return Err("wrong fixture run or process instance".into());
+    }
+    check_request_generation(&body, incoming.generation)?;
+    if incoming.command == "app.acceptance.describe" {
+        check_barrier_fields(&body, &["run", "instance", "generation"])?;
     }
     Ok(())
 }
@@ -441,5 +596,62 @@ fn state_name(state: barrier::State) -> &'static str {
         barrier::State::Cancelled => "cancelled",
         barrier::State::Expired => "expired",
         barrier::State::Closed => "closed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn incoming(verb: &str, body: Value) -> IncomingCommand {
+        IncomingCommand {
+            generation: 7,
+            from: "fixture".into(),
+            command: verb.into(),
+            id: None,
+            args: Value::Null,
+            body: body.to_string(),
+            headers: Default::default(),
+        }
+    }
+
+    #[test]
+    fn exact_verbs_and_fixture_identity_are_required_for_reads_too() {
+        assert!(recognises("app.acceptance.frame.wait"));
+        assert!(!recognises("app.acceptance.future"));
+        assert!(!recognises("app.describe"));
+        let describe = Describe::new(1, "owned", 11).unwrap();
+        for verb in VERBS {
+            let mut request = incoming(verb, json!({"run":"owned","instance":11,"generation":7}));
+            assert!(validate_fixture(&describe, &request).is_ok());
+            request.body = json!({"run":"foreign","instance":11}).to_string();
+            assert!(validate_fixture(&describe, &request).is_err());
+            request.body = json!({"run":"owned","instance":12}).to_string();
+            assert!(validate_fixture(&describe, &request).is_err());
+            request.body = json!({"run":"owned","instance":11,"generation":8}).to_string();
+            assert!(validate_fixture(&describe, &request).is_err());
+        }
+        assert!(
+            validate_fixture(
+                &describe,
+                &incoming(
+                    "app.acceptance.describe",
+                    json!({"run":"owned","instance":11,"typo":true})
+                )
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn normal_launch_is_absent_and_partial_fixture_identity_is_refused() {
+        assert!(Launch::parse(None, None).unwrap().is_none());
+        assert!(Launch::parse(Some("owned"), None).is_err());
+        assert!(Launch::parse(None, Some("1")).is_err());
+        assert!(Launch::parse(Some(""), Some("1")).is_err());
+        assert!(Launch::parse(Some("owned"), Some("0")).is_err());
+        assert!(Launch::parse(Some("owned"), Some("-1")).is_err());
+        let launch = Launch::parse(Some("owned"), Some("31")).unwrap().unwrap();
+        assert_eq!(launch.instance, 31);
     }
 }

@@ -8,7 +8,7 @@ add their own title, theme and subscriptions before running the event loop.
 The optional `test-support` feature exposes the pinned UI simulator through
 the host, so app tests need no direct iced-family manifest dependency.
 
-With `settings-native`, `application::frames::Handle` observes the actual native
+With `settings-native` or `acceptance`, `application::frames::Handle` observes the actual native
 runtime without posting a widget message or requesting a redraw. Construct one
 handle for each window incarnation and retain it. Bind its stable observer using
 `Session::frame_stamp()` alongside the immutable view; this stamp describes the
@@ -27,6 +27,33 @@ before draining shutdown work or replacing/removing a binding. Receipt history
 does not prove current registration: Bus generation and settings authority are
 separate evidence. Nested receipts describe nested presentation; they do not
 attest physical scanout.
+
+The non-default `acceptance` feature supplies a fixture-only Bus facade. A host
+must also require an explicit owned fixture launch identity; enabling the build
+feature alone does not authorise registration. All eight verbs are registered
+under the shared application contract: `app.acceptance.describe`, `layout`,
+`barrier.arm`, `barrier.wait`, `barrier.release`, `barrier.state`, `frame.state`
+and `frame.wait` (each with the `app.acceptance.` prefix). Normal launches omit
+these verbs. Every request carries `run` and `instance`; optional `generation`
+must match the incoming native connection. Unknown fields and verbs are refused.
+The owning actor retains admission until the result-bearing `track_result`
+future and final reply complete and are reaped. The compatibility `track`
+wrapper discards send errors; new hosts use the result-bearing entry point.
+
+`acceptance::frames::Endpoint` shares the actual frame handle and one target
+mailbox. The UI publishes its actual window id and installed stamp after window
+creation and activation. `frame.state` returns this target separately from the
+latest status and latest presented receipt. `frame.wait` additionally requires
+numeric `window`, nonzero `activation_epoch`, `local_revision` and optional
+`timeout_ms` (default 2000, range 1–10000). It captures a native lifecycle fence
+at admission. A caller cannot supply that fence through JSON. An already
+presented exact stamp may satisfy immediately; this does not promise a fresh
+frame after the call. Discard, capacity or submission failure wait for natural
+progress, while unsupported evidence, exhausted identities, closure, wrong
+window, lifecycle loss, timeout and a second waiter fail explicitly. The final
+reply has a separate two-second deadline and remains on its receiving socket.
+Close frame, inspector and barrier owners before draining actor tasks; reserve
+control capacity so a wait cannot block its own release or shutdown.
 
 Portable controls live in `libs/toolkit`. `EditorPane` takes a bounded document
 provider and emits editing intents; Ced adapts its editor engine to that

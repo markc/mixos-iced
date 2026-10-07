@@ -43,11 +43,19 @@ impl Lane {
     /// Hold one physical task after opening the real writer. Dropping the
     /// release sender also unblocks it, including during a test panic.
     #[cfg(test)]
-    pub fn hold_next_write(&mut self) -> (tokio::sync::oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    pub fn hold_next_write(
+        &mut self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
         assert!(self.write_gate.is_none());
         let (entered, notification) = tokio::sync::oneshot::channel();
         let (release, gate) = std::sync::mpsc::channel();
-        self.write_gate = Some(WriteGate { entered, release: gate });
+        self.write_gate = Some(WriteGate {
+            entered,
+            release: gate,
+        });
         (notification, release)
     }
 

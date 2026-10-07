@@ -20,11 +20,26 @@ fn frame_stamp_tracks_installed_content_through_pending_and_failed_preparation()
     assert_eq!(installed.local_revision, 0);
     let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
     assert_eq!(session.frame_stamp(), Some(installed));
-    session.handle(local(captured(&jobs), Err(Diagnostic::new("fixture", "context", "held source failed"))), Some(1));
+    session.handle(
+        local(
+            captured(&jobs),
+            Err(Diagnostic::new("fixture", "context", "held source failed")),
+        ),
+        Some(1),
+    );
     assert_eq!(session.frame_stamp(), Some(installed));
     let (_, jobs) = session.set_context(Context(3), Some(1)).unwrap();
     let appearance = session.host.presentation().unwrap().appearance.clone();
-    session.handle(local(captured(&jobs), Ok(Presentation {appearance, content:3})), Some(1));
+    session.handle(
+        local(
+            captured(&jobs),
+            Ok(Presentation {
+                appearance,
+                content: 3,
+            }),
+        ),
+        Some(1),
+    );
     let local = session.frame_stamp().unwrap();
     assert_eq!(local.activation_epoch, installed.activation_epoch);
     assert_eq!(local.local_revision, 2);
@@ -391,17 +406,24 @@ async fn physical_cache_write_serialises_latest_context_and_keeps_failed_write_q
         activate_first(&mut session);
         let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = Arc::clone(&builds);
-        let mut worker = Worker::contextual_with_host(move |_, _, context: &Context| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            Ok(context.0)
-        }, hermetic_host()).with_cache_directory(directory.path().to_owned());
+        let mut worker = Worker::contextual_with_host(
+            move |_, _, context: &Context| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(context.0)
+            },
+            hermetic_host(),
+        )
+        .with_cache_directory(directory.path().to_owned());
         let (entered, release) = worker.cache.as_mut().unwrap().hold_next_write();
         let (_, jobs) = session.handle(Event::Wake, Some(1));
         let save = jobs.save.clone().unwrap();
         let epoch = session.activation_epoch;
         worker.replace(jobs);
         worker.start();
-        tokio::time::timeout(Duration::from_secs(5), entered).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(settings::cache::Writer::open(directory.path(), session.host.consumer()).is_err());
         for value in 2..=4 {
             let (_, jobs) = session.set_context(Context(value), Some(1)).unwrap();
@@ -410,9 +432,18 @@ async fn physical_cache_write_serialises_latest_context_and_keeps_failed_write_q
             worker.start();
             assert!(matches!(worker.running, Some(Running::Save { .. })));
         }
-        assert_eq!(builds.load(Ordering::SeqCst), 0, "physical save excludes another preparation");
-        let path = directory.path().join(format!("{}.json", settings::digest(&(binding(), "app:ced", false)).unwrap()));
-        if fail { std::fs::create_dir(&path).unwrap(); }
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            0,
+            "physical save excludes another preparation"
+        );
+        let path = directory.path().join(format!(
+            "{}.json",
+            settings::digest(&(binding(), "app:ced", false)).unwrap()
+        ));
+        if fail {
+            std::fs::create_dir(&path).unwrap();
+        }
         release.send(()).unwrap();
         let event = next_context(&mut worker).await;
         assert!(matches!(&event, Event::Saved(_, result) if result.is_err() == fail));
@@ -424,12 +455,18 @@ async fn physical_cache_write_serialises_latest_context_and_keeps_failed_write_q
         assert_eq!(*session.host.presentation().unwrap().content(), 4);
         assert_eq!(session.activation_epoch, epoch);
         assert_eq!(builds.load(Ordering::SeqCst), 1);
-        assert_eq!(session.cache_fault().is_some(), fail, "local success retains persistence faults");
+        assert_eq!(
+            session.cache_fault().is_some(),
+            fail,
+            "local success retains persistence faults"
+        );
         let (_, jobs) = session.handle(Event::Wake, Some(1));
         worker.replace(jobs);
         assert!(!worker.cache.as_ref().unwrap().pending());
         if fail {
-            assert!(settings::cache::Writer::open(directory.path(), session.host.consumer()).is_err());
+            assert!(
+                settings::cache::Writer::open(directory.path(), session.host.consumer()).is_err()
+            );
             std::fs::remove_dir(&path).unwrap();
             let (_, jobs) = session.handle(Event::RetryCache, Some(1));
             worker.replace(jobs);
@@ -437,7 +474,13 @@ async fn physical_cache_write_serialises_latest_context_and_keeps_failed_write_q
         }
         assert!(session.cache_fault().is_none());
         assert_eq!(session.cache_persisted(), Some(&save.identity()));
-        assert_eq!(settings::cache::load(directory.path(), session.host.consumer()).unwrap().snapshot().revision, save.identity().revision);
+        assert_eq!(
+            settings::cache::load(directory.path(), session.host.consumer())
+                .unwrap()
+                .snapshot()
+                .revision,
+            save.identity().revision
+        );
     }
 }
 
@@ -448,25 +491,41 @@ async fn physical_cache_write_survives_shutdown_deadline_without_activating_loca
     let directory = tempfile::tempdir().unwrap();
     let mut session = contextual();
     activate_first(&mut session);
-    let mut worker = Worker::contextual_with_host(|_, _, context: &Context| Ok(context.0), hermetic_host())
-        .with_cache_directory(directory.path().to_owned());
+    let mut worker =
+        Worker::contextual_with_host(|_, _, context: &Context| Ok(context.0), hermetic_host())
+            .with_cache_directory(directory.path().to_owned());
     let (entered, release) = worker.cache.as_mut().unwrap().hold_next_write();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     worker.replace(jobs);
     worker.start();
-    tokio::time::timeout(Duration::from_secs(5), entered).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
     let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
     worker.replace(jobs);
-    let fault = worker.flush_cache(Instant::now() + Duration::from_millis(20)).await.unwrap_err();
+    let fault = worker
+        .flush_cache(Instant::now() + Duration::from_millis(20))
+        .await
+        .unwrap_err();
     assert_eq!(fault.code, "cache_drain_timeout");
     assert!(matches!(worker.running, Some(Running::Save { .. })));
     assert!(session.cache_persisted().is_none());
     assert_eq!(*session.host.presentation().unwrap().content(), 1);
     assert!(worker.queued.is_none());
     release.send(()).unwrap();
-    worker.flush_cache(Instant::now() + Duration::from_secs(5)).await.unwrap();
+    worker
+        .flush_cache(Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
     assert!(worker.running.is_none());
-    assert_eq!(settings::cache::load(directory.path(), session.host.consumer()).unwrap().snapshot().revision, Revision(1));
+    assert_eq!(
+        settings::cache::load(directory.path(), session.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(1)
+    );
     assert_eq!(*session.host.presentation().unwrap().content(), 1);
 }
 

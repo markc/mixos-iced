@@ -5,6 +5,14 @@
 {
   schema: 1,
   verbs: [
+    {name:"app.acceptance.describe", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.layout", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.barrier.arm", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.barrier.wait", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.barrier.release", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.barrier.state", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.frame.state", owner:"application", version:"0.1.14", status:"accepted"},
+    {name:"app.acceptance.frame.wait", owner:"application", version:"0.1.14", status:"accepted"},
     {name:"settings.describe", owner:"settingsd", version:"0.1.0", status:"accepted"},
     {name:"settings.get", owner:"settingsd", version:"0.1.0", status:"accepted"},
     {name:"settings.validate", owner:"settingsd", version:"0.1.0", status:"accepted"},

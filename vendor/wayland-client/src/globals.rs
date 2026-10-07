@@ -57,8 +57,8 @@ use std::{
     ops::RangeInclusive,
     os::unix::io::OwnedFd,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -68,8 +68,8 @@ use wayland_backend::{
 };
 
 use crate::{
-    protocol::{wl_display, wl_fixes, wl_registry},
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+    protocol::{wl_display, wl_fixes, wl_registry},
 };
 
 /// Initialize a new event queue with its associated registry and retrieve the initial list of globals
@@ -86,7 +86,9 @@ where
     let fixes = Arc::new(OnceLock::<wl_fixes::WlFixes>::new());
 
     let data = Arc::new(RegistryState {
-        globals: GlobalListContents { contents: Default::default() },
+        globals: GlobalListContents {
+            contents: Default::default(),
+        },
         handle: event_queue.handle(),
         fixes: fixes.clone(),
         initial_roundtrip_done: AtomicBool::new(false),
@@ -165,8 +167,12 @@ impl GlobalList {
 
         if *version.end() > interface.version {
             // This is a panic because it's a compile-time programmer error, not a runtime error.
-            panic!("Maximum version ({}) of {} was higher than the proxy's maximum version ({}); outdated wayland XML files?",
-                version.end(), interface.name, interface.version);
+            panic!(
+                "Maximum version ({}) of {} was higher than the proxy's maximum version ({}); outdated wayland XML files?",
+                version.end(),
+                interface.name,
+                interface.version
+            );
         }
 
         let globals = &self.registry.data::<GlobalListContents>().unwrap().contents;
@@ -174,14 +180,20 @@ impl GlobalList {
         let (name, version) = guard
             .iter()
             // Find the with the correct interface
-            .filter_map(|Global { name, interface: interface_name, version }| {
-                // TODO: then_some
-                if interface.name == &interface_name[..] {
-                    Some((*name, *version))
-                } else {
-                    None
-                }
-            })
+            .filter_map(
+                |Global {
+                     name,
+                     interface: interface_name,
+                     version,
+                 }| {
+                    // TODO: then_some
+                    if interface.name == &interface_name[..] {
+                        Some((*name, *version))
+                    } else {
+                        None
+                    }
+                },
+            )
             .next()
             .ok_or(BindError::NotPresent)?;
 
@@ -364,7 +376,11 @@ where
         // Can't do much if the server sends a malformed message
         if let Ok((registry, event)) = wl_registry::WlRegistry::parse_event(&conn, msg) {
             match event {
-                wl_registry::Event::Global { name, interface, version } => {
+                wl_registry::Event::Global {
+                    name,
+                    interface,
+                    version,
+                } => {
                     let wl_fixes_ver = 1u32..=1;
                     if interface == "wl_fixes" && version >= *wl_fixes_ver.start() {
                         let _ = self.fixes.set(
@@ -384,7 +400,11 @@ where
                     }
 
                     let mut guard = self.globals.contents.lock().unwrap();
-                    guard.push(Global { name, interface, version });
+                    guard.push(Global {
+                        name,
+                        interface,
+                        version,
+                    });
                 }
 
                 wl_registry::Event::GlobalRemove { name: remove } => {
@@ -396,7 +416,8 @@ where
 
         if let Some(msg) = to_forward {
             // forward the message to the event queue as normal
-            let rejected = self.handle
+            let rejected = self
+                .handle
                 .inner
                 .lock()
                 .unwrap()
