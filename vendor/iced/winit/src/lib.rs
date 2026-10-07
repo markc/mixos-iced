@@ -761,6 +761,11 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        #[cfg(feature = "native-frame-probe")]
+                        if window.native_frame_probe.submissions_held() {
+                            continue;
+                        }
+
                         let physical_size = window.state.physical_size();
                         let mut logical_size = window.state.logical_size();
 
@@ -943,16 +948,16 @@ async fn run_instance<P>(
                         window.draw_preedit();
 
                         let present_span = debug::present(id);
-                        let binding = interface.frame_presentation().cloned();
-                        window.presentation.drawn(binding.clone());
+                        let drawn = interface.frame_presentation().cloned();
+                        window.presentation.drawn(drawn.clone());
                         let binding = window.presentation.feedback_candidate();
                         #[cfg(feature = "native-frame-probe")]
                         let scope =
                             window
                                 .native_frame_probe
-                                .begin(id, binding.as_ref())
-                                .then(|| {
-                                    core::window::presentation::probe::Scope::arm()
+                                .begin(id, drawn.as_ref(), (physical_size.width, physical_size.height))
+                                .map(|point| {
+                                    core::window::presentation::probe::Scope::arm_at(point)
                                         .expect("one native draw scope")
                                 });
                         let mut feedback = None;
@@ -974,12 +979,12 @@ async fn run_instance<P>(
                         let fault_consumed = scope.as_ref().map(|scope| scope.consumed());
                         #[cfg(feature = "native-frame-probe")]
                         drop(scope);
+                        #[cfg(feature = "native-frame-probe")]
+                        let request = feedback
+                            .as_ref()
+                            .and_then(|result| result.as_ref().ok())
+                            .copied();
                         if let Some(binding) = binding {
-                            #[cfg(feature = "native-frame-probe")]
-                            let request = feedback
-                                .as_ref()
-                                .and_then(|result| result.as_ref().ok())
-                                .copied();
                             match feedback {
                                 Some(feedback) => {
                                     match feedback {
@@ -1004,13 +1009,16 @@ async fn run_instance<P>(
                                 }
                                 None => {}
                             }
-                            #[cfg(feature = "native-frame-probe")]
+                        }
+                        #[cfg(feature = "native-frame-probe")]
+                        if let Some(drawn) = &drawn {
                             if let Some(held) = window.native_frame_probe.submitted(
                                 id,
-                                &binding,
+                                drawn,
                                 request,
                                 result.is_ok(),
                                 fault_consumed,
+                                pre_present_called,
                             ) {
                                 deliver_frame_feedback(&mut window.presentation, id, held);
                             }
@@ -1090,7 +1098,13 @@ async fn run_instance<P>(
                         else {
                             continue;
                         };
+                        #[cfg(feature = "native-frame-probe")]
+                        let delivered = feedback.id.get();
                         deliver_frame_feedback(&mut window.presentation, id, feedback);
+                        #[cfg(feature = "native-frame-probe")]
+                        if window.native_frame_probe.after_delivery(delivered) {
+                            window.raw.request_redraw();
+                        }
                     }
                     event::Event::WindowEvent {
                         event: window_event,

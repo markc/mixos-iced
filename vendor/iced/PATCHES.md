@@ -19,10 +19,19 @@ Charge retirement wakes this path even when the original window's event is
 suppressed. Epoch exhaustion reconciles each existing native wake without wrapping.
 Ledger guards use this production module, including the root embedding.
 
-The non-default core fault scope now also supports BeforeCommit. Tiny-skia consumes
+The non-default core fault scope also supports BeforeCommit. Tiny-skia consumes
 it after the actual pre-present callback and before buffer submission; AfterCommit
-retains its original meaning. The real pre-commit and repeated-capacity native
-fixtures remain required acceptance work.
+retains its original meaning. The recovery fixture presents its baseline and
+consumes startup completion before changing to one fixed draw. It records one or
+nine real BeforeCommit faults, requiring failed native-ID retirement and a fresh
+successful proof. Failure nine still arms from the drawn binding when feedback
+capacity suppresses its candidate; the later successful untracked commit must
+drain the backlog. An additional unheld AfterCommit schedule accepts either real
+terminal outcome and independently requires successful recovery. No fixture
+redraw, resize or raw commit assists these recovery schedules. Physical draw size
+and observer owner stay fixed. Metadata/observations are bounded and the runner
+supplies finite execution/cleanup deadlines. Shared process-capacity native
+acceptance remains separate required work.
 
 ## Non-default native frame ordering acceptance
 
@@ -31,9 +40,14 @@ renderer, winit and the umbrella crate. Ordinary builds omit the scope, runtime
 gate and holder. The separate native-gallery probe enables it explicitly.
 
 The core thread-local scope is bound to one synchronous draw and cannot move
-between threads. Tiny-skia consumes its one-shot failure only after the actual
-buffer commit succeeds. The runtime therefore exercises its existing failed
-submission and ordinary retry path while real native feedback still arrives.
+between threads. Its default AfterCommit point is consumed only after the actual
+buffer commit succeeds. The strict ordering schedule then holds that window's
+submissions until the failed ID's real terminal passes normal ledger delivery and
+native lease retirement. Production error recovery still runs unchanged; the
+probe releases one ordinary redraw after delivery. This preserves a real
+Presented-on-failed-ID suppression proof even when faster production retries
+could legitimately supersede that commit and cause Discarded. The separate
+unheld recovery schedules establish automatic production retry behaviour.
 Failed submissions cannot reach the production observer as Presented.
 
 Each window gate can retain at most one actual successful old feedback lease.
@@ -48,9 +62,9 @@ The held notification waits for both the actual old successful lease and the
 failed request's actual terminal, so out-of-order native dispatch cannot close
 the window before the failed-ID terminal has been inspected.
 
-The after-commit fault does not establish recovery from a failed pre-commit draw
-after winit has requested its pacing callback. That separate native recovery
-case remains explicit implementation and acceptance work.
+The ordering schedule does not establish automatic pre-commit recovery after
+winit has requested its pacing callback. The unheld recovery fixture above is
+the separate owning acceptance path for that behaviour.
 
 iced 0.15.0-dev from git master. The code delta is a local port of
 `iced_wgpu` to the wgpu 30 snapshot in `vendor/wgpu`, plus the manifest

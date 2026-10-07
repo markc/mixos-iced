@@ -3,13 +3,14 @@
 -- One owned native host runner for queue and presentation ownership probes.
 fn run_probe($repo,$bin,$probe,$marker,$renderer)
   if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
-  if not contains(["testkit-queue-retirement","native-frame-winit-probe","native-frame-iced-probe","native-winit-charge-test"],$probe) then raise("ARGS","Unknown native ownership probe") end
+  if not contains(["testkit-queue-retirement","native-frame-winit-probe","native-frame-iced-probe","native-frame-iced-recovery-probe","native-winit-charge-test"],$probe) then raise("ARGS","Unknown native ownership probe") end
   $n = require("nested_host_lib.mix")
   $h = require("settings_host_lib.mix")
   for each $name in ["compd","noded",$probe]
     if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
   end
   $owned = {run:nil,bus:nil,session:nil,probe:nil,ok:false}
+  $host_budget = if $probe == "native-frame-iced-recovery-probe" then 360 elif $probe == "native-frame-iced-probe" then 240 else 150 end
   try
     $owned.run = $n.new_run("/var/tmp/native-probe")
     $root = $owned.run.path
@@ -18,7 +19,7 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
     write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
     write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
     $owned.session = $n.start({bin:$bin .. "/compd",tag:"native-probe",run:$owned.run,
-      config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:150,width:1280,height:720,
+      config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:$host_budget,width:1280,height:720,
       env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
     if not $n.wait_ready($owned.session,30) then raise("SETUP","Owned compositor did not register") end
     for each $role in ["weston","compd"]
@@ -74,10 +75,23 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
       if $probe == "native-frame-iced-probe" then
         $closed=run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,merge($extra,{ICED_PROBE_CLOSE_HELD:"1"}))})
         write_file($root .. "/" .. $probe .. "-" .. $role .. "-close-held.log",$closed.stdout)
-        if not $closed.ok or $closed.stdout_truncated or not contains($closed.stdout,"ICED_FRAME PASS failed_native_presented_suppressed=true ordinary_retry=true close_held_retired=true") then
+        if not $closed.ok or $closed.stdout_truncated or not contains($closed.stdout,"ICED_FRAME PASS failed_native_presented_suppressed=true ordered_retry_presented=true close_held_retired=true") then
           raise("NATIVE_PROBE",$role .. " close-held schedule failed: " .. $closed.stdout)
         end
         print($role .. " " .. trim($closed.stdout))
+      elif $probe == "native-frame-iced-recovery-probe" then
+        $repeated=run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,merge($extra,{ICED_PROBE_FAILURES:"9"}))})
+        write_file($root .. "/" .. $probe .. "-" .. $role .. "-nine-failures.log",$repeated.stdout)
+        if not $repeated.ok or $repeated.stdout_truncated or not contains($repeated.stdout,"ICED_RECOVERY PASS before_commit=true failures=9 unchanged_view=true failed_success_suppressed=true exact_retry=true") then
+          raise("NATIVE_PROBE",$role .. " nine-failure recovery failed: " .. $repeated.stdout)
+        end
+        print($role .. " " .. trim($repeated.stdout))
+        $after=run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,merge($extra,{ICED_PROBE_AFTER_COMMIT:"1"}))})
+        write_file($root .. "/" .. $probe .. "-" .. $role .. "-after-commit.log",$after.stdout)
+        if not $after.ok or $after.stdout_truncated or not contains($after.stdout,"ICED_RECOVERY PASS after_commit=true failures=1 unchanged_view=true failed_success_suppressed=true exact_retry=true") then
+          raise("NATIVE_PROBE",$role .. " unheld after-commit recovery failed: " .. $after.stdout)
+        end
+        print($role .. " " .. trim($after.stdout))
       end
     end
     $owned.ok = true

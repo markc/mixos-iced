@@ -9,8 +9,26 @@ use crate::core::window::{
 use crate::futures::futures::channel::oneshot;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use winit::presentation::PresentationFeedback;
+use crate::core::window::presentation::probe::FailurePoint;
 
-static INSTALLED: Mutex<Option<Weak<Control>>> = Mutex::new(None);
+mod recovery;
+pub use recovery::{RecoveryGuard, RecoveryHandle, RecoveryPlan, RecoveryReport, install_recovery, install_after_commit_recovery};
+
+static INSTALLED: Mutex<Option<Installation>> = Mutex::new(None);
+
+enum Installation {
+    Ordering(Weak<Control>),
+    Recovery(Weak<recovery::Control>),
+}
+
+impl Installation {
+    fn alive(&self) -> bool {
+        match self {
+            Self::Ordering(control) => control.strong_count() != 0,
+            Self::Recovery(control) => control.strong_count() != 0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 /// One real-window acceptance schedule, absent from ordinary builds.
@@ -90,7 +108,7 @@ pub fn install(plan: Plan) -> Result<(Guard, Handle), String> {
         return Err("probe stamps must be distinct".into());
     }
     let mut installed = lock(&INSTALLED);
-    if installed.as_ref().and_then(Weak::upgrade).is_some() {
+    if installed.as_ref().is_some_and(Installation::alive) {
         return Err("native frame probe already installed".into());
     }
     let (held_sender, held_receiver) = oneshot::channel();
@@ -105,7 +123,7 @@ pub fn install(plan: Plan) -> Result<(Guard, Handle), String> {
         held_receiver: Mutex::new(Some(held_receiver)),
         report_receiver: Mutex::new(Some(report_receiver)),
     });
-    *installed = Some(Arc::downgrade(&control));
+    *installed = Some(Installation::Ordering(Arc::downgrade(&control)));
     Ok((Guard(control.clone()), Handle(control)))
 }
 
@@ -127,9 +145,10 @@ impl Handle {
 impl Drop for Guard {
     fn drop(&mut self) {
         let mut installed = lock(&INSTALLED);
-        if installed
-            .as_ref()
-            .and_then(Weak::upgrade)
+        if installed.as_ref().and_then(|installation| match installation {
+            Installation::Ordering(control) => control.upgrade(),
+            Installation::Recovery(_) => None,
+        })
             .is_some_and(|control| Arc::ptr_eq(&control, &self.0))
         {
             *installed = None;
@@ -205,15 +224,37 @@ pub(crate) struct Gate {
     control: Option<Arc<Control>>,
     held: Option<PresentationFeedback>,
     bound: Option<(Id, FrameObserver)>,
+    recovery: Option<recovery::Gate>,
+    submission_hold: Option<u64>,
 }
 
 impl Gate {
     pub(crate) fn new() -> Self {
+        let installed = lock(&INSTALLED);
+        let (control, recovery) = match installed.as_ref() {
+            Some(Installation::Ordering(control)) => (control.upgrade(), None),
+            Some(Installation::Recovery(control)) => (None, control.upgrade().map(recovery::Gate::new)),
+            None => (None, None),
+        };
         Self {
-            control: lock(&INSTALLED).as_ref().and_then(Weak::upgrade),
+            control,
             held: None,
             bound: None,
+            recovery,
+            submission_hold: None,
         }
+    }
+
+    pub(crate) fn submissions_held(&self) -> bool {
+        self.submission_hold.is_some()
+    }
+
+    pub(crate) fn after_delivery(&mut self, request: u64) -> bool {
+        if self.submission_hold == Some(request) {
+            self.submission_hold = None;
+            return true;
+        }
+        false
     }
 
     fn owns(&self, window: Id, binding: &FrameBinding) -> bool {
@@ -222,7 +263,14 @@ impl Gate {
         })
     }
 
-    pub(crate) fn begin(&mut self, window: Id, binding: Option<&FrameBinding>) -> bool {
+    pub(crate) fn begin(&mut self, window: Id, binding: Option<&FrameBinding>, physical_size: (u32, u32)) -> Option<FailurePoint> {
+        if let Some(recovery) = &mut self.recovery {
+            return recovery.begin(window, binding, physical_size);
+        }
+        self.begin_ordering(window, binding).then_some(FailurePoint::AfterCommit)
+    }
+
+    fn begin_ordering(&mut self, window: Id, binding: Option<&FrameBinding>) -> bool {
         let Some(control) = &self.control else {
             return false;
         };
@@ -258,7 +306,12 @@ impl Gate {
         request: Option<u64>,
         successful: bool,
         fault_consumed: Option<bool>,
+        pre_present_called: bool,
     ) -> Option<PresentationFeedback> {
+        if let Some(recovery) = &mut self.recovery {
+            recovery.submitted(window, binding, request, successful, fault_consumed, pre_present_called);
+            return None;
+        }
         let Some(control) = &self.control else {
             return None;
         };
@@ -271,6 +324,11 @@ impl Gate {
                 return None;
             }
             lock(&control.state).aborted = request;
+            // This strict ordering schedule must observe the failed commit's
+            // real terminal before any newer buffer can supersede it. The
+            // production retry path still runs; only this probe's submissions
+            // are held until normal delivery retires the original lease.
+            self.submission_hold = request;
         }
         if binding.stamp == control.plan.release_after_submit
             && successful
@@ -293,6 +351,10 @@ impl Gate {
         ledger: &crate::presentation::Ledger,
         feedback: PresentationFeedback,
     ) -> Option<PresentationFeedback> {
+        if let Some(recovery) = &mut self.recovery {
+            recovery.intercept(window, ledger, &feedback);
+            return Some(feedback);
+        }
         let Some(control) = &self.control else {
             return Some(feedback);
         };

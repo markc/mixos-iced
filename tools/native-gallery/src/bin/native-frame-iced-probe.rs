@@ -95,7 +95,7 @@ fn validate(state: &State, report: Report) -> Result<(), String> {
             && event.request_id.is_some_and(|id| id != report.aborted)
             && presented(event.outcome)
     }) {
-        return Err("ordinary retry did not present the original view".into());
+        return Err("released retry did not present the original view".into());
     }
     if state.close_while_held {
         if report.released_after.is_some()
@@ -184,7 +184,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn view(state: &State, _: Id) -> Element<'_, Message> {
     let label = match state.stamp {
-        X => "Native frame X: ordinary retry",
+        X => "Native frame X: released retry",
         A => "Native frame A: retained feedback",
         _ => "Native frame B: replacement commit",
     };
@@ -290,11 +290,11 @@ fn main() {
         .expect("native schedule validation");
     if close_while_held {
         println!(
-            "ICED_FRAME PASS failed_native_presented_suppressed=true ordinary_retry=true close_held_retired=true"
+            "ICED_FRAME PASS failed_native_presented_suppressed=true ordered_retry_presented=true close_held_retired=true"
         );
     } else {
         println!(
-            "ICED_FRAME PASS failed_native_presented_suppressed=true ordinary_retry=true old_stamp_after_new_submit=true exact_ids=true"
+            "ICED_FRAME PASS failed_native_presented_suppressed=true ordered_retry_presented=true old_stamp_after_new_submit=true exact_ids=true"
         );
     }
 }
