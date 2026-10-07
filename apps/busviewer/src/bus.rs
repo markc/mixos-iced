@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised native Bus connection. Topics drive refreshes; no poller.
 use ::bus::native_client::{
-    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient, SupervisedError,
 };
 use application::iced::futures::SinkExt;
 use application::iced::futures::channel::{mpsc, oneshot};
@@ -26,18 +26,45 @@ pub struct Reply {
     pub body: String,
 }
 enum Effect {
-    Reply(u64, u8, Value),
     Call(
         String,
         String,
         String,
-        oneshot::Sender<Result<Reply, String>>,
+        oneshot::Sender<Result<Reply, CallError>>,
     ),
+}
+#[derive(Debug, Clone)]
+pub struct CallError {
+    pub message: String,
+    pub outcome_unknown: bool,
+}
+impl CallError {
+    fn not_sent(message: impl Into<String>) -> Self {
+        Self { message: message.into(), outcome_unknown: false }
+    }
+    fn transport(error: SupervisedError) -> Self {
+        let outcome_unknown = !matches!(error, SupervisedError::Disconnected | SupervisedError::ShuttingDown);
+        Self { message: error.to_string(), outcome_unknown }
+    }
+}
+impl From<String> for CallError {
+    fn from(message: String) -> Self { Self { message, outcome_unknown: true } }
+}
+impl From<&str> for CallError {
+    fn from(message: &str) -> Self { message.to_owned().into() }
+}
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.message.fmt(f) }
+}
+impl std::error::Error for CallError {}
+enum Control {
+    Reply(u64, u8, Value),
     Quit,
 }
 #[derive(Clone)]
 pub struct Handle {
     tx: tokio::sync::mpsc::Sender<Effect>,
+    control: tokio::sync::mpsc::UnboundedSender<Control>,
     done: Arc<(Mutex<bool>, Condvar)>,
     #[cfg(test)]
     records: Arc<Mutex<Vec<(u64, u8, Value)>>>,
@@ -45,42 +72,50 @@ pub struct Handle {
     stopped: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Handle {
-    pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, String> {
+    pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, CallError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Effect::Call(service.into(), verb.into(), body, tx))
             .await
-            .map_err(|_| "Bus stopped")?;
-        rx.await.map_err(|_| "Bus request abandoned")?
+            .map_err(|_| CallError::not_sent("Bus stopped; no call sent"))?;
+        rx.await.map_err(|_| CallError::from("Bus request abandoned"))?
     }
     pub async fn call(&self, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
-        self.raw(service, verb, args.to_string()).await
+        self.raw(service, verb, args.to_string()).await.map_err(|e|e.to_string())
     }
     pub fn reply(&self, id: u64, rc: u8, body: Value) {
         #[cfg(test)]
         self.records.lock().unwrap().push((id, rc, body.clone()));
-        let _ = self.tx.try_send(Effect::Reply(id, rc, body));
+        // Only the GUI sends replies, once per accepted command (at most 32).
+        // This separate queue cannot lose a reply to outgoing call backpressure.
+        // A closed receiver means the native connection has already ended.
+        let _ = self.control.send(Control::Reply(id, rc, body));
     }
     pub fn quit(&self) {
         #[cfg(test)]
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let _ = self.tx.try_send(Effect::Quit);
+        // FIFO with replies: accepted replies are flushed before close.
+        let _ = self.control.send(Control::Quit);
     }
-    pub fn wait_done(&self) {
+    pub fn wait_done(&self) -> Result<(), String> {
         let (lock, changed) = &*self.done;
         let state = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = changed
-            .wait_timeout_while(state, Duration::from_secs(5), |done| !*done)
+        // 32 pending replies × their 2s budget, plus connection close.
+        let (state, _) = changed
+            .wait_timeout_while(state, Duration::from_secs(70), |done| !*done)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *state { Ok(()) } else { Err("Bus shutdown did not complete".into()) }
     }
     #[cfg(test)]
     pub fn sink() -> Self {
         let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let (control, _rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             tx,
+            control,
             done: Arc::new((Mutex::new(true), Condvar::new())),
             records: Arc::new(Mutex::new(Vec::new())),
             stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -110,6 +145,7 @@ impl Drop for Finished {
 pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Delivery>), String> {
     let (send, receive) = mpsc::channel(64);
     let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let (control, controls) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
     let done = Arc::new((Mutex::new(false), Condvar::new()));
     let finished = done.clone();
@@ -123,7 +159,7 @@ pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Deliver
                 .enable_all()
                 .build();
             match runtime {
-                Ok(runtime) => runtime.block_on(worker(service, url, send, rx, ready_send)),
+                Ok(runtime) => runtime.block_on(worker(service, url, send, rx, controls, ready_send)),
                 Err(error) => {
                     let _ = ready_send.send(Err(format!("Bus runtime: {error}")));
                 }
@@ -136,6 +172,7 @@ pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Deliver
     Ok((
         Handle {
             tx,
+            control,
             done,
             #[cfg(test)]
             records: Arc::new(Mutex::new(Vec::new())),
@@ -150,6 +187,7 @@ async fn worker(
     url: String,
     mut send: mpsc::Sender<Delivery>,
     mut effects: tokio::sync::mpsc::Receiver<Effect>,
+    mut controls: tokio::sync::mpsc::UnboundedReceiver<Control>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
 ) {
     let connect = SupervisedClient::connect_options(&service, &url)
@@ -188,6 +226,17 @@ async fn worker(
     let permits = Arc::new(tokio::sync::Semaphore::new(16));
     loop {
         tokio::select! {
+            biased;
+            control = controls.recv() => {
+                match control {
+                    Some(Control::Reply(id,rc,value)) => {
+                        if let Some(command) = pending.remove(&id) {
+                            let _ = tokio::time::timeout(Duration::from_secs(2),client.respond(&command,rc,&value.to_string())).await;
+                        }
+                    }
+                    Some(Control::Quit) | None => break,
+                }
+            }
             command = incoming.recv() => {
                 let command = match command {
                     Some(BoundedIncomingEvent::Command(command)) => command,
@@ -222,27 +271,21 @@ async fn worker(
             effect = effects.recv() => {
                 let Some(effect) = effect else { break; };
                 match effect {
-                    Effect::Reply(id,rc,value) => {
-                        if let Some(command) = pending.remove(&id) {
-                            let _ = tokio::time::timeout(Duration::from_secs(2),client.respond(&command,rc,&value.to_string())).await;
-                        }
-                    }
                     Effect::Call(service,verb,body,reply) => {
                         let Ok(permit) = permits.clone().try_acquire_owned() else {
-                            let _ = reply.send(Err("Bus call capacity exhausted; no call sent".into()));
+                            let _ = reply.send(Err(CallError::not_sent("Bus call capacity exhausted; no call sent")));
                             continue;
                         };
                         let client = client.clone();
                         tokio::spawn(async move {
                             let _permit = permit;
                             let result = tokio::time::timeout(Duration::from_secs(30),client.call_with_headers_raw(&service,&verb,&BTreeMap::new(),&body)).await
-                                .map_err(|_|"Bus request timed out".to_owned())
-                                .and_then(|v|v.map_err(|e|e.to_string()))
+                                .map_err(|_|CallError::from("Bus request timed out"))
+                                .and_then(|v|v.map_err(CallError::transport))
                                 .map(|(rc,body,_)|Reply{rc,body});
                             let _ = reply.send(result);
                         });
                     }
-                    Effect::Quit => break,
                 }
             }
             changed = connection.changed() => {
@@ -257,7 +300,7 @@ async fn worker(
             }
         }
     }
-    let _ = send.send(Delivery::Disconnected).await;
+    let _ = send.try_send(Delivery::Disconnected);
     let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
 }
 fn anonymous(url: &str, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
@@ -297,7 +340,7 @@ pub fn forward(url: &str, service: &str) -> Result<(), String> {
 }
 
 async fn json_call(handle: &Handle, service: &str, verb: &str) -> Result<Value, String> {
-    let reply = handle.raw(service, verb, String::new()).await?;
+    let reply = handle.raw(service, verb, String::new()).await.map_err(|e|e.to_string())?;
     if reply.rc >= 10 {
         return Err(format!("rc = {}: {}", reply.rc, reply.body));
     }
@@ -346,4 +389,33 @@ pub async fn discover(handle: Handle) -> crate::model::Snapshot {
     .await;
     snapshot.services.extend(results);
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn replies_and_quit_survive_full_call_queue_in_order() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let (control, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        let handle = Handle { tx, control, ..Handle::sink() };
+        for _ in 0..64 {
+            let (reply, _rx) = oneshot::channel();
+            assert!(handle.tx.try_send(Effect::Call("example".into(), "echo".into(), String::new(), reply)).is_ok());
+        }
+        handle.reply(42, 0, json!({"ok":true}));
+        handle.quit();
+        assert!(matches!(controls.try_recv(), Ok(Control::Reply(42, 0, _))));
+        assert!(matches!(controls.try_recv(), Ok(Control::Quit)));
+        assert!(handle.wait_done().is_ok());
+    }
+    #[test]
+    fn unsent_calls_and_lost_replies_have_distinct_outcomes() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let error = runtime.block_on(Handle::sink().raw("example", "echo", String::new())).unwrap_err();
+        assert!(!error.outcome_unknown);
+        assert!(!CallError::transport(SupervisedError::Disconnected).outcome_unknown);
+        assert!(!CallError::transport(SupervisedError::ShuttingDown).outcome_unknown);
+        assert!(CallError::from("lost response").outcome_unknown);
+    }
 }

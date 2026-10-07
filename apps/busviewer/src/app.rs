@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::{
-    bus::{self, Delivery, Handle, Reply},
+    bus::{self, CallError, Delivery, Handle, Reply},
     menu::{self, Action},
     model::{self, APP_ID, Selection, Snapshot},
     strings::label,
@@ -48,7 +48,7 @@ pub enum Message {
     Split(f32),
     Bus(Delivery),
     Discovered(u64, Snapshot),
-    Completed(u64, Result<Reply, String>),
+    Completed(u64, Result<Reply, CallError>),
     Shown(Option<u64>, Result<Value, String>),
     Window(window::Id, window::Event),
     Key(iced::keyboard::Key, iced::keyboard::Modifiers),
@@ -134,8 +134,8 @@ pub fn run(settings: Settings) -> Result<(), String> {
         .map_err(|e| e.to_string())
     })();
     bus.quit();
-    bus.wait_done();
-    result
+    let stopped = bus.wait_done();
+    result.and(stopped)
 }
 impl App {
     fn new(settings: Settings, bus: Handle, look: appearance::Appearance) -> Self {
@@ -467,7 +467,7 @@ impl App {
             "busviewer.info" => self.bus.reply(id, 0, self.info()),
             "HELP" => self.bus.reply(id, 0, model::describe()["verbs"].clone()),
             "app.describe" => self.bus.reply(id, 0, model::describe()),
-            "busviewer.show" => return self.show(Some(id)),
+            "busviewer.show" if !self.quitting => return self.show(Some(id)),
             "busviewer.refresh" if self.dialog.is_none() => return self.refresh(Some(id)),
             "busviewer.select" if !self.busy() && self.dialog.is_none() && !self.quitting => {
                 match self.target(&args) {
@@ -505,7 +505,7 @@ impl App {
                 self.bus.reply(id, 0, json!({"quitting":true}));
                 return self.quit();
             }
-            "busviewer.select" | "busviewer.refresh" | "busviewer.quit" => {
+            "busviewer.show" | "busviewer.select" | "busviewer.refresh" | "busviewer.quit" => {
                 self.error(id, "BUSY", &label("busy"))
             }
             _ => self.error(id, "UNKNOWN_VERB", "unknown BusViewer verb"),
@@ -643,7 +643,7 @@ impl App {
                         json!({"service":call.target.service,"verb":call.target.verb,"request_body":call.body,"rc":reply.rc,"body":reply.body})
                     }
                     Err(error) => {
-                        json!({"service":call.target.service,"verb":call.target.verb,"request_body":call.body,"transport_error":error,"outcome_unknown":true,"retried":false})
+                        json!({"service":call.target.service,"verb":call.target.verb,"request_body":call.body,"transport_error":error.message,"outcome_unknown":error.outcome_unknown,"retried":false})
                     }
                 };
                 let rendered = if let Some(rc) = self.last_reply["rc"].as_u64() {
@@ -1162,5 +1162,25 @@ mod tests {
         assert!(app.body.text().is_empty());
         let _ = app.update(Message::Split(0.9));
         assert_eq!(app.split, 0.65);
+    }
+    #[test]
+    fn accepted_agent_calls_reply_once_and_quit_is_acknowledged() {
+        let mut app = app();
+        app.selected = Some(target());
+        let _ = app.command(80, "busviewer.call", "{}");
+        assert!(app.bus.responses().is_empty());
+        let ticket = app.call.as_ref().unwrap().ticket;
+        let _ = app.update(Message::Completed(ticket, Ok(Reply { rc: 10, body: "permission denied".into() })));
+        let replies = app.bus.responses();
+        assert_eq!(replies.len(), 1);
+        assert_eq!((replies[0].0, replies[0].1), (80, 0));
+        assert_eq!(replies[0].2["rc"], 10);
+        let _ = app.update(Message::Completed(ticket, Err("late duplicate".into())));
+        assert_eq!(app.bus.responses().len(), 1);
+        let _ = app.command(81, "busviewer.quit", "{}");
+        assert_eq!(app.bus.responses().last().unwrap().2["quitting"], true);
+        assert!(app.bus.has_quit());
+        let _ = app.command(82, "busviewer.show", "{}");
+        assert_eq!(app.bus.responses().last().unwrap().2["error_code"], "BUSY");
     }
 }

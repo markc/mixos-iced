@@ -36,7 +36,11 @@ fn main() {
     }
     let result = parse(std::env::args().skip(1)).and_then(|settings| {
         if bus::probe(&settings.url, &settings.service) {
-            return bus::forward(&settings.url, &settings.service);
+            match bus::forward(&settings.url, &settings.service) {
+                Ok(()) => return Ok(()),
+                Err(error) if bus::probe(&settings.url, &settings.service) => return Err(error),
+                Err(_) => {} // The previous instance exited between probe and activation.
+            }
         }
         match busviewer::app::run(settings.clone()) {
             Err(_) if bus::probe(&settings.url, &settings.service) => {
