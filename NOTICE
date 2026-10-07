@@ -5,6 +5,10 @@ Licensed MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE).
 Incorporated code
 -----------------
 
+- wayland-client 0.31.15 (vendor/wayland-client), Smithay wayland-rs
+  contributors, MIT. The pinned queue owner retires abandoned callback
+  userdata; its original licence and upstream provenance are retained.
+
 - toolkit owns a small input adapter derived from iced at
   `3de451447bd28217bb535632867550908e29d5d0`, MIT,
   Copyright 2019 Héctor Ramón and Iced contributors:

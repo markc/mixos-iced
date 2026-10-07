@@ -4,6 +4,12 @@
 version = 1
 
 [[annotations]]
+path = "vendor/wayland-client/**"
+precedence = "override"
+SPDX-FileCopyrightText = "The wayland-rs contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = "share/icons/material/**"
 precedence = "override"
 SPDX-FileCopyrightText = "Google LLC (Material Symbols)"

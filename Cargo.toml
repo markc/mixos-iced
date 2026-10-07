@@ -151,6 +151,7 @@ calloop = { path = "vendor/calloop" }
 input = { path = "vendor/input" }
 smithay-client-toolkit = { path = "vendor/sctk" }
 dirs-sys = { path = "vendor/dirs-sys" }
+wayland-client = { path = "vendor/wayland-client" }
 
 [patch."https://github.com/iced-rs/winit.git"]
 # Native DnD on the iced fork's existing Wayland data-device queue.
