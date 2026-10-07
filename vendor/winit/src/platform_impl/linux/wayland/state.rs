@@ -14,15 +14,16 @@ use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 use sctk::compositor::{CompositorHandler, CompositorState};
 use sctk::output::{OutputHandler, OutputState};
 use sctk::registry::{ProvidesRegistryState, RegistryState};
-use sctk::seat::pointer::ThemedPointer;
 use sctk::seat::SeatState;
-use sctk::shell::xdg::window::{Window, WindowConfigure, WindowHandler};
-use sctk::shell::xdg::XdgShell;
+use sctk::seat::pointer::ThemedPointer;
 use sctk::shell::WaylandSurface;
+use sctk::shell::xdg::XdgShell;
+use sctk::shell::xdg::window::{Window, WindowConfigure, WindowHandler};
 use sctk::shm::slot::SlotPool;
 use sctk::shm::{Shm, ShmHandler};
 use sctk::subcompositor::SubcompositorState;
 
+use crate::platform_impl::OsError;
 use crate::platform_impl::wayland::event_loop::sink::EventSink;
 use crate::platform_impl::wayland::output::MonitorHandle;
 use crate::platform_impl::wayland::seat::{
@@ -31,12 +32,11 @@ use crate::platform_impl::wayland::seat::{
 };
 use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
-use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
 use crate::platform_impl::wayland::types::wp_presentation::PresentationState;
+use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
 use crate::platform_impl::wayland::types::xdg_activation::XdgActivationState;
 use crate::platform_impl::wayland::window::{WindowRequests, WindowState};
 use crate::platform_impl::wayland::{WaylandError, WindowId};
-use crate::platform_impl::OsError;
 
 /// Winit's Wayland state.
 pub struct WinitState {
@@ -149,7 +149,8 @@ impl WinitState {
         let seat_state = SeatState::new(globals, queue_handle);
         let drag = super::data_device::State::new(
             sctk::data_device_manager::DataDeviceManagerState::bind(globals, queue_handle).ok(),
-            seat_state.seats(), queue_handle,
+            seat_state.seats(),
+            queue_handle,
         );
 
         let mut seats = AHashMap::default();

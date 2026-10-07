@@ -11,7 +11,9 @@ pub struct PresentationId(u64);
 
 impl PresentationId {
     /// The process-local request identity, not an output or application sequence.
-    pub fn get(self) -> u64 { self.0 }
+    pub fn get(self) -> u64 {
+        self.0
+    }
 }
 
 /// A request could not obtain native presentation evidence.
@@ -62,27 +64,40 @@ pub struct PresentationFeedback {
 }
 
 impl PresentationFeedback {
-    pub(crate) fn new(id: PresentationId, outcome: PresentationOutcome, lease: Arc<dyn Send + Sync>) -> Self {
+    pub(crate) fn new(
+        id: PresentationId,
+        outcome: PresentationOutcome,
+        lease: Arc<dyn Send + Sync>,
+    ) -> Self {
         Self { id, outcome, _lease: lease }
     }
 }
 
 impl fmt::Debug for PresentationFeedback {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PresentationFeedback").field("id", &self.id).field("outcome", &self.outcome).finish()
+        f.debug_struct("PresentationFeedback")
+            .field("id", &self.id)
+            .field("outcome", &self.outcome)
+            .finish()
     }
 }
 impl PartialEq for PresentationFeedback {
-    fn eq(&self, other: &Self) -> bool { self.id == other.id && self.outcome == other.outcome }
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.outcome == other.outcome
+    }
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn next_id() -> Result<PresentationId, PresentationError> { allocate(&NEXT_ID) }
+pub(crate) fn next_id() -> Result<PresentationId, PresentationError> {
+    allocate(&NEXT_ID)
+}
 
 fn allocate(counter: &AtomicU64) -> Result<PresentationId, PresentationError> {
-    counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
-        .map(|previous| PresentationId(previous + 1)).map_err(|_| PresentationError::Exhausted)
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .map(|previous| PresentationId(previous + 1))
+        .map_err(|_| PresentationError::Exhausted)
 }
 
 #[cfg(test)]
