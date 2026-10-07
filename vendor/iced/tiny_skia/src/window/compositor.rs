@@ -305,7 +305,13 @@ mod tests {
     fn native_cell_damage_reaches_physical_present_rectangles() {
         use crate::core::{Bytes, Renderer as _};
         use crate::grid::{Damage, Grid};
-        let viewport = Viewport::with_physical_size(Size::new(2250, 200), 2.5);
+        let viewport = Viewport::with_physical_size(
+            Size::new(2250, 200),
+            crate::core::renderer::Scale {
+                window: 2.5,
+                application: 1.0,
+            },
+        );
         let full = Rectangle::with_size(viewport.logical_size());
         let mut stamps = Damage::new(2250, 200, (25, 50)).unwrap();
         let pixels = Bytes::from([0, 0, 0, 255].repeat(2250 * 200));
@@ -371,7 +377,13 @@ mod tests {
 
     #[test]
     fn present_lifecycle_repairs_ages_and_paces_empty_frames() {
-        let viewport = Viewport::with_physical_size(Size::new(100, 80), 1.25);
+        let viewport = Viewport::with_physical_size(
+            Size::new(100, 80),
+            crate::core::renderer::Scale {
+                window: 1.25,
+                application: 1.0,
+            },
+        );
         let full = Rectangle::with_size(viewport.logical_size());
         let mut history = PresentHistory::default();
         let a = scene(0.0);
@@ -419,7 +431,13 @@ mod tests {
         assert_eq!(history.damage(2, &a, &viewport, Color::WHITE), [full]);
         // configure_surface resets this state on resize AND output-scale change.
         history = PresentHistory::default();
-        let resized = Viewport::with_physical_size(Size::new(120, 90), 1.5);
+        let resized = Viewport::with_physical_size(
+            Size::new(120, 90),
+            crate::core::renderer::Scale {
+                window: 1.5,
+                application: 1.0,
+            },
+        );
         assert_eq!(
             history.damage(1, &a, &resized, Color::WHITE),
             [Rectangle::with_size(resized.logical_size())]
@@ -433,7 +451,13 @@ mod tests {
 
     #[test]
     fn damage_is_outward_rounded_clamped_and_empty_stays_empty() {
-        let viewport = Viewport::with_physical_size(Size::new(100, 80), 1.25);
+        let viewport = Viewport::with_physical_size(
+            Size::new(100, 80),
+            crate::core::renderer::Scale {
+                window: 1.25,
+                application: 1.0,
+            },
+        );
         assert!(physical_damage(&[], &viewport).is_empty());
         let rects = physical_damage(
             &[

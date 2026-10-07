@@ -120,6 +120,31 @@ mod tests {
                         },
                     };
                     engine.draw_text(&text, transform, &mut target.as_mut(), &mut mask, clip);
+                    #[cfg(feature = "image")]
+                    {
+                        // Raster clips really narrow the shared mask. The
+                        // following primitive must restore its wider clip.
+                        let image = crate::graphics::Image::Raster {
+                            image: crate::core::Image::new(crate::core::image::Handle::from_rgba(
+                                8,
+                                8,
+                                [200, 40, 90, 128].repeat(64),
+                            )),
+                            bounds: Rectangle {
+                                x: 1.5,
+                                y: 2.0,
+                                width: 55.0,
+                                height: 36.0,
+                            },
+                            clip_bounds: Rectangle {
+                                x: 5.75,
+                                y: 4.25,
+                                width,
+                                height: 15.0,
+                            },
+                        };
+                        engine.draw_image(&image, transform, &mut target.as_mut(), &mut mask, clip);
+                    }
                     let primitive = crate::Primitive::Fill {
                         path: tiny_skia::PathBuilder::from_rect(
                             tiny_skia::Rect::from_xywh(0.0, 0.0, 80.0, 60.0).unwrap(),

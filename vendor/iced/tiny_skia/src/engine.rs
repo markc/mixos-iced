@@ -328,6 +328,7 @@ impl Engine {
                     *color,
                     pixels,
                     clip_mask,
+                    clip_bounds,
                     transformation,
                 );
             }
@@ -354,6 +355,7 @@ impl Engine {
                     *color,
                     pixels,
                     Some(clip_mask.mask()),
+                    clip_bounds,
                     transformation,
                 );
             }
@@ -399,6 +401,7 @@ impl Engine {
                     *ellipsis,
                     pixels,
                     clip_mask,
+                    clip_bounds,
                     transformation,
                 );
             }
@@ -438,6 +441,7 @@ impl Engine {
                     raw.color,
                     pixels,
                     clip_mask,
+                    clip_bounds,
                     transformation,
                 );
             }

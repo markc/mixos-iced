@@ -43,6 +43,7 @@ impl Pipeline {
         color: Color,
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
+        clip_bounds: Rectangle,
         transformation: Transformation,
     ) {
         let Some(paragraph) = paragraph.upgrade() else {
@@ -59,6 +60,7 @@ impl Pipeline {
             color,
             pixels,
             clip_mask,
+            clip_bounds,
             transformation,
         );
     }
@@ -70,6 +72,7 @@ impl Pipeline {
         color: Color,
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
+        clip_bounds: Rectangle,
         transformation: Transformation,
     ) {
         let Some(editor) = editor.upgrade() else {
@@ -86,6 +89,7 @@ impl Pipeline {
             color,
             pixels,
             clip_mask,
+            clip_bounds,
             transformation,
         );
     }
@@ -105,6 +109,7 @@ impl Pipeline {
         ellipsis: Ellipsis,
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
+        clip_bounds: Rectangle,
         transformation: Transformation,
     ) {
         let line_height = f32::from(line_height);
@@ -149,6 +154,7 @@ impl Pipeline {
             color,
             pixels,
             clip_mask,
+            clip_bounds,
             transformation,
         );
     }
@@ -160,6 +166,7 @@ impl Pipeline {
         color: Color,
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
+        clip_bounds: Rectangle,
         transformation: Transformation,
     ) {
         let mut font_system = font_system().write().expect("Write font system");
@@ -172,6 +179,7 @@ impl Pipeline {
             color,
             pixels,
             clip_mask,
+            clip_bounds,
             transformation,
         );
     }
@@ -190,9 +198,16 @@ fn draw(
     color: Color,
     pixels: &mut tiny_skia::PixmapMut<'_>,
     clip_mask: Option<&tiny_skia::Mask>,
+    clip_bounds: Rectangle,
     transformation: Transformation,
 ) {
     let position = position * transformation;
+    #[cfg(test)]
+    let cull = clip_mask.is_some() && !glyph_cache.disable_culling;
+    #[cfg(not(test))]
+    let cull = clip_mask.is_some();
+    #[cfg(test)]
+    let mut drawn_glyphs = 0;
 
     let mut swash = cosmic_text::SwashCache::new();
     let scroll = buffer.scroll();
@@ -210,6 +225,26 @@ fn draw(
                 font_system,
                 &mut swash,
             ) {
+                // Test actual rasterised ink, including bearings and baseline
+                // rounding. A layout/run box can omit glyph overhang. tiny-skia
+                // clips to the target but still builds a pipeline and scans
+                // pixels for glyphs wholly outside this rectangular mask.
+                let x = physical_glyph.x + placement.left;
+                let y = physical_glyph.y - placement.top
+                    + (run.line_y * transformation.scale_factor()).round() as i32;
+                let ink = Rectangle {
+                    x: x as f32,
+                    y: y as f32,
+                    width: placement.width as f32,
+                    height: placement.height as f32,
+                };
+                if cull && !ink.intersects(&clip_bounds) {
+                    continue;
+                }
+                #[cfg(test)]
+                {
+                    drawn_glyphs += 1;
+                }
                 let pixmap =
                     tiny_skia::PixmapRef::from_bytes(buffer, placement.width, placement.height)
                         .expect("Create glyph pixel map");
@@ -218,9 +253,8 @@ fn draw(
                     color.a * glyph.color_opt.map(|c| c.a() as f32 / 255.0).unwrap_or(1.0);
 
                 pixels.draw_pixmap(
-                    physical_glyph.x + placement.left,
-                    physical_glyph.y - placement.top
-                        + (run.line_y * transformation.scale_factor()).round() as i32,
+                    x,
+                    y,
                     pixmap,
                     &tiny_skia::PixmapPaint {
                         opacity,
@@ -231,6 +265,10 @@ fn draw(
                 );
             }
         }
+    }
+    #[cfg(test)]
+    {
+        glyph_cache.drawn_glyphs += drawn_glyphs;
     }
 }
 
@@ -246,6 +284,10 @@ struct GlyphCache {
         FxHashMap<(cosmic_text::CacheKey, [u8; 3]), Option<(Vec<u32>, cosmic_text::Placement)>>,
     recently_used: FxHashSet<(cosmic_text::CacheKey, [u8; 3])>,
     trim_count: usize,
+    #[cfg(test)]
+    disable_culling: bool,
+    #[cfg(test)]
+    drawn_glyphs: usize,
 }
 
 impl GlyphCache {
@@ -269,8 +311,8 @@ impl GlyphCache {
         if let hash_map::Entry::Vacant(entry) = self.entries.entry(key) {
             // TODO: Outline support
             let Some(image) = swash.get_image_uncached(font_system, cache_key) else {
-                entry.insert(None);
-                self.recently_used.insert(key);
+                let _ = entry.insert(None);
+                let _ = self.recently_used.insert(key);
                 return None;
             };
 
@@ -279,8 +321,8 @@ impl GlyphCache {
             if glyph_size == 0 {
                 // Spaces and missing glyphs are cache hits too. Otherwise a
                 // warm line still invokes the rasteriser for every space.
-                entry.insert(None);
-                self.recently_used.insert(key);
+                let _ = entry.insert(None);
+                let _ = self.recently_used.insert(key);
                 return None;
             }
 
@@ -359,6 +401,167 @@ impl GlyphCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shaped_buffer(content: &str, width: f32, height: f32) -> cosmic_text::Buffer {
+        let mut fonts = font_system().write().unwrap();
+        let fonts = fonts.raw();
+        let mut buffer = cosmic_text::Buffer::new(fonts, cosmic_text::Metrics::new(13.0, 20.0));
+        buffer.set_size(Some(width), Some(height));
+        buffer.set_text(
+            content,
+            &cosmic_text::Attrs::new(),
+            cosmic_text::Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(fonts, false);
+        buffer
+    }
+
+    #[test]
+    fn glyph_ink_culling_matches_partial_masks_and_full_text_pixels() {
+        let buffer = shaped_buffer(&"Áj fi e\u{301} 中 clipped text\n".repeat(8), 200.0, 180.0);
+        let mut skipped = 0;
+        for scale in [1.0, 1.25, 1.5, 2.5] {
+            for x in [-18.25, 0.0, 19.5] {
+                let position = Point::new(x, -5.25);
+                let transform = Transformation::scale(scale);
+                let mut full = tiny_skia::Pixmap::new(240, 120).unwrap();
+                full.fill(tiny_skia::Color::from_rgba8(13, 21, 37, 255));
+                let mut full_pipeline = Pipeline::new();
+                full_pipeline.draw_raw(
+                    &buffer,
+                    position,
+                    Color::WHITE,
+                    &mut full.as_mut(),
+                    None,
+                    Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 240.0,
+                        height: 120.0,
+                    },
+                    transform,
+                );
+                assert!(full_pipeline.glyph_cache.drawn_glyphs > 0);
+                for clip in [
+                    Rectangle {
+                        x: 0.25,
+                        y: 6.25,
+                        width: 9.5,
+                        height: 65.25,
+                    },
+                    Rectangle {
+                        x: 10.25,
+                        y: 32.5,
+                        width: 180.0,
+                        height: 2.5,
+                    },
+                    Rectangle {
+                        x: -7.5,
+                        y: -3.25,
+                        width: 66.75,
+                        height: 47.5,
+                    },
+                ] {
+                    let mut mask = tiny_skia::Mask::new(240, 120).unwrap();
+                    crate::engine::adjust_clip_mask(&mut mask, clip);
+                    let mut reference = tiny_skia::Pixmap::new(240, 120).unwrap();
+                    reference.fill(tiny_skia::Color::from_rgba8(13, 21, 37, 255));
+                    let mut actual = reference.clone();
+                    let mut baseline = Pipeline::new();
+                    baseline.glyph_cache.disable_culling = true;
+                    let mut optimised = Pipeline::new();
+                    for (pipeline, target) in [
+                        (&mut baseline, &mut reference),
+                        (&mut optimised, &mut actual),
+                    ] {
+                        pipeline.draw_raw(
+                            &buffer,
+                            position,
+                            Color::WHITE,
+                            &mut target.as_mut(),
+                            Some(&mask),
+                            clip,
+                            transform,
+                        );
+                    }
+                    assert_eq!(
+                        actual.data(),
+                        reference.data(),
+                        "scale={scale} x={x} clip={clip:?}"
+                    );
+                    for (index, &coverage) in mask.data().iter().enumerate() {
+                        if coverage == 255 {
+                            assert_eq!(
+                                &actual.data()[index * 4..index * 4 + 4],
+                                &full.data()[index * 4..index * 4 + 4],
+                                "partial text differs from full redraw at pixel {index}",
+                            );
+                        }
+                    }
+                    assert!(
+                        optimised.glyph_cache.drawn_glyphs <= baseline.glyph_cache.drawn_glyphs
+                    );
+                    skipped +=
+                        baseline.glyph_cache.drawn_glyphs - optimised.glyph_cache.drawn_glyphs;
+                }
+            }
+        }
+        assert!(
+            skipped > 100,
+            "the oracle must exercise skipped real glyphs"
+        );
+    }
+
+    #[test]
+    #[ignore = "release-only narrow text damage performance measurement"]
+    fn narrow_text_damage_bench() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let buffer = shaped_buffer(&format!("{}\n", "x".repeat(120)).repeat(40), 1000.0, 800.0);
+        let clip = Rectangle {
+            x: 1000.25,
+            y: 600.5,
+            width: 8.5,
+            height: 50.0,
+        };
+        let mut mask = tiny_skia::Mask::new(2250, 1250).unwrap();
+        crate::engine::adjust_clip_mask(&mut mask, clip);
+        for cull in [false, true] {
+            let mut pipeline = Pipeline::new();
+            pipeline.glyph_cache.disable_culling = !cull;
+            let mut pixels = tiny_skia::Pixmap::new(2250, 1250).unwrap();
+            // Warm shaping and glyph cache before measuring repeated caret damage.
+            pipeline.draw_raw(
+                &buffer,
+                Point::ORIGIN,
+                Color::WHITE,
+                &mut pixels.as_mut(),
+                Some(&mask),
+                clip,
+                Transformation::scale(2.5),
+            );
+            pipeline.glyph_cache.drawn_glyphs = 0;
+            let started = Instant::now();
+            for _ in 0..100 {
+                pipeline.draw_raw(
+                    &buffer,
+                    Point::ORIGIN,
+                    Color::WHITE,
+                    &mut pixels.as_mut(),
+                    Some(&mask),
+                    clip,
+                    Transformation::scale(2.5),
+                );
+                black_box(pixels.data());
+            }
+            eprintln!(
+                "100 narrow text frames cull={cull}: {:?}, draw_pixmap calls={}",
+                started.elapsed(),
+                pipeline.glyph_cache.drawn_glyphs
+            );
+        }
+    }
 
     #[test]
     fn empty_glyphs_are_retained_and_trimmed_with_visible_glyphs() {

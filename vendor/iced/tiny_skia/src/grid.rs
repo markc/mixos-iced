@@ -560,7 +560,10 @@ mod tests {
         for scale in [1.0, 1.25] {
             let viewport = crate::graphics::Viewport::with_physical_size(
                 crate::core::Size::new(48, 48),
-                scale,
+                crate::core::renderer::Scale {
+                    window: scale,
+                    application: 1.0,
+                },
             );
             let full = Rectangle::with_size(viewport.logical_size());
             let mut renderer = crate::Renderer::new(crate::core::renderer::Settings {

@@ -121,9 +121,12 @@ draw and clears only the previous rectangle when the clip changes. Mask
 coverage still comes from tiny-skia, including fractional edges. Engine
 entry points restore their own clip before consuming the shared mask.
 Empty glyph rasters are cached alongside visible glyphs, so spaces do not
-repeatedly invoke Swash. Guards: `clip::tests` (fractional/offscreen mask
+repeatedly invoke Swash. Masked text skips glyph pixmaps whose actual ink
+bounds miss the physical clip; unmasked overhang retains upstream behaviour.
+The native-grid/presentation guard tests use iced's current structured Scale.
+Guards: `clip::tests` (fractional/offscreen mask
 equivalence and release benchmark) and `text::tests` (real shaped space,
-visible glyph and cache eviction).
+visible glyph, cache eviction, glyph-ink pixel oracle and narrow-damage benchmark).
 
 Ported from the frozen source e0297242305f3a3c3de09f1ca01e8faa771768da.
 The existing tiny-skia crate gains immutable native grid generations and cell

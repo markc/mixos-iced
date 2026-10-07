@@ -298,7 +298,13 @@ mod tests {
     #[test]
     fn engine_unmasked_native_image_remains_under_later_clipped_overlay() {
         use crate::core::{Renderer as _, image::Renderer as _};
-        let viewport = crate::graphics::Viewport::with_physical_size(Size::new(15, 15), 1.0);
+        let viewport = crate::graphics::Viewport::with_physical_size(
+            Size::new(15, 15),
+            crate::core::renderer::Scale {
+                window: 1.0,
+                application: 1.0,
+            },
+        );
         let clip = Rectangle::with_size(viewport.logical_size());
         let bounds = Rectangle {
             x: 2.0,
