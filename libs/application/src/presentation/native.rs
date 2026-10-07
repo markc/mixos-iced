@@ -317,9 +317,8 @@ type Builder<T> = Arc<dyn Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Se
 /// Pure per-snapshot icon requirements, built on the worker before any
 /// renderer mutation. Applications collect their real static menu/control
 /// catalogue and bounded dynamic snapshot here; the default requests no icons.
-type Requirements = Arc<
-    dyn Fn(&Projection, &Snapshot) -> Result<ResourceRequirements, Diagnostic> + Send + Sync,
->;
+type Requirements =
+    Arc<dyn Fn(&Projection, &Snapshot) -> Result<ResourceRequirements, Diagnostic> + Send + Sync>;
 
 enum Resource {
     Prepare(Request),
@@ -430,9 +429,9 @@ impl<T: Send + 'static> Worker<T> {
     pub fn with_resource_requirements(
         self,
         build: impl Fn(&Projection, &Snapshot) -> Result<ResourceRequirements, Diagnostic>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             requirements: Arc::new(build),

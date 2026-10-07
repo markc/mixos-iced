@@ -520,10 +520,16 @@ async fn verified_omission_binding_is_acknowledged_and_captured_by_the_save() {
         .unwrap();
     assert_eq!(resources.binding().unwrap().set_id, "binding-set");
     let save = session.host().consumer().cache_save().unwrap();
-    assert_eq!(save.binding().map(|binding| binding.set_id.as_str()), Some("binding-set"));
     assert_eq!(
-        save.binding().map(|binding| binding.manifest_blake3.as_str()),
-        resources.binding().map(|binding| binding.manifest_blake3.as_str()),
+        save.binding().map(|binding| binding.set_id.as_str()),
+        Some("binding-set")
+    );
+    assert_eq!(
+        save.binding()
+            .map(|binding| binding.manifest_blake3.as_str()),
+        resources
+            .binding()
+            .map(|binding| binding.manifest_blake3.as_str()),
         "the save captures exactly the activated binding"
     );
 }

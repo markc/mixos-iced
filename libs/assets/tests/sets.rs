@@ -635,14 +635,18 @@ fn the_icon_asset_cap_accepts_its_bound_and_refuses_one_more() {
     let mut at_bound = original.clone();
     at_bound["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS));
     write_manifest_compact(&dir, &at_bound);
-    let set = AssetSet::open(temp.path(), "two").expect("the count-bound fixture fits the byte cap");
+    let set =
+        AssetSet::open(temp.path(), "two").expect("the count-bound fixture fits the byte cap");
     assert_eq!(set.icon_assets().len(), assets::MAX_ICON_ASSETS);
     let mut over = original;
     over["icon_assets"] = serde_json::json!(assets(assets::MAX_ICON_ASSETS + 1));
     write_manifest_compact(&dir, &over);
     let error = AssetSet::open(temp.path(), "two").unwrap_err();
     assert!(matches!(error, assets::Error::Invalid(_)), "{error}");
-    assert!(error.to_string().contains("too many icon assets"), "{error}");
+    assert!(
+        error.to_string().contains("too many icon assets"),
+        "{error}"
+    );
 }
 
 #[test]

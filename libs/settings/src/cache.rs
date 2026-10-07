@@ -962,9 +962,7 @@ mod tests {
             Some(fixture_reference("core-icons"))
         );
         // A later refusal leaves the persisted envelope byte-identical.
-        let file = dir
-            .path()
-            .join(name(&binding(), "app:ced", false));
+        let file = dir.path().join(name(&binding(), "app:ced", false));
         let bytes = std::fs::read(&file).unwrap();
         let newer = Save::capture_resources(
             7,

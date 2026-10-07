@@ -38,12 +38,12 @@ use std::{
 
 use iced_core::{
     Font,
-    font::{Family, Style, Stretch, Weight},
+    font::{Family, Stretch, Style, Weight},
 };
 use iced_graphics::text::{
     cosmic_text::{
-        self, fontdb, FontRegistration, FontRegistrationError, FontRegistrationResult,
-        PinnedFaceRef, PinnedFontPolicy,
+        self, FontRegistration, FontRegistrationError, FontRegistrationResult, PinnedFaceRef,
+        PinnedFontPolicy, fontdb,
     },
     font_system,
 };
@@ -90,7 +90,9 @@ impl FontRegistry {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut system = font_system().write().map_err(|_| RegistrationError::LockPoisoned)?;
+        let mut system = font_system()
+            .write()
+            .map_err(|_| RegistrationError::LockPoisoned)?;
         register_batch_in(&mut *system, &mut ledger, batch, &Limits::PROCESS)
     }
 
@@ -627,7 +629,11 @@ impl fmt::Display for RegistrationError {
             Self::TooManySources { limit, have } => {
                 write!(f, "collection holds {have} sources, at most {limit}")
             }
-            Self::SourceTooLarge { source, bytes, limit } => {
+            Self::SourceTooLarge {
+                source,
+                bytes,
+                limit,
+            } => {
                 write!(f, "source {source} holds {bytes} bytes, at most {limit}")
             }
             Self::BatchBytesTooLarge { bytes, limit } => {
@@ -636,7 +642,11 @@ impl fmt::Display for RegistrationError {
             Self::SourceUnparsable { source } => {
                 write!(f, "source {source} holds no parseable font face")
             }
-            Self::TooManyFacesInSource { source, faces, limit } => {
+            Self::TooManyFacesInSource {
+                source,
+                faces,
+                limit,
+            } => {
                 write!(f, "source {source} declares {faces} faces, at most {limit}")
             }
             Self::FaceOutOfRange {
@@ -663,10 +673,16 @@ impl fmt::Display for RegistrationError {
                 write!(f, "{what} name is {len} bytes, at most {limit}")
             }
             Self::TooManyGroups { key, limit, have } => {
-                write!(f, "selection {key:?} declares {have} groups, at most {limit}")
+                write!(
+                    f,
+                    "selection {key:?} declares {have} groups, at most {limit}"
+                )
             }
             Self::TooManyFaceRefs { key, limit, have } => {
-                write!(f, "selection {key:?} resolves {have} faces, at most {limit}")
+                write!(
+                    f,
+                    "selection {key:?} resolves {have} faces, at most {limit}"
+                )
             }
             Self::TooManySelections { limit, have } => {
                 write!(f, "batch holds {have} selections, at most {limit}")
@@ -685,7 +701,10 @@ impl fmt::Display for RegistrationError {
                 write!(f, "weight {weight} is outside 1..=1000")
             }
             Self::AllFamiliesAbsent { key } => {
-                write!(f, "selection {key:?}: no declared family exists in the collection")
+                write!(
+                    f,
+                    "selection {key:?}: no declared family exists in the collection"
+                )
             }
             Self::UnsupportedWeight {
                 key,
@@ -725,10 +744,16 @@ impl fmt::Display for RegistrationError {
                 "capacity {resource:?}: {have} retained, {need} more needed, limit {limit}"
             ),
             Self::SourceCollision { source } => {
-                write!(f, "source {source} collides with a distinct retained source")
+                write!(
+                    f,
+                    "source {source} collides with a distinct retained source"
+                )
             }
             Self::SelectionsCollision { alias } => {
-                write!(f, "selection identity {alias:?} already holds different content")
+                write!(
+                    f,
+                    "selection identity {alias:?} already holds different content"
+                )
             }
             Self::Renderer(error) => write!(f, "renderer registration failed: {error}"),
             Self::RendererVersionExhausted => {
@@ -970,11 +995,7 @@ fn validate_weight(weight: u16) -> Result<(), RegistrationError> {
     Ok(())
 }
 
-fn check_name(
-    what: &'static str,
-    name: &str,
-    limit: u64,
-) -> Result<(), RegistrationError> {
+fn check_name(what: &'static str, name: &str, limit: u64) -> Result<(), RegistrationError> {
     if name.is_empty() {
         return Err(RegistrationError::NameEmpty { what });
     }
@@ -988,15 +1009,13 @@ fn check_name(
     Ok(())
 }
 
-fn add_metadata(
-    bytes: u64,
-    len: usize,
-    limits: &Limits,
-) -> Result<u64, RegistrationError> {
-    let next = bytes.checked_add(len as u64).ok_or(RegistrationError::MetadataTooLarge {
-        bytes,
-        limit: limits.metadata_bytes,
-    })?;
+fn add_metadata(bytes: u64, len: usize, limits: &Limits) -> Result<u64, RegistrationError> {
+    let next = bytes
+        .checked_add(len as u64)
+        .ok_or(RegistrationError::MetadataTooLarge {
+            bytes,
+            limit: limits.metadata_bytes,
+        })?;
     if next > limits.metadata_bytes {
         return Err(RegistrationError::MetadataTooLarge {
             bytes: next,
@@ -1008,10 +1027,7 @@ fn add_metadata(
 
 /// Every count, length and name bound of the batch, checked with checked
 /// arithmetic before anything is hashed or parsed.
-fn validate_shape(
-    batch: &RegistrationBatch,
-    limits: &Limits,
-) -> Result<(), RegistrationError> {
+fn validate_shape(batch: &RegistrationBatch, limits: &Limits) -> Result<(), RegistrationError> {
     let collection = &batch.collection;
     let sources = collection.sources.len() as u64;
     if sources > limits.sources_per_collection {
@@ -1030,12 +1046,13 @@ fn validate_shape(
                 limit: limits.source_bytes,
             });
         }
-        batch_bytes = batch_bytes.checked_add(len).ok_or(
-            RegistrationError::BatchBytesTooLarge {
-                bytes: u64::MAX,
-                limit: limits.batch_bytes,
-            },
-        )?;
+        batch_bytes =
+            batch_bytes
+                .checked_add(len)
+                .ok_or(RegistrationError::BatchBytesTooLarge {
+                    bytes: u64::MAX,
+                    limit: limits.batch_bytes,
+                })?;
     }
     if batch_bytes > limits.batch_bytes {
         return Err(RegistrationError::BatchBytesTooLarge {
@@ -1089,7 +1106,10 @@ fn validate_shape(
         metadata = add_metadata(metadata, catalogue.style.len(), limits)?;
         // Catalogue identity matches lookup: the family is case-folded, the
         // style is exact.
-        if !catalogues.insert((catalogue.family.to_ascii_lowercase(), catalogue.style.clone())) {
+        if !catalogues.insert((
+            catalogue.family.to_ascii_lowercase(),
+            catalogue.style.clone(),
+        )) {
             return Err(RegistrationError::DuplicateCatalogue {
                 family: catalogue.family.clone(),
                 style: catalogue.style.clone(),
@@ -1157,7 +1177,9 @@ fn validate_shape(
     for icon in &batch.icons {
         check_name("icon key", &icon.key, limits.key_bytes)?;
         if !icon_keys.insert(&icon.key) {
-            return Err(RegistrationError::DuplicateKey { key: icon.key.clone() });
+            return Err(RegistrationError::DuplicateKey {
+                key: icon.key.clone(),
+            });
         }
         metadata = add_metadata(metadata, icon.key.len(), limits)?;
         check_name("icon family", &icon.family, limits.key_bytes)?;
@@ -1229,11 +1251,7 @@ fn parse_sources(
                     info: face.clone(),
                     static_weight: face.weight.0,
                     wght,
-                    families: face
-                        .families
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect(),
+                    families: face.families.iter().map(|(name, _)| name.clone()).collect(),
                 },
             );
         }
@@ -1449,9 +1467,12 @@ fn resolve_selection(
 ) -> Result<SelectionPlan, RegistrationError> {
     let (effective, substitution) = match &request.weight_policy {
         WeightPolicy::Exact => (request.requested_weight, None),
-        WeightPolicy::Substitute { effective, reason } => {
-            (*effective, Some(SubstitutionEvidence { reason: reason.clone() }))
-        }
+        WeightPolicy::Substitute { effective, reason } => (
+            *effective,
+            Some(SubstitutionEvidence {
+                reason: reason.clone(),
+            }),
+        ),
     };
     let mut groups: Vec<Vec<FaceKey>> = Vec::new();
     let mut evidences: Vec<Vec<FaceEvidence>> = Vec::new();
@@ -1634,8 +1655,9 @@ fn resolve_icon(
         });
     }
     let source = &parsed[catalogue.face.source];
-    let font = cosmic_text::Font::new(&source.db, face.info.id, face.info.weight)
-        .ok_or(RegistrationError::Internal("icon face did not parse in scratch"))?;
+    let font = cosmic_text::Font::new(&source.db, face.info.id, face.info.weight).ok_or(
+        RegistrationError::Internal("icon face did not parse in scratch"),
+    )?;
     for name in &request.required_names {
         let Some(&glyph) = catalogue.glyphs.get(name) else {
             return Err(RegistrationError::IconNameMissing {
@@ -1747,22 +1769,32 @@ fn stage(
     }
     let mut new_faces: Vec<(FaceKey, FaceRecord, fontdb::FaceInfo)> = Vec::new();
     for face_key in &new_face_keys {
-        let source_key = SourceKey { digest: face_key.source, len: face_key.len };
+        let source_key = SourceKey {
+            digest: face_key.source,
+            len: face_key.len,
+        };
         let slot = *slot_by_source
             .get(&source_key)
             .ok_or(RegistrationError::Internal("face source digest not staged"))?;
-        let parsed_face = parsed[slot]
-            .faces
-            .get(&face_key.index)
-            .ok_or(RegistrationError::Internal("resolved face index not parsed"))?;
+        let parsed_face =
+            parsed[slot]
+                .faces
+                .get(&face_key.index)
+                .ok_or(RegistrationError::Internal(
+                    "resolved face index not parsed",
+                ))?;
         let record = FaceRecord {
             id: fontdb::ID::default(),
             static_weight: parsed_face.static_weight,
             wght: parsed_face.wght,
         };
-        let canonical = ledger.sources.get(&source_key)
+        let canonical = ledger
+            .sources
+            .get(&source_key)
             .or_else(|| staged_sources.get(&source_key))
-            .ok_or(RegistrationError::Internal("new face source has no canonical allocation"))?;
+            .ok_or(RegistrationError::Internal(
+                "new face source has no canonical allocation",
+            ))?;
         let mut info = parsed_face.info.clone();
         info.source = fontdb::Source::Binary(Arc::new(canonical.clone()));
         new_faces.push((*face_key, record, info));
@@ -1878,22 +1910,22 @@ fn build_registration(
         faces.push(info.clone());
         added_index.insert(*face_key, position);
     }
-    let mut policies: Vec<PinnedFontPolicy> =
-        Vec::with_capacity(staged.new_policies.len());
+    let mut policies: Vec<PinnedFontPolicy> = Vec::with_capacity(staged.new_policies.len());
     for (_digest, policy) in &staged.new_policies {
         let mut groups = Vec::with_capacity(policy.groups.len());
         for group in &policy.groups {
             let mut references = Vec::with_capacity(group.len());
             for face in group {
-                let reference = match ledger.faces.get(face) {
-                    Some(record) => PinnedFaceRef::Existing(record.id),
-                    None => {
-                        let position = added_index.get(face).copied().ok_or(
-                            RegistrationError::Internal("staged face missing from added index"),
-                        )?;
-                        PinnedFaceRef::Added(position)
-                    }
-                };
+                let reference =
+                    match ledger.faces.get(face) {
+                        Some(record) => PinnedFaceRef::Existing(record.id),
+                        None => {
+                            let position = added_index.get(face).copied().ok_or(
+                                RegistrationError::Internal("staged face missing from added index"),
+                            )?;
+                            PinnedFaceRef::Added(position)
+                        }
+                    };
                 references.push(reference);
             }
             groups.push(references);
@@ -2019,7 +2051,9 @@ fn prepare_receipt(
         let policy = staged
             .policies
             .get(&plan.digest)
-            .ok_or(RegistrationError::Internal("selection policy missing from staging"))?;
+            .ok_or(RegistrationError::Internal(
+                "selection policy missing from staging",
+            ))?;
         let evidence = Arc::new(SelectionEvidence {
             declared: plan.declared,
             chosen_group: plan.chosen_group,
@@ -2053,7 +2087,9 @@ fn prepare_receipt(
         let policy = staged
             .policies
             .get(&plan.digest)
-            .ok_or(RegistrationError::Internal("icon policy missing from staging"))?;
+            .ok_or(RegistrationError::Internal(
+                "icon policy missing from staging",
+            ))?;
         let face_evidence = FaceEvidence {
             source: digest_hex(&plan.face.source),
             bytes: plan.face.len,
@@ -2396,7 +2432,13 @@ mod tests {
         RegistrationBatch {
             collection: FontCollection {
                 sources: vec![blob(bytes)],
-                families: vec![group(family, vec![SourceFace { source: 0, index: 0 }])],
+                families: vec![group(
+                    family,
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
+                )],
                 roles: BTreeMap::from([(role.into(), vec![family.into()])]),
                 icons: Vec::new(),
             },
@@ -2471,7 +2513,10 @@ mod tests {
             let glyphs = shape(&mut renderer.raw, "Hello MixOS", alias, shaping);
             assert!(!glyphs.is_empty());
             for (id, _, glyph_id, _) in &glyphs {
-                assert_eq!(*id, added_id, "{shaping:?}: only the registered face may shape");
+                assert_eq!(
+                    *id, added_id,
+                    "{shaping:?}: only the registered face may shape"
+                );
                 assert_ne!(*glyph_id, 0);
             }
         }
@@ -2483,7 +2528,13 @@ mod tests {
         let batch = RegistrationBatch {
             collection: FontCollection {
                 sources: vec![blob(INTER_VARIABLE)],
-                families: vec![group("Inter", vec![SourceFace { source: 0, index: 0 }])],
+                families: vec![group(
+                    "Inter",
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
+                )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
             },
@@ -2496,13 +2547,23 @@ mod tests {
         assert_eq!(evidence.chosen_group, 1);
         assert_eq!(evidence.family, "Inter");
         assert!(evidence.skipped.is_empty());
-        assert_eq!(evidence.groups.len(), 1, "absent families leave no empty group");
+        assert_eq!(
+            evidence.groups.len(),
+            1,
+            "absent families leave no empty group"
+        );
         assert_eq!(evidence.groups[0].len(), 1);
 
         let batch = RegistrationBatch {
             collection: FontCollection {
                 sources: vec![blob(INTER_VARIABLE)],
-                families: vec![group("Inter", vec![SourceFace { source: 0, index: 0 }])],
+                families: vec![group(
+                    "Inter",
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
+                )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
             },
@@ -2577,8 +2638,14 @@ mod tests {
         let light_alias = alias_of(light.font("light").unwrap());
         let heavy_alias = alias_of(heavy.font("heavy").unwrap());
         assert_ne!(light_alias, heavy_alias);
-        assert_eq!(light.font("light").unwrap().evidence().requested_weight, 350);
-        assert_eq!(light.font("light").unwrap().evidence().effective_weight, 350);
+        assert_eq!(
+            light.font("light").unwrap().evidence().requested_weight,
+            350
+        );
+        assert_eq!(
+            light.font("light").unwrap().evidence().effective_weight,
+            350
+        );
         for shaping in [cosmic_text::Shaping::Basic, cosmic_text::Shaping::Advanced] {
             let light_width: f32 = shape(&mut renderer.raw, "Hello", light_alias, shaping)
                 .iter()
@@ -2613,13 +2680,19 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: vec![IconCatalogue {
                     family: "Fira Sans".into(),
                     style: "default".into(),
-                    face: SourceFace { source: 0, index: 0 },
+                    face: SourceFace {
+                        source: 0,
+                        index: 0,
+                    },
                     glyphs: BTreeMap::from([("home".into(), 'a')]),
                 }],
             },
@@ -2632,8 +2705,8 @@ mod tests {
                 required_names: vec!["home".into(), "missing".into()],
             }],
         };
-        let err = register_batch_in(&mut renderer, &mut ledger, batch, &Limits::PROCESS)
-            .unwrap_err();
+        let err =
+            register_batch_in(&mut renderer, &mut ledger, batch, &Limits::PROCESS).unwrap_err();
         assert!(matches!(
             err,
             RegistrationError::IconNameMissing { name, .. } if name == "missing"
@@ -2725,7 +2798,10 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -2821,10 +2897,19 @@ mod tests {
         let collection = FontCollection {
             sources: vec![blob(NOTO_SANS), blob(NOTO_ARABIC)],
             families: vec![
-                group("Noto Sans", vec![SourceFace { source: 0, index: 0 }]),
+                group(
+                    "Noto Sans",
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
+                ),
                 group(
                     "Noto Sans Arabic",
-                    vec![SourceFace { source: 1, index: 0 }],
+                    vec![SourceFace {
+                        source: 1,
+                        index: 0,
+                    }],
                 ),
             ],
             roles: BTreeMap::new(),
@@ -2891,12 +2976,21 @@ mod tests {
         let (mut renderer, mut ledger) = isolated();
         let collection = FontCollection {
             sources: vec![blob(FIRA)],
-            families: vec![group("Fira Sans", vec![SourceFace { source: 0, index: 0 }])],
+            families: vec![group(
+                "Fira Sans",
+                vec![SourceFace {
+                    source: 0,
+                    index: 0,
+                }],
+            )],
             roles: BTreeMap::new(),
             icons: vec![IconCatalogue {
                 family: "Fira Sans".into(),
                 style: "default".into(),
-                face: SourceFace { source: 0, index: 0 },
+                face: SourceFace {
+                    source: 0,
+                    index: 0,
+                },
                 glyphs: BTreeMap::from([("home".into(), 'a'), ("emoji".into(), '\u{1F600}')]),
             }],
         };
@@ -2969,7 +3063,10 @@ mod tests {
         };
         assert!(matches!(
             register_batch_in(&mut renderer, &mut ledger, uncovered, &Limits::PROCESS),
-            Err(RegistrationError::IconGlyphMissing { glyph: '\u{1F600}', .. })
+            Err(RegistrationError::IconGlyphMissing {
+                glyph: '\u{1F600}',
+                ..
+            })
         ));
     }
 
@@ -2988,7 +3085,13 @@ mod tests {
                 sources: vec![FontBlob {
                     bytes: Arc::from(bytes),
                 }],
-                families: vec![group("x", vec![SourceFace { source: 0, index: 0 }])],
+                families: vec![group(
+                    "x",
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
+                )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
             },
@@ -2996,15 +3099,34 @@ mod tests {
             icons: Vec::new(),
         };
         assert!(matches!(
-            register_batch_in(&mut renderer, &mut ledger, batch_with(ttc(0)), &Limits::PROCESS),
+            register_batch_in(
+                &mut renderer,
+                &mut ledger,
+                batch_with(ttc(0)),
+                &Limits::PROCESS
+            ),
             Err(RegistrationError::SourceUnparsable { source: 0 })
         ));
         assert!(matches!(
-            register_batch_in(&mut renderer, &mut ledger, batch_with(ttc(700)), &Limits::PROCESS),
-            Err(RegistrationError::TooManyFacesInSource { source: 0, faces: 700, .. })
+            register_batch_in(
+                &mut renderer,
+                &mut ledger,
+                batch_with(ttc(700)),
+                &Limits::PROCESS
+            ),
+            Err(RegistrationError::TooManyFacesInSource {
+                source: 0,
+                faces: 700,
+                ..
+            })
         ));
         assert!(matches!(
-            register_batch_in(&mut renderer, &mut ledger, batch_with(vec![0u8; 64]), &Limits::PROCESS),
+            register_batch_in(
+                &mut renderer,
+                &mut ledger,
+                batch_with(vec![0u8; 64]),
+                &Limits::PROCESS
+            ),
             Err(RegistrationError::SourceUnparsable { source: 0 })
         ));
         let tight = Limits {
@@ -3012,8 +3134,17 @@ mod tests {
             ..Limits::PROCESS
         };
         assert!(matches!(
-            register_batch_in(&mut renderer, &mut ledger, batch_with(vec![0u8; 17]), &tight),
-            Err(RegistrationError::SourceTooLarge { source: 0, bytes: 17, .. })
+            register_batch_in(
+                &mut renderer,
+                &mut ledger,
+                batch_with(vec![0u8; 17]),
+                &tight
+            ),
+            Err(RegistrationError::SourceTooLarge {
+                source: 0,
+                bytes: 17,
+                ..
+            })
         ));
     }
 
@@ -3044,8 +3175,20 @@ mod tests {
             collection: FontCollection {
                 sources: vec![blob(FIRA), blob(INTER_VARIABLE)],
                 families: vec![
-                    group("Fira Sans", vec![SourceFace { source: 0, index: 0 }]),
-                    group("Inter", vec![SourceFace { source: 1, index: 0 }]),
+                    group(
+                        "Fira Sans",
+                        vec![SourceFace {
+                            source: 0,
+                            index: 0,
+                        }],
+                    ),
+                    group(
+                        "Inter",
+                        vec![SourceFace {
+                            source: 1,
+                            index: 0,
+                        }],
+                    ),
                 ],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -3125,7 +3268,10 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     &long_family,
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -3135,7 +3281,11 @@ mod tests {
         };
         assert!(matches!(
             register_batch_in(&mut renderer, &mut ledger, batch, &Limits::PROCESS),
-            Err(RegistrationError::NameTooLong { what: "family", len: 257, .. })
+            Err(RegistrationError::NameTooLong {
+                what: "family",
+                len: 257,
+                ..
+            })
         ));
 
         let batch = RegistrationBatch {
@@ -3143,7 +3293,10 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -3153,7 +3306,11 @@ mod tests {
         };
         assert!(matches!(
             register_batch_in(&mut renderer, &mut ledger, batch, &Limits::PROCESS),
-            Err(RegistrationError::NameTooLong { what: "selection key", len: 97, .. })
+            Err(RegistrationError::NameTooLong {
+                what: "selection key",
+                len: 97,
+                ..
+            })
         ));
 
         let mut heavy = batch_for(FIRA, "Fira Sans", "ui", 400);
@@ -3172,7 +3329,10 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -3198,20 +3358,27 @@ mod tests {
             Err(RegistrationError::MetadataTooLarge { .. })
         ));
 
-        let glyphs: BTreeMap<String, char> =
-            (0..16_385).map(|index| (format!("n{index}"), 'a')).collect();
+        let glyphs: BTreeMap<String, char> = (0..16_385)
+            .map(|index| (format!("n{index}"), 'a'))
+            .collect();
         let batch = RegistrationBatch {
             collection: FontCollection {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: vec![IconCatalogue {
                     family: "Fira Sans".into(),
                     style: "default".into(),
-                    face: SourceFace { source: 0, index: 0 },
+                    face: SourceFace {
+                        source: 0,
+                        index: 0,
+                    },
                     glyphs,
                 }],
             },
@@ -3220,7 +3387,10 @@ mod tests {
         };
         assert!(matches!(
             register_batch_in(&mut renderer, &mut ledger, batch, &Limits::PROCESS),
-            Err(RegistrationError::TooManyIconNames { limit: 16_384, have: 16_385 })
+            Err(RegistrationError::TooManyIconNames {
+                limit: 16_384,
+                have: 16_385
+            })
         ));
     }
 
@@ -3232,7 +3402,10 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Wrong Family",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -3259,10 +3432,11 @@ mod tests {
         .unwrap();
         let id = registration.collection_id();
         assert_eq!(id.as_str().len(), 64);
-        assert!(id
-            .as_str()
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            id.as_str()
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
         assert_eq!(
             registration.evidence().usage_after.retained_bytes,
             INTER_VARIABLE.len() as u64
@@ -3282,7 +3456,13 @@ mod tests {
         let batch_with = |bytes: Arc<[u8]>| RegistrationBatch {
             collection: FontCollection {
                 sources: vec![FontBlob { bytes }],
-                families: vec![group("Inter", vec![SourceFace { source: 0, index: 0 }])],
+                families: vec![group(
+                    "Inter",
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
+                )],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
             },
@@ -3325,13 +3505,19 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: vec![IconCatalogue {
                     family: "Wrong Icons".into(),
                     style: "default".into(),
-                    face: SourceFace { source: 0, index: 0 },
+                    face: SourceFace {
+                        source: 0,
+                        index: 0,
+                    },
                     glyphs: BTreeMap::from([("home".into(), 'a')]),
                 }],
             },
@@ -3357,10 +3543,27 @@ mod tests {
         let canonical: Arc<[u8]> = Arc::from(INTER_VARIABLE);
         let first = RegistrationBatch {
             collection: FontCollection {
-                sources: vec![blob(FIRA), FontBlob { bytes: canonical.clone() }],
+                sources: vec![
+                    blob(FIRA),
+                    FontBlob {
+                        bytes: canonical.clone(),
+                    },
+                ],
                 families: vec![
-                    group("Fira Sans", vec![SourceFace { source: 0, index: 0 }]),
-                    group("Inter", vec![SourceFace { source: 1, index: 0 }]),
+                    group(
+                        "Fira Sans",
+                        vec![SourceFace {
+                            source: 0,
+                            index: 0,
+                        }],
+                    ),
+                    group(
+                        "Inter",
+                        vec![SourceFace {
+                            source: 1,
+                            index: 0,
+                        }],
+                    ),
                 ],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),
@@ -3373,15 +3576,21 @@ mod tests {
         let fresh: Arc<[u8]> = Arc::from(INTER_VARIABLE);
         let mut second = batch_for(INTER_VARIABLE, "Inter", "ui", 400);
         second.collection.sources[0].bytes = fresh.clone();
-        let registration = register_batch_in(&mut renderer, &mut ledger, second, &Limits::PROCESS)
-            .unwrap();
+        let registration =
+            register_batch_in(&mut renderer, &mut ledger, second, &Limits::PROCESS).unwrap();
         assert_eq!(ledger.usage().retained_bytes, before_bytes);
         let owned = registration.font("ui").unwrap().owned();
         assert!(Arc::ptr_eq(&owned.groups()[0][0].bytes(), &canonical));
-        let key = FaceKey { source: *blake3::hash(INTER_VARIABLE).as_bytes(),
-            len: INTER_VARIABLE.len() as u64, index: 0 };
+        let key = FaceKey {
+            source: *blake3::hash(INTER_VARIABLE).as_bytes(),
+            len: INTER_VARIABLE.len() as u64,
+            index: 0,
+        };
         let id = ledger.faces[&key].id;
-        let renderer_pointer = renderer.raw.db().with_face_data(id, |bytes, _| bytes.as_ptr())
+        let renderer_pointer = renderer
+            .raw
+            .db()
+            .with_face_data(id, |bytes, _| bytes.as_ptr())
             .expect("committed renderer face");
         assert_eq!(renderer_pointer, canonical.as_ptr());
         assert_ne!(renderer_pointer, fresh.as_ptr());
@@ -3393,13 +3602,20 @@ mod tests {
         let before = snapshot(&renderer, &ledger);
         let mut batch = batch_for(FIRA, "Fira Sans", "ui", 400);
         batch.collection.icons.push(IconCatalogue {
-            family: "Fira Sans".into(), style: "rounded".into(),
-            face: SourceFace { source: 0, index: 0 },
+            family: "Fira Sans".into(),
+            style: "rounded".into(),
+            face: SourceFace {
+                source: 0,
+                index: 0,
+            },
             glyphs: BTreeMap::from([("home".into(), 'a')]),
         });
         let request = IconSelectionRequest {
-            key: "icons".into(), family: "Fira Sans".into(), style: "rounded".into(),
-            weight: 400, required_names: vec!["home".into()],
+            key: "icons".into(),
+            family: "Fira Sans".into(),
+            style: "rounded".into(),
+            weight: 400,
+            required_names: vec!["home".into()],
         };
         for (style, stretch) in [
             (fontdb::Style::Italic, fontdb::Stretch::Normal),
@@ -3410,8 +3626,10 @@ mod tests {
             let face = parsed[0].faces.get_mut(&0).unwrap();
             face.info.style = style;
             face.info.stretch = stretch;
-            assert!(matches!(resolve_icon(&request, &batch.collection, &parsed, &digest),
-                Err(RegistrationError::UnsupportedStyle { .. })));
+            assert!(matches!(
+                resolve_icon(&request, &batch.collection, &parsed, &digest),
+                Err(RegistrationError::UnsupportedStyle { .. })
+            ));
             assert_eq!(snapshot(&renderer, &ledger), before);
         }
     }
@@ -3424,13 +3642,19 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: vec![IconCatalogue {
                     family: "Fira Sans".into(),
                     style: "default".into(),
-                    face: SourceFace { source: 0, index: 0 },
+                    face: SourceFace {
+                        source: 0,
+                        index: 0,
+                    },
                     glyphs: BTreeMap::from([("home".into(), 'a')]),
                 }],
             },
@@ -3447,7 +3671,10 @@ mod tests {
             register_batch_in(&mut renderer, &mut ledger, batch, &Limits::PROCESS).unwrap();
         // The evidence reports the parsed intrinsic name, not the request's
         // spelling.
-        assert_eq!(registration.font("ui").unwrap().evidence().family, "Fira Sans");
+        assert_eq!(
+            registration.font("ui").unwrap().evidence().family,
+            "Fira Sans"
+        );
         assert!(registration.icon("icons", "home").is_some());
 
         // Two catalogues differing only in family case are one catalogue.
@@ -3456,20 +3683,29 @@ mod tests {
                 sources: vec![blob(FIRA)],
                 families: vec![group(
                     "Fira Sans",
-                    vec![SourceFace { source: 0, index: 0 }],
+                    vec![SourceFace {
+                        source: 0,
+                        index: 0,
+                    }],
                 )],
                 roles: BTreeMap::new(),
                 icons: vec![
                     IconCatalogue {
                         family: "Icons".into(),
                         style: "default".into(),
-                        face: SourceFace { source: 0, index: 0 },
+                        face: SourceFace {
+                            source: 0,
+                            index: 0,
+                        },
                         glyphs: BTreeMap::from([("home".into(), 'a')]),
                     },
                     IconCatalogue {
                         family: "icons".into(),
                         style: "default".into(),
-                        face: SourceFace { source: 0, index: 0 },
+                        face: SourceFace {
+                            source: 0,
+                            index: 0,
+                        },
                         glyphs: BTreeMap::from([("home".into(), 'a')]),
                     },
                 ],
@@ -3533,8 +3769,20 @@ mod tests {
             collection: FontCollection {
                 sources: vec![blob(FIRA), blob(INTER_VARIABLE)],
                 families: vec![
-                    group("Fira Sans", vec![SourceFace { source: 0, index: 0 }]),
-                    group("Inter", vec![SourceFace { source: 1, index: 0 }]),
+                    group(
+                        "Fira Sans",
+                        vec![SourceFace {
+                            source: 0,
+                            index: 0,
+                        }],
+                    ),
+                    group(
+                        "Inter",
+                        vec![SourceFace {
+                            source: 1,
+                            index: 0,
+                        }],
+                    ),
                 ],
                 roles: BTreeMap::new(),
                 icons: Vec::new(),

@@ -46,18 +46,16 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use assets::{ExplicitRequest, IconDefault, Lookup, ReadLimits, VerifiedFile, VerifiedSet};
 use design::{ResolvedTypeRecord, TypographyGeneric, TypographyRole};
-use iced_core::font::{Style, Stretch, Weight};
-use settings::{
-    Diagnostic, IconReference, ResourceBinding, ResourceReference, RESOURCE_SCHEMA,
-};
+use iced_core::font::{Stretch, Style, Weight};
+use settings::{Diagnostic, IconReference, RESOURCE_SCHEMA, ResourceBinding, ResourceReference};
 use toolkit::{
     Icon,
     fonts::{
         FontChoice, FontSelection,
         registry::{
             FamilyGroup, FontBlob, FontCollection, IconCatalogue, IconSelectionRequest,
-            OwnedSelection, RegistrationBatch, RegistryUsage, SelectionRequest, SourceFace, WeightPolicy,
-            registry as process_registry,
+            OwnedSelection, RegistrationBatch, RegistryUsage, SelectionRequest, SourceFace,
+            WeightPolicy, registry as process_registry,
         },
     },
     graphics::text::Version,
@@ -103,7 +101,9 @@ enum ImageError {
 impl ImageError {
     fn message(&self) -> String {
         match self {
-            Self::Sources { have, limit } => format!("image store would retain {have} sources; the limit is {limit}"),
+            Self::Sources { have, limit } => {
+                format!("image store would retain {have} sources; the limit is {limit}")
+            }
             Self::Collision => "equal image digests identify different source bytes".into(),
             Self::Variants { have, limit } => {
                 format!("decoded image ledger holds {have} variants; the limit is {limit}")
@@ -188,59 +188,120 @@ struct ImageAdmission {
 
 impl ImageStore {
     fn source(&self, digest: &str) -> Option<Arc<[u8]>> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sources.get(digest).cloned()
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .sources
+            .get(digest)
+            .cloned()
     }
 
     fn variant(&self, key: &VariantKey) -> Option<Arc<VariantCharge>> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .variants.get(key).cloned()
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .variants
+            .get(key)
+            .cloned()
     }
 
-    fn preflight(&self, compact: &CompactSet, variants: &[Arc<VariantCharge>]) -> Result<ImageAdmission, ImageError> {
-        let ledger = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn preflight(
+        &self,
+        compact: &CompactSet,
+        variants: &[Arc<VariantCharge>],
+    ) -> Result<ImageAdmission, ImageError> {
+        let ledger = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut sources: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
         for source in &compact.assets {
-            if let Some(previous) = ledger.sources.get(&source.blake3).or_else(|| sources.get(&source.blake3)) {
-                if previous.as_ref() != source.bytes.as_ref() { return Err(ImageError::Collision); }
+            if let Some(previous) = ledger
+                .sources
+                .get(&source.blake3)
+                .or_else(|| sources.get(&source.blake3))
+            {
+                if previous.as_ref() != source.bytes.as_ref() {
+                    return Err(ImageError::Collision);
+                }
             } else {
                 sources.insert(source.blake3.clone(), Arc::clone(&source.bytes));
             }
         }
         let count = ledger.sources.len() + sources.len();
-        if count > MAX_RETAINED_SOURCES { return Err(ImageError::Sources { have:count, limit:MAX_RETAINED_SOURCES }); }
-        let encoded: u64 = sources.values().map(|source| source.len() as u64).sum();
-        if ledger.encoded_bytes.checked_add(encoded).is_none_or(|total| total > MAX_RETAINED_ENCODED_BYTES) {
-            return Err(ImageError::Encoded { have:ledger.encoded_bytes, need:encoded, limit:MAX_RETAINED_ENCODED_BYTES });
+        if count > MAX_RETAINED_SOURCES {
+            return Err(ImageError::Sources {
+                have: count,
+                limit: MAX_RETAINED_SOURCES,
+            });
         }
-        let variants: BTreeMap<_, _> = variants.iter()
+        let encoded: u64 = sources.values().map(|source| source.len() as u64).sum();
+        if ledger
+            .encoded_bytes
+            .checked_add(encoded)
+            .is_none_or(|total| total > MAX_RETAINED_ENCODED_BYTES)
+        {
+            return Err(ImageError::Encoded {
+                have: ledger.encoded_bytes,
+                need: encoded,
+                limit: MAX_RETAINED_ENCODED_BYTES,
+            });
+        }
+        let variants: BTreeMap<_, _> = variants
+            .iter()
             .filter(|variant| !ledger.variants.contains_key(&variant.key))
-            .map(|variant| (variant.key.clone(), Arc::clone(variant))).collect();
+            .map(|variant| (variant.key.clone(), Arc::clone(variant)))
+            .collect();
         let count = ledger.variants.len() + variants.len();
-        if count > MAX_RETAINED_VARIANTS { return Err(ImageError::Variants { have:count, limit:MAX_RETAINED_VARIANTS }); }
+        if count > MAX_RETAINED_VARIANTS {
+            return Err(ImageError::Variants {
+                have: count,
+                limit: MAX_RETAINED_VARIANTS,
+            });
+        }
         let decoded: u64 = variants.values().map(|variant| variant.decoded).sum();
-        if ledger.decoded_bytes.checked_add(decoded).is_none_or(|total| total > MAX_RETAINED_DECODED_BYTES) {
-            return Err(ImageError::Decoded { have:ledger.decoded_bytes, need:decoded, limit:MAX_RETAINED_DECODED_BYTES });
+        if ledger
+            .decoded_bytes
+            .checked_add(decoded)
+            .is_none_or(|total| total > MAX_RETAINED_DECODED_BYTES)
+        {
+            return Err(ImageError::Decoded {
+                have: ledger.decoded_bytes,
+                need: decoded,
+                limit: MAX_RETAINED_DECODED_BYTES,
+            });
         }
         Ok(ImageAdmission { sources, variants })
     }
 
     fn publish(&self, admission: ImageAdmission) {
-        let mut ledger = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut ledger = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for (key, bytes) in admission.sources {
-            assert!(!ledger.sources.contains_key(&key), "STAGING excludes competing admissions");
+            assert!(
+                !ledger.sources.contains_key(&key),
+                "STAGING excludes competing admissions"
+            );
             ledger.encoded_bytes += bytes.len() as u64;
             ledger.sources.insert(key, bytes);
         }
         for (key, variant) in admission.variants {
-            assert!(!ledger.variants.contains_key(&key), "STAGING excludes competing admissions");
+            assert!(
+                !ledger.variants.contains_key(&key),
+                "STAGING excludes competing admissions"
+            );
             ledger.decoded_bytes += variant.decoded;
             ledger.variants.insert(key, variant);
         }
     }
 
     fn usage(&self) -> ImageUsage {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).usage()
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .usage()
     }
 }
 /// One process-wide image ledger, created on first use and never reset.
@@ -281,7 +342,9 @@ struct StagingPermit {
 
 fn staging_permit() -> StagingPermit {
     StagingPermit {
-        _guard: STAGING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+        _guard: STAGING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
     }
 }
 
@@ -321,13 +384,19 @@ impl ResourceRequirements {
         for requirement in &icons {
             let path = format!("resources.requirements.{}", requirement.key);
             if requirement.key.is_empty() || requirement.key.len() > MAX_KEY_BYTES {
-                return Err(fault(&path, format!("key must be 1..={MAX_KEY_BYTES} bytes")));
+                return Err(fault(
+                    &path,
+                    format!("key must be 1..={MAX_KEY_BYTES} bytes"),
+                ));
             }
             if !seen.insert(requirement.key.as_str()) {
                 return Err(fault(&path, "duplicate icon key"));
             }
             if requirement.name.is_empty() || requirement.name.len() > MAX_KEY_BYTES {
-                return Err(fault(&path, format!("name must be 1..={MAX_KEY_BYTES} bytes")));
+                return Err(fault(
+                    &path,
+                    format!("name must be 1..={MAX_KEY_BYTES} bytes"),
+                ));
             }
             for (field, value) in [
                 ("logical_size", requirement.logical_size),
@@ -622,7 +691,13 @@ struct CompactSet {
 }
 
 impl CompactSet {
-    fn matches(&self, set_id: &str, digest: [u8; 32], selector: Option<&Selector>, packaged: bool) -> bool {
+    fn matches(
+        &self,
+        set_id: &str,
+        digest: [u8; 32],
+        selector: Option<&Selector>,
+        packaged: bool,
+    ) -> bool {
         self.set_id == set_id
             && self.digest == digest
             && self.selector.as_ref() == selector
@@ -708,16 +783,23 @@ impl ResourceHost {
         // Validate all font-independent typography geometry before any image
         // admission or registry commit. Resolving a different Font cannot
         // change these sizes, line heights or record names.
-        projection.clone().prepare(|_, _| Ok(FontSelection {
-            font: iced_core::Font::DEFAULT,
-            choice: FontChoice::Generic,
-        }))?;
+        projection.clone().prepare(|_, _| {
+            Ok(FontSelection {
+                font: iced_core::Font::DEFAULT,
+                choice: FontChoice::Generic,
+            })
+        })?;
         let _permit = staging_permit();
         check()?;
         let identity = request_identity(reference, expected, self.pin.as_ref())?;
         let compact_index = identity.digest.and_then(|digest| {
             self.compact.iter().position(|compact| {
-                compact.matches(&identity.set_id, digest, identity.selector.as_ref(), identity.packaged)
+                compact.matches(
+                    &identity.set_id,
+                    digest,
+                    identity.selector.as_ref(),
+                    identity.packaged,
+                )
             })
         });
         match compact_index {
@@ -727,10 +809,17 @@ impl ResourceHost {
                 // image requirement rereads this exact pinned manifest,
                 // never `current`, and replaces compact reuse metadata.
                 if requirements.icons().iter().any(|requirement| {
-                    !compact.catalogue.as_ref().is_some_and(|catalogue| catalogue.glyphs.contains_key(&requirement.name))
-                        && !compact.assets.iter().any(|asset| asset.name == requirement.name)
+                    !compact
+                        .catalogue
+                        .as_ref()
+                        .is_some_and(|catalogue| catalogue.glyphs.contains_key(&requirement.name))
+                        && !compact
+                            .assets
+                            .iter()
+                            .any(|asset| asset.name == requirement.name)
                 }) {
-                    compact = self.read(&identity, &requirements, check)?
+                    compact = self
+                        .read(&identity, &requirements, check)?
                         .ok_or_else(|| fault("resources", "pinned resource set is unavailable"))?;
                 }
                 let plan = icon_plan(&requirements, &compact)?;
@@ -743,7 +832,8 @@ impl ResourceHost {
                 if reusable {
                     reuse(projection, &plan, &compact, &identity, check)
                 } else {
-                    let (prepared, updated) = register(projection, &plan, compact, &identity, check)?;
+                    let (prepared, updated) =
+                        register(projection, &plan, compact, &identity, check)?;
                     self.store(updated, Some(index));
                     check()?;
                     Ok(prepared)
@@ -784,7 +874,12 @@ impl ResourceHost {
             match config::atomic::open_directory(root) {
                 Ok(directory) => roots.push(directory),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(fault("resources", format!("cannot open asset root: {error}"))),
+                Err(error) => {
+                    return Err(fault(
+                        "resources",
+                        format!("cannot open asset root: {error}"),
+                    ));
+                }
             }
         }
         let limits = ReadLimits {
@@ -798,9 +893,7 @@ impl ResourceHost {
             };
             match VerifiedSet::read_explicit(&roots, &request, limits) {
                 Ok(Some(set)) => set,
-                Ok(None) => {
-                    return Err(fault("resources", "requested asset set is unavailable"))
-                }
+                Ok(None) => return Err(fault("resources", "requested asset set is unavailable")),
                 Err(error) => return Err(fault("resources", error.to_string())),
             }
         } else {
@@ -850,8 +943,13 @@ fn request_identity(
     if let Some(binding) = expected {
         binding.validate()?;
         let digest = hex_digest(&binding.manifest_blake3)?;
-        if reference.is_none() && pin.is_some_and(|pin| pin.set_id != binding.set_id || pin.digest != digest) {
-            return Err(fault("resources", "recorded omission binding conflicts with the lifetime pin"));
+        if reference.is_none()
+            && pin.is_some_and(|pin| pin.set_id != binding.set_id || pin.digest != digest)
+        {
+            return Err(fault(
+                "resources",
+                "recorded omission binding conflicts with the lifetime pin",
+            ));
         }
         let selector = binding.icons.as_ref().map(Selector::from);
         if let Some(reference) = reference {
@@ -908,7 +1006,10 @@ fn request_identity(
 /// The slot of a verified font file among the compact sources, deduplicated by
 /// exact source digest so shared files share one retained allocation.
 fn source_slot(sources: &mut Vec<CompactSource>, file: &VerifiedFile) -> usize {
-    if let Some(index) = sources.iter().position(|source| source.blake3 == file.blake3()) {
+    if let Some(index) = sources
+        .iter()
+        .position(|source| source.blake3 == file.blake3())
+    {
         return index;
     }
     sources.push(CompactSource {
@@ -944,7 +1045,10 @@ fn extract(
             continue;
         }
         let file = set.file(path).ok_or_else(|| {
-            fault("resources", format!("manifest role {role:?} file is not locked"))
+            fault(
+                "resources",
+                format!("manifest role {role:?} file is not locked"),
+            )
         })?;
         let slot = source_slot(&mut sources, file);
         roles.insert(role.clone(), (slot, family.clone()));
@@ -983,21 +1087,36 @@ fn extract(
                 glyphs: resolved.glyphs.clone(),
             })
         }
-        None if !requirements.icons().is_empty() => return Err(fault("resources", "asset set declares no icon catalogue")),
+        None if !requirements.icons().is_empty() => {
+            return Err(fault("resources", "asset set declares no icon catalogue"));
+        }
         None => None,
     };
     let mut assets = Vec::new();
     if let Some(style) = selected.as_ref().map(|selector| selector.style.as_str()) {
         for asset in set.icon_assets() {
-            if asset.style == style && requirements.icons().iter().any(|requirement| requirement.name == asset.name)
-                && !catalogue.as_ref().is_some_and(|catalogue| catalogue.glyphs.contains_key(&asset.name)) {
+            if asset.style == style
+                && requirements
+                    .icons()
+                    .iter()
+                    .any(|requirement| requirement.name == asset.name)
+                && !catalogue
+                    .as_ref()
+                    .is_some_and(|catalogue| catalogue.glyphs.contains_key(&asset.name))
+            {
                 let file = set.icon_asset_file(asset).ok_or_else(|| {
-                    fault("resources", format!("icon asset {:?} is not locked", asset.name))
+                    fault(
+                        "resources",
+                        format!("icon asset {:?} is not locked", asset.name),
+                    )
                 })?;
                 if file.bytes().len() as u64 > MAX_ENCODED_IMAGE_BYTES {
                     return Err(fault(
                         "resources",
-                        format!("icon asset {:?} exceeds the encoded image bound", asset.name),
+                        format!(
+                            "icon asset {:?} exceeds the encoded image bound",
+                            asset.name
+                        ),
                     ));
                 }
                 assets.push(CompactAsset {
@@ -1051,7 +1170,10 @@ fn image_format(path: &str) -> ImageFormat {
 /// registry's preflight), else the declared image asset of the same style.
 /// Nothing silently becomes a themed icon: an unsatisfiable requirement is a
 /// fault.
-fn icon_plan(requirements: &ResourceRequirements, compact: &CompactSet) -> Result<IconPlan, Diagnostic> {
+fn icon_plan(
+    requirements: &ResourceRequirements,
+    compact: &CompactSet,
+) -> Result<IconPlan, Diagnostic> {
     let mut plan = IconPlan {
         glyphs: Vec::new(),
         images: Vec::new(),
@@ -1059,9 +1181,10 @@ fn icon_plan(requirements: &ResourceRequirements, compact: &CompactSet) -> Resul
     if requirements.icons().is_empty() {
         return Ok(plan);
     }
-    let catalogue = compact.catalogue.as_ref().ok_or_else(|| {
-        fault("resources", "asset set declares no icon catalogue")
-    })?;
+    let catalogue = compact
+        .catalogue
+        .as_ref()
+        .ok_or_else(|| fault("resources", "asset set declares no icon catalogue"))?;
     for requirement in requirements.icons() {
         let path = format!("resources.icons.{}", requirement.key);
         if let Some(glyph) = catalogue.glyphs.get(&requirement.name) {
@@ -1123,23 +1246,51 @@ fn decode_images(
         let key = VariantKey {
             source: image.blake3.clone(),
             svg: image.format == ImageFormat::Svg,
-            side: if image.format == ImageFormat::Svg { image.side } else { 0 },
+            side: if image.format == ImageFormat::Svg {
+                image.side
+            } else {
+                0
+            },
             tint: image.tint,
         };
-        let charge = match image_store().variant(&key).or_else(|| charges.iter().find(|variant: &&Arc<VariantCharge>| variant.key == key).cloned()) {
+        let charge = match image_store().variant(&key).or_else(|| {
+            charges
+                .iter()
+                .find(|variant: &&Arc<VariantCharge>| variant.key == key)
+                .cloned()
+        }) {
             Some(charge) => charge,
             None => {
                 if usage.variants + staged_variants >= MAX_RETAINED_VARIANTS {
-                    return Err(Diagnostic::new("image_capacity", "resources", "decoded variant capacity exhausted"));
+                    return Err(Diagnostic::new(
+                        "image_capacity",
+                        "resources",
+                        "decoded variant capacity exhausted",
+                    ));
                 }
-                let decoded = decode_owned(Arc::clone(&image.bytes), image.format, image.side, image.tint)
-                    .map_err(|error| fault(&format!("resources.icons.{}", image.key), error.to_string()))?;
+                let decoded = decode_owned(
+                    Arc::clone(&image.bytes),
+                    image.format,
+                    image.side,
+                    image.tint,
+                )
+                .map_err(|error| {
+                    fault(&format!("resources.icons.{}", image.key), error.to_string())
+                })?;
                 staged_bytes += decoded.byte_charge();
                 if usage.decoded_bytes + staged_bytes > MAX_RETAINED_DECODED_BYTES {
-                    return Err(Diagnostic::new("image_capacity", "resources", "decoded pixel capacity exhausted"));
+                    return Err(Diagnostic::new(
+                        "image_capacity",
+                        "resources",
+                        "decoded pixel capacity exhausted",
+                    ));
                 }
                 staged_variants += 1;
-                Arc::new(VariantCharge { key, decoded: decoded.byte_charge(), handle: decoded.into_handle() })
+                Arc::new(VariantCharge {
+                    key,
+                    decoded: decoded.byte_charge(),
+                    handle: decoded.into_handle(),
+                })
             }
         };
         let handle = charge.handle.clone();
@@ -1243,11 +1394,17 @@ fn effective_chain(
 
 /// A stable signature of every record's effective chain and weight, used to
 /// decide whether retained selections still cover the projection.
-fn text_signature(records: &BTreeMap<String, ResolvedTypeRecord>, compact: &CompactSet) -> BTreeMap<String, (Vec<String>, u16)> {
-    records.iter().map(|(name, record)| {
-        let (chain, _) = effective_chain(name, record, compact);
-        (name.clone(), (chain, record.weight))
-    }).collect()
+fn text_signature(
+    records: &BTreeMap<String, ResolvedTypeRecord>,
+    compact: &CompactSet,
+) -> BTreeMap<String, (Vec<String>, u16)> {
+    records
+        .iter()
+        .map(|(name, record)| {
+            let (chain, _) = effective_chain(name, record, compact);
+            (name.clone(), (chain, record.weight))
+        })
+        .collect()
 }
 
 /// One complete toolkit batch: every role font with a declared family claim,
@@ -1369,10 +1526,12 @@ fn reuse(
             ));
         }
     }
-    image_store().preflight(compact, &[])
+    image_store()
+        .preflight(compact, &[])
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let (images, charges) = decode_images(plan, check)?;
-    let admission = image_store().preflight(compact, &charges)
+    let admission = image_store()
+        .preflight(compact, &charges)
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let mut icons = BTreeMap::new();
     let mut icon_evidence = Vec::new();
@@ -1411,7 +1570,14 @@ fn reuse(
         registry: compact.registry.clone().with_image_usage(),
     };
     check()?;
-    let receipt = PreparedResources::assemble(Some(binding), compact.texts.clone(), compact.owned_texts.clone(), icons, evidence, charges);
+    let receipt = PreparedResources::assemble(
+        Some(binding),
+        compact.texts.clone(),
+        compact.owned_texts.clone(),
+        icons,
+        evidence,
+        charges,
+    );
     let prepared = projection.prepare_with_resources(receipt)?;
     image_store().publish(admission);
     Ok(prepared)
@@ -1431,13 +1597,18 @@ fn register(
     let binding = binding_for(&compact);
     if let Some(expected) = &identity.expected {
         if binding != *expected {
-            return Err(fault("resources", "verified resource identity differs from the recorded binding"));
+            return Err(fault(
+                "resources",
+                "verified resource identity differs from the recorded binding",
+            ));
         }
     }
-    image_store().preflight(&compact, &[])
+    image_store()
+        .preflight(&compact, &[])
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let (images, charges) = decode_images(plan, check)?;
-    let admission = image_store().preflight(&compact, &charges)
+    let admission = image_store()
+        .preflight(&compact, &charges)
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     // The final cancellation fence before the registry/renderer mutation
     // locks are acquired.
@@ -1450,14 +1621,13 @@ fn register(
     let mut owned_texts = BTreeMap::new();
     let mut text_evidence = Vec::new();
     for (name, record) in projection.type_records() {
-        let selection = receipt.font(name).expect("successful batch resolves every requested record");
+        let selection = receipt
+            .font(name)
+            .expect("successful batch resolves every requested record");
         let font = selection.font();
         let evidence = selection.evidence();
         let (chain, remapped) = effective_chain(name, record, &compact);
-        let face = evidence
-            .groups
-            .first()
-            .and_then(|group| group.first());
+        let face = evidence.groups.first().and_then(|group| group.first());
         let family = evidence.family.clone();
         let choice = if family == record.family {
             FontChoice::Declared
@@ -1475,10 +1645,7 @@ fn register(
         } else {
             String::new()
         };
-        texts.insert(
-            name.clone(),
-            FontSelection { font, choice },
-        );
+        texts.insert(name.clone(), FontSelection { font, choice });
         owned_texts.insert(name.clone(), selection.owned());
         text_evidence.push(TextEvidence {
             record: name.clone(),
@@ -1494,7 +1661,8 @@ fn register(
     let mut icons = BTreeMap::new();
     let mut icon_evidence = Vec::new();
     for glyph in &plan.glyphs {
-        let (character, font) = receipt.icon(ICON_KEY, &glyph.name)
+        let (character, font) = receipt
+            .icon(ICON_KEY, &glyph.name)
             .expect("successful batch resolves every validated required glyph");
         glyph_fonts.insert(glyph.name.clone(), font);
         icons.insert(
@@ -1543,7 +1711,8 @@ fn register(
     // registry. Reuse metadata shares that exact allocation, including any
     // source not selected as a primary face.
     for source in &mut updated.sources {
-        source.bytes = process_registry().retained_source(&source.bytes)
+        source.bytes = process_registry()
+            .retained_source(&source.bytes)
             .expect("successful registry batch retains every source");
     }
     updated.text_signature = text_signature(projection.type_records(), &updated);
@@ -1552,11 +1721,13 @@ fn register(
     updated.text_evidence = evidence.text.clone();
     updated.glyph_fonts = glyph_fonts;
     updated.registry = registry;
-    let receipt = PreparedResources::assemble(Some(binding), texts, owned_texts, icons, evidence, charges);
+    let receipt =
+        PreparedResources::assemble(Some(binding), texts, owned_texts, icons, evidence, charges);
     let prepared = projection.prepare_with_resources(receipt)?;
     image_store().publish(admission);
     for asset in &mut updated.assets {
-        asset.bytes = image_store().source(&asset.blake3)
+        asset.bytes = image_store()
+            .source(&asset.blake3)
             .expect("successful admission retains every compact image source");
     }
     Ok((prepared, updated))
@@ -1617,7 +1788,14 @@ fn generic_prepared(
         icons: icon_evidence,
         registry: RegistryEvidence::default().with_image_usage(),
     };
-    let receipt = PreparedResources::assemble(None, texts, BTreeMap::new(), BTreeMap::new(), evidence, Vec::new());
+    let receipt = PreparedResources::assemble(
+        None,
+        texts,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        evidence,
+        Vec::new(),
+    );
     prepared.attach_resources(receipt);
     Ok(prepared)
 }
@@ -1701,9 +1879,9 @@ mod tests {
     /// A distinct nonblank SVG per name: every named asset has its own exact
     /// source digest, so the ledger can tell its variants apart.
     fn svg(name: &str) -> String {
-        let value = name
-            .bytes()
-            .fold(0u32, |total, byte| total.wrapping_mul(31).wrapping_add(u32::from(byte)));
+        let value = name.bytes().fold(0u32, |total, byte| {
+            total.wrapping_mul(31).wrapping_add(u32::from(byte))
+        });
         format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#{:06x}"/></svg>"#,
             value & 0xFF_FFFF
@@ -1742,7 +1920,11 @@ mod tests {
             let assets = images
                 .iter()
                 .map(|name| {
-                    entries.push(write_file(&dir, &format!("icons/{name}.svg"), svg(name).as_bytes()));
+                    entries.push(write_file(
+                        &dir,
+                        &format!("icons/{name}.svg"),
+                        svg(name).as_bytes(),
+                    ));
                     serde_json::json!({
                         "name": name, "style": "default",
                         "path": format!("icons/{name}.svg"), "symbolic": true
@@ -1781,7 +1963,10 @@ mod tests {
     /// A projection whose every record resolves to the one family an explicit
     /// fixture declares: explicit references never remap packaged roles.
     fn explicit_projection() -> Projection {
-        let mut effective = resolve(&Desktop::default()).unwrap().remove("desktop").unwrap();
+        let mut effective = resolve(&Desktop::default())
+            .unwrap()
+            .remove("desktop")
+            .unwrap();
         for record in effective.design.typography.values_mut() {
             record.family = "Inter".into();
             record.fallbacks = Vec::new();
@@ -1830,115 +2015,331 @@ mod tests {
 
     #[test]
     fn descriptor_default_keeps_authored_omission_across_warm_and_cold_captures() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         let manifest = publish_full(directory.path(), "default-icons", true, &["picture"]);
         activate(directory.path(), "default-icons");
         let tint = Color::from_rgba8(255, 255, 255, 1.0);
         let mut first_host = host(directory.path());
-        let first = first_host.prepare(projection(), None, None, requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        let first = first_host
+            .prepare(
+                projection(),
+                None,
+                None,
+                requirement("slot", "picture", tint),
+                &mut check_ok(),
+            )
+            .unwrap();
         let binding = first.resources().unwrap().binding().unwrap().clone();
         assert!(binding.icons.is_none());
         let first_handle = image_handle(first.resources().unwrap().icon("slot"));
         first_host.roots.clear();
-        let warm = first_host.prepare(projection(), None, Some(&binding), requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        let warm = first_host
+            .prepare(
+                projection(),
+                None,
+                Some(&binding),
+                requirement("slot", "picture", tint),
+                &mut check_ok(),
+            )
+            .unwrap();
         assert_eq!(warm.resources().unwrap().binding(), Some(&binding));
-        assert_eq!(image_handle(warm.resources().unwrap().icon("slot")).id(), first_handle.id());
+        assert_eq!(
+            image_handle(warm.resources().unwrap().icon("slot")).id(),
+            first_handle.id()
+        );
         let mut cold_host = host(directory.path());
-        let cold = cold_host.prepare(projection(), None, Some(&binding), requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        let cold = cold_host
+            .prepare(
+                projection(),
+                None,
+                Some(&binding),
+                requirement("slot", "picture", tint),
+                &mut check_ok(),
+            )
+            .unwrap();
         assert_eq!(cold.resources().unwrap().binding(), Some(&binding));
         let cold_handle = image_handle(cold.resources().unwrap().icon("slot"));
-        assert_eq!(cold_handle.id(), first_handle.id(), "two hosts share the actual decoded payload");
-        assert!(Arc::ptr_eq(&first_host.compact[0].assets[0].bytes, &cold_host.compact[0].assets[0].bytes));
+        assert_eq!(
+            cold_handle.id(),
+            first_handle.id(),
+            "two hosts share the actual decoded payload"
+        );
+        assert!(Arc::ptr_eq(
+            &first_host.compact[0].assets[0].bytes,
+            &cold_host.compact[0].assets[0].bytes
+        ));
         for source in &cold_host.compact[0].sources {
-            assert!(Arc::ptr_eq(&source.bytes, &process_registry().retained_source(&source.bytes).unwrap()));
+            assert!(Arc::ptr_eq(
+                &source.bytes,
+                &process_registry().retained_source(&source.bytes).unwrap()
+            ));
         }
         let reference = reference("default-icons", &manifest);
         assert!(reference.icons.is_none());
-        let explicit = host(directory.path()).prepare(explicit_projection(), Some(&reference), Some(&binding), requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        let explicit = host(directory.path())
+            .prepare(
+                explicit_projection(),
+                Some(&reference),
+                Some(&binding),
+                requirement("slot", "picture", tint),
+                &mut check_ok(),
+            )
+            .unwrap();
         assert_eq!(explicit.resources().unwrap().binding(), Some(&binding));
         let usage = image_usage();
         drop((first, warm, cold, explicit, first_host, cold_host));
-        assert_eq!(image_usage(), usage, "escaped handles stay permanently charged");
+        assert_eq!(
+            image_usage(),
+            usage,
+            "escaped handles stay permanently charged"
+        );
         assert!(matches!(cold_handle, iced_core::image::Handle::Rgba { .. }));
     }
 
     #[test]
     fn cold_omission_pins_a_while_current_points_at_b() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         let manifest = publish_full(directory.path(), "cached-a", true, &["picture"]);
         publish_full(directory.path(), "current-b", true, &["picture"]);
         activate(directory.path(), "current-b");
         let reference_a = reference("cached-a", &manifest);
         let mut explicit_host = host(directory.path());
-        let a = explicit_host.prepare(explicit_projection(), Some(&reference_a), None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
-        assert!(explicit_host.pin.is_none(), "authored references do not establish omission policy");
+        let a = explicit_host
+            .prepare(
+                explicit_projection(),
+                Some(&reference_a),
+                None,
+                ResourceRequirements::empty(),
+                &mut check_ok(),
+            )
+            .unwrap();
+        assert!(
+            explicit_host.pin.is_none(),
+            "authored references do not establish omission policy"
+        );
         let binding = a.resources().unwrap().binding().unwrap().clone();
         let tint = Color::from_rgba8(255, 255, 255, 1.0);
         let mut cold = host(directory.path());
-        let cached = cold.prepare(projection(), None, Some(&binding), requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        let cached = cold
+            .prepare(
+                projection(),
+                None,
+                Some(&binding),
+                requirement("slot", "picture", tint),
+                &mut check_ok(),
+            )
+            .unwrap();
         assert_eq!(cold.pin.as_ref().unwrap().set_id, "cached-a");
-        let live = cold.prepare(projection(), None, None, requirement("slot", "picture", tint), &mut check_ok()).unwrap();
+        let live = cold
+            .prepare(
+                projection(),
+                None,
+                None,
+                requirement("slot", "picture", tint),
+                &mut check_ok(),
+            )
+            .unwrap();
         assert_eq!(live.resources().unwrap().binding(), Some(&binding));
-        assert_eq!(image_handle(cached.resources().unwrap().icon("slot")).id(), image_handle(live.resources().unwrap().icon("slot")).id());
-        let unpinned = explicit_host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
-        assert_eq!(unpinned.resources().unwrap().binding().unwrap().set_id, "current-b");
+        assert_eq!(
+            image_handle(cached.resources().unwrap().icon("slot")).id(),
+            image_handle(live.resources().unwrap().icon("slot")).id()
+        );
+        let unpinned = explicit_host
+            .prepare(
+                projection(),
+                None,
+                None,
+                ResourceRequirements::empty(),
+                &mut check_ok(),
+            )
+            .unwrap();
+        assert_eq!(
+            unpinned.resources().unwrap().binding().unwrap().set_id,
+            "current-b"
+        );
     }
 
     #[test]
     fn rejected_batches_and_unused_images_never_publish_partial_image_admissions() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_image_ledger_for_tests();
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "staged", true, &["good", "later"]);
         activate(directory.path(), "staged");
         let mut host = host(directory.path());
-        host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
-        assert_eq!(image_usage(), ImageUsage::default(), "text-only capture retains no unrequested image payloads");
-        let tint = Color::from_rgba8(255,255,255,1.0);
+        host.prepare(
+            projection(),
+            None,
+            None,
+            ResourceRequirements::empty(),
+            &mut check_ok(),
+        )
+        .unwrap();
+        assert_eq!(
+            image_usage(),
+            ImageUsage::default(),
+            "text-only capture retains no unrequested image payloads"
+        );
+        let tint = Color::from_rgba8(255, 255, 255, 1.0);
         let requirements = ResourceRequirements::new(vec![
-            IconRequirement { key:"good".into(), name:"good".into(), logical_size:16.0, scale:1.0, tint },
-            IconRequirement { key:"missing".into(), name:"absent".into(), logical_size:16.0, scale:1.0, tint },
-        ]).unwrap();
+            IconRequirement {
+                key: "good".into(),
+                name: "good".into(),
+                logical_size: 16.0,
+                scale: 1.0,
+                tint,
+            },
+            IconRequirement {
+                key: "missing".into(),
+                name: "absent".into(),
+                logical_size: 16.0,
+                scale: 1.0,
+                tint,
+            },
+        ])
+        .unwrap();
         let before = image_usage();
-        assert!(host.prepare(projection(), None, None, requirements, &mut check_ok()).is_err());
+        assert!(
+            host.prepare(projection(), None, None, requirements, &mut check_ok())
+                .is_err()
+        );
         assert_eq!(image_usage(), before);
-        let mut effective = resolve(&Desktop::default()).unwrap().remove("desktop").unwrap();
+        let mut effective = resolve(&Desktop::default())
+            .unwrap()
+            .remove("desktop")
+            .unwrap();
         effective.design.typography.get_mut("ui").unwrap().family = "Missing Family".into();
-        effective.design.typography.get_mut("ui").unwrap().fallbacks.clear();
-        assert!(host.prepare(Projection::new(&effective).unwrap(), None, None, requirement("good", "good", tint), &mut check_ok()).is_err());
-        assert_eq!(image_usage(), before, "registry refusal publishes neither encoded nor decoded images");
+        effective
+            .design
+            .typography
+            .get_mut("ui")
+            .unwrap()
+            .fallbacks
+            .clear();
+        assert!(
+            host.prepare(
+                Projection::new(&effective).unwrap(),
+                None,
+                None,
+                requirement("good", "good", tint),
+                &mut check_ok()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            image_usage(),
+            before,
+            "registry refusal publishes neither encoded nor decoded images"
+        );
         let identity = request_identity(None, None, host.pin.as_ref()).unwrap();
-        let mut compact = host.read(&identity, &ResourceRequirements::new(vec![
-            IconRequirement { key:"good".into(), name:"good".into(), logical_size:16.0, scale:1.0, tint },
-            IconRequirement { key:"later".into(), name:"later".into(), logical_size:16.0, scale:1.0, tint },
-        ]).unwrap(), &mut check_ok()).unwrap().unwrap();
-        compact.assets.iter_mut().find(|asset| asset.name == "later").unwrap().bytes = Arc::from(&b"malformed SVG"[..]);
+        let mut compact = host
+            .read(
+                &identity,
+                &ResourceRequirements::new(vec![
+                    IconRequirement {
+                        key: "good".into(),
+                        name: "good".into(),
+                        logical_size: 16.0,
+                        scale: 1.0,
+                        tint,
+                    },
+                    IconRequirement {
+                        key: "later".into(),
+                        name: "later".into(),
+                        logical_size: 16.0,
+                        scale: 1.0,
+                        tint,
+                    },
+                ])
+                .unwrap(),
+                &mut check_ok(),
+            )
+            .unwrap()
+            .unwrap();
+        compact
+            .assets
+            .iter_mut()
+            .find(|asset| asset.name == "later")
+            .unwrap()
+            .bytes = Arc::from(&b"malformed SVG"[..]);
         let requirements = ResourceRequirements::new(vec![
-            IconRequirement { key:"good".into(), name:"good".into(), logical_size:16.0, scale:1.0, tint },
-            IconRequirement { key:"later".into(), name:"later".into(), logical_size:16.0, scale:1.0, tint },
-        ]).unwrap();
+            IconRequirement {
+                key: "good".into(),
+                name: "good".into(),
+                logical_size: 16.0,
+                scale: 1.0,
+                tint,
+            },
+            IconRequirement {
+                key: "later".into(),
+                name: "later".into(),
+                logical_size: 16.0,
+                scale: 1.0,
+                tint,
+            },
+        ])
+        .unwrap();
         let plan = icon_plan(&requirements, &compact).unwrap();
         assert!(decode_images(&plan, &mut check_ok()).is_err());
-        assert_eq!(image_usage(), before, "successful first decode remains private when the next decode fails");
+        assert_eq!(
+            image_usage(),
+            before,
+            "successful first decode remains private when the next decode fails"
+        );
     }
 
     #[test]
     fn reuse_validates_changed_glyph_names_and_structured_family_chains() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "glyph-proof", true, &[]);
         activate(directory.path(), "glyph-proof");
         let tint = Color::from_rgba8(255, 255, 255, 1.0);
         let mut host = host(directory.path());
-        host.prepare(projection(), None, None, requirement("action", "home", tint), &mut check_ok()).unwrap();
+        host.prepare(
+            projection(),
+            None,
+            None,
+            requirement("action", "home", tint),
+            &mut check_ok(),
+        )
+        .unwrap();
         let before = process_registry().usage();
-        let version = toolkit::graphics::text::font_system().read().unwrap().version();
-        let error = host.prepare(projection(), None, None, requirement("action", "emoji", tint), &mut check_ok()).unwrap_err();
-        assert!(error.to_string().contains("no glyph in its face"), "{error}");
+        let version = toolkit::graphics::text::font_system()
+            .read()
+            .unwrap()
+            .version();
+        let error = host
+            .prepare(
+                projection(),
+                None,
+                None,
+                requirement("action", "emoji", tint),
+                &mut check_ok(),
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("no glyph in its face"),
+            "{error}"
+        );
         assert_eq!(process_registry().usage(), before);
-        assert_eq!(toolkit::graphics::text::font_system().read().unwrap().version(), version);
+        assert_eq!(
+            toolkit::graphics::text::font_system()
+                .read()
+                .unwrap()
+                .version(),
+            version
+        );
         let mut records = projection().type_records().clone();
         let record = records.get_mut("ui").unwrap();
         record.family = "A,B".into();
@@ -1948,35 +2349,84 @@ mod tests {
         record.family = "A".into();
         record.fallbacks.push("B".into());
         let two = text_signature(&records, &host.compact[0]);
-        assert_ne!(one, two, "family delimiters cannot forge a retained selection proof");
+        assert_ne!(
+            one, two,
+            "family delimiters cannot forge a retained selection proof"
+        );
     }
 
     #[test]
     fn cancellation_after_registry_commit_retains_the_reusable_capture() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "cancelled", true, &["picture"]);
         activate(directory.path(), "cancelled");
         let mut host = host(directory.path());
         let mut checks = 0;
-        let mut count = || { checks += 1; Ok(()) };
-        host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut count).unwrap();
+        let mut count = || {
+            checks += 1;
+            Ok(())
+        };
+        host.prepare(
+            projection(),
+            None,
+            None,
+            ResourceRequirements::empty(),
+            &mut count,
+        )
+        .unwrap();
         let final_check = checks;
         let mut host = super::tests::host(directory.path());
         let mut checks = 0;
-        let mut cancel = || { checks += 1; if checks == final_check { Err(fault("resources", "cancelled after capture")) } else { Ok(()) } };
-        assert!(host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut cancel).is_err());
+        let mut cancel = || {
+            checks += 1;
+            if checks == final_check {
+                Err(fault("resources", "cancelled after capture"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(
+            host.prepare(
+                projection(),
+                None,
+                None,
+                ResourceRequirements::empty(),
+                &mut cancel
+            )
+            .is_err()
+        );
         assert_eq!(host.compact.len(), 1);
         assert!(host.pin.is_some());
         host.roots.clear();
-        let version = toolkit::graphics::text::font_system().read().unwrap().version();
-        host.prepare(projection(), None, None, ResourceRequirements::empty(), &mut check_ok()).unwrap();
-        assert_eq!(toolkit::graphics::text::font_system().read().unwrap().version(), version);
+        let version = toolkit::graphics::text::font_system()
+            .read()
+            .unwrap()
+            .version();
+        host.prepare(
+            projection(),
+            None,
+            None,
+            ResourceRequirements::empty(),
+            &mut check_ok(),
+        )
+        .unwrap();
+        assert_eq!(
+            toolkit::graphics::text::font_system()
+                .read()
+                .unwrap()
+                .version(),
+            version
+        );
     }
 
     #[test]
     fn requirements_are_finite_unique_and_bounded() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(ResourceRequirements::new(Vec::new()).is_ok());
         let tint = Color::from_rgba8(255, 255, 255, 1.0);
         let fine = ResourceRequirements::new(vec![IconRequirement {
@@ -1989,13 +2439,16 @@ mod tests {
         .unwrap();
         assert_eq!(fine.icons().len(), 1);
         for icons in [
-            vec![IconRequirement {
-                key: "dup".into(),
-                name: "a".into(),
-                logical_size: 16.0,
-                scale: 1.0,
-                tint,
-            }; 2],
+            vec![
+                IconRequirement {
+                    key: "dup".into(),
+                    name: "a".into(),
+                    logical_size: 16.0,
+                    scale: 1.0,
+                    tint,
+                };
+                2
+            ],
             vec![IconRequirement {
                 key: String::new(),
                 name: "a".into(),
@@ -2024,7 +2477,9 @@ mod tests {
 
     #[test]
     fn explicit_reference_verifies_bytes_and_returns_the_exact_binding() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         let manifest = publish_full(directory.path(), "one", false, &[]);
         let reference = reference("one", &manifest);
@@ -2056,7 +2511,9 @@ mod tests {
 
     #[test]
     fn omission_discovers_pins_and_reuses_without_registration() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "default", false, &[]);
         activate(directory.path(), "default");
@@ -2093,7 +2550,8 @@ mod tests {
             "reuse registers nothing"
         );
         assert_eq!(
-            second_registry.renderer_version_after, first_registry.renderer_version_after
+            second_registry.renderer_version_after,
+            first_registry.renderer_version_after
         );
         // The pin never drifts: removing the set changes what the next
         // cold reader sees, never what this host already retains.
@@ -2112,7 +2570,9 @@ mod tests {
 
     #[test]
     fn packaged_omission_remaps_default_roles_with_reported_evidence() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "default", false, &[]);
         activate(directory.path(), "default");
@@ -2144,7 +2604,10 @@ mod tests {
             mono.reason
         );
         assert_eq!(mono.requested_weight, 300);
-        assert_eq!(mono.effective_weight, 300, "numeric weights are not bucketed");
+        assert_eq!(
+            mono.effective_weight, 300,
+            "numeric weights are not bucketed"
+        );
         let button = evidence
             .text
             .iter()
@@ -2156,7 +2619,9 @@ mod tests {
 
     #[test]
     fn corrupt_or_missing_explicit_resources_are_terminal() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         let manifest = publish_full(directory.path(), "one", false, &[]);
         let mismatched = ResourceReference {
@@ -2165,35 +2630,41 @@ mod tests {
             manifest_blake3: "0".repeat(64),
             icons: None,
         };
-        assert!(host(directory.path())
-            .prepare(
-                explicit_projection(),
-                Some(&mismatched),
-                None,
-                ResourceRequirements::empty(),
-                &mut check_ok(),
-            )
-            .is_err());
+        assert!(
+            host(directory.path())
+                .prepare(
+                    explicit_projection(),
+                    Some(&mismatched),
+                    None,
+                    ResourceRequirements::empty(),
+                    &mut check_ok(),
+                )
+                .is_err()
+        );
         let missing = ResourceReference {
             schema: RESOURCE_SCHEMA,
             set_id: "absent".into(),
             manifest_blake3: digest(&manifest),
             icons: None,
         };
-        assert!(host(directory.path())
-            .prepare(
-                explicit_projection(),
-                Some(&missing),
-                None,
-                ResourceRequirements::empty(),
-                &mut check_ok(),
-            )
-            .is_err());
+        assert!(
+            host(directory.path())
+                .prepare(
+                    explicit_projection(),
+                    Some(&missing),
+                    None,
+                    ResourceRequirements::empty(),
+                    &mut check_ok(),
+                )
+                .is_err()
+        );
     }
 
     #[test]
     fn ready_icons_carry_verified_glyphs_and_tinted_image_variants() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_image_ledger_for_tests();
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "icons", true, &["picture"]);
@@ -2226,14 +2697,18 @@ mod tests {
         }
         assert!(matches!(receipt.icon("image"), Some(Ready::Image { .. })));
         let evidence = receipt.evidence();
-        assert!(evidence
-            .icons
-            .iter()
-            .any(|icon| icon.key == "image" && icon.asset.is_some()));
-        assert!(evidence
-            .icons
-            .iter()
-            .any(|icon| icon.key == "glyph" && icon.glyph == Some('a')));
+        assert!(
+            evidence
+                .icons
+                .iter()
+                .any(|icon| icon.key == "image" && icon.asset.is_some())
+        );
+        assert!(
+            evidence
+                .icons
+                .iter()
+                .any(|icon| icon.key == "glyph" && icon.glyph == Some('a'))
+        );
         let usage = image_usage();
         assert_eq!(usage.variants, 1, "one decoded image variant");
         assert_eq!(usage.sources, 1, "one encoded source charged once");
@@ -2241,7 +2716,9 @@ mod tests {
 
     #[test]
     fn colour_only_change_reuses_selections_and_adds_only_the_new_variant() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_image_ledger_for_tests();
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "icons", true, &["picture"]);
@@ -2286,7 +2763,9 @@ mod tests {
 
     #[test]
     fn repeated_a_b_colour_variants_charge_each_variant_once() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_image_ledger_for_tests();
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "icons", true, &["picture"]);
@@ -2318,7 +2797,10 @@ mod tests {
             }
         }
         let usage = image_usage();
-        assert_eq!(usage.variants, 2, "A/B alternation must never grow capacity");
+        assert_eq!(
+            usage.variants, 2,
+            "A/B alternation must never grow capacity"
+        );
         assert_eq!(usage.sources, 1, "one encoded source charged once");
         for pair in white_handles.windows(2) {
             assert_eq!(pair[0].id(), pair[1].id(), "the same variant is shared");
@@ -2331,7 +2813,9 @@ mod tests {
 
     #[test]
     fn late_icon_failure_leaves_font_version_aliases_and_usage_unchanged() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let directory = tempfile::tempdir().unwrap();
         publish_full(directory.path(), "icons", true, &[]);
         activate(directory.path(), "icons");
@@ -2345,10 +2829,16 @@ mod tests {
         )
         .unwrap();
         let usage_before = process_registry().usage();
-        let version_before = toolkit::graphics::text::font_system().read().unwrap().version();
+        let version_before = toolkit::graphics::text::font_system()
+            .read()
+            .unwrap()
+            .version();
         // A weight change routes through a fresh batch; its last icon name is
         // declared by the catalogue but absent from the face's cmap.
-        let mut effective = resolve(&Desktop::default()).unwrap().remove("desktop").unwrap();
+        let mut effective = resolve(&Desktop::default())
+            .unwrap()
+            .remove("desktop")
+            .unwrap();
         effective.design.typography.get_mut("ui").unwrap().weight = 350;
         let changed = Projection::new(&effective).unwrap();
         let tint = Color::from_rgba8(255, 255, 255, 1.0);
@@ -2369,14 +2859,19 @@ mod tests {
         );
         assert_eq!(process_registry().usage(), usage_before);
         assert_eq!(
-            toolkit::graphics::text::font_system().read().unwrap().version(),
+            toolkit::graphics::text::font_system()
+                .read()
+                .unwrap()
+                .version(),
             version_before
         );
     }
 
     #[test]
     fn two_hosts_share_the_process_image_ledger_and_old_handles_force_refusal() {
-        let _test = TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _test = TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_image_ledger_for_tests();
         let tint = Color::from_rgba8(255, 255, 255, 1.0);
         // Host A: one variant under a fresh omission; the receipt stays alive

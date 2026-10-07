@@ -138,10 +138,7 @@ impl<T, const SLOTS: usize> Outbox<T, SLOTS> {
     /// handed to the sender. Callers must only invoke this after the
     /// transport reports readiness, and must never hold a taken item across
     /// an await point.
-    pub fn flush_with(
-        &mut self,
-        mut send: impl FnMut(T) -> Result<(), SendError<T>>,
-    ) -> Flush {
+    pub fn flush_with(&mut self, mut send: impl FnMut(T) -> Result<(), SendError<T>>) -> Flush {
         loop {
             match self.order.front() {
                 None => return Flush::Empty,
@@ -446,7 +443,10 @@ mod tests {
         assert_eq!(outbox.push(300), Ok(()));
         // The wake keeps its original front position but carries the latest
         // value; the reliable entries queued behind it follow in order.
-        let mut receiver = Receiver { capacity: 3, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 3,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Empty);
         assert_eq!(receiver.delivered, [101, 200, 300]);
         assert!(outbox.is_empty());
@@ -458,7 +458,9 @@ mod tests {
         let mut outbox = Outbox::<Tracked, 1>::new(0);
         assert_eq!(outbox.replace(0, Tracked::new(1, &drops)), Ok(None));
         assert_eq!(drops.load(Ordering::SeqCst), 0);
-        let superseded = outbox.replace(0, Tracked::new(2, &drops)).expect("slot 0 exists");
+        let superseded = outbox
+            .replace(0, Tracked::new(2, &drops))
+            .expect("slot 0 exists");
         assert_eq!(superseded.expect("the slot was occupied").value(), 1);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         let retired = outbox.drain().map(|item| item.value()).collect::<Vec<_>>();
@@ -505,13 +507,19 @@ mod tests {
         }
         assert_eq!(outbox.len(), 5);
         assert_eq!(outbox.reliable_len(), 4);
-        let mut receiver = Receiver { capacity: 5, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 5,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Empty);
         // ...and the latest wake goes out first, exactly once.
         assert_eq!(receiver.delivered, [20, 2, 3, 4, 5]);
         // A publish while the UI drains its Mailbox leaves another wake.
         assert_eq!(outbox.replace(0, 21), Ok(None));
-        let mut receiver = Receiver { capacity: 1, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 1,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Empty);
         assert_eq!(receiver.delivered, [21]);
     }
@@ -537,7 +545,10 @@ mod tests {
         );
         assert_eq!(outbox.len(), 2);
         assert_eq!(outbox.reliable_len(), 2);
-        let mut receiver = Receiver { capacity: 2, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 2,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Empty);
         assert_eq!(receiver.delivered, [2, 3]);
     }
@@ -551,7 +562,10 @@ mod tests {
         // Cancelled readiness and full receivers: nothing is delivered or
         // lost, however many times the actor attempts the flush.
         for _ in 0..3 {
-            assert_eq!(outbox.flush_with(|item| Err(SendError::Full(item))), Flush::Full);
+            assert_eq!(
+                outbox.flush_with(|item| Err(SendError::Full(item))),
+                Flush::Full
+            );
             assert_eq!(outbox.len(), 2);
             assert_eq!(outbox.reliable_len(), 1);
             assert_eq!(drops.load(Ordering::SeqCst), 0);
@@ -567,8 +581,14 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut outbox = Outbox::<Tracked, 0>::new(1);
         assert!(outbox.push(Tracked::new(7, &drops)).is_ok());
-        assert_eq!(outbox.flush_with(|item| Err(SendError::Full(item))), Flush::Full);
-        assert_eq!(outbox.flush_with(|item| Err(SendError::Closed(item))), Flush::Closed);
+        assert_eq!(
+            outbox.flush_with(|item| Err(SendError::Full(item))),
+            Flush::Full
+        );
+        assert_eq!(
+            outbox.flush_with(|item| Err(SendError::Closed(item))),
+            Flush::Closed
+        );
         assert_eq!(outbox.len(), 1);
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         let retired = outbox.drain().map(|item| item.value()).collect::<Vec<_>>();
@@ -612,7 +632,10 @@ mod tests {
     fn freed_receiver_capacity_delivers_a_retained_wake_with_no_other_event() {
         let mut outbox = Outbox::<u32, 1>::new(0);
         assert_eq!(outbox.replace(0, 42), Ok(None));
-        let mut receiver = Receiver { capacity: 0, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 0,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Full);
         assert_eq!(receiver.delivered, Vec::<u32>::new());
         // The GUI drains its channel; nothing else wakes the actor, but the
@@ -629,11 +652,17 @@ mod tests {
         assert_eq!(outbox.replace(0, 1), Ok(None));
         assert_eq!(outbox.push(2), Ok(()));
         // The slot marker is the front entry and the receiver is full.
-        assert_eq!(outbox.flush_with(|item| Err(SendError::Full(item))), Flush::Full);
+        assert_eq!(
+            outbox.flush_with(|item| Err(SendError::Full(item))),
+            Flush::Full
+        );
         assert_eq!(outbox.len(), 2);
         // One slot of capacity frees: the slot value, still at the front,
         // goes first and the reliable entry stays behind it.
-        let mut receiver = Receiver { capacity: 1, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 1,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Full);
         assert_eq!(receiver.delivered, [1]);
         assert_eq!(outbox.len(), 1);
@@ -669,7 +698,10 @@ mod tests {
         assert_eq!(outbox.push(1), Ok(()));
         assert_eq!(outbox.replace(0, 2), Ok(None));
         assert_eq!(outbox.push(3), Ok(()));
-        let mut receiver = Receiver { capacity: 3, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 3,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Empty);
         assert_eq!(receiver.delivered, [1, 2, 3]);
         // Draining after a completed flush retires nothing.
@@ -703,7 +735,10 @@ mod tests {
         }
         assert_eq!(outbox.len(), 7);
         assert_eq!(outbox.reliable_len(), 4);
-        let mut receiver = Receiver { capacity: 7, delivered: Vec::new() };
+        let mut receiver = Receiver {
+            capacity: 7,
+            delivered: Vec::new(),
+        };
         assert_eq!(outbox.flush_with(|item| receiver.send(item)), Flush::Empty);
         assert_eq!(receiver.delivered.len(), 7);
     }
@@ -726,17 +761,49 @@ mod tests {
         // Pending records, running tasks and completed-but-unreaped outputs
         // all hold their permit: the pool stays exhausted.
         assert!(admission.try_acquire().is_none());
-        assert_eq!(admission.counts(), Counts { limit: 2, active: 2, finished: 0, abandoned: 0 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 2,
+                active: 2,
+                finished: 0,
+                abandoned: 0
+            }
+        );
         // Reaping one outcome opens exactly one slot.
         running.finish();
-        assert_eq!(admission.counts(), Counts { limit: 2, active: 1, finished: 1, abandoned: 0 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 2,
+                active: 1,
+                finished: 1,
+                abandoned: 0
+            }
+        );
         let replacement = admission.try_acquire().expect("one slot reopened");
         assert!(admission.try_acquire().is_none());
         // An unfinished drop is abandonment, never a finished outcome.
         drop(pending);
-        assert_eq!(admission.counts(), Counts { limit: 2, active: 1, finished: 1, abandoned: 1 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 2,
+                active: 1,
+                finished: 1,
+                abandoned: 1
+            }
+        );
         replacement.finish();
-        assert_eq!(admission.counts(), Counts { limit: 2, active: 0, finished: 2, abandoned: 1 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 2,
+                active: 0,
+                finished: 2,
+                abandoned: 1
+            }
+        );
     }
 
     #[test]
@@ -748,9 +815,25 @@ mod tests {
         let reap = std::thread::spawn(move || (permit, 42u32));
         let (permit, result) = reap.join().expect("the task did not panic");
         assert_eq!(result, 42);
-        assert_eq!(admission.counts(), Counts { limit: 1, active: 1, finished: 0, abandoned: 0 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 1,
+                active: 1,
+                finished: 0,
+                abandoned: 0
+            }
+        );
         permit.finish();
-        assert_eq!(admission.counts(), Counts { limit: 1, active: 0, finished: 1, abandoned: 0 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 1,
+                active: 0,
+                finished: 1,
+                abandoned: 0
+            }
+        );
     }
 
     #[test]
@@ -764,10 +847,26 @@ mod tests {
             panic!("the response task aborted");
         });
         assert!(task.join().is_err());
-        assert_eq!(admission.counts(), Counts { limit: 2, active: 1, finished: 0, abandoned: 1 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 2,
+                active: 1,
+                finished: 0,
+                abandoned: 1
+            }
+        );
         // The panic did not claim a success.
         held.finish();
-        assert_eq!(admission.counts(), Counts { limit: 2, active: 0, finished: 1, abandoned: 1 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 2,
+                active: 0,
+                finished: 1,
+                abandoned: 1
+            }
+        );
     }
 
     #[test]
@@ -775,23 +874,44 @@ mod tests {
         let admission = Admission::new(4);
         let poisoned = admission.clone();
         let holder = std::thread::spawn(move || {
-            let _guard = poisoned.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = poisoned
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             panic!("poison the pool lock");
         });
         assert!(holder.join().is_err());
         // Acquisition and counts keep working through the poisoned lock.
         let permit = admission.try_acquire().expect("recovers from poisoning");
-        assert_eq!(admission.counts(), Counts { limit: 4, active: 1, finished: 0, abandoned: 0 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 4,
+                active: 1,
+                finished: 0,
+                abandoned: 0
+            }
+        );
         permit.finish();
-        assert_eq!(admission.counts(), Counts { limit: 4, active: 0, finished: 1, abandoned: 0 });
+        assert_eq!(
+            admission.counts(),
+            Counts {
+                limit: 4,
+                active: 0,
+                finished: 1,
+                abandoned: 0
+            }
+        );
     }
 
     #[test]
     fn finished_and_abandoned_counters_saturate_instead_of_wrapping() {
         let admission = Admission::new(2);
         {
-            let mut state =
-                admission.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = admission
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.finished = u64::MAX;
         }
         let permit = admission.try_acquire().expect("capacity remains");
@@ -799,15 +919,22 @@ mod tests {
         assert_eq!(admission.counts().finished, u64::MAX);
         // The abandoned counter saturates the same way.
         {
-            let mut state =
-                admission.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = admission
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.abandoned = u64::MAX;
         }
         let permit = admission.try_acquire().expect("capacity remains");
         drop(permit);
         assert_eq!(
             admission.counts(),
-            Counts { limit: 2, active: 0, finished: u64::MAX, abandoned: u64::MAX }
+            Counts {
+                limit: 2,
+                active: 0,
+                finished: u64::MAX,
+                abandoned: u64::MAX
+            }
         );
     }
 }

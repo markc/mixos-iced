@@ -127,7 +127,10 @@ pub fn read_link_in(dir: &File, name: &std::ffi::OsStr) -> io::Result<std::path:
         return Err(io::Error::last_os_error());
     }
     if unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFLNK {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected a symlink"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a symlink",
+        ));
     }
     let mut buffer = vec![0u8; 256];
     loop {
@@ -655,8 +658,7 @@ mod tests {
     #[test]
     fn read_link_in_reads_targets_and_refuses_everything_else() {
         use std::os::unix::ffi::OsStrExt;
-        let root =
-            std::env::temp_dir().join(format!("settings-link-in-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("settings-link-in-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sets")).unwrap();
         std::os::unix::fs::symlink("sets/target", root.join("current")).unwrap();

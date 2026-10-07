@@ -14,7 +14,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use toolkit::core::font::{Family, Style, Stretch, Weight};
+use toolkit::core::font::{Family, Stretch, Style, Weight};
 use toolkit::fonts::registry::{
     self, FamilyGroup, FontBlob, FontCollection, IconCatalogue, IconSelectionRequest,
     RegistrationBatch, RegistrationError, Resource, Selection, SelectionRequest, SourceFace,
@@ -41,7 +41,10 @@ fn blob(bytes: &'static [u8]) -> FontBlob {
 fn group(name: &str) -> FamilyGroup {
     FamilyGroup {
         name: name.into(),
-        faces: vec![SourceFace { source: 0, index: 0 }],
+        faces: vec![SourceFace {
+            source: 0,
+            index: 0,
+        }],
     }
 }
 
@@ -216,7 +219,10 @@ fn registry_end_to_end_scenarios() {
     let light_alias = alias_of(light.font("light").unwrap());
     let heavy_alias = alias_of(heavy.font("heavy").unwrap());
     assert_ne!(light_alias, heavy_alias);
-    assert_eq!(light.font("light").unwrap().font().weight, Weight::Numeric(350));
+    assert_eq!(
+        light.font("light").unwrap().font().weight,
+        Weight::Numeric(350)
+    );
     let width = |alias: &str| {
         shape(alias, "Hello", cosmic_text::Shaping::Advanced)
             .iter()
@@ -261,7 +267,11 @@ fn registry_end_to_end_scenarios() {
     let evidence = fallback.font("ui").unwrap().evidence();
     assert_eq!(evidence.chosen_group, 1);
     assert_eq!(evidence.family, "Inter");
-    assert_eq!(evidence.groups.len(), 1, "absent families leave no empty group");
+    assert_eq!(
+        evidence.groups.len(),
+        1,
+        "absent families leave no empty group"
+    );
 
     // --- Same public family, different bytes: old paragraph stays bound ----
     let old_alias = alias.to_owned();
@@ -287,11 +297,17 @@ fn registry_end_to_end_scenarios() {
         families: vec![
             FamilyGroup {
                 name: "Noto Sans".into(),
-                faces: vec![SourceFace { source: 0, index: 0 }],
+                faces: vec![SourceFace {
+                    source: 0,
+                    index: 0,
+                }],
             },
             FamilyGroup {
                 name: "Noto Sans Arabic".into(),
-                faces: vec![SourceFace { source: 1, index: 0 }],
+                faces: vec![SourceFace {
+                    source: 1,
+                    index: 0,
+                }],
             },
         ],
         roles: BTreeMap::new(),
@@ -355,7 +371,10 @@ fn registry_end_to_end_scenarios() {
         icons: vec![IconCatalogue {
             family: "Fira Sans".into(),
             style: "default".into(),
-            face: SourceFace { source: 0, index: 0 },
+            face: SourceFace {
+                source: 0,
+                index: 0,
+            },
             glyphs: BTreeMap::from([("home".into(), 'a')]),
         }],
     };
@@ -397,7 +416,11 @@ fn registry_end_to_end_scenarios() {
         registry.register_batch(invalid),
         Err(RegistrationError::WeightOutOfRange { weight: 0 })
     ));
-    assert_eq!(version(), version_before, "a failed preflight never touches the renderer");
+    assert_eq!(
+        version(),
+        version_before,
+        "a failed preflight never touches the renderer"
+    );
     // Late failure: valid role, then the final icon fails on its last name.
     let err = registry
         .register_batch(RegistrationBatch {
@@ -441,8 +464,7 @@ fn registry_end_to_end_scenarios() {
                 assert_eq!(evidence.added_faces, 0);
                 assert_eq!(evidence.policies_added, 0);
                 assert_eq!(
-                    evidence.renderer_version_after,
-                    evidence.renderer_version_before,
+                    evidence.renderer_version_after, evidence.renderer_version_before,
                     "collection bookkeeping alone must not bump the renderer version"
                 );
                 assert_eq!(

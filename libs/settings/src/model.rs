@@ -140,9 +140,9 @@ fn validate_resource_identity(
             || !(1..=1000).contains(&icons.weight))
     {
         return Err(Diagnostic::new(
-                "invalid_resources",
-                path,
-                "icons needs family (1–256 bytes), style (1–96 bytes) and an exact weight 1–1000",
+            "invalid_resources",
+            path,
+            "icons needs family (1–256 bytes), style (1–96 bytes) and an exact weight 1–1000",
         ));
     }
     Ok(())

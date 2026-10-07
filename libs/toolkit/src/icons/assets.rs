@@ -991,7 +991,7 @@ mod tests {
             (r#"<rect width="1" height="1" style="fill:red"/>"#, IconDecodeError::SvgStyleDependency),
             (r#"<use href="file:///missing.svg#icon"/>"#, IconDecodeError::SvgUnsupported),
             (r#"<use href="data:image/svg+xml,ignored"/>"#, IconDecodeError::SvgUnsupported),
-            (r#"<use href="#"/>"#, IconDecodeError::SvgUnsupported),
+            (r##"<use href="#"/>"##, IconDecodeError::SvgUnsupported),
             (r#"<pattern id="p" width="1000000" height="1000000" patternUnits="userSpaceOnUse"><rect width="1" height="1"/></pattern>"#, IconDecodeError::SvgUnsupported),
             (r#"<g opacity="0.5"><g opacity="0.5"><rect width="1" height="1"/></g></g>"#, IconDecodeError::SvgUnsupported),
             (r#"<path d="M0 0 L1000000000 0" stroke="red" stroke-dasharray="0.01 0.01"/>"#, IconDecodeError::SvgUnsupported),
