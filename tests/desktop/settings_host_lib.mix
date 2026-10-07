@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.1.1
 -- Shared owned-fixture support. All calls use native Mix ABP; no app transport
 -- is substituted. Callers retain child ownership and acceptance assertions.
 fn bus_env($broker,$directory)
@@ -26,6 +26,38 @@ end
 fn identity($snapshot)
   return {incarnation:$snapshot.incarnation,revision:$snapshot.revision,
     design_revision:$snapshot.design_revision,source_digest:$snapshot.source_digest}
+end
+-- Bounded fixture-only asynchronous native request. The child mix holds its
+-- `send` until the peer replies (the caller deliberately suspends the peer),
+-- writing the rc and the complete reply to `out`. The send timeout bounds the
+-- child's lifetime, so a hung peer can never leave it running past the
+-- deadline. Service and verb are quoted, so hyphenated names survive.
+fn call_async($mix,$broker,$directory,$service,$verb,$body,$out,$send_timeout)
+  $script = '$body = ' .. json_encode(json_encode($body)) .. "\nsend " .. json_encode($service) ..
+    " " .. json_encode($verb) .. ' body=$body timeout=' .. to_string($send_timeout ?? 45) .. "\n" ..
+    'print($rc)' .. "\n" .. 'print(json_encode($result))' .. "\n"
+  return spawn([$mix,"-c",$script],{env:bus_env($broker,$directory),stdout:{file:$out},stderr:"stdout",detach:true})
+end
+-- The completed asynchronous reply, only once the child process has exited
+-- and written both lines. A child that failed before its native `send` (its
+-- diagnostics land in the same file) yields rc -9 with the raw output, never
+-- a parsed success: the rc line must be a number.
+fn collect($out,$pid)
+  if $pid != nil and process_alive($pid) then return nil end
+  if not is_file($out) then return nil end
+  $text = trim(read_file($out))
+  $lines = split($text,"\n")
+  if len($lines) < 2 then return nil end
+  $rc = -9
+  try
+    $rc = to_number($lines[0])
+  catch $ignored
+  end
+  if type($rc) != "number" then $rc = -9 end
+  if $rc == -9 then return {rc:-9,result:$text} end
+  $value = json_parse(join(slice($lines,1),"\n"))
+  if type($value) == "string" and starts_with($value,"{") then $value=json_parse($value) end
+  return {rc:$rc,result:$value}
 end
 fn stop($child)
   if not process_alive($child) then return end

@@ -1,5 +1,12 @@
 # Scene Editor contract
 
+## 0.1.2
+
+Read-only `ui.confirmation` in `scene-editor.info`: while a confirmation is
+open it reports the pending action's request body, the captured selection and
+the captured state token, so the frozen values can be verified across an
+appearance change without a mutation verb.
+
 ## 0.1.1
 
 Live settings use the shared paired bridge, prepared typography and isolated
