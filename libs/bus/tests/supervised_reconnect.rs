@@ -43,6 +43,17 @@ struct StubState {
     active_registrations: HashMap<String, usize>,
 }
 
+/// The shape of the register-rejection reply the stub emits, mirroring the
+/// broker generations a client can face.
+enum RejectionShape {
+    /// Real noded: rc=10, the `error` header, and the structured v1 body.
+    Structured,
+    /// A legacy broker: rc=10 and an `error` header only.
+    LegacyText,
+    /// Structured-looking but with an unrecognised `error_code`.
+    Malformed,
+}
+
 struct Stub {
     state: Mutex<StubState>,
     /// Fired by a test to drop connection #1 (the simulated bounce).
@@ -54,6 +65,8 @@ struct Stub {
     reject_register_on_reconnect: bool,
     /// Refuse this topic name on every connection.
     reject_topic: Option<String>,
+    /// The shape of a collision reply.
+    rejection_shape: RejectionShape,
     flood_on_register: usize,
     replay_delay: Duration,
     register_delay: Duration,
@@ -67,18 +80,51 @@ impl Stub {
             fail_replay_on_reconnect: false,
             reject_register_on_reconnect: false,
             reject_topic: None,
+            rejection_shape: RejectionShape::Structured,
             flood_on_register: commands,
             replay_delay: Duration::ZERO,
             register_delay: Duration::ZERO,
         })
     }
     fn new(fail_replay_on_reconnect: bool, reject_register_on_reconnect: bool) -> Arc<Stub> {
+        Self::with_rejection_shape(
+            RejectionShape::Structured,
+            fail_replay_on_reconnect,
+            reject_register_on_reconnect,
+        )
+    }
+    fn legacy_text(
+        fail_replay_on_reconnect: bool,
+        reject_register_on_reconnect: bool,
+    ) -> Arc<Stub> {
+        Self::with_rejection_shape(
+            RejectionShape::LegacyText,
+            fail_replay_on_reconnect,
+            reject_register_on_reconnect,
+        )
+    }
+    fn malformed_body(
+        fail_replay_on_reconnect: bool,
+        reject_register_on_reconnect: bool,
+    ) -> Arc<Stub> {
+        Self::with_rejection_shape(
+            RejectionShape::Malformed,
+            fail_replay_on_reconnect,
+            reject_register_on_reconnect,
+        )
+    }
+    fn with_rejection_shape(
+        rejection_shape: RejectionShape,
+        fail_replay_on_reconnect: bool,
+        reject_register_on_reconnect: bool,
+    ) -> Arc<Stub> {
         Arc::new(Stub {
             state: Mutex::new(StubState::default()),
             drop_conn1: Notify::new(),
             fail_replay_on_reconnect,
             reject_register_on_reconnect,
             reject_topic: None,
+            rejection_shape,
             flood_on_register: 0,
             replay_delay: Duration::ZERO,
             register_delay: Duration::ZERO,
@@ -92,6 +138,7 @@ impl Stub {
             fail_replay_on_reconnect: false,
             reject_register_on_reconnect: false,
             reject_topic: Some(topic.to_string()),
+            rejection_shape: RejectionShape::Structured,
             flood_on_register: 0,
             replay_delay: Duration::ZERO,
             register_delay: Duration::ZERO,
@@ -112,9 +159,30 @@ fn reply(req: &BusMessage, rc: &str) -> String {
     m.to_wire()
 }
 
-fn collision_reply(req: &BusMessage) -> String {
+fn collision_reply(req: &BusMessage, shape: &RejectionShape) -> String {
     let mut response = bus::parse(&reply(req, "10")).expect("stub reply parses");
+    // One wording everywhere on purpose: classification must come from the
+    // body, never from this text.
     response.set("error", "stub collision diagnostic wording");
+    match shape {
+        RejectionShape::Structured => {
+            response.body = serde_json::json!({
+                "schema": bus::REGISTRATION_REJECTION_SCHEMA,
+                "error_code": bus::REGISTRATION_REJECTION_NAME_TAKEN,
+                "message": "stub collision diagnostic wording",
+            })
+            .to_string();
+        }
+        RejectionShape::LegacyText => {}
+        RejectionShape::Malformed => {
+            response.body = serde_json::json!({
+                "schema": bus::REGISTRATION_REJECTION_SCHEMA,
+                "error_code": "UNRECOGNISED_CODE",
+                "message": "stub collision diagnostic wording",
+            })
+            .to_string();
+        }
+    }
     response.to_wire()
 }
 
@@ -182,7 +250,8 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                             // Keep the socket open, as the real broker does;
                             // the client must close its half-built
                             // connection itself.
-                            let _ = sink.send(Message::Text(collision_reply(&req).into())).await;
+                            let reply = collision_reply(&req, &stub.rejection_shape);
+                            let _ = sink.send(Message::Text(reply.into())).await;
                             continue;
                         }
                         let _ = sink.send(Message::Text(reply(&req, "0").into())).await;
@@ -422,6 +491,13 @@ async fn registration_rejection_preserves_rc_and_message() {
         error.registration_rejection(),
         Some((10, "stub collision diagnostic wording"))
     );
+    assert_eq!(
+        error
+            .registration_rejection_typed()
+            .map(|rejection| rejection.kind()),
+        Some(bus::RegistrationRejectionKind::NameTaken),
+        "a finite connect exposes the same typed reason"
+    );
     // The refused connection closed itself: only the owner is open.
     assert!(
         wait_until(5, || stub
@@ -442,6 +518,80 @@ async fn registration_rejection_preserves_rc_and_message() {
     assert_eq!(
         error.registration_rejection(),
         Some((10, "stub collision diagnostic wording"))
+    );
+    assert_eq!(
+        error
+            .registration_rejection_typed()
+            .map(|rejection| rejection.kind()),
+        Some(bus::RegistrationRejectionKind::NameTaken),
+        "the finite supervised connect exposes the same typed reason"
+    );
+    owner.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn classification_comes_from_the_body_not_the_diagnostic_wording() {
+    // Three brokers that word the refusal identically: only the one that
+    // carries the structured v1 body classifies as a name collision.
+    let structured = Stub::new(false, false);
+    let (url, _acceptor) = start(&structured).await;
+    let owner = Connection::connect("taken-service", &url)
+        .await
+        .expect("first registration owns the name");
+    let error = match Connection::connect("taken-service", &url).await {
+        Ok(_) => panic!("duplicate registration must fail"),
+        Err(error) => error,
+    };
+    let rejection = error
+        .registration_rejection_typed()
+        .expect("a structured refusal is typed");
+    assert_eq!(
+        (rejection.rc, rejection.message.as_str()),
+        (10, "stub collision diagnostic wording")
+    );
+    assert_eq!(rejection.kind(), bus::RegistrationRejectionKind::NameTaken);
+    owner.close().await;
+
+    let legacy = Stub::legacy_text(false, false);
+    let (url, _acceptor) = start(&legacy).await;
+    let owner = Connection::connect("taken-service", &url)
+        .await
+        .expect("first registration owns the name");
+    let error = match Connection::connect("taken-service", &url).await {
+        Ok(_) => panic!("duplicate registration must fail"),
+        Err(error) => error,
+    };
+    let rejection = error
+        .registration_rejection_typed()
+        .expect("a legacy refusal is still typed as Unknown");
+    assert_eq!(
+        (rejection.rc, rejection.message.as_str()),
+        (10, "stub collision diagnostic wording"),
+        "identical wording to the structured case"
+    );
+    assert_eq!(
+        rejection.kind(),
+        bus::RegistrationRejectionKind::Unknown,
+        "wording alone must never classify a collision"
+    );
+    owner.close().await;
+
+    let malformed = Stub::malformed_body(false, false);
+    let (url, _acceptor) = start(&malformed).await;
+    let owner = Connection::connect("taken-service", &url)
+        .await
+        .expect("first registration owns the name");
+    let error = match Connection::connect("taken-service", &url).await {
+        Ok(_) => panic!("duplicate registration must fail"),
+        Err(error) => error,
+    };
+    let rejection = error
+        .registration_rejection_typed()
+        .expect("a malformed refusal is still typed as Unknown");
+    assert_eq!(
+        rejection.kind(),
+        bus::RegistrationRejectionKind::Unknown,
+        "an unrecognised error_code must not classify a collision"
     );
     owner.close().await;
 }
@@ -727,13 +877,17 @@ async fn reconnect_registration_rejection_is_terminal_when_opted_in() {
     .await
     .expect("opt-in rejection policy publishes a terminal state");
 
+    let rejection = client
+        .registration_rejection()
+        .expect("Fatal is observed only after the exact refusal is sampleable");
     assert_eq!(
-        client.registration_rejection(),
-        Some(bus::RegistrationRejected {
-            rc: 10,
-            message: "stub collision diagnostic wording".into(),
-        }),
-        "Fatal is observed only after the exact refusal is sampleable"
+        (rejection.rc, rejection.message.as_str()),
+        (10, "stub collision diagnostic wording")
+    );
+    assert_eq!(
+        rejection.kind(),
+        bus::RegistrationRejectionKind::NameTaken,
+        "the supervised reconnect rejection carries the typed reason"
     );
 
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -904,14 +1058,19 @@ async fn cold_registration_refusal_is_exact_sampleable_and_terminal() {
     })
     .await
     .unwrap();
-    let expected = Some(bus::RegistrationRejected {
-        rc: 10,
-        message: "stub collision diagnostic wording".into(),
-    });
-    assert_eq!(client.registration_rejection(), expected);
+    let rejection = client.registration_rejection().expect("rejection");
+    assert_eq!(
+        (rejection.rc, rejection.message.as_str()),
+        (10, "stub collision diagnostic wording")
+    );
+    assert_eq!(
+        rejection.kind(),
+        bus::RegistrationRejectionKind::NameTaken,
+        "a nonblocking start exposes the same typed reason as a finite connect"
+    );
     assert_eq!(
         client.registration_rejection(),
-        expected,
+        Some(rejection),
         "sampling is non-consuming"
     );
     assert_eq!(client.connection_generation(), 0);

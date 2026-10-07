@@ -34,5 +34,19 @@ failure has no refusal diagnostic. Close, shutdown, deregister and drop are safe
 before a first socket exists and fence late registration publication. These are
 client lifecycle APIs; the frozen ABP wire format is unchanged.
 
+A broker rejection is typed: `RegistrationRejected` keeps the public `rc` and
+`message` fields — field reads and the tuple accessors stay source-compatible,
+but old two-field struct literals no longer compile (construct with
+`RegistrationRejected::new`) — and adds `kind()`, which decodes the structured
+rejection body (`{"schema": "noded.registration-rejection.v1", "error_code":
+"NAME_TAKEN", "message": …}`, sent alongside the unchanged `rc=10` and `error`
+header).
+`RegistrationRejectionKind::NameTaken` is produced only from that body;
+an admission refusal, a legacy text-only broker, or a missing, malformed,
+oversized or unrecognised body is `Unknown` — classification never string-matches
+the wording. `ClientError::registration_rejection_typed()` and
+`SupervisedError::registration_rejection_typed()` expose the typed value, and the
+`(rc, message)` tuple accessors remain for compatibility.
+
 Test: `cargo test -p bus`. The integration test drives a stub broker in
 process; no noded is needed.
