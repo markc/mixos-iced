@@ -8,7 +8,7 @@ use config::{Value as MixValue, parse as parse_mix_data};
 use decor::{Palette, Srgba};
 use edges::{Corner, PanelMode};
 use iced_core::{Background, Border, Color, Element, Length, Theme};
-use iced_widget::{Column, button, container, text};
+use iced_widget::{Column, button, container};
 use serde_json::{Value, json};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface};

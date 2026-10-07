@@ -110,7 +110,9 @@ struct Event {
 
 struct PendingEvent(Arc<AtomicUsize>);
 impl Drop for PendingEvent {
-    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// The engine's end of the port.
@@ -666,8 +668,11 @@ async fn worker(
     // drain that expires cancels the remaining sequence, preserving its order.
     let _ = tokio::time::timeout(Duration::from_millis(50), async {
         while sends.join_next().await.is_some() {}
-        while let Ok(message) = outbound.try_recv() { send(&client, &topics, message).await; }
-    }).await;
+        while let Ok(message) = outbound.try_recv() {
+            send(&client, &topics, message).await;
+        }
+    })
+    .await;
     flights.abort_all();
     replies.abort_all();
     sends.abort_all();
@@ -677,6 +682,7 @@ async fn worker(
         Err(_) => tracing::debug!("scene host deregister timed out"),
     }
     client.close().await;
+    settings_send(SettingsEvent::Wake);
 }
 
 async fn registry_read(
@@ -708,13 +714,22 @@ async fn registry_read(
 
 async fn registry_subscribe(client: Arc<SupervisedClient>) -> bool {
     for attempt in 0..3 {
-        if settings::native::live_generation(&client).is_none() { return false; }
-        if matches!(tokio::time::timeout(SEND_TIMEOUT, client.subscribe_topic(REGISTRY_TOPIC)).await, Ok(Ok(()))) {
+        if settings::native::live_generation(&client).is_none() {
+            return false;
+        }
+        if matches!(
+            tokio::time::timeout(SEND_TIMEOUT, client.subscribe_topic(REGISTRY_TOPIC)).await,
+            Ok(Ok(()))
+        ) {
             return true;
         }
-        if attempt < 2 { tokio::time::sleep(RETRY_INITIAL * (1 << attempt)).await; }
+        if attempt < 2 {
+            tokio::time::sleep(RETRY_INITIAL * (1 << attempt)).await;
+        }
     }
-    tracing::warn!("scene host: registry subscription failed; retry waits for next lifecycle event");
+    tracing::warn!(
+        "scene host: registry subscription failed; retry waits for next lifecycle event"
+    );
     false
 }
 

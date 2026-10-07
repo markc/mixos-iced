@@ -920,8 +920,8 @@ impl SceneHost {
         renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
     ) {
-        // Chrome's palette for dialogs and menus; SceneUi resolves a cached
-        // dark design context for edges, as Quoin does, even with light chrome.
+        // The prepared authority presentation supplies scene/dialog/menu
+        // defaults; embedded scene design remains available during bootstrap.
         let palette = decor::window::installed()
             .map(|theme| theme.palette)
             .unwrap_or_else(|| {

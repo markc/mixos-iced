@@ -25,7 +25,7 @@ settings = { workspace = true, features = ["native"] }
 config = { workspace = true }
 # The design-token palette the chrome theme already compiled.
 decor = { workspace = true }
-# Edge furniture resolves the shared design in dark mode, as Quoin does.
+# Interim embedded scene defaults and closed button axes; live settings use read data.
 design = { workspace = true }
 # RedrawReason::Publish.
 dispatcher = { workspace = true }
