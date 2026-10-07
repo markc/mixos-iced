@@ -103,7 +103,7 @@ pub fn root<'a>(
     right_rows: &'a [VisibleRow],
     editing: Option<(PaneId, &'a str)>,
     info: &'a str,
-    provenance: &'a str,
+    provenance: &str,
     dialog: Option<&'a dialogs::Dialog>,
     places: &'a [(&'static str, std::path::PathBuf)],
     properties: dopus_core::properties::Properties,

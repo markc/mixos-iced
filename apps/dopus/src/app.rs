@@ -43,7 +43,9 @@ use application::Element;
 use application::cpu::Renderer;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::{Size, Subscription, Task};
-use application::presentation::native::{Event as SettingsEvent, Ui as SettingsUi};
+use application::presentation::native::Ui as SettingsUi;
+#[cfg(test)]
+use application::presentation::native::Event as SettingsEvent;
 
 use actions::{ActionId, Keymap};
 use design::{Mode, Scheme};
@@ -265,7 +267,7 @@ pub fn run(
     let ui_font = content.theme.ui_font;
     let tint = icons::hex(content.theme.tokens.palette.text);
 
-    let (mut core, core_events) = DopusCore::new(config, config_file);
+    let (core, core_events) = DopusCore::new(config, config_file);
     // Startup `dopus.open` PATHs land in the panes only once the window owns
     // its name (or keeps the window after a failed handoff): an initial
     // refused duplicate must never navigate — and thereby settle config —
@@ -1093,7 +1095,7 @@ impl Dopus {
                 }
                 Served::ThemeAction { id, action } => match action {
                     verbs::ThemeAction::Scheme(name) => {
-                        self.theme_request(Some(id), Some(&name), None)
+                        self.theme_request(Some(id), Some(&name), None);
                     }
                     // Mode-toggle resolves against the live applied
                     // selection first (the keyboard path's rule).
@@ -1102,7 +1104,7 @@ impl Dopus {
                             Mode::Dark => Mode::Light,
                             _ => Mode::Dark,
                         };
-                        self.theme_request(Some(id), None, Some(mode.name()))
+                        self.theme_request(Some(id), None, Some(mode.name()));
                     }
                 },
                 Served::Quit { id } => {

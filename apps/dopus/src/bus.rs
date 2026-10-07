@@ -146,7 +146,6 @@ struct Done {
     faults: Vec<String>,
     fault_count: u64,
 }
-#[derive(Clone)]
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
     done: Arc<(std::sync::Mutex<Done>, std::sync::Condvar)>,
@@ -156,6 +155,22 @@ pub struct BusHandle {
     themes: Admission,
     quitting: Arc<std::sync::atomic::AtomicBool>,
     forwarded: Arc<std::sync::atomic::AtomicBool>,
+}
+// Control handles share requests; only the original owns the startup UI and
+// bootstrap, which its take methods transfer to the window.
+impl Clone for BusHandle {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            done: Arc::clone(&self.done),
+            client: self.client.clone(),
+            settings: None,
+            bootstrap: None,
+            themes: self.themes.clone(),
+            quitting: Arc::clone(&self.quitting),
+            forwarded: Arc::clone(&self.forwarded),
+        }
+    }
 }
 impl BusHandle {
     #[cfg(test)]

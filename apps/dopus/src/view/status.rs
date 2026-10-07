@@ -13,7 +13,7 @@ use crate::view::Look;
 pub fn bar<'a>(
     look: Look,
     info: &'a str,
-    provenance: &'a str,
+    provenance: &str,
     places_open: bool,
     properties_open: bool,
     actions: &[crate::verbs::ActionRow],
@@ -50,7 +50,7 @@ pub fn bar<'a>(
             color: look.chrome.secondary_text
         },
         super::elide::Label {
-            text: provenance.into(),
+            text: provenance.to_owned().into(),
             font: look.ui_font,
             px: look.small_px,
             color: look.chrome.secondary_text
