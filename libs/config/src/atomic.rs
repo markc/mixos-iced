@@ -97,6 +97,76 @@ pub fn read_in(dir: &File, name: &std::ffi::OsStr, limit: usize) -> io::Result<V
     Ok(bytes)
 }
 
+/// Open a nested regular file under a held directory descriptor, walking
+/// every intermediate component with `openat` and refusing a symlink at
+/// any level, including the final file. The returned descriptor is bound
+/// to the opened inode, not to the walked path: renaming or replacing any
+/// component afterwards changes what a path-based open finds, never what
+/// this descriptor reads.
+///
+/// `relative` must be a relative path of plain components: no leading
+/// `/`, no `.`, `..`, empty or NUL-bearing components. The raw bytes are
+/// validated before any open, so `Path` normalisation cannot smuggle an
+/// interior `.`, a repeated `/` or a trailing `/` past the check;
+/// non-UTF-8 plain names are accepted. O_NONBLOCK on the final open
+/// prevents a FIFO from hanging before the regular-file metadata check,
+/// and the opened inode is verified to be a regular file before it is
+/// returned.
+pub fn open_nested(dir: &File, relative: &Path) -> io::Result<File> {
+    use std::os::unix::ffi::OsStrExt;
+    let raw = relative.as_os_str().as_bytes();
+    if raw.is_empty() || raw[0] == b'/' {
+        return Err(io::Error::other("expected a relative path of plain components"));
+    }
+    let mut names: Vec<&[u8]> = Vec::new();
+    for part in raw.split(|byte| *byte == b'/') {
+        if part.is_empty() || part == b"." || part == b".." {
+            return Err(io::Error::other("expected a relative path of plain components"));
+        }
+        if part.contains(&0) {
+            return Err(io::Error::other("component contains a NUL byte"));
+        }
+        names.push(part);
+    }
+    let (file_name, parents) = names
+        .split_last()
+        .ok_or_else(|| io::Error::other("expected a file name"))?;
+    let component = |bytes: &[u8]| {
+        std::ffi::CString::new(bytes).map_err(|_| io::Error::other("component contains a NUL byte"))
+    };
+    let mut current = dir.try_clone()?;
+    for name in parents {
+        let name = component(name)?;
+        let fd = unsafe {
+            libc::openat(
+                current.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        current = unsafe { File::from_raw_fd(fd) };
+    }
+    let name = component(file_name)?;
+    let fd = unsafe {
+        libc::openat(
+            current.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("expected a regular file"));
+    }
+    Ok(file)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Prepare,
@@ -318,5 +388,100 @@ mod tests {
         assert!(replace(&path, b"bad").is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_nested_walks_and_the_descriptor_survives_a_rename() {
+        use std::io::Read;
+        let root = std::env::temp_dir().join(format!("settings-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/file.txt"), b"pinned").unwrap();
+        let held = open_directory(&root).unwrap();
+        let mut file = open_nested(&held, Path::new("a/b/file.txt")).unwrap();
+        // The path is replaced after the descriptor open: the held
+        // descriptors still read the pinned bytes, a path-based open
+        // through the same root finds the replacement.
+        std::fs::rename(root.join("a"), root.join("old-a")).unwrap();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/file.txt"), b"replacement").unwrap();
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes).unwrap();
+        assert_eq!(bytes, "pinned");
+        assert!(open_nested(&held, Path::new("a/b/file.txt")).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_nested_refuses_symlinks_at_every_level() {
+        let root = std::env::temp_dir().join(format!("settings-nested-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(root.join("a/file.txt"), b"pinned").unwrap();
+        std::fs::write(root.join("outside/evil.txt"), b"outside").unwrap();
+        let held = open_directory(&root).unwrap();
+        // A symlinked intermediate directory is refused, so the outside
+        // file is never read.
+        std::os::unix::fs::symlink(root.join("outside"), root.join("a/link")).unwrap();
+        assert!(open_nested(&held, Path::new("a/link/evil.txt")).is_err());
+        std::fs::remove_file(root.join("a/link")).unwrap();
+        // A symlinked final component is refused.
+        std::fs::remove_file(root.join("a/file.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside/evil.txt"), root.join("a/file.txt")).unwrap();
+        assert!(open_nested(&held, Path::new("a/file.txt")).is_err());
+        std::fs::remove_file(root.join("a/file.txt")).unwrap();
+        // The whole directory component swapped for a symlink escape.
+        std::fs::remove_dir(root.join("a")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("a")).unwrap();
+        assert!(open_nested(&held, Path::new("a/evil.txt")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_nested_refuses_escapes_and_non_regular_components() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = std::env::temp_dir().join(format!("settings-nested-refuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/file.txt"), b"data").unwrap();
+        let held = open_directory(&root).unwrap();
+        assert!(open_nested(&held, Path::new("a/../file.txt")).is_err());
+        assert!(open_nested(&held, Path::new("/absolute")).is_err());
+        assert!(open_nested(&held, Path::new("")).is_err());
+        assert!(open_nested(&held, Path::new("a")).is_err()); // a directory
+        // A FIFO would block a naive open forever; O_NONBLOCK plus the
+        // regular-file check refuses it instead.
+        let fifo = root.join("a/pipe");
+        let fifo = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(open_nested(&held, Path::new("a/pipe")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_nested_refuses_normalised_components_and_nul_bytes() {
+        use std::ffi::OsStr;
+        use std::io::Read;
+        use std::os::unix::ffi::OsStrExt;
+        let root = std::env::temp_dir().join(format!("settings-nested-raw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/file.txt"), b"data").unwrap();
+        let held = open_directory(&root).unwrap();
+        // `Path` would silently normalise these; the raw-bytes walk
+        // refuses each one before any open.
+        assert!(open_nested(&held, Path::new("a/./file.txt")).is_err());
+        assert!(open_nested(&held, Path::new("a//file.txt")).is_err());
+        assert!(open_nested(&held, Path::new("a/file.txt/")).is_err());
+        assert!(open_nested(&held, Path::new(OsStr::from_bytes(b"a/fi\0le.txt"))).is_err());
+        // A plain non-UTF-8 component still walks and reads.
+        std::fs::write(root.join("a").join(OsStr::from_bytes(b"fi\xffle.txt")), b"plain").unwrap();
+        let nested = OsStr::from_bytes(b"a/fi\xffle.txt");
+        let mut file = open_nested(&held, Path::new(nested)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"plain");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

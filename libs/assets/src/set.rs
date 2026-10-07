@@ -18,8 +18,8 @@ use crate::manifest::{
 /// The activation link inside a root: `current -> sets/<id>`.
 pub const CURRENT_LINK: &str = "current";
 
-const MANIFEST_LIMIT: u64 = 256 * 1024;
-const CATALOGUE_LIMIT: u64 = 1024 * 1024;
+pub(crate) const MANIFEST_LIMIT: u64 = 256 * 1024;
+pub(crate) const CATALOGUE_LIMIT: u64 = 1024 * 1024;
 
 /// A complete selection, pinned to a concrete published directory.
 ///
@@ -247,6 +247,26 @@ impl AssetSet {
             }
         }
         Ok(())
+    }
+
+    /// Read, check and capture every byte of this set (the `verified`
+    /// feature): the set directory is opened through a held descriptor,
+    /// the manifest is re-read and re-validated rather than trusted from
+    /// this handle, and every locked file is descriptor-opened and read
+    /// exactly once, its exact length and both digests checked against the
+    /// same owned bytes that are retained.
+    ///
+    /// The returned [`VerifiedSet`](crate::VerifiedSet) owns its bytes, so
+    /// fonts come from `font("sans").bytes()` and nothing is reopened
+    /// later: replacing or removing `sets/<id>` afterwards changes what
+    /// the next reader sees, never what this one holds. `limits` bounds
+    /// how much is staged in memory at once, under hard caps.
+    #[cfg(feature = "verified")]
+    pub fn read_verified(
+        &self,
+        limits: crate::verified::ReadLimits,
+    ) -> Result<crate::verified::VerifiedSet> {
+        crate::verified::read(self.assets_root(), self.set_id(), limits)
     }
 }
 

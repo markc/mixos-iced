@@ -70,7 +70,59 @@ reported rather than silently replaced by a system set.
 
 The core depends on `strict` (the manifest parser), `serde`, `sha2`,
 `blake3`, `hex` and `thiserror`. With `default-features = false` that is
-all it depends on, and another project can take it as is.
+all it depends on, and another project can take it as is. The `verified`
+feature (pulled in by the default `mixos` feature) adds `config`, whose
+`config::atomic` module provides the descriptor-safe directory walk the
+verified reads use.
+
+## Verified byte reads
+
+`AssetSet::read_verified(limits)` re-reads a set into a `VerifiedSet`
+that owns every byte, instead of answering paths:
+
+```rust
+let set = assets::mixos::discover()?.unwrap();               // opened, hashed once
+let verified = set.read_verified(ReadLimits::default())?;    // read once, owned
+let sans: &[u8] = verified.font("sans").unwrap().bytes();    // never reopened
+```
+
+What the read guarantees:
+
+- **Descriptor-relative, symlink-free.** The set directory is opened
+  through `config::atomic::open_directory` (no symlink in any component of
+  the absolute path) and every file through `config::atomic::open_nested`
+  (no symlink in any intermediate component or in the final file, which
+  must be a regular file). The manifest is opened and read exactly once,
+  through the descriptor.
+- **Strict reparse.** The manifest is parsed and validated again from its
+  own bytes; the verified set never trusts an earlier `AssetSet::open`.
+  Manifest parse errors stay `Error::Manifest`, icon catalogue errors stay
+  `Error::Invalid`, content differences stay `Error::Mismatch`.
+- **One read, exact length, both digests.** Each locked file is
+  descriptor-opened once, its metadata length must equal the locked size,
+  it is read exactly once, and the SHA-256 and BLAKE3 are computed over
+  the same owned bytes that are retained (`VerifiedFile::bytes`). A file
+  that grows or shrinks while being read is refused.
+- **Bounded capture.** `ReadLimits` bounds the manifest, each file and the
+  total captured bytes (defaults: 256 KiB manifest, 64 MiB per file,
+  128 MiB in all). Every bound is capped by a hard limit
+  (`ReadLimits::MAX_MANIFEST_BYTES`, `MAX_FILE_BYTES`, `MAX_TOTAL_BYTES` —
+  256 KiB, 256 MiB, 512 MiB), so no request can capture unbounded bytes;
+  the total is a bound on captured source bytes, deliberately not
+  `MAX_FILES × MAX_FILE_BYTES`. It is not a process-heap limit: the
+  parsed manifest, the icon table and the one-time bounded read and
+  conversion scratch are outside it.
+- **The identity pins bytes, not a path.** `VerifiedSet::identity()` is a
+  `SetIdentity`: the set ID plus the BLAKE3 of the exact manifest bytes
+  the set was read from. Two directories that share an ID but hold
+  different manifests are different identities, and the digest can be
+  recomputed from `manifest_bytes()`.
+
+Replacement semantics: once the set directory descriptor is opened, reads
+are bound to that inode — swapping or removing `sets/<id>` afterwards
+changes what the next reader sees, never what a captured `VerifiedSet`
+holds. Nothing is reopened later; the directory descriptor is retained
+for the life of the set.
 
 ## The MixOS defaults
 
@@ -96,9 +148,14 @@ The lock and installer for the MixOS set live in `share/assets/`
 ## Testing
 
 `cargo test -p assets`. The unit tests cover the validators, the catalogue
-parser and the lookup order; `tests/sets.rs` the public behaviour on
-fixture sets in a temporary directory (pinning across a `current` swap,
-XDG precedence, tampering, symlinks, escapes, bad manifests);
-`tests/layout.rs` the installed `2026-10-04-core-3` layout rebuilt with
-stand-in bytes and resolved through the MixOS search path, plus the real
-installation when the machine has one.
+parser, the read limits and the lookup order; `tests/sets.rs` the public
+behaviour on fixture sets in a temporary directory (pinning across a
+`current` swap, XDG precedence, tampering, symlinks, escapes, bad
+manifests); `tests/verified.rs` the verified reads (owned bytes surviving
+path replacement and removal, descriptor pinning across a substitution,
+symlink escapes, staging limits, length and digest refusals, malformed
+manifests and catalogues); `tests/layout.rs` the installed
+`2026-10-04-core-3` layout rebuilt with stand-in bytes and resolved
+through the MixOS search path, plus the real installation when the
+machine has one. `config::atomic::open_nested`'s walker refusals are
+tested in `libs/config/src/atomic.rs`.
