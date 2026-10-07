@@ -213,9 +213,9 @@ impl Projection {
         }
         let mut keys = BTreeSet::new();
         for cell in &d.buttons {
-            if design::ButtonVariant::from_name(&cell.variant).is_none()
-                || design::ButtonSize::from_name(&cell.size).is_none()
-                || design::InteractionState::from_name(&cell.interaction).is_none()
+            if !design::ButtonVariant::NAMES.contains(&cell.variant.as_str())
+                || !design::ButtonSize::NAMES.contains(&cell.size.as_str())
+                || !design::InteractionState::NAMES.contains(&cell.interaction.as_str())
                 || !keys.insert((
                     &cell.variant,
                     &cell.size,
