@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11
+
+- Use application's paired settings bridge for shell activation and worker
+  delivery, sharing cancellation-safe progress and final cache flushing with
+  native apps. Retain the existing Bus identity and independent registry lane.
+
 ## 0.1.10
 
 - Prepare validated persistent shell settings through the shared resource/cache

@@ -636,7 +636,7 @@ pub struct SceneHost {
     wiring: Wiring,
     actions: Receiver<Action>,
     menu_surface: Option<crate::menu::Surface>,
-    settings: application::presentation::native::Session<crate::appearance::Look>,
+    settings: application::presentation::native::Ui<crate::appearance::Look>,
     appearance_generation: u64,
     input_geometry: Option<InputGeometry>,
 }
@@ -654,15 +654,9 @@ impl SceneHost {
     /// Start the port (only when the `scene_host` preference
     /// is on; the caller decides).
     pub fn start(config: HostConfig, waker: Waker) -> Result<Self, String> {
-        let port = Port::start(config, Arc::clone(&waker))?;
-        let consumer = settings::consumer::Consumer::for_shell(port.settings_binding())
-            .map_err(|error| format!("shell settings: {error:?}"))?;
-        let mut settings = application::presentation::native::Session::new(consumer);
-        let (_, jobs) = settings.handle(
-            application::presentation::native::Event::Wake,
-            port.settings_generation(),
-        );
-        port.settings_jobs(jobs);
+        let mut port = Port::start(config, Arc::clone(&waker))?;
+        let mut settings = port.take_settings_ui();
+        settings.reconcile(port.settings_generation());
         let (sender, actions) = std::sync::mpsc::channel();
         let wiring = Wiring {
             sink: port.event_sink(),
@@ -729,22 +723,17 @@ impl SceneHost {
     /// the loop's post-dispatch hook after the waker fired.
     pub fn service_port(&mut self, lp: &mut world::state::Loop) -> Serviced {
         let mut serviced = Serviced::default();
-        for event in self.port.take_settings() {
-            let panels = &mut self.host.panels;
-            let (changed, jobs) =
-                self.settings
-                    .handle_with(event, self.port.settings_generation(), |presentation| {
+        let panels = &mut self.host.panels;
+        let port = &self.port;
+        for _changed in self.settings.drain_with(|| port.settings_generation(), |presentation| {
                         let look = presentation.content();
                         panels.set_preferences(look.preferences.clone());
                         let style = decor::window::installed()
                             .map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
                         decor::window::install(look.chrome(style));
-                    });
-            self.port.settings_jobs(jobs);
-            if changed.is_some() {
+                    }) {
                 self.appearance_generation = self.appearance_generation.wrapping_add(1);
                 serviced.changed = true;
-            }
         }
         let Some(monitor) =
             dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner)
@@ -881,13 +870,14 @@ impl SceneHost {
                     let mut layout = |store: &SceneStore, scene: &str, node: Option<&str>| {
                         crate::render::layout(store, surfaces, placed, &mut *lp, scene, node)
                     };
-                    let evidence = self.settings.host().consumer().evidence();
+                    self.settings.reconcile(self.port.settings_generation());
+                    let evidence = self.settings.session().host().consumer().evidence();
                     let answer = self.host.answer_with_settings(
                         &request,
                         output,
                         generation,
                         Some(&evidence),
-                        Some(self.settings.cache_evidence()),
+                        Some(self.settings.session().cache_evidence()),
                         &mut layout,
                     );
                     // A load or unload changes the pages the edges carry.

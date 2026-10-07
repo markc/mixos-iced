@@ -19,7 +19,9 @@ use std::{
 };
 #[cfg(feature = "settings-cache")]
 mod cache;
+mod bridge;
 mod mailbox;
+pub use bridge::{Lane, Progress, Ui, bridge};
 pub use mailbox::Mailbox;
 #[cfg(test)]
 mod tests;

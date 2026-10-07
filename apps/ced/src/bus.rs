@@ -29,7 +29,8 @@ use editor_model::types::{Incoming, ParsedBody};
 
 use crate::controller::{BusCommand, Effect};
 use application::presentation::native::{
-    Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker,
+    Event as SettingsEvent, Progress, Session, Ui as SettingsUi,
+    Worker as SettingsWorker, bridge,
 };
 
 /// Everything the bus thread delivers.
@@ -37,7 +38,7 @@ use application::presentation::native::{
 pub enum Delivery {
     Incoming(Incoming),
     Command(BusCommand),
-    Settings(Mailbox<crate::theme::Theme>),
+    Settings,
     Registered,
     RegistrationFailed(StartError),
     HandoffFinished(Result<(), String>),
@@ -91,14 +92,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// own (chrome, clipboard, session) and are ignored here.
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<WorkerCommand>,
-    settings: tokio::sync::watch::Sender<Option<Jobs>>,
-    binding: Option<settings::Binding>,
+    settings: Option<SettingsUi<crate::theme::Theme>>,
     client: Arc<SupervisedClient>,
 }
 
 impl BusHandle {
-    pub fn settings_binding(&self) -> Option<settings::Binding> {
-        self.binding.clone()
+    pub fn take_settings_ui(&mut self) -> Option<SettingsUi<crate::theme::Theme>> {
+        self.settings.take()
     }
     pub fn settings_generation(&self) -> Option<u64> {
         settings::native::live_generation(&self.client)
@@ -114,9 +114,6 @@ impl BusHandle {
     }
     pub fn shutdown(&self, session: Option<crate::session::SessionWriter>) {
         let _ = self.tx.send(WorkerCommand::Shutdown(session));
-    }
-    pub fn settings_jobs(&self, jobs: Jobs) {
-        self.settings.send_replace(Some(jobs));
     }
     pub fn perform(&self, effect: &Effect) {
         match effect {
@@ -166,7 +163,6 @@ fn spawn_inner(
     let (dtx, drx) = unbounded();
     let (etx, erx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let (settings, settings_rx) = tokio::sync::watch::channel(None);
     let service = service.to_string();
     let url = ::bus::client_helpers::resolve_noded_url();
     std::thread::Builder::new()
@@ -189,7 +185,6 @@ fn spawn_inner(
                 dtx,
                 erx,
                 ready_tx,
-                settings_rx,
                 desktop_settings,
             ));
             // A timed-out spawn_blocking cache operation cannot be aborted.
@@ -198,11 +193,10 @@ fn spawn_inner(
         })
         .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
     match ready_rx.recv() {
-        Ok(Ok((binding, client))) => Ok((
+        Ok(Ok((client, settings))) => Ok((
             BusHandle {
                 tx: etx,
                 settings,
-                binding,
                 client,
             },
             drx,
@@ -212,7 +206,11 @@ fn spawn_inner(
     }
 }
 
-type Ready = Result<(Option<settings::Binding>, Arc<SupervisedClient>), StartError>;
+type Ready = Result<(Arc<SupervisedClient>, Option<SettingsUi<crate::theme::Theme>>), StartError>;
+
+fn settings_wake(delivery: &UnboundedSender<Delivery>, needed: bool) {
+    if needed { let _ = delivery.unbounded_send(Delivery::Settings); }
+}
 
 async fn run(
     service: String,
@@ -220,7 +218,6 @@ async fn run(
     dtx: UnboundedSender<Delivery>,
     mut erx: tokio::sync::mpsc::UnboundedReceiver<WorkerCommand>,
     ready: std::sync::mpsc::Sender<Ready>,
-    mut settings_rx: tokio::sync::watch::Receiver<Option<Jobs>>,
     desktop_settings: bool,
 ) {
     let binding = match desktop_settings
@@ -261,24 +258,25 @@ async fn run(
         return;
     };
     let mut state = client.subscribe_state();
-    let _ = ready.send(Ok((binding.clone(), Arc::clone(&client))));
-    let mut settings_worker = match desktop_settings
-        .then(|| crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT))
-        .flatten()
-    {
-        Some(dirs) => SettingsWorker::offline_with_cache(
-            dirs.cache().join("settings"),
-            crate::theme::from_settings,
-        ),
-        None => SettingsWorker::offline(crate::theme::from_settings),
-    };
-    settings_worker.connect(Arc::clone(&client));
-    let settings_mailbox = Mailbox::default();
-    let settings_send = |event| {
-        if settings_mailbox.publish(event) {
-            let _ = dtx.unbounded_send(Delivery::Settings(settings_mailbox.clone()));
-        }
-    };
+    let (ui, mut lane) = if let Some(binding) = binding {
+        let consumer = match settings::consumer::Consumer::for_app(binding, "ced") {
+            Ok(consumer) => consumer,
+            Err(error) => {
+                let _ = ready.send(Err(StartError::SettingsBinding(error.message)));
+                return;
+            }
+        };
+        let worker = match crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT) {
+            Some(dirs) => SettingsWorker::offline_with_cache(
+                dirs.cache().join("settings"), crate::theme::from_settings,
+            ),
+            None => SettingsWorker::offline(crate::theme::from_settings),
+        };
+        let (ui, mut lane) = bridge(Session::new(consumer), worker);
+        settings_wake(&dtx, lane.connect(Arc::clone(&client)));
+        (Some(ui), Some(lane))
+    } else { (None, None) };
+    let _ = ready.send(Ok((Arc::clone(&client), ui)));
 
     let mut commands: HashMap<u64, IncomingCommand> = HashMap::new();
     let mut replies = tokio::task::JoinSet::new();
@@ -300,17 +298,18 @@ async fn run(
                     tracing::warn!(%error, "Ced Bus reply or handoff failed");
                 }
             },
-            changed = settings_rx.changed() => {
-                if changed.is_err() { break; }
-                let jobs = settings_rx.borrow_and_update().clone();
-                if let Some(jobs) = jobs { settings_worker.replace(jobs); }
+            progress = async { lane.as_mut().expect("guarded settings lane").drive().await }, if lane.is_some() => {
+                match progress {
+                    Progress::Wake => settings_wake(&dtx, true),
+                    Progress::UiClosed => break,
+                    Progress::Updated => {}
+                }
             }
-            event = settings_worker.next() => { if let Some(event) = event.take() { settings_send(event); } }
             cmd = incoming.recv(), if incoming_open => {
                 let cmd = match cmd {
                     Some(BoundedIncomingEvent::Command(cmd)) => cmd,
                     Some(BoundedIncomingEvent::Overflow { .. }) => {
-                        if binding.is_some() { settings_send(SettingsEvent::Lost); }
+                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Lost)); }
                         // Mirrors conservatively reconcile any lost editor topics.
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
                         continue;
@@ -318,12 +317,12 @@ async fn run(
                     None => {
                         if !desktop_settings { break; }
                         incoming_open = false;
-                        settings_send(SettingsEvent::Wake);
+                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
                         continue;
                     },
                 };
-                if let Some(decoded) = binding.as_ref().and_then(|binding| settings::native::Decoded::from_command(binding, &cmd)) {
-                    settings_send(SettingsEvent::Delivery(decoded));
+                if let Some(wake) = lane.as_ref().and_then(|lane| lane.delivery(&cmd)) {
+                    settings_wake(&dtx, wake);
                     continue;
                 }
                 if let Some(topic) = cmd.topic() {
@@ -407,7 +406,7 @@ async fn run(
                     }
                     Effect::Subscribe { topic } => {
                         // The migrated GUI consumes compiled settings snapshots.
-                        if binding.is_some() && topic == "theme.changed" { continue; }
+                        if lane.is_some() && topic == "theme.changed" { continue; }
                         let (c, d) = (client.clone(), dtx.clone());
                         tokio::spawn(async move {
                             // The client replays only topics that once
@@ -453,16 +452,16 @@ async fn run(
                 }
                 match now {
                     ConnState::Connected => {
-                        if binding.is_some() { settings_send(SettingsEvent::Wake); }
+                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: true }));
                     }
                     ConnState::Disconnected => {
-                        if binding.is_some() { settings_send(SettingsEvent::Wake); }
+                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
                     }
                     ConnState::ShuttingDown | ConnState::Fatal => {
                         if !desktop_settings { break; }
-                        settings_send(SettingsEvent::Wake);
+                        if let Some(lane) = &lane { settings_wake(&dtx, lane.publish(SettingsEvent::Wake)); }
                         let error = registration_error(&client);
                         let _ = dtx.unbounded_send(Delivery::RegistrationFailed(error));
                         let _ = dtx.unbounded_send(Delivery::Incoming(Incoming::Connection { up: false }));
@@ -474,10 +473,6 @@ async fn run(
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut faults = Vec::new();
-    // Quit may win select before the last activated save is received.
-    if let Some(jobs) = settings_rx.borrow_and_update().clone() {
-        settings_worker.replace(jobs);
-    }
     // A quit response is queued before Shutdown. Let the existing response
     // tasks send it before closing its generation's socket.
     while !replies.is_empty() {
@@ -499,7 +494,7 @@ async fn run(
         }
     }
     if desktop_settings {
-        if let Err(error) = settings_worker.flush_cache(deadline).await {
+        if let Err(error) = lane.as_mut().expect("GUI settings lane").flush_cache(deadline).await {
             faults.push(format!("settings cache: {}: {}", error.code, error.message));
         }
         if let Some(mut writer) = shutdown_session {

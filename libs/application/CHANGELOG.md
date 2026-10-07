@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9
+
+- Pair existing settings Session/Worker through owned UI and worker endpoints.
+  Share coalesced jobs, bounded mailbox delivery, cancellation-safe worker
+  progress and latest-watch cache flushing on the host's existing runtime.
+- Ced and Quoin use the pair, keeping connection lifecycle, host wake delivery
+  and shutdown policy under their existing owners.
+
 ## 0.1.8
 
 - Share serialisable cache persistence, fault and fallback evidence between

@@ -251,3 +251,18 @@ async fn bounded_shutdown_drains_the_latest_activated_capture() {
         Revision(2)
     );
 }
+
+#[tokio::test]
+async fn bridge_shutdown_flushes_newest_capture_without_consuming_watch_notification() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut ui, mut lane) = super::super::bridge(activated(), cache_worker(dir.path()));
+    ui.reconcile(Some(1));
+    assert_eq!(lane.drive().await, Progress::Updated);
+    // A no-op effective change still advances the applied durable identity.
+    ui.handle_with(Event::Delivery(decoded(2)), Some(1), |_| panic!("unchanged paint"));
+    assert_eq!(ui.session().host().consumer().applied().unwrap().revision, Revision(2));
+    // Never poll drive after revision 2: the worker still holds revision 1.
+    // Shutdown must consume the newer pending UI->worker capture.
+    lane.flush_cache(Instant::now()+Duration::from_secs(5)).await.unwrap();
+    assert_eq!(cache::load(dir.path(), ui.session().host().consumer()).unwrap().snapshot().revision, Revision(2));
+}

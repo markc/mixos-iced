@@ -52,7 +52,7 @@ use crate::keys::{self, Binding, Bindings, Routed};
 use crate::macros::{self, MacroDef, MacroEnv, MacroEvent};
 use crate::theme::{self, Theme};
 use crate::verbs::{LayoutReply, Rect};
-use application::presentation::native::{Event as SettingsEvent, Session as SettingsSession};
+use application::presentation::native::{Event as SettingsEvent, Ui as SettingsUi};
 
 pub const APP_ID: &str = "dev.mixos.ced";
 
@@ -134,7 +134,7 @@ pub struct App {
     session_writer: Option<crate::session::SessionWriter>,
     config: Config,
     theme: Theme,
-    settings: SettingsSession<Theme>,
+    settings: SettingsUi<Theme>,
     registered: bool,
     bootstrap_paths: Vec<String>,
     bootstrap_opens: Vec<BootstrapOpen>,
@@ -194,7 +194,7 @@ static STREAMS: OnceLock<Mutex<Option<Streams>>> = OnceLock::new();
 /// Run the windowed app registered on the Bus as `service`, opening `paths`.
 pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<()> {
     let launched = Instant::now();
-    let (bus, deliveries) =
+    let (mut bus, deliveries) =
         bus::spawn_settings(service).map_err(|error| anyhow::anyhow!("Ced bootstrap: {error}"))?;
     let (timers, fired) = Timers::start();
     let installed = STREAMS.set(Mutex::new(Some(Streams {
@@ -215,15 +215,8 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         },
         Vec::new(),
     );
-    let mut settings = SettingsSession::new(
-        settings::consumer::Consumer::for_app(
-            bus.settings_binding().expect("GUI settings binding"),
-            "ced",
-        )
-        .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?,
-    );
-    let (_, jobs) = settings.handle(SettingsEvent::Wake, bus.settings_generation());
-    bus.settings_jobs(jobs);
+    let mut settings = bus.take_settings_ui().expect("GUI settings endpoint");
+    settings.reconcile(bus.settings_generation());
     let ui_font = theme.ui_font;
     let run_id: u32 = rand::random();
     let controller = Controller::new(config.clone(), run_id, false);
@@ -402,7 +395,7 @@ impl App {
 
     fn persistent_status(&self) -> String {
         use settings::fallback::PresentationKind;
-        let evidence = self.settings.host().consumer().evidence();
+        let evidence = self.settings.session().host().consumer().evidence();
         let kind = match evidence.kind {
             Some(PresentationKind::Current) => "settings-current",
             Some(PresentationKind::Cached) => "settings-cached",
@@ -709,12 +702,12 @@ impl App {
             Delivery::Command(cmd) => {
                 let describe = cmd.verb == "app.describe";
                 if describe {
-                    self.on_settings_event(SettingsEvent::Wake);
+                    self.settings.reconcile(self.bus.settings_generation());
                 }
                 let id = cmd.id;
                 let mut effects = self.controller.on_bus_command(cmd);
                 if describe {
-                    let evidence = self.settings.host().consumer().evidence();
+                    let evidence = self.settings.session().host().consumer().evidence();
                     for effect in &mut effects {
                         if let Effect::Respond {
                             id: reply, body, ..
@@ -729,7 +722,7 @@ impl App {
                             );
                             object.insert(
                                 "settings_cache".into(),
-                                serde_json::json!(self.settings.cache_evidence()),
+                                serde_json::json!(self.settings.session().cache_evidence()),
                             );
                             *body = serde_json::Value::Object(object).to_string();
                         }
@@ -737,10 +730,13 @@ impl App {
                 }
                 self.perform(effects)
             }
-            Delivery::Settings(mailbox) => {
-                for event in mailbox.take() {
-                    self.on_settings_event(event);
-                }
+            Delivery::Settings => {
+                let theme = &mut self.theme;
+                let bus = &self.bus;
+                let changed = self.settings.drain_with(|| bus.settings_generation(), |presentation| {
+                    *theme = presentation.content().clone();
+                });
+                if !changed.is_empty() { self.settings_changed(); }
                 Task::none()
             }
         }
@@ -748,22 +744,23 @@ impl App {
 
     fn on_settings_event(&mut self, event: SettingsEvent<Theme>) {
         let theme = &mut self.theme;
-        let (changed, jobs) =
+        let changed =
             self.settings
                 .handle_with(event, self.bus.settings_generation(), |presentation| {
                     *theme = presentation.content().clone();
                 });
-        if changed.is_some() {
+        if changed.is_some() { self.settings_changed(); }
+    }
+
+    fn settings_changed(&self) {
             eprintln!(
                 "CED_SETTINGS {}",
                 serde_json::json!({
                     "elapsed_ms": self.launched.elapsed().as_millis(),
-                    "evidence": self.settings.host().consumer().evidence(),
-                    "fallback_diagnostics": self.settings.fallback_diagnostics(),
+                    "evidence": self.settings.session().host().consumer().evidence(),
+                    "fallback_diagnostics": self.settings.session().fallback_diagnostics(),
                 })
             );
-        }
-        self.bus.settings_jobs(jobs);
     }
 
     fn on_timer(&mut self, key: TimerKey) -> Task<Msg> {
@@ -1641,10 +1638,7 @@ impl App {
     }
 
     fn reload_theme(&mut self) {
-        let (_, jobs) = self
-            .settings
-            .handle(SettingsEvent::Refresh, self.bus.settings_generation());
-        self.bus.settings_jobs(jobs);
+        self.on_settings_event(SettingsEvent::Refresh);
     }
 
     fn save_session(&mut self) {
@@ -2041,7 +2035,7 @@ fn msg_kind(msg: &Msg) -> &'static str {
         Msg::Bus(Delivery::Incoming(Incoming::Deadline { .. })) => "bus.deadline",
         Msg::Bus(Delivery::Incoming(Incoming::Connection { .. })) => "bus.connection",
         Msg::Bus(Delivery::Command(_)) => "bus.command",
-        Msg::Bus(Delivery::Settings(_)) => "bus.settings",
+        Msg::Bus(Delivery::Settings) => "bus.settings",
         Msg::Timer(_) => "timer",
         Msg::Action(_) => "action",
         Msg::Editor(..) => "editor",

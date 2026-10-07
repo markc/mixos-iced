@@ -21,7 +21,8 @@ use std::time::Duration;
 
 use crate::appearance::Look;
 use application::presentation::native::{
-    Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker,
+    Event as SettingsEvent, Lane as SettingsLane, Progress, Session, Ui as SettingsUi,
+    Worker as SettingsWorker, bridge,
 };
 use bus::native_client::BoundedIncomingEvent;
 use bus::{ConnState, IncomingCommand, SupervisedClient};
@@ -129,21 +130,11 @@ pub struct Port {
     /// connection generation from it directly (an atomic load), so a
     /// reconnect the worker has not yet reported still fences.
     client: Arc<OnceLock<Arc<SupervisedClient>>>,
-    binding: settings::Binding,
-    settings_jobs: watch::Sender<Option<Jobs>>,
-    settings_mailbox: Mailbox<Look>,
+    settings_ui: Option<SettingsUi<Look>>,
     registry: RegistryMailbox,
 }
 
 type RegistryMailbox = Arc<Mutex<Option<(u64, BTreeSet<String>)>>>;
-
-struct SettingsLane {
-    cache_directory: std::path::PathBuf,
-    binding: settings::Binding,
-    jobs: watch::Receiver<Option<Jobs>>,
-    mailbox: Mailbox<Look>,
-    registry: RegistryMailbox,
-}
 
 /// The names to try, in order: `shell`, then the override when it differs.
 pub fn candidate_names(service_override: Option<&str>) -> Vec<String> {
@@ -175,16 +166,12 @@ impl Port {
     ) -> Result<Self, String> {
         let binding =
             settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
-        let (settings_jobs, jobs) = watch::channel(None);
-        let settings_mailbox = Mailbox::default();
+        let consumer = settings::consumer::Consumer::for_shell(binding)
+            .map_err(|error| format!("shell settings: {error:?}"))?;
+        let worker = SettingsWorker::offline_with_cache(cache_directory, crate::appearance::build);
+        let (ui, lane) = bridge(Session::new(consumer), worker);
         let registry = RegistryMailbox::default();
-        let lane = SettingsLane {
-            cache_directory,
-            binding: binding.clone(),
-            jobs,
-            mailbox: settings_mailbox.clone(),
-            registry: Arc::clone(&registry),
-        };
+        let worker_registry = Arc::clone(&registry);
         let (inbound_tx, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (outbound, outbound_rx) = tokio_mpsc::unbounded_channel();
         let (events, events_rx) = tokio_mpsc::unbounded_channel();
@@ -221,6 +208,7 @@ impl Port {
                     shutdown_rx,
                     published,
                     lane,
+                    worker_registry,
                 ));
                 runtime.shutdown_timeout(RUNTIME_GRACE);
             })
@@ -237,21 +225,13 @@ impl Port {
             completion,
             thread: Some(thread),
             client,
-            binding,
-            settings_jobs,
-            settings_mailbox,
+            settings_ui: Some(ui),
             registry,
         })
     }
 
-    pub(crate) fn settings_binding(&self) -> settings::Binding {
-        self.binding.clone()
-    }
-    pub(crate) fn settings_jobs(&self, jobs: Jobs) {
-        self.settings_jobs.send_replace(Some(jobs));
-    }
-    pub(crate) fn take_settings(&self) -> Vec<SettingsEvent<Look>> {
-        self.settings_mailbox.take()
+    pub(crate) fn take_settings_ui(&mut self) -> SettingsUi<Look> {
+        self.settings_ui.take().expect("settings UI taken only once")
     }
     pub(crate) fn settings_generation(&self) -> Option<u64> {
         self.client
@@ -527,17 +507,11 @@ async fn worker(
     pending_events: Arc<AtomicUsize>,
     mut shutdown: watch::Receiver<bool>,
     published: Arc<OnceLock<Arc<SupervisedClient>>>,
-    mut lane: SettingsLane,
+    mut lane: SettingsLane<Look>,
+    registry_mailbox: RegistryMailbox,
 ) {
-    let mailbox = lane.mailbox.clone();
     let waker = Arc::clone(&delivery.waker);
-    let settings_send = move |event| {
-        if mailbox.publish(event) {
-            waker();
-        }
-    };
-    let mut settings_worker =
-        SettingsWorker::offline_with_cache(lane.cache_directory.clone(), crate::appearance::build);
+    let notify = move |needed| { if needed { waker(); } };
     let mut connecting = Some(Box::pin(connect(config.clone(), shutdown.clone())));
     // The existing connection attempt must not stop the resource worker. A
     // refused service still receives offline presentation work until shutdown.
@@ -546,12 +520,12 @@ async fn worker(
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() { break None; }
             }
-            changed = lane.jobs.changed() => {
-                if changed.is_err() { break None; }
-                if let Some(jobs) = lane.jobs.borrow_and_update().clone() { settings_worker.replace(jobs); }
-            }
-            event = settings_worker.next() => {
-                if let Some(event) = event.take() { settings_send(event); }
+            progress = lane.drive() => {
+                match progress {
+                    Progress::Wake => notify(true),
+                    Progress::UiClosed => break None,
+                    Progress::Updated => {}
+                }
             }
             result = async { connecting.as_mut().expect("guarded connection").await }, if connecting.is_some() => {
                 connecting = None;
@@ -568,11 +542,7 @@ async fn worker(
     drop(connecting.take());
     let deadline = if let Some((client, service)) = &connected {
         let _ = published.set(Arc::clone(client));
-        settings_worker.connect(Arc::clone(client));
-        if let Some(jobs) = lane.jobs.borrow_and_update().clone() {
-            settings_worker.replace(jobs);
-        }
-        settings_send(SettingsEvent::Wake);
+        notify(lane.connect(Arc::clone(client)));
         tracing::info!(
             "scene host: registered as `{service}` via {}",
             config.noded_url
@@ -589,18 +559,14 @@ async fn worker(
             pending_events,
             &mut shutdown,
             &mut lane,
-            &mut settings_worker,
-            &settings_send,
+            &registry_mailbox,
+            &notify,
         )
         .await
     } else {
         std::time::Instant::now() + SHUTDOWN_BUDGET
     };
-    // Activation can publish a newer capture immediately before shutdown.
-    if let Some(jobs) = lane.jobs.borrow_and_update().clone() {
-        settings_worker.replace(jobs);
-    }
-    if let Err(error) = settings_worker.flush_cache(deadline).await {
+    if let Err(error) = lane.flush_cache(deadline).await {
         tracing::warn!(?error, "scene host settings cache drain failed");
     }
     if let Some((client, _)) = connected {
@@ -621,7 +587,7 @@ async fn worker(
             tracing::warn!("scene host Bus close exceeded shutdown budget");
         }
     }
-    settings_send(SettingsEvent::Wake);
+    notify(lane.publish(SettingsEvent::Wake));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -633,9 +599,9 @@ async fn serve(
     events: &mut tokio_mpsc::UnboundedReceiver<Event>,
     pending_events: Arc<AtomicUsize>,
     shutdown: &mut watch::Receiver<bool>,
-    lane: &mut SettingsLane,
-    settings_worker: &mut SettingsWorker<Look>,
-    settings_send: &impl Fn(SettingsEvent<Look>),
+    lane: &mut SettingsLane<Look>,
+    registry_mailbox: &RegistryMailbox,
+    notify: &impl Fn(bool),
 ) -> std::time::Instant {
     let Some(mut incoming) = client.incoming_bounded() else {
         tracing::error!("scene host: the Bus client has no incoming lane; the host is OFF");
@@ -667,14 +633,17 @@ async fn serve(
                     break;
                 }
             }
-            changed = lane.jobs.changed() => {
-                if changed.is_err() { break; }
-                if let Some(jobs) = lane.jobs.borrow_and_update().clone() { settings_worker.replace(jobs); }
+            progress = lane.drive() => {
+                match progress {
+                    Progress::Wake => notify(true),
+                    Progress::UiClosed => break,
+                    Progress::Updated => {}
+                }
             }
             changed = lifecycle.changed(), if lifecycle_open => {
                 if changed.is_err() { lifecycle_open = false; }
                 let state = *lifecycle.borrow_and_update();
-                settings_send(SettingsEvent::Wake);
+                notify(lane.publish(SettingsEvent::Wake));
                 registry = None;
                 registry_subscription = (lifecycle_open && state == ConnState::Connected)
                     .then(|| Box::pin(registry_subscribe(Arc::clone(client))));
@@ -696,7 +665,7 @@ async fn serve(
                 registry = None;
                 if let Some((generation, services)) = result {
                     if settings::native::live_generation(client) == Some(generation) {
-                        *lane.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((generation, services));
+                        *registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((generation, services));
                         (delivery.waker)();
                     }
                 } else if settings::native::live_generation(client).is_some() && registry_retries < 3 {
@@ -707,20 +676,17 @@ async fn serve(
                     tracing::warn!("scene host: registry recovery paused until next lifecycle or loss event");
                 }
             }
-            event = settings_worker.next() => {
-                if let Some(event) = event.take() { settings_send(event); }
-            }
             command = incoming.recv(), if incoming_open && replies.len() < INBOUND_CAPACITY => {
                 match command {
                     Some(BoundedIncomingEvent::Command(command)) => {
-                        if let Some(decoded) = settings::native::Decoded::from_command(&lane.binding, &command) {
-                            settings_send(SettingsEvent::Delivery(decoded));
+                        if let Some(wake) = lane.delivery(&command) {
+                            notify(wake);
                         } else if let Route::Live(services) = route(service, &command) {
                             if settings::native::live_generation(client) == Some(command.generation) {
                                 // Each registry notice is a full set. It supersedes
                                 // an older read and cannot be dropped by scene RPCs.
                                 registry = None;
-                                *lane.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((command.generation, services));
+                                *registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((command.generation, services));
                                 (delivery.waker)();
                             }
                         } else {
@@ -731,7 +697,7 @@ async fn serve(
                         }
                     }
                     Some(BoundedIncomingEvent::Overflow { .. }) => {
-                        settings_send(SettingsEvent::Lost);
+                        notify(lane.publish(SettingsEvent::Lost));
                         registry = Some(Box::pin(registry_read(Arc::clone(client), Duration::ZERO)));
                         registry_retries = 0;
                         tracing::warn!("scene host: incoming queue overflow; recovering settings and registry");
@@ -740,7 +706,7 @@ async fn serve(
                         incoming_open = false;
                         registry = None;
                         registry_subscription = None;
-                        settings_send(SettingsEvent::Wake);
+                        notify(lane.publish(SettingsEvent::Wake));
                         let _ = delivery.send(Inbound::Refused("Bus incoming lane closed; retaining settings resources".into()));
                     }
                 }
@@ -770,7 +736,7 @@ async fn serve(
         }
     }
     let deadline = std::time::Instant::now() + SHUTDOWN_BUDGET;
-    settings_send(SettingsEvent::Wake);
+    notify(lane.publish(SettingsEvent::Wake));
     // Finish the earlier active send before later queued messages. A bounded
     // drain that expires cancels the remaining sequence, preserving its order.
     if tokio::time::timeout(Duration::from_millis(50), async {
@@ -988,30 +954,25 @@ mod tests {
     fn settings_drive(
         port: &Port,
         wake: &Receiver<()>,
-        session: &mut application::presentation::native::Session<Look>,
+        session: &mut SettingsUi<Look>,
         panels: &mut crate::panels::Panels,
         revision: Option<u64>,
     ) -> usize {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         let mut changes = 0;
         loop {
-            for event in port.take_settings() {
-                let (change, jobs) =
-                    session.handle_with(event, port.settings_generation(), |presentation| {
+            changes += session.drain_with(|| port.settings_generation(), |presentation| {
                         panels.set_preferences(presentation.content().preferences.clone());
-                    });
-                changes += usize::from(change.is_some());
-                port.settings_jobs(jobs);
-            }
+                    }).len();
             let ready = match revision {
                 Some(revision) => {
-                    session.host().kind() == Some(settings::fallback::PresentationKind::Current)
-                        && session.host().consumer().applied().is_some_and(|snapshot| {
+                    session.session().host().kind() == Some(settings::fallback::PresentationKind::Current)
+                        && session.session().host().consumer().applied().is_some_and(|snapshot| {
                             snapshot.revision == settings::Revision(revision)
                         })
                 }
                 None => {
-                    session.host().kind() == Some(settings::fallback::PresentationKind::Embedded)
+                    session.session().host().kind() == Some(settings::fallback::PresentationKind::Embedded)
                 }
             };
             if ready {
@@ -1028,11 +989,11 @@ mod tests {
     ) -> (
         Port,
         Receiver<()>,
-        application::presentation::native::Session<Look>,
+        SettingsUi<Look>,
     ) {
         install_settings_fonts();
         let (notify, wake) = mpsc::channel();
-        let port = Port::start_at(
+        let mut port = Port::start_at(
             HostConfig {
                 service_override: None,
                 noded_url: url,
@@ -1043,11 +1004,8 @@ mod tests {
             cache_directory,
         )
         .unwrap();
-        let mut session = application::presentation::native::Session::new(
-            settings::consumer::Consumer::for_shell(port.settings_binding()).unwrap(),
-        );
-        let (_, jobs) = session.handle(SettingsEvent::Wake, port.settings_generation());
-        port.settings_jobs(jobs);
+        let mut session = port.take_settings_ui();
+        session.reconcile(port.settings_generation());
         (port, wake, session)
     }
 
@@ -1076,7 +1034,7 @@ mod tests {
         assert_eq!(port.settings_generation(), None);
         assert_eq!(
             session
-                .host()
+                .session().host()
                 .presentation()
                 .unwrap()
                 .content()
@@ -1129,12 +1087,12 @@ mod tests {
             settings_drive(&port, &wake, &mut session, &mut panels, Some(1)),
             1
         );
-        let before = session.host().presentation().unwrap().content().clone();
+        let before = session.session().host().presentation().unwrap().content().clone();
         let controller = SupervisedClient::connect_options("quoin-settings-controller", &url)
             .connect()
             .await
             .unwrap();
-        let current = session.host().consumer().current().unwrap();
+        let current = session.session().host().consumer().current().unwrap();
         let applied = controller
             .call(
                 "settingsd",
@@ -1172,7 +1130,7 @@ mod tests {
             160.0
         );
         assert!(panels.zones("future").is_empty());
-        let after = session.host().presentation().unwrap().content().clone();
+        let after = session.session().host().presentation().unwrap().content().clone();
         assert_ne!(
             after.prepared.tokens().palette,
             before.prepared.tokens().palette
@@ -1183,7 +1141,7 @@ mod tests {
                 before.chrome(style).deco.metrics.title_size_px * 1.5
             );
         }
-        let current = session.host().consumer().current().unwrap();
+        let current = session.session().host().consumer().current().unwrap();
         let app_only = controller
             .call(
                 "settingsd",
@@ -1202,7 +1160,7 @@ mod tests {
             0,
             "an unrelated app override acknowledges without staging shell resources"
         );
-        let current = session.host().consumer().current().unwrap();
+        let current = session.session().host().consumer().current().unwrap();
         let invalid = controller.call("settingsd", "settings.apply", json!({
             "binding":current.binding, "expected_incarnation":current.incarnation,
             "expected_revision":"3", "operation_id":"quoin-duplicate-edge",
@@ -1210,25 +1168,21 @@ mod tests {
         })).await.unwrap();
         assert_eq!(invalid["status"], "changed");
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while session.host().consumer().fault().is_none() {
-            for event in port.take_settings() {
-                let (change, jobs) =
-                    session.handle_with(event, port.settings_generation(), |presentation| {
+        while session.session().host().consumer().fault().is_none() {
+            let changes = session.drain_with(|| port.settings_generation(), |presentation| {
                         panels.set_preferences(presentation.content().preferences.clone());
                     });
                 assert!(
-                    change.is_none(),
+                    changes.is_empty(),
                     "failed whole preparation must not activate either resource"
                 );
-                port.settings_jobs(jobs);
-            }
-            if session.host().consumer().fault().is_none() {
+            if session.session().host().consumer().fault().is_none() {
                 wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                     .expect("Quoin invalid-policy diagnostic did not arrive before deadline");
             }
         }
         assert_eq!(
-            session.host().consumer().applied().unwrap().revision,
+            session.session().host().consumer().applied().unwrap().revision,
             settings::Revision(3)
         );
         assert_eq!(
@@ -1237,7 +1191,7 @@ mod tests {
         );
         assert_eq!(
             session
-                .host()
+                .session().host()
                 .presentation()
                 .unwrap()
                 .content()
@@ -1249,15 +1203,14 @@ mod tests {
         let client = port.client.get().unwrap();
         client.close().await;
         assert_eq!(port.settings_generation(), None);
-        let (change, jobs) = session.handle(SettingsEvent::Wake, port.settings_generation());
-        port.settings_jobs(jobs);
+        let change = session.handle_with(SettingsEvent::Wake, port.settings_generation(), |_| {});
         assert!(change.is_none());
         assert_eq!(
-            session.host().kind(),
+            session.session().host().kind(),
             Some(settings::fallback::PresentationKind::LastGood)
         );
         assert_eq!(
-            session.host().consumer().applied().unwrap().revision,
+            session.session().host().consumer().applied().unwrap().revision,
             settings::Revision(3)
         );
         controller.close().await;
@@ -1277,12 +1230,12 @@ mod tests {
             settings::fallback::PresentationKind::Cached,
         );
         assert_eq!(
-            cached.host().consumer().applied().unwrap().revision,
+            cached.session().host().consumer().applied().unwrap().revision,
             settings::Revision(3)
         );
         assert_eq!(
             cached
-                .host()
+                .session().host()
                 .presentation()
                 .unwrap()
                 .content()
@@ -1292,7 +1245,7 @@ mod tests {
             after.prepared.tokens().palette
         );
         assert_eq!(port.settings_generation(), None);
-        assert!(!cached.host().consumer().evidence().confirmed);
+        assert!(!cached.session().host().consumer().evidence().confirmed);
         port.finish();
 
         let files: Vec<_> = std::fs::read_dir(&cache_directory)
@@ -1313,28 +1266,24 @@ mod tests {
             &mut cached_panels,
             settings::fallback::PresentationKind::Embedded,
         );
-        assert!(!embedded.fallback_diagnostics().is_empty());
-        assert!(!embedded.host().consumer().evidence().confirmed);
+        assert!(!embedded.session().fallback_diagnostics().is_empty());
+        assert!(!embedded.session().host().consumer().evidence().confirmed);
         port.finish();
     }
 
     fn drive_fallback(
         port: &Port,
         wake: &Receiver<()>,
-        session: &mut application::presentation::native::Session<Look>,
+        session: &mut SettingsUi<Look>,
         panels: &mut crate::panels::Panels,
         kind: settings::fallback::PresentationKind,
     ) {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
-            for event in port.take_settings() {
-                let (_, jobs) =
-                    session.handle_with(event, port.settings_generation(), |presentation| {
+            session.drain_with(|| port.settings_generation(), |presentation| {
                         panels.set_preferences(presentation.content().preferences.clone());
                     });
-                port.settings_jobs(jobs);
-            }
-            if session.host().kind() == Some(kind) {
+            if session.session().host().kind() == Some(kind) {
                 return;
             }
             wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
@@ -1358,7 +1307,7 @@ mod tests {
             .enumerate()
         {
             let (notify, wake) = mpsc::channel();
-            let port = Port::start_at(
+            let mut port = Port::start_at(
                 HostConfig {
                     noded_url: url.clone(),
                     service_override,
@@ -1369,11 +1318,8 @@ mod tests {
                 root.path().join(index.to_string()),
             )
             .unwrap();
-            let mut session = application::presentation::native::Session::new(
-                settings::consumer::Consumer::for_shell(port.settings_binding()).unwrap(),
-            );
-            let (_, jobs) = session.handle(SettingsEvent::Wake, port.settings_generation());
-            port.settings_jobs(jobs);
+            let mut session = port.take_settings_ui();
+            session.reconcile(port.settings_generation());
             let mut panels = crate::panels::Panels::default();
             drive_fallback(
                 &port,
@@ -1409,7 +1355,7 @@ mod tests {
                 }
             }
             assert_eq!(
-                session.host().kind(),
+                session.session().host().kind(),
                 Some(settings::fallback::PresentationKind::Embedded)
             );
             port.finish();

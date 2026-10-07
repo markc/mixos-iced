@@ -41,6 +41,22 @@ request the required invalidation/redraw; unchanged revision evidence creates
 no new preparation. Applied evidence is separate from frame presentation.
 
 `settings-native` adds `presentation::native::Session<T>` and `Worker<T>`.
+`native::bridge(session, worker)` pairs these existing authorities as `Ui<T>`
+and `Lane<T>`, starting no work or connection. The UI handles events with
+`handle_with` or drains with `drain_with`, sampling live generation per event
+and activating before acknowledgement. Call `reconcile(live)` at startup and
+before evidence reads. `session()` is read-only and schedules no work.
+
+Multiplex `lane.drive()` on the existing worker. Its future is cancellation
+safe: a consumed completion is published before returning. `Progress::Wake`
+or a true `publish`, `connect` or recognised `delivery` result requires an
+eventual host UI wake; bounded host channels must preserve that notification
+when full. `UiClosed` retires the watch branch once. The pair owns no Bus
+receiver, supervisor, thread or runtime. Hosts still own registration policy,
+reply ordering and shutdown deadlines. `Lane::flush_cache` first consumes the
+latest jobs, including a save not yet received when shutdown won select.
+
+The underlying Session/Worker APIs remain supported for specialised hosts.
 The UI feeds events to the session together with the existing client's current
 connected generation and forwards its whole desired `Jobs` through a coalescing
 host command lane. The worker borrows that same client and its host runtime;

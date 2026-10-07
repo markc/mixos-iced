@@ -1,5 +1,10 @@
 # Ced Bus contract
 
+## 0.1.8
+
+Use application's paired settings bridge for UI activation, worker delivery
+and final cache flushing, preserving GUI ownership and headless behaviour.
+
 ## 0.1.7
 
 Start the GUI's existing native Bus supervisor without awaiting registration.
