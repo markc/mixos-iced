@@ -82,43 +82,6 @@ impl Ledger {
     }
 }
 
-pub(crate) fn outcome(feedback: &winit::presentation::PresentationFeedback) -> FrameOutcome {
-    match feedback.outcome {
-        winit::presentation::PresentationOutcome::Presented {
-            clock_id,
-            seconds,
-            nanoseconds,
-            refresh_ns,
-            output_sequence,
-            flags,
-        } => FrameOutcome::Presented {
-            clock_id,
-            seconds,
-            nanoseconds,
-            refresh_ns,
-            output_sequence,
-            flags,
-        },
-        winit::presentation::PresentationOutcome::Discarded => FrameOutcome::Discarded,
-    }
-}
-
-/// Retire the actual native lease before notifying the metadata-only observer.
-/// Ordinary and acceptance-deferred feedback share this one delivery path.
-pub(crate) fn deliver(
-    ledger: &mut Ledger,
-    window: Id,
-    feedback: winit::presentation::PresentationFeedback,
-) {
-    let request = feedback.id.get();
-    let outcome = outcome(&feedback);
-    let binding = ledger.resolve(request, outcome);
-    drop(feedback);
-    if let Some(binding) = binding {
-        binding.observe(window, Some(request), outcome);
-    }
-}
-
 impl Drop for Ledger {
     fn drop(&mut self) {
         if let Some(binding) = self.latest.take() {

@@ -22,7 +22,7 @@ checked separately by the layering gate.
 | [term-test-broker](https://github.com/markc/mixos/blob/main/apps/term/crates/term-test-broker/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [mix-shell](https://github.com/markc/mixos/blob/main/cli/mix-shell/Cargo.toml) | mix-shell | cli | mix | public | 0.109.4 |
 | [appearance](https://github.com/markc/mixos/blob/main/libs/appearance/Cargo.toml) | appearance | lib | desktop | none | 0.1.1 |
-| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.17 |
+| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.18 |
 | [assets](https://github.com/markc/mixos/blob/main/libs/assets/Cargo.toml) | assets | lib | core | public | 0.1.2 |
 | [buildinfo](https://github.com/markc/mixos/blob/main/libs/buildinfo/Cargo.toml) | buildinfo | lib | core | none | 0.1.1 |
 | [bus](https://github.com/markc/mixos/blob/main/libs/bus/Cargo.toml) | bus | lib | core | none | 0.1.1 |

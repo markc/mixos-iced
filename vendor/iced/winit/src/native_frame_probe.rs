@@ -277,7 +277,7 @@ impl Gate {
             return Some(feedback);
         };
         let request = feedback.id.get();
-        let outcome = crate::presentation::outcome(&feedback);
+        let outcome = crate::frame_feedback_outcome(&feedback);
         let Some((binding, successful)) = ledger.pending_binding(request) else {
             return Some(feedback);
         };

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.18
+
+- Forward the opt-in `native-frame-probe` developer acceptance feature through
+  the shared renderer facade. Ordinary applications do not enable the probe.
+
 ## 0.1.17
 
 Retire selected native outbox entries without moving surviving slots or reliable

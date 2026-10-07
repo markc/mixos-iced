@@ -1000,7 +1000,7 @@ async fn run_instance<P>(
                                 result.is_ok(),
                                 fault_consumed,
                             ) {
-                                presentation::deliver(&mut window.presentation, id, held);
+                                deliver_frame_feedback(&mut window.presentation, id, held);
                             }
                         }
                         match result {
@@ -1068,7 +1068,7 @@ async fn run_instance<P>(
                         else {
                             continue;
                         };
-                        presentation::deliver(&mut window.presentation, id, feedback);
+                        deliver_frame_feedback(&mut window.presentation, id, feedback);
                     }
                     event::Event::WindowEvent {
                         event: window_event,
@@ -1285,6 +1285,36 @@ async fn run_instance<P>(
     }
 
     let _ = ManuallyDrop::into_inner(user_interfaces);
+}
+
+pub(crate) fn frame_feedback_outcome(
+    feedback: &winit::presentation::PresentationFeedback,
+) -> core::window::presentation::FrameOutcome {
+    use core::window::presentation::FrameOutcome;
+    match feedback.outcome {
+        winit::presentation::PresentationOutcome::Presented {
+            clock_id, seconds, nanoseconds, refresh_ns, output_sequence, flags,
+        } => FrameOutcome::Presented {
+            clock_id, seconds, nanoseconds, refresh_ns, output_sequence, flags,
+        },
+        winit::presentation::PresentationOutcome::Discarded => FrameOutcome::Discarded,
+    }
+}
+
+/// Retire the actual native lease before notifying the metadata-only observer.
+/// Ordinary and acceptance-deferred feedback share this one delivery path.
+fn deliver_frame_feedback(
+    ledger: &mut presentation::Ledger,
+    window: core::window::Id,
+    feedback: winit::presentation::PresentationFeedback,
+) {
+    let request = feedback.id.get();
+    let outcome = frame_feedback_outcome(&feedback);
+    let binding = ledger.resolve(request, outcome);
+    drop(feedback);
+    if let Some(binding) = binding {
+        binding.observe(window, Some(request), outcome);
+    }
 }
 
 /// Request feedback synchronously at the actual pre-commit boundary.

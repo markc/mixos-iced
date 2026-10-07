@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.17"
+version = "0.1.18"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,6 +25,8 @@ image = ["iced/image", "iced_tiny_skia?/image"]
 wgpu = ["iced/wgpu"]
 wgpu-bare = ["iced/wgpu-bare"]
 raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
+# Developer-only actual native frame ordering acceptance, absent from defaults.
+native-frame-probe = ["iced/native-frame-probe"]
 test-support = ["dep:iced_test", "iced/selector"]
 settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit", "appearance/resources"]
 settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus", "dep:assets"]
