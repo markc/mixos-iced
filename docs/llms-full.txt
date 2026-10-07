@@ -314,7 +314,14 @@ events behind one wake. `Worker::offline` prepares fallback resources while the
 host's connection attempt continues. The live lifecycle/generation sample fences
 every activation, including queued completions after connection loss.
 
-Ced and compd's scene-host use this path. `appearance::settings::Prepared`
+Ced and compd's scene-host use this path. Hosts that also activate renderer
+resources use `Host::complete_with` or `Session::handle_with`: the synchronous,
+total hook runs after successful preparation and current-stage fencing, before
+the swap and acknowledgement. It must install prepared values without I/O,
+awaiting or discovering unsupported inputs. Quoin uses it for panel preferences
+and window chrome, including fallback activation.
+
+`appearance::settings::Prepared`
 supplies checked fonts, typography builders, toolkit tokens and validated button
 read cells. Scene-host prepares decoration themes from the same dictionary and
 selected title font. Appearance messages update existing scenes and corner menus
@@ -1417,6 +1424,47 @@ writer fences superseded applied-generation saves, permits retry of the latest
 failed attempt and reports ambiguous post-rename failure. All I/O belongs off
 the UI loop. Cache failure preserves usable applied data. Real font/asset loading,
 artifact preparation and GUI fallback/first-map timing remain pending.
+
+## Shell panel preferences
+
+Quoin prepares appearance and the global panel policy together, then installs
+both on the compositor loop before acknowledging the settings revision. Each
+record's explicit edge selects one of four panels on every current and future
+output; the record ID is provenance, independent of a connector or page name.
+`dock`, `overlay` and `hidden` map to runtime docked, pinned and hidden modes.
+The default profile owns the bottom panel in dock mode, requesting 40 logical
+pixels. An edge without pages draws nothing and reserves no work area.
+
+Thickness is requested logical pixels. Runtime edge ranges, the active page's
+minimum and the output/opposite-edge budget fit the request. A bottom page with
+a 52-pixel minimum therefore presents 52 pixels for the default 40-pixel
+request. Panel rows include a nullable `settings` object with the record ID,
+`requested_px`, `fitted_px`, `presented_px`, `reserved_px` and constraint names.
+Output shrinkage fits the panel; regrowth recovers the request. Page selection
+and registration use the existing carousel and panel model.
+
+Settings owns the mode and thickness of each declared edge. Conflicting legacy
+panel writes refuse `SETTINGS_MANAGED` before changing interaction state; exact
+current mode or settled-size requests are no-ops. Transient show/hide and page
+selection remain available. Persistent toggles cannot undock managed panels.
+Corner-menu mode entries are disabled while managed. Removing a profile record
+restores that edge's captured local mode and settled thickness. Saving a page
+selection keeps those local values, so profile preferences do not leak into the
+local state file. Thickness or appearance updates retain interaction holders;
+an actual transition to hidden retires invalid keyboard/menu holders.
+
+Duplicate records targeting one edge and non-empty `shell.page_order` lack a
+runtime identity mapping and fail whole shell preparation. The authority's
+schema can accept them, but Quoin reports the preparation fault and retains
+the last good appearance and panel policy. Correct them through a new fenced
+settings mutation. This is consumer capability validation, not a rollback of
+the accepted authority revision. Empty page ordering preserves local order.
+
+Requested maximised windows keep their owning output and follow only changes
+to its usable area; removal chooses an available output while retaining the
+original unmaximise geometry. Fullscreen continues to use the whole output.
+Persistent tiling, delayed-buffer protocol evidence and native VT frame/latency
+acceptance remain outstanding.
 
 ## Topics and storage
 

@@ -698,19 +698,24 @@ impl SceneHost {
         let mut serviced = Serviced::default();
         for event in self.port.take_settings() {
             let panels = &mut self.host.panels;
-            let (changed, jobs) = self.settings.handle_with(event, self.port.settings_generation(), |presentation| {
-                let look = presentation.content();
-                panels.set_preferences(look.preferences.clone());
-                let style = decor::window::installed().map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
-                decor::window::install(look.chrome(style));
-            });
+            let (changed, jobs) =
+                self.settings
+                    .handle_with(event, self.port.settings_generation(), |presentation| {
+                        let look = presentation.content();
+                        panels.set_preferences(look.preferences.clone());
+                        let style = decor::window::installed()
+                            .map_or(decor::ChromeStyle::Mac, |theme| theme.deco.style);
+                        decor::window::install(look.chrome(style));
+                    });
             self.port.settings_jobs(jobs);
             if changed.is_some() {
                 self.appearance_generation = self.appearance_generation.wrapping_add(1);
                 serviced.changed = true;
             }
         }
-        let Some(monitor) = dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner) else {
+        let Some(monitor) =
+            dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner)
+        else {
             return serviced;
         };
         let name = monitor.name();

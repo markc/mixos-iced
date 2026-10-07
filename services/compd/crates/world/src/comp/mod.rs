@@ -38,11 +38,13 @@ pub mod x11_place;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use dispatcher::wire::trait_::surface_event::{InteractiveOp, SurfaceEvent, SurfaceHandle, WindowRequest};
+use dispatcher::wire::trait_::surface_event::{
+    InteractiveOp, SurfaceEvent, SurfaceHandle, WindowRequest,
+};
 use policy::workspaces::{DefaultOutput, WorkspaceState};
-use surfaces::{Registry, SurfaceId, SurfaceRole};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use surfaces::{Registry, SurfaceId, SurfaceRole};
 
 /// The workspace a fresh `CompState` is on (the default: workspace 1 of
 /// 4). Live code reads [`CompState::current_workspace`].
@@ -216,7 +218,9 @@ impl CompState {
                 self.layer_explicit.remove(&handle);
             }
             SurfaceEvent::Buffer { handle, attached } => {
-                let Some(id) = self.registry.id_for_handle(&handle) else { return };
+                let Some(id) = self.registry.id_for_handle(&handle) else {
+                    return;
+                };
                 if attached {
                     let seq = {
                         let count = self.commits.entry(id).or_default();
@@ -226,7 +230,9 @@ impl CompState {
                     let window = self.window_of(id);
                     self.presentation.published(id, window, seq);
                 }
-                let Some(role) = self.registry.get(id).map(|record| record.role()) else { return };
+                let Some(role) = self.registry.get(id).map(|record| record.role()) else {
+                    return;
+                };
                 let mapped = match role {
                     SurfaceRole::Dormant => return,
                     SurfaceRole::Toplevel | SurfaceRole::X11 { .. } => {
@@ -239,7 +245,14 @@ impl CompState {
                 };
                 if self.set_mapped(id, mapped) {
                     self.touched();
-                    self.causes.note_window(id.0, if mapped { "wayland.map" } else { "wayland.unmap" });
+                    self.causes.note_window(
+                        id.0,
+                        if mapped {
+                            "wayland.map"
+                        } else {
+                            "wayland.unmap"
+                        },
+                    );
                 }
             }
             SurfaceEvent::Placed(handle) => {
@@ -259,10 +272,9 @@ impl CompState {
                 if let Some(id) = self.registry.id_for_handle(&handle) {
                     let title: Option<Arc<str>> = title.map(Arc::from);
                     let app_id: Option<Arc<str>> = app_id.map(Arc::from);
-                    let same = self
-                        .registry
-                        .get(id)
-                        .is_some_and(|record| record.title() == title.as_ref() && record.app_id() == app_id.as_ref());
+                    let same = self.registry.get(id).is_some_and(|record| {
+                        record.title() == title.as_ref() && record.app_id() == app_id.as_ref()
+                    });
                     if !same {
                         let _ = self.registry.set_title(id, title);
                         let _ = self.registry.set_app_id(id, app_id);
@@ -316,7 +328,9 @@ impl CompState {
                 }
             }
             SurfaceEvent::Interactive { handle, op } => {
-                let Some(id) = self.registry.id_for_handle(&handle) else { return };
+                let Some(id) = self.registry.id_for_handle(&handle) else {
+                    return;
+                };
                 match op {
                     InteractiveOp::Begin { edges } => {
                         self.interactive = Some(Interactive {
@@ -383,7 +397,10 @@ impl CompState {
             }
         }
         let record = self.registry.get(id)?;
-        record.role().managed_toplevel().then(|| (record.id().0, record.generation()))
+        record
+            .role()
+            .managed_toplevel()
+            .then(|| (record.id().0, record.generation()))
     }
 
     /// The mapped flag, stamping the workspace on the false→true edge.
@@ -437,7 +454,8 @@ impl CompState {
     /// The record a `wl_surface` belongs to (an Xwayland-backed one resolves to
     /// its X window's record).
     pub fn id_for_surface(&self, surface: &WlSurface) -> Option<SurfaceId> {
-        self.registry.id_for_handle(&SurfaceHandle::resolve(surface))
+        self.registry
+            .id_for_handle(&SurfaceHandle::resolve(surface))
     }
 
     /// Moves whenever the registry may have changed.
@@ -549,15 +567,19 @@ impl CompState {
     pub fn lifo_restore_candidate(&self) -> Option<SurfaceId> {
         let current = self.current_workspace();
         let live = |id: &&SurfaceId| {
-            self.registry
-                .get(**id)
-                .is_some_and(|record| record.mapped() && record.minimized() && record.role().managed_toplevel())
+            self.registry.get(**id).is_some_and(|record| {
+                record.mapped() && record.minimized() && record.role().managed_toplevel()
+            })
         };
         self.minimize_lifo
             .iter()
             .rev()
             .filter(live)
-            .find(|id| self.registry.get(**id).is_some_and(|record| record.workspace() == Some(current)))
+            .find(|id| {
+                self.registry
+                    .get(**id)
+                    .is_some_and(|record| record.workspace() == Some(current))
+            })
             .or_else(|| self.minimize_lifo.iter().rev().find(live))
             .copied()
     }
@@ -592,7 +614,11 @@ impl CompState {
                 Some(row) => row.generation,
                 None => self.registry.reserve_generation(),
             };
-            rows.push(scenes::SceneRow { id, generation, input });
+            rows.push(scenes::SceneRow {
+                id,
+                generation,
+                input,
+            });
         }
         // Only a mapped scene can hold the keyboard.
         let focus = focus
@@ -616,7 +642,9 @@ impl CompState {
 
     /// An output's current generation (0: never seen).
     pub fn output_generation(&self, name: &str) -> u64 {
-        self.output_generations.get(name).map_or(0, |entry| entry.generation)
+        self.output_generations
+            .get(name)
+            .map_or(0, |entry| entry.generation)
     }
 
     /// Fold the outputs present now into the generations: a new or changed

@@ -216,6 +216,7 @@
                     <nav id="toc-nav">
                         <a href="#served-verbs">Served verbs</a>
                         <a href="#initial-data-and-resolution">Initial data and resolution</a>
+                        <a href="#shell-panel-preferences">Shell panel preferences</a>
                         <a href="#topics-and-storage">Topics and storage</a>
                         <a href="#validation-and-remaining-scope">Validation and remaining scope</a>
                     </nav>
@@ -383,6 +384,41 @@ writer fences superseded applied-generation saves, permits retry of the latest
 failed attempt and reports ambiguous post-rename failure. All I/O belongs off
 the UI loop. Cache failure preserves usable applied data. Real font/asset loading,
 artifact preparation and GUI fallback/first-map timing remain pending.</p>
+<h2 id="shell-panel-preferences">Shell panel preferences</h2>
+<p>Quoin prepares appearance and the global panel policy together, then installs
+both on the compositor loop before acknowledging the settings revision. Each
+record's explicit edge selects one of four panels on every current and future
+output; the record ID is provenance, independent of a connector or page name.
+<code>dock</code>, <code>overlay</code> and <code>hidden</code> map to runtime docked, pinned and hidden modes.
+The default profile owns the bottom panel in dock mode, requesting 40 logical
+pixels. An edge without pages draws nothing and reserves no work area.</p>
+<p>Thickness is requested logical pixels. Runtime edge ranges, the active page's
+minimum and the output/opposite-edge budget fit the request. A bottom page with
+a 52-pixel minimum therefore presents 52 pixels for the default 40-pixel
+request. Panel rows include a nullable <code>settings</code> object with the record ID,
+<code>requested_px</code>, <code>fitted_px</code>, <code>presented_px</code>, <code>reserved_px</code> and constraint names.
+Output shrinkage fits the panel; regrowth recovers the request. Page selection
+and registration use the existing carousel and panel model.</p>
+<p>Settings owns the mode and thickness of each declared edge. Conflicting legacy
+panel writes refuse <code>SETTINGS_MANAGED</code> before changing interaction state; exact
+current mode or settled-size requests are no-ops. Transient show/hide and page
+selection remain available. Persistent toggles cannot undock managed panels.
+Corner-menu mode entries are disabled while managed. Removing a profile record
+restores that edge's captured local mode and settled thickness. Saving a page
+selection keeps those local values, so profile preferences do not leak into the
+local state file. Thickness or appearance updates retain interaction holders;
+an actual transition to hidden retires invalid keyboard/menu holders.</p>
+<p>Duplicate records targeting one edge and non-empty <code>shell.page_order</code> lack a
+runtime identity mapping and fail whole shell preparation. The authority's
+schema can accept them, but Quoin reports the preparation fault and retains
+the last good appearance and panel policy. Correct them through a new fenced
+settings mutation. This is consumer capability validation, not a rollback of
+the accepted authority revision. Empty page ordering preserves local order.</p>
+<p>Requested maximised windows keep their owning output and follow only changes
+to its usable area; removal chooses an available output while retaining the
+original unmaximise geometry. Fullscreen continues to use the whole output.
+Persistent tiling, delayed-buffer protocol evidence and native VT frame/latency
+acceptance remain outstanding.</p>
 <h2 id="topics-and-storage">Topics and storage</h2>
 <p>Publish retained <code>settingsd.desktop.changed.&lt;profile&gt;</code>, owned by the registered
 <code>settingsd</code> service. The unscoped base name is reserved too. All clients may

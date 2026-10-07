@@ -34,7 +34,14 @@ events behind one wake. `Worker::offline` prepares fallback resources while the
 host's connection attempt continues. The live lifecycle/generation sample fences
 every activation, including queued completions after connection loss.
 
-Ced and compd's scene-host use this path. `appearance::settings::Prepared`
+Ced and compd's scene-host use this path. Hosts that also activate renderer
+resources use `Host::complete_with` or `Session::handle_with`: the synchronous,
+total hook runs after successful preparation and current-stage fencing, before
+the swap and acknowledgement. It must install prepared values without I/O,
+awaiting or discovering unsupported inputs. Quoin uses it for panel preferences
+and window chrome, including fallback activation.
+
+`appearance::settings::Prepared`
 supplies checked fonts, typography builders, toolkit tokens and validated button
 read cells. Scene-host prepares decoration themes from the same dictionary and
 selected title font. Appearance messages update existing scenes and corner menus

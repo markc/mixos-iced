@@ -879,9 +879,10 @@ mod tests {
         let mut changes = 0;
         loop {
             for event in port.take_settings() {
-                let (change, jobs) = session.handle_with(event, port.settings_generation(), |presentation| {
-                    panels.set_preferences(presentation.content().preferences.clone());
-                });
+                let (change, jobs) =
+                    session.handle_with(event, port.settings_generation(), |presentation| {
+                        panels.set_preferences(presentation.content().preferences.clone());
+                    });
                 changes += usize::from(change.is_some());
                 port.settings_jobs(jobs);
             }
@@ -940,9 +941,15 @@ mod tests {
         let (port, wake, mut session) =
             settings_port(format!("ws://{}/ws", listener.local_addr().unwrap()));
         let mut panels = crate::panels::Panels::default();
-        assert_eq!(settings_drive(&port, &wake, &mut session, &mut panels, None), 1);
+        assert_eq!(
+            settings_drive(&port, &wake, &mut session, &mut panels, None),
+            1
+        );
         panels.ensure("fixture", (1280.0, 800.0));
-        assert_eq!(panels.state("fixture", crate::seat::Edge::Bottom)["mode"], "docked");
+        assert_eq!(
+            panels.state("fixture", crate::seat::Edge::Bottom)["mode"],
+            "docked"
+        );
         assert_eq!(port.settings_generation(), None);
         assert_eq!(
             session
@@ -992,7 +999,10 @@ mod tests {
         let (port, wake, mut session) = settings_port(url.clone());
         let mut panels = crate::panels::Panels::default();
         panels.ensure("fixture", (1280.0, 800.0));
-        assert_eq!(settings_drive(&port, &wake, &mut session, &mut panels, Some(1)), 1);
+        assert_eq!(
+            settings_drive(&port, &wake, &mut session, &mut panels, Some(1)),
+            1
+        );
         let before = session.host().presentation().unwrap().content().clone();
         let controller = SupervisedClient::connect_options("quoin-settings-controller", &url)
             .connect()
@@ -1007,19 +1017,34 @@ mod tests {
                     "binding": current.binding, "expected_incarnation": current.incarnation,
                     "expected_revision":"1", "operation_id":"quoin-live-fixture",
                     "changes":{"appearance.mode":"dark","ui.text_scale":1.5,
-                        "shell.panels.bottom":{"edge":"bottom","mode":"hidden","thickness":80},
+                        "shell.panels.bottom":{"edge":"bottom","mode":"dock","thickness":80},
                         "shell.panels.right":{"edge":"right","mode":"overlay","thickness":160}}
                 }),
             )
             .await
             .unwrap();
         assert_eq!(applied["status"], "changed");
-        assert_eq!(settings_drive(&port, &wake, &mut session, &mut panels, Some(2)), 1);
-        assert_eq!(panels.state("fixture", crate::seat::Edge::Bottom)["mode"], "hidden");
-        assert_eq!(panels.state("fixture", crate::seat::Edge::Bottom)["settings"]["requested_px"], 80.0);
-        assert_eq!(panels.state("fixture", crate::seat::Edge::Right)["mode"], "pinned");
+        assert_eq!(
+            settings_drive(&port, &wake, &mut session, &mut panels, Some(2)),
+            1
+        );
+        assert_eq!(
+            panels.state("fixture", crate::seat::Edge::Bottom)["mode"],
+            "docked"
+        );
+        assert_eq!(
+            panels.state("fixture", crate::seat::Edge::Bottom)["settings"]["requested_px"],
+            80.0
+        );
+        assert_eq!(
+            panels.state("fixture", crate::seat::Edge::Right)["mode"],
+            "pinned"
+        );
         panels.ensure("future", (1920.0, 1080.0));
-        assert_eq!(panels.state("future", crate::seat::Edge::Right)["width_px"], 160.0);
+        assert_eq!(
+            panels.state("future", crate::seat::Edge::Right)["width_px"],
+            160.0
+        );
         assert!(panels.zones("future").is_empty());
         let after = session.host().presentation().unwrap().content().clone();
         assert_ne!(
@@ -1061,19 +1086,40 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while session.host().consumer().fault().is_none() {
             for event in port.take_settings() {
-                let (change, jobs) = session.handle_with(event, port.settings_generation(), |presentation| {
-                    panels.set_preferences(presentation.content().preferences.clone());
-                });
-                assert!(change.is_none(), "failed whole preparation must not activate either resource");
+                let (change, jobs) =
+                    session.handle_with(event, port.settings_generation(), |presentation| {
+                        panels.set_preferences(presentation.content().preferences.clone());
+                    });
+                assert!(
+                    change.is_none(),
+                    "failed whole preparation must not activate either resource"
+                );
                 port.settings_jobs(jobs);
             }
             if session.host().consumer().fault().is_none() {
-                wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).unwrap();
+                wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap();
             }
         }
-        assert_eq!(session.host().consumer().applied().unwrap().revision, settings::Revision(3));
-        assert_eq!(panels.state("fixture", crate::seat::Edge::Bottom)["mode"], "hidden");
-        assert_eq!(session.host().presentation().unwrap().content().prepared.tokens().palette, after.prepared.tokens().palette);
+        assert_eq!(
+            session.host().consumer().applied().unwrap().revision,
+            settings::Revision(3)
+        );
+        assert_eq!(
+            panels.state("fixture", crate::seat::Edge::Bottom)["mode"],
+            "docked"
+        );
+        assert_eq!(
+            session
+                .host()
+                .presentation()
+                .unwrap()
+                .content()
+                .prepared
+                .tokens()
+                .palette,
+            after.prepared.tokens().palette
+        );
         let client = port.client.get().unwrap();
         client.close().await;
         assert_eq!(port.settings_generation(), None);

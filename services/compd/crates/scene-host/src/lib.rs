@@ -23,7 +23,6 @@ use smithay::utils::{Physical, Point, Size};
 use world::state::Loop;
 
 mod appearance;
-mod preferences;
 pub mod conf;
 pub mod host;
 mod icons;
@@ -33,6 +32,7 @@ pub mod menu;
 pub mod mount;
 pub mod panels;
 pub mod port;
+mod preferences;
 pub mod render;
 pub mod seat;
 mod state;

@@ -187,17 +187,29 @@ impl StateStore {
             let (sender, receiver) = std::sync::mpsc::channel::<Saved>();
             // One ordered writer, off the compositor thread. Persist after a
             // quiet interval, coalescing rapid carousel/mode changes.
-            match std::thread::Builder::new().name("scene-state".into()).spawn(move || {
-                while let Ok(mut next) = receiver.recv() {
-                    while let Ok(newer) = receiver.recv_timeout(Duration::from_millis(300)) { next = newer; }
-                    if let Err(error) = next.encode().and_then(|encoded| crate::conf::replace_atomically_at(&path, &encoded)) {
-                        tracing::warn!("scene host: Quoin state {} save failed: {error}", path.display());
+            match std::thread::Builder::new()
+                .name("scene-state".into())
+                .spawn(move || {
+                    while let Ok(mut next) = receiver.recv() {
+                        while let Ok(newer) = receiver.recv_timeout(Duration::from_millis(300)) {
+                            next = newer;
+                        }
+                        if let Err(error) = next
+                            .encode()
+                            .and_then(|encoded| crate::conf::replace_atomically_at(&path, &encoded))
+                        {
+                            tracing::warn!(
+                                "scene host: Quoin state {} save failed: {error}",
+                                path.display()
+                            );
+                        }
                     }
-                }
-            }) {
+                }) {
                 Ok(_) => store.writer = Some(sender),
                 Err(error) => {
-                    tracing::warn!("scene host: state writer unavailable, persistence disabled: {error}");
+                    tracing::warn!(
+                        "scene host: state writer unavailable, persistence disabled: {error}"
+                    );
                     store.path = None;
                 }
             }
@@ -325,29 +337,49 @@ mod tests {
     #[test]
     fn carousel_save_queues_complete_state_without_opening_the_path() {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut store = StateStore { path: Some(PathBuf::from("/nonexistent/scene-state.mix")), saved: Saved::default(), writer: Some(sender) };
+        let mut store = StateStore {
+            path: Some(PathBuf::from("/nonexistent/scene-state.mix")),
+            saved: Saved::default(),
+            writer: Some(sender),
+        };
         let mut current = model("DP-1");
-        current.carousel_mut(Edge::Right).restore_saved_selection("scene-calendar");
+        current
+            .carousel_mut(Edge::Right)
+            .restore_saved_selection("scene-calendar");
         store.save(&current);
-        current.carousel_mut(Edge::Right).restore_saved_selection("scene-notes");
+        current
+            .carousel_mut(Edge::Right)
+            .restore_saved_selection("scene-notes");
         store.save(&current);
         let queued: Vec<_> = receiver.try_iter().collect();
         assert_eq!(queued.len(), 2);
-        assert_eq!(queued[1].outputs["connector:DP-1"][Edge::Right.index()].page, "scene-notes");
+        assert_eq!(
+            queued[1].outputs["connector:DP-1"][Edge::Right.index()].page,
+            "scene-notes"
+        );
         assert_eq!(store.saved, queued[1]);
     }
 
     #[test]
     fn saving_page_selection_during_settings_ownership_keeps_local_mode_and_size() {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut store = StateStore { path: Some(PathBuf::from("/nonexistent/scene-state.mix")), saved: Saved::default(), writer: Some(sender) };
+        let mut store = StateStore {
+            path: Some(PathBuf::from("/nonexistent/scene-state.mix")),
+            saved: Saved::default(),
+            writer: Some(sender),
+        };
         let mut current = model("DP-1");
-        current.restore_mode(Edge::Left, Duration::ZERO, PanelMode::Pinned).unwrap();
+        current
+            .restore_mode(Edge::Left, Duration::ZERO, PanelMode::Pinned)
+            .unwrap();
         current.restore_thickness(Edge::Left, 180.0).unwrap();
         let mut values = [None; 4];
-        values[Edge::Left.index()] = Some(edges::PanelPreference::new(PanelMode::Docked, 256.0).unwrap());
+        values[Edge::Left.index()] =
+            Some(edges::PanelPreference::new(PanelMode::Docked, 256.0).unwrap());
         current.set_preferences(values, Duration::ZERO);
-        current.carousel_mut(Edge::Left).restore_saved_selection("scene-new");
+        current
+            .carousel_mut(Edge::Left)
+            .restore_saved_selection("scene-new");
         store.save(&current);
         let saved = receiver.recv().unwrap();
         let edge = &saved.outputs["connector:DP-1"][Edge::Left.index()];
@@ -452,7 +484,9 @@ mod tests {
         let other = dir.join("other.state.mix");
         let path = dir.join("run/var/quoin.state.mix");
         let mut first = model("winit");
-        first.restore_mode(Edge::Left, Duration::ZERO, PanelMode::Docked).unwrap();
+        first
+            .restore_mode(Edge::Left, Duration::ZERO, PanelMode::Docked)
+            .unwrap();
         let mut store = StateStore::load(&other);
         store.save(&first);
         let original = std::fs::read_to_string(&other).unwrap();

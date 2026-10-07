@@ -110,10 +110,13 @@ impl<T> Session<T> {
                         .complete_fallback(&request, Ok(fallback))
                     {
                         let capture = self.host.request().expect("staged fallback");
-                        changed = self.host.complete_with(Completion {
-                            update: capture.update,
-                            result: Box::new(Ok(presentation)),
-                        }, &mut activate);
+                        changed = self.host.complete_with(
+                            Completion {
+                                update: capture.update,
+                                result: Box::new(Ok(presentation)),
+                            },
+                            &mut activate,
+                        );
                     }
                 }
                 Err(faults) => {

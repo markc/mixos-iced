@@ -31,23 +31,22 @@ use smithay::desktop::Window;
 use smithay::utils::SERIAL_COUNTER;
 
 use comp_model::observation::{
-    HOST_PASSTHROUGH_PATH, PropValue, WORKSPACE_COUNT_RANGE, WORKSPACE_INDEX_RANGE, WORKSPACE_OUTPUT_RANGE,
-    WorkspacesSetTarget, invalid_value, parse_window_leaf_path, parse_workspaces_set_path,
-    apply_corner_value, read_only_or_unknown, validate_corner_value, workspace_value,
+    HOST_PASSTHROUGH_PATH, PropValue, WORKSPACE_COUNT_RANGE, WORKSPACE_INDEX_RANGE,
+    WORKSPACE_OUTPUT_RANGE, WorkspacesSetTarget, apply_corner_value, invalid_value,
+    parse_window_leaf_path, parse_workspaces_set_path, read_only_or_unknown, validate_corner_value,
+    workspace_value,
 };
 use comp_model::reply::ControlReply;
 use comp_model::request::{WindowOp, WindowState};
 use comp_model::snapshot::output_key;
 use dispatcher::state::state::RedrawReason;
 use dispatcher::wire::trait_::surface_event::SurfaceHandle;
+use dispatcher::wire::trait_::surface_event::WindowRequest;
 use dispatcher::wire::trait_::wire_trait::{ActivationOrigin, WireTrait};
 use policy::Effect;
 use policy::window::WindowFacts;
-use world::camera::transform::translate::slot;
-use world::comp::MaximizeRestore;
-use world::comp::usable::Reserved;
+use policy::workspaces::{DefaultOutput, SwitchGates, WorkspaceRefusal, WorkspaceTarget};
 use protocols::window::shell::shell;
-use dispatcher::wire::trait_::surface_event::WindowRequest;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::backend::protocol::ProtocolError;
@@ -55,8 +54,10 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
-use policy::workspaces::{DefaultOutput, SwitchGates, WorkspaceRefusal, WorkspaceTarget};
 use surfaces::{SurfaceId, WindowTargetError};
+use world::camera::transform::translate::slot;
+use world::comp::MaximizeRestore;
+use world::comp::usable::Reserved;
 use world::state::Loop;
 use world::window::interface::draw::visible::DrawWindow;
 
@@ -78,14 +79,22 @@ pub fn usable_area(
         geometry
     } else {
         let zone = map.non_exclusive_zone();
-        Rectangle::new(geometry.loc + zone.loc, Size::from((zone.size.w.max(0), zone.size.h.max(0))))
+        Rectangle::new(
+            geometry.loc + zone.loc,
+            Size::from((zone.size.w.max(0), zone.size.h.max(0))),
+        )
     };
     reserved.shrink(layered)
 }
 
 /// What docked scene panels reserve on `output` (none when unset).
 pub fn reserved_for(lp: &Loop, output: &smithay::output::Output) -> Reserved {
-    lp.inner.comp.reserved.get(&output.name()).copied().unwrap_or_default()
+    lp.inner
+        .comp
+        .reserved
+        .get(&output.name())
+        .copied()
+        .unwrap_or_default()
 }
 
 /// Refresh CompState's usable areas. When one moved (a
@@ -99,7 +108,10 @@ pub fn refresh_usable(lp: &mut Loop) {
         .outputs()
         .filter_map(|output| {
             let edges = reserved.get(&output.name()).copied().unwrap_or_default();
-            Some((output.name(), usable_area(output, space.output_geometry(output)?, edges)))
+            Some((
+                output.name(),
+                usable_area(output, space.output_geometry(output)?, edges),
+            ))
         })
         .collect();
     if usable == lp.inner.comp.usable {
@@ -110,7 +122,8 @@ pub fn refresh_usable(lp: &mut Loop) {
     for id in lp.inner.comp.maximized_ids() {
         if let Some(restore) = lp.inner.comp.maximize_restore(id)
             && (previous.get(&restore.output) != lp.inner.comp.usable.get(&restore.output)
-                || !lp.inner.comp.usable.contains_key(&restore.output)) {
+                || !lp.inner.comp.usable.contains_key(&restore.output))
+        {
             maximize(lp, id, true);
         }
     }
@@ -125,7 +138,9 @@ fn refresh_output_generations(lp: &mut Loop) {
         .outputs()
         .filter_map(|output| {
             let geometry = space.output_geometry(output)?;
-            let mode = output.current_mode().map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+            let mode = output
+                .current_mode()
+                .map_or((0, 0), |mode| (mode.size.w, mode.size.h));
             Some((
                 output.name(),
                 (
@@ -145,13 +160,21 @@ fn refresh_output_generations(lp: &mut Loop) {
         let generation = lp.inner.comp.output_generation(&output.name());
         let data = output.user_data();
         data.insert_if_missing(|| {
-            comp_model::capture::OutputGeneration(std::sync::atomic::AtomicU64::new(generation),std::sync::Mutex::new(screencopy::file::output_signature(output)))
+            comp_model::capture::OutputGeneration(
+                std::sync::atomic::AtomicU64::new(generation),
+                std::sync::Mutex::new(screencopy::file::output_signature(output)),
+            )
         });
         data.get::<comp_model::capture::OutputGeneration>()
             .expect("inserted generation")
             .0
             .store(generation, std::sync::atomic::Ordering::Relaxed);
-        *data.get::<comp_model::capture::OutputGeneration>().expect("inserted generation").1.lock().expect("output signature")=screencopy::file::output_signature(output);
+        *data
+            .get::<comp_model::capture::OutputGeneration>()
+            .expect("inserted generation")
+            .1
+            .lock()
+            .expect("output signature") = screencopy::file::output_signature(output);
     }
 }
 
@@ -197,7 +220,8 @@ fn named_window(op: &WindowOp) -> Option<u64> {
 fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
     // A session lock refuses every verb that names or changes a window, and
     // the workspace switch.
-    if let Some(locked) = policy::window::locked_refusal(op, world::comp::session_lock::active(lp)) {
+    if let Some(locked) = policy::window::locked_refusal(op, world::comp::session_lock::active(lp))
+    {
         return Some(locked);
     }
     match op {
@@ -258,27 +282,34 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
             state,
             enabled,
             output,
-        } => Some(match window_state(lp, *id, *generation, *state, *enabled, output.as_deref()) {
-            Ok((record_id, before, after)) => {
-                let facts = window_facts(lp, record_id);
-                let registry = &lp.inner.comp.registry;
-                match registry.get(record_id) {
-                    Some(record) => policy::window::state_reply(record, before != after, &facts),
-                    None => ControlReply::WindowTarget {
-                        id: *id,
-                        error: WindowTargetError::UnknownWindow,
-                    },
+        } => Some(
+            match window_state(lp, *id, *generation, *state, *enabled, output.as_deref()) {
+                Ok((record_id, before, after)) => {
+                    let facts = window_facts(lp, record_id);
+                    let registry = &lp.inner.comp.registry;
+                    match registry.get(record_id) {
+                        Some(record) => {
+                            policy::window::state_reply(record, before != after, &facts)
+                        }
+                        None => ControlReply::WindowTarget {
+                            id: *id,
+                            error: WindowTargetError::UnknownWindow,
+                        },
+                    }
                 }
-            }
-            Err(reply) => reply,
-        }),
+                Err(reply) => reply,
+            },
+        ),
         WindowOp::Minimize { id, generation } => Some(minimized(lp, *id, *generation, true)),
         WindowOp::Restore {
             target: Some((id, generation)),
         } => Some(minimized(lp, *id, *generation, false)),
         WindowOp::Restore { target: None } => {
             let comp = &lp.inner.comp;
-            match comp.lifo_restore_candidate().and_then(|id| comp.registry.get(id)) {
+            match comp
+                .lifo_restore_candidate()
+                .and_then(|id| comp.registry.get(id))
+            {
                 Some(record) => {
                     let (id, generation) = (record.id().0, record.generation());
                     Some(minimized(lp, id, generation, false))
@@ -287,17 +318,21 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
             }
         }
         WindowOp::Place(spec) => Some(place(lp, spec)),
-        WindowOp::Focus { id, generation, raise } => Some(focus(lp, *id, *generation, *raise)),
+        WindowOp::Focus {
+            id,
+            generation,
+            raise,
+        } => Some(focus(lp, *id, *generation, *raise)),
         WindowOp::Raise { id, generation } => Some(raise(lp, *id, *generation)),
-        WindowOp::Close { id, generation } => {
-            Some(match policy::window::close(&lp.inner.comp.registry, *id, *generation) {
+        WindowOp::Close { id, generation } => Some(
+            match policy::window::close(&lp.inner.comp.registry, *id, *generation) {
                 Ok((reply, effects)) => {
                     execute(lp, effects);
                     reply
                 }
                 Err(reply) => reply,
-            })
-        }
+            },
+        ),
         WindowOp::Stats { target, samples } => Some(stats(lp, target, *samples)),
         WindowOp::StatsReset { target } => Some(stats_reset(lp, target.as_ref())),
         // Every WindowOp is served; no catch-all, so a new
@@ -319,14 +354,22 @@ fn stats(lp: &Loop, target: &comp_model::request::StatsTarget, samples: usize) -
     use comp_model::request::StatsTarget;
     match target {
         StatsTarget::Window { id, generation } => {
-            if let Err(error) = lp.inner.comp.registry.resolve_window_target(*id, Some(*generation)) {
+            if let Err(error) = lp
+                .inner
+                .comp
+                .registry
+                .resolve_window_target(*id, Some(*generation))
+            {
                 return ControlReply::WindowTarget { id: *id, error };
             }
             let stats = &lp.inner.comp.presentation.stats;
             let empty = ledger::presentation_stats::PresentationStats::new(stats.epoch_us);
             let window = stats.window(*id, *generation).unwrap_or(&empty);
             ControlReply::Body(merged(
-                merged(serde_json::json!({"id": id, "generation": generation}), window.leaves().to_json()),
+                merged(
+                    serde_json::json!({"id": id, "generation": generation}),
+                    window.leaves().to_json(),
+                ),
                 window.samples(samples),
             ))
         }
@@ -360,8 +403,13 @@ fn source_target<'a>(
     registration: Option<u64>,
 ) -> Result<&'a ledger::presentation::SourceCounters, ControlReply> {
     let counters = lp.inner.comp.presentation.sources.get(id);
-    policy::window::source_target(id, registration, counters.map(|counters| counters.registration))?;
-    counters.ok_or_else(|| ControlReply::refused("unknown_source", serde_json::json!({"source": id})))
+    policy::window::source_target(
+        id,
+        registration,
+        counters.map(|counters| counters.registration),
+    )?;
+    counters
+        .ok_or_else(|| ControlReply::refused("unknown_source", serde_json::json!({"source": id})))
 }
 
 /// `comp.window.stats.reset`: one window, or
@@ -376,10 +424,19 @@ fn stats_reset(lp: &mut Loop, target: Option<&comp_model::request::StatsTarget>)
             ControlReply::Body(serde_json::json!({"reset": "all", "since_us": now}))
         }
         Some(StatsTarget::Window { id, generation }) => {
-            if let Err(error) = lp.inner.comp.registry.resolve_window_target(*id, Some(*generation)) {
+            if let Err(error) = lp
+                .inner
+                .comp
+                .registry
+                .resolve_window_target(*id, Some(*generation))
+            {
                 return ControlReply::WindowTarget { id: *id, error };
             }
-            lp.inner.comp.presentation.stats.reset_window(*id, *generation, now);
+            lp.inner
+                .comp
+                .presentation
+                .stats
+                .reset_window(*id, *generation, now);
             ControlReply::Body(serde_json::json!({
                 "reset": "window",
                 "id": id,
@@ -410,7 +467,12 @@ fn stats_reset(lp: &mut Loop, target: Option<&comp_model::request::StatsTarget>)
 /// activation (the raise) lands at the frame step, so the keyboard is focused
 /// at once for the read-back either way.
 fn focus(lp: &mut Loop, id: u64, generation: u64, raise: bool) -> ControlReply {
-    let sid = match lp.inner.comp.registry.resolve_window_target(id, Some(generation)) {
+    let sid = match lp
+        .inner
+        .comp
+        .registry
+        .resolve_window_target(id, Some(generation))
+    {
         Ok(record) => record.id(),
         Err(error) => return ControlReply::WindowTarget { id, error },
     };
@@ -459,10 +521,19 @@ fn raise(lp: &mut Loop, id: u64, generation: u64) -> ControlReply {
         Ok(effects) => effects,
         Err(reply) => return reply,
     };
-    let sid = lp.inner.comp.registry.resolve_window_target(id, Some(generation)).ok().map(|record| record.id());
+    let sid = lp
+        .inner
+        .comp
+        .registry
+        .resolve_window_target(id, Some(generation))
+        .ok()
+        .map(|record| record.id());
     let position = |lp: &Loop| {
         let uuid = sid.and_then(|sid| lp.inner.comp.registry.uuid_for(sid))?;
-        lp.inner.drawable_order().iter().position(|candidate| *candidate == uuid)
+        lp.inner
+            .drawable_order()
+            .iter()
+            .position(|candidate| *candidate == uuid)
     };
     let before = position(lp);
     execute(lp, effects);
@@ -472,8 +543,12 @@ fn raise(lp: &mut Loop, id: u64, generation: u64) -> ControlReply {
 
 /// Give the primary seat's keyboard to a window.
 fn focus_keyboard(lp: &mut Loop, id: SurfaceId) {
-    let Some(window) = window_of(lp, id) else { return };
-    let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else { return };
+    let Some(window) = window_of(lp, id) else {
+        return;
+    };
+    let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+        return;
+    };
     if let Some(keyboard) = lp.state.seat.seat.get_keyboard() {
         keyboard.set_focus(&mut lp.state, Some(surface), SERIAL_COUNTER.next_serial());
     }
@@ -537,9 +612,8 @@ fn window_state(
 fn requested(lp: &Loop, id: SurfaceId, state: WindowState) -> bool {
     match state {
         WindowState::Maximized => lp.inner.comp.maximize_restore(id).is_some(),
-        WindowState::Fullscreen => {
-            window_of(lp, id).is_some_and(|window| protocols::window::ident::ident::states(&window).fullscreen)
-        }
+        WindowState::Fullscreen => window_of(lp, id)
+            .is_some_and(|window| protocols::window::ident::ident::states(&window).fullscreen),
     }
 }
 
@@ -586,7 +660,12 @@ fn clamp_size(size: (i32, i32), (min, max): ((i32, i32), (i32, i32))) -> (i32, i
 /// refusals); the effects move and/or configure; the reply says where the
 /// window stands.
 fn place(lp: &mut Loop, spec: &comp_model::request::PlaceSpec) -> ControlReply {
-    let id = match lp.inner.comp.registry.resolve_window_target(spec.id, Some(spec.generation)) {
+    let id = match lp
+        .inner
+        .comp
+        .registry
+        .resolve_window_target(spec.id, Some(spec.generation))
+    {
         Ok(record) => record.id(),
         Err(error) => return ControlReply::WindowTarget { id: spec.id, error },
     };
@@ -601,7 +680,12 @@ fn place(lp: &mut Loop, spec: &comp_model::request::PlaceSpec) -> ControlReply {
             .first()
             .map(|output| output_key(&output.name()))
     });
-    let default_key = lp.inner.comp.default_output.as_ref().map(|output| output.key.clone());
+    let default_key = lp
+        .inner
+        .comp
+        .default_output
+        .as_ref()
+        .map(|output| output.key.clone());
     let placement = policy::window::place(
         &lp.inner.comp.registry,
         spec,
@@ -619,14 +703,23 @@ fn place(lp: &mut Loop, spec: &comp_model::request::PlaceSpec) -> ControlReply {
     execute(lp, std::mem::take(&mut placement.effects));
     let placed = window_of(lp, id)
         .and_then(|window| lp.inner.host_space().state.element_location(&window))
-        .map_or(facts.window_origin, |origin| (origin.x as f32, origin.y as f32));
+        .map_or(facts.window_origin, |origin| {
+            (origin.x as f32, origin.y as f32)
+        });
     policy::window::place_reply(spec, &placement, placed, placement.requested.is_some())
 }
 
 /// Put a window's geometry origin at `location` (and, with `size`, configure
 /// that size: one configure, no Resizing state).
-fn place_window(lp: &mut Loop, id: SurfaceId, location: Point<i32, Logical>, size: Option<Size<i32, Logical>>) {
-    let Some(window) = window_of(lp, id) else { return };
+fn place_window(
+    lp: &mut Loop,
+    id: SurfaceId,
+    location: Point<i32, Logical>,
+    size: Option<Size<i32, Logical>>,
+) {
+    let Some(window) = window_of(lp, id) else {
+        return;
+    };
     if let Some(size) = size {
         shell::stage(&window, size, false);
         shell::send(&window);
@@ -643,8 +736,12 @@ fn place_window(lp: &mut Loop, id: SurfaceId, location: Point<i32, Logical>, siz
 /// resize grows from the grabbed edges, anchored on the opposite ones, clamped
 /// to the client's hints, with the `Resizing` state until the button is let go.
 pub fn apply_interactive(lp: &mut Loop) {
-    let Some(mut grab) = lp.inner.comp.interactive.take() else { return };
-    let Some(window) = window_of(lp, grab.id) else { return };
+    let Some(mut grab) = lp.inner.comp.interactive.take() else {
+        return;
+    };
+    let Some(window) = window_of(lp, grab.id) else {
+        return;
+    };
     let (origin, size) = match grab.start {
         Some(start) => start,
         None => {
@@ -663,10 +760,11 @@ pub fn apply_interactive(lp: &mut Loop) {
         grab.updated = false;
         let (dx, dy) = (grab.delta.0.round() as i32, grab.delta.1.round() as i32);
         if grab.edges == 0 {
-            lp.inner
-                .host_space_mut()
-                .state
-                .map_element(window.clone(), Point::from((origin.x + dx, origin.y + dy)), false);
+            lp.inner.host_space_mut().state.map_element(
+                window.clone(),
+                Point::from((origin.x + dx, origin.y + dy)),
+                false,
+            );
         } else {
             let (top, bottom, left, right) = (
                 grab.edges & 1 != 0,
@@ -675,13 +773,35 @@ pub fn apply_interactive(lp: &mut Loop) {
                 grab.edges & 8 != 0,
             );
             let wanted = (
-                size.w + if right { dx } else if left { -dx } else { 0 },
-                size.h + if bottom { dy } else if top { -dy } else { 0 },
+                size.w
+                    + if right {
+                        dx
+                    } else if left {
+                        -dx
+                    } else {
+                        0
+                    },
+                size.h
+                    + if bottom {
+                        dy
+                    } else if top {
+                        -dy
+                    } else {
+                        0
+                    },
             );
             let (width, height) = clamp_size(wanted, size_hints(&window));
             let location = Point::from((
-                if left { origin.x + size.w - width } else { origin.x },
-                if top { origin.y + size.h - height } else { origin.y },
+                if left {
+                    origin.x + size.w - width
+                } else {
+                    origin.x
+                },
+                if top {
+                    origin.y + size.h - height
+                } else {
+                    origin.y
+                },
             ));
             let new_size = Size::from((width, height));
             shell::stage(&window, new_size, true);
@@ -739,7 +859,12 @@ pub fn window_facts(lp: &Loop, id: SurfaceId) -> WindowFacts {
 }
 
 /// A `comp.props.set` compd answers, or `None` (the caller replies `busy`).
-pub fn set(lp: &mut Loop, path: &str, value: &Value, generation: Option<u64>) -> Option<ControlReply> {
+pub fn set(
+    lp: &mut Loop,
+    path: &str,
+    value: &Value,
+    generation: Option<u64>,
+) -> Option<ControlReply> {
     let reply = set_leaf(lp, path, value, generation);
     // What an admitted set changed carries `props.set` as its cause: the window's rows
     // for a window leaf, else the leaf itself.
@@ -758,13 +883,21 @@ pub fn set(lp: &mut Loop, path: &str, value: &Value, generation: Option<u64>) ->
     reply
 }
 
-fn set_leaf(lp: &mut Loop, path: &str, value: &Value, generation: Option<u64>) -> Option<ControlReply> {
+fn set_leaf(
+    lp: &mut Loop,
+    path: &str,
+    value: &Value,
+    generation: Option<u64>,
+) -> Option<ControlReply> {
     if let Some((window, leaf)) = parse_window_leaf_path(path) {
         // The fence first, so a stale write never reaches whatever window
         // inherited the id.
         if let Some(generation) = generation
-            && let Err(error @ WindowTargetError::StaleTarget { .. }) =
-                lp.inner.comp.registry.resolve_window_target(window, Some(generation))
+            && let Err(error @ WindowTargetError::StaleTarget { .. }) = lp
+                .inner
+                .comp
+                .registry
+                .resolve_window_target(window, Some(generation))
         {
             return Some(ControlReply::WindowTarget { id: window, error });
         }
@@ -777,7 +910,9 @@ fn set_leaf(lp: &mut Loop, path: &str, value: &Value, generation: Option<u64>) -
         return match leaf {
             "workspace" => Some(set_window_workspace(lp, path, value, window, generation)),
             "minimized" => Some(set_window_minimized(lp, path, value, window, generation)),
-            "maximized" | "fullscreen" => Some(set_window_state(lp, path, value, window, generation, leaf)),
+            "maximized" | "fullscreen" => {
+                Some(set_window_state(lp, path, value, window, generation, leaf))
+            }
             "band" => Some(set_window_band(lp, path, value, window)),
             _ => Some(ControlReply::Validation(read_only_or_unknown(path))),
         };
@@ -892,7 +1027,11 @@ fn set_window_band(lp: &mut Loop, path: &str, value: &Value, window: u64) -> Con
 }
 
 fn missing_window(path: &str) -> ControlReply {
-    ControlReply::Validation(invalid_value(path, "existing window id", "a live toplevel window"))
+    ControlReply::Validation(invalid_value(
+        path,
+        "existing window id",
+        "a live toplevel window",
+    ))
 }
 
 /// `windows.s<id>.minimized`.
@@ -906,18 +1045,33 @@ fn set_window_minimized(
     let Some(wanted) = value.as_bool() else {
         return ControlReply::Validation(invalid_value(path, "bool", "true|false"));
     };
-    let (id, current_generation, old) = match lp.inner.comp.registry.resolve_window_target(window, generation) {
+    let (id, current_generation, old) = match lp
+        .inner
+        .comp
+        .registry
+        .resolve_window_target(window, generation)
+    {
         Ok(record) => (record.id(), record.generation(), record.minimized()),
         Err(error @ WindowTargetError::StaleTarget { .. }) => {
             return ControlReply::WindowTarget { id: window, error };
         }
         Err(_) => return missing_window(path),
     };
-    match policy::window::set_minimized(&mut lp.inner.comp.registry, window, current_generation, wanted) {
+    match policy::window::set_minimized(
+        &mut lp.inner.comp.registry,
+        window,
+        current_generation,
+        wanted,
+    ) {
         Ok((_, effects)) => execute(lp, effects),
         Err(_) => return missing_window(path),
     }
-    let new = lp.inner.comp.registry.get(id).is_some_and(|record| record.minimized());
+    let new = lp
+        .inner
+        .comp
+        .registry
+        .get(id)
+        .is_some_and(|record| record.minimized());
     ControlReply::Set {
         path: path.to_string(),
         old: PropValue::Bool(old),
@@ -938,7 +1092,12 @@ fn set_window_state(
     let Some(enabled) = value.as_bool() else {
         return ControlReply::Validation(invalid_value(path, "bool", "true|false"));
     };
-    let current_generation = match lp.inner.comp.registry.resolve_window_target(window, generation) {
+    let current_generation = match lp
+        .inner
+        .comp
+        .registry
+        .resolve_window_target(window, generation)
+    {
         Ok(record) => record.generation(),
         Err(error @ WindowTargetError::StaleTarget { .. }) => {
             return ControlReply::WindowTarget { id: window, error };
@@ -1003,7 +1162,12 @@ fn set_window_workspace(
     }
 }
 
-fn set_workspaces(lp: &mut Loop, path: &str, value: &Value, target: WorkspacesSetTarget) -> ControlReply {
+fn set_workspaces(
+    lp: &mut Loop,
+    path: &str,
+    value: &Value,
+    target: WorkspacesSetTarget,
+) -> ControlReply {
     let range = match target {
         WorkspacesSetTarget::Count => WORKSPACE_COUNT_RANGE,
         WorkspacesSetTarget::Current(_) => WORKSPACE_INDEX_RANGE,
@@ -1050,10 +1214,15 @@ fn set_workspaces(lp: &mut Loop, path: &str, value: &Value, target: WorkspacesSe
 /// Carry out the effects the workspace policy returned.
 pub fn execute(lp: &mut Loop, effects: Vec<Effect>) {
     let _span = ledger::frame_trace::span("comp_workspace_effects", 0);
-    crate::x11::sync_windows(lp, effects.iter().filter_map(|effect| match effect {
-        Effect::Withdraw { id, .. } | Effect::Present { id, .. } | Effect::Relabelled { id, .. } => Some(*id),
-        _ => None,
-    }));
+    crate::x11::sync_windows(
+        lp,
+        effects.iter().filter_map(|effect| match effect {
+            Effect::Withdraw { id, .. }
+            | Effect::Present { id, .. }
+            | Effect::Relabelled { id, .. } => Some(*id),
+            _ => None,
+        }),
+    );
     let mut moved = false;
     for effect in effects {
         match effect {
@@ -1106,10 +1275,14 @@ pub fn execute(lp: &mut Loop, effects: Vec<Effect>) {
                         if let Some(window) = window_of(lp, id) {
                             // Already fullscreen and asked again (an `{output}`):
                             // move it there (a re-target); `fullscreen_set` returns early.
-                            if enabled && protocols::window::ident::ident::states(&window).fullscreen {
+                            if enabled
+                                && protocols::window::ident::ident::states(&window).fullscreen
+                            {
                                 world::comp::fullscreen::retarget(lp, &window);
                             } else {
-                                world::window::interface::draw::fullscreen::fullscreen_set(lp, window, enabled);
+                                world::window::interface::draw::fullscreen::fullscreen_set(
+                                    lp, window, enabled,
+                                );
                             }
                         }
                     }
@@ -1117,7 +1290,12 @@ pub fn execute(lp: &mut Loop, effects: Vec<Effect>) {
                 moved = true;
             }
             Effect::MoveTo { id, x, y } => {
-                place_window(lp, id, Point::from((x.round() as i32, y.round() as i32)), None);
+                place_window(
+                    lp,
+                    id,
+                    Point::from((x.round() as i32, y.round() as i32)),
+                    None,
+                );
                 lp.state.schedule_redraw(RedrawReason::WindowState);
             }
             Effect::Resize {
@@ -1137,7 +1315,13 @@ pub fn execute(lp: &mut Loop, effects: Vec<Effect>) {
             }
             // A place mid-grab: the grab would steer the window straight back.
             Effect::FinishInteractive(id) => {
-                if let Some(grab) = lp.inner.comp.interactive.as_mut().filter(|grab| grab.id == id) {
+                if let Some(grab) = lp
+                    .inner
+                    .comp
+                    .interactive
+                    .as_mut()
+                    .filter(|grab| grab.id == id)
+                {
                     grab.ended = true;
                     grab.updated = false;
                     apply_interactive(lp);
@@ -1184,7 +1368,10 @@ fn raise_now(lp: &mut Loop, id: SurfaceId) {
         lp.inner.raise_drawable(uuid);
     }
     if let Some(window) = window_of(lp, id) {
-        lp.inner.host_space_mut().state.raise_element(&window, false);
+        lp.inner
+            .host_space_mut()
+            .state
+            .raise_element(&window, false);
     }
     crate::x11::sync_stacking(lp);
     lp.state.schedule_redraw(RedrawReason::WindowState);
@@ -1198,7 +1385,8 @@ fn raise_now(lp: &mut Loop, id: SurfaceId) {
 fn activate(lp: &mut Loop, id: SurfaceId) {
     raise_now(lp, id);
     if let Some(window) = window_of(lp, id) {
-        lp.inner.request_activation(window, ActivationOrigin::Foreign);
+        lp.inner
+            .request_activation(window, ActivationOrigin::Foreign);
     }
 }
 
@@ -1219,7 +1407,10 @@ fn bring_into_view(lp: &mut Loop, id: SurfaceId) {
             },
         )
     });
-    if let Some(effects) = comp.workspaces.ensure_shown(&comp.registry, default_output.as_ref(), id, allowed) {
+    if let Some(effects) =
+        comp.workspaces
+            .ensure_shown(&comp.registry, default_output.as_ref(), id, allowed)
+    {
         execute(lp, effects);
     }
 }
@@ -1231,16 +1422,32 @@ fn bring_into_view(lp: &mut Loop, id: SurfaceId) {
 /// server-side chrome gets the usable area less its chrome, so the titlebar
 /// stays on the output.
 pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
-    let Some(window) = window_of(lp, id) else { return };
+    let Some(window) = window_of(lp, id) else {
+        return;
+    };
     let target = if enabled {
         let restore = lp.inner.comp.maximize_restore(id);
         let space = &lp.inner.host_space().state;
-        let Some(output) = restore.as_ref()
-            .and_then(|restore| space.outputs().find(|output| output.name() == restore.output).cloned())
+        let Some(output) = restore
+            .as_ref()
+            .and_then(|restore| {
+                space
+                    .outputs()
+                    .find(|output| output.name() == restore.output)
+                    .cloned()
+            })
             .or_else(|| space.outputs_for_element(&window).first().cloned())
-            .or_else(|| space.outputs().next().cloned()) else { return };
-        let Some(geometry) = space.output_geometry(&output) else { return };
-        let area = decor::window::content_area(&window, usable_area(&output, geometry, reserved_for(lp, &output)));
+            .or_else(|| space.outputs().next().cloned())
+        else {
+            return;
+        };
+        let Some(geometry) = space.output_geometry(&output) else {
+            return;
+        };
+        let area = decor::window::content_area(
+            &window,
+            usable_area(&output, geometry, reserved_for(lp, &output)),
+        );
         if let Some(mut restore) = restore {
             if restore.output != output.name() {
                 restore.output = output.name();
@@ -1249,9 +1456,14 @@ pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
         } else {
             let location = space.element_location(&window).unwrap_or(area.loc);
             let size = window.geometry().size;
-            lp.inner
-                .comp
-                .set_maximize_restore(id, Some(MaximizeRestore { location, size, output: output.name() }));
+            lp.inner.comp.set_maximize_restore(
+                id,
+                Some(MaximizeRestore {
+                    location,
+                    size,
+                    output: output.name(),
+                }),
+            );
         }
         area
     } else {
@@ -1266,7 +1478,12 @@ pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
     apply_window_geometry(lp, &window, target, enabled);
 }
 
-fn apply_window_geometry(lp: &mut Loop, window: &Window, area: Rectangle<i32, Logical>, maximized: bool) {
+fn apply_window_geometry(
+    lp: &mut Loop,
+    window: &Window,
+    area: Rectangle<i32, Logical>,
+    maximized: bool,
+) {
     shell::stage(window, area.size, false);
     if let Some(toplevel) = window.toplevel() {
         toplevel.with_pending_state(|state| {
@@ -1303,7 +1520,15 @@ pub fn apply_client_requests(lp: &mut Loop) {
         };
         match request {
             WindowRequest::Maximize(enabled) => {
-                if window_state(lp, window_id, generation, WindowState::Maximized, enabled, None).is_err()
+                if window_state(
+                    lp,
+                    window_id,
+                    generation,
+                    WindowState::Maximized,
+                    enabled,
+                    None,
+                )
+                .is_err()
                     && let Some(window) = window_of(lp, id)
                 {
                     shell::send(&window);
@@ -1315,7 +1540,9 @@ pub fn apply_client_requests(lp: &mut Loop) {
             // The chrome's close button: the polite close (xdg `close` /
             // `WM_DELETE_WINDOW`), through the same policy as `comp.window.close`.
             WindowRequest::Close => {
-                if let Ok((_, effects)) = policy::window::close(&lp.inner.comp.registry, window_id, generation) {
+                if let Ok((_, effects)) =
+                    policy::window::close(&lp.inner.comp.registry, window_id, generation)
+                {
                     execute(lp, effects);
                 }
             }
@@ -1323,32 +1550,68 @@ pub fn apply_client_requests(lp: &mut Loop) {
             // verbs' own code, so a session lock refuses them (`locked_refusal`)
             // and an exclusive latch refuses the focus. A request for an
             // override-redirect window is ignored (X-2a).
-            WindowRequest::Unminimize | WindowRequest::Activate | WindowRequest::Desktop(_) | WindowRequest::Raise
-                if !lp.inner.comp.registry.get(id).is_some_and(|record| record.role().managed_toplevel()) => {}
+            WindowRequest::Unminimize
+            | WindowRequest::Activate
+            | WindowRequest::Desktop(_)
+            | WindowRequest::Raise
+                if !lp
+                    .inner
+                    .comp
+                    .registry
+                    .get(id)
+                    .is_some_and(|record| record.role().managed_toplevel()) => {}
             // An X11 `Reorder::Top` ConfigureRequest: a raise, no focus.
             // Through the raise verb, so the band rules apply.
             WindowRequest::Raise => {
-                let _ = window(lp, &WindowOp::Raise { id: window_id, generation });
+                let _ = window(
+                    lp,
+                    &WindowOp::Raise {
+                        id: window_id,
+                        generation,
+                    },
+                );
             }
             // `WM_CHANGE_STATE` NormalState: a restore (switches to the
             // window's workspace when allowed).
             WindowRequest::Unminimize => {
-                let _ = window(lp, &WindowOp::Restore { target: Some((window_id, generation)) });
+                let _ = window(
+                    lp,
+                    &WindowOp::Restore {
+                        target: Some((window_id, generation)),
+                    },
+                );
             }
             // `_NET_ACTIVE_WINDOW`: activate (focus with raise; rule 6
             // brings it on screen).
             WindowRequest::Activate => {
-                let _ = window(lp, &WindowOp::Focus { id: window_id, generation, raise: true });
+                let _ = window(
+                    lp,
+                    &WindowOp::Focus {
+                        id: window_id,
+                        generation,
+                        raise: true,
+                    },
+                );
             }
             // `_NET_WM_DESKTOP`: a move without a
             // switch. All-desktops (sticky) and an index past the count are
             // refused (decision §8.6.2).
             WindowRequest::Desktop(desktop) => {
-                let Some(desktop) = policy::x11::desktop_request_target(desktop, lp.inner.comp.workspaces.count) else {
+                let Some(desktop) =
+                    policy::x11::desktop_request_target(desktop, lp.inner.comp.workspaces.count)
+                else {
                     continue;
                 };
                 let index = comp_model::request::WorkspaceIndex::Absolute(desktop + 1);
-                let _ = window(lp, &WindowOp::SendToWorkspace { id: window_id, generation, index, follow: false });
+                let _ = window(
+                    lp,
+                    &WindowOp::SendToWorkspace {
+                        id: window_id,
+                        generation,
+                        index,
+                        follow: false,
+                    },
+                );
             }
         }
     }
@@ -1359,7 +1622,14 @@ pub fn apply_client_requests(lp: &mut Loop) {
             continue;
         }
         let index = comp_model::request::WorkspaceIndex::Absolute(desktop + 1);
-        let _ = window(lp, &WindowOp::SwitchWorkspace { output: None, index, wrap: false });
+        let _ = window(
+            lp,
+            &WindowOp::SwitchWorkspace {
+                output: None,
+                index,
+                wrap: false,
+            },
+        );
     }
 }
 
@@ -1380,11 +1650,29 @@ pub fn apply_bindings(lp: &mut Loop) {
             }
             BindingAction::WorkspaceJump(n) => {
                 let index = WorkspaceIndex::Absolute(u32::from(n));
-                let _ = window(lp, &WindowOp::SwitchWorkspace { output: None, index, wrap: true });
+                let _ = window(
+                    lp,
+                    &WindowOp::SwitchWorkspace {
+                        output: None,
+                        index,
+                        wrap: true,
+                    },
+                );
             }
             BindingAction::WorkspaceStep { prev } => {
-                let index = if prev { WorkspaceIndex::Prev } else { WorkspaceIndex::Next };
-                let _ = window(lp, &WindowOp::SwitchWorkspace { output: None, index, wrap: true });
+                let index = if prev {
+                    WorkspaceIndex::Prev
+                } else {
+                    WorkspaceIndex::Next
+                };
+                let _ = window(
+                    lp,
+                    &WindowOp::SwitchWorkspace {
+                        output: None,
+                        index,
+                        wrap: true,
+                    },
+                );
             }
             // D18: never under an exclusive layer (the policy's gate
             // refuses the follow there); a refused move changes nothing.
@@ -1393,7 +1681,15 @@ pub fn apply_bindings(lp: &mut Loop) {
                     && !crate::input::exclusive_layer(lp)
                 {
                     let index = WorkspaceIndex::Absolute(u32::from(n));
-                    let _ = window(lp, &WindowOp::SendToWorkspace { id, generation, index, follow: true });
+                    let _ = window(
+                        lp,
+                        &WindowOp::SendToWorkspace {
+                            id,
+                            generation,
+                            index,
+                            follow: true,
+                        },
+                    );
                 }
             }
             BindingAction::CycleWindow { reverse } => cycle_window(lp, reverse),
@@ -1419,7 +1715,10 @@ fn focused_window(lp: &Loop) -> Option<(u64, u64)> {
         }
     }
     let record = registry.get(id)?;
-    record.role().managed_toplevel().then(|| (record.id().0, record.generation()))
+    record
+        .role()
+        .managed_toplevel()
+        .then(|| (record.id().0, record.generation()))
 }
 
 /// The mapped, unminimised managed windows on the
@@ -1447,7 +1746,9 @@ fn cycle_window(lp: &mut Loop, reverse: bool) {
         return;
     }
     let focused = focused_window(lp);
-    let position = candidates.iter().position(|candidate| Some(*candidate) == focused);
+    let position = candidates
+        .iter()
+        .position(|candidate| Some(*candidate) == focused);
     let len = candidates.len();
     let index = match (position, reverse) {
         (Some(index), true) => (index + len - 1) % len,
@@ -1465,11 +1766,17 @@ pub fn kill_client(lp: &Loop, id: SurfaceId) -> (Option<i32>, Vec<u64>) {
     let Some(window) = window_of(lp, id) else {
         return (None, Vec::new());
     };
-    let Some(client) = window.toplevel().and_then(|toplevel| toplevel.wl_surface().client()) else {
+    let Some(client) = window
+        .toplevel()
+        .and_then(|toplevel| toplevel.wl_surface().client())
+    else {
         return (None, Vec::new());
     };
     let display = &lp.inner.loader.display_handle;
-    let pid = client.get_credentials(display).ok().map(|credentials| credentials.pid);
+    let pid = client
+        .get_credentials(display)
+        .ok()
+        .map(|credentials| credentials.pid);
     let comp = &lp.inner.comp;
     let windows = lp
         .inner

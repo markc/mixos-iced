@@ -729,9 +729,8 @@ impl PanelStateMachine {
         // (which ends when that membership does, so it cannot wedge);
         // otherwise the compositor's pointer holder would re-reveal the panel
         // the user just concealed.
-        let carried = available
-            && self.hover_latched
-            && (self.pointer_inside || self.corner_inside);
+        let carried =
+            available && self.hover_latched && (self.pointer_inside || self.corner_inside);
         self.hover_latched = false;
         self.latched = carried;
         self.latch_local = carried;
@@ -1020,7 +1019,9 @@ pub enum PanelConfigError {
 impl Display for PanelConfigError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SettingsManaged(edge) => write!(formatter, "panel {edge:?} is managed by settings"),
+            Self::SettingsManaged(edge) => {
+                write!(formatter, "panel {edge:?} is managed by settings")
+            }
             Self::ThicknessBudget {
                 edge,
                 requested,
@@ -1207,7 +1208,9 @@ mod intro_tests {
         let mut panel = panel();
         panel.apply(Duration::ZERO, PanelInput::Dock).unwrap();
         for thickness in [120.0, 250.0, 500.0] {
-            panel.resize_thickness(thickness, VERTICAL_RESIZE_RANGE).unwrap();
+            panel
+                .resize_thickness(thickness, VERTICAL_RESIZE_RANGE)
+                .unwrap();
             assert_eq!(panel.snapshot().thickness_px, thickness);
             assert_eq!(panel.snapshot().exclusive_zone_px, thickness);
         }
@@ -1220,16 +1223,26 @@ mod intro_tests {
             119.0,
             501.0,
         ] {
-            assert!(panel.resize_thickness(invalid, VERTICAL_RESIZE_RANGE).is_err());
+            assert!(
+                panel
+                    .resize_thickness(invalid, VERTICAL_RESIZE_RANGE)
+                    .is_err()
+            );
             assert_eq!(panel.snapshot().thickness_px, 500.0);
         }
         // Top/bottom use their own range: a 52 px strip is valid there.
         for thickness in [24.0, 52.0, 200.0] {
-            panel.resize_thickness(thickness, HORIZONTAL_RESIZE_RANGE).unwrap();
+            panel
+                .resize_thickness(thickness, HORIZONTAL_RESIZE_RANGE)
+                .unwrap();
             assert_eq!(panel.snapshot().thickness_px, thickness);
         }
         for invalid in [23.0, 201.0] {
-            assert!(panel.resize_thickness(invalid, HORIZONTAL_RESIZE_RANGE).is_err());
+            assert!(
+                panel
+                    .resize_thickness(invalid, HORIZONTAL_RESIZE_RANGE)
+                    .is_err()
+            );
             assert_eq!(panel.snapshot().thickness_px, 200.0);
         }
     }
@@ -1288,7 +1301,9 @@ mod intro_tests {
             panel
                 .apply(Duration::ZERO, PanelInput::ResizeStarted)
                 .unwrap();
-            panel.resize_thickness(300.0, VERTICAL_RESIZE_RANGE).unwrap();
+            panel
+                .resize_thickness(300.0, VERTICAL_RESIZE_RANGE)
+                .unwrap();
             assert_eq!(panel.snapshot().settled_thickness_px, 100.0);
             if retire {
                 panel.leave_output();
@@ -1384,7 +1399,10 @@ mod intro_tests {
         for input in [PanelInput::CornerEntered, PanelInput::PointerEntered] {
             let update = panel.apply(Duration::ZERO, input).unwrap();
             assert_eq!(update.effect, None);
-            assert!(!update.snapshot.transient_revealed, "{input:?} reveals only locally");
+            assert!(
+                !update.snapshot.transient_revealed,
+                "{input:?} reveals only locally"
+            );
         }
         assert!(panel.snapshot().corner_inside && panel.snapshot().pointer_inside);
         let update = panel
@@ -1399,14 +1417,21 @@ mod intro_tests {
         for input in [PanelInput::CornerLeft, PanelInput::PointerLeft] {
             panel.apply(Duration::from_millis(200), input).unwrap();
         }
-        assert_eq!(panel.snapshot().hide_at, None, "the conceal delay is the compositor's");
+        assert_eq!(
+            panel.snapshot().hide_at,
+            None,
+            "the conceal delay is the compositor's"
+        );
         panel.tick(Duration::from_secs(10)).unwrap();
         assert!(panel.snapshot().transient_revealed);
         let update = panel
             .apply(Duration::from_secs(10), PanelInput::HolderConceal)
             .unwrap();
         assert_eq!(update.effect, Some(holders_conceal()));
-        assert_eq!(update.snapshot.target_fraction, 0.0, "at once: the compositor served the delay");
+        assert_eq!(
+            update.snapshot.target_fraction, 0.0,
+            "at once: the compositor served the delay"
+        );
     }
 
     #[test]
@@ -1434,7 +1459,10 @@ mod intro_tests {
         let mut panel = commanded();
         panel.apply(at, PanelInput::Reveal).unwrap();
         panel.apply(at, PanelInput::HolderConceal).unwrap();
-        assert!(panel.snapshot().transient_revealed, "a restated verdict is not a release");
+        assert!(
+            panel.snapshot().transient_revealed,
+            "a restated verdict is not a release"
+        );
         panel.apply(at, PanelInput::HolderReveal).unwrap();
         let update = panel.apply(at, PanelInput::HolderConceal).unwrap();
         assert_eq!(update.effect, Some(holders_conceal()));
@@ -1447,12 +1475,17 @@ mod intro_tests {
         // still names the menu, and must not reopen the panel.
         let mut panel = commanded();
         panel.apply(at, PanelInput::Pin).unwrap();
-        panel.apply(at, PanelInput::SetMode(PanelMode::Hidden)).unwrap();
+        panel
+            .apply(at, PanelInput::SetMode(PanelMode::Hidden))
+            .unwrap();
         panel.apply(at, PanelInput::HolderReveal).unwrap();
         assert!(!panel.snapshot().transient_revealed, "latched");
         panel.apply(at, PanelInput::HolderConceal).unwrap();
         let update = panel.apply(at, PanelInput::HolderReveal).unwrap();
-        assert!(update.snapshot.transient_revealed, "the next hold reveals again");
+        assert!(
+            update.snapshot.transient_revealed,
+            "the next hold reveals again"
+        );
         // Escape, Hide and toggle-off while the compositor holds: a replayed hidden
         // report restates the reveal, which must not reopen the panel.
         for hide in [PanelInput::Escape, PanelInput::Hide, PanelInput::Toggle] {
@@ -1461,17 +1494,26 @@ mod intro_tests {
             panel.apply(at, hide).unwrap();
             assert!(!panel.snapshot().transient_revealed, "{hide:?}");
             panel.apply(at, PanelInput::HolderReveal).unwrap();
-            assert!(!panel.snapshot().transient_revealed, "{hide:?}: restated reveal");
+            assert!(
+                !panel.snapshot().transient_revealed,
+                "{hide:?}: restated reveal"
+            );
             panel.apply(at, PanelInput::HolderConceal).unwrap();
             panel.apply(at, PanelInput::HolderReveal).unwrap();
-            assert!(panel.snapshot().transient_revealed, "{hide:?}: a new hold reveals");
+            assert!(
+                panel.snapshot().transient_revealed,
+                "{hide:?}: a new hold reveals"
+            );
         }
         // Without a compositor hold nothing is latched: no release would clear it.
         let mut panel = commanded();
         panel.apply(at, PanelInput::Reveal).unwrap();
         panel.apply(at, PanelInput::Escape).unwrap();
         panel.apply(at, PanelInput::HolderReveal).unwrap();
-        assert!(panel.snapshot().transient_revealed, "the next dwell reveals");
+        assert!(
+            panel.snapshot().transient_revealed,
+            "the next dwell reveals"
+        );
         // A held undock is not deliberate concealment: it keeps its reveal,
         // counted as held, until the verdict on its hidden report arrives.
         let mut panel = commanded();
@@ -1481,7 +1523,10 @@ mod intro_tests {
         assert!(panel.snapshot().transient_revealed);
         panel.apply(at, PanelInput::MenuHold(true)).unwrap();
         panel.apply(at, PanelInput::MenuHold(false)).unwrap();
-        assert!(panel.snapshot().transient_revealed, "the verdict is still to come");
+        assert!(
+            panel.snapshot().transient_revealed,
+            "the verdict is still to come"
+        );
         let update = panel.apply(at, PanelInput::HolderConceal).unwrap();
         assert_eq!(update.effect, Some(holders_conceal()));
         // An unheld undock hides at once, as locally.
@@ -1501,7 +1546,10 @@ mod intro_tests {
         panel.apply(at, PanelInput::CornerEntered).unwrap();
         panel.apply(at, PanelInput::Escape).unwrap();
         panel.apply(at, PanelInput::HolderReveal).unwrap();
-        assert!(!panel.snapshot().transient_revealed, "the in-flight reveal is latched");
+        assert!(
+            !panel.snapshot().transient_revealed,
+            "the in-flight reveal is latched"
+        );
         // The compositor now holds: its release, not the local leave, ends the latch.
         panel.apply(at, PanelInput::CornerLeft).unwrap();
         panel.apply(at, PanelInput::HolderReveal).unwrap();
@@ -1515,7 +1563,10 @@ mod intro_tests {
         panel.apply(at, PanelInput::Hide).unwrap();
         panel.apply(at, PanelInput::PointerLeft).unwrap();
         panel.apply(at, PanelInput::HolderReveal).unwrap();
-        assert!(panel.snapshot().transient_revealed, "the next dwell reveals");
+        assert!(
+            panel.snapshot().transient_revealed,
+            "the next dwell reveals"
+        );
     }
 
     /// Doubt defaults local: an unpin's reveal held for a verdict that never
@@ -1558,7 +1609,9 @@ mod intro_tests {
             assert!(!update.changed && update.effect.is_none(), "{input:?}");
         }
         // Going command-driven drops local grace; an unheld reveal ends now.
-        panel.apply(Duration::ZERO, PanelInput::CornerEntered).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::CornerEntered)
+            .unwrap();
         panel.apply(Duration::ZERO, PanelInput::CornerLeft).unwrap();
         assert_eq!(panel.snapshot().hide_at, Some(Duration::from_millis(800)));
         panel.set_holder_plane(true, Duration::ZERO).unwrap();
@@ -1576,11 +1629,17 @@ mod intro_tests {
         // Falling back to local rules re-arms full grace for an unheld reveal,
         // from the moment of the fall back — not from the last idle update.
         let mut panel = commanded();
-        panel.apply(Duration::ZERO, PanelInput::HolderReveal).unwrap();
-        panel.set_holder_plane(false, Duration::from_secs(5)).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::HolderReveal)
+            .unwrap();
+        panel
+            .set_holder_plane(false, Duration::from_secs(5))
+            .unwrap();
         assert_eq!(panel.snapshot().hide_at, Some(Duration::from_millis(5800)));
         assert!(
-            panel.apply(Duration::from_secs(4), PanelInput::PointerLeft).is_err(),
+            panel
+                .apply(Duration::from_secs(4), PanelInput::PointerLeft)
+                .is_err(),
             "the change advanced time: nothing can be timed before it"
         );
         let update = panel.tick(Duration::from_millis(5799)).unwrap();
@@ -1594,8 +1653,12 @@ mod intro_tests {
         );
         // A held one keeps waiting for its membership to end, as before.
         let mut panel = commanded();
-        panel.apply(Duration::ZERO, PanelInput::PointerEntered).unwrap();
-        panel.apply(Duration::ZERO, PanelInput::HolderReveal).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::PointerEntered)
+            .unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::HolderReveal)
+            .unwrap();
         panel.set_holder_plane(false, Duration::ZERO).unwrap();
         assert_eq!(panel.snapshot().hide_at, None);
         panel
@@ -1645,7 +1708,9 @@ mod intro_tests {
                 for held in holders {
                     let mut panel = panel();
                     panel.set_holder_plane(plane, Duration::ZERO).unwrap();
-                    panel.apply(Duration::ZERO, PanelInput::SetMode(mode)).unwrap();
+                    panel
+                        .apply(Duration::ZERO, PanelInput::SetMode(mode))
+                        .unwrap();
                     for input in held {
                         panel.apply(Duration::ZERO, *input).unwrap();
                     }
@@ -1664,11 +1729,18 @@ mod intro_tests {
                         assert_eq!(update.snapshot.target_fraction, 1.0, "still shown");
                         assert_eq!(
                             update.snapshot.exclusive_zone_px,
-                            if mode == PanelMode::Docked { 100.0 } else { 0.0 },
+                            if mode == PanelMode::Docked {
+                                100.0
+                            } else {
+                                0.0
+                            },
                             "reservation untouched"
                         );
                     } else {
-                        assert_eq!(update.snapshot.exclusive_zone_px, 0.0, "hover never reserves");
+                        assert_eq!(
+                            update.snapshot.exclusive_zone_px, 0.0,
+                            "hover never reserves"
+                        );
                     }
                 }
             }
@@ -1764,16 +1836,32 @@ mod intro_tests {
         // Hotspot-only: the latch outlasts the slide while the pointer stays
         // in the hotspot, and ends when it leaves.
         let mut panel = self::panel();
-        panel.apply(Duration::ZERO, PanelInput::CornerEntered).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::CornerEntered)
+            .unwrap();
         panel.tick(ms(300)).unwrap();
-        assert!(panel.apply(ms(300), PanelInput::Escape).unwrap().snapshot.hover_latched);
+        assert!(
+            panel
+                .apply(ms(300), PanelInput::Escape)
+                .unwrap()
+                .snapshot
+                .hover_latched
+        );
         assert!(panel.tick(ms(600)).unwrap().snapshot.hover_latched);
-        assert!(!panel.apply(ms(610), PanelInput::CornerLeft).unwrap().snapshot.hover_latched);
+        assert!(
+            !panel
+                .apply(ms(610), PanelInput::CornerLeft)
+                .unwrap()
+                .snapshot
+                .hover_latched
+        );
 
         // A mode input that leaves the hidden panel hidden is not a reveal
         // and keeps the latch.
         let mut panel = self::panel();
-        panel.apply(Duration::ZERO, PanelInput::CornerEntered).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::CornerEntered)
+            .unwrap();
         panel.tick(ms(300)).unwrap();
         panel.apply(ms(300), PanelInput::Escape).unwrap();
         for input in [
@@ -1783,7 +1871,10 @@ mod intro_tests {
             PanelInput::Release,
             PanelInput::Hide,
         ] {
-            assert!(panel.apply(ms(310), input).unwrap().snapshot.hover_latched, "{input:?}");
+            assert!(
+                panel.apply(ms(310), input).unwrap().snapshot.hover_latched,
+                "{input:?}"
+            );
         }
 
         // Escape with the pointer already outside hides without latching.
@@ -1795,7 +1886,9 @@ mod intro_tests {
 
         // An explicit reveal is deliberate and overrides the latch.
         let mut panel = self::panel();
-        panel.apply(Duration::ZERO, PanelInput::CornerEntered).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::CornerEntered)
+            .unwrap();
         panel.apply(ms(10), PanelInput::Escape).unwrap();
         let shown = panel.apply(ms(20), PanelInput::Reveal).unwrap().snapshot;
         assert!(shown.transient_revealed);
@@ -1842,10 +1935,16 @@ mod intro_tests {
             for input in [PanelInput::PointerLeft, PanelInput::PointerEntered] {
                 let snapshot = panel.apply(ms(350), input).unwrap().snapshot;
                 assert!(snapshot.visible_fraction > 0.0, "slide still running");
-                assert!(!snapshot.transient_revealed, "{conceal:?}: {input:?} re-revealed");
+                assert!(
+                    !snapshot.transient_revealed,
+                    "{conceal:?}: {input:?} re-revealed"
+                );
             }
             // Same release rule: slide finished and out of the hotspot.
-            assert!(!panel.tick(ms(600)).unwrap().snapshot.hover_latched, "{conceal:?}");
+            assert!(
+                !panel.tick(ms(600)).unwrap().snapshot.hover_latched,
+                "{conceal:?}"
+            );
         }
     }
 
@@ -1857,20 +1956,31 @@ mod intro_tests {
         // membership: it carries as the plane's membership-only latch, so the
         // compositor's pointer holder cannot re-reveal the panel just concealed.
         let mut panel = self::panel();
-        panel.apply(Duration::ZERO, PanelInput::CornerEntered).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::CornerEntered)
+            .unwrap();
         panel.tick(ms(300)).unwrap();
         panel.apply(ms(300), PanelInput::Escape).unwrap();
         assert!(panel.hover_latched);
         let switched = panel.set_holder_plane(true, ms(310)).unwrap().snapshot;
-        assert!(switched.hover_latched, "the latch was dropped at the switch");
+        assert!(
+            switched.hover_latched,
+            "the latch was dropped at the switch"
+        );
         assert!(!panel.hover_latched && panel.latched && panel.latch_local);
         let mut unheld = panel.clone();
         let held = panel.apply(ms(320), PanelInput::HolderReveal).unwrap();
-        assert!(!held.snapshot.transient_revealed, "the compositor re-revealed an Escaped panel");
+        assert!(
+            !held.snapshot.transient_revealed,
+            "the compositor re-revealed an Escaped panel"
+        );
         // The compositor now holds it, so its release ends the latch; a fresh
         // dwell's hold then reveals.
         panel.apply(ms(330), PanelInput::CornerLeft).unwrap();
-        let released = panel.apply(ms(340), PanelInput::HolderConceal).unwrap().snapshot;
+        let released = panel
+            .apply(ms(340), PanelInput::HolderConceal)
+            .unwrap()
+            .snapshot;
         assert!(!released.hover_latched);
         panel.apply(ms(350), PanelInput::CornerEntered).unwrap();
         assert!(
@@ -1882,7 +1992,10 @@ mod intro_tests {
         );
         // Before the compositor reports any hold it is membership-only, so
         // leaving ends it: it cannot wedge.
-        let left = unheld.apply(ms(330), PanelInput::CornerLeft).unwrap().snapshot;
+        let left = unheld
+            .apply(ms(330), PanelInput::CornerLeft)
+            .unwrap()
+            .snapshot;
         assert!(!left.hover_latched);
 
         // With nothing inside at the switch there is nothing to carry.
@@ -1914,10 +2027,15 @@ mod intro_tests {
         assert!(!panel.hover_latched, "plane Escape armed the local latch");
 
         let mut panel = self::panel();
-        panel.apply(Duration::ZERO, PanelInput::CornerEntered).unwrap();
+        panel
+            .apply(Duration::ZERO, PanelInput::CornerEntered)
+            .unwrap();
         panel.tick(ms(300)).unwrap();
         panel.apply(ms(300), PanelInput::Escape).unwrap();
-        let ignored = panel.apply(ms(310), PanelInput::HolderReveal).unwrap().snapshot;
+        let ignored = panel
+            .apply(ms(310), PanelInput::HolderReveal)
+            .unwrap()
+            .snapshot;
         assert!(!panel.latched, "local Escape armed the plane latch");
         assert!(panel.hover_latched);
         assert!(!ignored.transient_revealed);

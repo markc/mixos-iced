@@ -267,7 +267,13 @@ RPCs, deadlines and one coalesced resource job; <code>Mailbox</code> bounds pend
 events behind one wake. <code>Worker::offline</code> prepares fallback resources while the
 host's connection attempt continues. The live lifecycle/generation sample fences
 every activation, including queued completions after connection loss.</p>
-<p>Ced and compd's scene-host use this path. <code>appearance::settings::Prepared</code>
+<p>Ced and compd's scene-host use this path. Hosts that also activate renderer
+resources use <code>Host::complete_with</code> or <code>Session::handle_with</code>: the synchronous,
+total hook runs after successful preparation and current-stage fencing, before
+the swap and acknowledgement. It must install prepared values without I/O,
+awaiting or discovering unsupported inputs. Quoin uses it for panel preferences
+and window chrome, including fallback activation.</p>
+<p><code>appearance::settings::Prepared</code>
 supplies checked fonts, typography builders, toolkit tokens and validated button
 read cells. Scene-host prepares decoration themes from the same dictionary and
 selected title font. Appearance messages update existing scenes and corner menus
