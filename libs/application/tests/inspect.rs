@@ -90,7 +90,10 @@ fn drive<F: Future<Output = Result<Snapshot, Error>>>(
     query: &mut Pin<Box<F>>,
     _context: &mut Context<'_>,
 ) -> Result<Snapshot, Error> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             for _ in 0..64 {
@@ -107,7 +110,9 @@ fn drive<F: Future<Output = Result<Snapshot, Error>>>(
                 }
             }
             panic!("the query did not complete");
-        }).await.expect("bounded native query completion")
+        })
+        .await
+        .expect("bounded native query completion")
     })
 }
 

@@ -6,9 +6,14 @@
 //! a widget message nor requests a redraw; only an exact window and installed
 //! view stamp can satisfy it. The two retained slots are not a history archive.
 
-pub use crate::iced::window::presentation::{FrameBinding, FrameObservation, FrameOutcome, FrameStamp};
+pub use crate::iced::window::presentation::{
+    FrameBinding, FrameObservation, FrameOutcome, FrameStamp,
+};
 use crate::iced::window::{Id, presentation::FrameObserver};
-use std::{sync::{Arc, Mutex, Weak}, time::Instant};
+use std::{
+    sync::{Arc, Mutex, Weak},
+    time::Instant,
+};
 use tokio::sync::Notify;
 
 struct Shared {
@@ -47,7 +52,10 @@ pub struct Fence {
 
 impl std::fmt::Debug for Fence {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Fence").field("revision", &self.revision).finish_non_exhaustive()
+        formatter
+            .debug_struct("Fence")
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
     }
 }
 
@@ -77,38 +85,56 @@ pub struct Handle {
 }
 
 impl Default for Handle {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Handle {
     pub fn new() -> Self {
-        let shared = Arc::new(Shared {state: Mutex::new(State::default()), changed: Notify::new()});
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Notify::new(),
+        });
         let observed = Arc::clone(&shared);
         let observer = FrameObserver::new(move |receipt| observed.observe(receipt));
-        Self {shared, observer}
+        Self { shared, observer }
     }
 
     /// Pure getter, sampled alongside the immutable view before it is drawn.
     pub fn binding(&self, stamp: FrameStamp) -> FrameBinding {
-        FrameBinding {stamp, observer:self.observer.clone()}
+        FrameBinding {
+            stamp,
+            observer: self.observer.clone(),
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {
         let state = self.shared.state.lock().unwrap();
-        Snapshot {window:state.window, closed:state.closed, live_generation:state.generation,
-            lifecycle_revision:state.revision, last_observation:state.last_observation,
-            last_presented:state.last_presented}
+        Snapshot {
+            window: state.window,
+            closed: state.closed,
+            live_generation: state.generation,
+            lifecycle_revision: state.revision,
+            last_observation: state.last_observation,
+            last_presented: state.last_presented,
+        }
     }
 
     pub fn fence(&self) -> Fence {
-        Fence {owner:Arc::downgrade(&self.shared), revision:self.shared.state.lock().unwrap().revision}
+        Fence {
+            owner: Arc::downgrade(&self.shared),
+            revision: self.shared.state.lock().unwrap().revision,
+        }
     }
 
     /// Called by the existing native owner before admitting evidence requests.
     /// Registration loss invalidates waits while retaining pixel history.
     pub fn set_live_generation(&self, generation: Option<u64>) {
         let mut state = self.shared.state.lock().unwrap();
-        if state.closed || state.generation == generation { return; }
+        if state.closed || state.generation == generation {
+            return;
+        }
         state.generation = generation;
         match state.revision.checked_add(1) {
             Some(next) => state.revision = next,
@@ -127,11 +153,19 @@ impl Handle {
     /// One cancellation-safe waiter, using the caller's absolute deadline.
     /// Capacity, discard and failed submission await a later natural frame;
     /// unsupported presentation or exhausted IDs fail explicitly.
-    pub async fn wait(&self, expected: Expected, deadline: Instant) -> Result<FrameObservation, WaitError> {
+    pub async fn wait(
+        &self,
+        expected: Expected,
+        deadline: Instant,
+    ) -> Result<FrameObservation, WaitError> {
         let _slot = {
             let mut state = self.shared.state.lock().unwrap();
-            if state.waiter { return Err(WaitError::Busy); }
-            if deadline <= Instant::now() { return Err(WaitError::TimedOut); }
+            if state.waiter {
+                return Err(WaitError::Busy);
+            }
+            if deadline <= Instant::now() {
+                return Err(WaitError::TimedOut);
+            }
             self.check_scope(&state, &expected)?;
             state.waiter = true;
             WaitSlot(Arc::clone(&self.shared))
@@ -143,12 +177,24 @@ impl Handle {
             {
                 let state = self.shared.state.lock().unwrap();
                 self.check_scope(&state, &expected)?;
-                if deadline <= Instant::now() { return Err(WaitError::TimedOut); }
-                let matches = |receipt: &FrameObservation| receipt.window == expected.window && receipt.stamp == expected.stamp;
-                if let Some(receipt) = state.last_presented.as_ref().filter(|receipt| matches(receipt)) {
+                if deadline <= Instant::now() {
+                    return Err(WaitError::TimedOut);
+                }
+                let matches = |receipt: &FrameObservation| {
+                    receipt.window == expected.window && receipt.stamp == expected.stamp
+                };
+                if let Some(receipt) = state
+                    .last_presented
+                    .as_ref()
+                    .filter(|receipt| matches(receipt))
+                {
                     return Ok(*receipt);
                 }
-                if let Some(receipt) = state.last_observation.as_ref().filter(|receipt| matches(receipt)) {
+                if let Some(receipt) = state
+                    .last_observation
+                    .as_ref()
+                    .filter(|receipt| matches(receipt))
+                {
                     match receipt.outcome {
                         FrameOutcome::Unsupported => return Err(WaitError::Unsupported),
                         FrameOutcome::Exhausted => return Err(WaitError::Exhausted),
@@ -157,50 +203,72 @@ impl Handle {
                 }
             }
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), notified)
-                .await.map_err(|_| WaitError::TimedOut)?;
+                .await
+                .map_err(|_| WaitError::TimedOut)?;
         }
     }
 
     fn check_scope(&self, state: &State, expected: &Expected) -> Result<(), WaitError> {
-        if state.closed { return Err(WaitError::Closed); }
-        if !Weak::ptr_eq(&expected.fence.owner, &Arc::downgrade(&self.shared)) || expected.fence.revision != state.revision {
+        if state.closed {
+            return Err(WaitError::Closed);
+        }
+        if !Weak::ptr_eq(&expected.fence.owner, &Arc::downgrade(&self.shared))
+            || expected.fence.revision != state.revision
+        {
             return Err(WaitError::LifecycleChanged);
         }
-        if state.window.is_some_and(|window| window != expected.window) { return Err(WaitError::WrongWindow); }
+        if state.window.is_some_and(|window| window != expected.window) {
+            return Err(WaitError::WrongWindow);
+        }
         Ok(())
     }
 }
 
 struct WaitSlot(Arc<Shared>);
 impl Drop for WaitSlot {
-    fn drop(&mut self) { self.0.state.lock().unwrap().waiter = false; }
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().waiter = false;
+    }
 }
 
 impl Shared {
     fn observe(&self, receipt: FrameObservation) {
         let mut state = self.state.lock().unwrap();
-        if state.closed || state.window.is_some_and(|window| window != receipt.window) { return; }
+        if state.closed || state.window.is_some_and(|window| window != receipt.window) {
+            return;
+        }
         state.window = Some(receipt.window);
         if receipt.outcome == FrameOutcome::Closed {
             state.closed = true;
         }
         let current = state.last_observation.as_ref().is_none_or(|previous| {
             let stamp = |value: FrameStamp| (value.activation_epoch, value.local_revision);
-            stamp(receipt.stamp) > stamp(previous.stamp) || (receipt.stamp == previous.stamp
-                && match (receipt.request_id, previous.request_id) { (Some(next), Some(old)) => next >= old, _ => true })
+            stamp(receipt.stamp) > stamp(previous.stamp)
+                || (receipt.stamp == previous.stamp
+                    && match (receipt.request_id, previous.request_id) {
+                        (Some(next), Some(old)) => next >= old,
+                        _ => true,
+                    })
         });
         let mut changed = state.closed;
         if current && state.last_observation != Some(receipt) {
             state.last_observation = Some(receipt);
             changed = true;
         }
-        if matches!(receipt.outcome, FrameOutcome::Presented {..}) && receipt.request_id.is_some()
-            && state.last_presented.as_ref().is_none_or(|previous| receipt.request_id > previous.request_id) {
+        if matches!(receipt.outcome, FrameOutcome::Presented { .. })
+            && receipt.request_id.is_some()
+            && state
+                .last_presented
+                .as_ref()
+                .is_none_or(|previous| receipt.request_id > previous.request_id)
+        {
             state.last_presented = Some(receipt);
             changed = true;
         }
         drop(state);
-        if changed { self.changed.notify_waiters(); }
+        if changed {
+            self.changed.notify_waiters();
+        }
     }
 }
 
@@ -209,21 +277,47 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn stamp(epoch: u64) -> FrameStamp { FrameStamp {activation_epoch:epoch, local_revision:0} }
+    fn stamp(epoch: u64) -> FrameStamp {
+        FrameStamp {
+            activation_epoch: epoch,
+            local_revision: 0,
+        }
+    }
     fn expected(handle: &Handle, window: Id, epoch: u64) -> Expected {
-        Expected {window, stamp:stamp(epoch), fence:handle.fence()}
+        Expected {
+            window,
+            stamp: stamp(epoch),
+            fence: handle.fence(),
+        }
     }
     fn presented() -> FrameOutcome {
-        FrameOutcome::Presented {clock_id:Some(1), seconds:2, nanoseconds:3, refresh_ns:4, output_sequence:5, flags:0}
+        FrameOutcome::Presented {
+            clock_id: Some(1),
+            seconds: 2,
+            nanoseconds: 3,
+            refresh_ns: 4,
+            output_sequence: 5,
+            flags: 0,
+        }
     }
-    fn deadline() -> Instant { Instant::now() + Duration::from_secs(5) }
+    fn deadline() -> Instant {
+        Instant::now() + Duration::from_secs(5)
+    }
 
     #[test]
     fn binding_and_snapshot_are_pure_and_preserve_the_observer_owner() {
         let handle = Handle::new();
         let before = handle.snapshot();
-        assert!(handle.binding(stamp(1)).same_presentation(&handle.clone().binding(stamp(1))));
-        assert!(!handle.binding(stamp(1)).same_presentation(&Handle::new().binding(stamp(1))));
+        assert!(
+            handle
+                .binding(stamp(1))
+                .same_presentation(&handle.clone().binding(stamp(1)))
+        );
+        assert!(
+            !handle
+                .binding(stamp(1))
+                .same_presentation(&Handle::new().binding(stamp(1)))
+        );
         assert_eq!(handle.snapshot(), before);
     }
 
@@ -236,13 +330,39 @@ mod tests {
         current.observe(window, Some(2), presented());
         old.observe(window, Some(1), presented());
         assert_eq!(handle.snapshot().last_presented.unwrap().stamp, stamp(2));
-        assert_eq!(handle.wait(expected(&handle, window, 2), deadline()).await.unwrap().request_id, Some(2));
+        assert_eq!(
+            handle
+                .wait(expected(&handle, window, 2), deadline())
+                .await
+                .unwrap()
+                .request_id,
+            Some(2)
+        );
         current.observe(Id::unique(), Some(3), presented());
         current.observe(window, Some(4), FrameOutcome::Discarded);
-        assert_eq!(handle.snapshot().last_presented.unwrap().request_id, Some(2));
-        assert_eq!(handle.snapshot().last_observation.unwrap().outcome, FrameOutcome::Discarded);
-        assert_eq!(handle.wait(expected(&handle, Id::unique(), 2), deadline()).await, Err(WaitError::WrongWindow));
-        assert_eq!(handle.wait(expected(&handle, window, 1), Instant::now() + Duration::from_millis(10)).await, Err(WaitError::TimedOut));
+        assert_eq!(
+            handle.snapshot().last_presented.unwrap().request_id,
+            Some(2)
+        );
+        assert_eq!(
+            handle.snapshot().last_observation.unwrap().outcome,
+            FrameOutcome::Discarded
+        );
+        assert_eq!(
+            handle
+                .wait(expected(&handle, Id::unique(), 2), deadline())
+                .await,
+            Err(WaitError::WrongWindow)
+        );
+        assert_eq!(
+            handle
+                .wait(
+                    expected(&handle, window, 1),
+                    Instant::now() + Duration::from_millis(10)
+                )
+                .await,
+            Err(WaitError::TimedOut)
+        );
     }
 
     #[tokio::test]
@@ -251,12 +371,24 @@ mod tests {
         let window = Id::unique();
         let mut first = Box::pin(handle.wait(expected(&handle, window, 1), deadline()));
         assert!(crate::iced::futures::poll!(first.as_mut()).is_pending());
-        assert_eq!(handle.wait(expected(&handle, window, 1), deadline()).await, Err(WaitError::Busy));
+        assert_eq!(
+            handle.wait(expected(&handle, window, 1), deadline()).await,
+            Err(WaitError::Busy)
+        );
         drop(first);
         let mut next = Box::pin(handle.wait(expected(&handle, window, 1), deadline()));
         assert!(crate::iced::futures::poll!(next.as_mut()).is_pending());
-        handle.binding(stamp(1)).observe(window, Some(1), presented());
-        assert_eq!(tokio::time::timeout(Duration::from_secs(1), next).await.unwrap().unwrap().stamp, stamp(1));
+        handle
+            .binding(stamp(1))
+            .observe(window, Some(1), presented());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), next)
+                .await
+                .unwrap()
+                .unwrap()
+                .stamp,
+            stamp(1)
+        );
     }
 
     #[tokio::test]
@@ -264,15 +396,29 @@ mod tests {
         let handle = Handle::new();
         let window = Id::unique();
         handle.set_live_generation(Some(1));
-        handle.binding(stamp(1)).observe(window, Some(1), presented());
+        handle
+            .binding(stamp(1))
+            .observe(window, Some(1), presented());
         let mut wait = Box::pin(handle.wait(expected(&handle, window, 2), deadline()));
         assert!(crate::iced::futures::poll!(wait.as_mut()).is_pending());
         handle.set_live_generation(None);
-        assert_eq!(tokio::time::timeout(Duration::from_secs(1), wait).await.unwrap(), Err(WaitError::LifecycleChanged));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), wait)
+                .await
+                .unwrap(),
+            Err(WaitError::LifecycleChanged)
+        );
         assert_eq!(handle.snapshot().live_generation, None);
         assert_eq!(handle.snapshot().last_presented.unwrap().stamp, stamp(1));
-        let foreign = Expected {window, stamp:stamp(1), fence:Handle::new().fence()};
-        assert_eq!(handle.wait(foreign, deadline()).await, Err(WaitError::LifecycleChanged));
+        let foreign = Expected {
+            window,
+            stamp: stamp(1),
+            fence: Handle::new().fence(),
+        };
+        assert_eq!(
+            handle.wait(foreign, deadline()).await,
+            Err(WaitError::LifecycleChanged)
+        );
     }
 
     #[tokio::test]
@@ -281,15 +427,28 @@ mod tests {
         let window = Id::unique();
         let binding = handle.binding(stamp(1));
         binding.observe(window, None, FrameOutcome::Unsupported);
-        assert_eq!(handle.wait(expected(&handle, window, 1), deadline()).await, Err(WaitError::Unsupported));
+        assert_eq!(
+            handle.wait(expected(&handle, window, 1), deadline()).await,
+            Err(WaitError::Unsupported)
+        );
         binding.observe(window, Some(1), presented());
         let mut wait = Box::pin(handle.wait(expected(&handle, window, 2), deadline()));
         assert!(crate::iced::futures::poll!(wait.as_mut()).is_pending());
         binding.observe(window, None, FrameOutcome::Closed);
-        assert_eq!(tokio::time::timeout(Duration::from_secs(1), wait).await.unwrap(), Err(WaitError::Closed));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), wait)
+                .await
+                .unwrap(),
+            Err(WaitError::Closed)
+        );
         let closed = handle.snapshot();
-        handle.binding(stamp(2)).observe(window, Some(2), presented());
+        handle
+            .binding(stamp(2))
+            .observe(window, Some(2), presented());
         assert_eq!(handle.snapshot(), closed);
-        assert_eq!(handle.wait(expected(&handle, window, 1), deadline()).await, Err(WaitError::Closed));
+        assert_eq!(
+            handle.wait(expected(&handle, window, 1), deadline()).await,
+            Err(WaitError::Closed)
+        );
     }
 }

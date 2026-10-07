@@ -35,13 +35,19 @@ pub const VERB_PREFIX: &str = "app.acceptance.";
 
 /// Exact fixture verbs. Unknown prefix matches belong to the caller.
 pub const VERBS: &[&str] = &[
-    "app.acceptance.describe", "app.acceptance.layout",
-    "app.acceptance.barrier.arm", "app.acceptance.barrier.wait",
-    "app.acceptance.barrier.release", "app.acceptance.barrier.state",
-    "app.acceptance.frame.state", "app.acceptance.frame.wait",
+    "app.acceptance.describe",
+    "app.acceptance.layout",
+    "app.acceptance.barrier.arm",
+    "app.acceptance.barrier.wait",
+    "app.acceptance.barrier.release",
+    "app.acceptance.barrier.state",
+    "app.acceptance.frame.state",
+    "app.acceptance.frame.wait",
 ];
 
-pub fn recognises(verb: &str) -> bool { VERBS.contains(&verb) }
+pub fn recognises(verb: &str) -> bool {
+    VERBS.contains(&verb)
+}
 
 /// Final sends have their own bound; the actor retains admission through reap.
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(2);
@@ -71,16 +77,25 @@ impl Launch {
             Err(std::env::VarError::NotPresent) => Ok(None),
             Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be Unicode")),
         };
-        Self::parse(read("MIXOS_ACCEPTANCE_RUN")?.as_deref(), read("MIXOS_ACCEPTANCE_INSTANCE")?.as_deref())
+        Self::parse(
+            read("MIXOS_ACCEPTANCE_RUN")?.as_deref(),
+            read("MIXOS_ACCEPTANCE_INSTANCE")?.as_deref(),
+        )
     }
 
     fn parse(run: Option<&str>, instance: Option<&str>) -> Result<Option<Self>, String> {
         match (run, instance) {
-            (None,None) => Ok(None),
-            (Some(run),Some(instance)) if !run.is_empty() && run.len() <= barrier::MAX_STRING => {
-                let instance = instance.parse::<u64>().ok().filter(|value| *value != 0)
+            (None, None) => Ok(None),
+            (Some(run), Some(instance)) if !run.is_empty() && run.len() <= barrier::MAX_STRING => {
+                let instance = instance
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value != 0)
                     .ok_or_else(|| "fixture instance must be a nonzero u64".to_owned())?;
-                Ok(Some(Self {run:run.to_owned(),instance}))
+                Ok(Some(Self {
+                    run: run.to_owned(),
+                    instance,
+                }))
             }
             _ => Err("fixture launch requires bounded run and nonzero instance together".into()),
         }
@@ -154,7 +169,9 @@ pub fn track(
     controller: &barrier::Controller,
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
     let future = track_result(client, incoming, describe, inspector, controller, None)?;
-    Some(async move { let _ = future.await; })
+    Some(async move {
+        let _ = future.await;
+    })
 }
 
 /// Result-bearing tracked operation. The existing actor owns admission,
@@ -167,7 +184,9 @@ pub fn track_result(
     controller: &barrier::Controller,
     frames: Option<&frames::Endpoint>,
 ) -> Option<impl Future<Output = Result<(), TrackError>> + Send + 'static> {
-    if !recognises(&incoming.command) { return None; }
+    if !recognises(&incoming.command) {
+        return None;
+    }
     let verb = incoming.command.strip_prefix(VERB_PREFIX)?.to_owned();
     let describe = describe.clone();
     let inspector = inspector.clone();
@@ -187,18 +206,23 @@ pub fn track_result(
         let body = match validate_fixture(&describe, &incoming) {
             Err(error) => Err(error),
             Ok(()) => match verb.as_str() {
-            "describe" => Ok(describe_json(&describe, frames.is_some())),
-            "layout" => layout_verb(&describe, &inspector, &incoming, admitted_at).await,
-            "barrier.arm" => barrier_arm_verb(&controller, &incoming),
-            "barrier.wait" => barrier_wait_verb(&controller, &incoming).await,
-            "barrier.release" => barrier_release_verb(&controller, &incoming),
-            "barrier.state" => barrier_state_verb(&controller, &incoming),
-            "frame.state" => frames.as_ref().ok_or_else(|| "frame evidence unsupported".to_owned()).and_then(|endpoint| endpoint.state(&incoming)),
-            "frame.wait" => match (&frames, frame_fence) {
-                (Some(endpoint), Some(fence)) => endpoint.wait(&incoming, fence, admitted_at).await,
-                _ => Err("frame evidence unsupported".to_owned()),
-            },
-            _ => unreachable!("exact registered verb"),
+                "describe" => Ok(describe_json(&describe, frames.is_some())),
+                "layout" => layout_verb(&describe, &inspector, &incoming, admitted_at).await,
+                "barrier.arm" => barrier_arm_verb(&controller, &incoming),
+                "barrier.wait" => barrier_wait_verb(&controller, &incoming).await,
+                "barrier.release" => barrier_release_verb(&controller, &incoming),
+                "barrier.state" => barrier_state_verb(&controller, &incoming),
+                "frame.state" => frames
+                    .as_ref()
+                    .ok_or_else(|| "frame evidence unsupported".to_owned())
+                    .and_then(|endpoint| endpoint.state(&incoming)),
+                "frame.wait" => match (&frames, frame_fence) {
+                    (Some(endpoint), Some(fence)) => {
+                        endpoint.wait(&incoming, fence, admitted_at).await
+                    }
+                    _ => Err("frame evidence unsupported".to_owned()),
+                },
+                _ => unreachable!("exact registered verb"),
             },
         };
 
@@ -206,17 +230,20 @@ pub fn track_result(
             return Err(TrackError::Retired);
         }
         let body = body.unwrap_or_else(error_json);
-        tokio::time::timeout(REPLY_DEADLINE, client
-            .respond_parts(
+        tokio::time::timeout(
+            REPLY_DEADLINE,
+            client.respond_parts(
                 incoming.generation,
                 &incoming.from,
                 &incoming.command,
                 incoming.id.as_deref(),
                 0,
                 &body,
-            ))
-            .await.map_err(|_| TrackError::ReplyTimedOut)?
-            .map_err(|error| TrackError::ReplyFailed(error.to_string()))
+            ),
+        )
+        .await
+        .map_err(|_| TrackError::ReplyTimedOut)?
+        .map_err(|error| TrackError::ReplyFailed(error.to_string()))
     })
 }
 
@@ -272,13 +299,28 @@ async fn layout_verb(
     admitted_at: Instant,
 ) -> Result<String, String> {
     let deadline = admitted_at + QUERY_DEADLINE;
-    if Instant::now() >= deadline { return Err("layout query timed out before dispatch".into()); }
+    if Instant::now() >= deadline {
+        return Err("layout query timed out before dispatch".into());
+    }
     let body = parse_body(&incoming.body)?;
-    check_barrier_fields(&body, &["run","instance","generation","window","layer","aliases"])?;
+    check_barrier_fields(
+        &body,
+        &[
+            "run",
+            "instance",
+            "generation",
+            "window",
+            "layer",
+            "aliases",
+        ],
+    )?;
     if body.get("layer").is_some_and(|layer| !layer.is_string()) {
         return Err("layer must be a string".into());
     }
-    if body.get("aliases").is_some_and(|aliases| !aliases.is_array()) {
+    if body
+        .get("aliases")
+        .is_some_and(|aliases| !aliases.is_array())
+    {
         return Err("aliases must be an array".into());
     }
 
@@ -312,11 +354,16 @@ async fn layout_verb(
         request = request.aliases(aliases);
     }
 
-    if Instant::now() >= deadline { return Err("layout query timed out before dispatch".into()); }
-    let snapshot = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), inspector.query(request))
-        .await
-        .map_err(|_| "layout query timed out".to_owned())?
-        .map_err(|error| format!("layout query: {error:?}"))?;
+    if Instant::now() >= deadline {
+        return Err("layout query timed out before dispatch".into());
+    }
+    let snapshot = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        inspector.query(request),
+    )
+    .await
+    .map_err(|_| "layout query timed out".to_owned())?
+    .map_err(|error| format!("layout query: {error:?}"))?;
 
     snapshot_json(&snapshot, &describe.limits)
 }
@@ -496,12 +543,13 @@ pub(super) fn check_barrier_fields(body: &Value, allowed: &[&str]) -> Result<(),
 fn validate_fixture(describe: &Describe, incoming: &IncomingCommand) -> Result<(), String> {
     let body = parse_body(&incoming.body)?;
     if body.get("run").and_then(Value::as_str) != Some(describe.run.as_str())
-        || body.get("instance").and_then(Value::as_u64) != Some(describe.instance) {
+        || body.get("instance").and_then(Value::as_u64) != Some(describe.instance)
+    {
         return Err("wrong fixture run or process instance".into());
     }
     check_request_generation(&body, incoming.generation)?;
     if incoming.command == "app.acceptance.describe" {
-        check_barrier_fields(&body, &["run","instance","generation"])?;
+        check_barrier_fields(&body, &["run", "instance", "generation"])?;
     }
     Ok(())
 }
@@ -556,8 +604,15 @@ mod tests {
     use super::*;
 
     fn incoming(verb: &str, body: Value) -> IncomingCommand {
-        IncomingCommand {generation:7,from:"fixture".into(),command:verb.into(),id:None,
-            args:Value::Null,body:body.to_string(),headers:Default::default()}
+        IncomingCommand {
+            generation: 7,
+            from: "fixture".into(),
+            command: verb.into(),
+            id: None,
+            args: Value::Null,
+            body: body.to_string(),
+            headers: Default::default(),
+        }
     }
 
     #[test]
@@ -565,29 +620,38 @@ mod tests {
         assert!(recognises("app.acceptance.frame.wait"));
         assert!(!recognises("app.acceptance.future"));
         assert!(!recognises("app.describe"));
-        let describe = Describe::new(1,"owned",11).unwrap();
+        let describe = Describe::new(1, "owned", 11).unwrap();
         for verb in VERBS {
-            let mut request = incoming(verb,json!({"run":"owned","instance":11,"generation":7}));
-            assert!(validate_fixture(&describe,&request).is_ok());
+            let mut request = incoming(verb, json!({"run":"owned","instance":11,"generation":7}));
+            assert!(validate_fixture(&describe, &request).is_ok());
             request.body = json!({"run":"foreign","instance":11}).to_string();
-            assert!(validate_fixture(&describe,&request).is_err());
+            assert!(validate_fixture(&describe, &request).is_err());
             request.body = json!({"run":"owned","instance":12}).to_string();
-            assert!(validate_fixture(&describe,&request).is_err());
+            assert!(validate_fixture(&describe, &request).is_err());
             request.body = json!({"run":"owned","instance":11,"generation":8}).to_string();
-            assert!(validate_fixture(&describe,&request).is_err());
+            assert!(validate_fixture(&describe, &request).is_err());
         }
-        assert!(validate_fixture(&describe,&incoming("app.acceptance.describe",json!({"run":"owned","instance":11,"typo":true}))).is_err());
+        assert!(
+            validate_fixture(
+                &describe,
+                &incoming(
+                    "app.acceptance.describe",
+                    json!({"run":"owned","instance":11,"typo":true})
+                )
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn normal_launch_is_absent_and_partial_fixture_identity_is_refused() {
-        assert!(Launch::parse(None,None).unwrap().is_none());
-        assert!(Launch::parse(Some("owned"),None).is_err());
-        assert!(Launch::parse(None,Some("1")).is_err());
-        assert!(Launch::parse(Some(""),Some("1")).is_err());
-        assert!(Launch::parse(Some("owned"),Some("0")).is_err());
-        assert!(Launch::parse(Some("owned"),Some("-1")).is_err());
-        let launch = Launch::parse(Some("owned"),Some("31")).unwrap().unwrap();
-        assert_eq!(launch.instance,31);
+        assert!(Launch::parse(None, None).unwrap().is_none());
+        assert!(Launch::parse(Some("owned"), None).is_err());
+        assert!(Launch::parse(None, Some("1")).is_err());
+        assert!(Launch::parse(Some(""), Some("1")).is_err());
+        assert!(Launch::parse(Some("owned"), Some("0")).is_err());
+        assert!(Launch::parse(Some("owned"), Some("-1")).is_err());
+        let launch = Launch::parse(Some("owned"), Some("31")).unwrap().unwrap();
+        assert_eq!(launch.instance, 31);
     }
 }

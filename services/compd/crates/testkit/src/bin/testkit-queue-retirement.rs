@@ -6,8 +6,14 @@ use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_callback};
 
 struct State;
 impl Dispatch<wl_callback::WlCallback, Arc<()>> for State {
-    fn event(_: &mut Self, _: &wl_callback::WlCallback, _: wl_callback::Event,
-        _: &Arc<()>, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        _: &Arc<()>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         panic!("the retirement probe never dispatches typed callbacks");
     }
 }
@@ -22,15 +28,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if close_first {
             drop(queue);
             drop(callback);
-            assert!(weak.upgrade().is_some(), "the native backend still owns the requested callback");
+            assert!(
+                weak.upgrade().is_some(),
+                "the native backend still owns the requested callback"
+            );
             connection.roundtrip()?;
-            assert!(weak.upgrade().is_none(), "delivery after close must not recreate a queue cycle");
+            assert!(
+                weak.upgrade().is_none(),
+                "delivery after close must not recreate a queue cycle"
+            );
         } else {
             connection.roundtrip()?;
             drop(callback);
-            assert!(weak.upgrade().is_some(), "the actual undrained queue owns native callback userdata");
+            assert!(
+                weak.upgrade().is_some(),
+                "the actual undrained queue owns native callback userdata"
+            );
             drop(queue);
-            assert!(weak.upgrade().is_none(), "retirement must release native callback userdata while the connection stays alive");
+            assert!(
+                weak.upgrade().is_none(),
+                "retirement must release native callback userdata while the connection stays alive"
+            );
             connection.roundtrip()?;
         }
     }

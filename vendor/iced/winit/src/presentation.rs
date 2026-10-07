@@ -53,7 +53,10 @@ impl Ledger {
                 successful,
             },
         );
-        debug_assert!(previous.is_none(), "checked native request IDs must be unique");
+        debug_assert!(
+            previous.is_none(),
+            "checked native request IDs must be unique"
+        );
     }
     /// Mutate the correlation table before returning its owned observer.
     pub fn resolve(&mut self, id: u64, outcome: FrameOutcome) -> Option<FrameBinding> {
@@ -99,7 +102,9 @@ mod tests {
         let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = closed.clone();
         let observer = FrameObserver::new(move |receipt| {
-            if receipt.outcome == FrameOutcome::Closed { observed.store(true, std::sync::atomic::Ordering::SeqCst); }
+            if receipt.outcome == FrameOutcome::Closed {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
         });
         let window = Id::unique();
         let current = binding(1, observer);
