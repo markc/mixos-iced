@@ -56,6 +56,7 @@ struct Stub {
     reject_topic: Option<String>,
     flood_on_register: usize,
     replay_delay: Duration,
+    register_delay: Duration,
 }
 
 impl Stub {
@@ -68,6 +69,7 @@ impl Stub {
             reject_topic: None,
             flood_on_register: commands,
             replay_delay: Duration::ZERO,
+            register_delay: Duration::ZERO,
         })
     }
     fn new(fail_replay_on_reconnect: bool, reject_register_on_reconnect: bool) -> Arc<Stub> {
@@ -79,6 +81,7 @@ impl Stub {
             reject_topic: None,
             flood_on_register: 0,
             replay_delay: Duration::ZERO,
+            register_delay: Duration::ZERO,
         })
     }
 
@@ -91,6 +94,7 @@ impl Stub {
             reject_topic: Some(topic.to_string()),
             flood_on_register: 0,
             replay_delay: Duration::ZERO,
+            register_delay: Duration::ZERO,
         })
     }
 }
@@ -173,6 +177,7 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                                 }
                             }
                         };
+                        tokio::time::sleep(stub.register_delay).await;
                         if collision {
                             // Keep the socket open, as the real broker does;
                             // the client must close its half-built
@@ -722,10 +727,191 @@ async fn reconnect_registration_rejection_is_terminal_when_opted_in() {
     .await
     .expect("opt-in rejection policy publishes a terminal state");
 
+    assert_eq!(client.registration_rejection(), Some(bus::RegistrationRejected {
+        rc: 10,
+        message: "stub collision diagnostic wording".into(),
+    }), "Fatal is observed only after the exact refusal is sampleable");
+
     tokio::time::sleep(Duration::from_millis(300)).await;
     let s = stub.state.lock().await;
     assert_eq!(s.connections, 2, "opt-in rejection must not be retried");
     assert!(s.open_connections <= 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_start_is_prompt_generation_zero_and_all_outbound_paths_fail_fast() {
+    let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", reserved.local_addr().unwrap());
+    drop(reserved);
+    let began = std::time::Instant::now();
+    let client = SupervisedClient::connect_options("cold", &url)
+        .bounded_incoming(2).start();
+    assert!(began.elapsed() < Duration::from_millis(100));
+    assert_eq!(client.state(), ConnState::Connecting);
+    assert_eq!(client.connection_generation(), 0);
+    assert!(client.incoming().is_none());
+    let mut incoming = client.incoming_bounded().unwrap();
+    assert!(client.incoming_bounded().is_none());
+    assert!(matches!(client.call("noded", "noded.list", serde_json::Value::Null).await,
+        Err(SupervisedError::Disconnected)));
+    assert!(matches!(client.subscribe_topic("world.cold").await,
+        Err(SupervisedError::Disconnected)));
+    assert!(matches!(client.respond_parts_shutdown_synth(0, "caller", "ping", Some("1"), 16, "stop").await,
+        Err(SupervisedError::Disconnected)));
+    assert!(client.registration_rejection().is_none());
+    assert!(client.subscription_registry().is_empty());
+    tokio::time::timeout(Duration::from_secs(1), client.close()).await.unwrap();
+    assert_eq!(client.state(), ConnState::ShuttingDown);
+    assert!(incoming.recv().await.is_none());
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_start_survives_beyond_finite_budget_then_replays_on_the_same_receiver() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let stub = Stub::flooding(1);
+    let rejected = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let attempts = rejected.clone();
+    let broker = stub.clone();
+    let acceptor = tokio::spawn(async move {
+        // Real TCP/WebSocket dial failures, rather than an application retry
+        // seam. Keep this same listener and let the broker become available
+        // only after the legacy initial budget would have been exhausted.
+        for _ in 0..=bus::MAX_INITIAL_ATTEMPTS {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        run_stub(listener, broker).await;
+    });
+    let client = SupervisedClient::connect_options("cold-recovery", &url)
+        .bounded_incoming(8).start();
+    let mut incoming = client.incoming_bounded().unwrap();
+    client.subscription_registry().record("world.before-registration");
+    assert!(wait_until(90, || rejected.load(std::sync::atomic::Ordering::SeqCst)
+        > bus::MAX_INITIAL_ATTEMPTS).await);
+    assert!(wait_until(90, || client.is_connected()).await);
+    assert_eq!(client.connection_generation(), 1);
+    let first = incoming.recv().await.unwrap();
+    let BoundedIncomingEvent::Command(first) = first else { panic!("unexpected overflow") };
+    assert_eq!(first.generation, 1);
+    assert_eq!(stub.state.lock().await.subscribed, ["world.before-registration"]);
+    client.subscribe_topic("world.after-registration").await.unwrap();
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    let next = incoming.recv().await.unwrap();
+    let BoundedIncomingEvent::Command(next) = next else { panic!("unexpected overflow") };
+    assert_eq!(next.generation, 2);
+    assert_eq!(stub.state.lock().await.subscribed, [
+        "world.before-registration", "world.after-registration",
+        "world.before-registration", "world.after-registration",
+    ]);
+    client.close().await;
+    assert!(wait_until(5, || stub.state.try_lock()
+        .map(|s| s.active_registrations.is_empty() && s.open_connections == 0)
+        .unwrap_or(false)).await);
+    acceptor.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_connect_still_exhausts_its_initial_attempt_budget() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let refused = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let attempts = refused.clone();
+    let acceptor = tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            drop(socket);
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    let error = SupervisedClient::connect("finite", &url).await.err().unwrap();
+    assert!(matches!(error, SupervisedError::InitialConnectFailed {
+        attempts: bus::MAX_INITIAL_ATTEMPTS, ..
+    }));
+    assert_eq!(refused.load(std::sync::atomic::Ordering::SeqCst), bus::MAX_INITIAL_ATTEMPTS);
+    acceptor.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_registration_refusal_is_exact_sampleable_and_terminal() {
+    let stub = Stub::new(false, false);
+    let (url, acceptor) = start(&stub).await;
+    let owner = Connection::connect("held", &url).await.unwrap();
+    let client = SupervisedClient::connect_options("held", &url)
+        .fatal_on_registration_rejection(true).start();
+    let mut incoming = client.incoming().unwrap();
+    let mut states = client.subscribe_state();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while *states.borrow_and_update() != ConnState::Fatal {
+            states.changed().await.unwrap();
+        }
+    }).await.unwrap();
+    let expected = Some(bus::RegistrationRejected {
+        rc: 10, message: "stub collision diagnostic wording".into(),
+    });
+    assert_eq!(client.registration_rejection(), expected);
+    assert_eq!(client.registration_rejection(), expected, "sampling is non-consuming");
+    assert_eq!(client.connection_generation(), 0);
+    assert!(incoming.recv().await.is_none());
+    owner.close().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(client.state(), ConnState::Fatal);
+    assert_eq!(stub.state.lock().await.connections, 2, "Fatal must never resume dialing");
+    client.close().await;
+    assert_eq!(client.state(), ConnState::Fatal);
+    acceptor.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_shutdown_deregister_and_drop_are_safe_before_any_socket() {
+    let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", reserved.local_addr().unwrap());
+    drop(reserved);
+    let client = SupervisedClient::connect_options("no-socket", &url).start();
+    let mut incoming = client.incoming().unwrap();
+    assert!(matches!(client.deregister_for_drain().await, Err(SupervisedError::Disconnected)));
+    tokio::time::timeout(Duration::from_secs(1), incoming.recv()).await.unwrap();
+    client.close().await;
+    let client = SupervisedClient::connect_options("no-socket", &url).start();
+    let mut incoming = client.incoming().unwrap();
+    client.shutdown().await;
+    assert!(incoming.recv().await.is_none());
+    let client = SupervisedClient::connect_options("no-socket", &url).start();
+    let mut incoming = client.incoming().unwrap();
+    let states = client.subscribe_state();
+    drop(client);
+    assert_eq!(*states.borrow(), ConnState::ShuttingDown);
+    assert!(tokio::time::timeout(Duration::from_secs(1), incoming.recv()).await.unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_or_dropping_during_initial_registration_cannot_publish_or_leak() {
+    for drop_handle in [false, true] {
+        let mut delayed = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+        delayed.register_delay = Duration::from_millis(400);
+        let stub = Arc::new(delayed);
+        let (url, acceptor) = start(&stub).await;
+        let client = SupervisedClient::connect_options("initial-cancel", &url).start();
+        let _incoming = client.incoming().unwrap();
+        let states = client.subscribe_state();
+        assert!(wait_until(5, || stub.state.try_lock()
+            .map(|s| s.register_names.len() == 1).unwrap_or(false)).await);
+        if drop_handle {
+            drop(client);
+        } else {
+            tokio::time::timeout(Duration::from_secs(1), client.close()).await.unwrap();
+            assert_eq!(client.connection_generation(), 0);
+            drop(client);
+        }
+        assert_eq!(*states.borrow(), ConnState::ShuttingDown);
+        assert!(wait_until(5, || stub.state.try_lock()
+            .map(|s| s.active_registrations.is_empty() && s.open_connections == 0)
+            .unwrap_or(false)).await);
+        assert_eq!(stub.state.lock().await.connections, 1);
+        acceptor.abort();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
