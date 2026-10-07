@@ -174,7 +174,10 @@ fn coalesced_jobs_retain_capture_and_atomic_loss_rejects_queued_ready() {
 fn no_op_revision_advances_evidence_without_a_resource_job() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let (change, _) = session.handle(Event::Prepared(Box::new(ready(jobs.prepare.unwrap()))), Some(1));
+    let (change, _) = session.handle(
+        Event::Prepared(Box::new(ready(jobs.prepare.unwrap()))),
+        Some(1),
+    );
     assert!(change.is_some());
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let (change, jobs) = session.handle(Event::Wake, Some(1));
