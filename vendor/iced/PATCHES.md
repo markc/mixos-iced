@@ -162,6 +162,54 @@ Term adds end-to-end sparse-damage and offscreen pixel comparisons.
 The optional raster-probe counts copies; reference-raster disables the fast
 path for comparative tests. Neither feature is enabled in production.
 
+## Native layout inspection hooks
+
+Read-only layout queries, enabled by the existing `selector` features and
+not by any default:
+
+- `core/src/widget/operation.rs`: a default-no-op `Operation::clip(Rectangle)`
+  hook that clipped containers call within a traversal scope. It forwards
+  through the `Box`, `black_box`, `map`, `map-ref` and `then` adapters. Guard:
+  `clip_hook_forwards_through_every_adapter`.
+- `core/src/window/id.rs`: `Id::from_raw(u64)` / `Id::raw()` for diagnostic
+  queries that select an explicit window.
+- `selector/src/find.rs`: the `Finder` gains an initial viewport
+  (`with_viewport`), bounded traversal limits (`with_limits`), a visited
+  count, a `truncated` flag, and a `clip` intersection scoped by its
+  `traverse` save/restore so a clip cannot leak into the next subtree.
+- `selector/src/query.rs`: a bounded raw-record traversal (`query`) that
+  records alias index, candidate kind, layout bounds and clipped visible
+  bounds only — never text, editor state, unique id debug strings or
+  reconstructed rectangles. Guards: `clip_intersects_the_viewport_and_never_leaks_siblings`,
+  `nested_clips_intersect_and_restore`, `limits_truncate_the_traversal`.
+- `runtime/src/lib.rs` (feature `selector`): an `Action::Query` carrying a
+  `QueryTarget`, a `Layer`, a bounded query operation and a oneshot reply.
+- `runtime/src/widget/selector.rs`: the public `query` helper, which accepts
+  a `Selector<Output = u8>` (alias indices), never a mutating `Operation`.
+- `runtime/src/user_interface.rs`: `UserInterface::inspect` walks the real
+  base layout or the already-laid-out cached overlay (`false` = `NOT_READY`);
+  it never calls `overlay.layout` merely to answer. `UserInterface` records a
+  `layout_sequence` whenever a real layout is completed or replaced — layout
+  evidence only, never a presentation revision counter.
+- `winit/src/lib.rs` (feature `selector`): the `Action::Query` branch routes
+  to the chosen live interface without the `Action::Widget` redraw branch; no
+  update, message or redraw is produced by a query. `window::Manager::len`
+  lets `QueryTarget::Only` fail on more than one window instead of silently
+  picking the first.
+- `test/src/emulator.rs` (feature `selector`): the equivalent handling for
+  the headless test runtime.
+
+Run the guards:
+
+```
+cargo test --manifest-path vendor/iced/selector/Cargo.toml
+cargo test --manifest-path vendor/iced/core/Cargo.toml clip_hook_forwards
+```
+
+The toolkit `VirtualList` advertises its exact row drawing clip through the
+new hook (its own guard tests in `libs/toolkit`). Retire this delta when a
+re-vendor lands an upstream iced that already carries a read-only query.
+
 ## Primary selection and CPU presentation
 
 Term and Ced need primary selection independently of the regular clipboard.

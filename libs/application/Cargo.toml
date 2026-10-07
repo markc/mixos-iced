@@ -29,6 +29,14 @@ test-support = ["dep:iced_test"]
 settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit"]
 settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus"]
 settings-cache = ["settings-native", "settings/cache", "dep:config", "dep:serde"]
+# Read-only layout inspection; enables the narrow selector-only iced query
+# support. Not in defaults.
+native-inspect = ["iced/selector"]
+# The native acceptance facade and bounded operation barrier, on top of
+# native-inspect, using the existing optional Bus, serde_json and tokio
+# dependencies. Does not force a GPU backend or a settings feature. Not in
+# defaults.
+acceptance = ["native-inspect", "dep:bus", "dep:tokio", "dep:serde_json"]
 
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland"] }
@@ -44,6 +52,7 @@ tokio = { workspace = true, optional = true }
 bus = { workspace = true, optional = true, features = ["native"] }
 config = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

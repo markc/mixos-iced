@@ -1024,19 +1024,33 @@ where
         operation.focusable(self.id.as_ref(), bounds, state);
         operation.custom(self.id.as_ref(), bounds, state);
         operation.container(self.id.as_ref(), bounds);
+        // The rows draw clipped to the list body inside the list bounds;
+        // advertise that exact clip inside a traversal scope so it cannot
+        // leak into the header or the next subtree.
         operation.traverse(&mut |operation| {
-            for ((row, child), node) in self
-                .visible
-                .rows
-                .iter_mut()
-                .chain(self.header.iter_mut())
-                .zip(tree.children.iter_mut())
-                .zip(layout.children())
-            {
-                row.as_widget_mut()
-                    .operate(child, node, renderer, operation);
-            }
+            operation.clip(self.body(bounds));
+            operation.traverse(&mut |operation| {
+                for ((row, child), node) in self
+                    .visible
+                    .rows
+                    .iter_mut()
+                    .zip(tree.children.iter_mut())
+                    .zip(layout.children())
+                {
+                    row.as_widget_mut()
+                        .operate(child, node, renderer, operation);
+                }
+            });
         });
+        // The header draws with the list clip, not the body clip.
+        if let Some(header) = &mut self.header
+            && let (Some(child), Some(node)) =
+                (tree.children.last_mut(), layout.children().last())
+        {
+            operation.traverse(&mut |operation| {
+                header.as_widget_mut().operate(child, node, renderer, operation);
+            });
+        }
     }
 
     fn update(
@@ -2495,6 +2509,70 @@ mod tests {
         );
         let node = lay(&mut list, &mut tree);
         assert_eq!(tree.children.len(), node.children().len());
+    }
+
+    /// An operation that records the clips a widget advertises while it is
+    /// traversed.
+    #[derive(Default)]
+    struct ClipRecorder {
+        clips: Vec<Rectangle>,
+    }
+
+    impl Operation for ClipRecorder {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn clip(&mut self, bounds: Rectangle) {
+            self.clips.push(bounds);
+        }
+    }
+
+    #[test]
+    fn operate_advertises_the_exact_row_drawing_clip() {
+        let built = Cell::new(0);
+        let mut list = list(100, &built);
+        let mut tree = Tree::new(&list as &dyn Widget<Msg, iced_core::Theme, LayoutRenderer>);
+        let node = lay(&mut list, &mut tree);
+        let mut recorder = ClipRecorder::default();
+        Widget::operate(
+            &mut list,
+            &mut tree,
+            Layout::new(&node),
+            &LayoutRenderer::new(),
+            &mut recorder,
+        );
+        // Without a header, the body is the whole list, so the advertised
+        // clip is exactly the list bounds.
+        assert_eq!(recorder.clips, vec![Rectangle::with_size(VIEW)]);
+    }
+
+    #[test]
+    fn operate_scopes_the_row_clip_away_from_the_header() {
+        let built = Cell::new(0);
+        let mut list = list(100, &built).header(Element::new(iced_widget::Space::new()));
+        let mut tree = Tree::new(&list as &dyn Widget<Msg, iced_core::Theme, LayoutRenderer>);
+        let node = lay(&mut list, &mut tree);
+        let mut recorder = ClipRecorder::default();
+        Widget::operate(
+            &mut list,
+            &mut tree,
+            Layout::new(&node),
+            &LayoutRenderer::new(),
+            &mut recorder,
+        );
+        // The row clip starts below the header, is advertised exactly once,
+        // and the header walk (which draws with the list clip) does not see
+        // it: a clip cannot leak past its traversal scope.
+        assert_eq!(
+            recorder.clips,
+            vec![Rectangle {
+                x: 0.0,
+                y: 28.0,
+                width: VIEW.width,
+                height: VIEW.height - 28.0,
+            }]
+        );
     }
 
     #[test]

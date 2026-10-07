@@ -38,6 +38,27 @@ pub enum Action<T> {
     /// Run a widget operation.
     Widget(Box<dyn core::widget::Operation>),
 
+    /// Run a read-only widget query on the selected layout layer of a
+    /// window, without requesting a redraw.
+    #[cfg(feature = "selector")]
+    Query {
+        /// The window to query.
+        target: widget::selector::QueryTarget,
+        /// The layout layer to query.
+        layer: widget::selector::Layer,
+        /// The bounded read-only query operation, whose traversal output is
+        /// captured into the shared slot when it finishes.
+        operation: Box<dyn core::widget::Operation>,
+        /// Where the finished traversal lands.
+        traversal: std::sync::Arc<
+            std::sync::Mutex<Option<widget::selector::Traversal>>,
+        >,
+        /// The reply channel for the query report.
+        reply: crate::futures::futures::channel::oneshot::Sender<
+            Result<widget::selector::QueryReport, widget::selector::QueryError>,
+        >,
+    },
+
     /// Run a clipboard action.
     Clipboard(clipboard::Action),
 
@@ -87,6 +108,20 @@ impl<T> Action<T> {
         match self {
             Action::Output(output) => Ok(output),
             Action::Widget(operation) => Err(Action::Widget(operation)),
+            #[cfg(feature = "selector")]
+            Action::Query {
+                target,
+                layer,
+                operation,
+                traversal,
+                reply,
+            } => Err(Action::Query {
+                target,
+                layer,
+                operation,
+                traversal,
+                reply,
+            }),
             Action::Clipboard(action) => Err(Action::Clipboard(action)),
             Action::Window(action) => Err(Action::Window(action)),
             Action::System(action) => Err(Action::System(action)),
@@ -110,6 +145,10 @@ where
             Action::Output(output) => write!(f, "Action::Output({output:?})"),
             Action::Widget { .. } => {
                 write!(f, "Action::Widget")
+            }
+            #[cfg(feature = "selector")]
+            Action::Query { target, layer, .. } => {
+                write!(f, "Action::Query {{ target: {target:?}, layer: {layer:?} }}")
             }
             Action::Clipboard(action) => {
                 write!(f, "Action::Clipboard({action:?})")

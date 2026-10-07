@@ -204,6 +204,55 @@ impl<P: Program + 'static> Emulator<P> {
 
                     self.cache = Some(user_interface.into_cache());
                 }
+                #[cfg(feature = "selector")]
+                runtime::Action::Query { target, layer, operation, traversal, reply } => {
+                    use crate::runtime::widget::selector::{QueryError, QueryReport, QueryTarget};
+
+                    let window = match target {
+                        QueryTarget::Id(id) => Some(id),
+                        QueryTarget::Only => Some(self.window),
+                    };
+
+                    let result = match window.filter(|id| *id == self.window) {
+                        Some(_) => {
+                            let mut user_interface = UserInterface::build(
+                                program.view(&self.state, self.window),
+                                self.size,
+                                self.cache.take().unwrap(),
+                                &mut self.renderer,
+                            );
+
+                            let result = match user_interface.inspect(
+                                &self.renderer,
+                                layer,
+                                operation.as_mut(),
+                            ) {
+                                true => {
+                                    let _ = operation.finish();
+                                    match traversal.lock().unwrap().take() {
+                                        Some(traversal) => Ok(QueryReport {
+                                            layer,
+                                            records: traversal.records,
+                                            visited: traversal.visited,
+                                            truncated: traversal.truncated,
+                                            layout_sequence: user_interface.layout_sequence(),
+                                            logical_size: user_interface.logical_size(),
+                                            window_id: self.window,
+                                        }),
+                                        None => Err(QueryError::NotReady),
+                                    }
+                                }
+                                false => Err(QueryError::NotReady),
+                            };
+
+                            self.cache = Some(user_interface.into_cache());
+                            result
+                        }
+                        None => Err(QueryError::WindowNotFound),
+                    };
+
+                    let _ = reply.send(result);
+                }
                 runtime::Action::Clipboard(action) => {
                     // TODO
                     dbg!(action);

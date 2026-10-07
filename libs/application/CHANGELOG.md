@@ -5,6 +5,22 @@
 Paired cache evidence explicitly reports an unconfigured persistent root,
 separately from write faults, saved identities and usable fallback state.
 
+- Opt-in `native-inspect` adds the shared read-only layout inspector:
+  registered alias/id/kind targets, a bounded one-query-in-flight channel
+  task, and cached-layout snapshots with raw and clipped visible bounds,
+  layer and layout-sequence evidence. Queries run through a narrow
+  selector-only iced query action on the existing executor and never emit an
+  application message or request a redraw; missing interfaces and unlaid-out
+  overlays return `NotReady`.
+- Opt-in `acceptance` adds the shared process-wide native operation barrier
+  (`acceptance::barrier`): one armed hold, one `wait_reached` waiter, run and
+  instance fences, an absolute ten-second lifetime, cancellation-safe driving
+  on the existing Bus worker, and release-as-cancellation on shutdown, expiry
+  or permit drop. The `acceptance::track` facade parses `app.acceptance.*`
+  commands and returns the tracked reply future for the same client, without
+  owning it. Diagnostic verbs are registered only by an explicit fixture
+  launch configuration; default launches register none.
+
 ## 0.1.9
 
 - Pair existing settings Session/Worker through owned UI and worker endpoints.

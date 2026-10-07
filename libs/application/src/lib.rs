@@ -42,6 +42,12 @@ pub mod widget {
 #[cfg(feature = "settings")]
 pub mod presentation;
 
+#[cfg(feature = "native-inspect")]
+pub mod inspect;
+
+#[cfg(feature = "acceptance")]
+pub mod acceptance;
+
 #[cfg(feature = "native-grid")]
 pub mod native_grid;
 

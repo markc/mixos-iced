@@ -2,9 +2,11 @@
 use iced_core as core;
 
 mod find;
+mod query;
 mod target;
 
-pub use find::{Find, FindAll};
+pub use find::{Find, FindAll, Limits};
+pub use query::{Kind, Raw, Record, Traversal, query};
 pub use target::{Bounded, Candidate, Target, Text};
 
 use crate::core::Point;

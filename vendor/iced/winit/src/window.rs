@@ -101,6 +101,11 @@ where
         self.entries.is_empty()
     }
 
+    /// The number of live windows.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     pub fn is_idle(&self) -> bool {
         self.entries
             .values()

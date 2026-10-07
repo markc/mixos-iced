@@ -1722,6 +1722,60 @@ fn run_action<'a, P, C>(
                 window.raw.request_redraw();
             }
         }
+        #[cfg(feature = "selector")]
+        Action::Query { target, layer, operation, traversal, reply } => {
+            use crate::runtime::widget::selector::{QueryError, QueryReport, QueryTarget};
+
+            let window = match target {
+                QueryTarget::Id(id) => Some(id),
+                QueryTarget::Only => match window_manager.len() {
+                    1 => window_manager.iter_mut().next().map(|(id, _window)| id),
+                    0 => None,
+                    _ => {
+                        let _ = reply.send(Err(QueryError::MultipleWindows));
+                        return;
+                    }
+                },
+            };
+
+            let Some(window) = window else {
+                let _ = reply.send(Err(QueryError::WindowNotFound));
+                return;
+            };
+
+            let Some(win) = window_manager.get(&window) else {
+                let _ = reply.send(Err(QueryError::WindowNotFound));
+                return;
+            };
+
+            let Some(ui) = interfaces.get_mut(&window) else {
+                let _ = reply.send(Err(QueryError::NotReady));
+                return;
+            };
+
+            // A read-only query: no update, no message and no redraw. It
+            // only walks layouts that already exist.
+            let result = match ui.inspect(&win.renderer, layer, operation.as_mut()) {
+                true => {
+                    let _ = operation.finish();
+                    match traversal.lock().unwrap().take() {
+                        Some(traversal) => Ok(QueryReport {
+                            layer,
+                            records: traversal.records,
+                            visited: traversal.visited,
+                            truncated: traversal.truncated,
+                            layout_sequence: ui.layout_sequence(),
+                            logical_size: ui.logical_size(),
+                            window_id: window,
+                        }),
+                        None => Err(QueryError::NotReady),
+                    }
+                }
+                false => Err(QueryError::NotReady),
+            };
+
+            let _ = reply.send(result);
+        }
         Action::Image(action) => match action {
             image::Action::Allocate(handle, sender) => {
                 // TODO: Shared image cache in compositor
