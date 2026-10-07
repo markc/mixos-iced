@@ -195,7 +195,10 @@ pub fn start(
     let frames = application::frames::Handle::new();
     let worker_frames = frames.clone();
     #[cfg(feature = "acceptance")]
-    let fixture_frames = seed.fixture.as_ref().map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    let fixture_frames = seed
+        .fixture
+        .as_ref()
+        .map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
     #[cfg(feature = "acceptance")]
     let worker_fixture_frames = fixture_frames.clone();
     let (describe_tx, describe_rx) = tokio::sync::mpsc::channel(PENDING_CAP);
@@ -346,10 +349,21 @@ async fn worker(
         #[cfg(feature = "acceptance")]
         if let Some(hook) = &prepare_hook {
             use application::acceptance::barrier::Observation;
-            let fault = |message| settings::Diagnostic::new("fixture_prepare_cancelled", "terminal.prepare", message);
-            let observation = Observation::try_new(format!("revision={} scale={} zoom={}",snapshot.revision.0,local.scale,local.zoom_steps)).map_err(|error| fault(format!("{error:?}")))?;
-            if let Some(permit) = hook.reach("terminal.prepare",observation).map_err(|error| fault(format!("{error:?}")))? {
-                permit.wait_blocking().map_err(|error| fault(format!("{error:?}")))?;
+            let fault = |message| {
+                settings::Diagnostic::new("fixture_prepare_cancelled", "terminal.prepare", message)
+            };
+            let observation = Observation::try_new(format!(
+                "revision={} scale={} zoom={}",
+                snapshot.revision.0, local.scale, local.zoom_steps
+            ))
+            .map_err(|error| fault(format!("{error:?}")))?;
+            if let Some(permit) = hook
+                .reach("terminal.prepare", observation)
+                .map_err(|error| fault(format!("{error:?}")))?
+            {
+                permit
+                    .wait_blocking()
+                    .map_err(|error| fault(format!("{error:?}")))?;
             }
         }
         crate::presentation::prepare(appearance, snapshot, local, &raster)
@@ -400,7 +414,7 @@ async fn worker(
     let mut operations = tokio::task::JoinSet::new();
     // Two independently bounded waits cannot occupy ordinary control/reply
     // slots. Credits remain in the JoinSet result until the actor reaps them.
-    let mut fixture_waits = tokio::task::JoinSet::<(Permit,Result<(),String>)>::new();
+    let mut fixture_waits = tokio::task::JoinSet::<(Permit, Result<(), String>)>::new();
     loop {
         // Accepted replies retained while the task cap was exhausted start
         // the moment capacity frees; an unused permit returns immediately.
@@ -438,7 +452,9 @@ async fn worker(
             frames.set_live_generation(settings::native::live_generation(&client));
             #[cfg(feature = "acceptance")]
             if let Some(fixture) = &fixture {
-                fixture.controller.close(application::acceptance::barrier::ClosedReason::LostGeneration);
+                fixture
+                    .controller
+                    .close(application::acceptance::barrier::ClosedReason::LostGeneration);
             }
             // EVERY lifecycle transition publishes into the settings lane:
             // edge-triggered consumers and the UI reconcile on one signal.
@@ -773,7 +789,9 @@ async fn worker(
     }
     frames.close();
     #[cfg(feature = "acceptance")]
-    if let Some(fixture) = &fixture { fixture.close(application::acceptance::barrier::ClosedReason::Shutdown); }
+    if let Some(fixture) = &fixture {
+        fixture.close(application::acceptance::barrier::ClosedReason::Shutdown);
+    }
     // tabs.close -> global Bus finish: the serve task has drained the final
     // reap's completion notes by the time the TabSet emptied; wait for it,
     // the tracked replies, the cache flush and the client close all under ONE
@@ -783,9 +801,11 @@ async fn worker(
     let deadline_at = tokio::time::Instant::from_std(deadline);
     let mut faults = Vec::new();
     while !fixture_waits.is_empty() {
-        match tokio::time::timeout_at(deadline_at,fixture_waits.join_next()).await {
-            Ok(Some(Ok((permit,result)))) => {
-                if let Err(error) = result { faults.push(error); }
+        match tokio::time::timeout_at(deadline_at, fixture_waits.join_next()).await {
+            Ok(Some(Ok((permit, result)))) => {
+                if let Err(error) = result {
+                    faults.push(error);
+                }
                 permit.finish();
             }
             Ok(Some(Err(error))) => faults.push(format!("fixture wait: {error}")),
@@ -794,8 +814,10 @@ async fn worker(
                 faults.push("fixture wait drain timed out".to_owned());
                 fixture_waits.abort_all();
                 while let Some(result) = fixture_waits.join_next().await {
-                    if let Ok((permit,result)) = result {
-                        if let Err(error) = result { faults.push(error); }
+                    if let Ok((permit, result)) = result {
+                        if let Err(error) = result {
+                            faults.push(error);
+                        }
                         permit.finish();
                     }
                 }
@@ -1000,16 +1022,39 @@ mod tests {
     fn fixture_waits_leave_release_and_shutdown_control_headroom() {
         use application::acceptance::{Launch, frames::Target};
         let broker = term_test_broker::Broker::start();
-        let settings = term_core::config::Settings {config:term_core::config::Config::default(),term:"xterm-256color"};
+        let settings = term_core::config::Settings {
+            config: term_core::config::Config::default(),
+            term: "xterm-256color",
+        };
         let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
-        let (cleanup,reaper) = term_core::tabs::Cleanup::start().unwrap();
-        let (_notes,notify_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (wake_tx,mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
-        let wake:Wake = Arc::new(move || {let _ = wake_tx.send(());});
-        let (fixture,_inspect_task) = crate::acceptance::setup_launch(Launch {run:"actor-owned".into(),instance:51}).unwrap();
-        let initial = LocalContext::new(1.0,term_core::config::Cursor::Underline).unwrap();
-        let mut started = start("term",broker.url.clone(),tabs.clone(),cleanup.clone(),notify_rx,wake,
-            PreparationSeed {local:initial,raster:term_core::raster::Raster::for_test(1.0,13.0,initial.cursor).unwrap().prepared_snapshot(),fixture:Some(fixture)}).unwrap();
+        let (cleanup, reaper) = term_core::tabs::Cleanup::start().unwrap();
+        let (_notes, notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let wake: Wake = Arc::new(move || {
+            let _ = wake_tx.send(());
+        });
+        let (fixture, _inspect_task) = crate::acceptance::setup_launch(Launch {
+            run: "actor-owned".into(),
+            instance: 51,
+        })
+        .unwrap();
+        let initial = LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap();
+        let mut started = start(
+            "term",
+            broker.url.clone(),
+            tabs.clone(),
+            cleanup.clone(),
+            notify_rx,
+            wake,
+            PreparationSeed {
+                local: initial,
+                raster: term_core::raster::Raster::for_test(1.0, 13.0, initial.cursor)
+                    .unwrap()
+                    .prepared_snapshot(),
+                fixture: Some(fixture),
+            },
+        )
+        .unwrap();
         runtime().block_on(async {
             let caller = Arc::new(::bus::native_client::NodedClient::connect_anonymous(&broker.url).await.unwrap());
             tokio::time::timeout(Duration::from_secs(5),async {

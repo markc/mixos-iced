@@ -17,6 +17,8 @@
 //! (four-row CPU bands or a whole-pane wgpu buffer). See `frame.rs` and
 //! `term_core::raster::render_into`.
 
+#[cfg(feature = "acceptance")]
+mod acceptance;
 mod clipboard;
 mod frame;
 mod ime;
@@ -26,8 +28,6 @@ mod layout;
 mod native_tests;
 mod presentation;
 mod settings_bus;
-#[cfg(feature = "acceptance")]
-mod acceptance;
 mod strings;
 mod theme;
 
@@ -422,7 +422,10 @@ enum Message {
     Paste(u64, Option<String>),
     Wheel(u64, application::iced::mouse::ScrollDelta),
     Pointer,
-    Window(application::iced::window::Id, application::iced::window::Event),
+    Window(
+        application::iced::window::Id,
+        application::iced::window::Event,
+    ),
     /// The window's device-pixel ratio, answered by the runtime.
     Scale(f32),
 }
@@ -445,7 +448,11 @@ fn subscription(_state: &State) -> Subscription<Message> {
 /// Sample only installed settings alongside the immutable view. A pending or
 /// failed preparation keeps the last good stamp; bootstrap remains unstamped.
 fn frame_binding(state: &State) -> Option<application::frames::FrameBinding> {
-    state.settings.session().frame_stamp().map(|stamp| state.frames.binding(stamp))
+    state
+        .settings
+        .session()
+        .frame_stamp()
+        .map(|stamp| state.frames.binding(stamp))
 }
 
 /// Publishes a [`Message::Wake`] whenever the core's eventfd fires.
@@ -660,7 +667,7 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
                 state.scroll(id, delta);
             }
         }
-        Message::Window(window, _) if state.window_id.is_some_and(|owned| owned != window) => {},
+        Message::Window(window, _) if state.window_id.is_some_and(|owned| owned != window) => {}
         Message::Window(window, event) => match event {
             application::iced::window::Event::Opened { size, .. } => {
                 state.window_id = Some(window);
@@ -670,8 +677,7 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
                 // Rescaled for the scale a surface is BORN at, and a terminal
                 // that renders one frame at the wrong scale is a terminal
                 // that starts blurry.
-                return application::iced::window::scale_factor(window)
-                    .map(Message::Scale);
+                return application::iced::window::scale_factor(window).map(Message::Scale);
             }
             application::iced::window::Event::Resized(size) => state.resize(size),
             application::iced::window::Event::Rescaled(scale) => state.rescale(scale),
@@ -878,7 +884,11 @@ fn view(state: &State) -> Element<'_, Message> {
             ..container::Style::default()
         });
     #[cfg(feature = "acceptance")]
-    let root = if state.fixture_frames.is_some() { root.id(application::iced::widget::Id::from(acceptance::ROOT_ID)) } else { root };
+    let root = if state.fixture_frames.is_some() {
+        root.id(application::iced::widget::Id::from(acceptance::ROOT_ID))
+    } else {
+        root
+    };
     root.into()
 }
 
@@ -1103,8 +1113,11 @@ impl State {
         #[cfg(feature = "acceptance")]
         if let (Some(endpoint), Some(window)) = (&self.fixture_frames, self.window_id) {
             if let Err(error) = endpoint.publish(application::acceptance::frames::Target {
-                window, stamp:self.settings.session().frame_stamp(),
-            }) { eprintln!("term: fixture frame target: {error}"); }
+                window,
+                stamp: self.settings.session().frame_stamp(),
+            }) {
+                eprintln!("term: fixture frame target: {error}");
+            }
         }
     }
     fn scroll(&mut self, id: u64, delta: application::iced::mouse::ScrollDelta) {
@@ -2226,7 +2239,10 @@ mod tests {
         state.right_shift.set(true);
         let _ = update(
             &mut state,
-            Message::Window(application::iced::window::Id::unique(), application::iced::window::Event::Unfocused),
+            Message::Window(
+                application::iced::window::Id::unique(),
+                application::iced::window::Event::Unfocused,
+            ),
         );
         assert!(!state.right_shift.get());
         let _ = update(&mut state, Message::Ime(Event::Commit(text.into())));
@@ -2499,7 +2515,10 @@ mod tests {
         state.modifiers = application::iced::keyboard::Modifiers::SHIFT;
         let _ = update(
             &mut state,
-            Message::Window(application::iced::window::Id::unique(), application::iced::window::Event::Unfocused),
+            Message::Window(
+                application::iced::window::Id::unique(),
+                application::iced::window::Event::Unfocused,
+            ),
         );
         assert_eq!(
             input().unwrap(),
@@ -2628,7 +2647,10 @@ mod tests {
         );
         let _ = update(
             &mut state,
-            Message::Window(application::iced::window::Id::unique(), application::iced::window::Event::Unfocused),
+            Message::Window(
+                application::iced::window::Id::unique(),
+                application::iced::window::Event::Unfocused,
+            ),
         );
         assert_eq!(terminals[1].lock().unwrap().selection_text(), None);
         assert_eq!(
@@ -2742,7 +2764,10 @@ mod tests {
     #[test]
     fn a_zoom_repaints_before_the_next_draw() {
         let (mut state, reaper) = test_state();
-        assert!(frame_binding(&state).is_none(), "bootstrap has no installed stamp");
+        assert!(
+            frame_binding(&state).is_none(),
+            "bootstrap has no installed stamp"
+        );
         let _ = state.sync();
         finish_preparation(&mut state);
         let installed = frame_binding(&state).expect("actual settings activation");
@@ -2753,7 +2778,10 @@ mod tests {
         let before = state.painter.cell();
         state.zoom(|font| font.step_by(6));
         let pending = frame_binding(&state).unwrap();
-        assert!(installed.same_presentation(&pending), "pending context retains the drawn stamp and owner");
+        assert!(
+            installed.same_presentation(&pending),
+            "pending context retains the drawn stamp and owner"
+        );
         assert_eq!(
             state.painter.cell(),
             before,
