@@ -1785,7 +1785,9 @@ mod tests {
                 .unwrap();
             runtime.block_on(async move {
                 loop {
-                    if let application::presentation::native::Progress::UiClosed = lane.drive().await {
+                    if let application::presentation::native::Progress::UiClosed =
+                        lane.drive().await
+                    {
                         break;
                     }
                 }
@@ -2437,7 +2439,7 @@ impl canvas::Program<Message, Theme, Renderer> for Picture<'_> {
         theme: &Theme,
         bounds: iced::Rectangle,
         _: mouse::Cursor,
-    ) -> Vec<canvas::Geometry> {
+    ) -> Vec<canvas::Geometry<Renderer>> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let viewport = self.viewport(bounds);
         let c = self.document.crop();
