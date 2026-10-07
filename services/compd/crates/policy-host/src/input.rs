@@ -1176,20 +1176,7 @@ fn surface_origin(lp: &Loop, window: &smithay::desktop::Window) -> Option<Point<
 /// Re-run the human pointer's hit-test where it stands: stacking or visibility moved
 /// what is under the cursor, so focus follows without the cursor moving.
 pub fn retarget_pointer(lp: &mut Loop) {
-    let Some(pointer) = lp.state.seat.seat.get_pointer() else { return };
-    if pointer.is_grabbed() {
-        return;
-    }
-    let location = pointer.current_location();
-    let focus = surface_under_filtered(lp, location, &|hit| visible_hit(lp, hit))
-        .and_then(|hit| Some((hit.surface()?.clone(), hit.position_motion()?)));
-    let time = now_ms(lp);
-    pointer.motion(
-        &mut lp.state,
-        focus,
-        &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time },
-    );
-    pointer.frame(&mut lp.state);
+    seat::pointer::input::retarget_stationary(lp);
 }
 
 /// A hit the draw would show (hidden windows take no pointer).

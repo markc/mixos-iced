@@ -7,6 +7,9 @@
 - Expose owner-decided slot sizes independently of client ACKs in `compd.truth`.
 - Add a native rendered desktop gate covering settings-driven panel geometry,
   real xdg client sizes, captured pixels and stationary pointer routing.
+- Reconcile stationary pointer focus and iced hover through the shared seat
+  routing owner after changed scene placement has applied its pending sizes.
+  Keep notifications through grabs, session pause and output loss without polling.
 
 ## 0.1.8
 

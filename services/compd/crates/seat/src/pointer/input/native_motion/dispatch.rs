@@ -36,13 +36,6 @@ pub fn dispatch(
         true
     });
 
-    let compositor_output_size = _loop
-        .inner.space_state()
-        .state
-        .output_geometry(_loop.inner.space_state().state.outputs().next().unwrap())
-        .unwrap()
-        .size;
-
     let iced_target = under.as_ref().and_then(|h| h.iced_handle());
     // Server-side chrome under the pointer (decor), for hover and the
     // resize cursor once the motion has gone out.

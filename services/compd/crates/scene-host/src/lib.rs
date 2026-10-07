@@ -83,6 +83,7 @@ pub fn service(lp: &mut Loop) -> Serviced {
 /// One output's frame, inside the GLES prepare pass: keep the scenes'
 /// surfaces in step with the store.
 pub fn per_frame(lp: &mut Loop, renderer: &mut GlesRenderer, size: Size<i32, Physical>) {
+    let mut input_changed = false;
     let wake = HOST.with_borrow_mut(|slot| {
         let host = slot.as_mut()?;
         // The panel model first: an edge sliding in or out is placed
@@ -96,9 +97,12 @@ pub fn per_frame(lp: &mut Loop, renderer: &mut GlesRenderer, size: Size<i32, Phy
             (size.w as f32 / scale as f32, size.h as f32 / scale as f32),
         );
         let wake = host.tick_panels(&name);
-        host.render(lp, renderer, size);
+        input_changed = host.render(lp, renderer, size);
         Some(wake)
     });
+    if input_changed {
+        world::comp::scenes::mark_geometry_dirty(lp);
+    }
     schedule_panel_wake(lp, wake);
 }
 

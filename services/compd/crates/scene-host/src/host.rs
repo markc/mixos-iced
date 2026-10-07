@@ -633,6 +633,16 @@ pub struct SceneHost {
     menu_surface: Option<crate::menu::Surface>,
     settings: application::presentation::native::Session<crate::appearance::Look>,
     appearance_generation: u64,
+    input_geometry: Option<InputGeometry>,
+}
+
+/// Last rendered input shape. Appearance/revision-only changes do not reroute.
+#[derive(PartialEq)]
+struct InputGeometry {
+    placed: BTreeMap<String, (f32, f32, f32, f32)>,
+    handles: BTreeMap<String, ui::HandleId>,
+    menu_handle: Option<ui::HandleId>,
+    outputs: Vec<(String, Vec<SceneSurface>)>,
 }
 
 impl SceneHost {
@@ -672,6 +682,7 @@ impl SceneHost {
             menu_surface: None,
             settings,
             appearance_generation: 0,
+            input_geometry: None,
         })
     }
 
@@ -945,7 +956,7 @@ impl SceneHost {
         state: &mut world::state::Loop,
         renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
-    ) {
+    ) -> bool {
         // The prepared authority presentation supplies scene/dialog/menu
         // defaults; embedded scene design remains available during bootstrap.
         let palette = decor::window::installed()
@@ -1005,12 +1016,21 @@ impl SceneHost {
         let seat = self.host.store.dialog_seat().map(|seat| seat.scene.clone());
         self.host.dialog_fit =
             seat.and_then(|scene| self.placed.get(&scene).map(|&(_, _, w, h)| (scene, w, h)));
+        let input_geometry = InputGeometry {
+            placed: self.placed.clone(),
+            handles: self.surfaces.iter().map(|(name, surface)| (name.clone(), surface.handle())).collect(),
+            menu_handle: self.menu_surface.as_ref().map(|menu| menu.handle),
+            outputs: self.output_names.values().map(|name| (name.clone(), self.surfaces(name))).collect(),
+        };
+        let input_changed = self.input_geometry.as_ref() != Some(&input_geometry);
+        self.input_geometry = Some(input_geometry);
         // Read back on the next loop pass, after this frame has applied the
         // new instance's pending resize/scale and ticked it. A request that
         // raced panel.state must measure that surface, not an empty layout.
-        if !self.pending_layouts.is_empty() {
+        if input_changed || !self.pending_layouts.is_empty() {
             (self.wiring.waker)();
         }
+        input_changed
     }
 
     pub fn finish(self) {

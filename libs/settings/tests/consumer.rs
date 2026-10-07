@@ -64,6 +64,7 @@ fn evidence_distinguishes_acceptance_activation_and_lost_confirmation() {
     );
     let wire = serde_json::to_value(&applied).unwrap();
     assert_eq!(wire["applied"]["revision"], "9007199254740993");
+    assert_eq!(wire["kind"], "current");
     state.disconnected();
     let offline = state.evidence();
     assert!(!offline.confirmed);
@@ -72,6 +73,7 @@ fn evidence_distinguishes_acceptance_activation_and_lost_confirmation() {
         offline.kind,
         Some(settings::fallback::PresentationKind::LastGood)
     );
+    assert_eq!(serde_json::to_value(&offline).unwrap()["kind"], "last_good");
 }
 #[test]
 fn read_event_race_keeps_newest_and_fences_old_renderer_completion() {

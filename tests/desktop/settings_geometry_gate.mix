@@ -60,14 +60,12 @@ fn await_layout($thickness)
   end
   raise("LAYOUT","Scene placement did not settle: " .. json_encode($last))
 end
-fn wait_size($w,$h)
+fn wait_size($w,$h,$offset)
   comp("comp.window.wait",{match:$window,until:"size",width:$w,height:$h,timeout_ms:5000})
-  if not $n.await_log($probe_log,"PROBE configure " .. to_string($w) .. " " .. to_string($h),3) then
-    raise("CONFIGURE","No actual client configure for " .. to_string($w) .. "x" .. to_string($h))
-  end
+  await_new($probe_log,$offset,"PROBE configure " .. to_string($w) .. " " .. to_string($h))
   $truth = comp("compd.truth",{})
   $slot = $truth.slots[to_string($window.id)]
-  if not deep_eq($slot.decided,[$w,$h]) then raise("SLOT",json_encode($slot)) end
+  if $slot == nil or not deep_eq($slot.decided,[$w,$h]) then raise("SLOT",json_encode($slot)) end
   return $truth
 end
 fn ppm($path)
@@ -211,8 +209,9 @@ try
   $R.children = concat($R.children,[$probe])
   $mapped = comp("comp.window.wait",{match:{app_id:"dev.mixos.SettingsGeometry"},until:"presented",timeout_ms:15000})
   $window = {id:$mapped.window.id,generation:$mapped.window.generation}
+  $offset = len(read_file($probe_log))
   comp("comp.window.maximize",$window)
-  wait_size($width,$height)
+  wait_size($width,$height,$offset)
   capture("overlay-52",$layout,$height-55,nil,$initial,"resting")
   comp("comp.props.set",{path:"input.host.passthrough",value:false})
   $x = $layout.surface.x+$layout.nodes.go.x+$layout.nodes.go.w/2
@@ -225,25 +224,40 @@ try
   $changed = apply({"appearance.mode":"dark","shell.panels.bottom":{edge:"bottom",mode:"dock",thickness:96}},"dark-dock-96")
   await_panel("docked",96,96,$changed.revision)
   $layout = await_layout(96)
-  $truth = wait_size($width,$height-96)
+  $truth = wait_size($width,$height-96,$offset)
   $area = $truth.outputs[keys($truth.outputs)[0]].usable
   if $area.height != $height-96 or $area.y != 0 then raise("WORK_AREA",json_encode($area)) end
-  capture("dark-dock-96",$layout,$height-99,nil,$changed,"hovered")
   await_new($probe_log,$offset,"PROBE leave")
+  $button = $layout.nodes.go
+  if ($x <= $layout.surface.x+$button.x or $x >= $layout.surface.x+$button.x+$button.w or
+    $y <= $layout.surface.y+$button.y or $y >= $layout.surface.y+$button.y+$button.h) then
+    raise("INPUT","Parked pointer no longer lies inside the resized button")
+  end
+  capture("dark-dock-96",$layout,$height-99,nil,$changed,"hovered")
   $event_offset = len(read_file($events))
   comp("comp.input.pointer.button",{seat:"human",button:"left",action:"click"})
   await_new($events,$event_offset,"\n")
+  $click = json_parse(split(tail_after($events,$event_offset),"\n")[0])
+  if $click.scene != "settings-geometry" or $click.node != "go" or $click.kind != "click" then
+    raise("INPUT","Unexpected citizen click: " .. json_encode($click))
+  end
   $offset = len(read_file($probe_log))
   $changed = apply({"shell.panels.bottom.thickness":64},"dock-64")
   await_panel("docked",64,64,$changed.revision)
   $layout = await_layout(64)
-  $truth = wait_size($width,$height-64)
+  $truth = wait_size($width,$height-64,$offset)
   if $truth.outputs[keys($truth.outputs)[0]].usable.height != $height-64 then raise("WORK_AREA","Regrowth did not update usable area") end
-  capture("dock-64",$layout,$height-67,$height-80,$changed,"resting")
+  if $y >= $layout.surface.y then raise("INPUT","Parked pointer is not in the vacated client strip") end
   await_new($probe_log,$offset,"PROBE enter")
+  capture("dock-64",$layout,$height-67,$height-80,$changed,"resting")
   $after = comp("comp.window.wait",{match:$window,until:"presented",timeout_ms:5000}).window
   if $after.id != $window.id or $after.generation != $window.generation then raise("IDENTITY","Window replaced during activation") end
   if shell("shell.panel.state",{edge:"bottom"}).page != $panel.page then raise("IDENTITY","Scene page replaced during activation") end
+  $quiet_offset = len(read_file($probe_log))
+  sleep(0.3)
+  if len(re_find(tail_after($probe_log,$quiet_offset),"PROBE (?:enter|leave|motion)")) != 0 then
+    raise("INPUT","Unchanged frames repeatedly retargeted the stationary pointer")
+  end
   print("PASS native settings geometry: matching applied revisions, occupied panel reservation, real configure/slot, captured pixels and stationary pointer leave/click/re-entry")
   $R.ok = true
 catch $message

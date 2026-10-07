@@ -42,6 +42,20 @@ pub fn pointer_motion(lp: &mut crate::state::Loop, point: Option<smithay::utils:
     }
 }
 
+/// A scene frame changed input geometry. The compositor drains this after
+/// queued iced sizes/scales have been applied, never inside the render borrow.
+pub fn mark_geometry_dirty(lp: &mut crate::state::Loop) {
+    lp.inner.comp.scenes.geometry_dirty = true;
+}
+
+pub fn geometry_dirty(lp: &crate::state::Loop) -> bool {
+    lp.inner.comp.scenes.geometry_dirty
+}
+
+pub fn clear_geometry_dirty(lp: &mut crate::state::Loop) {
+    lp.inner.comp.scenes.geometry_dirty = false;
+}
+
 /// One scene surface as the scene host reports it this pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneInput {
@@ -72,6 +86,8 @@ pub struct SceneRow {
 
 #[derive(Debug, Default)]
 pub struct SceneSurfaces {
+    /// Retained through grabs, paused frames and output loss; no retry timer.
+    geometry_dirty: bool,
     /// Scene key -> its reserved id.
     pub(crate) ids: BTreeMap<String, SurfaceId>,
     /// The mapped scene surfaces, in the host's order.
