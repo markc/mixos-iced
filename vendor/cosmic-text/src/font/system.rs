@@ -576,7 +576,7 @@ impl FontSystem {
             let fontdb::Source::Binary(data) = &face.source else {
                 return Err(FontRegistrationError::NonBinarySource { face_index });
             };
-            if skrifa::FontRef::from_index((*data).as_ref(), face.index).is_err() {
+            if skrifa::FontRef::from_index(data.as_ref().as_ref(), face.index).is_err() {
                 return Err(FontRegistrationError::UnconstructibleFace { face_index });
             }
         }
@@ -654,7 +654,7 @@ impl FontSystem {
                                 });
                             };
                             face_data_supports_weight(
-                                (*data).as_ref(),
+                                data.as_ref().as_ref(),
                                 face.index,
                                 face.weight,
                                 policy.weight,
