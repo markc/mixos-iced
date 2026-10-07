@@ -94,6 +94,23 @@ MIT OR Apache-2.0; original LICENSE-MIT and LICENSE-APACHE retained.
 Base 8bcd4aa2c35990d57a2cff2953793525fc42709c; local dependency removal is
 recorded in vendor/dirs-sys/PATCHES.md.
 
+cosmic-text 0.19.0, vendor/cosmic-text, Copyright (c) 2022 System76,
+MIT OR Apache-2.0; original LICENSE-MIT and LICENSE-APACHE retained.
+Base: crates.io 0.19.0, SHA-256
+be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73 (matches
+Cargo.lock). Local pinned-shaping and atomic-registration additions recorded
+in vendor/cosmic-text/PATCHES.md. Its fonts/ fixtures are test-only data,
+cleared per font: NotoSans-Regular.ttf, NotoSansArabic.ttf and
+NotoSansHebrew.ttf are Copyright 2012 Google Inc., SIL OFL 1.1
+(fonts/NotoSans-LICENSE); Inter-Regular.ttf and InterVariable-Italic.ttf
+are Copyright 2020 The Inter Project Authors
+(https://github.com/rsms/inter), SIL OFL 1.1 (fonts/Inter-LICENSE; the
+upstream archive's fonts/InterVariable.ttf fixture is deliberately not
+carried — the public hygiene gate rejects its raw bytes and the allowlist
+stays closed — and shares the same Inter licence);
+FiraMono-Medium.ttf is Copyright 2012-2015 The Mozilla Foundation and
+Telefonica S.A., SIL OFL 1.1 (fonts/FiraMono-LICENSE).
+
 Third-party desktop assets
 -------------------------
 
@@ -154,6 +171,11 @@ per-file receipt and retained Apache-2.0 licence:
 - share/icons/material/200/screenshot_monitor.svg
 - share/icons/material/200/apps.svg
 
+A byte-identical copy of the pinned terminal.svg serves as the toolkit
+decoder's packaged SVG test fixture, with the same upstream revision,
+receipt and retained Apache-2.0 licence (annotated in REUSE.toml):
+- libs/toolkit/tests/fixtures/terminal.svg
+
 Third-party assets and licences in the compd binary
 ----------------------------------------------------
 
@@ -165,6 +187,13 @@ Only what the workspace members reach is listed.
   google/fonts revision 9710da1eacb3be272583c3224dcb70f9da6eadbb, Copyright
   The Noto Project Authors, SIL Open Font License 1.1. Downloaded font bytes
   and the original licence ship in the immutable asset set, outside Git.
+- Variable font test fixtures in libs/appearance/assets/test-fonts are
+  byte-identical to the approved share/assets/core.conf.mix entries: Noto Sans
+  from google/fonts 9710da1eacb3be272583c3224dcb70f9da6eadbb, Copyright The
+  Noto Project Authors; JetBrains Mono from google/fonts
+  cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9, Copyright 2020 The JetBrains Mono
+  Project Authors. Both use SIL OFL 1.1; original licences accompany the
+  unmodified fonts. They support hermetic default-weight acceptance tests.
 - Inter 4.001 variable font (vendor/font/Inter-VariableFont_opsz,wght.ttf,
   embedded by ui): Copyright (c) 2016 The Inter Project Authors
   (https://github.com/rsms/inter), SIL Open Font License 1.1, vendor/font/OFL.txt.

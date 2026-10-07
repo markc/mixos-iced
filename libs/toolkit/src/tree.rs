@@ -460,7 +460,7 @@ where
     }
 
     /// Derives the prepared per-depth indent from the shared control
-    /// metrics: [`controls::Metrics::indent`] of the caller's row `text`
+    /// metrics: row height and [`controls::Metrics::indent`] of the caller's row `text`
     /// style — at least `lg + sm` and at least the row height, so the
     /// expander square and a guide always fit. The expander square follows
     /// the indent (0.6 × indent, clamped 8–16). Applied after
@@ -468,6 +468,7 @@ where
     /// 20-pixel default is unchanged.
     pub fn metrics(mut self, metrics: controls::Metrics, text: TextStyle) -> Self {
         self.indent = metrics.indent(&text);
+        self.list = self.list.row_height(metrics.row_height(&text));
         self
     }
 
@@ -1086,14 +1087,15 @@ mod tests {
                     ) + Send
                     + 'static,
             ) {
-                renderer::Renderer::allocate_image(&mut (), handle, callback);
+                let _ = handle;
+        callback(Err(iced_core::image::Error::Unsupported));
             }
         }
 
         impl text::Renderer for Recorder {
             type Font = Font;
             type Paragraph = iced_graphics::text::Paragraph;
-            type Editor = ();
+            type Editor = iced_graphics::text::Editor;
 
             const ICON_FONT: Font = Font::new("Iced-Icons");
             const CHECKMARK_ICON: char = '\u{f00c}';
@@ -1122,7 +1124,7 @@ mod tests {
                     .push((paragraph.font(), paragraph.size(), paragraph.line_height()));
             }
 
-            fn fill_editor(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
+            fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
 
             fn fill_text(&mut self, text: text::Text, _: Point, _: Color, _: Rectangle) {
                 self.texts.push((text.content, text.font, text.size, text.line_height));
@@ -1283,6 +1285,45 @@ mod tests {
             assert_eq!(send(press.clone(), Point::new(1.0, 14.0)), [Msg::Select(Selection::single(0))]);
             // A neighbouring row's content selects that row only.
             assert_eq!(send(press.clone(), Point::new(150.0, 42.0)), [Msg::Select(Selection::single(1))]);
+        }
+
+        #[test]
+        fn prepared_density_and_text_change_actual_row_clicks() {
+            let mut nodes = nodes();
+            nodes.set_expanded(&"a", true);
+            let renderer = crate::test_renderer::LayoutRenderer::new();
+            let mut retained = None;
+            for (density, size, expected_row) in [(1.0, 20.0, 1), (2.0, 30.0, 0)] {
+                let mut tokens = Tokens::default();
+                tokens.metrics.spacing.xs *= density;
+                tokens.metrics.spacing.sm *= density;
+                tokens.metrics.spacing.lg *= density;
+                let metrics = controls::Metrics::from_tokens(tokens);
+                let text = TextStyle { font: Font::DEFAULT, size, line_height: None };
+                let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
+                    TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                        .metrics(metrics, text)
+                        .expanders(Expanders::new(None, None))
+                        .on_select(Msg::Select)
+                        .into();
+                let tree = retained.get_or_insert_with(|| Tree::new(element.as_widget()));
+                element.as_widget_mut().diff(tree);
+                let node = element.as_widget_mut().layout(tree, &renderer, &layout::Limits::new(Size::ZERO, VIEW));
+                let mut bus = Bus::new();
+                let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
+                element.as_widget_mut().update(
+                    tree,
+                    &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    Layout::new(&node),
+                    mouse::Cursor::Available(Point::new(150.0, 35.0)),
+                    &renderer,
+                    &mut shell,
+                    &Rectangle::with_size(VIEW),
+                );
+                assert_eq!(bus.drain().collect::<Vec<_>>(), [Msg::Select(Selection::single(expected_row))]);
+                assert!(nodes.is_expanded(&"a"));
+                assert_eq!(nodes.visible_len(), 2);
+            }
         }
 
         #[test]

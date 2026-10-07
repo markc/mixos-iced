@@ -16,20 +16,20 @@ pub struct TextStyle<F = Font> {
 impl<F> TextStyle<F> {
     /// Height of a line box laid out with this style, in logical pixels:
     /// the absolute line height when set, else iced's default 1.3 factor.
-    pub fn line_box(self) -> f32 {
+    pub fn line_box(&self) -> f32 {
         self.line_height.unwrap_or(self.size * 1.3)
     }
 
     /// The smallest allocation one control row needs before padding: the
     /// text size, grown to the requested line box. This floor drives control
     /// allocation; the renderer still receives the requested line height.
-    pub fn minimum_height(self) -> f32 {
+    pub fn minimum_height(&self) -> f32 {
         self.size.max(self.line_box())
     }
 
     /// The iced [`LineHeight`] this style lays out with: absolute when a
     /// line height is set, else the default relative factor.
-    pub fn line_height_or_default(self) -> LineHeight {
+    pub fn line_height_or_default(&self) -> LineHeight {
         match self.line_height {
             Some(height) => LineHeight::Absolute(Pixels(height)),
             None => LineHeight::default(),
@@ -44,10 +44,16 @@ impl<F> TextStyle<F> {
         Theme: iced_widget::text::Catalog,
         Renderer: iced_core::text::Renderer<Font = F>,
     {
+        // Compute the line height before moving the font, so `F` does not
+        // need to be `Copy`.
+        let line_height = match self.line_height {
+            Some(height) => LineHeight::Absolute(Pixels(height)),
+            None => LineHeight::default(),
+        };
         iced_widget::Text::new(content)
             .font(self.font)
             .size(self.size)
-            .line_height(self.line_height_or_default())
+            .line_height(line_height)
     }
 
     pub fn input<'a, Message, Theme, Renderer>(
@@ -60,10 +66,16 @@ impl<F> TextStyle<F> {
         Theme: iced_widget::text_input::Catalog,
         Renderer: iced_core::text::Renderer<Font = F>,
     {
+        // Compute the line height before moving the font, so `F` does not
+        // need to be `Copy`.
+        let line_height = match self.line_height {
+            Some(height) => LineHeight::Absolute(Pixels(height)),
+            None => LineHeight::default(),
+        };
         iced_widget::TextInput::new(placeholder, value)
             .font(self.font)
             .size(self.size)
-            .line_height(self.line_height_or_default())
+            .line_height(line_height)
     }
 }
 

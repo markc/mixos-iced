@@ -13,9 +13,9 @@ use iced_core::layout::{self, Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
 use iced_core::text;
+use iced_core::widget::Tree;
 use iced_core::widget::text::{Ellipsis, LineHeight, Shaping, Wrapping};
 use iced_core::widget::tree::{State, Tag};
-use iced_core::widget::Tree;
 use iced_core::{Border, Color, Element, Event, Length, Point, Rectangle, Shell, Size, Widget};
 
 use super::{Catalog, Status};
@@ -116,15 +116,15 @@ pub struct ListState {
 // height, and keep the same [`ListState`] tree.
 trait Rows<'a, 'c, T, Message, Theme, Renderer>
 where
-    T: Clone + Display + Eq + Hash,
+    T: Clone + Display + Eq + Hash + 'a,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn options(&self) -> &'a [T];
     fn font(&self) -> Renderer::Font;
     fn text_size(&self) -> f32;
-    fn padding(&self) -> iced_core::Padding;
     fn row_height(&self) -> f32;
     fn text_line_height(&self) -> LineHeight;
     fn selected(&self) -> Option<usize>;
@@ -349,7 +349,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn options(&self) -> &'a [T] {
         self.options
@@ -359,9 +360,6 @@ where
     }
     fn text_size(&self) -> f32 {
         self.text_size
-    }
-    fn padding(&self) -> iced_core::Padding {
-        self.padding
     }
     // The legacy rows: the text size plus the vertical padding.
     fn row_height(&self) -> f32 {
@@ -387,7 +385,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn options(&self) -> &'a [T] {
         self.list.options
@@ -397,9 +396,6 @@ where
     }
     fn text_size(&self) -> f32 {
         self.list.text_size
-    }
-    fn padding(&self) -> iced_core::Padding {
-        self.list.padding
     }
     // The prepared rows: the content height (never less than the text size;
     // an absent line height is the 1.3 default factor) plus the vertical
@@ -434,7 +430,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn tag(&self) -> Tag {
         Rows::tag(self)
@@ -510,7 +507,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn tag(&self) -> Tag {
         Rows::tag(self)
@@ -626,15 +624,17 @@ mod tests {
 
     fn list<'a>(options: &'a [String]) -> TestList<'a> {
         // Leak the (capture-free) class and callback so the returned rows
-        // can borrow them for the caller's lifetime.
-        let class: <iced_core::Theme as Catalog>::Class<'a> =
-            <iced_core::Theme as Catalog>::default();
-        let on_selected = Box::leak(Box::new(|_: usize, _: String| String::new())
-            as Box<dyn Fn(usize, String) -> String>);
+        // can borrow them for the caller's lifetime. The class reference
+        // points at the leaked box itself, not its dyn target.
+        let class: &'a <iced_core::Theme as Catalog>::Class<'a> =
+            Box::leak(Box::new(<iced_core::Theme as Catalog>::default()));
+        let on_selected: &'a dyn Fn(usize, String) -> String =
+            Box::leak(Box::new(|_: usize, _: String| String::new())
+                as Box<dyn Fn(usize, String) -> String>);
         List {
             options,
             font: iced_core::Font::DEFAULT,
-            class: Box::leak(class),
+            class,
             on_selected,
             padding: 5.0.into(),
             text_size: 12.0,
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(Widget::tag(&rows), Tag::of::<ListState>());
         assert_eq!(layout_height(rows, &renderer), (12.0 + 10.0) * 3.0);
         // A prepared line height drives the same, taller rows everywhere.
-        let rows: TestStyled<'_> = list(&options).line_height(30.0);
+        let rows: TestStyled<'_> = list(&options).line_height(30.0_f32);
         assert_eq!(layout_height(rows, &renderer), (30.0 + 10.0) * 3.0);
         // A prepared style without a line height uses the 1.3 default
         // factor, unlike the legacy rows above.
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn pointer_hover_maps_rows_with_the_prepared_line_height() {
         let options = options();
-        let mut rows: TestStyled<'_> = list(&options).line_height(30.0);
+        let mut rows: TestStyled<'_> = list(&options).line_height(30.0_f32);
         let mut tree = Tree::new(&rows as &dyn Widget<String, iced_core::Theme, LayoutRenderer>);
         Widget::diff(&mut rows, &mut tree);
         let renderer = LayoutRenderer::new();

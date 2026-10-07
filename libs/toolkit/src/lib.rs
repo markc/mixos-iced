@@ -97,7 +97,16 @@ pub use fader::Fader;
 pub use file_pane::FilePane;
 pub use fit_text::FitText;
 pub use flush_column::FlushColumn;
-pub use fonts::{FontSet, FontSource, Fonts, IconFont, Role};
+pub use fonts::{
+    FontSet, FontSource, Fonts, IconFont, Role,
+    registry::{
+        CollectionId, FaceEvidence, FamilyGroup, FontBlob, FontCollection, FontRegistry,
+        IconCatalogue, IconSelectionRequest, OwnedFace, OwnedSelection, Registration,
+        RegistrationBatch, RegistrationError, RegistrationEvidence, RegistryUsage, Resource,
+        Selection as FontSelectionReceipt, SelectionEvidence, SelectionRequest, SourceEvidence,
+        SourceFace, SubstitutionEvidence, WeightPolicy,
+    },
+};
 pub use grip::Grip;
 pub use icon::{Icon, icon};
 #[cfg(feature = "image")]

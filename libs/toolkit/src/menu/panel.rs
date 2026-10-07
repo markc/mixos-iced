@@ -3,8 +3,8 @@
 //! its own surface (xdg_popup), plus the panel geometry both modes share.
 use iced_core::widget::{Tree, tree};
 use iced_core::{
-    Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Widget, layout, mouse, renderer,
-    text, touch,
+    Element, Event, Font, Layout, Length, Point, Rectangle, Shell, Size, Widget, layout, mouse,
+    renderer, text, touch,
 };
 
 use super::{Item, Kind, MenuStyle, label, quad, resolve, resolve_text, text_width};
@@ -21,7 +21,7 @@ pub const SEPARATOR_HEIGHT: f32 = 8.0;
 /// (the text size and the requested line height, whichever is larger; an
 /// absent line height is the 1.3 default factor). Separators keep
 /// `SEPARATOR_HEIGHT`.
-pub(crate) fn row_height<Message, F>(
+pub(crate) fn row_height<Message, F: Copy>(
     item: &Item<Message>,
     style: MenuStyle,
     text: Option<TextStyle<F>>,
@@ -130,7 +130,7 @@ pub fn row_bounds<Message>(
     width: f32,
     style: MenuStyle,
 ) -> Option<Rectangle> {
-    row_bounds_with(items, index, width, style, None)
+    row_bounds_with::<Message, Font>(items, index, width, style, None)
 }
 
 /// `row_bounds` with a prepared text style; the font does not change row
@@ -170,7 +170,7 @@ pub(crate) fn row_at_with<Message, F: Copy>(
 /// The row at panel-relative `y`, if any (separators and disabled rows
 /// included; the navigator decides what they do).
 pub fn row_at<Message>(items: &[Item<Message>], y: f32, style: MenuStyle) -> Option<usize> {
-    row_at_with(items, y, style, None)
+    row_at_with::<Message, Font>(items, y, style, None)
 }
 
 /// `row_at` with a prepared text style; the font does not change row heights,
@@ -354,19 +354,31 @@ fn panel_layout<Message, Renderer: text::Renderer>(
     ))
 }
 
-fn panel_update<Message, Renderer: text::Renderer>(
-    items: &[Item<Message>],
+struct PanelInput<'a, Message, F> {
+    items: &'a [Item<Message>],
     selected: Option<usize>,
     style: Option<MenuStyle>,
-    text: Option<TextStyle<Renderer::Font>>,
-    on_hover: Option<&dyn Fn(Option<usize>) -> Message>,
-    on_press: Option<&dyn Fn(usize) -> Message>,
+    text: Option<TextStyle<F>>,
+    on_hover: Option<&'a dyn Fn(Option<usize>) -> Message>,
+    on_press: Option<&'a dyn Fn(usize) -> Message>,
+}
+
+fn panel_update<Message, Renderer: text::Renderer>(
+    input: PanelInput<'_, Message, Renderer::Font>,
     tree: &mut Tree,
     event: &Event,
     layout: Layout<'_>,
     cursor: mouse::Cursor,
     shell: &mut Shell<'_, Message>,
 ) {
+    let PanelInput {
+        items,
+        selected,
+        style,
+        text,
+        on_hover,
+        on_press,
+    } = input;
     let bounds = layout.bounds();
     let state = tree.state.downcast_mut::<PanelState>();
     let metrics = || style.unwrap_or_default();
@@ -385,8 +397,7 @@ fn panel_update<Message, Renderer: text::Renderer>(
             let row = row_under(point);
             // Also re-report a row that keyboard navigation moved the
             // selection away from, as the in-surface overlay reselects it.
-            let reselect =
-                row != selected && row.is_some_and(|row| items[row].selectable());
+            let reselect = row != selected && row.is_some_and(|row| items[row].selectable());
             if state.hovered != Some(row) || reselect {
                 state.hovered = Some(row);
                 if let Some(on_hover) = on_hover {
@@ -472,13 +483,15 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        panel_update(
-            self.items,
-            self.selected,
-            self.style,
-            None,
-            self.on_hover.as_deref(),
-            self.on_press.as_deref(),
+        panel_update::<Message, Renderer>(
+            PanelInput {
+                items: self.items,
+                selected: self.selected,
+                style: self.style,
+                text: None,
+                on_hover: self.on_hover.as_deref(),
+                on_press: self.on_press.as_deref(),
+            },
             tree,
             event,
             layout,
@@ -515,7 +528,7 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        panel_interaction(self.items, self.metrics(), None, layout, cursor)
+        panel_interaction::<Message, Renderer>(self.items, self.metrics(), None, layout, cursor)
     }
 }
 
@@ -566,13 +579,15 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        panel_update(
-            self.panel.items,
-            self.panel.selected,
-            self.panel.style,
-            Some(self.text_style),
-            self.panel.on_hover.as_deref(),
-            self.panel.on_press.as_deref(),
+        panel_update::<Message, Renderer>(
+            PanelInput {
+                items: self.panel.items,
+                selected: self.panel.selected,
+                style: self.panel.style,
+                text: Some(self.text_style),
+                on_hover: self.panel.on_hover.as_deref(),
+                on_press: self.panel.on_press.as_deref(),
+            },
             tree,
             event,
             layout,
@@ -609,7 +624,7 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        panel_interaction(
+        panel_interaction::<Message, Renderer>(
             self.panel.items,
             self.panel.metrics(),
             Some(self.text_style),
@@ -673,10 +688,19 @@ mod tests {
 
     #[test]
     fn panel_size_has_a_minimum_width_and_sums_rows() {
-        let size = panel_size(&(), &items(), MenuStyle::default());
+        let size = panel_size(
+            &crate::test_renderer::LayoutRenderer::new(),
+            &items(),
+            MenuStyle::default(),
+        );
         assert_eq!(size, Size::new(MIN_PANEL_WIDTH, 64.0));
         assert_eq!(
-            panel_size::<u8, ()>(&(), &[], MenuStyle::default()).height,
+            panel_size::<u8, crate::test_renderer::LayoutRenderer>(
+                &crate::test_renderer::LayoutRenderer::new(),
+                &[],
+                MenuStyle::default()
+            )
+            .height,
             0.0
         );
     }
@@ -695,14 +719,26 @@ mod tests {
         };
         // Legacy helpers keep the style's own row height without a prepared
         // text: 20 + 8 (separator) + 20.
-        assert_eq!(panel_size(&(), &items, style).height, 48.0);
+        assert_eq!(
+            panel_size(&crate::test_renderer::LayoutRenderer::new(), &items, style).height,
+            48.0
+        );
         assert_eq!(row_at(&items, 19.9, style), Some(0));
         assert_eq!(row_at(&items, 20.0, style), Some(1));
         // A prepared text style drives one height everywhere: rows are never
         // shorter than the 30px content height.
         assert_eq!(row_height(&items[0], style, Some(text)), 30.0);
         assert_eq!(row_height(&items[1], style, Some(text)), SEPARATOR_HEIGHT);
-        assert_eq!(panel_size_text(&(), &items, style, text).height, 68.0);
+        assert_eq!(
+            panel_size_text(
+                &crate::test_renderer::LayoutRenderer::new(),
+                &items,
+                style,
+                text
+            )
+            .height,
+            68.0
+        );
         assert_eq!(
             row_bounds_text(&items, 2, 200.0, style, text).map(|row| row.y),
             Some(38.0)
@@ -731,7 +767,16 @@ mod tests {
             line_height: Some(10.0),
         };
         assert_eq!(row_height(&items[0], style, Some(text)), 40.0);
-        assert_eq!(panel_size_text(&(), &items, style, text).height, 88.0);
+        assert_eq!(
+            panel_size_text(
+                &crate::test_renderer::LayoutRenderer::new(),
+                &items,
+                style,
+                text
+            )
+            .height,
+            88.0
+        );
         assert_eq!(
             row_bounds_text(&items, 2, 200.0, style, text).map(|row| row.y),
             Some(48.0)
@@ -744,7 +789,7 @@ mod tests {
             line_height: None,
         };
         assert_eq!(row_height(&items[0], style, Some(text)), 26.0);
-        assert_eq!(row_height(&items[0], style, None), 20.0);
+        assert_eq!(row_height::<u8, Font>(&items[0], style, None), 20.0);
     }
 
     #[test]
@@ -838,13 +883,13 @@ mod tests {
                 iced_core::shell::Waker::noop(),
                 &mut messages,
             );
-            Widget::<u8, iced_core::Theme, ()>::update(
+            Widget::<u8, iced_core::Theme, crate::test_renderer::LayoutRenderer>::update(
                 &mut panel,
                 &mut tree,
                 &event,
                 Layout::new(&node),
                 at.map_or(mouse::Cursor::Unavailable, mouse::Cursor::Available),
-                &(),
+                &crate::test_renderer::LayoutRenderer::new(),
                 &mut shell,
                 &Rectangle::with_size(Size::INFINITE),
             );

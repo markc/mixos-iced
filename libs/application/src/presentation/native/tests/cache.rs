@@ -21,7 +21,11 @@ async fn next(worker: &mut Worker<u64>) -> Event<u64> {
 }
 fn cache_worker(directory: &std::path::Path) -> Worker<u64> {
     install_fonts();
-    Worker::offline_with_cache(directory.to_owned(), |_, snapshot| Ok(snapshot.revision.0))
+    Worker::offline_with_cache_and_host(
+        directory.to_owned(),
+        |_, snapshot| Ok(snapshot.revision.0),
+        hermetic_host(),
+    )
 }
 fn cache_path(directory: &std::path::Path) -> std::path::PathBuf {
     directory.join(format!(
@@ -99,17 +103,21 @@ async fn unavailable_cached_resources_fall_through_to_prepared_embedded() {
         .unwrap();
     drop(writer);
     install_fonts();
-    let mut worker = Worker::offline_with_cache(dir.path().to_owned(), |_, snapshot| {
-        if snapshot.revision == Revision(1) {
-            Err(Diagnostic::new(
-                "fixture_missing_resource",
-                "resource",
-                "missing",
-            ))
-        } else {
-            Ok(snapshot.revision.0)
-        }
-    });
+    let mut worker = Worker::offline_with_cache_and_host(
+        dir.path().to_owned(),
+        |_, snapshot| {
+            if snapshot.revision == Revision(1) {
+                Err(Diagnostic::new(
+                    "fixture_missing_resource",
+                    "resource",
+                    "missing",
+                ))
+            } else {
+                Ok(snapshot.revision.0)
+            }
+        },
+        hermetic_host(),
+    );
     let mut cold = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     let (_, jobs) = cold.handle(Event::Wake, None);
     worker.replace(jobs);
@@ -295,7 +303,10 @@ async fn bridge_shutdown_flushes_newest_capture_without_consuming_watch_notifica
 
 #[test]
 fn absent_cache_root_is_configuration_evidence_not_a_write_or_consumer_failure() {
-    let (ui, _lane) = super::super::bridge(activated(), Worker::offline(|_, _| Ok(0_u64)));
+    let (ui, _lane) = super::super::bridge(
+        activated(),
+        Worker::offline_with_host(|_, _| Ok(0_u64), hermetic_host()),
+    );
     let cache = ui.session().cache_evidence();
     assert_eq!(cache.configuration.unwrap().code, "cache_unconfigured");
     assert!(cache.fault.is_none());

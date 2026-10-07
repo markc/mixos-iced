@@ -35,6 +35,10 @@ pub struct Prepared {
     projection: Projection,
     typography: Typography,
     choices: BTreeMap<String, FontChoice>,
+    /// The immutable resource receipt of a host preparation. [`bootstrap`]
+    /// keeps this `None`: no I/O or registration happens before connection.
+    #[cfg(feature = "resources")]
+    resources: Option<crate::resources::PreparedResources>,
 }
 
 /// Immediate generic appearance until the host activates checked resources.
@@ -385,6 +389,8 @@ impl Projection {
             projection: self,
             typography,
             choices,
+            #[cfg(feature = "resources")]
+            resources: None,
         })
     }
     /// Check the process's already registered fonts. An implicit package source
@@ -433,6 +439,36 @@ impl Projection {
         })
     }
 }
+#[cfg(feature = "resources")]
+impl Projection {
+    /// Every resolved type record, including records referenced by compiled
+    /// button assignments. Crate-private: resource preparation resolves all
+    /// of them, but public callers must not treat this as preparation.
+    pub(crate) fn type_records(&self) -> &BTreeMap<String, ResolvedTypeRecord> {
+        &self.types
+    }
+
+    /// Attach a verified resource receipt to a fully resolved projection.
+    /// This delegates typography construction to [`Projection::prepare`] and
+    /// attaches the immutable receipt; callers cannot forge a successful
+    /// receipt because the receipt only exists after a verified read and one
+    /// atomic toolkit batch.
+    pub(crate) fn prepare_with_resources(
+        self,
+        resources: crate::resources::PreparedResources,
+    ) -> Result<Prepared, Diagnostic> {
+        let mut prepared = self.prepare(|name, _| {
+            resources.text_selection(name).ok_or_else(|| {
+                fault(
+                    &format!("typography.{name}"),
+                    "verified batch resolved no text record",
+                )
+            })
+        })?;
+        prepared.resources = Some(resources);
+        Ok(prepared)
+    }
+}
 impl Prepared {
     /// A validated compiler read cell. This does not recreate accepted design
     /// ownership. Every closed-axis key is present after projection validation.
@@ -478,5 +514,19 @@ impl Prepared {
     }
     pub fn reduced_motion(&self) -> bool {
         self.projection.reduced_motion
+    }
+    /// The immutable resource receipt attached by a verified host preparation:
+    /// the exact binding, the ready icons and the selection evidence.
+    /// [`bootstrap`] prepared presentations return `None`.
+    #[cfg(feature = "resources")]
+    pub fn resources(&self) -> Option<&crate::resources::PreparedResources> {
+        self.resources.as_ref()
+    }
+    /// Attach the honest receipt of a preparation that resolved its text
+    /// records directly (the no-set generic rescue); crate-private, used by
+    /// the resource host only.
+    #[cfg(feature = "resources")]
+    pub(crate) fn attach_resources(&mut self, resources: crate::resources::PreparedResources) {
+        self.resources = Some(resources);
     }
 }

@@ -1331,14 +1331,15 @@ mod tests {
                 ) + Send
                 + 'static,
         ) {
-            renderer::Renderer::allocate_image(&mut (), handle, callback);
+            let _ = handle;
+        callback(Err(iced_core::image::Error::Unsupported));
         }
     }
 
     impl text::Renderer for TextRecorder {
         type Font = Font;
-        type Paragraph = ();
-        type Editor = ();
+        type Paragraph = iced_graphics::text::Paragraph;
+        type Editor = iced_graphics::text::Editor;
 
         const ICON_FONT: Font = Font::new("Iced-Icons");
         const CHECKMARK_ICON: char = '\u{f00c}';
@@ -1355,8 +1356,8 @@ mod tests {
         fn default_size(&self) -> Pixels {
             Pixels(16.0)
         }
-        fn fill_paragraph(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
-        fn fill_editor(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
+        fn fill_paragraph(&mut self, _: &Self::Paragraph, _: Point, _: Color, _: Rectangle) {}
+        fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
         fn fill_text(&mut self, text: text::Text, _: Point, _: Color, _: Rectangle) {
             self.texts
                 .push((text.content, text.font, text.size, text.line_height));

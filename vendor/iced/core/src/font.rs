@@ -167,6 +167,29 @@ pub enum Weight {
     Bold,
     ExtraBold,
     Black,
+    /// An exact numeric weight in the CSS 1..=1000 range.
+    ///
+    /// Distinct from the named variants even when the numeric values
+    /// coincide: `Numeric(400)` and `Normal` are not the same enum value.
+    Numeric(u16),
+}
+
+impl Weight {
+    /// The numeric CSS value of this weight.
+    pub const fn value(self) -> u16 {
+        match self {
+            Weight::Thin => 100,
+            Weight::ExtraLight => 200,
+            Weight::Light => 300,
+            Weight::Normal => 400,
+            Weight::Medium => 500,
+            Weight::Semibold => 600,
+            Weight::Bold => 700,
+            Weight::ExtraBold => 800,
+            Weight::Black => 900,
+            Weight::Numeric(value) => value,
+        }
+    }
 }
 
 /// The width of some text.

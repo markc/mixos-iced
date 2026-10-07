@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.7
+## 0.2.9
 
 - `typography::TextStyle` gains `minimum_height()` (the text size grown to the
   requested line box), the allocation floor of one control row; the renderer
@@ -59,6 +59,26 @@
   zero from its event timestamp, and no paused or clipped time is integrated.
   Wiring `animated` from `Prepared::reduced_motion` is the host's
   responsibility, not the widget's.
+
+## 0.2.8
+
+- Add `fonts::registry`: one `FontRegistry` per process registers caller-supplied
+  font collections and immutable role/icon selections against iced's shared font
+  system in single atomic batches. Sources are re-digested, faces parsed in
+  scratch databases, every selection resolved — all eligible declared fallback
+  groups reach the renderer in declaration order, weights are sealed exact or
+  explicitly substituted, styles and stretches are validated against the faces,
+  and icon catalogue family claims must match the parsed intrinsic family —
+  with all process-wide capacities checked in checked arithmetic before one
+  renderer transaction commits. Every error is produced before that call, so
+  registry and renderer are left exactly as they were. Selections render
+  through private digest aliases; two roles making the same selection share
+  one alias; identical or collection-only batches leave the numeric
+  font-system version in the evidence unchanged; and `Selection::owned()`
+  hands back the selected policy's source bytes, face indices, intrinsic
+  evidence and exact effective weight without re-registering anything.
+  Legacy `fonts::install` never replaces faces pinned by the registry;
+  `font_for` and `try_font_for` behaviour is unchanged.
 
 ## 0.2.6
 
@@ -134,6 +154,22 @@
 
 ## Unreleased
 
+- Owned icon decoding supports PNG, JPEG, GIF, WebP, BMP and ICO with strict
+  dimensions and checked source allocation before pixels are materialised.
+  Ready images retain their intrinsic aspect ratio. The bounded SVG subset
+  accepts filled shapes and bounded gradients, refuses DTDs, CSS, strokes,
+  indirect painting and image/text dependencies before constructing the tree,
+  and caps XML/depth, path/points bytes and gradient expansion. Converted
+  groups cannot require isolation. Final pixel accounting is distinct from
+  structural conversion budgets and advisory codec scratch limits.
+  Zero-alpha tints fail visibly.
+
+- The opt-in `font-registration-guards` integration target owns the font
+  registration seam guards: the cosmic guard sources compile from their
+  single vendored owner and the iced wrapper assertions run through the
+  public font system, registration, version and paragraph APIs. Test-only;
+  no production feature branch.
+
 - Native drag areas carry the host's press token in the same widget message
   as the payload. `Session::start_with_gesture` avoids asynchronous subscription
   ordering races while retaining backend window, seat and liveness checks.
@@ -154,6 +190,12 @@
   Preview/Commit/Cancel lifecycle; scrollable tabs and middle-click close.
 - Icons: PNG/SVG fallback assets with symbolic tint, scale-aware bounded
   metadata cache and external SVG resources disabled (`image` feature).
+- Icons: one owned-byte decoder (`icons::decode_owned`, `ImageFormat`,
+  `DecodedIcon`, `IconDecodeError`) shared by prepared resources and the
+  legacy `Assets` path, with bounded encoded/side/decoded caps, refused
+  external/data image hrefs and text dependencies, EXIF orientation,
+  symbolic tint and blank rejection. `Icon::with_glyph` owns a resolved
+  glyph/font pair that never consults the installed icon font table.
 - Native DnD: portable `dnd::native::Session` and MIME codecs with explicit
   target acknowledgement and source completion; failed/cancelled transfers
   cannot remove a Move source. Native window adapters remain host-owned.

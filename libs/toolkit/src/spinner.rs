@@ -260,6 +260,7 @@ where
 mod tests {
     use super::*;
     use iced_core::shell::{Bus, Waker};
+    use crate::test_renderer::LayoutRenderer;
 
     fn frame<Message: 'static>(
         spinner: &mut Spinner,
@@ -269,22 +270,22 @@ mod tests {
     ) {
         let node = Node::new(Size::new(20.0, 20.0));
         let layout = Layout::new(&node);
-        Widget::<Message, iced_core::Theme, ()>::update(
+        Widget::<Message, iced_core::Theme, LayoutRenderer>::update(
             spinner,
             tree,
             &Event::Window(window::Event::RedrawRequested(now)),
             layout,
             mouse::Cursor::Unavailable,
-            &(),
+            &LayoutRenderer::default(),
             shell,
             &Rectangle::with_size(Size::new(20.0, 20.0)),
         );
     }
 
     fn spinner<Message: 'static>() -> (Spinner, Tree) {
-        let spinner = Spinner::new();
-        let mut tree = Tree::new(&spinner as &dyn Widget<Message, iced_core::Theme, ()>);
-        spinner.diff(&mut tree);
+        let mut spinner = Spinner::new();
+        let mut tree = Tree::new(&spinner as &dyn Widget<Message, iced_core::Theme, LayoutRenderer>);
+        Widget::<Message, iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         (spinner, tree)
     }
 
@@ -337,7 +338,7 @@ mod tests {
         let (mut spinner, mut tree) = spinner::<()>();
         let mut shell = shell::<()>();
         spinner = spinner.animated(false);
-        spinner.diff(&mut tree);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, now, &mut shell);
         assert!(matches!(shell.redraw_request(), RedrawRequest::None));
         assert!(tree.state.downcast_ref::<SpinnerState>().last_update.is_none());
@@ -345,20 +346,20 @@ mod tests {
         let (mut spinner, mut tree) = spinner::<()>();
         let mut shell = shell::<()>();
         spinner = spinner.rate(Duration::ZERO);
-        spinner.diff(&mut tree);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, now, &mut shell);
         assert!(matches!(shell.redraw_request(), RedrawRequest::None));
         // Bounds clipped by the viewport.
         let (mut spinner, mut tree) = spinner::<()>();
         let mut shell = shell::<()>();
         let node = Node::new(Size::new(20.0, 20.0));
-        Widget::<(), iced_core::Theme, ()>::update(
+        Widget::<(), iced_core::Theme, LayoutRenderer>::update(
             &mut spinner,
             &mut tree,
             &Event::Window(window::Event::RedrawRequested(now)),
             Layout::new(&node),
             mouse::Cursor::Unavailable,
-            &(),
+            &LayoutRenderer::default(),
             &mut shell,
             &Rectangle::new(
                 iced_core::Point::new(100.0, 100.0),
@@ -380,7 +381,7 @@ mod tests {
         frame(&mut spinner, &mut tree, now, &mut shell);
         let t = tree.state.downcast_ref::<SpinnerState>().t;
         spinner = spinner.animated(false);
-        spinner.diff(&mut tree);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, now + Duration::from_secs(5), &mut shell);
         // The phase survives; the widget schedules nothing of its own and
         // never replaces the independently supplied earlier deadline.
@@ -404,11 +405,11 @@ mod tests {
         assert!(phase > 0.0);
         // A long pause without animation: the origin clears.
         spinner = spinner.animated(false);
-        spinner.diff(&mut tree);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, next + Duration::from_secs(60), &mut shell);
         // Resume: the first active frame advances zero and keeps the phase.
         spinner = spinner.animated(true);
-        spinner.diff(&mut tree);
+        Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         let resumed = next + Duration::from_secs(61);
         frame(&mut spinner, &mut tree, resumed, &mut shell);
         assert_eq!(
@@ -438,8 +439,8 @@ mod tests {
         // therefore the phase.
         let mut rebuilt = Spinner::new();
         assert_eq!(
-            Widget::<(), iced_core::Theme, ()>::tag(&rebuilt),
-            Widget::<(), iced_core::Theme, ()>::tag(&spinner)
+            Widget::<(), iced_core::Theme, LayoutRenderer>::tag(&rebuilt),
+            Widget::<(), iced_core::Theme, LayoutRenderer>::tag(&spinner)
         );
         rebuilt.diff(&mut tree);
         assert_eq!(tree.state.downcast_ref::<SpinnerState>().t, phase);

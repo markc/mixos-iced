@@ -100,9 +100,9 @@ pub struct StyledToggle<'a, Message, F> {
     padding: Padding,
 }
 
-impl<Message, F> StyledToggle<'_, Message, F> {
+impl<'a, Message, F> StyledToggle<'a, Message, F> {
     /// Enables the toggle; a press publishes the new state.
-    pub fn on_toggle(mut self, callback: impl Fn(bool) -> Message + '_) -> Self {
+    pub fn on_toggle(mut self, callback: impl Fn(bool) -> Message + 'a) -> Self {
         self.toggle = self.toggle.on_toggle(callback);
         self
     }
@@ -374,13 +374,13 @@ mod tests {
             iced_core::shell::Waker::noop(),
             &mut messages,
         );
-        Widget::<bool, iced_core::Theme, ()>::update(
+        Widget::<bool, iced_core::Theme, crate::test_renderer::LayoutRenderer>::update(
             toggle,
             &mut tree,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Layout::new(&node),
             mouse::Cursor::Available(at),
-            &(),
+            &crate::test_renderer::LayoutRenderer::new(),
             &mut shell,
             &Rectangle::with_size(Size::INFINITE),
         );

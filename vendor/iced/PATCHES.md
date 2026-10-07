@@ -38,7 +38,9 @@ Further out the curve climbs fast (2,176 lines at 08-29, 28,382 at 10-02).
 
 To re-check: `git diff 3de451447 <tree> -- . ':!Cargo.lock'` must list only the
 files below (plus compd's guard: `wgpu/src/compd_patch_guard.rs` and the
-`mod compd_patch_guard` line in `wgpu/src/lib.rs`).
+`mod compd_patch_guard` line in `wgpu/src/lib.rs`), plus `core/src/font.rs`
+and `graphics/src/text.rs` from the "Numeric weights and the pinned
+registration seam" section further down.
 
 ## Local delta (+152/−103 in 8 files)
 
@@ -90,6 +92,62 @@ and all seven fail on a pristine extract of upstream `3de451447` + cryoglyph
 Retire the API-port part of this delta (and the corresponding guards) when a
 re-vendor lands an upstream iced that already targets wgpu ≥ 30; keep the
 re-wiring guards for as long as the forks are vendored.
+
+## Numeric weights and the pinned registration seam
+
+`graphics/src/text.rs::Version::value()` exposes a read-only numeric revision
+for bounded registry accounting and exact registration-delta guards. The
+counter remains private; callers cannot construct or advance a Version.
+
+`core/src/font.rs` adds `Weight::Numeric(u16)` and
+`const fn value(self) -> u16`, so exact CSS weights are representable without
+bucketing. The four exhaustive `Weight` matches in this tree now convert
+through `value()`: `graphics/src/text.rs` (`to_weight`),
+`libs/toolkit/src/fonts.rs` (`registered_font`),
+`services/compd/crates/scene-host/src/appearance.rs` and
+`apps/dopus/src/app.rs`. No other exhaustive match on `Weight` exists in the
+tree (audited 2026-10-08; `apps/dopus/src/icons.rs` only constructs weights).
+
+`graphics/src/text.rs::FontSystem::register_fonts` forwards the
+cosmic-text registration transaction (see `vendor/cosmic-text/PATCHES.md`)
+and bumps `Version` exactly once when faces or policies were actually added;
+identical transactions do not bump, and the hypothetical version overflow is
+checked before the cosmic commit. `load_font` now refreshes the derived
+database indexes after a successful mutation instead of relying on the match
+cache clear alone.
+
+The fontdb 0.23 loader returns all inserted IDs (including collections), so
+`load_font` tests that this result is non-empty before refreshing indexes or
+advancing the version. Malformed input leaves the version unchanged.
+
+The guard tests live in the root-owned toolkit integration target
+(`libs/toolkit/tests/font_registration.rs`, feature
+`font-registration-guards`), which path-includes the cosmic seam sources
+(see `vendor/cosmic-text/PATCHES.md`) and ports the wrapper scenarios below
+through the public font system, registration, version and paragraph APIs.
+The exact-delta assertions use the read-only `Version::value()` accessor.
+The guard feature also forwards the cosmic `monospace_fallback` feature
+through a test-only toolkit alias, so the path-included per-script
+monospace index guards run their full assertions. The private `cfg(test)` duplicates previously carried in this file and in
+`core/src/font.rs` were removed so the patch documentation names one
+executable owner; no upstream unit test was touched. The ported scenarios
+use the packaged Noto Sans fixture for their text (an icon-only face does
+not establish Latin paragraph coverage) and assert non-empty raster ink,
+not just a returned image.
+
+Run from the repository root at the checked/updated lock SHA:
+
+```
+cargo test --locked --profile release-fast -p toolkit --features font-registration-guards,tiny-skia --test font_registration
+```
+
+| test | fails when |
+|---|---|
+| `named_and_numeric_weights_keep_their_exact_values` | a named weight loses its 100..=900 value, or a numeric weight loses its exact value (1, 350, 650, 1000) |
+| `registration_changes_version_and_noops_stay_stable` | a successful registration does not advance the version by exactly one, an identical or empty transaction advances it, or a failed registration changes the version or the live database/policy facts |
+| `one_transaction_with_many_faces_activates_once` | one transaction with several faces and policies advances the version by more than one, or the no-op that follows it advances it again |
+| `retained_paragraph_stays_pinned_across_registration_version` | a retained paragraph does not report a Shape difference through the comparison path after a version bump, its re-shape loses the original face/metrics, or it stops rasterising non-empty ink from the pinned face |
+
 
 ## Toolkit input accessors retired
 

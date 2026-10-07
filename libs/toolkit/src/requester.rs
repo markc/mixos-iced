@@ -44,7 +44,7 @@ pub struct TextStyles<F = iced_core::Font> {
     button: TextStyle<F>,
 }
 
-impl<F> TextStyles<F> {
+impl<F: Copy> TextStyles<F> {
     /// The prepared roles: `ui` for the path field, `small` for path,
     /// list, recent and error labels.
     pub fn new(ui: TextStyle<F>, small: TextStyle<F>) -> Self {
@@ -69,6 +69,7 @@ fn label<'a, Theme, Renderer>(
     text: TextStyle<Renderer::Font>,
 ) -> iced_widget::Text<'a, Theme, Renderer>
 where
+    Theme: iced_widget::text::Catalog + 'a,
     Renderer: iced_core::text::Renderer,
 {
     iced_widget::text(content)

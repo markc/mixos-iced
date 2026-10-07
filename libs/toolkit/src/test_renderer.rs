@@ -367,7 +367,8 @@ impl iced_core::Renderer for FaceRenderer {
         handle: &image::Handle,
         callback: impl FnOnce(Result<image::Allocation, image::Error>) + Send + 'static,
     ) {
-        renderer::Renderer::allocate_image(&mut (), handle, callback);
+        let _ = handle;
+        callback(Err(iced_core::image::Error::Unsupported));
     }
 }
 
