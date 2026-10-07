@@ -35,6 +35,11 @@ path = "src/bin/native-frame-iced-recovery-probe.rs"
 required-features = ["native-frame-probe"]
 
 [[bin]]
+name = "native-frame-iced-capacity-probe"
+path = "src/bin/native-frame-iced-capacity-probe.rs"
+required-features = ["native-frame-probe"]
+
+[[bin]]
 name = "native-frame-winit-probe"
 path = "src/bin/native-frame-winit-probe.rs"
 required-features = ["frame-probes"]

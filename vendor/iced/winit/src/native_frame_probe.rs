@@ -11,7 +11,9 @@ use crate::futures::futures::channel::oneshot;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use winit::presentation::PresentationFeedback;
 
+pub(crate) mod capacity;
 mod recovery;
+pub use capacity::{CapacityGuard, CapacityHandle, CapacityReport, install_capacity};
 pub use recovery::{
     RecoveryGuard, RecoveryHandle, RecoveryPlan, RecoveryReport, install_after_commit_recovery,
     install_recovery,
@@ -22,6 +24,7 @@ static INSTALLED: Mutex<Option<Installation>> = Mutex::new(None);
 enum Installation {
     Ordering(Weak<Control>),
     Recovery(Weak<recovery::Control>),
+    Capacity(Weak<capacity::Control>),
 }
 
 impl Installation {
@@ -29,6 +32,7 @@ impl Installation {
         match self {
             Self::Ordering(control) => control.strong_count() != 0,
             Self::Recovery(control) => control.strong_count() != 0,
+            Self::Capacity(control) => control.strong_count() != 0,
         }
     }
 }
@@ -152,7 +156,7 @@ impl Drop for Guard {
             .as_ref()
             .and_then(|installation| match installation {
                 Installation::Ordering(control) => control.upgrade(),
-                Installation::Recovery(_) => None,
+                Installation::Recovery(_) | Installation::Capacity(_) => None,
             })
             .is_some_and(|control| Arc::ptr_eq(&control, &self.0))
         {
@@ -241,7 +245,7 @@ impl Gate {
             Some(Installation::Recovery(control)) => {
                 (None, control.upgrade().map(recovery::Gate::new))
             }
-            None => (None, None),
+            Some(Installation::Capacity(_)) | None => (None, None),
         };
         Self {
             control,
@@ -276,6 +280,7 @@ impl Gate {
         binding: Option<&FrameBinding>,
         physical_size: (u32, u32),
     ) -> Option<FailurePoint> {
+        capacity::begin(window, binding, physical_size);
         if let Some(recovery) = &mut self.recovery {
             return recovery.begin(window, binding, physical_size);
         }
@@ -321,6 +326,7 @@ impl Gate {
         fault_consumed: Option<bool>,
         pre_present_called: bool,
     ) -> Option<PresentationFeedback> {
+        capacity::submitted(window, binding, request, successful);
         if let Some(recovery) = &mut self.recovery {
             recovery.submitted(
                 window,

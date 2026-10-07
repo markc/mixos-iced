@@ -126,7 +126,7 @@ impl Drop for RecoveryGuard {
                 Installation::Recovery(control) => control
                     .upgrade()
                     .is_some_and(|control| Arc::ptr_eq(&control, &self.0)),
-                Installation::Ordering(_) => false,
+                Installation::Ordering(_) | Installation::Capacity(_) => false,
             })
         {
             *installed = None;

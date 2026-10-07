@@ -32,11 +32,24 @@ struct ProcessBudget {
 pub(crate) struct CapacityWake {
     ping: sctk::reexports::calloop::ping::Ping,
     pending: AtomicBool,
+    #[cfg(test)]
+    acknowledgements: AtomicUsize,
 }
 
 impl CapacityWake {
     pub(crate) fn acknowledge(&self) {
-        self.pending.store(false, Ordering::Release);
+        let pending = self.pending.swap(false, Ordering::AcqRel);
+        #[cfg(test)]
+        if pending {
+            self.acknowledgements.fetch_add(1, Ordering::Relaxed);
+        }
+        #[cfg(not(test))]
+        let _ = pending;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_acknowledgements(&self) -> usize {
+        self.acknowledgements.load(Ordering::Relaxed)
     }
 
     fn notify(&self) {
@@ -48,7 +61,12 @@ impl CapacityWake {
 
 impl ProcessBudget {
     fn subscribe(&self, ping: sctk::reexports::calloop::ping::Ping) -> Arc<CapacityWake> {
-        let wake = Arc::new(CapacityWake { ping, pending: AtomicBool::new(false) });
+        let wake = Arc::new(CapacityWake {
+            ping,
+            pending: AtomicBool::new(false),
+            #[cfg(test)]
+            acknowledgements: AtomicUsize::new(0),
+        });
         let mut registry = self.wakes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut live: Vec<_> =
             registry.iter().filter(|entry| entry.strong_count() != 0).cloned().collect();

@@ -1,0 +1,8 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [pixman|gl]") end
+$renderer = len(args()) == 3 ? args()[2] : "pixman"
+$probe = require("native_probe_lib.mix")
+$probe.run_probe(args()[0],args()[1],"native-frame-iced-capacity-probe",
+  "ICED_CAPACITY PASS real_leases=128 destroyed_donors=16 unchanged_view=true native_release_retry=true exact_presented=true",$renderer)
+print("PASS actual Iced foreign-window process-capacity recovery on owned Weston/compd: " .. $renderer)
