@@ -365,7 +365,7 @@ impl App {
                 self.body = text_editor::Content::new();
                 Task::none()
             }
-            Action::Copy => iced::clipboard::write(self.reply.text()).map(|_|Message::Noop),
+            Action::Copy => iced::clipboard::write(self.reply.text()).map(|_| Message::Noop),
             Action::About | Action::Shortcuts => {
                 self.dialog = Some(action);
                 Task::none()
@@ -486,7 +486,7 @@ impl App {
             Message::Action(action) => self.action(action),
             Message::OpenMenu(index) if self.dialog.is_none() => {
                 iced::advanced::widget::operate(toolkit::menu::open_operation(menu::BAR_ID, index))
-                    .map(|()|Message::Noop)
+                    .map(|()| Message::Noop)
                     .chain(Task::done(Message::Noop))
             }
             Message::Key(key, mods) => {
@@ -569,7 +569,9 @@ impl App {
                     self.selected = None;
                 }
                 self.rebuild();
-                self.status = if !self.connected {label("disconnected")} else if let Some(error) = &self.snapshot.error {
+                self.status = if !self.connected {
+                    label("disconnected")
+                } else if let Some(error) = &self.snapshot.error {
                     format!("{}: {error}", label("discovery-failed"))
                 } else {
                     format!(
@@ -833,7 +835,11 @@ impl App {
 mod tests {
     use super::*;
     fn app() -> App {
-        let look = appearance::install_with(&appearance::Theme::embedded(), appearance::FontSources::none(appearance::FontOrigin::NoSet{roots:vec![]})).unwrap();
+        let look = appearance::install_with(
+            &appearance::Theme::embedded(),
+            appearance::FontSources::none(appearance::FontOrigin::NoSet { roots: vec![] }),
+        )
+        .unwrap();
         let mut app = App::new(Settings::default(), Handle::sink(), look);
         app.snapshot.services.insert(
             "example".into(),

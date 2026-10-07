@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised native Bus connection. Topics drive refreshes; no poller.
-use ::bus::native_client::{BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient};
+use ::bus::native_client::{
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+};
 use application::iced::futures::SinkExt;
 use application::iced::futures::channel::{mpsc, oneshot};
 use serde_json::{Value, json};
@@ -75,10 +77,7 @@ impl Handle {
     }
 }
 
-pub fn start(
-    service: &str,
-    url: &str,
-) -> Result<(Handle, mpsc::Receiver<Delivery>), String> {
+pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Delivery>), String> {
     let (send, receive) = mpsc::channel(64);
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
