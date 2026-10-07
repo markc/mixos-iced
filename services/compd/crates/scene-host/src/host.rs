@@ -866,7 +866,11 @@ impl SceneHost {
                     };
                     let evidence = self.settings.host().consumer().evidence();
                     let answer = self.host.answer_with_settings(
-                        &request, output, generation, Some(&evidence), &mut layout,
+                        &request,
+                        output,
+                        generation,
+                        Some(&evidence),
+                        &mut layout,
                     );
                     // A load or unload changes the pages the edges carry.
                     self.host.panels.sync(&self.host.store);
@@ -1260,24 +1264,58 @@ mod tests {
     fn settings_props_share_root_dotted_reads_and_request_fences() {
         let mut host = Host::default();
         let evidence = settings::consumer::Consumer::for_shell(settings::Binding {
-            instance: "fixture".into(), profile: "default".into(),
-        }).unwrap().evidence();
+            instance: "fixture".into(),
+            profile: "default".into(),
+        })
+        .unwrap()
+        .evidence();
         for (path, expected) in [
             (None, json!(evidence)),
             (Some("settings"), json!(evidence)),
             (Some("settings.binding.instance"), json!("fixture")),
         ] {
             let request = request(SceneVerb::PropsGet, "agent", LOCAL, json!({"path": path}));
-            let answer = host.answer_with_settings(&request, "DP-1", Some(1), Some(&evidence), &mut no_layout);
+            let answer = host.answer_with_settings(
+                &request,
+                "DP-1",
+                Some(1),
+                Some(&evidence),
+                &mut no_layout,
+            );
             assert_eq!(answer.rc, 0);
             let value: Value = serde_json::from_str(&answer.body).unwrap();
-            assert_eq!(if path.is_none() { &value["settings"] } else { &value }, &expected);
+            assert_eq!(
+                if path.is_none() {
+                    &value["settings"]
+                } else {
+                    &value
+                },
+                &expected
+            );
         }
         let receipt = host.receipt;
-        let bad = request(SceneVerb::PropsGet, "agent", &[], json!({"path":"settings"}));
-        assert_eq!(host.answer_with_settings(&bad, "DP-1", Some(1), Some(&evidence), &mut no_layout).rc, 10);
-        let stale = request(SceneVerb::PropsGet, "agent", LOCAL, json!({"path":"settings"}));
-        assert_eq!(host.answer_with_settings(&stale, "DP-1", Some(2), Some(&evidence), &mut no_layout).rc, 10);
+        let bad = request(
+            SceneVerb::PropsGet,
+            "agent",
+            &[],
+            json!({"path":"settings"}),
+        );
+        assert_eq!(
+            host.answer_with_settings(&bad, "DP-1", Some(1), Some(&evidence), &mut no_layout)
+                .rc,
+            10
+        );
+        let stale = request(
+            SceneVerb::PropsGet,
+            "agent",
+            LOCAL,
+            json!({"path":"settings"}),
+        );
+        assert_eq!(
+            host.answer_with_settings(&stale, "DP-1", Some(2), Some(&evidence), &mut no_layout)
+                .rc,
+            10
+        );
         assert_eq!(host.receipt, receipt);
     }
 

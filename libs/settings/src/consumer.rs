@@ -8,6 +8,7 @@ use crate::{
     reducer::{Decision, Reducer},
     *,
 };
+use serde::Serialize;
 use std::{
     collections::VecDeque,
     sync::{
@@ -16,7 +17,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use serde::Serialize;
 
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
 

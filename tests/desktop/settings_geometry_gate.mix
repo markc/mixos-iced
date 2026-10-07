@@ -163,7 +163,7 @@ try
   end
   if $shell != "shell" and $shell != "settings-gate-fallback" then raise("SETUP","No owned scene service") end
   require_ok($n.call("settings-gate-citizen","HELP",{}),"citizen readiness")
-  $document = "---\nscene: 1\nname: settings-geometry\ncitizen: settings-gate-citizen\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":40}\n---\n```mix\nroot: {widget: \"column\", padding: 4, width: \"fill\", height: \"fill\", background: \"#123456\", children: [\"go\"]}\ngo: {widget: \"button\", label: \"Go\", tone: \"primary\", width: 160, on_click: \"go\"}\n```\n"
+  $document = "---\nscene: 1\nname: settings-geometry\ncitizen: settings-gate-citizen\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":40}\n---\n```mix\nroot: {widget: \"row\", padding: 4, fill: true, background: \"#123456\", children: [\"go\"]}\ngo: {widget: \"button\", label: \"Go\", tone: \"primary\", width: 160, on_click: \"go\"}\n```\n"
   shell("shell.scene.load",{source:$document})
   $panel = await_panel("pinned",52,0,$initial.revision)
   $outputs = comp("comp.props.get",{path:"outputs"})

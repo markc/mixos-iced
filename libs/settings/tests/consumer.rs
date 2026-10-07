@@ -58,14 +58,20 @@ fn evidence_distinguishes_acceptance_activation_and_lost_confirmation() {
     assert!(state.acknowledge(&update));
     let applied = state.evidence();
     assert_eq!(applied.current, applied.applied);
-    assert_eq!(applied.kind, Some(settings::fallback::PresentationKind::Current));
+    assert_eq!(
+        applied.kind,
+        Some(settings::fallback::PresentationKind::Current)
+    );
     let wire = serde_json::to_value(&applied).unwrap();
     assert_eq!(wire["applied"]["revision"], "9007199254740993");
     state.disconnected();
     let offline = state.evidence();
     assert!(!offline.confirmed);
     assert_eq!(offline.applied, applied.applied);
-    assert_eq!(offline.kind, Some(settings::fallback::PresentationKind::LastGood));
+    assert_eq!(
+        offline.kind,
+        Some(settings::fallback::PresentationKind::LastGood)
+    );
 }
 #[test]
 fn read_event_race_keeps_newest_and_fences_old_renderer_completion() {

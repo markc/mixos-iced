@@ -111,7 +111,10 @@ impl SeatEvents {
     fn named(&mut self, name: String) -> Vec<String> {
         self.name = Some(name);
         let pending = std::mem::take(&mut self.pending);
-        pending.into_iter().flat_map(|event| self.event(event)).collect()
+        pending
+            .into_iter()
+            .flat_map(|event| self.event(event))
+            .collect()
     }
 }
 
@@ -159,7 +162,8 @@ impl Probe {
             if seat.notification.is_none()
                 && let (Some(manager), Some(timeout)) = (&self.idle_notifier, self.idle_timeout_ms)
             {
-                seat.notification = Some(manager.get_idle_notification(timeout, &seat.seat, qh, *id));
+                seat.notification =
+                    Some(manager.get_idle_notification(timeout, &seat.seat, qh, *id));
             }
             if !seat.listed
                 && seat.capabilities_received
@@ -170,7 +174,8 @@ impl Probe {
                     "bound keyboard={} pointer={} idle_timeout_ms={}",
                     u8::from(seat.keyboard.is_some()),
                     u8::from(seat.pointer.is_some()),
-                    self.idle_timeout_ms.map_or_else(|| "none".into(), |ms| ms.to_string())
+                    self.idle_timeout_ms
+                        .map_or_else(|| "none".into(), |ms| ms.to_string())
                 ));
                 seat.listed = true;
             }
@@ -549,10 +554,7 @@ fn run() -> Result<(), String> {
 /// strings with no `--` escape, so a value spelled `--version` must reach the
 /// parser, not this check.
 fn version_requested() -> bool {
-    matches!(
-        env::args().nth(1).as_deref(),
-        Some("--version" | "-V")
-    )
+    matches!(env::args().nth(1).as_deref(), Some("--version" | "-V"))
 }
 
 fn main() -> ExitCode {
@@ -838,10 +840,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Probe {
                 state: button_state,
                 ..
             } => {
-                let pressed = matches!(
-                    button_state,
-                    WEnum::Value(wl_pointer::ButtonState::Pressed)
-                );
+                let pressed =
+                    matches!(button_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
                 say(&format!(
                     "button {button} {} {} {}",
                     u8::from(pressed),
@@ -1016,7 +1016,10 @@ mod tests {
         assert_eq!(options.pixel(19), [0, 128, 255, 255]);
         options.translucent = true;
         assert_eq!(options.pixel(27), [0, 64, 128, 128]);
-        assert_eq!(parse(&["--colour", "12aBf0"]).unwrap().colour, Some([18, 171, 240]));
+        assert_eq!(
+            parse(&["--colour", "12aBf0"]).unwrap().colour,
+            Some([18, 171, 240])
+        );
         for value in ["", "fff", "fffffff", "12 456", "gggggg", "éabcd"] {
             assert!(parse(&["--colour", value]).is_err(), "{value:?}");
         }
@@ -1028,7 +1031,9 @@ mod tests {
         let parse = |args: &[&str]| parse_options(args.iter().map(|s| (*s).to_string()));
         assert!(parse(&["--seats"]).unwrap().seats);
         assert_eq!(
-            parse(&["--idle-timeout-ms", "3000"]).unwrap().idle_timeout_ms,
+            parse(&["--idle-timeout-ms", "3000"])
+                .unwrap()
+                .idle_timeout_ms,
             Some(3000)
         );
         assert_eq!(
