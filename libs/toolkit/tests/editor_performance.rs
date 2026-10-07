@@ -291,7 +291,8 @@ fn pixel_difference(
 /// The pinned tiny-skia version strength-reduces an unmasked opaque fill to
 /// Source, but keeps a masked fill in SourceOver. Fractional AA edges can
 /// therefore differ by one RGB value. Keep that separate from the retained
-/// editor oracle, which uses integer physical row boundaries.
+/// editor oracle, whose current-line highlight uses the same blend path in
+/// both full and partial frames.
 fn opaque_aa_rounding_reproducer() {
     let path =
         tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(0.0, 4.5, 12.0, 4.0).unwrap());
@@ -348,12 +349,15 @@ fn editor_render_phases_benchmark() {
     let fixture = Fixture::new();
     let view = pane::View {
         px: 14.0,
-        // Exactly 20 logical / 50 physical pixels per row isolates retained
-        // redraw correctness from the dependency rounding reproducer above.
-        line_height: 20.0 / 14.0,
+        line_height: 1.3,
         ..pane::View::default()
     };
     let mut palette = pane::Palette::from(toolkit::Tokens::default());
+    // Opaque fractional highlight edges have the dependency rounding issue
+    // reproduced above. A translucent highlight keeps SourceOver for both
+    // paths, so the retained oracle remains byte-exact at the real fractional
+    // row geometry. The expensive full editor background remains opaque.
+    palette.current_line.a = 0.5;
     palette.highlight[pane::Class::String as usize] = palette.agent;
     palette.highlight[pane::Class::Number as usize] = palette.warning;
     palette.highlight[pane::Class::Punctuation as usize] = palette.gutter_text;
@@ -387,9 +391,11 @@ fn editor_render_phases_benchmark() {
     let full = Rectangle::with_size(viewport.logical_size());
     let head = fixture.text.line_start(20).unwrap() + 4;
     eprintln!(
-        "editor fixture: bytes={} lines=44 longest=795 columns=120 physical=2750x1900 scale=2.5 font_px={} cell_w={cell_w:.3}",
+        "editor fixture: bytes={} lines=44 longest=795 columns=120 physical=2750x1900 scale=2.5 font_px={} line_height={} cell_w={cell_w:.3} current_line_alpha={}",
         fixture.text.len(),
-        view.px
+        view.px,
+        view.line_height,
+        palette.current_line.a
     );
     let mut pixel_failures = Vec::new();
     for syntax in [false, true] {
