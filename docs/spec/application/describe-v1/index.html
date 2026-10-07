@@ -258,8 +258,10 @@ not widen application mutation authority, add a second settings API, or create
 a dispatcher, application trait, lifecycle scaffold or second registry.</p>
 <h2 id="request">Request</h2>
 <p>The canonical request is <code>{}</code>. Empty and whitespace-only bodies are also
-accepted as <code>{}</code> for existing callers. Before dispatch the host runs the
-shared <code>validate_request</code> on the command body:</p>
+accepted as <code>{}</code> for existing callers, and so is any body that parses as an
+empty object: whitespace inside or around the braces (<code>" {} "</code>, <code>"\n{}\n"</code>) is
+valid JSON and the same request. Before dispatch the host runs the shared
+<code>validate_request</code> on the command body:</p>
 <ul>
 <li>bodies over 4 KiB are refused before parsing;</li>
 <li>malformed JSON, null, arrays and scalars are refused;</li>
@@ -300,9 +302,12 @@ membership or the verb's own read-only status; a descriptor for
 <tr><td>identity/version fields</td><td>256 bytes</td></tr>
 <tr><td>one descriptor</td><td>16 KiB</td></tr>
 </tbody></table>
-<p>Callers validating native responses must bound the raw body to 256 KiB
-<strong>before</strong> <code>serde_json::from_str</code>; the <code>Value</code> validator alone cannot enforce
-a raw input byte limit. Use the existing Bus command/response deadlines.</p>
+<p><code>parse_validate</code> is the raw-body entry point: it bounds the raw body to
+256 KiB <strong>before</strong> parsing, so an oversized response is refused rather than
+parsed or truncated. The borrowed <code>Value</code> validator alone cannot enforce a
+raw input byte limit — <code>validate</code> checks only the compact re-encoding of an
+already-parsed value, which a whitespace-heavy body can beat. Use the
+existing Bus command/response deadlines.</p>
 <h3 id="evidence-fields">Evidence fields</h3>
 <p><code>settings</code> and <code>settings_cache</code> are checked only as object-or-null. Their
 shape and semantics stay owned and tested where they live:
@@ -331,6 +336,7 @@ pub fn complete(value: &amp;mut serde_json::Value, identity: Identity&lt;'_&gt;)
     -&gt; Result&lt;(), Violation&gt;;
 
 pub fn validate(value: &amp;serde_json::Value) -&gt; Result&lt;Description&lt;'_&gt;, Violation&gt;;
+pub fn parse_validate(raw: &amp;str) -&gt; Result&lt;OwnedDescription, Violation&gt;;
 pub fn read_legacy(value: &amp;serde_json::Value)
     -&gt; Result&lt;LegacyDescription&lt;'_&gt;, Violation&gt;;
 </code></pre>
@@ -344,15 +350,22 @@ validates as a whole. <code>complete</code> never turns a <code>Vec&lt;String&gt
 mixed descriptors. Product verb tables must add <code>app.describe</code> in their
 existing representation before completion.</p>
 <p><code>validate</code> requires the v1 marker and the required common fields; an absent or
-unknown marker cannot accidentally pass as v1. <code>read_legacy</code> stays explicit
-and permissive enough to read the current product objects (a verbs array plus
-partial identity). It returns missing fields as missing, never inferred or
-fabricated, keeps legacy duplicate compatibility, and does not convert a bare
-HELP array or shell.info's bare suffixes into a v1 describe. BusViewer keeps
-its own permissive HELP parser for those sources.</p>
+unknown marker cannot accidentally pass as v1. <code>parse_validate</code> parses a raw
+body and validates it in one call, bounding the raw bytes to 256 KiB before
+<code>serde_json::from_str</code>; it returns an <code>OwnedDescription</code> that owns the parsed
+value, with the borrowed <code>Description</code> view available as <code>view()</code>. <code>read_legacy</code>
+stays explicit and permissive enough to read the current product objects (a
+verbs array plus partial identity). It returns missing fields as missing,
+never inferred or fabricated, keeps legacy duplicate compatibility, and does
+not convert a bare HELP array or shell.info's bare suffixes into a v1
+describe; an object carrying a <code>describe_contract</code> key of any value is
+refused, so a migrated or foreign marker-bearing object must go through
+<code>validate</code>. BusViewer keeps its own permissive HELP parser for those sources.</p>
 <p><code>Description</code> and <code>LegacyDescription</code> borrow the object and expose the common
 fields and a verb iterator; they do not clone a second source of truth.
-<code>Violation</code> carries a bounded field path, a stable code and a message; the
+<code>OwnedDescription</code> owns the value parsed by <code>parse_validate</code> and exposes the
+same fields through a borrowed <code>Description</code> view. <code>Violation</code> carries a
+bounded field path, a stable code and a message; the
 caller maps it to its own rc and refusal body, so no application's established
 error codes are renamed. Refusals keep the ordinary ABP rc conventions (0
 handled, 10 refusal).</p>
@@ -431,12 +444,13 @@ layout-inspection contract; describe traffic does not prove frame
 invalidation.</p>
 <h3 id="conformance-required-before-claiming-universal-support">Conformance required before claiming universal support</h3>
 <ol>
-<li>Unit validator cases: <code>{}</code> and empty requests accepted; invalid
-shape/unknown args/oversize refused; legacy marker absence distinguishable
-from current; both verb representations and mixed arrays accepted; unknown
-safety remains unknown; malformed descriptors, duplicate v1 names,
-contradictory reserved metadata and byte/count limits rejected; unknown
-extension fields survive.</li>
+<li>Unit validator cases: <code>{}</code>, blank and whitespace-padded empty-object
+requests accepted; invalid shape/unknown args/oversize refused; legacy
+marker absence distinguishable from current; both verb representations and
+mixed arrays accepted; unknown safety remains unknown; malformed
+descriptors, duplicate v1 names, contradictory reserved metadata and
+byte/count limits rejected; a raw body over 256 KiB refused by
+<code>parse_validate</code> before parsing; unknown extension fields survive.</li>
 <li>Actual producer tests run the shared validator on each emitted response
 through the producer's real handler (controller test plus GUI
 augmentation, real command handler, queued frontend handler, response

@@ -1,0 +1,8 @@
+{
+  "app_id": null,
+  "describe_contract": "application.describe.v1",
+  "pid": 4294967296,
+  "service": "example",
+  "verbs": ["example.ping", "app.describe"],
+  "version": "0.1.0"
+}

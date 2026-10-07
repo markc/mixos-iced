@@ -15,8 +15,10 @@ a dispatcher, application trait, lifecycle scaffold or second registry.
 ## Request
 
 The canonical request is `{}`. Empty and whitespace-only bodies are also
-accepted as `{}` for existing callers. Before dispatch the host runs the
-shared `validate_request` on the command body:
+accepted as `{}` for existing callers, and so is any body that parses as an
+empty object: whitespace inside or around the braces (`" {} "`, `"\n{}\n"`) is
+valid JSON and the same request. Before dispatch the host runs the shared
+`validate_request` on the command body:
 
 - bodies over 4 KiB are refused before parsing;
 - malformed JSON, null, arrays and scalars are refused;
@@ -64,9 +66,12 @@ Limits, enforced on the encoded bytes where a bound is on bytes:
 | identity/version fields | 256 bytes |
 | one descriptor | 16 KiB |
 
-Callers validating native responses must bound the raw body to 256 KiB
-**before** `serde_json::from_str`; the `Value` validator alone cannot enforce
-a raw input byte limit. Use the existing Bus command/response deadlines.
+`parse_validate` is the raw-body entry point: it bounds the raw body to
+256 KiB **before** parsing, so an oversized response is refused rather than
+parsed or truncated. The borrowed `Value` validator alone cannot enforce a
+raw input byte limit — `validate` checks only the compact re-encoding of an
+already-parsed value, which a whitespace-heavy body can beat. Use the
+existing Bus command/response deadlines.
 
 ### Evidence fields
 
@@ -100,6 +105,7 @@ pub fn complete(value: &mut serde_json::Value, identity: Identity<'_>)
     -> Result<(), Violation>;
 
 pub fn validate(value: &serde_json::Value) -> Result<Description<'_>, Violation>;
+pub fn parse_validate(raw: &str) -> Result<OwnedDescription, Violation>;
 pub fn read_legacy(value: &serde_json::Value)
     -> Result<LegacyDescription<'_>, Violation>;
 ```
@@ -115,16 +121,23 @@ mixed descriptors. Product verb tables must add `app.describe` in their
 existing representation before completion.
 
 `validate` requires the v1 marker and the required common fields; an absent or
-unknown marker cannot accidentally pass as v1. `read_legacy` stays explicit
-and permissive enough to read the current product objects (a verbs array plus
-partial identity). It returns missing fields as missing, never inferred or
-fabricated, keeps legacy duplicate compatibility, and does not convert a bare
-HELP array or shell.info's bare suffixes into a v1 describe. BusViewer keeps
-its own permissive HELP parser for those sources.
+unknown marker cannot accidentally pass as v1. `parse_validate` parses a raw
+body and validates it in one call, bounding the raw bytes to 256 KiB before
+`serde_json::from_str`; it returns an `OwnedDescription` that owns the parsed
+value, with the borrowed `Description` view available as `view()`. `read_legacy`
+stays explicit and permissive enough to read the current product objects (a
+verbs array plus partial identity). It returns missing fields as missing,
+never inferred or fabricated, keeps legacy duplicate compatibility, and does
+not convert a bare HELP array or shell.info's bare suffixes into a v1
+describe; an object carrying a `describe_contract` key of any value is
+refused, so a migrated or foreign marker-bearing object must go through
+`validate`. BusViewer keeps its own permissive HELP parser for those sources.
 
 `Description` and `LegacyDescription` borrow the object and expose the common
 fields and a verb iterator; they do not clone a second source of truth.
-`Violation` carries a bounded field path, a stable code and a message; the
+`OwnedDescription` owns the value parsed by `parse_validate` and exposes the
+same fields through a borrowed `Description` view. `Violation` carries a
+bounded field path, a stable code and a message; the
 caller maps it to its own rc and refusal body, so no application's established
 error codes are renamed. Refusals keep the ordinary ABP rc conventions (0
 handled, 10 refusal).
@@ -209,12 +222,13 @@ invalidation.
 
 ### Conformance required before claiming universal support
 
-1. Unit validator cases: `{}` and empty requests accepted; invalid
-   shape/unknown args/oversize refused; legacy marker absence distinguishable
-   from current; both verb representations and mixed arrays accepted; unknown
-   safety remains unknown; malformed descriptors, duplicate v1 names,
-   contradictory reserved metadata and byte/count limits rejected; unknown
-   extension fields survive.
+1. Unit validator cases: `{}`, blank and whitespace-padded empty-object
+   requests accepted; invalid shape/unknown args/oversize refused; legacy
+   marker absence distinguishable from current; both verb representations and
+   mixed arrays accepted; unknown safety remains unknown; malformed
+   descriptors, duplicate v1 names, contradictory reserved metadata and
+   byte/count limits rejected; a raw body over 256 KiB refused by
+   `parse_validate` before parsing; unknown extension fields survive.
 2. Actual producer tests run the shared validator on each emitted response
    through the producer's real handler (controller test plus GUI
    augmentation, real command handler, queued frontend handler, response

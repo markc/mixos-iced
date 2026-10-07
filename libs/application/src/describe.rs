@@ -10,11 +10,12 @@
 //! spec and machine-checkable fixtures live in `docs/spec/application/`.
 //!
 //! The canonical request is `{}`; empty and whitespace-only bodies are also
-//! accepted for existing callers. Everything else is refused before dispatch:
-//! malformed JSON, non-object JSON and nonempty objects are host-level
-//! argument errors, mapped by the caller to its own rc and refusal body.
-//! [`validate_request`] bounds the body to [`MAX_REQUEST_BYTES`] before
-//! parsing.
+//! accepted for existing callers, and so is any body that parses as an empty
+//! object — whitespace inside or around the braces is valid JSON. Everything
+//! else is refused before dispatch: malformed JSON, non-object JSON and
+//! nonempty objects are host-level argument errors, mapped by the caller to
+//! its own rc and refusal body. [`validate_request`] bounds the body to
+//! [`MAX_REQUEST_BYTES`] before parsing.
 //!
 //! [`complete`] adds `describe_contract`, `version`, `pid`, `service` and
 //! `app_id` to a product object whose verb inventory already lists
@@ -29,19 +30,23 @@
 //! required identity fields, a bounded verb inventory that includes
 //! `app.describe` (a descriptor for it must claim `read_only: true`), and
 //! optional `settings`/`settings_cache` evidence that is an object or null.
-//! Unknown root fields and descriptor extension fields survive. The encoded
-//! response is bounded to [`MAX_RESPONSE_BYTES`]; callers parsing native
-//! responses must apply the same bound to the raw body before `from_str`,
-//! which a [`Value`] validator alone cannot enforce. Safety is never inferred
-//! from a name, the spelling "get", registry membership or the verb's own
-//! read-only status: absent or null `read_only` means unknown.
+//! Unknown root fields and descriptor extension fields survive. [`validate`]
+//! re-encodes the value compactly and bounds that to [`MAX_RESPONSE_BYTES`] —
+//! a bound on the in-memory object, never the raw wire body, which a
+//! whitespace-heavy body can beat. [`parse_validate`] is the raw-body entry
+//! point: it bounds the raw body to [`MAX_RESPONSE_BYTES`] before parsing.
+//! Safety is never inferred from a name, the spelling "get", registry
+//! membership or the verb's own read-only status: absent or null `read_only`
+//! means unknown.
 //!
 //! [`read_legacy`] reads the current product objects of unmigrated
 //! applications: a verbs array plus whatever partial identity they carry.
-//! Missing fields stay missing, never inferred or fabricated. A bare HELP
-//! array is not a describe object, and shell.info's bare verb suffixes are
-//! not converted into v1 names; BusViewer keeps its own permissive HELP
-//! parser for those sources.
+//! Missing fields stay missing, never inferred or fabricated, and an object
+//! carrying a `describe_contract` key is refused — a migrated or foreign
+//! marker-bearing object must go through [`validate`], never be silently read
+//! as legacy. A bare HELP array is not a describe object, and shell.info's
+//! bare verb suffixes are not converted into v1 names; BusViewer keeps its
+//! own permissive HELP parser for those sources.
 
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -52,7 +57,9 @@ pub const VERB: &str = "app.describe";
 
 /// Encoded request bound, applied before parsing the command body.
 pub const MAX_REQUEST_BYTES: usize = 4 * 1024;
-/// Encoded response bound: a v1 response that would exceed it is refused,
+/// Encoded response bound. [`parse_validate`] applies it to the raw body
+/// before parsing; [`validate`] applies it to the compact re-encoding of an
+/// already-parsed value. A v1 response that would exceed it is refused,
 /// never silently truncated.
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub const MAX_VERBS: usize = 512;
@@ -74,6 +81,7 @@ pub mod code {
     pub const TOO_MANY_VERBS: &str = "too_many_verbs";
     pub const MISSING_MARKER: &str = "missing_marker";
     pub const UNKNOWN_MARKER: &str = "unknown_marker";
+    pub const NOT_LEGACY: &str = "not_legacy";
     pub const MISSING_FIELD: &str = "missing_field";
     pub const INVALID_IDENTITY: &str = "invalid_identity";
     pub const APP_DESCRIBE_MISSING: &str = "app_describe_missing";
@@ -250,9 +258,15 @@ fn reserved_agree(object: &Map<String, Value>, identity: &Identity<'_>) -> Resul
     Ok(())
 }
 
-/// Validate a complete v1 response. The v1 marker and the required common
-/// fields must be present; an absent or unknown marker cannot pass as v1.
-/// Unknown root fields are allowed and preserved.
+/// Validate an already-parsed v1 response. The v1 marker and the required
+/// common fields must be present; an absent or unknown marker cannot pass as
+/// v1. Unknown root fields are allowed and preserved.
+///
+/// The size check here bounds the compact re-encoding of the value, not the
+/// raw wire body it may have been parsed from: a pretty-printed or
+/// whitespace-heavy body can exceed [`MAX_RESPONSE_BYTES`] while its compact
+/// re-encoding does not. Callers parsing raw bodies use [`parse_validate`],
+/// which applies the bound before parsing.
 pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
     let object = value.as_object().ok_or_else(|| {
         Violation::new("", code::INVALID_ROOT, "v1 describe must be a JSON object")
@@ -442,6 +456,30 @@ pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
     })
 }
 
+/// Parse and validate a raw v1 response body in one call. The raw byte
+/// length is bounded to [`MAX_RESPONSE_BYTES`] before parsing, so an
+/// oversized body is refused ([`code::OVERSIZE_RESPONSE`]) without being
+/// parsed, and malformed JSON is refused with [`code::MALFORMED_JSON`].
+/// This is the entry point for callers that read responses off the wire:
+/// [`validate`] alone cannot see the raw body its value came from. The
+/// returned description owns its value.
+pub fn parse_validate(raw: &str) -> Result<OwnedDescription, Violation> {
+    if raw.len() > MAX_RESPONSE_BYTES {
+        return Err(Violation::new(
+            "",
+            code::OVERSIZE_RESPONSE,
+            format!("raw response exceeds {MAX_RESPONSE_BYTES} bytes"),
+        ));
+    }
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|error| Violation::new("", code::MALFORMED_JSON, error.to_string()))?;
+    let description = validate(&value)?;
+    Ok(OwnedDescription {
+        value,
+        pid: description.pid(),
+    })
+}
+
 fn required_nonempty_bounded<'a>(
     object: &'a Map<String, Value>,
     key: &'static str,
@@ -521,6 +559,51 @@ impl<'a> Description<'a> {
     }
 }
 
+/// A v1 response parsed and validated from a raw body by
+/// [`parse_validate`]. Owns its value; [`OwnedDescription::view`] gives the
+/// borrowed [`Description`] form of the same object.
+#[derive(Clone, Debug)]
+pub struct OwnedDescription {
+    value: Value,
+    pid: u32,
+}
+impl OwnedDescription {
+    /// The whole response object, unknown root fields included.
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+    /// The borrowed [`Description`] view of the same object.
+    pub fn view(&self) -> Description<'_> {
+        Description {
+            value: &self.value,
+            pid: self.pid,
+        }
+    }
+    pub fn version(&self) -> &str {
+        self.view().version()
+    }
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+    pub fn service(&self) -> &str {
+        self.view().service()
+    }
+    /// `None` when `app_id` is explicit null; the field itself is required.
+    pub fn app_id(&self) -> Option<&str> {
+        self.view().app_id()
+    }
+    /// The evidence object, or `None` when the field is absent or null.
+    pub fn settings(&self) -> Option<&Value> {
+        self.view().settings()
+    }
+    pub fn settings_cache(&self) -> Option<&Value> {
+        self.view().settings_cache()
+    }
+    pub fn verbs(&self) -> VerbIter<'_> {
+        self.view().verbs()
+    }
+}
+
 /// One inventory entry. `read_only` is `None` for unknown safety: absent,
 /// null, or a plain string entry. It is never inferred from a name.
 #[derive(Clone, Copy)]
@@ -581,10 +664,6 @@ impl<'a> LegacyDescription<'a> {
     pub fn value(&self) -> &'a Value {
         self.value
     }
-    /// The v1 marker, only when an unmigrated object already claims one.
-    pub fn contract(&self) -> Option<&'a str> {
-        self.value.get("describe_contract").and_then(Value::as_str)
-    }
     pub fn version(&self) -> Option<&'a str> {
         self.value.get("version").and_then(Value::as_str)
     }
@@ -614,7 +693,9 @@ impl<'a> LegacyDescription<'a> {
 
 /// Read a legacy product object. The root must be an object: a bare HELP
 /// array is not a describe object, and shell.info's bare suffixes are read as
-/// they are, never converted into v1 names.
+/// they are, never converted into v1 names. An object carrying a
+/// `describe_contract` key of any value is refused: a migrated or foreign
+/// marker-bearing object is not legacy and must go through [`validate`].
 pub fn read_legacy(value: &Value) -> Result<LegacyDescription<'_>, Violation> {
     let object = value.as_object().ok_or_else(|| {
         Violation::new(
@@ -623,6 +704,13 @@ pub fn read_legacy(value: &Value) -> Result<LegacyDescription<'_>, Violation> {
             "a legacy describe must be a JSON object, not a bare HELP array",
         )
     })?;
+    if object.contains_key("describe_contract") {
+        return Err(Violation::new(
+            "describe_contract",
+            code::NOT_LEGACY,
+            "an object carrying describe_contract is not a legacy describe; use validate",
+        ));
+    }
     if let Some(verbs) = object.get("verbs") {
         let entries = verbs
             .as_array()
@@ -677,7 +765,9 @@ mod tests {
 
     #[test]
     fn request_accepts_only_the_canonical_no_argument_forms() {
-        for body in ["", "   ", "\n\t", "{}"] {
+        // Whitespace-padded empty objects parse as the same request; the
+        // gate fixtures pin the identical strings.
+        for body in ["", "   ", "\n\t", "{}", " {} ", "\n{}\n", "{ }"] {
             assert!(validate_request(body).is_ok(), "{body:?}");
         }
         for (body, expected) in [
@@ -890,6 +980,7 @@ mod tests {
             ("v1-refusal-app-describe-mutable.json", code::APP_DESCRIBE_MUTABLE),
             ("v1-refusal-missing-app-describe.json", code::APP_DESCRIBE_MISSING),
             ("v1-refusal-bad-identity.json", code::INVALID_IDENTITY),
+            ("v1-refusal-pid-overflow.json", code::INVALID_IDENTITY),
             ("v1-refusal-bad-evidence.json", code::INVALID_EVIDENCE),
         ] {
             let violation = validate(&fixture!(name)).unwrap_err();
@@ -960,7 +1051,7 @@ mod tests {
             );
         }
         // Identity representations that are not a positive u32.
-        for pid in [json!(0), json!(1.5), json!("1")] {
+        for pid in [json!(0), json!(1.5), json!("1"), json!(u32::MAX as u64 + 1)] {
             assert_eq!(
                 validate(&json!({"describe_contract": CONTRACT, "version": "v",
                     "pid": pid, "service": "s", "app_id": null, "verbs": [VERB]}))
@@ -969,6 +1060,37 @@ mod tests {
                 code::INVALID_IDENTITY
             );
         }
+        // The full positive u32 range is accepted.
+        assert!(validate(&json!({"describe_contract": CONTRACT, "version": "v",
+            "pid": u32::MAX, "service": "s", "app_id": null, "verbs": [VERB]}))
+            .is_ok());
+    }
+
+    #[test]
+    fn parse_validate_bounds_the_raw_body_before_parsing() {
+        let compact = json!({"describe_contract": CONTRACT, "version": "v", "pid": 1,
+            "service": "s", "app_id": null, "verbs": [VERB]});
+        validate(&compact).unwrap();
+        // Pretty-printed and padded past the bound, the raw body parses to
+        // the same compact value: only parse_validate can see the raw bytes.
+        let raw = serde_json::to_string_pretty(&compact).unwrap();
+        assert!(raw.len() < MAX_RESPONSE_BYTES);
+        let padded = format!("{raw}{}", " ".repeat(MAX_RESPONSE_BYTES));
+        assert_eq!(
+            parse_validate(&padded).unwrap_err().code,
+            code::OVERSIZE_RESPONSE
+        );
+        assert_eq!(
+            parse_validate("{not json").unwrap_err().code,
+            code::MALFORMED_JSON
+        );
+        let parsed = parse_validate(&raw).unwrap();
+        assert_eq!(parsed.pid(), 1);
+        assert_eq!(parsed.service(), "s");
+        assert_eq!(parsed.version(), "v");
+        assert_eq!(parsed.verbs().count(), 1);
+        assert_eq!(parsed.view().pid(), 1);
+        assert_eq!(parsed.value()["verbs"][0], VERB);
     }
 
     #[test]
@@ -985,7 +1107,10 @@ mod tests {
     #[test]
     fn read_legacy_reads_product_objects_and_keeps_missing_fields_missing() {
         let ced = read_legacy(&fixture!("ced-legacy-describe.json")).unwrap();
-        assert_eq!(ced.contract(), None, "ctk contract is not the v1 marker");
+        assert_eq!(
+            ced.value()["contract"], "ctk-app-control.v0",
+            "the ctk contract field is not the v1 marker and survives"
+        );
         assert_eq!(ced.version(), Some("0.1.8"));
         assert_eq!(ced.pid(), None);
         assert_eq!(ced.service(), None);
@@ -1019,7 +1144,7 @@ mod tests {
         // never converted into v1 names.
         let shell = read_legacy(&fixture!("shell-info-legacy.json")).unwrap();
         assert_eq!(shell.service(), Some("shell"));
-        assert_eq!(shell.contract(), None);
+        assert_eq!(shell.value()["contract"], "shell.v1");
         let names: Vec<&str> = shell.verbs().map(|verb| verb.name).collect();
         assert!(names.contains(&"props.get"));
         assert!(!names.contains(&"shell.props.get"));
@@ -1035,6 +1160,20 @@ mod tests {
         );
         // Legacy discovery keeps its duplicate compatibility.
         assert!(read_legacy(&json!({"title": "old", "verbs": ["ping", "ping"]})).is_ok());
+        // A migrated v1 object or a foreign marker is not legacy: validate
+        // owns every marker-carrying object, never a silent demotion.
+        assert_eq!(
+            read_legacy(&fixture!("v1-minimal-strings.json"))
+                .unwrap_err()
+                .code,
+            code::NOT_LEGACY
+        );
+        assert_eq!(
+            read_legacy(&fixture!("v1-refusal-unknown-marker.json"))
+                .unwrap_err()
+                .code,
+            code::NOT_LEGACY
+        );
     }
 
     #[test]

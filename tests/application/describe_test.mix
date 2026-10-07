@@ -23,8 +23,8 @@ fn v1_problems($value, $contract)
       push($problems, $key .. " must be a nonblank string")
     end
   end
-  if not has_key($value, "pid") or type($value.pid) != "number" or floor($value.pid) != $value.pid or $value.pid <= 0 then
-    push($problems, "pid must be a positive integer")
+  if not has_key($value, "pid") or type($value.pid) != "number" or floor($value.pid) != $value.pid or $value.pid <= 0 or $value.pid > 4294967295 then
+    push($problems, "pid must be a positive integer within the u32 range")
   end
   if not has_key($value, "app_id") then
     push($problems, "app_id is required")
@@ -149,32 +149,30 @@ if $row.owner != "application" or $row.version != $manifest.version or $row.stat
   raise("REGISTRY", "app.describe row must be owned by application, version " .. $manifest.version .. ", accepted")
 end
 
--- Request bodies: bounded, and each declared expectation matches the shape.
+-- Request bodies: bounded, and each declared expectation matches the parse
+-- semantics of validate_request — blank bodies and anything that parses as an
+-- empty JSON object (whitespace inside the braces included) are the accepted
+-- canonical request; everything else is refused before dispatch.
 for each $request in $manifest.requests
   $body = $request.body
   $problems = []
   if len($body) > $manifest.limits.request_bytes then
     push($problems, "request body exceeds request_bytes")
   end
-  $accepted_shape = trim($body) == "" or $body == "{}"
-  if $request.expected == "accepted" and not $accepted_shape then
-    push($problems, "accepted request must be {} or blank")
-  end
-  if $request.expected == "refused" then
+  $parses = false
+  $parsed = nil
+  try
+    $parsed = json_parse($body)
+    $parses = true
+  catch $msg
     $parses = false
-    $parsed = nil
-    try
-      $parsed = json_parse($body)
-      $parses = true
-    catch $msg
-      $parses = false
-    end
-    if $parses and $accepted_shape then
-      push($problems, "refused request parses as the accepted form")
-    end
-    if $parses and type($parsed) == "map" and len(keys($parsed)) == 0 then
-      push($problems, "refused request parses as an empty object")
-    end
+  end
+  $accepted_shape = trim($body) == "" or ($parses and type($parsed) == "map" and len(keys($parsed)) == 0)
+  if $request.expected == "accepted" and not $accepted_shape then
+    push($problems, "accepted request must be blank or parse as an empty object")
+  end
+  if $request.expected == "refused" and $accepted_shape then
+    push($problems, "refused request parses as the accepted form")
   end
   if len($problems) > 0 then
     raise("REQUEST_FIXTURE", "request " .. json_encode($body) .. ": " .. join($problems, "; "))
