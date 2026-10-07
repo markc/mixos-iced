@@ -404,14 +404,18 @@ I/O errors, strict shape changes and intact documents requiring a changed
 compiler interpretation fail without an automatic backup rollback.</p>
 <p><code>settingsd init --instance example</code> explicitly creates a profile and refuses
 existing accepted/backup data. <code>settingsd serve --instance example</code> never
-materialises defaults for a missing established store. <code>settingsd seed --instance example</code> provisions a first-run profile or validates an existing primary without
-rewriting valid state. A retained writer.lock is establishment evidence: seed
-refuses a missing established primary even without a backup. Existing-store
+materialises defaults for a missing established store. Plain <code>settingsd seed --instance example</code> validates an existing profile without rewriting valid state;
+it refuses a wholly missing directory. First installation explicitly uses
+<code>settingsd seed --allow-create --instance example</code> as the service account.
+A retained writer.lock is establishment evidence: even --allow-create refuses
+a missing established primary without a backup. Existing-store
 corruption uses the same validated, evidence-preserving recovery as serve.
-The unit seeds before serving, binds the instance to the machine hostname, and
+The unit validates with plain seed before serving, binds the instance to the machine hostname, and
 the session target wants/upholds it. Settings readiness never blocks application
 or compositor startup. The image provisions the authority account's writable
-MixOS settings parent; isolated native image adoption still needs runtime evidence.</p>
+MixOS settings parent and seeds once explicitly. Automatic unit startup never
+uses --allow-create; missing mounts/directories fail visibly rather than resetting
+preferences. Isolated native image adoption still needs runtime evidence.</p>
 <h2 id="validation-and-remaining-scope">Validation and remaining scope</h2>
 <p>Machine fixtures: <a href="/spec/settings/authority.spec.mix">authority.spec.mix</a>. Rust tests cover
 precision, patches, projection round-trip, writer locking, changed/no-op receipts,

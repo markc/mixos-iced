@@ -35,8 +35,10 @@ Provision the profile's writable state directory for its service account,
 including `MIXOS_VAR/edit/recovery` with mode `0700`. Editor readiness must
 include `edit.info` reporting `volatile:false` and `recovery.ok:true`.
 Also provision the service account's writable `MIXOS_ETC/settings` parent.
-Settingsd seeds a first-run default profile before serving; subsequent starts
-validate existing state and refuse missing established/unsupported data. Its
+The installer explicitly provisions the default profile with
+`settingsd seed --allow-create --instance example` as the service account;
+session startup uses plain seed to validate existing state and refuses a wholly
+missing directory, missing primary or unsupported data. Its
 instance binding is the machine hostname, while the unit number identifies the
 session's VT. The target wants/upholds settingsd without making applications or
 the compositor wait for it: degraded startup is allowed. Native GUI settings

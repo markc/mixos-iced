@@ -183,7 +183,12 @@ impl Store {
     /// Session provisioning is idempotent only for a valid existing primary.
     /// A retained lock inode is evidence of an established or interrupted
     /// profile: never recreate its missing primary, even without a backup.
-    pub fn seed(root: &Path, binding: Binding) -> anyhow::Result<(Self, Accepted)> {
+    pub fn seed(root: &Path, binding: Binding, allow_create: bool) -> anyhow::Result<(Self, Accepted)> {
+        // Automatic startup cannot distinguish first install from a whole lost
+        // directory/mount. Only an explicit installer operation permits creation.
+        if !allow_create {
+            return Self::open(root, &binding);
+        }
         if root.try_exists()? {
             // An empty directory pre-provisioned for the account is allowed.
             // Once writer.lock exists, only explicit init can recover an

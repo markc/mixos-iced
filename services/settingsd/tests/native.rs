@@ -140,7 +140,7 @@ fn broker_restart_republishes_without_authority_restart_and_shared_consumer_reco
     runtime.block_on(async {
         let mut broker = BrokerFixture::new();
         let root = tempfile::tempdir().unwrap();
-        assert!(Command::new(env!("CARGO_BIN_EXE_settingsd")).args(["seed","--instance","fixture","--root"]).arg(root.path()).status().unwrap().success());
+        assert!(Command::new(env!("CARGO_BIN_EXE_settingsd")).args(["seed","--allow-create","--instance","fixture","--root"]).arg(root.path()).status().unwrap().success());
         let mut authority = broker.authority(root.path());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         let client = loop {

@@ -78,14 +78,16 @@ fn missing_primary_with_backup_requires_visible_recovery() {
 fn session_seed_is_idempotent_and_never_recreates_lost_or_foreign_state() {
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("profile");
-    let (store, accepted) = Store::seed(&root, binding()).unwrap();
+    assert!(Store::seed(&root, binding(), false).is_err());
+    assert!(!root.exists(), "automatic startup cannot create a missing profile");
+    let (store, accepted) = Store::seed(&root, binding(), true).unwrap();
     let initial = std::fs::read(root.join("desktop.conf.mix")).unwrap();
     assert!(
-        Store::seed(&root, binding()).is_err(),
+        Store::seed(&root, binding(), false).is_err(),
         "active writer must exclude seed"
     );
     drop(store);
-    let (store, again) = Store::seed(&root, binding()).unwrap();
+    let (store, again) = Store::seed(&root, binding(), false).unwrap();
     assert_eq!(again.incarnation, accepted.incarnation);
     assert_eq!(
         std::fs::read(root.join("desktop.conf.mix")).unwrap(),
@@ -96,14 +98,18 @@ fn session_seed_is_idempotent_and_never_recreates_lost_or_foreign_state() {
         instance: "other".into(),
         ..binding()
     };
-    assert!(Store::seed(&root, foreign).is_err());
+    assert!(Store::seed(&root, foreign, false).is_err());
     assert_eq!(
         std::fs::read(root.join("desktop.conf.mix")).unwrap(),
         initial
     );
     std::fs::remove_file(root.join("desktop.conf.mix")).unwrap();
-    assert!(Store::seed(&root, binding()).is_err());
+    assert!(Store::seed(&root, binding(), false).is_err());
+    assert!(Store::seed(&root, binding(), true).is_err(), "a retained lock forbids recreating an established missing primary even with the creation flag");
     assert!(!root.join("desktop.conf.mix").exists());
+    std::fs::rename(&root, parent.path().join("detached")).unwrap();
+    assert!(Store::seed(&root, binding(), false).is_err());
+    assert!(!root.exists(), "a whole missing directory must remain visibly missing");
 }
 #[test]
 fn directory_or_lock_replacement_fences_the_existing_writer() {

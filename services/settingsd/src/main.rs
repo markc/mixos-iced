@@ -41,8 +41,14 @@ impl Profile {
 enum Command {
     /// Explicitly create a new profile. Never overwrites existing state.
     Init(Profile),
-    /// Create a first-run session profile, or validate existing state unchanged.
-    Seed(Profile),
+    /// Validate session state; creation requires explicit installer permission.
+    Seed {
+        #[command(flatten)]
+        profile: Profile,
+        /// Installer-only first provisioning; never used by automatic startup.
+        #[arg(long)]
+        allow_create: bool,
+    },
     /// Serve an established profile; missing/unsupported state fails visibly.
     Serve(Profile),
 }
@@ -63,9 +69,9 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        Command::Seed(profile) => {
+        Command::Seed { profile, allow_create } => {
             let (root, binding) = profile.resolve()?;
-            let (_store, accepted) = settingsd::store::Store::seed(&root, binding)?;
+            let (_store, accepted) = settingsd::store::Store::seed(&root, binding, allow_create)?;
             println!(
                 "{}",
                 serde_json::json!({"status":"seeded","binding":accepted.binding,"incarnation":accepted.incarnation,"revision":accepted.revision})

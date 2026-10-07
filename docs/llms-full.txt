@@ -1234,15 +1234,19 @@ compiler interpretation fail without an automatic backup rollback.
 
 `settingsd init --instance example` explicitly creates a profile and refuses
 existing accepted/backup data. `settingsd serve --instance example` never
-materialises defaults for a missing established store. `settingsd seed --instance
-example` provisions a first-run profile or validates an existing primary without
-rewriting valid state. A retained writer.lock is establishment evidence: seed
-refuses a missing established primary even without a backup. Existing-store
+materialises defaults for a missing established store. Plain `settingsd seed
+--instance example` validates an existing profile without rewriting valid state;
+it refuses a wholly missing directory. First installation explicitly uses
+`settingsd seed --allow-create --instance example` as the service account.
+A retained writer.lock is establishment evidence: even --allow-create refuses
+a missing established primary without a backup. Existing-store
 corruption uses the same validated, evidence-preserving recovery as serve.
-The unit seeds before serving, binds the instance to the machine hostname, and
+The unit validates with plain seed before serving, binds the instance to the machine hostname, and
 the session target wants/upholds it. Settings readiness never blocks application
 or compositor startup. The image provisions the authority account's writable
-MixOS settings parent; isolated native image adoption still needs runtime evidence.
+MixOS settings parent and seeds once explicitly. Automatic unit startup never
+uses --allow-create; missing mounts/directories fail visibly rather than resetting
+preferences. Isolated native image adoption still needs runtime evidence.
 
 ## Validation and remaining scope
 
