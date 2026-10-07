@@ -494,11 +494,13 @@ pub fn font_for(
 }
 
 /// A checked font selection for an immutable prepared presentation. This does
-/// not load files or mutate role bindings. A generic rescue is explicit evidence,
+/// not discover files or mutate role bindings. It probes lazily registered faces
+/// on the host worker. A generic rescue is explicit evidence,
 /// and is allowed only when the host opts in (for example embedded defaults).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontChoice {
     Declared,
+    DeclaredFallback,
     InstalledRole,
     Generic,
 }
@@ -524,45 +526,43 @@ pub fn try_font_for(
         .write()
         .map_err(|_| "font system lock poisoned")?;
     let raw = system.raw();
+    if let Some(font) = preferred.and_then(|name| registered_font(raw, name, requested_weight)) {
+        return Ok(FontSelection { font, choice: FontChoice::InstalledRole });
+    }
+    for (index, name) in std::iter::once(family).chain(fallbacks.iter().map(String::as_str)).enumerate() {
+        if let Some(font) = registered_font(raw, name, requested_weight) {
+            return Ok(FontSelection { font, choice: if index == 0 { FontChoice::Declared } else { FontChoice::DeclaredFallback } });
+        }
+    }
+    if allow_generic {
+        let generic_family = if monospace { fontdb::Family::Monospace } else { fontdb::Family::SansSerif };
+        let name = raw.db().family_name(&generic_family).to_owned();
+        if let Some(font) = registered_font(raw, &name, requested_weight) { return Ok(FontSelection { font, choice: FontChoice::Generic }); }
+    }
+    Err("no declared or permitted generic font face could be loaded")
+}
+
+fn registered_font(raw: &mut cosmic_text::FontSystem, name: &str, requested_weight: u16) -> Option<Font> {
     // Canonicalise to a name actually in the database before interning: varying
     // case in repeated settings must not allocate unbounded duplicate names.
-    let canonical = |name: &str| {
-        raw.db()
-            .faces()
-            .flat_map(|face| &face.families)
-            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
-            .map(|(candidate, _)| candidate.clone())
-    };
-    let selected = preferred
-        .and_then(canonical)
-        .map(|name| (name, FontChoice::InstalledRole))
-        .or_else(|| {
-            std::iter::once(family)
-                .chain(fallbacks.iter().map(String::as_str))
-                .find_map(canonical)
-                .map(|name| (name, FontChoice::Declared))
-        })
-        .or_else(|| {
-            if !allow_generic {
-                return None;
-            }
-            let generic = raw.db().family_name(&if monospace {
-                fontdb::Family::Monospace
-            } else {
-                fontdb::Family::SansSerif
-            });
-            canonical(generic).map(|name| (name, FontChoice::Generic))
-        });
-    let (name, choice) =
-        selected.ok_or("no declared or permitted generic font family is available")?;
+    let name = raw.db().faces().flat_map(|face| &face.families)
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name)).map(|(candidate, _)| candidate.clone())?;
     let has_light = family_has_light(raw, &name);
-    Ok(FontSelection {
-        font: Font {
+    let selected_weight = weight(effective_weight(requested_weight, has_light));
+    let database_weight = fontdb::Weight(match selected_weight {
+        font::Weight::Thin => 100, font::Weight::ExtraLight => 200, font::Weight::Light => 300,
+        font::Weight::Normal => 400, font::Weight::Medium => 500, font::Weight::Semibold => 600,
+        font::Weight::Bold => 700, font::Weight::ExtraBold => 800, font::Weight::Black => 900,
+    });
+    let id = raw.db().query(&fontdb::Query {
+        families: &[fontdb::Family::Name(&name)], weight: database_weight,
+        ..fontdb::Query::default()
+    })?;
+    raw.get_font(id, database_weight)?;
+    Some(Font {
             family: font::Family::Name(intern(&name)),
-            weight: weight(effective_weight(requested_weight, has_light)),
+            weight: selected_weight,
             ..Font::DEFAULT
-        },
-        choice,
     })
 }
 

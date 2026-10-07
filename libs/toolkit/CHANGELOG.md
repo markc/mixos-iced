@@ -4,8 +4,9 @@
 
 - Prepared immutable typography defaults and shared text/input builders let
   hosts change fonts, logical text size and line height without startup captures.
-- Checked registered-font selection reports declared, installed-role or explicit
-  generic choices, and refuses unavailable chains instead of hiding failure.
+- Checked registered-font selection probes usable faces and reports primary,
+  declared fallback, installed-role or explicit generic choices. Unavailable
+  chains fail visibly; requested weights stay independent of role selection.
 
 ## 0.2.3
 

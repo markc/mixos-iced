@@ -133,3 +133,17 @@ fn repeated_inputs_do_not_duplicate_resource_preparation() {
     assert!(host.complete(prepare(request, "stale")).is_none());
     assert!(host.request().is_none());
 }
+
+#[test]
+fn host_worker_failure_does_not_strand_a_preparing_stage() {
+    let mut host = host();
+    let request = host.request().unwrap();
+    let failure = request.failed(Diagnostic::new("worker_failed", "resources", "worker exited"));
+    assert!(host.complete(failure).is_none());
+    assert_eq!(host.consumer().fault().unwrap().code, "worker_failed");
+    assert!(host.presentation().is_none());
+    let work = host.consumer_mut().refresh().unwrap();
+    host.consumer_mut().complete(&work, Ok(Some(snapshot(1, false))));
+    let completion = prepare(host.request().unwrap(), "recovered");
+    assert!(host.complete(completion).is_some());
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Settings authority read data to one prepared toolkit presentation. No source
-//! compilation, transport, file reads, font installation or renderer swap here.
+//! compilation, transport, font installation or renderer swap here. Registered
+//! font faces may load during worker preparation, never in a draw callback.
 //! Preparation belongs on the host's worker; activation belongs on its UI loop.
 use design::{
     LinearRgba, ResolvedColours, ResolvedDictionary, ResolvedMetric, ResolvedMetricKind,
@@ -143,6 +144,7 @@ impl Projection {
                 return Err(fault(name, "Required logical-pixel metric is missing"));
             }
         }
+        bounded(dictionary.metrics["type.compact"].value * f64::from(text_scale), 0.01, 4096.0, "type.compact")?;
         for (name, scale) in &d.scales {
             if scale.is_empty() || scale.len() > 4096 {
                 return Err(fault(name, "Invalid scale length"));
@@ -161,10 +163,10 @@ impl Projection {
         }
         let mut types = BTreeMap::new();
         for (name, t) in &d.typography {
-            if t.family.is_empty()
+            if t.family.trim().is_empty()
                 || t.family.len() > 256
                 || t.fallbacks.len() > 16
-                || t.fallbacks.iter().any(|s| s.is_empty() || s.len() > 256)
+                || t.fallbacks.iter().any(|s| s.trim().is_empty() || s.len() > 256)
                 || !(1..=1000).contains(&t.weight)
             {
                 return Err(fault(name, "Invalid font family chain or weight"));
@@ -287,6 +289,9 @@ impl Projection {
         metrics.text.lg *= text_scale;
         metrics.text.xl *= text_scale;
         metrics.text.xxl *= text_scale;
+        for value in [metrics.text.xs, metrics.text.sm, metrics.text.md, metrics.text.lg, metrics.text.xl, metrics.text.xxl] {
+            bounded(f64::from(value), 0.01, 4096.0, "text scale")?;
+        }
         let tokens = Tokens::new(crate::tokens::palette(&dictionary.colours), metrics);
         let semantic = crate::tokens::semantic_colours(&dictionary.colours);
         Ok(Self {
@@ -353,7 +358,7 @@ impl Projection {
             let builtin = package_source
                 && default.is_some_and(|role| {
                     let r = design::default_typography(role);
-                    r.family == t.family && r.fallbacks == t.fallbacks
+                    r.family == t.family && r.fallbacks == t.fallbacks && r.generic == t.generic
                 });
             let role = if name == "ui_display" {
                 Role::Display

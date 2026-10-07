@@ -66,23 +66,14 @@ pub(crate) fn semantic_colours(colours: &ResolvedColours) -> toolkit::tokens::Se
         };
         // Status colours are foreground roles. Resolve their alpha over the
         // same surface used for the contrast check, then render opaquely.
-        let authored = colour(*value);
-        let authored = Color {
-            r: authored.r * authored.a + palette.surface.r * (1.0 - authored.a),
-            g: authored.g * authored.a + palette.surface.g * (1.0 - authored.a),
-            b: authored.b * authored.a + palette.surface.b * (1.0 - authored.a),
-            a: 1.0,
-        };
-        let luminance = |colour: Color| {
-            let channel = |c: f32| {
-                if c <= 0.04045 {
-                    c / 12.92
-                } else {
-                    ((c + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * channel(colour.r) + 0.7152 * channel(colour.g) + 0.0722 * channel(colour.b)
-        };
+        let [r, g, b, _] = palette.surface.into_linear();
+        let alpha = value.alpha as f32;
+        let authored = Color::from_linear_rgba(
+            value.red as f32 * alpha + r * (1.0 - alpha),
+            value.green as f32 * alpha + g * (1.0 - alpha),
+            value.blue as f32 * alpha + b * (1.0 - alpha), 1.0,
+        );
+        let luminance = |colour: Color| colour.relative_luminance();
         let readable = |colour| {
             let a = luminance(colour);
             let b = luminance(palette.surface);
@@ -94,12 +85,11 @@ pub(crate) fn semantic_colours(colours: &ResolvedColours) -> toolkit::tokens::Se
         if !readable(palette.text) {
             return default;
         }
-        let blend = |weight: f32| Color {
-            r: authored.r + (palette.text.r - authored.r) * weight,
-            g: authored.g + (palette.text.g - authored.g) * weight,
-            b: authored.b + (palette.text.b - authored.b) * weight,
-            a: 1.0,
-        };
+        let [r, g, b, _] = authored.into_linear();
+        let [tr, tg, tb, _] = palette.text.into_linear();
+        let blend = |weight: f32| Color::from_linear_rgba(
+            r + (tr - r) * weight, g + (tg - g) * weight, b + (tb - b) * weight, 1.0,
+        );
         let (mut lo, mut hi) = (0.0, 1.0);
         for _ in 0..24 {
             let mid = (lo + hi) / 2.0;
@@ -377,6 +367,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn readable_status_alpha_composites_in_linear_light() {
+        let theme = Theme::embedded();
+        let mut colours = theme.dictionary().colours.clone();
+        let base = colours.pairs.get_mut("base").unwrap();
+        base.rendered_surface = LinearRgba::BLACK;
+        base.rendered_foreground = LinearRgba::WHITE;
+        colours.primitives.insert("status.success".into(), LinearRgba { alpha: 0.5, ..LinearRgba::WHITE });
+        let status = semantic_colours(&colours).success;
+        let expected = Color::from_linear_rgba(0.5, 0.5, 0.5, 1.0);
+        assert!((status.r - expected.r).abs() < 1e-6);
+        assert!((status.g - expected.g).abs() < 1e-6);
+        assert!((status.b - expected.b).abs() < 1e-6);
+        assert!(status.r > 0.7);
     }
 
     #[test]

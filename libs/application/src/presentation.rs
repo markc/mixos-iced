@@ -20,7 +20,7 @@ pub struct Presentation<T> {
     appearance: Prepared,
     content: T,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Request {
     update: Update,
     context: String,
@@ -97,6 +97,11 @@ impl<T> Host<T> {
 impl Request {
     pub fn update(&self) -> &Update {
         &self.update
+    }
+    /// Turn a host worker cancellation, panic or timeout into the same fenced
+    /// failure path. Keep a capture outside the job until completion arrives.
+    pub fn failed<T>(self, fault: Diagnostic) -> Completion<T> {
+        Completion { update: self.update, result: Err(fault) }
     }
     /// Run on a host worker. Additional deliberate content styling/resources
     /// are prepared before the whole result can be activated. Font resolution

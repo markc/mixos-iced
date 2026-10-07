@@ -109,6 +109,9 @@ typography, motion preference and font-choice evidence. `prepare_registered`
 checks already registered process fonts off the UI loop, without loading an
 asset set or changing generic role bindings. Custom sources require an available
 declared chain; package data may use an explicitly reported generic rescue.
+The resolver checks that a matching face can load, tries the next declared
+family after an unusable face, and distinguishes a declared fallback from the
+primary family. Font atlas upload and actual frame evidence belong to rendering.
 
 Text scale multiplies logical text sizes and authored logical-pixel line heights;
 density multiplies spacing. Radii and border widths retain their design values.

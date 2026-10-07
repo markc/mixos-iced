@@ -23,6 +23,9 @@ presentation and acknowledging it. Preparation/resource/content errors keep the
 last applied presentation; superseded or foreign completions cannot swap it.
 Repeated capture of the same pending stage returns no new request. Replace or
 cancel the host's one resource job when a fresh stage supersedes its capture.
+Retain a cloned capture until the worker finishes. Convert a cancelled, timed-out
+or panicked job into `request.failed(diagnostic)` and complete it on the UI loop;
+dropping work without a completion would leave that stage marked preparing.
 
 Feed native events and RPC completions to `host.consumer_mut()` using the
 application's existing Bus lifetime. The bridge creates no connection, receiver,
