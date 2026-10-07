@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One window-wide navigation strip, dispatched through the existing actions.
 use actions::{ActionId, filemgr};
-use application::iced::widget::{button, container, row};
 use application::Element;
-use application::iced::{Length};
+use application::iced::Length;
+use application::iced::widget::{button, container, row};
 use dopus_core::PaneModel;
 
 use super::Look;

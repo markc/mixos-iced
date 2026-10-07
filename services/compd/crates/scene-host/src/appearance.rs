@@ -8,7 +8,7 @@ use decor::{
 };
 use iced_core::{
     Theme,
-    font::{Family, Weight},
+    font::Family,
 };
 use settings::{Diagnostic, Snapshot};
 use std::sync::Arc;
@@ -109,11 +109,7 @@ pub(crate) fn fixture(mode: &str, scale: f64) -> Arc<Prepared> {
             .prepare(|_, record| {
                 Ok(toolkit::fonts::FontSelection {
                     font: iced_core::Font {
-                        weight: if record.weight >= 600 {
-                            Weight::Bold
-                        } else {
-                            Weight::Normal
-                        },
+                        weight: toolkit::fonts::weight(record.weight),
                         ..iced_core::Font::DEFAULT
                     },
                     choice: toolkit::fonts::FontChoice::Declared,

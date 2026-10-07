@@ -1029,7 +1029,8 @@ fn ttc_collection_faces_register_and_malformed_ttc_is_rejected() {
         for table in 0..tables {
             let start = 12 + table * 16 + 8;
             let offset = u32::from_be_bytes(font[start..start + 4].try_into().unwrap());
-            font[start..start + 4].copy_from_slice(&offset.checked_add(base).unwrap().to_be_bytes());
+            font[start..start + 4]
+                .copy_from_slice(&offset.checked_add(base).unwrap().to_be_bytes());
         }
         font
     };

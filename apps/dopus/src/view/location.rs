@@ -14,8 +14,8 @@
 //! while an editor holds focus and the keystroke reaches the field.
 //! The field owns Enter submission; KeyRouter cancels editing on Escape.
 
-use application::iced::widget::{button, container};
 use application::Element;
+use application::iced::widget::{button, container};
 use application::iced::{Border, Length};
 
 use dopus_core::{PaneId, PaneModel};

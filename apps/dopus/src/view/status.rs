@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared status and panel toggles. Directory summaries belong to each pane.
 
-use application::iced::widget::{button, container, row, text};
 use application::Element;
-use application::iced::{Length};
+use application::iced::Length;
+use application::iced::widget::{button, container, row, text};
 
 use crate::app::Msg;
 use crate::view::Look;
