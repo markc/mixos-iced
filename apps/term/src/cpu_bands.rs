@@ -141,7 +141,15 @@ impl Surface {
         {
             return None;
         }
+        // Charge every exact row check, including cheap failed anchors, to
+        // one shared budget. Repetitive redraws must not spend sixteen
+        // screenfuls comparing text before starting their ordinary paint.
+        let remaining = std::cell::Cell::new(rows.saturating_mul(2));
         let matches = |old: usize, new: usize| {
+            if remaining.get() == 0 {
+                return false;
+            }
+            remaining.set(remaining.get() - 1);
             raster.matches_cached_row(
                 screen,
                 &self.tiles[old / ROWS_PER_BAND].state,
@@ -154,6 +162,7 @@ impl Surface {
         // only when most visible rows actually changed, not merely dirty hints.
         if (0..rows)
             .filter(|&row| dirty[row] && !matches(row, row))
+            .take(rows / 2 + 1)
             .count()
             <= rows / 2
         {
@@ -161,12 +170,14 @@ impl Surface {
         }
         // Prefer small shifts and retain at least half the viewport. Exact
         // row checks make ambiguous duplicate/blank rows harmless.
-        // Anchors reject most candidates in O(rows * cols). Repetitive rows
-        // can pass anchors then fail late, so bound expensive overlap scans;
-        // falling back to normal painting is always correct.
-        let mut overlap_scans = 0;
+        // Anchors reject most candidates cheaply. The complete detector,
+        // including its initial positional comparisons, checks at most two
+        // screenfuls of rows; exhaustion falls back to ordinary painting.
         for amount in 1..=rows / 2 {
             for shift in [amount as isize, -(amount as isize)] {
+                if remaining.get() == 0 {
+                    return None;
+                }
                 let first = if shift < 0 { amount } else { 0 };
                 let end = if shift > 0 { rows - amount } else { rows };
                 if !matches((first as isize + shift) as usize, first)
@@ -174,11 +185,9 @@ impl Surface {
                 {
                     continue;
                 }
-                if overlap_scans == 16 {
-                    return None;
-                }
-                overlap_scans += 1;
-                if (first..end).all(|new| matches((new as isize + shift) as usize, new)) {
+                // The endpoints are already verified; do not charge or check
+                // them twice, particularly in a small viewport.
+                if (first + 1..end - 1).all(|new| matches((new as isize + shift) as usize, new)) {
                     return Some(shift);
                 }
             }
