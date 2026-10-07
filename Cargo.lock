@@ -187,6 +187,7 @@ dependencies = [
  "iced_core",
  "iced_tiny_skia",
  "iced_widget",
+ "serde",
  "serde_json",
  "settings",
  "sha2 0.10.9",

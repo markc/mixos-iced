@@ -471,15 +471,18 @@ pub struct RegistryEvidence {
     pub image: ImageUsage,
 }
 
-fn serialize_registry_usage<S: serde::Serializer>(usage: &RegistryUsage, serializer: S) -> Result<S::Ok,S::Error> {
+fn serialize_registry_usage<S: serde::Serializer>(
+    usage: &RegistryUsage,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeStruct;
-    let mut record = serializer.serialize_struct("RegistryUsage",6)?;
-    record.serialize_field("retained_bytes",&usage.retained_bytes)?;
-    record.serialize_field("sources",&usage.sources)?;
-    record.serialize_field("faces",&usage.faces)?;
-    record.serialize_field("collections",&usage.collections)?;
-    record.serialize_field("aliases",&usage.aliases)?;
-    record.serialize_field("instantiated_pairs",&usage.instantiated_pairs)?;
+    let mut record = serializer.serialize_struct("RegistryUsage", 6)?;
+    record.serialize_field("retained_bytes", &usage.retained_bytes)?;
+    record.serialize_field("sources", &usage.sources)?;
+    record.serialize_field("faces", &usage.faces)?;
+    record.serialize_field("collections", &usage.collections)?;
+    record.serialize_field("aliases", &usage.aliases)?;
+    record.serialize_field("instantiated_pairs", &usage.instantiated_pairs)?;
     record.end()
 }
 

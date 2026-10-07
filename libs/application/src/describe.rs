@@ -486,10 +486,7 @@ pub fn parse_validate(raw: &str) -> Result<OwnedDescription, Violation> {
     let value: Value = serde_json::from_str(raw)
         .map_err(|error| Violation::new("", code::MALFORMED_JSON, error.to_string()))?;
     let pid = validate(&value)?.pid();
-    Ok(OwnedDescription {
-        value,
-        pid,
-    })
+    Ok(OwnedDescription { value, pid })
 }
 
 fn required_nonempty_bounded<'a>(
@@ -781,14 +778,23 @@ mod tests {
         };
     }
     fixtures!(
-        "v1-refusal-unknown-marker.json", "v1-refusal-bad-identity.json",
-        "ced-legacy-describe.json", "v1-refusal-missing-marker.json",
-        "v1-refusal-missing-app-describe.json", "v1-minimal-strings.json",
-        "ced-legacy-describe-gui.json", "v1-descriptors.json", "dopus-legacy-describe.json",
-        "v1-refusal-app-describe-mutable.json", "scene-editor-legacy-describe.json",
-        "busviewer-legacy-describe.json", "v1-refusal-pid-overflow.json",
-        "v1-refusal-bad-evidence.json", "v1-evidence.json",
-        "v1-refusal-duplicate-verbs.json", "shell-info-legacy.json",
+        "v1-refusal-unknown-marker.json",
+        "v1-refusal-bad-identity.json",
+        "ced-legacy-describe.json",
+        "v1-refusal-missing-marker.json",
+        "v1-refusal-missing-app-describe.json",
+        "v1-minimal-strings.json",
+        "ced-legacy-describe-gui.json",
+        "v1-descriptors.json",
+        "dopus-legacy-describe.json",
+        "v1-refusal-app-describe-mutable.json",
+        "scene-editor-legacy-describe.json",
+        "busviewer-legacy-describe.json",
+        "v1-refusal-pid-overflow.json",
+        "v1-refusal-bad-evidence.json",
+        "v1-evidence.json",
+        "v1-refusal-duplicate-verbs.json",
+        "shell-info-legacy.json",
     );
 
     #[test]
