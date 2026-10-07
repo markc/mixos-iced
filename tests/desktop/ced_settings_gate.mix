@@ -98,9 +98,10 @@ fn identity($snapshot)
   return {incarnation:$snapshot.incarnation,revision:$snapshot.revision,
     design_revision:$snapshot.design_revision,source_digest:$snapshot.source_digest}
 end
-fn await_current($snapshot,$window)
+fn await_current($snapshot,$window,$budget)
   $last = nil
-  for $attempt = 1 to 100
+  $deadline = time()+$budget
+  while time() < $deadline
     $reply = call($R.b,$R.run.path .. "/b","ced-settings-gate","app.describe",{})
     if $reply.rc == 0 then
       $last = $reply.result
@@ -194,7 +195,7 @@ try
   $home = $root .. "/ced-home"
   $online = launch($home,"online",[$document])
   $window = presented($online,5000)
-  await_current($light,$window)
+  await_current($light,$window,10)
   $tabs = app("ced.tabs",{}).tabs
   check(len($tabs) == 1,"Launch document not opened exactly once")
   $tab = $tabs[0].tab
@@ -203,7 +204,7 @@ try
   $before = app("ced.state",{tab:$tab,text:true})
   $light_pixel = capture("online-light",$window,$light)
   $dark = apply({"appearance.mode":"dark","ui.text_scale":1.25},"ced-gui-dark")
-  await_current($dark,$window)
+  await_current($dark,$window,10)
   $dark_pixel = capture("online-dark",$window,$dark)
   $after = app("ced.state",{tab:$tab,text:true})
   check($before.buffer == $after.buffer and $before.rev == $after.rev and $before.text == $after.text and
@@ -244,7 +245,9 @@ try
     $broker_identity.noded.pid == $broker,"Restart answered through a different broker")
   start_authorities()
   $restarted = rpc($R.b,$root .. "/b","settingsd","settings.get",{binding:$binding}).snapshot
-  await_current($restarted,$cached_window)
+  -- The existing Bus supervisor caps full-jitter reconnect backoff at 30s.
+  -- A ten-second wait falsely rejects a healthy long-outage recovery.
+  await_current($restarted,$cached_window,45)
   capture("recovered-current",$cached_window,$restarted)
   $recovered_tabs = app("ced.tabs",{}).tabs
   check(len($recovered_tabs) == 2,"Offline new-file intent was not deferred and restored exactly once")
