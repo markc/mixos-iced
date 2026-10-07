@@ -184,6 +184,14 @@ fn cache_refuses_tampering_including_resealed_projection_and_foreign_targets() {
     let (dir, state, _) = populated();
     let file = path(dir.path());
     let original: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    let mut future = original.clone();
+    future["schema"] = 2.into();
+    future["new_future_field"] = true.into();
+    fs::write(&file, serde_json::to_vec(&future).unwrap()).unwrap();
+    assert_eq!(cache::load(dir.path(), &state).unwrap_err().code, "unsupported_cache");
+    future["schema"] = 1.into();
+    fs::write(&file, serde_json::to_vec(&future).unwrap()).unwrap();
+    assert_eq!(cache::load(dir.path(), &state).unwrap_err().code, "invalid_cache");
     for field in ["schema", "interpretation", "context", "shell", "digest"] {
         let mut value = original.clone();
         value[field] = match field {

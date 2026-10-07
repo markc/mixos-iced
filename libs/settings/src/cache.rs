@@ -17,6 +17,12 @@ use std::{
 pub const MAX_CACHE_BYTES: usize = 1024 * 1024;
 const CACHE_SCHEMA: u32 = 1;
 
+#[derive(Deserialize)]
+struct Header {
+    schema: u32,
+    interpretation: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -244,6 +250,12 @@ pub fn load(directory: &Path, consumer: &Consumer) -> Result<Candidate, Diagnost
     );
     let bytes = config::atomic::read_in(&directory, name.as_ref(), MAX_CACHE_BYTES)
         .map_err(|e| fault("cache_read_failed", e))?;
+    // Read compatibility evidence before strict body decoding, so a new
+    // schema with new fields is unsupported rather than labelled corrupt.
+    let header: Header = serde_json::from_slice(&bytes).map_err(|e| fault("invalid_cache", e))?;
+    if header.schema != CACHE_SCHEMA || header.interpretation != interpretation() {
+        return Err(fault("unsupported_cache", "Cache schema/interpretation differs"));
+    }
     let envelope: Envelope =
         serde_json::from_slice(&bytes).map_err(|e| fault("invalid_cache", e))?;
     if envelope.schema != CACHE_SCHEMA || envelope.interpretation != interpretation() {

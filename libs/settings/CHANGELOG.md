@@ -12,6 +12,8 @@ ambiguous post-rename failure remains visible. Exact JSON float round trips
 preserve compiler projection comparison. The authority wire/schema stay
 0.1.0/1. Real resource loading, GUI/first-map timing and artifact integration
 remain pending.
+Keep fallback preparation/activation faults separate from authority/current
+resource faults, and detect unsupported cache headers before strict body parsing.
 
 ## 0.2.0
 

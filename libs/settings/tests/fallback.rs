@@ -175,3 +175,21 @@ fn failed_first_live_resource_stage_allows_usable_fallback_without_losing_author
     assert_eq!(state.applied().unwrap().revision, Revision(0));
     assert_eq!(state.fault().unwrap().code, "resource_failed");
 }
+#[test]
+fn successful_fallback_retry_clears_its_fault_and_preserves_authority_outage() {
+    let mut state = Consumer::for_app(binding(), "ced").unwrap();
+    let subscribe = state.connected(1).unwrap();
+    state.complete(&subscribe, Err(Diagnostic::new("subscribe_failed", "native", "Outage")));
+    let request = state.fallback_request().unwrap();
+    let failed = request.prepare(None, |_, _, _| Err(Diagnostic::new("missing_resources", "font", "Not ready")));
+    assert!(!state.complete_fallback(&request, failed));
+    assert_eq!(state.fallback_fault().unwrap().code, "missing_resources");
+    assert_eq!(state.fault().unwrap().code, "subscribe_failed");
+    let request = state.fallback_request().unwrap();
+    let prepared = request.prepare(None, resources).unwrap();
+    assert!(state.complete_fallback(&request, Ok(prepared)));
+    assert!(state.acknowledge(&state.pending().unwrap().clone()));
+    assert!(state.fallback_fault().is_none());
+    assert_eq!(state.fault().unwrap().code, "subscribe_failed");
+    assert_eq!(state.presentation_kind(), Some(PresentationKind::Embedded));
+}

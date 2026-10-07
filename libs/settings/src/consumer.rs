@@ -96,6 +96,7 @@ pub struct Consumer {
     applied_serial: u64,
     fallback_serial: u64,
     fault: Option<Diagnostic>,
+    fallback_fault: Option<Diagnostic>,
 }
 impl Consumer {
     pub fn for_app(binding: Binding, app: &str) -> Result<Self, Diagnostic> {
@@ -149,6 +150,7 @@ impl Consumer {
             applied_serial: 0,
             fallback_serial: 0,
             fault: None,
+            fallback_fault: None,
         })
     }
     pub fn binding(&self) -> &Binding {
@@ -219,14 +221,15 @@ impl Consumer {
             }
             Ok(_) => return false,
             Err(errors) => {
-                self.fault = errors.into_iter().next();
+                self.fallback_fault = errors.into_iter().next();
                 return false;
             }
         };
         if let Err(fault) = self.check(&prepared.snapshot) {
-            self.fault = Some(fault);
+            self.fallback_fault = Some(fault);
             return false;
         }
+        self.fallback_fault = None;
         let changes = ChangePlan::between(None, &prepared.snapshot, &self.context, self.shell);
         let serial = self.serial();
         self.pending = Some(Update {
@@ -266,6 +269,9 @@ impl Consumer {
     }
     pub fn fault(&self) -> Option<&Diagnostic> {
         self.fault.as_ref()
+    }
+    pub fn fallback_fault(&self) -> Option<&Diagnostic> {
+        self.fallback_fault.as_ref()
     }
     pub fn retry_delay(&self) -> Option<Duration> {
         self.retry_deadline
@@ -334,6 +340,7 @@ impl Consumer {
         self.retry_deadline = None;
         self.failures = 0;
         self.fault = None;
+        self.fallback_fault = None;
         // Last usable applied/current data remains available, labelled offline
         // by the absent connection generation; it is not current read evidence.
     }
@@ -644,6 +651,7 @@ impl Consumer {
             }
             self.pending = None;
             self.fault = None;
+            self.fallback_fault = None;
         } else if let Some(generation) = self.generation {
             let serial = self.serial();
             self.pending = Some(Update {
@@ -682,6 +690,7 @@ impl Consumer {
         if update.kind == PresentationKind::Current {
             self.fault = None;
         }
+        self.fallback_fault = None;
         true
     }
     pub fn failed(&mut self, update: &Update, fault: Diagnostic) -> bool {
@@ -689,7 +698,11 @@ impl Consumer {
             return false;
         }
         self.pending = None;
-        self.fault = Some(fault);
+        if update.kind == PresentationKind::Current {
+            self.fault = Some(fault);
+        } else {
+            self.fallback_fault = Some(fault);
+        }
         // Preserve last-good applied data. Resource retry belongs to the host's
         // pending resource job, not a settings heartbeat.
         true

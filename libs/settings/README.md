@@ -61,6 +61,9 @@ a new consumer; unique consumer tickets reject completions from retired hosts.
 LastGood or Embedded. Fallback never enters `current()` or supplies mutation
 fences. Embedded/cached fallback cannot be saved as authority-derived data.
 An unchanged fresh authority projection promotes evidence without a swap.
+`fault()` reports authority/current-resource faults; `fallback_fault()` reports
+fallback preparation/activation failure. A usable fallback clears its own fault
+while preserving an ongoing authority outage or unavailable live resources.
 
 The optional `cache` feature provides bounded presentation-cache I/O over
 `config::atomic`. The caller supplies an existing absolute directory inside its
