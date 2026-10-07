@@ -858,7 +858,7 @@ fn publish_state(
 }
 
 fn publish_registration_rejection(ctx: &SupervisorCtx, error: &ClientError) {
-    let Some((rc, message)) = error.registration_rejection() else {
+    let Some(rejection) = error.registration_rejection_typed() else {
         return;
     };
     // One protocol-bounded diagnostic, never a history of failed attempts.
@@ -876,10 +876,7 @@ fn publish_registration_rejection(ctx: &SupervisorCtx, error: &ClientError) {
     }
     *ctx.registration_rejection
         .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(RegistrationRejected {
-        rc,
-        message: message.to_owned(),
-    });
+        .unwrap_or_else(|error| error.into_inner()) = Some(rejection.clone());
     ctx.state_tx.send_replace(ConnState::Fatal);
 }
 

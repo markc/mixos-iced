@@ -2,28 +2,7 @@
 
 use std::fmt;
 
-/// The broker refused `noded.register`.
-///
-/// Only the return code and the broker's diagnostic text are kept. A name
-/// collision and an admission refusal both arrive as `rc=10` with different
-/// wording, so this never claims to know which it was.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegistrationRejected {
-    pub rc: u8,
-    pub message: String,
-}
-
-impl fmt::Display for RegistrationRejected {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Bus registration rejected with rc {}: {}",
-            self.rc, self.message
-        )
-    }
-}
-
-impl std::error::Error for RegistrationRejected {}
+pub use crate::native_client::{RegistrationRejected, RegistrationRejectionKind};
 
 /// What can go wrong on one [`Connection`](super::Connection). The
 /// transport errors are boxed: they carry a whole HTTP response and would
@@ -84,24 +63,33 @@ impl From<serde_json::Error> for ClientError {
 
 impl ClientError {
     pub(crate) fn from_native(error: anyhow::Error) -> Self {
-        if let Some((rc, message)) =
-            crate::native_client::NodedClient::registration_rejection(&error)
-        {
-            return Self::Rejected(RegistrationRejected {
-                rc,
-                message: message.to_owned(),
-            });
-        }
+        // Carry the typed refusal across the native boundary whole: the
+        // classification decoded from the rejection body survives, so
+        // nothing downstream ever rebuilds a `RegistrationRejected` from
+        // the (rc, text) tuple accessor.
+        let error = match error.downcast::<RegistrationRejected>() {
+            Ok(rejection) => return Self::Rejected(rejection),
+            Err(error) => error,
+        };
         match error.downcast::<Self>() {
             Ok(error) => error,
             Err(error) => Self::Native(error),
         }
     }
-    /// The broker's structured registration refusal, when that is what this
-    /// error is.
+    /// The broker's registration refusal, when that is what this error is.
+    /// The tuple/string compatibility accessor; the typed classification is
+    /// [`registration_rejection_typed`](Self::registration_rejection_typed).
     pub fn registration_rejection(&self) -> Option<(u8, &str)> {
         match self {
             ClientError::Rejected(r) => Some((r.rc, r.message.as_str())),
+            _ => None,
+        }
+    }
+    /// The structured registration refusal, when that is what this error is,
+    /// with the typed [`RegistrationRejected::kind`] classification.
+    pub fn registration_rejection_typed(&self) -> Option<&RegistrationRejected> {
+        match self {
+            ClientError::Rejected(rejection) => Some(rejection),
             _ => None,
         }
     }
@@ -158,10 +146,21 @@ impl std::error::Error for SupervisedError {
 
 impl SupervisedError {
     /// The broker's structured registration refusal when this error came
-    /// from the initial connect-and-register path.
+    /// from the initial connect-and-register path. The tuple/string
+    /// compatibility accessor.
     pub fn registration_rejection(&self) -> Option<(u8, &str)> {
         match self {
             SupervisedError::InitialConnectFailed { source, .. } => source.registration_rejection(),
+            _ => None,
+        }
+    }
+    /// The structured registration refusal when this error came from the
+    /// initial connect-and-register path.
+    pub fn registration_rejection_typed(&self) -> Option<&RegistrationRejected> {
+        match self {
+            SupervisedError::InitialConnectFailed { source, .. } => {
+                source.registration_rejection_typed()
+            }
             _ => None,
         }
     }
@@ -188,18 +187,45 @@ mod tests {
     #[test]
     fn registration_rejection_surfaces_only_from_the_initial_connect() {
         let rejected = || {
-            ClientError::Rejected(RegistrationRejected {
-                rc: 10,
-                message: "name held".into(),
-            })
+            ClientError::Rejected(RegistrationRejected::new(
+                10,
+                "name held",
+                RegistrationRejectionKind::NameTaken,
+            ))
         };
         let initial = SupervisedError::InitialConnectFailed {
             attempts: 1,
             source: rejected(),
         };
         assert_eq!(initial.registration_rejection(), Some((10, "name held")));
+        assert_eq!(
+            initial
+                .registration_rejection_typed()
+                .map(|rejection| rejection.kind()),
+            Some(RegistrationRejectionKind::NameTaken)
+        );
         assert!(initial.to_string().contains("rc 10: name held"));
         let later = SupervisedError::Transport(rejected());
         assert!(later.registration_rejection().is_none());
+        assert!(later.registration_rejection_typed().is_none());
+    }
+
+    #[test]
+    fn from_native_carries_the_typed_rejection_kind() {
+        let native = RegistrationRejected::new(
+            10,
+            "held elsewhere",
+            RegistrationRejectionKind::NameTaken,
+        );
+        let mapped = ClientError::from_native(anyhow::Error::from(native.clone()));
+        assert_eq!(
+            mapped.registration_rejection_typed(),
+            Some(&native),
+            "the typed rejection crosses the native boundary whole, kind included"
+        );
+        // A plain native failure is still Native, never a manufactured rejection.
+        let plain = ClientError::from_native(anyhow::anyhow!("socket exploded"));
+        assert!(plain.registration_rejection_typed().is_none());
+        assert!(matches!(plain, ClientError::Native(_)));
     }
 }
