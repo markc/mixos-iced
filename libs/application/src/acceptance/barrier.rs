@@ -878,18 +878,35 @@ mod tests {
     #[tokio::test]
     async fn released_permits_survive_rearm_and_delayed_poll() {
         let (controller, hook, run) = pair();
-        let first = controller.arm(arm(&run, "dopus.before_execute", "first")).unwrap();
-        let mut old = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
+        let first = controller
+            .arm(arm(&run, "dopus.before_execute", "first"))
+            .unwrap();
+        let mut old = hook
+            .reach("dopus.before_execute", observation())
+            .unwrap()
+            .unwrap();
         controller.release(&first.token).unwrap();
         // Both async select branches are ready when this permit is first polled.
         old.deadline = Instant::now() - Duration::from_secs(1);
-        controller.arm(arm(&run, "dopus.before_execute", "second")).unwrap();
+        controller
+            .arm(arm(&run, "dopus.before_execute", "second"))
+            .unwrap();
         assert_eq!(old.wait().await, Ok(()));
-        let blocking = hook.reach("dopus.before_execute", observation()).unwrap().unwrap();
-        controller.release(&Token::try_new("second").unwrap()).unwrap();
-        let fresh = controller.arm(arm(&run, "dopus.before_execute", "third")).unwrap();
+        let blocking = hook
+            .reach("dopus.before_execute", observation())
+            .unwrap()
+            .unwrap();
+        controller
+            .release(&Token::try_new("second").unwrap())
+            .unwrap();
+        let fresh = controller
+            .arm(arm(&run, "dopus.before_execute", "third"))
+            .unwrap();
         assert_eq!(blocking.wait_blocking(), Ok(()));
-        assert_eq!(controller.snapshot(&fresh.token).unwrap().state, State::Armed);
+        assert_eq!(
+            controller.snapshot(&fresh.token).unwrap().state,
+            State::Armed
+        );
     }
 
     #[tokio::test]
@@ -898,9 +915,14 @@ mod tests {
         let closing = controller.clone();
         let driving = controller.drive();
         tokio::pin!(driving);
-        assert!(matches!(futures::poll!(&mut driving), std::task::Poll::Pending));
+        assert!(matches!(
+            futures::poll!(&mut driving),
+            std::task::Poll::Pending
+        ));
         closing.close(ClosedReason::Shutdown);
-        tokio::time::timeout(Duration::from_secs(1), driving).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), driving)
+            .await
+            .unwrap();
     }
 
     #[test]
