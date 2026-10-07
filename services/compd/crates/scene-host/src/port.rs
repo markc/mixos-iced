@@ -23,8 +23,8 @@ use crate::appearance::Look;
 use application::presentation::native::{
     Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker,
 };
-use bus::{IncomingCommand, SupervisedClient, SupervisedError};
 use bus::native_client::BoundedIncomingEvent;
+use bus::{IncomingCommand, SupervisedClient, SupervisedError};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
@@ -245,7 +245,11 @@ impl Port {
     /// The next message from the worker, without blocking.
     pub fn try_recv(&self) -> Option<Inbound> {
         self.inbound.try_recv().ok().or_else(|| {
-            let (generation, services) = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()?;
+            let (generation, services) = self
+                .registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()?;
             (self.settings_generation() == Some(generation)).then_some(Inbound::Live(services))
         })
     }
@@ -551,6 +555,7 @@ async fn worker(
     let mut replies = tokio::task::JoinSet::new();
     let mut sends = tokio::task::JoinSet::new();
     let mut registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+    let mut registry_retries = 0;
     let registry_client = Arc::clone(&client);
     flights.spawn(async move {
         if let Err(error) = registry_client.subscribe_topic(REGISTRY_TOPIC).await {
@@ -573,6 +578,7 @@ async fn worker(
                 lifecycle.borrow_and_update();
                 settings_send(SettingsEvent::Wake);
                 registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+                registry_retries = 0;
             }
             result = async { registry.as_mut().expect("guarded registry read").await }, if registry.is_some() => {
                 registry = None;
@@ -581,8 +587,12 @@ async fn worker(
                         *lane.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((generation, services));
                         (delivery.waker)();
                     }
+                } else if settings::native::live_generation(&client).is_some() && registry_retries < 3 {
+                    let delay = RETRY_INITIAL * (1 << registry_retries);
+                    registry_retries += 1;
+                    registry = Some(Box::pin(registry_read(Arc::clone(&client), delay)));
                 } else {
-                    registry = Some(Box::pin(registry_read(Arc::clone(&client), RETRY_INITIAL)));
+                    tracing::warn!("scene host: registry recovery paused until next lifecycle or loss event");
                 }
             }
             event = settings_worker.next() => {
@@ -611,6 +621,7 @@ async fn worker(
                     Some(BoundedIncomingEvent::Overflow { .. }) => {
                         settings_send(SettingsEvent::Lost);
                         registry = Some(Box::pin(registry_read(Arc::clone(&client), Duration::ZERO)));
+                        registry_retries = 0;
                         tracing::warn!("scene host: incoming queue overflow; recovering settings and registry");
                     }
                     None => break,
@@ -654,11 +665,30 @@ async fn worker(
     client.close().await;
 }
 
-async fn registry_read(client: Arc<SupervisedClient>, delay: Duration) -> Option<(u64, BTreeSet<String>)> {
-    if !delay.is_zero() { tokio::time::sleep(delay).await; }
+async fn registry_read(
+    client: Arc<SupervisedClient>,
+    delay: Duration,
+) -> Option<(u64, BTreeSet<String>)> {
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
     let generation = settings::native::live_generation(&client)?;
-    let services = tokio::time::timeout(SEND_TIMEOUT, client.call("noded", "noded.props.get", json!({"path":"services.registered"}))).await.ok()?.ok()?;
-    let services = services.as_array()?.iter().map(|name| name.as_str().map(str::to_owned)).collect::<Option<BTreeSet<_>>>()?;
+    let services = tokio::time::timeout(
+        SEND_TIMEOUT,
+        client.call(
+            "noded",
+            "noded.props.get",
+            json!({"path":"services.registered"}),
+        ),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let services = services
+        .as_array()?
+        .iter()
+        .map(|name| name.as_str().map(str::to_owned))
+        .collect::<Option<BTreeSet<_>>>()?;
     Some((generation, services))
 }
 
@@ -704,7 +734,11 @@ fn admit(
         }
         Route::Unknown => {
             let message = format!("{} is not a scene host verb", command.command);
-            return Some((command, 10, json!({"error_code":"UNKNOWN_VERB","message":message})));
+            return Some((
+                command,
+                10,
+                json!({"error_code":"UNKNOWN_VERB","message":message}),
+            ));
         }
         Route::Ignore => {}
     }
@@ -942,14 +976,24 @@ mod tests {
             );
         }
         let current = session.host().consumer().current().unwrap();
-        let app_only = controller.call("settingsd", "settings.apply", json!({
-            "binding":current.binding, "expected_incarnation":current.incarnation,
-            "expected_revision":"2", "operation_id":"quoin-unrelated-app",
-            "changes":{"apps.ced":{"mode":"light"}}
-        })).await.unwrap();
+        let app_only = controller
+            .call(
+                "settingsd",
+                "settings.apply",
+                json!({
+                    "binding":current.binding, "expected_incarnation":current.incarnation,
+                    "expected_revision":"2", "operation_id":"quoin-unrelated-app",
+                    "changes":{"apps.ced":{"mode":"light"}}
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(app_only["status"], "changed");
-        assert_eq!(settings_drive(&port, &wake, &mut session, Some(3)), 0,
-            "an unrelated app override acknowledges without staging shell resources");
+        assert_eq!(
+            settings_drive(&port, &wake, &mut session, Some(3)),
+            0,
+            "an unrelated app override acknowledges without staging shell resources"
+        );
         let client = port.client.get().unwrap();
         client.close().await;
         assert_eq!(port.settings_generation(), None);
