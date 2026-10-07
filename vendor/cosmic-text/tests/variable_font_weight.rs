@@ -25,7 +25,7 @@ fn variable_font_all_weights_match() {
 
     let mut db = Database::new();
     let loaded = db.load_font_source(Source::Binary(Arc::new(bytes.to_vec())));
-    assert!(loaded.is_some(), "the variable fixture must parse");
+    assert!(!loaded.is_empty(), "the variable fixture must parse");
 
     let mut font_system = FontSystem::new_with_locale_and_db("en-US".into(), db);
     let face = font_system

@@ -724,7 +724,7 @@ fn variable_policy_weights_change_basic_advanced_and_raster() {
     }
 
     // Raster output differs between the two sealed weights of the same face.
-    let raster = |font_system: &mut FontSystem, alias: &str| -> Option<Arc<[u8]>> {
+    let raster = |font_system: &mut FontSystem, alias: &str| -> Option<Vec<u8>> {
         let attrs = Attrs::new().family(Family::Name(alias));
         let metrics = Metrics::new(16.0, 20.0);
         let mut buffer = Buffer::new(font_system, metrics);
