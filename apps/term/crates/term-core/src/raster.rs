@@ -542,8 +542,18 @@ impl Raster {
         state: &PaintState,
         format: PixelFormat,
     ) -> bool {
+        self.requires_full_paint_rows(screen, state, paintable_rows(screen), format)
+    }
+
+    fn requires_full_paint_rows(
+        &self,
+        screen: &Screen,
+        state: &PaintState,
+        rows: usize,
+        format: PixelFormat,
+    ) -> bool {
         state.cols != screen.cols
-            || state.rows != paintable_rows(screen)
+            || state.rows != rows
             || state.cell != (self.width, self.height)
             || state.format != format
             || state.scale != self.scale.to_bits()
@@ -556,6 +566,42 @@ impl Raster {
                 .raster
                 .as_ref()
                 .is_some_and(|id| Arc::ptr_eq(id, &self.identity))
+    }
+
+    /// Borrowed preflight for a retained row band, before the frontend creates
+    /// its local snapshot. Damage refers to the complete screen. A true result
+    /// preserves the band's pixels and cursor without allocating or copying
+    /// its cells; dirty hints still compare exact visual cells.
+    /// The caller must own the last-painted bytes and keep this state's band
+    /// origin fixed; invalidate it when assigning a different origin or pane.
+    pub fn is_current_rows(
+        &self,
+        screen: &Screen,
+        state: &PaintState,
+        rows: std::ops::Range<usize>,
+        dirty: &[bool],
+        format: PixelFormat,
+    ) -> bool {
+        if screen.cols == 0
+            || rows.is_empty()
+            || rows.end > screen.rows
+            || paintable_rows(screen) != screen.rows
+            || dirty.len() != screen.rows
+            || self.requires_full_paint_rows(screen, state, rows.len(), format)
+            || state.cells.len() != screen.cols * rows.len()
+        {
+            return false;
+        }
+        let full_cursor = visible_cursor(screen, screen.rows).filter(|(_, row)| rows.contains(row));
+        let cursor = full_cursor.map(|(col, row)| (col, row - rows.start));
+        if state.cursor != cursor || state.cursor_span != cursor_span(screen, full_cursor) {
+            return false;
+        }
+        screen.cells[rows.start * screen.cols..rows.end * screen.cols]
+            .chunks_exact(screen.cols)
+            .zip(state.cells.chunks_exact(screen.cols))
+            .zip(&dirty[rows])
+            .all(|((now, old), dirty)| !*dirty || now == old)
     }
 
     /// Read-only preflight for copy-on-write frontends. The caller must still

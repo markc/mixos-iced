@@ -8,6 +8,11 @@ moved-region presentation damage. Bound scroll detection on repetitive full
 redraws and share glyph masks across foreground colours. Native session verbs
 and wire contracts are unchanged.
 
+Bound pane background rasterisation to damage through the shared tiny-skia
+renderer. Retain unchanged row-band snapshots without allocating or copying
+their cells, including cursor and font/viewport invalidation checks. Exercise
+the complete themed TerminalPane with retained-buffer pixel comparisons.
+
 ## 0.3.5
 
 Share the native application bootstrap and task worker. CPU/GPU selection and

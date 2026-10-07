@@ -14,6 +14,8 @@ pub struct Surface {
     cell: (u32, u32),
     #[cfg(test)]
     pub(super) disable_scroll: bool,
+    #[cfg(test)]
+    pub(super) prepared_cells: usize,
 }
 
 impl Surface {
@@ -82,6 +84,18 @@ impl Surface {
         for (index, tile) in self.tiles.iter_mut().enumerate() {
             let first = index * ROWS_PER_BAND;
             let end = (first + ROWS_PER_BAND).min(rows);
+            // Like Ced's retained viewport rows, unchanged bands need no new
+            // local snapshot. Include cursor/identity/geometry checks rather
+            // than treating a clean damage hint as proof of valid pixels.
+            if shift.is_none()
+                && raster.is_current_rows(screen, &tile.state, first..end, dirty, PixelFormat::Bgra)
+            {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.prepared_cells += (end - first) * screen.cols;
+            }
             // Keep the original cell columns and translate only the row and
             // cursor origin. Core PaintState then erases the old cursor even
             // when it moves to another band or disappears on a resize.
@@ -232,6 +246,68 @@ mod tests {
     use super::*;
     use std::time::Instant;
     use term_core::{config::Cursor, terminal::Cell};
+
+    #[test]
+    fn retained_bands_prepare_only_changed_rows_and_repair_wide_cursors() {
+        for scale in [1.0, 1.25, 2.5] {
+            let mut raster = Raster::for_test(scale, 13.0, Cursor::Block).unwrap();
+            let mut surface = Surface::default();
+            let mut screen = term_core::terminal::Terminal::from_test_vt(
+                13,
+                11,
+                "\x1b[4;2H界\x1b[5;2H👍🏽".as_bytes(),
+            )
+            .screen(false);
+            screen.cursor = (2, 3); // Wide-cell spacer: cursor covers its leader.
+            screen.cursor_visible = true;
+            surface.paint(&mut raster, &screen, &[]);
+            surface.cache_handle(1);
+            let retained = surface.images(scale);
+            let old: Vec<_> = retained.iter().map(|(h, _)| h.pixels().to_vec()).collect();
+            for dirty in [[false; 11], [true; 11]] {
+                surface.prepared_cells = 0;
+                assert!(surface.paint(&mut raster, &screen, &dirty).is_empty());
+                assert_eq!(surface.prepared_cells, 0, "unchanged band was copied");
+            }
+            screen.cells[0].bg = [71, 32, 93];
+            let mut dirty = [false; 11];
+            dirty[0] = true;
+            surface.prepared_cells = 0;
+            surface.paint(&mut raster, &screen, &dirty);
+            assert_eq!(surface.prepared_cells, 4 * screen.cols);
+            assert_eq!(surface.rgba(), raster.render(&screen));
+
+            // Wide cursors cross a band boundary, disappear and reappear.
+            for (cursor, visible, prepared_rows) in [
+                ((2, 4), true, 8),
+                ((2, 4), false, 4),
+                ((2, 3), true, 4),
+                ((0, 10), true, 7),
+            ] {
+                screen.cursor = cursor;
+                screen.cursor_visible = visible;
+                surface.prepared_cells = 0;
+                surface.paint(&mut raster, &screen, &[false; 11]);
+                assert_eq!(surface.prepared_cells, prepared_rows * screen.cols);
+                assert_eq!(surface.rgba(), raster.render(&screen));
+            }
+            for invalidation in 0..4 {
+                match invalidation {
+                    0 => surface.invalidate(),
+                    1 => screen.display_offset += 1,
+                    2 => screen.clusters = Default::default(),
+                    _ => raster = raster.resized(scale, 13.0).unwrap(),
+                }
+                surface.prepared_cells = 0;
+                surface.paint(&mut raster, &screen, &[false; 11]);
+                assert_eq!(surface.prepared_cells, screen.cols * screen.rows);
+                assert_eq!(surface.rgba(), raster.render(&screen));
+            }
+            for ((handle, _), bytes) in retained.iter().zip(&old) {
+                assert_eq!(handle.pixels().as_ref(), bytes.as_slice());
+            }
+        }
+    }
 
     #[test]
     fn repetitive_redraw_with_late_mismatch_falls_back_to_exact_pixels() {
