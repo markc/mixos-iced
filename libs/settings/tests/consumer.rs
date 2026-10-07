@@ -303,7 +303,12 @@ fn contradictory_bootstrap_deliveries_discard_the_candidate_and_bound_recovery()
     let read = read_work(&mut state, 1);
     state.observe(1, snapshot(2, "a"));
     let mut contradictory = snapshot(2, "a");
-    contradictory.effective.get_mut("app:ced").unwrap().ui.density = 1.5;
+    contradictory
+        .effective
+        .get_mut("app:ced")
+        .unwrap()
+        .ui
+        .density = 1.5;
     state.observe(1, contradictory);
     assert_eq!(state.fault().unwrap().code, "invalid_delivery");
     let deadline = state.retry_deadline().unwrap();
