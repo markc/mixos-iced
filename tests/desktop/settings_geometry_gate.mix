@@ -72,12 +72,21 @@ fn wait_size($w,$h)
 end
 fn ppm($path)
   $bytes = read_file_bytes($path)
-  $match = re_find(bytes_to_string(slice($bytes,0,40)),"^P6\\s+(\\d+)\\s+(\\d+)\\s+255\\s")
+  $lines = 0
+  $header_end = nil
+  for $at = 0 to min(127,len($bytes)-1)
+    if $bytes[$at] == 10 then
+      $lines = $lines+1
+      if $lines == 3 then $header_end=$at+1; break end
+    end
+  end
+  if $header_end == nil then raise("CAPTURE","Missing P6 header") end
+  $match = re_find(bytes_to_string(slice($bytes,0,$header_end)),"^P6\\s+(\\d+)\\s+(\\d+)\\s+255\\s")
   if len($match) != 1 then raise("CAPTURE","Not a P6 screenshot") end
   $w = to_number($match[0].groups[0])
   $h = to_number($match[0].groups[1])
-  if len($bytes) != $match[0].end + $w*$h*3 then raise("CAPTURE","Truncated P6") end
-  return {bytes:$bytes,w:$w,h:$h,off:$match[0].end}
+  if $match[0].end != $header_end or len($bytes) != $header_end + $w*$h*3 then raise("CAPTURE","Truncated P6") end
+  return {bytes:$bytes,w:$w,h:$h,off:$header_end}
 end
 fn client_pixel($ppm,$x,$y)
   $x = floor($x)
