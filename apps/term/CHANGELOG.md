@@ -13,6 +13,15 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.9
+
+Add non-default owned fixture acceptance on the existing Bus worker. Explicit
+run and process-instance configuration enables real root inspection, exact
+frame waits and a barrier inside the actual blocking preparation operation.
+Two tracked wait slots remain separate from ordinary control/reply capacity.
+Actual window ids replace latest-window lookup. Ordinary launches omit the
+fixture surface. Shutdown cancels observation and operation holds before drains.
+
 ## 0.3.8
 
 Bind native frame feedback to the terminal's installed settings and local

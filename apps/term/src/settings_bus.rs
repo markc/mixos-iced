@@ -146,6 +146,8 @@ impl Handle {
 pub struct Started {
     pub handle: Handle,
     pub frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    pub fixture_frames: Option<application::acceptance::frames::Endpoint>,
     pub ui: Ui<Content, LocalContext>,
     pub bootstrap: appearance::settings::Prepared,
     pub describes: tokio::sync::mpsc::Receiver<Describe>,
@@ -167,10 +169,14 @@ type Ready = std::sync::mpsc::Sender<
 pub(crate) struct PreparationSeed {
     pub local: LocalContext,
     pub raster: term_core::raster::PreparedRaster,
+    #[cfg(feature = "acceptance")]
+    pub fixture: Option<crate::acceptance::Fixture>,
 }
 
 struct WorkerChannels {
     frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    fixture_frames: Option<application::acceptance::frames::Endpoint>,
     describes: tokio::sync::mpsc::Sender<Describe>,
     effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
@@ -188,6 +194,10 @@ pub fn start(
 ) -> Result<Started, String> {
     let frames = application::frames::Handle::new();
     let worker_frames = frames.clone();
+    #[cfg(feature = "acceptance")]
+    let fixture_frames = seed.fixture.as_ref().map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    #[cfg(feature = "acceptance")]
+    let worker_fixture_frames = fixture_frames.clone();
     let (describe_tx, describe_rx) = tokio::sync::mpsc::channel(PENDING_CAP);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
@@ -210,6 +220,8 @@ pub fn start(
                         wake,
                         WorkerChannels {
                             frames: worker_frames,
+                            #[cfg(feature = "acceptance")]
+                            fixture_frames: worker_fixture_frames,
                             describes: describe_tx,
                             effects: rx,
                             ready: ready_send,
@@ -237,6 +249,8 @@ pub fn start(
     Ok(Started {
         handle: Handle { tx, done, shared },
         frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
         ui,
         bootstrap,
         describes: describe_rx,
@@ -270,6 +284,8 @@ async fn worker(
 ) {
     let WorkerChannels {
         frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
         describes,
         mut effects,
         ready,
@@ -278,6 +294,8 @@ async fn worker(
     let PreparationSeed {
         local: initial,
         raster,
+        #[cfg(feature = "acceptance")]
+        mut fixture,
     } = seed;
     // The shared session binding, following the existing diagnostics: a
     // binding failure is reported and startup stops — a terminal never
@@ -322,7 +340,18 @@ async fn worker(
     // worker; the bridge records that missing cache configuration as a
     // diagnostic in the session's cache evidence, so it is visible rather
     // than silent.
+    #[cfg(feature = "acceptance")]
+    let prepare_hook = fixture.as_ref().map(|fixture| fixture.hook.clone());
     let settings_worker = Worker::contextual(move |appearance, snapshot, local: &LocalContext| {
+        #[cfg(feature = "acceptance")]
+        if let Some(hook) = &prepare_hook {
+            use application::acceptance::barrier::Observation;
+            let fault = |message| settings::Diagnostic::new("fixture_prepare_cancelled", "terminal.prepare", message);
+            let observation = Observation::try_new(format!("revision={} scale={} zoom={}",snapshot.revision.0,local.scale,local.zoom_steps)).map_err(|error| fault(format!("{error:?}")))?;
+            if let Some(permit) = hook.reach("terminal.prepare",observation).map_err(|error| fault(format!("{error:?}")))? {
+                permit.wait_blocking().map_err(|error| fault(format!("{error:?}")))?;
+            }
+        }
         crate::presentation::prepare(appearance, snapshot, local, &raster)
     });
     let settings_worker = match config::AppDirs::resolve("term") {
@@ -369,6 +398,9 @@ async fn worker(
     let mut retained_replies = Outbox::<Box<Reply>, 0>::new(PENDING_CAP);
     let mut deliveries = Outbox::<Describe, 0>::new(PENDING_CAP);
     let mut operations = tokio::task::JoinSet::new();
+    // Two independently bounded waits cannot occupy ordinary control/reply
+    // slots. Credits remain in the JoinSet result until the actor reaps them.
+    let mut fixture_waits = tokio::task::JoinSet::<(Permit,Result<(),String>)>::new();
     loop {
         // Accepted replies retained while the task cap was exhausted start
         // the moment capacity frees; an unused permit returns immediately.
@@ -404,6 +436,10 @@ async fn worker(
         if lifecycle != Some((now, generation)) {
             lifecycle = Some((now, generation));
             frames.set_live_generation(settings::native::live_generation(&client));
+            #[cfg(feature = "acceptance")]
+            if let Some(fixture) = &fixture {
+                fixture.controller.close(application::acceptance::barrier::ClosedReason::LostGeneration);
+            }
             // EVERY lifecycle transition publishes into the settings lane:
             // edge-triggered consumers and the UI reconcile on one signal.
             {
@@ -551,6 +587,21 @@ async fn worker(
         // the command lane cannot starve either.
         tokio::select! {
             biased;
+            result = fixture_waits.join_next(), if !fixture_waits.is_empty() => {
+                match result {
+                    Some(Ok((permit,result))) => {
+                        if let Err(error) = result { eprintln!("{service} fixture wait: {error}"); }
+                        permit.finish();
+                    }
+                    Some(Err(error)) => eprintln!("{service} fixture wait: {error}"),
+                    None => {}
+                }
+            }
+            _ = async {
+                #[cfg(feature = "acceptance")]
+                if let Some(fixture) = fixture.as_mut() { fixture.controller.drive().await; return; }
+                std::future::pending::<()>().await;
+            } => {},
             result = operations.join_next(), if !operations.is_empty() => {
                 match result {
                     Some(Ok((permit, result))) => {
@@ -625,6 +676,25 @@ async fn worker(
                 if let Some(needed) = lane.delivery(&command) {
                     wake_ui(&wake, needed);
                     continue;
+                }
+                #[cfg(feature = "acceptance")]
+                if let Some(fixture) = &fixture {
+                    if application::acceptance::recognises(&command.command) {
+                        frames.set_live_generation(settings::native::live_generation(&client));
+                        let waiting = matches!(command.command.as_str(), "app.acceptance.frame.wait" | "app.acceptance.barrier.wait");
+                        let full = if waiting { fixture_waits.len() >= 2 } else { operations.len() >= OPERATIONS_CAP };
+                        let permit = if full { None } else { admitted.try_acquire() };
+                        let Some(permit) = permit else {
+                            try_spawn(service,&refusals,&mut operations,Arc::clone(&client),command,10,
+                                "{\"error_code\":\"BUSY\",\"message\":\"acceptance capacity exhausted\"}".to_string());
+                            continue;
+                        };
+                        let future = application::acceptance::track_result(Arc::clone(&client),command,
+                            &fixture.describe,&fixture.inspector,&fixture.controller,fixture_frames.as_ref()).expect("exact fixture verb");
+                        let operation = async move {(permit,future.await.map_err(|error| format!("acceptance: {error:?}")))};
+                        if waiting { fixture_waits.spawn(operation); } else { operations.spawn(operation); }
+                        continue;
+                    }
                 }
                 if command.command == "app.describe" {
                     if client.state() != ConnState::Connected
@@ -702,6 +772,8 @@ async fn worker(
         }
     }
     frames.close();
+    #[cfg(feature = "acceptance")]
+    if let Some(fixture) = &fixture { fixture.close(application::acceptance::barrier::ClosedReason::Shutdown); }
     // tabs.close -> global Bus finish: the serve task has drained the final
     // reap's completion notes by the time the TabSet emptied; wait for it,
     // the tracked replies, the cache flush and the client close all under ONE
@@ -710,6 +782,26 @@ async fn worker(
     let deadline = std::time::Instant::now() + SHUTDOWN_BUDGET;
     let deadline_at = tokio::time::Instant::from_std(deadline);
     let mut faults = Vec::new();
+    while !fixture_waits.is_empty() {
+        match tokio::time::timeout_at(deadline_at,fixture_waits.join_next()).await {
+            Ok(Some(Ok((permit,result)))) => {
+                if let Err(error) = result { faults.push(error); }
+                permit.finish();
+            }
+            Ok(Some(Err(error))) => faults.push(format!("fixture wait: {error}")),
+            Ok(None) => break,
+            Err(_) => {
+                faults.push("fixture wait drain timed out".to_owned());
+                fixture_waits.abort_all();
+                while let Some(result) = fixture_waits.join_next().await {
+                    if let Ok((permit,result)) = result {
+                        if let Err(error) = result { faults.push(error); }
+                        permit.finish();
+                    }
+                }
+            }
+        }
+    }
     // Accepted replies retained while the task cap was exhausted stay fenced
     // on their originating client and generation: they must be sent under the
     // shared deadline or be counted as undelivered — never silently dropped.
@@ -901,6 +993,75 @@ mod tests {
             .unwrap()
     }
 
+    /// Real ABP actor and actual blocking preparation hook. The artificial
+    /// runtime target only holds a frame wait; this is not presentation proof.
+    #[cfg(feature = "acceptance")]
+    #[test]
+    fn fixture_waits_leave_release_and_shutdown_control_headroom() {
+        use application::acceptance::{Launch, frames::Target};
+        let broker = term_test_broker::Broker::start();
+        let settings = term_core::config::Settings {config:term_core::config::Config::default(),term:"xterm-256color"};
+        let tabs = Arc::new(Mutex::new(TabSet::starting(settings)));
+        let (cleanup,reaper) = term_core::tabs::Cleanup::start().unwrap();
+        let (_notes,notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (wake_tx,mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let wake:Wake = Arc::new(move || {let _ = wake_tx.send(());});
+        let (fixture,_inspect_task) = crate::acceptance::setup_launch(Launch {run:"actor-owned".into(),instance:51}).unwrap();
+        let initial = LocalContext::new(1.0,term_core::config::Cursor::Underline).unwrap();
+        let mut started = start("term",broker.url.clone(),tabs.clone(),cleanup.clone(),notify_rx,wake,
+            PreparationSeed {local:initial,raster:term_core::raster::Raster::for_test(1.0,13.0,initial.cursor).unwrap().prepared_snapshot(),fixture:Some(fixture)}).unwrap();
+        runtime().block_on(async {
+            let caller = Arc::new(::bus::native_client::NodedClient::connect_anonymous(&broker.url).await.unwrap());
+            tokio::time::timeout(Duration::from_secs(5),async {
+                loop {
+                    let generation = started.handle.settings_generation();
+                    started.ui.reconcile(generation);
+                    started.ui.drain_with(|| started.handle.settings_generation(), |_| {});
+                    if generation.is_some() && started.ui.preparation_evidence().current {break;}
+                    assert!(started.ui.preparation_evidence().fault.is_none(),"{:?}",started.ui.preparation_evidence().fault);
+                    wake_rx.recv().await.expect("native worker wake");
+                }
+            }).await.expect("native contextual bootstrap");
+            let identity = json!({"run":"actor-owned","instance":51});
+            let window = application::iced::window::Id::unique();
+            let stamp = started.ui.session().frame_stamp().unwrap();
+            started.fixture_frames.as_ref().unwrap().publish(Target {window,stamp:Some(stamp)}).unwrap();
+            let arm = caller.call("term","app.acceptance.barrier.arm",json!({"run":"actor-owned","instance":51,"point":"terminal.prepare","token":"held"})).await.unwrap();
+            assert_eq!(arm["state"],"armed");
+            let reference = json!({"run":"actor-owned","instance":51,"token":"held","sequence":arm["sequence"]});
+            let barrier_wait = {
+                let caller = caller.clone(); let reference = reference.clone();
+                tokio::spawn(async move {caller.call("term","app.acceptance.barrier.wait",reference).await})
+            };
+            let frame_wait = {
+                let caller = caller.clone();
+                tokio::spawn(async move {caller.call("term","app.acceptance.frame.wait",json!({"run":"actor-owned","instance":51,
+                    "window":window.raw(),"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision,"timeout_ms":10000})).await})
+            };
+            let mut next = initial; next.zoom_steps = 1;
+            started.ui.set_context(next,started.handle.settings_generation()).unwrap();
+            let reached = tokio::time::timeout(Duration::from_secs(3),barrier_wait).await.unwrap().unwrap().unwrap();
+            assert_eq!(reached["state"],"reached","actual preparation worker must reach the hold");
+            let released = tokio::time::timeout(Duration::from_secs(2),caller.call("term","app.acceptance.barrier.release",reference)).await.unwrap().unwrap();
+            assert_eq!(released["state"],"released","release must bypass held frame wait");
+            let state = caller.call("term","app.acceptance.frame.state",identity.clone()).await.unwrap();
+            assert_eq!(state["target"]["window"],window.raw());
+            let describe = caller.call("term","app.acceptance.describe",identity).await.unwrap();
+            assert_eq!(describe["frames"]["enabled"],true);
+            started.handle.quit();
+            let stopped = tokio::time::timeout(Duration::from_secs(3),frame_wait).await.unwrap().unwrap().unwrap();
+            assert_eq!(stopped["ok"],false);
+            assert!(stopped["error"].as_str().unwrap().contains("Closed"));
+            assert!(started.frames.snapshot().closed);
+        });
+        cleanup.submit(tabs.lock().unwrap().shutdown());
+        started.handle.quit();
+        started.handle.wait_done().unwrap();
+        started.worker.join().unwrap();
+        drop(cleanup);
+        reaper.join().unwrap();
+    }
+
     /// One client serves both lanes: an `app.describe` request is tracked by
     /// the adapter, answered by the UI half (the frontend) and carried back
     /// to the caller over the real embedded broker.
@@ -924,6 +1085,8 @@ mod tests {
             wake,
             PreparationSeed {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
+                #[cfg(feature = "acceptance")]
+                fixture: None,
                 raster: term_core::raster::Raster::for_test(
                     1.0,
                     13.0,
@@ -1128,6 +1291,8 @@ mod tests {
             wake,
             PreparationSeed {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
+                #[cfg(feature = "acceptance")]
+                fixture: None,
                 raster: term_core::raster::Raster::for_test(
                     1.0,
                     13.0,
