@@ -678,13 +678,12 @@ async fn worker(
 
 /// One bounded reply on the client that received the command. Spawned as a
 /// tracked operation, so the settings lane is never blocked on a send.
-fn respond(
+async fn respond(
     client: Arc<SupervisedClient>,
     command: IncomingCommand,
     rc: u8,
     body: String,
-) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
-    async move {
+) -> Result<(), String> {
         tokio::time::timeout(
             Duration::from_secs(2),
             SupervisedClient::respond(&client, &command, rc, &body),
@@ -692,7 +691,6 @@ fn respond(
         .await
         .map_err(|_| "Bus reply timed out".to_owned())?
         .map_err(|error| format!("Bus reply: {error}"))
-    }
 }
 
 /// Start one bounded reply task if a permit remains. A refusal under
