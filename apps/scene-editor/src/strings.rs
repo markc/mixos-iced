@@ -5,5 +5,9 @@ thread_local! {
         .expect("valid Scene Editor English catalogue");
 }
 pub fn label(key: &str) -> String {
-    CATALOGUE.with(|catalogue| catalogue.label(key).expect("Scene Editor catalogue message"))
+    CATALOGUE.with(|catalogue| {
+        catalogue
+            .label(key)
+            .expect("Scene Editor catalogue message")
+    })
 }

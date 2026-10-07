@@ -16,7 +16,9 @@ pub fn bridge<T>(session: Session<T>, worker: Worker<T>) -> (Ui<T>, Lane<T>) {
         let mut session = session;
         if worker.cache.is_none() {
             session.cache_configuration = Some(Diagnostic::new(
-                "cache_unconfigured", "cache", "The host supplied no persistent cache root",
+                "cache_unconfigured",
+                "cache",
+                "The host supplied no persistent cache root",
             ));
         }
         session

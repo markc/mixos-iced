@@ -7,6 +7,10 @@
 //!   when a root is set, else the XDG directory for a user or the system
 //!   directory for root. Code that needs the rule without the process
 //!   environment resolves [`Dirs`] from an explicit [`Environment`].
+//! - [`AppDirs`] resolves an application's existing config/state/cache roots,
+//!   without creating directories. It honours absolute app overrides before
+//!   project, XDG state and home defaults; `resolve_with` supports injected
+//!   values while app-owned wrappers retain their filenames.
 //! - [`parse`] and [`parse_file`] read a `*.conf.mix` file as strict data
 //!   into a [`Value`] tree. They are the `strict` crate's, re-exported so a
 //!   config reader needs one dependency; a typed reader uses

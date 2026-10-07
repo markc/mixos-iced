@@ -12,8 +12,8 @@ use application::iced::{
     widget::{column, container, row},
     window,
 };
-use application::{Element, widget};
 use application::presentation::native::Ui;
+use application::{Element, widget};
 use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use serde_json::{Value, json};
 use std::sync::{Mutex, OnceLock};
@@ -100,7 +100,6 @@ pub struct App {
     dialog: Option<Dialog>,
     status: String,
     notice: Option<String>,
-    connected: bool,
     touched: bool,
     refused: bool,
     handoff_pending: bool,
@@ -132,12 +131,17 @@ fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     })
 }
 pub fn run(settings: Settings, selection: Selection) -> Result<(), String> {
-    let (bus, mut settings_ui, bootstrap, rx) = bus::start(&settings.service, &settings.url, &settings.host)?;
+    let (bus, mut settings_ui, bootstrap, rx) =
+        bus::start(&settings.service, &settings.url, &settings.host)?;
     let result = (|| {
         STREAM
             .set(Mutex::new(Some(rx)))
             .map_err(|_| "app already started")?;
-        let font = bootstrap.typography().get("ui").expect("UI typography").font;
+        let font = bootstrap
+            .typography()
+            .get("ui")
+            .expect("UI typography")
+            .font;
         settings_ui.reconcile(bus.settings_generation());
         let app = App::new(settings, bus.clone(), bootstrap, settings_ui, selection);
         application::start(
@@ -182,7 +186,6 @@ impl App {
             dialog: None,
             status: label("waiting"),
             notice: None,
-            connected: false,
             touched: false,
             refused: false,
             handoff_pending: false,
@@ -191,13 +194,22 @@ impl App {
         }
     }
     fn look(&self) -> &appearance::settings::Prepared {
-        self.settings_ui.session().host().presentation()
+        self.settings_ui
+            .session()
+            .host()
+            .presentation()
             .map_or(&self.bootstrap, |presentation| presentation.appearance())
     }
     fn typography(&self, role: &str) -> toolkit::typography::TextStyle {
-        self.look().typography().get(role).expect("prepared typography role")
+        self.look()
+            .typography()
+            .get(role)
+            .expect("prepared typography role")
     }
-    fn text<'a>(&self, content: impl iced::advanced::text::IntoFragment<'a>) -> widget::Text<'a, Theme> {
+    fn text<'a>(
+        &self,
+        content: impl iced::advanced::text::IntoFragment<'a>,
+    ) -> widget::Text<'a, Theme> {
         self.typography("ui").text(content)
     }
     fn persistent_status(&self) -> String {
@@ -210,10 +222,15 @@ impl App {
             Some(PresentationKind::LastGood) => "settings-last-good",
             None => "settings-bootstrap",
         };
-        let connection = if self.bus.connected() { "bus-connected" }
-            else if self.refused { "bus-refused" }
-            else if self.bus.ever_registered() { "bus-disconnected" }
-            else { "bus-connecting" };
+        let connection = if self.bus.connected() {
+            "bus-connected"
+        } else if self.refused {
+            "bus-refused"
+        } else if self.bus.ever_registered() {
+            "bus-disconnected"
+        } else {
+            "bus-connecting"
+        };
         format!("{} · {}", label(kind), label(connection))
     }
     fn context(&self) -> menu::Context<'_> {
@@ -242,11 +259,13 @@ impl App {
             .reply(id, 10, json!({"error_code":code,"message":message}));
     }
     fn info(&self) -> Value {
-        json!({"schema":"scene-editor.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.connected,"busy":self.operation.is_some(),"selection":self.selection,"edge":self.edge,"status":self.status,"state_token":self.snapshot.0["state_token"],"ui":{"menu_bar":true,"dialog":match self.dialog{Some(Dialog::Confirm{..})=>Some("confirm"),Some(Dialog::Shortcuts)=>Some("shortcuts"),Some(Dialog::About)=>Some("about"),None=>None}},"snapshot":self.snapshot.0})
+        json!({"schema":"scene-editor.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.bus.connected(),"busy":self.operation.is_some(),"selection":self.selection,"edge":self.edge,"epoch":self.epoch,"status":self.status,"state_token":self.snapshot.0["state_token"],"ui":{"menu_bar":true,"dialog":match self.dialog{Some(Dialog::Confirm{..})=>Some("confirm"),Some(Dialog::Shortcuts)=>Some("shortcuts"),Some(Dialog::About)=>Some("about"),None=>None}},"snapshot":self.snapshot.0})
     }
     fn start(&mut self, verb: &str, args: Value, kind: Kind, reply: Option<u64>) -> Task<Message> {
         if !self.bus.connected() {
-            if let Some(id) = reply { self.reply_error(id, "TRANSPORT", "Bus is disconnected"); }
+            if let Some(id) = reply {
+                self.reply_error(id, "TRANSPORT", "Bus is disconnected");
+            }
             return Task::none();
         }
         if self.operation.is_some() {
@@ -449,7 +468,8 @@ impl App {
             "app.describe" => {
                 self.settings_ui.reconcile(self.bus.settings_generation());
                 let mut describe = model::describe();
-                describe["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
+                describe["settings"] =
+                    json!(self.settings_ui.session().host().consumer().evidence());
                 describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
                 self.bus.reply(id, 0, describe);
                 Task::none()
@@ -534,9 +554,17 @@ impl App {
         }
     }
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        if matches!(&message, Message::Action(_) | Message::OpenMenu(_) | Message::SelectTemplate(_)
-            | Message::SelectScene(_) | Message::SelectPage(..) | Message::Key(..)
-            | Message::Confirm | Message::Cancel) {
+        if matches!(
+            &message,
+            Message::Action(_)
+                | Message::OpenMenu(_)
+                | Message::SelectTemplate(_)
+                | Message::SelectScene(_)
+                | Message::SelectPage(..)
+                | Message::Key(..)
+                | Message::Confirm
+                | Message::Cancel
+        ) {
             self.touched = true;
         }
         match message {
@@ -691,39 +719,56 @@ impl App {
             Message::Bus(Delivery::Changed) => self.refresh(),
             Message::Bus(Delivery::Settings) => {
                 let bus = &self.bus;
-                if !self.settings_ui.drain_with(|| bus.settings_generation(), |_| {}).is_empty() {
-                    eprintln!("SCENE_EDITOR_SETTINGS {}", json!({
-                        "evidence": self.settings_ui.session().host().consumer().evidence(),
-                        "settings_cache": self.settings_ui.session().cache_evidence(),
-                        "elapsed_ms": self.launched.elapsed().as_millis(),
-                    }));
+                if !self
+                    .settings_ui
+                    .drain_with(|| bus.settings_generation(), |_| {})
+                    .is_empty()
+                {
+                    eprintln!(
+                        "SCENE_EDITOR_SETTINGS {}",
+                        json!({
+                            "evidence": self.settings_ui.session().host().consumer().evidence(),
+                            "settings_cache": self.settings_ui.session().cache_evidence(),
+                            "elapsed_ms": self.launched.elapsed().as_millis(),
+                        })
+                    );
                 }
                 Task::none()
             }
-            Message::Bus(Delivery::Refused { name_taken, message }) => {
-                self.connected = false;
+            Message::Bus(Delivery::Refused {
+                name_taken,
+                message,
+            }) => {
                 self.refused = true;
                 self.status = message;
-                if name_taken && !self.bus.ever_registered() && !self.touched && !self.handoff_pending {
+                if name_taken
+                    && !self.bus.ever_registered()
+                    && !self.touched
+                    && !self.handoff_pending
+                {
                     self.handoff_pending = true;
                     self.bus.forward_selection(self.launch_selection.clone());
                 }
                 Task::none()
             }
             Message::Bus(Delivery::Forwarded(result)) => {
+                if !self.handoff_pending {
+                    return Task::none();
+                }
                 self.handoff_pending = false;
                 match result {
                     Ok(()) if !self.touched && !self.bus.ever_registered() => self.quit(),
                     Ok(()) => Task::none(),
-                    Err(error) => { self.status = error; Task::none() }
+                    Err(error) => {
+                        self.status = error;
+                        Task::none()
+                    }
                 }
             }
             Message::Bus(Delivery::Connected) => {
-                self.connected = self.bus.connected();
                 self.refresh()
             }
             Message::Bus(Delivery::Disconnected) => {
-                self.connected = false;
                 self.status = label("waiting");
                 Task::none()
             }
@@ -950,7 +995,8 @@ impl App {
                     .push(self.text(label(action.confirmation().expect("confirm action"))))
                     .push(self.text(selection.scene.as_deref().unwrap_or_default()));
                 controls = controls.push(
-                    toolkit::CenteredButton::new(self.text(label("cancel"))).on_press(Message::Cancel),
+                    toolkit::CenteredButton::new(self.text(label("cancel")))
+                        .on_press(Message::Cancel),
                 );
                 let button = toolkit::CenteredButton::new(self.text(label("confirm")));
                 controls = controls.push(if self.operation.is_none() {
@@ -964,19 +1010,17 @@ impl App {
                     .push(self.text(label("shortcuts")))
                     .push(self.text(label("shortcut-body")));
                 controls = controls.push(
-                    toolkit::CenteredButton::new(self.text(label("done"))).on_press(Message::Cancel),
+                    toolkit::CenteredButton::new(self.text(label("done")))
+                        .on_press(Message::Cancel),
                 );
             }
             Dialog::About => {
                 contents = contents
-                    .push(self.text(format!(
-                        "{} {}",
-                        label("title"),
-                        env!("CARGO_PKG_VERSION")
-                    )))
+                    .push(self.text(format!("{} {}", label("title"), env!("CARGO_PKG_VERSION"))))
                     .push(self.text(label("about-body")));
                 controls = controls.push(
-                    toolkit::CenteredButton::new(self.text(label("done"))).on_press(Message::Cancel),
+                    toolkit::CenteredButton::new(self.text(label("done")))
+                        .on_press(Message::Cancel),
                 );
             }
         }
@@ -1011,9 +1055,14 @@ impl App {
 mod tests {
     use super::*;
     fn app() -> App {
-        let consumer = settings::consumer::Consumer::for_app(settings::Binding {
-            instance: "fixture".into(), profile: "default".into(),
-        }, "scene-editor").unwrap();
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "scene-editor",
+        )
+        .unwrap();
         let (ui, _lane) = application::presentation::native::bridge(
             application::presentation::native::Session::new(consumer),
             application::presentation::native::Worker::offline(|_, _| Ok(())),
@@ -1187,7 +1236,10 @@ mod tests {
     #[test]
     fn delayed_handoff_cannot_close_a_touched_window_or_clear_its_dialogue() {
         let mut app = app();
-        let _ = app.update(Message::Bus(Delivery::Refused { name_taken: true, message: "already registered".into() }));
+        let _ = app.update(Message::Bus(Delivery::Refused {
+            name_taken: true,
+            message: "already registered".into(),
+        }));
         assert!(app.handoff_pending);
         let _ = app.update(Message::Action(Action::View(View::Installed)));
         app.dialog = Some(Dialog::Shortcuts);
@@ -1200,13 +1252,24 @@ mod tests {
     #[test]
     fn untouched_initial_collision_closes_only_after_successful_handoff() {
         let mut app = app();
-        let _ = app.update(Message::Bus(Delivery::Refused { name_taken: true, message: "already registered".into() }));
+        let _ = app.update(Message::Bus(Delivery::Refused {
+            name_taken: true,
+            message: "already registered".into(),
+        }));
         assert!(app.handoff_pending);
         assert!(!app.quitting);
-        let _ = app.update(Message::Bus(Delivery::Forwarded(Err("target disappeared".into()))));
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Err(
+            "target disappeared".into()
+        ))));
         assert!(!app.quitting);
         let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
-        assert!(app.quitting);
+        assert!(!app.quitting, "unsolicited late completion must not close a window");
+        let mut untouched = super::tests::app();
+        let _ = untouched.update(Message::Bus(Delivery::Refused {
+            name_taken: true, message: "already registered".into(),
+        }));
+        let _ = untouched.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(untouched.quitting);
     }
     #[test]
     fn menus_navigate_and_modals_keep_done_reachable_at_minimum_size() {

@@ -292,3 +292,14 @@ async fn bridge_shutdown_flushes_newest_capture_without_consuming_watch_notifica
         Revision(2)
     );
 }
+
+#[test]
+fn absent_cache_root_is_configuration_evidence_not_a_write_or_consumer_failure() {
+    let (ui, _lane) = super::super::bridge(activated(), Worker::offline(|_, _| Ok(0_u64)));
+    let cache = ui.session().cache_evidence();
+    assert_eq!(cache.configuration.unwrap().code, "cache_unconfigured");
+    assert!(cache.fault.is_none());
+    assert!(cache.persisted.is_none());
+    assert!(ui.session().host().consumer().fault().is_none());
+    assert!(ui.session().host().consumer().applied().is_some());
+}

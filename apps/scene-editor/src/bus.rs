@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised native Bus connection. Topics drive refreshes; no poller.
-use ::bus::native_client::{BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient};
+use ::bus::native_client::{
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, SupervisedClient,
+};
 use application::iced::futures::channel::{mpsc, oneshot};
-use application::presentation::native::{bridge, Event as SettingsEvent, Progress, Session, Ui, Worker};
+use application::presentation::native::{
+    Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
+};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -44,13 +48,19 @@ pub struct Handle {
 }
 impl Handle {
     pub fn connected(&self) -> bool {
-        self.client.as_ref().is_none_or(|client| settings::native::live_generation(client).is_some())
+        self.client
+            .as_ref()
+            .is_none_or(|client| settings::native::live_generation(client).is_some())
     }
     pub fn settings_generation(&self) -> Option<u64> {
-        self.client.as_ref().and_then(|client| settings::native::live_generation(client))
+        self.client
+            .as_ref()
+            .and_then(|client| settings::native::live_generation(client))
     }
     pub fn ever_registered(&self) -> bool {
-        self.client.as_ref().is_some_and(|client| client.connection_generation() > 0)
+        self.client
+            .as_ref()
+            .is_some_and(|client| client.connection_generation() > 0)
     }
     pub fn forward_selection(&self, selection: crate::model::Selection) {
         let _ = self.tx.send(Effect::Forward(selection));
@@ -92,7 +102,15 @@ pub fn start(
     service: &str,
     url: &str,
     host: &str,
-) -> Result<(Handle, Ui<()>, appearance::settings::Prepared, mpsc::UnboundedReceiver<Delivery>), String> {
+) -> Result<
+    (
+        Handle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::UnboundedReceiver<Delivery>,
+    ),
+    String,
+> {
     let (send, receive) = mpsc::unbounded();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
@@ -126,11 +144,31 @@ pub fn start(
     let (client, ui, bootstrap) = ready_receive
         .recv_timeout(Duration::from_secs(5))
         .map_err(|e| format!("Bus startup: {e}"))??;
-    Ok((Handle { tx, done, client: Some(client) }, ui, bootstrap, receive))
+    Ok((
+        Handle {
+            tx,
+            done,
+            client: Some(client),
+        },
+        ui,
+        bootstrap,
+        receive,
+    ))
 }
-type Ready = std::sync::mpsc::Sender<Result<(Arc<SupervisedClient>, Ui<()>, appearance::settings::Prepared), String>>;
+type Ready = std::sync::mpsc::Sender<
+    Result<
+        (
+            Arc<SupervisedClient>,
+            Ui<()>,
+            appearance::settings::Prepared,
+        ),
+        String,
+    >,
+>;
 fn settings_wake(send: &mpsc::UnboundedSender<Delivery>, needed: bool) {
-    if needed { let _ = send.unbounded_send(Delivery::Settings); }
+    if needed {
+        let _ = send.unbounded_send(Delivery::Settings);
+    }
 }
 
 async fn worker(
@@ -141,17 +179,28 @@ async fn worker(
     mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
 ) {
-    let consumer = match settings::session::binding().and_then(|binding|
-        settings::consumer::Consumer::for_app(binding, "scene-editor")) {
+    let consumer = match settings::session::binding()
+        .and_then(|binding| settings::consumer::Consumer::for_app(binding, "scene-editor"))
+    {
         Ok(consumer) => consumer,
-        Err(error) => { let _ = ready.send(Err(error.message)); return; }
+        Err(error) => {
+            let _ = ready.send(Err(error.message));
+            return;
+        }
     };
     let bootstrap = match appearance::settings::bootstrap() {
         Ok(bootstrap) => bootstrap,
-        Err(error) => { let _ = ready.send(Err(error.message)); return; }
+        Err(error) => {
+            let _ = ready.send(Err(error.message));
+            return;
+        }
     };
-    let client = Arc::new(SupervisedClient::connect_options(&service, &url)
-        .fatal_on_registration_rejection(true).bounded_incoming(64).start());
+    let client = Arc::new(
+        SupervisedClient::connect_options(&service, &url)
+            .fatal_on_registration_rejection(true)
+            .bounded_incoming(64)
+            .start(),
+    );
     let Some(mut incoming) = client.incoming_bounded() else {
         let _ = ready.send(Err("no incoming Bus channel".into()));
         return;
@@ -164,7 +213,10 @@ async fn worker(
     };
     let (ui, mut lane) = bridge(Session::new(consumer), settings_worker);
     settings_wake(&send, lane.connect(Arc::clone(&client)));
-    if ready.send(Ok((Arc::clone(&client), ui, bootstrap))).is_err() {
+    if ready
+        .send(Ok((Arc::clone(&client), ui, bootstrap)))
+        .is_err()
+    {
         let _ = client.close().await;
         return;
     }
@@ -194,11 +246,16 @@ async fn worker(
                 ConnState::Fatal | ConnState::ShuttingDown => {
                     let reason = client.registration_rejection();
                     let _ = send.unbounded_send(Delivery::Refused {
-                        name_taken: reason.as_ref().is_some_and(|reason| reason.message.contains("already registered")),
-                        message: reason.map_or_else(|| "connection stopped".into(), |reason| reason.message),
+                        name_taken: reason
+                            .as_ref()
+                            .is_some_and(|reason| reason.message.contains("already registered")),
+                        message: reason
+                            .map_or_else(|| "connection stopped".into(), |reason| reason.message),
                     });
                 }
-                ConnState::Disconnected => { let _ = send.unbounded_send(Delivery::Disconnected); }
+                ConnState::Disconnected => {
+                    let _ = send.unbounded_send(Delivery::Disconnected);
+                }
                 ConnState::Connecting => {}
             }
         }
@@ -292,33 +349,63 @@ async fn worker(
     if let Err(error) = lane.flush_cache(deadline).await {
         faults.push(format!("settings cache: {}: {}", error.code, error.message));
     }
-    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), client.close()).await.is_err() {
+    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), client.close())
+        .await
+        .is_err()
+    {
         faults.push("Bus close timed out".into());
     }
     eprintln!("SCENE_EDITOR_SHUTDOWN {}", json!({"faults":faults}));
 }
 
-fn arm_topics(client: &Arc<SupervisedClient>, host: &str, tasks: &mut tokio::task::JoinSet<Result<(), String>>) {
+fn arm_topics(
+    client: &Arc<SupervisedClient>,
+    host: &str,
+    tasks: &mut tokio::task::JoinSet<Result<(), String>>,
+) {
     tasks.abort_all();
-    for topic in ["scenes.changed".to_owned(), "noded.props.changed".to_owned(), format!("{host}.panel.changed")] {
+    for topic in [
+        "scenes.changed".to_owned(),
+        "noded.props.changed".to_owned(),
+        format!("{host}.panel.changed"),
+    ] {
         let client = Arc::clone(client);
         tasks.spawn(async move {
-            tokio::time::timeout(Duration::from_secs(2), client.subscribe_topic(&topic)).await
+            tokio::time::timeout(Duration::from_secs(2), client.subscribe_topic(&topic))
+                .await
                 .map_err(|_| format!("{topic}: subscription timed out"))?
                 .map_err(|error| format!("{topic}: {error}"))
         });
     }
 }
 
-async fn forward_async(url: &str, service: &str, selection: &crate::model::Selection) -> Result<(), String> {
+async fn forward_async(
+    url: &str,
+    service: &str,
+    selection: &crate::model::Selection,
+) -> Result<(), String> {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let client = NodedClient::connect_anonymous(url).await.map_err(|error| error.to_string())?;
-        let result = client.call_with_headers_raw(service, "scene-editor.show", &BTreeMap::new(),
-            &json!({"view":selection.view,"scene":selection.scene}).to_string()).await;
+        let client = NodedClient::connect_anonymous(url)
+            .await
+            .map_err(|error| error.to_string())?;
+        let result = client
+            .call_with_headers_raw(
+                service,
+                "scene-editor.show",
+                &BTreeMap::new(),
+                &json!({"view":selection.view,"scene":selection.scene}).to_string(),
+            )
+            .await;
         client.close().await;
         let (rc, body, _) = result.map_err(|error| error.to_string())?;
-        if rc == 0 { Ok(()) } else { Err(format!("activation refused: {body}")) }
-    }).await.map_err(|_| "activation timed out".to_owned())?
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("activation refused: {body}"))
+        }
+    })
+    .await
+    .map_err(|_| "activation timed out".to_owned())?
 }
 fn anonymous(url: &str, service: &str, verb: &str, args: Value) -> Result<Reply, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()

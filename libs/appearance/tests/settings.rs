@@ -16,6 +16,14 @@ fn checked_font(_: &str, _: &design::ResolvedTypeRecord) -> Result<FontSelection
     })
 }
 #[test]
+fn bootstrap_uses_only_explicit_generics_before_checked_resources_exist() {
+    let look = appearance::settings::bootstrap().unwrap();
+    assert!(look.font_choices().values().all(|choice| *choice == FontChoice::Generic));
+    assert_eq!(look.typography().get("ui").unwrap().font.family, iced_core::font::Family::SansSerif);
+    assert_eq!(look.typography().get("mono").unwrap().font.family, iced_core::font::Family::Monospace);
+    assert_eq!(look.tokens(), appearance::tokens(&appearance::Theme::embedded()));
+}
+#[test]
 fn projection_reuses_compiler_mapping_and_prepares_every_type() {
     let e = effective();
     let projection = Projection::new(&e).unwrap();
