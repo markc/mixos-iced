@@ -2311,6 +2311,7 @@ mod tests {
         menu.items.push(Item {
             label: extra.label.clone(),
             checked: false,
+            disabled: false,
             choice: Choice::Extra(extra),
         });
         assert!(

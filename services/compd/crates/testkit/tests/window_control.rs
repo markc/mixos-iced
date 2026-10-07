@@ -78,8 +78,9 @@ fn a_destroyed_window_takes_its_maximise_record_with_it() {
     let restore = MaximizeRestore {
         location: Point::from((10, 20)),
         size: Size::from((64, 48)),
+        output: "test".into(),
     };
-    h.wire.inner.comp.set_maximize_restore(id, Some(restore));
+    h.wire.inner.comp.set_maximize_restore(id, Some(restore.clone()));
     assert_eq!(h.comp().maximize_restore(id), Some(restore));
     toplevel.destroy();
     xdg.destroy();
