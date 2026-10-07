@@ -25,7 +25,8 @@ pub enum Error {
     /// The layout, the manifest or the activation link breaks a rule.
     #[error("{0}")]
     Invalid(String),
-    /// A locked file's size or hash differs from the manifest.
+    /// A locked file's size or hash differs from the manifest, or a
+    /// resolved set's manifest digest is not the requested identity.
     #[error("{0}")]
     Mismatch(String),
 }
@@ -33,9 +34,16 @@ pub enum Error {
 /// `std::result::Result` with this crate's [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub(crate) fn io(action: &'static str, path: &std::path::Path) -> impl FnOnce(std::io::Error) -> Error {
+pub(crate) fn io(
+    action: &'static str,
+    path: &std::path::Path,
+) -> impl FnOnce(std::io::Error) -> Error {
     let path = path.to_path_buf();
-    move |source| Error::Io { action, path, source }
+    move |source| Error::Io {
+        action,
+        path,
+        source,
+    }
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> Error {

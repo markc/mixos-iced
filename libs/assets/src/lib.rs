@@ -6,11 +6,11 @@
 //! checks and reads it.
 //!
 //! A set is a directory holding a strict-data manifest
-//! ([`MANIFEST_FILE`], schema [`SCHEMA`]), the generated stylesheet
-//! ([`STYLESHEET_FILE`]) and the locked files, each with a size, a
-//! SHA-256 and a BLAKE3. Opening a set checks the layout (no symlinks, no
-//! escapes), the manifest and every size; [`AssetSet::verify`] checks the
-//! hashes.
+//! ([`MANIFEST_FILE`], schema [`SCHEMA`] or the versioned icon-metadata
+//! schema [`SCHEMA_V2`]), the generated stylesheet ([`STYLESHEET_FILE`])
+//! and the locked files, each with a size, a SHA-256 and a BLAKE3.
+//! Opening a set checks the layout (no symlinks, no escapes), the
+//! manifest and every size; [`AssetSet::verify`] checks the hashes.
 //!
 //! - [`Lookup`] is the generic resolver: the caller names the roots to
 //!   search (an XDG subdirectory, an environment variable with a default,
@@ -47,6 +47,46 @@
     feature = "verified",
     doc = "  the set ID together with the BLAKE3 of the exact manifest bytes."
 )]
+#![cfg_attr(
+    feature = "verified",
+    doc = "- [`VerifiedSet::read_at`] and [`VerifiedSet::read_explicit`] (the `verified`"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  feature) resolve an [`ExplicitRequest`] — a set ID with an optional"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  manifest digest — under held approved root descriptors, selecting"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  `sets/<id>` directly and never `current`: an absent set falls through,"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  an encountered invalid or digest-mismatched set is a diagnostic."
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "- [`VerifiedSet::read_current`] (the `verified` feature) is the"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  descriptor-owned analogue of [`AssetSet::current`]: the initial"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  omitted-resource selection follows `current` exactly once under a held"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  root descriptor. Only that selection consults `current`; an"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  expected-binding request uses `read_at`, which never does."
+)]
 //!
 //! Native readers call `discover` once at startup and keep that selection
 //! while `current` changes underneath them. An installer opens its own
@@ -76,9 +116,13 @@ pub mod mixos;
 pub use error::{Error, Result};
 pub use lookup::{Lookup, XdgData};
 pub use manifest::{
-    AssetFile, MANIFEST_FILE, MAX_FILE_BYTES, MAX_FILES, MAX_ROLES, Manifest, SCHEMA,
-    STYLESHEET_FILE, valid_relative_path, valid_set_id,
+    AssetFile, DEFAULT_ICON_STYLE, IconAsset, IconCatalogue, IconDefault, MANIFEST_FILE,
+    MAX_FACE_INDEX, MAX_FAMILY_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_ICON_ASSETS,
+    MAX_ICON_CATALOGUES, MAX_ROLES, Manifest, ManifestV2, SCHEMA, SCHEMA_V2, STYLESHEET_FILE,
+    valid_relative_path, valid_set_id,
 };
 pub use set::{AssetSet, CURRENT_LINK};
 #[cfg(feature = "verified")]
-pub use verified::{ReadLimits, SetIdentity, VerifiedFile, VerifiedSet};
+pub use verified::{
+    ExplicitRequest, ReadLimits, ResolvedCatalogue, SetIdentity, VerifiedFile, VerifiedSet,
+};

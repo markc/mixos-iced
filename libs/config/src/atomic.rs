@@ -97,6 +97,67 @@ pub fn read_in(dir: &File, name: &std::ffi::OsStr, limit: usize) -> io::Result<V
     Ok(bytes)
 }
 
+/// Read a symlink's target inside a held directory descriptor, without
+/// following it. The entry is stat'ed with `AT_SYMLINK_NOFOLLOW` and must
+/// be a symlink: a missing entry is `NotFound`, an entry that exists but
+/// is not a symlink is refused as invalid input. The target is returned as
+/// raw bytes; nothing is opened through it here.
+///
+/// `name` must be a single plain component: no `/`, `.`, `..` or empty
+/// name, validated before any open, like [`read_in`].
+pub fn read_link_in(dir: &File, name: &std::ffi::OsStr) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    if name.as_bytes().is_empty() || name.as_bytes().contains(&b'/') || name == "." || name == ".."
+    {
+        return Err(io::Error::other("expected a single file name"));
+    }
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // Never dereference the link itself: stat the entry, refuse anything
+    // that is not a symlink, then read its target bytes.
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let rc = unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFLNK {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "expected a symlink"));
+    }
+    let mut buffer = vec![0u8; 256];
+    loop {
+        let length = unsafe {
+            libc::readlinkat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        };
+        if length < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let length = length as usize;
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
+                buffer,
+            )));
+        }
+        // The target filled the buffer: grow and retry, bounded by the
+        // kernel's own symlink length limit.
+        if buffer.len() >= libc::PATH_MAX as usize {
+            return Err(io::Error::other("symlink target is too long"));
+        }
+        buffer.resize(buffer.len() * 2, 0);
+    }
+}
+
 /// Open a nested regular file under a held directory descriptor, walking
 /// every intermediate component with `openat` and refusing a symlink at
 /// any level, including the final file. The returned descriptor is bound
@@ -169,6 +230,57 @@ pub fn open_nested(dir: &File, relative: &Path) -> io::Result<File> {
         return Err(io::Error::other("expected a regular file"));
     }
     Ok(file)
+}
+
+/// Open a nested directory under a held directory descriptor, walking
+/// every component with `openat` (`O_DIRECTORY | O_NOFOLLOW`) and refusing
+/// a symlink at any level. A missing component is `NotFound`; a component
+/// that exists but is not a plain directory is refused. The returned
+/// descriptor is bound to the opened inode, not to the walked path.
+///
+/// `relative` must be a relative path of plain components, with the same
+/// raw-byte validation as [`open_nested`]: no leading `/`, no `.`, `..`,
+/// empty or NUL-bearing components, and at least one component.
+pub fn open_nested_directory(dir: &File, relative: &Path) -> io::Result<File> {
+    use std::os::unix::ffi::OsStrExt;
+    let raw = relative.as_os_str().as_bytes();
+    if raw.is_empty() || raw[0] == b'/' {
+        return Err(io::Error::other(
+            "expected a relative path of plain components",
+        ));
+    }
+    let mut names: Vec<&[u8]> = Vec::new();
+    for part in raw.split(|byte| *byte == b'/') {
+        if part.is_empty() || part == b"." || part == b".." {
+            return Err(io::Error::other(
+                "expected a relative path of plain components",
+            ));
+        }
+        if part.contains(&0) {
+            return Err(io::Error::other("component contains a NUL byte"));
+        }
+        names.push(part);
+    }
+    if names.is_empty() {
+        return Err(io::Error::other("expected a directory name"));
+    }
+    let mut current = dir.try_clone()?;
+    for name in names {
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| io::Error::other("component contains a NUL byte"))?;
+        let fd = unsafe {
+            libc::openat(
+                current.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        current = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(current)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -466,6 +578,51 @@ mod tests {
     }
 
     #[test]
+    fn open_nested_directory_walks_pins_and_refuses_links() {
+        use std::io::Read;
+        let root = std::env::temp_dir().join(format!("settings-nested-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/file.txt"), b"pinned").unwrap();
+        let held = open_directory(&root).unwrap();
+        // The nested directory opens, and files inside it read normally.
+        let nested = open_nested_directory(&held, Path::new("a/b")).unwrap();
+        let mut file = open_nested(&nested, Path::new("file.txt")).unwrap();
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes).unwrap();
+        assert_eq!(bytes, "pinned");
+        // The descriptor is bound to the inode: the path is renamed aside
+        // and replaced, the held directory still answers with the old file.
+        std::fs::rename(root.join("a"), root.join("old-a")).unwrap();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/file.txt"), b"replacement").unwrap();
+        let mut file = open_nested(&nested, Path::new("file.txt")).unwrap();
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes).unwrap();
+        assert_eq!(bytes, "pinned");
+        // A missing component is NotFound, so callers can fall through.
+        let missing = open_nested_directory(&held, Path::new("a/missing")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+        // A symlinked intermediate component is refused.
+        std::os::unix::fs::symlink(root.join("old-a"), root.join("a/link")).unwrap();
+        assert!(open_nested_directory(&held, Path::new("a/link/b")).is_err());
+        std::fs::remove_file(root.join("a/link")).unwrap();
+        // A symlinked final component, and a final component that is a
+        // regular file, are refused.
+        std::os::unix::fs::symlink(root.join("old-a/b"), root.join("a/swapped")).unwrap();
+        assert!(open_nested_directory(&held, Path::new("a/swapped")).is_err());
+        std::fs::remove_file(root.join("a/swapped")).unwrap();
+        assert!(open_nested_directory(&held, Path::new("a/b/file.txt")).is_err());
+        // Traversal, escapes and normalisation are refused before any open.
+        assert!(open_nested_directory(&held, Path::new("a/../b")).is_err());
+        assert!(open_nested_directory(&held, Path::new("/absolute")).is_err());
+        assert!(open_nested_directory(&held, Path::new("")).is_err());
+        assert!(open_nested_directory(&held, Path::new("a/./b")).is_err());
+        assert!(open_nested_directory(&held, Path::new("a//b")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn open_nested_refuses_normalised_components_and_nul_bytes() {
         use std::ffi::OsStr;
         use std::io::Read;
@@ -492,6 +649,44 @@ mod tests {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"plain");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_link_in_reads_targets_and_refuses_everything_else() {
+        use std::os::unix::ffi::OsStrExt;
+        let root =
+            std::env::temp_dir().join(format!("settings-link-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sets")).unwrap();
+        std::os::unix::fs::symlink("sets/target", root.join("current")).unwrap();
+        std::fs::write(root.join("plain.txt"), b"x").unwrap();
+        std::fs::create_dir(root.join("dir")).unwrap();
+        let held = open_directory(&root).unwrap();
+        // The target comes back as raw bytes; the link is never followed.
+        let target = read_link_in(&held, std::ffi::OsStr::new("current")).unwrap();
+        assert_eq!(target, std::path::PathBuf::from("sets/target"));
+        // A missing entry is NotFound, so callers can fall through.
+        let missing = read_link_in(&held, std::ffi::OsStr::new("absent")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+        // An entry that exists but is not a symlink is refused as invalid
+        // input, distinguishable from a missing entry.
+        let file = read_link_in(&held, std::ffi::OsStr::new("plain.txt")).unwrap_err();
+        assert_eq!(file.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(read_link_in(&held, std::ffi::OsStr::new("dir")).is_err());
+        // Names are validated before any open, as in the other walks.
+        assert!(read_link_in(&held, std::ffi::OsStr::new("a/b")).is_err());
+        assert!(read_link_in(&held, std::ffi::OsStr::new("")).is_err());
+        assert!(read_link_in(&held, std::ffi::OsStr::new(".")).is_err());
+        assert!(read_link_in(&held, std::ffi::OsStr::new("..")).is_err());
+        // A target that is not UTF-8 still reads as its raw bytes.
+        std::os::unix::fs::symlink(
+            std::ffi::OsStr::from_bytes(b"sets/r\xffw"),
+            root.join("raw"),
+        )
+        .unwrap();
+        let raw = read_link_in(&held, std::ffi::OsStr::new("raw")).unwrap();
+        assert_eq!(raw.as_os_str().as_bytes(), b"sets/r\xffw");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
