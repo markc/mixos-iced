@@ -763,6 +763,16 @@ impl Orchestrator {
             .inner
     }
 
+    /// Disjoint policy state and placement Space for renderer-free geometry
+    /// execution. Resolve candidate windows across worlds before taking this
+    /// mutable view; placement keeps the existing spawn-target semantics.
+    pub fn comp_space_mut(&mut self) -> (&mut crate::comp::CompState, &mut smithay::desktop::Space<Window>) {
+        let target = self.worlds.spawn_target();
+        let space = &mut self.worlds.get_mut(target).storage_mut()
+            .get_mut(&crate::host::space::base::SPACE_MUT).inner.state;
+        (&mut self.comp, space)
+    }
+
     /// The space of every world EXCEPT the hosted (spawn-target) one. Those
     /// worlds' windows are invisible by definition (nothing renders them), so
     /// the per-window fractional scale can publish scale 1 to them under the
@@ -1404,5 +1414,4 @@ impl CoordinateTrait for Loop {
 
 /// The compositor loop: protocol state (`Dispatch`) + the orchestrator.
 pub type Loop = Wire<Orchestrator>;
-
 

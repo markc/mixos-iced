@@ -103,6 +103,14 @@ fn refresh_scene_reserved(lp: &mut Loop) {
     }
 }
 
+/// Reconcile settings-owned panels before frame work, even without a comp Bus
+/// port. Scene activation runs after the port; do not leave windows using the
+/// previous reservation until another dispatch happens to arrive.
+pub(crate) fn reconcile_scene_geometry(lp: &mut Loop) {
+    refresh_scene_reserved(lp);
+    policy_host::control::refresh_usable(lp);
+}
+
 /// The scene host's surfaces and keyboard focus as comp.props rows: they stand
 /// in for Quoin's layer surfaces, so `surfaces.*`, `stack` and
 /// `focus.keyboard` must carry them too. Positions are made global from

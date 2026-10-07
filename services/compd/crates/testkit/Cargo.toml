@@ -35,6 +35,7 @@ wayland-protocols = { version = "=0.32.13", features = ["client", "unstable", "s
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 
 [dev-dependencies]
+policy-host = { workspace = true }
 # The workspace model the window tests drive.
 policy = { workspace = true }
 # The offline X11 suite: smithay's offline setters.

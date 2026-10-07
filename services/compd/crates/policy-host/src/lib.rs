@@ -24,6 +24,7 @@
 pub mod capture;
 pub mod control;
 pub mod edges;
+pub mod geometry;
 pub mod input;
 pub mod panel;
 pub mod region;

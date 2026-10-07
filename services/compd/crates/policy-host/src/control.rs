@@ -56,7 +56,6 @@ use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 use surfaces::{SurfaceId, WindowTargetError};
 use world::camera::transform::translate::slot;
-use world::comp::MaximizeRestore;
 use world::comp::usable::Reserved;
 use world::state::Loop;
 use world::window::interface::draw::visible::DrawWindow;
@@ -74,17 +73,7 @@ pub fn usable_area(
     geometry: Rectangle<i32, Logical>,
     reserved: Reserved,
 ) -> Rectangle<i32, Logical> {
-    let map = smithay::desktop::layer_map_for_output(output);
-    let layered = if map.layers().next().is_none() {
-        geometry
-    } else {
-        let zone = map.non_exclusive_zone();
-        Rectangle::new(
-            geometry.loc + zone.loc,
-            Size::from((zone.size.w.max(0), zone.size.h.max(0))),
-        )
-    };
-    reserved.shrink(layered)
+    crate::geometry::usable_area(output, geometry, reserved)
 }
 
 /// What docked scene panels reserve on `output` (none when unset).
@@ -100,33 +89,18 @@ pub fn reserved_for(lp: &Loop, output: &smithay::output::Output) -> Reserved {
 /// Refresh CompState's usable areas. When one moved (a
 /// panel mapped, unmapped or resized its zone, an output changed), the
 /// windows maximised by request take the new area.
-pub fn refresh_usable(lp: &mut Loop) {
+pub fn refresh_usable(lp: &mut Loop) -> crate::geometry::GeometryChange {
     refresh_output_generations(lp);
-    let reserved = &lp.inner.comp.reserved;
-    let space = &lp.inner.host_space().state;
-    let usable: std::collections::BTreeMap<String, Rectangle<i32, Logical>> = space
-        .outputs()
-        .filter_map(|output| {
-            let edges = reserved.get(&output.name()).copied().unwrap_or_default();
-            Some((
-                output.name(),
-                usable_area(output, space.output_geometry(output)?, edges),
-            ))
-        })
+    let windows: Vec<_> = lp.inner.comp.maximized_ids().into_iter()
+        .filter_map(|id| Some((id, window_of(lp, id)?)))
         .collect();
-    if usable == lp.inner.comp.usable {
-        return;
+    let (comp, space) = lp.inner.comp_space_mut();
+    let change = crate::geometry::refresh_usable(comp, space, &windows);
+    if change.windows {
+        lp.state.schedule_redraw(RedrawReason::WindowState);
+        crate::input::retarget_pointer(lp);
     }
-    let previous = std::mem::replace(&mut lp.inner.comp.usable, usable);
-    lp.inner.comp.outputs_changed();
-    for id in lp.inner.comp.maximized_ids() {
-        if let Some(restore) = lp.inner.comp.maximize_restore(id)
-            && (previous.get(&restore.output) != lp.inner.comp.usable.get(&restore.output)
-                || !lp.inner.comp.usable.contains_key(&restore.output))
-        {
-            maximize(lp, id, true);
-        }
-    }
+    change
 }
 
 /// Refresh each output's generation: its place in the
@@ -1425,84 +1399,11 @@ pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
     let Some(window) = window_of(lp, id) else {
         return;
     };
-    let target = if enabled {
-        let restore = lp.inner.comp.maximize_restore(id);
-        let space = &lp.inner.host_space().state;
-        let Some(output) = restore
-            .as_ref()
-            .and_then(|restore| {
-                space
-                    .outputs()
-                    .find(|output| output.name() == restore.output)
-                    .cloned()
-            })
-            .or_else(|| space.outputs_for_element(&window).first().cloned())
-            .or_else(|| space.outputs().next().cloned())
-        else {
-            return;
-        };
-        let Some(geometry) = space.output_geometry(&output) else {
-            return;
-        };
-        let area = decor::window::content_area(
-            &window,
-            usable_area(&output, geometry, reserved_for(lp, &output)),
-        );
-        if let Some(mut restore) = restore {
-            if restore.output != output.name() {
-                restore.output = output.name();
-                lp.inner.comp.set_maximize_restore(id, Some(restore));
-            }
-        } else {
-            let location = space.element_location(&window).unwrap_or(area.loc);
-            let size = window.geometry().size;
-            lp.inner.comp.set_maximize_restore(
-                id,
-                Some(MaximizeRestore {
-                    location,
-                    size,
-                    output: output.name(),
-                }),
-            );
-        }
-        area
-    } else {
-        let Some(restore) = lp.inner.comp.maximize_restore(id) else {
-            // Not maximised by request: still answer with a configure.
-            shell::send(&window);
-            return;
-        };
-        lp.inner.comp.set_maximize_restore(id, None);
-        Rectangle::new(restore.location, restore.size)
-    };
-    apply_window_geometry(lp, &window, target, enabled);
-}
-
-fn apply_window_geometry(
-    lp: &mut Loop,
-    window: &Window,
-    area: Rectangle<i32, Logical>,
-    maximized: bool,
-) {
-    shell::stage(window, area.size, false);
-    if let Some(toplevel) = window.toplevel() {
-        toplevel.with_pending_state(|state| {
-            if maximized {
-                state.states.set(xdg_toplevel::State::Maximized);
-            } else {
-                state.states.unset(xdg_toplevel::State::Maximized);
-            }
-        });
+    let (comp, space) = lp.inner.comp_space_mut();
+    if crate::geometry::set_maximized(comp, space, id, &window, enabled).windows {
+        lp.state.schedule_redraw(RedrawReason::WindowState);
+        crate::input::retarget_pointer(lp);
     }
-    if let Some(x11) = window.x11_surface() {
-        let _ = x11.set_maximized(maximized);
-    }
-    shell::send(window);
-    slot::set_expected_size(window, area.size);
-    lp.inner
-        .host_space_mut()
-        .state
-        .map_element(window.clone(), area.loc, false);
 }
 
 /// The client's own maximise / minimise requests, through the same policy as

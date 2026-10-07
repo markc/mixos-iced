@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.8
+
+- Share the renderer-free maximise/work-area executor with protocol fixtures;
+  preserve owning outputs and authoritative slots through delayed client ACKs
+  and buffer commits, without redundant configures on unchanged targets.
+- Defer work-area resize while fullscreen owns geometry and reconcile the
+  latest maximised rectangle after its exit commit.
+- Reconcile scene reservations after settings activation and before frame work,
+  including sessions without the comp Bus port; redraw and retarget the window
+  pointer after actual geometry changes.
+
 ## 0.1.7
 
 - Activate global panel modes and requested thickness with prepared shell

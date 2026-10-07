@@ -40,6 +40,13 @@ pub struct ClientState {
     pub syncs: u64,
     /// Configures acked (xdg_surface and layer surface together).
     pub configures: u64,
+    /// Default false preserves automatic ACK for existing fixtures. Tests may
+    /// hold an xdg configure while independently controlling buffer commits.
+    pub hold_xdg_configures: bool,
+    /// `(xdg_surface protocol id, serial)` in receive order, including held ACKs.
+    pub xdg_configures: Vec<(u32, u32)>,
+    /// Actual toplevel configure sizes/states, associated with their object.
+    pub toplevel_configures: Vec<ToplevelConfigure>,
     /// The serial of the last `wl_pointer.enter`, on any bound seat.
     pub enter_serial: Option<u32>,
     /// Every `wl_pointer.button` received: `(serial, button, pressed, seat)`, with
@@ -48,6 +55,13 @@ pub struct ClientState {
     pub buttons: Vec<(u32, u32, bool, usize)>,
     /// Every screencopy frame's events, by the index [`TestClient::capture`] returned.
     pub frames: Vec<FrameEvents>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToplevelConfigure {
+    pub toplevel: u32,
+    pub size: (i32, i32),
+    pub states: Vec<u32>,
 }
 
 pub struct TestClient {
@@ -446,8 +460,32 @@ impl Dispatch<XdgSurface, ()> for ClientState {
         _qh: &QueueHandle<Self>,
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
-            xdg.ack_configure(serial);
+            state.xdg_configures.push((protocol_id(xdg), serial));
+            if !state.hold_xdg_configures {
+                xdg.ack_configure(serial);
+            }
             state.configures += 1;
+        }
+    }
+}
+
+impl Dispatch<XdgToplevel, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        toplevel: &XdgToplevel,
+        event: wayland_protocols::xdg::shell::client::xdg_toplevel::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Configure { width, height, states } = event {
+            state.toplevel_configures.push(ToplevelConfigure {
+                toplevel: protocol_id(toplevel),
+                size: (width, height),
+                states: states.chunks_exact(4)
+                    .map(|bytes| u32::from_ne_bytes(bytes.try_into().expect("four-byte state")))
+                    .collect(),
+            });
         }
     }
 }
@@ -500,7 +538,6 @@ delegate_noop!(ClientState: ignore WlOutput);
 delegate_noop!(ClientState: ZwlrScreencopyManagerV1);
 delegate_noop!(ClientState: ignore WlShm);
 delegate_noop!(ClientState: ignore WlBuffer);
-delegate_noop!(ClientState: ignore XdgToplevel);
 delegate_noop!(ClientState: ignore XdgPopup);
 
 /// The client half of a proxy's id, for the server-side lookup.

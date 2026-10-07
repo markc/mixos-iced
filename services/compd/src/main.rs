@@ -626,6 +626,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(scenes) = scenes_port.as_mut() {
             scenes.service(state);
         }
+        comp::reconcile_scene_geometry(state);
         // Deliver what this pass queued on world channels NOW, not at the next
         // frame's dispatch. Input systems announce effects on channels: an iced
         // button RELEASE goes canvas -> ICED_BUTTON -> surface system -> registry,
