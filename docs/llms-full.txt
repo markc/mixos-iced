@@ -601,7 +601,7 @@ BusViewer separates `model.rs`, `bus.rs`, `menu.rs`, `strings.rs` and `app.rs`. 
 
 ## Use the shared host and existing compound controls
 
-Apps depend on `application`, `toolkit` and `appearance`, without direct iced-family dependencies. The host exposes the pinned iced API, a bounded task executor, renderer features and native window defaults. The app still owns its backend worker and graceful shutdown.
+New ports depend on `application`, `toolkit` and `appearance`, without direct iced-family dependencies. The host exposes the pinned iced API, a bounded task executor, renderer features and native window defaults. The app still owns its backend worker and graceful shutdown. The shared-host gate currently covers Ced, DOpus, Term, Scene Editor and BusViewer. Cap's earlier frontend still needs its image and clipboard adapters migrated into the application host; its conventional menus can be reused as a UI reference.
 
 Use `TreeView`/`Nodes` for keyed, virtualised trees, `Split` for resizing, `TextField` for search, `Menu` for conventional menu bars and `CenteredButton` for dialogue controls. Multiline JSON editing uses the pinned `text_editor` through the host; specialised source editing, files and terminal grids use the existing shared `EditorPane`, `FilePane` and `TerminalPane` contracts. Promote a new compound control only when another owner needs the generic interaction, with an API review. Service discovery and application commands remain app semantics.
 
