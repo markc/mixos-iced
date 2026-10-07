@@ -3,7 +3,7 @@ name = "toolkit"
 description = "iced widgets: text field, menus, audio controls, waveform, piano roll, a token-driven iced theme, font sets, icon fonts and freedesktop icon lookup"
 # A public contract with its own version (CHANGELOG.md); the edition and
 # toolchain are stated here so the crate carries them when taken elsewhere.
-version = "0.2.5"
+version = "0.2.8"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -46,6 +46,8 @@ iced_renderer = { workspace = true }
 iced_runtime = { workspace = true }
 iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
 iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "x11", "thread-pool", "fira-sans"] }
+# `fonts::registry` recomputes source identities from the owned bytes.
+blake3 = { workspace = true }
 fluent-bundle = { version = "0.15", optional = true }
 image = { workspace = true, optional = true }
 resvg = { version = "=0.45.1", default-features = false, optional = true }
@@ -61,6 +63,8 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 unicode-width = "=0.2.2"
 # Tests shape real text; iced's embedded Fira Sans means no host font is read.
 iced_graphics = { workspace = true, features = ["fira-sans"] }
+# The registry integration tests recompute the digests of shaped face data.
+blake3 = { workspace = true }
 # `tests/snapshots.rs` renders the gallery offscreen with iced's headless
 # simulator and reads the PNGs it writes back.
 iced_test = { workspace = true }
