@@ -629,12 +629,15 @@ fn explicit_requests_resolve_by_descriptor_id_and_digest_never_current() {
     let error = VerifiedSet::read_explicit(&held, &wrong, ReadLimits::default()).unwrap_err();
     assert!(matches!(error, assets::Error::Mismatch(_)), "{error}");
     assert!(error.to_string().contains("digest"), "{error}");
-    // The second root's digest selects the second root's copy.
+    // A digest belonging to the second root cannot bypass a same-ID set in
+    // the first root. Refuse substitution; an explicit root choice is needed.
     let request = ExplicitRequest {
         set_id: "one",
         manifest_blake3: Some(second_digest),
     };
-    let set = VerifiedSet::read_explicit(&held, &request, ReadLimits::default())
+    let error = VerifiedSet::read_explicit(&held, &request, ReadLimits::default()).unwrap_err();
+    assert!(matches!(error, assets::Error::Mismatch(_)), "{error}");
+    let set = VerifiedSet::read_explicit(&held[1..], &request, ReadLimits::default())
         .unwrap()
         .unwrap();
     assert_eq!(set.font("sans").unwrap().bytes(), b"replaced font!");
