@@ -183,6 +183,14 @@ pub fn complete(value: &mut Value, identity: Identity<'_>) -> Result<(), Violati
             "describe value must be a JSON object",
         )
     })?;
+    // Validate the owner-supplied identity before checking whether a product
+    // field conflicts with it. A malformed owner value has its own stable
+    // diagnostic and never changes the caller's product object.
+    validate(&serde_json::json!({
+        "describe_contract": CONTRACT, "version": identity.version,
+        "pid": identity.pid, "service": identity.service,
+        "app_id": identity.app_id, "verbs": [VERB],
+    }))?;
     reserved_agree(object, &identity)?;
     let mut completed = value.clone();
     let map = completed.as_object_mut().expect("cloned object");
@@ -304,7 +312,9 @@ pub fn validate(value: &Value) -> Result<Description<'_>, Violation> {
     required_nonempty_bounded(object, "version")?;
     let pid = object
         .get("pid")
-        .and_then(Value::as_u64)
+        .ok_or_else(|| Violation::new("pid", code::MISSING_FIELD, "pid is required"))
+        ?
+        .as_u64()
         .filter(|pid| (1..=u64::from(u32::MAX)).contains(pid))
         .ok_or_else(|| {
             Violation::new("pid", code::INVALID_IDENTITY, "pid must be a positive u32")
