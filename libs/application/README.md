@@ -49,6 +49,8 @@ Replacing a snapshot marks a gap so the consumer reconciles. `message::Once`
 lets cloneable GUI messages consume an opaque completion exactly once.
 Fallback resources start during authority bootstrap. `fallback_diagnostics()`
 retains current load/resource failures even if embedded presentation succeeds.
+An explicit `Refresh` retries failed fallback resources without needing a new
+connection; ordinary wakes leave that failure quiescent.
 Ced and Quoin share this coordinator for live presentation changes. Native
 first-map timing remains an independent acceptance check.
 

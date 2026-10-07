@@ -313,6 +313,13 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
     assert!(jobs.fallback.is_none());
     assert!(jobs.wake.is_none());
     assert!(session.host().consumer().fallback_fault().is_some());
+    for _ in 0..100 {
+        let (_, jobs) = session.handle(Event::Wake, None);
+        assert!(jobs.fallback.is_none());
+        assert!(jobs.wake.is_none());
+    }
+    let (_, jobs) = session.handle(Event::Refresh, None);
+    assert!(jobs.fallback.is_some(), "explicit refresh can heal offline resource failure");
 }
 #[tokio::test]
 async fn superseded_blocking_jobs_are_physically_serial_and_keep_only_latest() {

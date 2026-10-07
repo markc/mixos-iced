@@ -124,6 +124,11 @@ impl<T> Session<T> {
             Event::Wake => {}
             Event::Refresh => {
                 self.host.consumer_mut().refresh();
+                // Failure stays quiescent on ordinary wakes. An explicit
+                // refresh may retry resources without a connection edge.
+                if self.host.consumer().applied().is_none() && self.fallback.is_none() {
+                    self.fallback_attempted = false;
+                }
             }
             Event::Lost => {
                 self.host.consumer_mut().lost();

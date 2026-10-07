@@ -9,6 +9,8 @@
 - Start fallback resource work during authority bootstrap, including builds
   without caching. Preserve fallback diagnostics after a successful embedded
   activation. This does not establish a GUI first-map timing guarantee.
+  Explicit refresh retries failed offline fallback resources; ordinary wakes
+  remain quiescent.
 
 ## 0.1.5
 
