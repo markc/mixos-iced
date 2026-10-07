@@ -1347,8 +1347,15 @@ mod tests {
             json!({"path":"settings"}),
         );
         assert_eq!(
-            host.answer_with_settings(&stale, "DP-1", Some(2), Some(&evidence), None, &mut no_layout)
-                .rc,
+            host.answer_with_settings(
+                &stale,
+                "DP-1",
+                Some(2),
+                Some(&evidence),
+                None,
+                &mut no_layout
+            )
+            .rc,
             10
         );
         assert_eq!(host.receipt, receipt);

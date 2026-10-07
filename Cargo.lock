@@ -202,7 +202,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "appearance",
  "bus",
@@ -214,6 +214,7 @@ dependencies = [
  "iced_test",
  "iced_tiny_skia",
  "png 0.18.1",
+ "serde",
  "serde_json",
  "settings",
  "tempfile",
@@ -1041,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "buildinfo",
  "comp-model",

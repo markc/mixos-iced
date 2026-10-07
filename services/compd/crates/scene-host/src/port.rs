@@ -160,10 +160,18 @@ impl Port {
     /// Start the worker. The broker connection is the worker's: a missing
     /// noded is retried with backoff and never blocks the compositor.
     pub fn start(config: HostConfig, waker: Waker) -> Result<Self, String> {
-        Self::start_at(config, waker, config::path(config::Dir::Var).join("compd/cache/settings"))
+        Self::start_at(
+            config,
+            waker,
+            config::path(config::Dir::Var).join("compd/cache/settings"),
+        )
     }
 
-    fn start_at(config: HostConfig, waker: Waker, cache_directory: std::path::PathBuf) -> Result<Self, String> {
+    fn start_at(
+        config: HostConfig,
+        waker: Waker,
+        cache_directory: std::path::PathBuf,
+    ) -> Result<Self, String> {
         let binding =
             settings::session::binding().map_err(|error| format!("settings session: {error:?}"))?;
         let (settings_jobs, jobs) = watch::channel(None);
@@ -184,7 +192,7 @@ impl Port {
         let pending_events = Arc::new(AtomicUsize::new(0));
         let pending = Arc::clone(&pending_events);
         let client: Arc<OnceLock<Arc<SupervisedClient>>> = Arc::new(OnceLock::new());
-        let published = Arc::clone(client);
+        let published = Arc::clone(&client);
         let thread = thread::Builder::new()
             .name("compd-scenes".into())
             .spawn(move || {
@@ -442,10 +450,12 @@ async fn connect(config: HostConfig, mut shutdown: watch::Receiver<bool>) -> Con
     let names = candidate_names(config.service_override.as_deref());
     let mut refusals = Vec::new();
     for name in &names {
-        let client = Arc::new(SupervisedClient::connect_options(name, &config.noded_url)
-            .fatal_on_registration_rejection(true)
-            .bounded_incoming(INBOUND_CAPACITY)
-            .start());
+        let client = Arc::new(
+            SupervisedClient::connect_options(name, &config.noded_url)
+                .fatal_on_registration_rejection(true)
+                .bounded_incoming(INBOUND_CAPACITY)
+                .start(),
+        );
         let mut lifecycle = client.subscribe_state();
         loop {
             // A Connected edge may have coalesced with subsequent loss or
@@ -460,14 +470,21 @@ async fn connect(config: HostConfig, mut shutdown: watch::Receiver<bool>) -> Con
                 if client.connection_generation() > 0 {
                     return Connected::Client(client, name.clone());
                 }
-                let refusal = client.registration_rejection().map(|refusal| {
-                    format!("rc {}: {}", refusal.rc, refusal.message)
-                });
-                if tokio::time::timeout(DEREGISTER_BUDGET, client.close()).await.is_err() {
-                    return Connected::Refused(format!("{name}: rejected supervisor did not retire; no fallback attempted"));
+                let refusal = client
+                    .registration_rejection()
+                    .map(|refusal| format!("rc {}: {}", refusal.rc, refusal.message));
+                if tokio::time::timeout(DEREGISTER_BUDGET, client.close())
+                    .await
+                    .is_err()
+                {
+                    return Connected::Refused(format!(
+                        "{name}: rejected supervisor did not retire; no fallback attempted"
+                    ));
                 }
                 let Some(refusal) = refusal else {
-                    return Connected::Refused(format!("{name}: supervisor stopped without an initial registration refusal"));
+                    return Connected::Refused(format!(
+                        "{name}: supervisor stopped without an initial registration refusal"
+                    ));
                 };
                 tracing::error!("SCENE HOST: the broker refused the Bus name `{name}` ({refusal})");
                 refusals.push(format!("{name}: {refusal}"));
@@ -514,10 +531,12 @@ async fn worker(
     let mailbox = lane.mailbox.clone();
     let waker = Arc::clone(&delivery.waker);
     let settings_send = move |event| {
-        if mailbox.publish(event) { waker(); }
+        if mailbox.publish(event) {
+            waker();
+        }
     };
-    let mut settings_worker = SettingsWorker::offline_with_cache(
-        lane.cache_directory.clone(), crate::appearance::build);
+    let mut settings_worker =
+        SettingsWorker::offline_with_cache(lane.cache_directory.clone(), crate::appearance::build);
     let mut connecting = Some(Box::pin(connect(config.clone(), shutdown.clone())));
     // The existing connection attempt must not stop the resource worker. A
     // refused service still receives offline presentation work until shutdown.
@@ -553,13 +572,26 @@ async fn worker(
             settings_worker.replace(jobs);
         }
         settings_send(SettingsEvent::Wake);
-        tracing::info!("scene host: established as `{service}` via {}", config.noded_url);
+        tracing::info!(
+            "scene host: registered as `{service}` via {}",
+            config.noded_url
+        );
         if !delivery.send(Inbound::Registered(service.clone())) {
             tracing::warn!("scene host: the engine's queue refused the registration notice");
         }
-        serve(client, service, &delivery, &mut outbound, &mut events,
-            pending_events, &mut shutdown, &mut lane, &mut settings_worker,
-            &settings_send).await
+        serve(
+            client,
+            service,
+            &delivery,
+            &mut outbound,
+            &mut events,
+            pending_events,
+            &mut shutdown,
+            &mut lane,
+            &mut settings_worker,
+            &settings_send,
+        )
+        .await
     } else {
         std::time::Instant::now() + SHUTDOWN_BUDGET
     };
@@ -572,13 +604,19 @@ async fn worker(
     }
     if let Some((client, _)) = connected {
         let close_deadline = tokio::time::Instant::from_std(deadline);
-        let deregister_deadline = close_deadline.min(tokio::time::Instant::now() + DEREGISTER_BUDGET);
+        let deregister_deadline =
+            close_deadline.min(tokio::time::Instant::now() + DEREGISTER_BUDGET);
         match tokio::time::timeout_at(deregister_deadline, client.deregister()).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::debug!(%error, "scene host deregister did not complete cleanly"),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "scene host deregister did not complete cleanly")
+            }
             Err(_) => tracing::warn!("scene host deregister timed out"),
         }
-        if tokio::time::timeout_at(close_deadline, client.close()).await.is_err() {
+        if tokio::time::timeout_at(close_deadline, client.close())
+            .await
+            .is_err()
+        {
             tracing::warn!("scene host Bus close exceeded shutdown budget");
         }
     }
@@ -740,7 +778,9 @@ async fn serve(
             send(client, &topics, message).await;
         }
     })
-    .await.is_err() {
+    .await
+    .is_err()
+    {
         tracing::warn!("scene host ordered outbound drain timed out");
     }
     flights.abort_all();
@@ -752,7 +792,12 @@ async fn serve(
 fn terminal_reason(client: &SupervisedClient) -> String {
     client.registration_rejection().map_or_else(
         || "Bus supervisor stopped; retaining settings resources".into(),
-        |refusal| format!("registration refused (rc {}): {}; retaining settings resources", refusal.rc, refusal.message),
+        |refusal| {
+            format!(
+                "registration refused (rc {}): {}; retaining settings resources",
+                refusal.rc, refusal.message
+            )
+        },
     )
 }
 
@@ -1013,8 +1058,10 @@ mod tests {
         // somebody else can claim between binding and the connection attempt.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let (port, wake, mut session) =
-            settings_port(format!("ws://{}/ws", listener.local_addr().unwrap()), cache.path().join("settings"));
+        let (port, wake, mut session) = settings_port(
+            format!("ws://{}/ws", listener.local_addr().unwrap()),
+            cache.path().join("settings"),
+        );
         let mut panels = crate::panels::Panels::default();
         assert_eq!(
             settings_drive(&port, &wake, &mut session, &mut panels, None),
@@ -1215,30 +1262,56 @@ mod tests {
         controller.close().await;
         port.finish();
 
-        // finish must consume the latest activated save from the watch lane,
-        // even if the worker has not processed that value before shutdown.
+        // The newest successfully activated snapshot survives connection loss
+        // and shutdown, and is validated again by an offline worker.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let offline_url = format!("ws://{}/ws", listener.local_addr().unwrap());
         let (port, wake, mut cached) = settings_port(offline_url.clone(), cache_directory.clone());
         let mut cached_panels = crate::panels::Panels::default();
-        drive_fallback(&port, &wake, &mut cached, &mut cached_panels,
-            settings::fallback::PresentationKind::Cached);
-        assert_eq!(cached.host().consumer().applied().unwrap().revision, settings::Revision(3));
-        assert_eq!(cached.host().presentation().unwrap().content().prepared.tokens().palette,
-            after.prepared.tokens().palette);
+        drive_fallback(
+            &port,
+            &wake,
+            &mut cached,
+            &mut cached_panels,
+            settings::fallback::PresentationKind::Cached,
+        );
+        assert_eq!(
+            cached.host().consumer().applied().unwrap().revision,
+            settings::Revision(3)
+        );
+        assert_eq!(
+            cached
+                .host()
+                .presentation()
+                .unwrap()
+                .content()
+                .prepared
+                .tokens()
+                .palette,
+            after.prepared.tokens().palette
+        );
         assert_eq!(port.settings_generation(), None);
         assert!(!cached.host().consumer().evidence().confirmed);
         port.finish();
 
-        let files: Vec<_> = std::fs::read_dir(&cache_directory).unwrap()
+        let files: Vec<_> = std::fs::read_dir(&cache_directory)
+            .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
             .collect();
         assert_eq!(files.len(), 1);
         std::fs::write(&files[0], b"{broken cache").unwrap();
         let (port, wake, mut embedded) = settings_port(offline_url, cache_directory);
-        drive_fallback(&port, &wake, &mut embedded, &mut cached_panels,
-            settings::fallback::PresentationKind::Embedded);
+        drive_fallback(
+            &port,
+            &wake,
+            &mut embedded,
+            &mut cached_panels,
+            settings::fallback::PresentationKind::Embedded,
+        );
         assert!(!embedded.fallback_diagnostics().is_empty());
         assert!(!embedded.host().consumer().evidence().confirmed);
         port.finish();
@@ -1254,12 +1327,15 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
             for event in port.take_settings() {
-                let (_, jobs) = session.handle_with(event, port.settings_generation(), |presentation| {
-                    panels.set_preferences(presentation.content().preferences.clone());
-                });
+                let (_, jobs) =
+                    session.handle_with(event, port.settings_generation(), |presentation| {
+                        panels.set_preferences(presentation.content().preferences.clone());
+                    });
                 port.settings_jobs(jobs);
             }
-            if session.host().kind() == Some(kind) { return; }
+            if session.host().kind() == Some(kind) {
+                return;
+            }
             wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                 .expect("offline Quoin fallback did not converge");
         }
@@ -1270,26 +1346,51 @@ mod tests {
     async fn settings_initial_refusal_uses_only_configured_override_and_keeps_fallback() {
         install_settings_fonts();
         let url = std::env::var("MIXOS_NODED_URL").unwrap();
-        let owner = SupervisedClient::connect_options("shell", &url).connect().await.unwrap();
+        let owner = SupervisedClient::connect_options("shell", &url)
+            .connect()
+            .await
+            .unwrap();
+        let owner_generation = owner.connection_generation();
         let root = tempfile::tempdir().unwrap();
-        for (index, service_override) in [Some("shell-cache-fixture".to_owned()), None].into_iter().enumerate() {
+        for (index, service_override) in [Some("shell-cache-fixture".to_owned()), None]
+            .into_iter()
+            .enumerate()
+        {
             let (notify, wake) = mpsc::channel();
-            let port = Port::start_at(HostConfig { noded_url: url.clone(), service_override },
-                Arc::new(move || { let _ = notify.send(()); }), root.path().join(index.to_string())).unwrap();
+            let port = Port::start_at(
+                HostConfig {
+                    noded_url: url.clone(),
+                    service_override,
+                },
+                Arc::new(move || {
+                    let _ = notify.send(());
+                }),
+                root.path().join(index.to_string()),
+            )
+            .unwrap();
             let mut session = application::presentation::native::Session::new(
-                settings::consumer::Consumer::for_shell(port.settings_binding()).unwrap());
+                settings::consumer::Consumer::for_shell(port.settings_binding()).unwrap(),
+            );
             let (_, jobs) = session.handle(SettingsEvent::Wake, port.settings_generation());
             port.settings_jobs(jobs);
             let mut panels = crate::panels::Panels::default();
-            drive_fallback(&port, &wake, &mut session, &mut panels,
-                settings::fallback::PresentationKind::Embedded);
+            drive_fallback(
+                &port,
+                &wake,
+                &mut session,
+                &mut panels,
+                settings::fallback::PresentationKind::Embedded,
+            );
             let deadline = std::time::Instant::now() + Duration::from_secs(20);
             loop {
                 match port.try_recv() {
                     Some(Inbound::Registered(name)) => {
                         assert_eq!(index, 0);
                         assert_eq!(name, "shell-cache-fixture");
-                        assert!(port.connection_generation().is_some_and(|generation| generation > 0));
+                        assert!(
+                            port.connection_generation()
+                                .is_some_and(|generation| generation > 0)
+                        );
                         break;
                     }
                     Some(Inbound::Refused(reason)) => {
@@ -1299,14 +1400,26 @@ mod tests {
                         break;
                     }
                     _ => {
-                        wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                            .expect("initial scene-host refusal did not settle");
+                        wake.recv_timeout(
+                            deadline.saturating_duration_since(std::time::Instant::now()),
+                        )
+                        .expect("initial scene-host refusal did not settle");
                     }
                 }
             }
-            assert_eq!(session.host().kind(), Some(settings::fallback::PresentationKind::Embedded));
+            assert_eq!(
+                session.host().kind(),
+                Some(settings::fallback::PresentationKind::Embedded)
+            );
             port.finish();
-            assert_eq!(owner.state(), ConnState::Connected, "the existing shell owner must remain untouched");
+            assert_eq!(
+                owner.state(),
+                ConnState::Connected,
+                "the existing shell owner must remain untouched"
+            );
+            owner.call("noded", "noded.ping", json!({})).await.unwrap();
+            assert_eq!(owner.connection_generation(), owner_generation,
+                "fallback must preserve the existing owner's actual connection");
         }
         owner.close().await;
     }
