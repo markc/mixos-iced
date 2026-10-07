@@ -433,7 +433,9 @@ fn unmaximise_without_a_restore_record_clears_intent_without_moving_the_slot() {
     let before = count(&h, &top);
     maximize(&mut h, id, &window, false);
     h.roundtrip();
-    assert_eq!(count(&h, &top), before, "cleared intent is idempotent");
+    assert_eq!(count(&h, &top), before + 1, "explicit requests retain their configure response");
+    configured(&h, &top, (800, 600), false);
+    assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
 }
 
 #[test]

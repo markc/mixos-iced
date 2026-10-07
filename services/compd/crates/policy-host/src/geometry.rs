@@ -17,6 +17,8 @@ use world::window::interface::record::window::LoopWindow;
 
 /// Work-area observation and actual window placement/configure changes are
 /// separate: changing an empty output's usable area need not move a window.
+/// `windows` reports a geometry application; an explicit request may still send
+/// a protocol response without changing placement or its decided slot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GeometryChange {
     pub usable: bool,
