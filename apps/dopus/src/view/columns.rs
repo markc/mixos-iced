@@ -5,7 +5,7 @@ use super::{
     rows::{Columns, presentation},
 };
 use crate::app::{Msg, PaneOp};
-use application::iced::Element;
+use application::Element;
 use dopus_core::{PaneId, SortColumn};
 
 pub struct Header;

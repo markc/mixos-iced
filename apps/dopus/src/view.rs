@@ -25,7 +25,8 @@ pub mod tips;
 pub mod toolbar;
 
 use application::iced::widget::{column, container, row};
-use application::iced::{Element, Length};
+use application::Element;
+use application::iced::{Length};
 
 use dopus_core::{PaneId, PaneModel, VisibleRow};
 

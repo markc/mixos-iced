@@ -6,7 +6,8 @@
 //! pane's current directory highlights.
 
 use application::iced::widget::{Scrollable, Space, button, column, container, image, row};
-use application::iced::{Border, Element, Length, Padding};
+use application::Element;
+use application::iced::{Border, Length, Padding};
 
 use dopus_core::{PaneId, PaneModel};
 

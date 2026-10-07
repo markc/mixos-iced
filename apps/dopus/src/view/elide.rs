@@ -2,7 +2,8 @@
 //! Filename middle elision, ported from CTK's `text_elide` without Bevy.
 use application::cpu::Renderer;
 use application::iced::advanced::text::{self, Paragraph as _};
-use application::iced::{Element, Length, Size};
+use application::Element;
+use application::iced::{Length, Size};
 use unicode_segmentation::UnicodeSegmentation;
 
 type Para = <Renderer as text::Renderer>::Paragraph;
