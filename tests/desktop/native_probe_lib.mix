@@ -3,7 +3,7 @@
 -- One owned native host runner for queue and presentation ownership probes.
 fn run_probe($repo,$bin,$probe,$marker,$renderer)
   if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
-  if not contains(["testkit-queue-retirement","native-frame-winit-probe"],$probe) then raise("ARGS","Unknown native ownership probe") end
+  if not contains(["testkit-queue-retirement","native-frame-winit-probe","native-winit-charge-test"],$probe) then raise("ARGS","Unknown native ownership probe") end
   $n = require("nested_host_lib.mix")
   for each $name in ["compd","noded",$probe]
     if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
@@ -22,7 +22,8 @@ fn run_probe($repo,$bin,$probe,$marker,$renderer)
     if not $n.wait_ready($owned.session,30) then raise("SETUP","Owned compositor did not register") end
     for each $role in ["weston","compd"]
       $extra = if $role == "weston" then {WAYLAND_DISPLAY:"wl-host"} else {} end
-      $result = run_argv([$bin .. "/" .. $probe],{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
+      $command = if $probe == "native-winit-charge-test" then [$bin .. "/" .. $probe,"actual_charge_retires_with_undrained_and_closed_queues","--ignored","--nocapture","--test-threads=1"] else [$bin .. "/" .. $probe] end
+      $result = run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
       write_file($root .. "/" .. $probe .. "-" .. $role .. ".log",$result.stdout)
       if not $result.ok or $result.stdout_truncated or not contains($result.stdout,$marker) then
         raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $result.stdout)

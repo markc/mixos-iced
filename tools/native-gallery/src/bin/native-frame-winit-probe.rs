@@ -325,10 +325,9 @@ impl ApplicationHandler for Probe {
                     .iter()
                     .flatten()
                     .find(|native| native.window.id() == window)
+                    && !native.submitted
                 {
-                    if !native.submitted {
-                        native.window.request_redraw();
-                    }
+                    native.window.request_redraw();
                 }
                 Ok(())
             }

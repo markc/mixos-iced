@@ -633,6 +633,72 @@ pub struct ActiveEventLoop {
     pub connection: Connection,
 }
 
+#[cfg(test)]
+mod presentation_native_guards {
+    use super::*;
+    use crate::platform_impl::wayland::types::wp_presentation::native_process_count;
+    use crate::platform_impl::wayland::window::Window;
+
+    #[test]
+    #[ignore = "requires an owned native compositor with wp_presentation"]
+    fn actual_charge_retires_with_undrained_and_closed_queues() {
+        for schedule in 0..3 {
+            let baseline = native_process_count();
+            let event_loop = EventLoop::<()>::new().expect("owned Wayland server");
+            let connection = event_loop.connection.clone();
+            let observation = {
+                let target = match &event_loop.window_target.p {
+                    PlatformActiveEventLoop::Wayland(target) => target,
+                    #[cfg(x11_platform)]
+                    _ => unreachable!(),
+                };
+                let window = Window::new(target, crate::window::WindowAttributes::default())
+                    .expect("actual configured native window");
+                let window_id = window.id();
+                window.request_presentation_feedback().expect("presentation global");
+                let observation = window.take_native_request().expect("real request observation");
+                assert!(observation.charge_alive());
+                assert_eq!(native_process_count(), baseline + 1);
+                // No buffer attachment or post-request commit: unseen pending
+                // feedback is discarded by actual surface destruction.
+                drop(window);
+                let mut state = target.state.borrow_mut();
+                state.drag_close_window(window_id);
+                drop(state.window_requests.get_mut().remove(&window_id));
+                drop(state.windows.get_mut().remove(&window_id));
+                observation
+            };
+            if schedule == 0 {
+                connection.roundtrip().expect("surface destruction and real terminal read");
+                assert!(observation.discarded(), "real Discarded before typed dispatch");
+                assert!(connection.backend().info(observation.object_id()).is_err());
+                assert!(observation.charge_alive(), "undrained queue owns actual charge");
+                assert_eq!(native_process_count(), baseline + 1);
+            }
+            drop(event_loop);
+            if schedule == 0 {
+                assert!(!observation.charge_alive());
+                assert_eq!(native_process_count(), baseline);
+                connection.roundtrip().expect("connection survives retired queue");
+            } else {
+                assert!(observation.charge_alive(), "backend still owns unread feedback");
+                assert_eq!(native_process_count(), baseline + 1);
+                if schedule == 1 {
+                    connection.roundtrip().expect("real terminal arrives after queue closure");
+                    assert!(observation.discarded(), "actual late Discarded");
+                    assert!(!observation.charge_alive());
+                    assert_eq!(native_process_count(), baseline);
+                }
+            }
+            drop(connection);
+            assert!(!observation.charge_alive(), "actual backend retirement releases lease");
+            assert_eq!(native_process_count(), baseline);
+            println!("WINIT_CHARGE schedule={schedule} baseline_restored=true");
+        }
+        println!("WINIT_CHARGE PASS queued=true late=true backend_retired=true");
+    }
+}
+
 impl ActiveEventLoop {
     pub(crate) fn set_control_flow(&self, control_flow: ControlFlow) {
         self.control_flow.set(control_flow)

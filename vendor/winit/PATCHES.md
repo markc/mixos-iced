@@ -58,3 +58,9 @@ object retirement plus receipt retirement frees it exactly once. Unsupported
 compositors render normally without invented presentation evidence. Unit guards
 cover ID exhaustion, cap rollback, window churn and shared receipt retirement;
 the renderer same-commit native guard is required separately.
+
+An ignored backend-native guard uses actual pending surface feedback and a
+test-only transparent wire-event observer. It preserves typed dispatch and
+observes the real Charge weakly. It checks undrained terminal queue retirement,
+late terminal delivery after queue closure, and backend retirement without a
+terminal read, each against the unchanged process counter baseline.

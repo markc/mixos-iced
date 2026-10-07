@@ -709,6 +709,13 @@ impl Drop for Window {
 }
 
 impl Window {
+    #[cfg(test)]
+    pub(crate) fn take_native_request(
+        &self,
+    ) -> Option<super::types::wp_presentation::NativeRequest> {
+        self.presentation_liveness.take_native_request()
+    }
+
     pub fn request_presentation_feedback(
         &self,
     ) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {

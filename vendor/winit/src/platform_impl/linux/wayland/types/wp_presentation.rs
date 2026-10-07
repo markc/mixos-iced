@@ -24,6 +24,77 @@ static PROCESS: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
 pub struct WindowPresentation {
     pub closed: AtomicBool,
     outstanding: AtomicUsize,
+    #[cfg(test)]
+    native_request: Mutex<Option<NativeRequest>>,
+}
+
+#[cfg(test)]
+pub(crate) struct NativeRequest {
+    id: sctk::reexports::client::backend::ObjectId,
+    charge: std::sync::Weak<Charge>,
+    seen: Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[cfg(test)]
+impl NativeRequest {
+    pub(crate) fn charge_alive(&self) -> bool {
+        self.charge.strong_count() != 0
+    }
+    pub(crate) fn discarded(&self) -> bool {
+        self.seen.load(Ordering::Acquire) == 2
+    }
+    pub(crate) fn object_id(&self) -> sctk::reexports::client::backend::ObjectId {
+        self.id.clone()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn native_process_count() -> usize {
+    PROCESS.get().map_or(0, |counter| counter.load(Ordering::Acquire))
+}
+
+#[cfg(test)]
+impl WindowPresentation {
+    pub(crate) fn take_native_request(&self) -> Option<NativeRequest> {
+        self.native_request.lock().unwrap().take()
+    }
+}
+
+// Records only the real wire event. The original QueueProxyData receives the
+// unchanged event and keeps ownership of typed dispatch and its native lease.
+#[cfg(test)]
+struct NativeTap {
+    inner: Arc<dyn sctk::reexports::client::backend::ObjectData>,
+    seen: Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[cfg(test)]
+impl sctk::reexports::client::backend::ObjectData for NativeTap {
+    fn event(
+        self: Arc<Self>,
+        backend: &sctk::reexports::client::backend::Backend,
+        msg: sctk::reexports::client::backend::protocol::Message<
+            sctk::reexports::client::backend::ObjectId,
+            std::os::fd::OwnedFd,
+        >,
+    ) -> Option<Arc<dyn sctk::reexports::client::backend::ObjectData>> {
+        if let Some(event) = wp_presentation_feedback::WpPresentationFeedback::interface()
+            .events.get(usize::from(msg.opcode))
+        {
+            match event.name {
+                "presented" => self.seen.store(1, Ordering::Release),
+                "discarded" => self.seen.store(2, Ordering::Release),
+                _ => (),
+            }
+        }
+        self.inner.clone().event(backend, msg)
+    }
+    fn destroyed(&self, id: sctk::reexports::client::backend::ObjectId) {
+        self.inner.destroyed(id);
+    }
+    fn data_as_any(&self) -> &dyn std::any::Any {
+        self.inner.data_as_any()
+    }
 }
 
 struct Charge {
@@ -111,6 +182,21 @@ impl PresentationState {
                 terminal: AtomicBool::new(false),
             },
         );
+        #[cfg(test)]
+        {
+            let data = _feedback.data::<FeedbackData>().unwrap();
+            let seen = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let observation = NativeRequest {
+                id: _feedback.id(),
+                charge: Arc::downgrade(&data.charge),
+                seen: seen.clone(),
+            };
+            let inner = _feedback.object_data().unwrap().clone();
+            _feedback.backend().upgrade().expect("live native backend")
+                .set_data(_feedback.id(), Arc::new(NativeTap { inner, seen }))
+                .expect("new feedback still alive");
+            *data.charge.window.native_request.lock().unwrap() = Some(observation);
+        }
         Ok(id)
     }
 }
