@@ -119,7 +119,7 @@ pub enum Effect {
         permit: Permit,
     },
     ThemeApply {
-        request: ThemeRequest,
+        request: Box<ThemeRequest>,
         generation: Option<u64>,
         deadline: Instant,
         permit: Permit,
@@ -262,14 +262,13 @@ impl BusHandle {
             }
             return Err("appearance queue exhausted".into());
         };
-        if let Some(id) = &request.reply_id {
-            if !self.is_current(id) || id.ticket.take().is_none() {
-                permit.finish();
-                return Err("Bus theme request retired".into());
-            }
+        if let Some(id) = &request.reply_id
+            && (!self.is_current(id) || id.ticket.take().is_none()) {
+            permit.finish();
+            return Err("Bus theme request retired".into());
         }
         let effect = Effect::ThemeApply {
-            request,
+            request: Box::new(request),
             generation: self.settings_generation(),
             deadline: Instant::now() + SHUTDOWN_BUDGET,
             permit,

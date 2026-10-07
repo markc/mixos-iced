@@ -4,7 +4,7 @@ use super::{Look, elide::Label};
 use crate::app::Msg;
 use application::Element;
 use application::iced::Length;
-use application::iced::widget::{column, container, scrollable, text};
+use application::iced::widget::{column, container, scrollable};
 use dopus_core::{format_modified_at, format_size, properties::Properties};
 
 pub fn sidebar<'a>(
@@ -83,15 +83,11 @@ pub fn sidebar<'a>(
     for (label, value) in fields {
         content = content.push(
             column![
-                text(label)
-                    .font(look.ui_font)
-                    .size(look.sidebar_px())
+                look.ui_text(look.sidebar_px() / look.px).text(label)
                     .color(look.tokens.palette.muted_text),
-                text(value)
+                look.ui_text(look.sidebar_px() / look.px).text(value)
                     .wrapping(application::iced::advanced::text::Wrapping::WordOrGlyph)
                     .shaping(application::iced::advanced::text::Shaping::Advanced)
-                    .font(look.ui_font)
-                    .size(look.sidebar_px())
                     .color(look.tokens.palette.text)
                     .width(Length::Fill),
             ]

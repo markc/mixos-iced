@@ -177,7 +177,7 @@ struct ThemeWork {
     permit: Permit,
 }
 fn theme_task(
-    work: ThemeWork,
+    work: Box<ThemeWork>,
     client: Arc<SupervisedClient>,
 ) -> (
     Permit,
@@ -189,7 +189,7 @@ fn theme_task(
         generation,
         deadline,
         permit,
-    } = work;
+    } = *work;
     let (primary, native, extra) = match origin {
         Origin::Local => (permit, None, None),
         Origin::Bus(accepted) => {
@@ -271,7 +271,7 @@ fn refusal(
     }
 }
 fn submit_themes(
-    retained: &mut Outbox<ThemeWork, 0>,
+    retained: &mut Outbox<Box<ThemeWork>, 0>,
     tasks: &mut TaskSet<Outcome>,
     client: &Arc<SupervisedClient>,
 ) {
@@ -403,7 +403,7 @@ async fn run(
     let mut retained = Outbox::<NativeReply, 0>::new(PENDING_BOUND);
     let mut replies = TaskSet::new(JOB_BOUND);
     let mut refusals = TaskSet::new(JOB_BOUND);
-    let mut theme_queue = Outbox::<ThemeWork, 0>::new(THEME_QUEUE_BOUND);
+    let mut theme_queue = Outbox::<Box<ThemeWork>, 0>::new(THEME_QUEUE_BOUND);
     let mut themes = TaskSet::<Outcome>::new(THEME_QUEUE_BOUND);
     let mut forwards = TaskSet::<Outcome>::new(1);
     let mut faults = Faults::default();
@@ -484,7 +484,7 @@ async fn run(
                             Origin::Bus(accepted)
                         }
                     };
-                    if let Err(work) = theme_queue.push(ThemeWork { request, origin, generation, deadline, permit }) {
+                    if let Err(work) = theme_queue.push(Box::new(ThemeWork { request: *request, origin, generation, deadline, permit })) {
                         if let Origin::Bus(accepted) = work.origin { accepted.retire().finish(); }
                         work.permit.finish(); faults.push("theme queue invariant failed".into());
                     }

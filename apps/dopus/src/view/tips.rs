@@ -6,7 +6,7 @@ use actions::ActionId;
 use application::Element;
 use application::cpu::Renderer;
 use application::iced::advanced::{layout, widget::Tree};
-use application::iced::widget::{Space, text, tooltip};
+use application::iced::widget::{Space, tooltip};
 use application::iced::{Rectangle, Size};
 
 pub fn action_label(actions: &[ActionRow], action: ActionId, label: &str) -> String {
@@ -29,9 +29,7 @@ pub fn tip<'a, M: 'a>(
     // iced's default delay until the design supplies a duration role.
     tooltip(
         content,
-        text(label)
-            .font(look.ui_font)
-            .size(look.small_px)
+        look.small_text().text(label)
             .shaping(application::iced::advanced::text::Shaping::Advanced)
             .wrapping(application::iced::advanced::text::Wrapping::WordOrGlyph),
         tooltip::Position::Bottom,

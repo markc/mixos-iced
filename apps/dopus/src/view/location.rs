@@ -93,7 +93,7 @@ fn editor(look: Look, pane_id: PaneId, text: &str) -> Element<'_, Msg> {
         .on_submit(Msg::LocationSubmit(pane_id))
         .width(Length::Fill)
         .padding(padding(look))
-        .size(text_px(look))
+        .text_style(look.mono_text(text_px(look) / look.mono_px))
         .style(field_look(&look));
     field.into()
 }
