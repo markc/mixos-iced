@@ -1331,7 +1331,10 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
     let mut owner = AttemptOwner::new(connection.clone());
 
     // 3. Transaction mutex, preserving the old-socket ACK / new-socket
-    //    snapshot ordering, selected against stop and the deadline.
+    //    snapshot ordering, selected against stop and the deadline. Lock a
+    //    local Arc clone: the guard is held for the whole attempt, so its
+    //    borrow must not be on `ctx`, which every exit below needs mutably.
+    let transaction = ctx.subscription_transaction.clone();
     let _transaction = tokio::select! {
         biased;
         _ = ctx.out_tx.closed() => {
@@ -1350,7 +1353,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
                 "transaction", None,
             );
         }
-        guard = ctx.subscription_transaction.lock() => guard,
+        guard = transaction.lock() => guard,
     };
 
     // 4. The topics this attempt must establish.
