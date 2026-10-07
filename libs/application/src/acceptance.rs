@@ -146,7 +146,10 @@ impl Fixture {
         if launch.instance == 0 {
             return Err("fixture instance must be a nonzero u64".into());
         }
-        let aliases = targets.iter().map(|target| target.alias().to_owned()).collect();
+        let aliases = targets
+            .iter()
+            .map(|target| target.alias().to_owned())
+            .collect();
         let (inspector, task) = inspect::channel(targets, limits)
             .map_err(|error| format!("fixture inspector: {error:?}"))?;
         let run = barrier::Run::new(launch.run.clone(), launch.instance)
@@ -157,7 +160,15 @@ impl Fixture {
             .points(points.iter().map(|point| (*point).to_owned()).collect())
             .aliases(aliases)
             .limits(limits);
-        Ok((Self { describe, inspector, controller, hook }, task))
+        Ok((
+            Self {
+                describe,
+                inspector,
+                controller,
+                hook,
+            },
+            task,
+        ))
     }
 
     /// A lost broker generation retires held work without destroying the
@@ -673,11 +684,33 @@ mod tests {
 
     #[test]
     fn fixture_constructor_rejects_unfenced_identity_and_ambiguous_actual_targets() {
-        assert!(Fixture::new::<()>(Launch {run:"owned".into(),instance:0}, &[], vec![], inspect::Limits::new()).is_err());
-        assert!(Fixture::new::<()>(Launch {run:"owned".into(),instance:1}, &[], vec![
-            inspect::Target::new("root",iced::widget::Id::from("a")),
-            inspect::Target::new("root",iced::widget::Id::from("b")),
-        ], inspect::Limits::new()).is_err());
+        assert!(
+            Fixture::new::<()>(
+                Launch {
+                    run: "owned".into(),
+                    instance: 0
+                },
+                &[],
+                vec![],
+                inspect::Limits::new()
+            )
+            .is_err()
+        );
+        assert!(
+            Fixture::new::<()>(
+                Launch {
+                    run: "owned".into(),
+                    instance: 1
+                },
+                &[],
+                vec![
+                    inspect::Target::new("root", iced::widget::Id::from("a")),
+                    inspect::Target::new("root", iced::widget::Id::from("b")),
+                ],
+                inspect::Limits::new()
+            )
+            .is_err()
+        );
     }
 
     fn incoming(verb: &str, body: Value) -> IncomingCommand {

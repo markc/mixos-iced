@@ -1266,7 +1266,10 @@ impl State {
         while let Ok(describe) = self.describes.try_recv() {
             let (rc, value) = match self.describe() {
                 Ok(value) => (0, value),
-                Err(error) => (10, serde_json::json!({"error_code":error.code,"message":error.to_string()})),
+                Err(error) => (
+                    10,
+                    serde_json::json!({"error_code":error.code,"message":error.to_string()}),
+                ),
             };
             self.bus.reply(&describe, rc, value);
         }
@@ -1319,12 +1322,16 @@ impl State {
                 "cursor":key.cursor,
             })),
         });
-        application::describe::complete_native(&mut describe, application::describe::Identity {
-            app_id: Some("dev.mixos.term"),
-            version: env!("CARGO_PKG_VERSION"),
-            pid: std::process::id(),
-            service: &service,
-        }, self.settings.session())?;
+        application::describe::complete_native(
+            &mut describe,
+            application::describe::Identity {
+                app_id: Some("dev.mixos.term"),
+                version: env!("CARGO_PKG_VERSION"),
+                pid: std::process::id(),
+                service: &service,
+            },
+            self.settings.session(),
+        )?;
         Ok(describe)
     }
 
