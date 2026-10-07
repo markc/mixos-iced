@@ -10,6 +10,49 @@ fn contextual() -> Session<u64, Context> {
     Session::with_context(session().host.consumer, Context(1))
 }
 
+#[cfg(feature = "describe")]
+#[test]
+fn canonical_readback_keeps_installed_content_and_stamp_during_failed_context_work() {
+    let mut session = contextual();
+    activate_first(&mut session);
+    let readback = |session: &Session<u64, Context>| {
+        let before_stamp = session.frame_stamp();
+        let before_work = session.host.consumer().current_work().cloned();
+        let mut value = serde_json::json!({
+            "verbs":["app.describe"],"preparation":{"zoom":2.0},"document":{"draft":"retained"}
+        });
+        crate::describe::complete_native(&mut value, crate::describe::Identity {
+            app_id: Some("dev.mixos.probe"), version:"fixture", pid:1, service:"probe",
+        }, session).unwrap();
+        assert_eq!(session.frame_stamp(), before_stamp);
+        assert_eq!(session.host.consumer().current_work(), before_work.as_ref());
+        assert_eq!(value["settings"], serde_json::to_value(session.host.consumer().evidence()).unwrap());
+        assert_eq!(value["document"]["draft"], "retained");
+        assert_eq!(value["preparation"]["zoom"], 2.0);
+        value
+    };
+    let installed = session.frame_stamp();
+    let value = readback(&session);
+    assert_eq!(value["preparation"]["applied"],0);
+    assert_eq!(value["preparation"]["current"],true);
+    let (_, jobs) = session.set_context(Context(2), Some(1)).unwrap();
+    let pending = readback(&session);
+    assert_eq!(pending["preparation"]["desired"],1);
+    assert_eq!(pending["preparation"]["applied"],0);
+    assert_eq!(pending["preparation"]["current"],false);
+    session.handle(local(captured(&jobs), Err(Diagnostic::new("local","resources","refused"))), Some(1));
+    let failed = readback(&session);
+    assert_eq!(failed["preparation"]["fault"]["code"],"local");
+    assert_eq!(failed["preparation"]["applied"],0);
+    assert_eq!(failed["preparation"]["current"],false);
+    assert_eq!(session.frame_stamp(),installed);
+    assert_eq!(*session.host.presentation().unwrap().content(),1);
+    session.handle(Event::Lost, None);
+    let offline = readback(&session);
+    assert_eq!(offline["settings"]["applied"],failed["settings"]["applied"]);
+    assert_eq!(session.frame_stamp(),installed);
+}
+
 #[test]
 fn frame_stamp_tracks_installed_content_through_pending_and_failed_preparation() {
     let mut session = contextual();

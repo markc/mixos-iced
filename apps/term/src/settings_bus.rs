@@ -729,6 +729,11 @@ async fn worker(
                         eprintln!("{service} rejected stale queued describe");
                         continue;
                     }
+                    if let Err(error) = application::describe::validate_request(&command.body) {
+                        try_spawn(service, &refusals, &mut operations, Arc::clone(&client), command, 10,
+                            serde_json::json!({"error_code":error.code,"message":error.to_string()}).to_string());
+                        continue;
+                    }
                     // The frontend answers: a UI request that reconciles live
                     // settings evidence first, tracked here by id, bounded so
                     // a slow UI cannot grow the map without limit. While the

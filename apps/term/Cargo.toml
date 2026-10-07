@@ -1,6 +1,6 @@
 [package]
 name = "term"
-version = "0.3.10"
+version = "0.3.11"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -32,7 +32,7 @@ buildinfo.workspace = true
 
 [dependencies]
 bytes = { version = "1.12", optional = true }
-application = { workspace = true, features = ["settings-cache"] }
+application = { workspace = true, features = ["settings-cache", "describe"] }
 term-core = { path = "crates/term-core" }
 appearance.workspace = true
 config.workspace = true

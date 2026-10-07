@@ -1264,8 +1264,11 @@ impl State {
     /// presentation. Bounded: the adapter refuses beyond 32 pending.
     fn answer_describes(&mut self) {
         while let Ok(describe) = self.describes.try_recv() {
-            let value = self.describe();
-            self.bus.reply(&describe, 0, value);
+            let (rc, value) = match self.describe() {
+                Ok(value) => (0, value),
+                Err(error) => (10, serde_json::json!({"error_code":error.code,"message":error.to_string()})),
+            };
+            self.bus.reply(&describe, rc, value);
         }
     }
 
@@ -1273,7 +1276,7 @@ impl State {
     /// cache state, the ACTUAL served name (post-fallback), the computed
     /// chrome extent and the prepared UI typography — never a partial or
     /// fabricated picture.
-    fn describe(&self) -> serde_json::Value {
+    fn describe(&self) -> Result<serde_json::Value, application::describe::Violation> {
         let service = self.bus.service_name();
         let ui = self.ui;
         let mut describe = serde_json::json!({
@@ -1296,17 +1299,9 @@ impl State {
                 "line_height": ui.line_height,
             },
         });
-        describe["settings"] =
-            serde_json::json!(self.settings.session().host().consumer().evidence());
-        describe["settings_cache"] = serde_json::json!(self.settings.session().cache_evidence());
         describe["fallback_diagnostics"] =
             serde_json::json!(self.settings.session().fallback_diagnostics());
-        let preparation = self.settings.preparation_evidence();
         describe["preparation"] = serde_json::json!({
-            "desired": preparation.desired.get(),
-            "applied": preparation.applied.map(|revision| revision.get()),
-            "current": preparation.current,
-            "fault": preparation.fault,
             "cell": self.painter.cell(),
             "scale": self.painter.scale(),
             "baseline_px": self.baseline,
@@ -1324,7 +1319,13 @@ impl State {
                 "cursor":key.cursor,
             })),
         });
-        describe
+        application::describe::complete_native(&mut describe, application::describe::Identity {
+            app_id: Some("dev.mixos.term"),
+            version: env!("CARGO_PKG_VERSION"),
+            pid: std::process::id(),
+            service: &service,
+        }, self.settings.session())?;
+        Ok(describe)
     }
 
     /// The label the chrome wears, sampled from the shared handle — the Bus

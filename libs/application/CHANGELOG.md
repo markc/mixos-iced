@@ -4,6 +4,10 @@
 
 - Converge the shared description contract with native preparation and actor
   ownership, preserving the existing optional features and public validators.
+- Complete descriptions from an already reconciled native owner without I/O or
+  redraw. Preserve installed resources and product preparation members; reject
+  contradictory evidence atomically. Share owned fixture construction from
+  validated actual inspection targets without introducing another worker.
 
 ## 0.1.19
 

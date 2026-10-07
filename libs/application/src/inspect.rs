@@ -38,6 +38,11 @@ pub struct Target {
 }
 
 impl Target {
+    /// The public alias associated with this actual widget target.
+    pub fn alias(&self) -> &str {
+        &self.alias
+    }
+
     /// A target for the widget with the given actual id, reported under
     /// `alias`.
     pub fn new(alias: impl Into<String>, id: widget::Id) -> Self {

@@ -126,6 +126,50 @@ impl Launch {
     }
 }
 
+/// Diagnostic wiring owned by the application and its existing Bus actor.
+/// Construction starts no worker and returns one bootstrap task to batch into
+/// the application's startup. Aliases are derived from validated real targets.
+pub struct Fixture {
+    pub describe: Describe,
+    pub inspector: inspect::Handle,
+    pub controller: barrier::Controller,
+    pub hook: barrier::Hook,
+}
+
+impl Fixture {
+    pub fn new<Message: Send + 'static>(
+        launch: Launch,
+        points: &'static [&'static str],
+        targets: Vec<inspect::Target>,
+        limits: inspect::Limits,
+    ) -> Result<(Self, iced::Task<Message>), String> {
+        if launch.instance == 0 {
+            return Err("fixture instance must be a nonzero u64".into());
+        }
+        let aliases = targets.iter().map(|target| target.alias().to_owned()).collect();
+        let (inspector, task) = inspect::channel(targets, limits)
+            .map_err(|error| format!("fixture inspector: {error:?}"))?;
+        let run = barrier::Run::new(launch.run.clone(), launch.instance)
+            .map_err(|error| format!("fixture run: {error:?}"))?;
+        let (controller, hook) = barrier::barrier(points, run);
+        let describe = Describe::new(std::process::id(), launch.run, launch.instance)
+            .map_err(|error| format!("fixture identity: {error:?}"))?
+            .points(points.iter().map(|point| (*point).to_owned()).collect())
+            .aliases(aliases)
+            .limits(limits);
+        Ok((Self { describe, inspector, controller, hook }, task))
+    }
+
+    /// A lost broker generation retires held work without destroying the
+    /// surviving window's inspector. Final window teardown closes both.
+    pub fn close(&self, reason: barrier::ClosedReason) {
+        self.controller.close(reason);
+        if reason != barrier::ClosedReason::LostGeneration {
+            self.inspector.close();
+        }
+    }
+}
+
 /// The per-process acceptance identity, from the fixture launch
 /// configuration. It is shared by the describe verb and the fence
 /// validation of every mutating verb.
@@ -626,6 +670,15 @@ fn state_name(state: barrier::State) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_constructor_rejects_unfenced_identity_and_ambiguous_actual_targets() {
+        assert!(Fixture::new::<()>(Launch {run:"owned".into(),instance:0}, &[], vec![], inspect::Limits::new()).is_err());
+        assert!(Fixture::new::<()>(Launch {run:"owned".into(),instance:1}, &[], vec![
+            inspect::Target::new("root",iced::widget::Id::from("a")),
+            inspect::Target::new("root",iced::widget::Id::from("b")),
+        ], inspect::Limits::new()).is_err());
+    }
 
     fn incoming(verb: &str, body: Value) -> IncomingCommand {
         IncomingCommand {

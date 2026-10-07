@@ -13,6 +13,13 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.11
+
+Publish the canonical read-only application description from the installed
+shared settings owner, including retained resources and local preparation.
+Validate raw describe requests before frontend admission. Share owned fixture
+construction without changing the terminal's Bus worker or window lifecycle.
+
 ## 0.3.10
 
 Use shared native task admission and origin-owned replies on the existing Bus

@@ -112,7 +112,8 @@ impl<T> Session<T, ()> {
 }
 
 /// A process-local resource preparation identity, independent of settingsd.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
 pub struct PreparationRevision(u64);
 impl PreparationRevision {
     const INITIAL: Self = Self(0);
@@ -122,6 +123,7 @@ impl PreparationRevision {
 }
 
 /// Local presentation readback; authoritative settings evidence stays separate.
+#[derive(serde::Serialize)]
 pub struct PreparationEvidence<'a> {
     pub desired: PreparationRevision,
     pub applied: Option<PreparationRevision>,

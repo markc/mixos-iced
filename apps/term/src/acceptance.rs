@@ -2,7 +2,7 @@
 //! Explicit owned fixture wiring on the existing application and Bus workers.
 
 use application::{
-    acceptance::{self, barrier},
+    acceptance,
     iced::{Task, widget},
     inspect,
 };
@@ -10,21 +10,7 @@ use application::{
 pub const ROOT_ID: &str = "term.fixture.root";
 pub const POINTS: &[&str] = &["terminal.prepare"];
 
-pub(crate) struct Fixture {
-    pub describe: acceptance::Describe,
-    pub inspector: inspect::Handle,
-    pub controller: barrier::Controller,
-    pub hook: barrier::Hook,
-}
-
-impl Fixture {
-    pub fn close(&self, reason: barrier::ClosedReason) {
-        self.controller.close(reason);
-        if reason != barrier::ClosedReason::LostGeneration {
-            self.inspector.close();
-        }
-    }
-}
+pub(crate) use acceptance::Fixture;
 
 pub(crate) fn setup() -> Result<(Option<Fixture>, Task<crate::Message>), String> {
     let Some(launch) = acceptance::Launch::from_env()? else {
@@ -37,27 +23,10 @@ pub(crate) fn setup() -> Result<(Option<Fixture>, Task<crate::Message>), String>
 pub(crate) fn setup_launch(
     launch: acceptance::Launch,
 ) -> Result<(Fixture, Task<crate::Message>), String> {
-    let limits = inspect::Limits::new();
-    let (inspector, task) = inspect::channel(
+    Fixture::new(
+        launch,
+        POINTS,
         vec![inspect::Target::new("root", widget::Id::from(ROOT_ID))],
-        limits,
+        inspect::Limits::new(),
     )
-    .map_err(|error| format!("fixture inspector: {error:?}"))?;
-    let run = barrier::Run::new(launch.run.clone(), launch.instance)
-        .map_err(|error| format!("fixture run: {error:?}"))?;
-    let (controller, hook) = barrier::barrier(POINTS, run);
-    let describe = acceptance::Describe::new(std::process::id(), launch.run, launch.instance)
-        .map_err(|error| format!("fixture identity: {error:?}"))?
-        .points(POINTS.iter().map(|point| (*point).to_owned()).collect())
-        .aliases(vec!["root".to_owned()])
-        .limits(limits);
-    Ok((
-        Fixture {
-            describe,
-            inspector,
-            controller,
-            hook,
-        },
-        task,
-    ))
 }
