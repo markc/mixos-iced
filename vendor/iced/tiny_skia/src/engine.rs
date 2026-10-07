@@ -292,7 +292,6 @@ impl Engine {
         clip_mask: &mut crate::clip::ClipMask<'_>,
         clip_bounds: Rectangle,
     ) {
-        clip_mask.set(clip_bounds);
         match text {
             Text::Paragraph {
                 paragraph,
@@ -426,8 +425,12 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
+                let clip_mask = if physical_bounds.is_within(&clip_bounds) {
+                    None
+                } else {
+                    clip_mask.set(clip_bounds);
+                    Some(clip_mask.mask())
+                };
 
                 self.text_pipeline.draw_raw(
                     &buffer,
@@ -449,7 +452,6 @@ impl Engine {
         clip_mask: &mut crate::clip::ClipMask<'_>,
         clip_bounds: Rectangle,
     ) {
-        clip_mask.set(clip_bounds);
         match primitive {
             Primitive::Fill { path, paint, rule } => {
                 let physical_bounds = {
@@ -467,8 +469,12 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
+                let clip_mask = if physical_bounds.is_within(&clip_bounds) {
+                    None
+                } else {
+                    clip_mask.set(clip_bounds);
+                    Some(clip_mask.mask())
+                };
 
                 pixels.fill_path(
                     path,
@@ -498,8 +504,12 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&clip_bounds)).then_some(clip_mask.mask());
+                let clip_mask = if physical_bounds.is_within(&clip_bounds) {
+                    None
+                } else {
+                    clip_mask.set(clip_bounds);
+                    Some(clip_mask.mask())
+                };
 
                 pixels.stroke_path(
                     path,
@@ -567,7 +577,6 @@ impl Engine {
         _clip_mask: &mut crate::clip::ClipMask<'_>,
         _clip_bounds: Rectangle,
     ) {
-        _clip_mask.set(_clip_bounds);
         match image {
             #[cfg(feature = "image")]
             Image::Raster {
@@ -612,8 +621,12 @@ impl Engine {
                     return;
                 }
 
-                let clip_mask =
-                    (!physical_bounds.is_within(&_clip_bounds)).then_some(_clip_mask.mask());
+                let clip_mask = if physical_bounds.is_within(&_clip_bounds) {
+                    None
+                } else {
+                    _clip_mask.set(_clip_bounds);
+                    Some(_clip_mask.mask())
+                };
 
                 let center = physical_bounds.center();
                 let radians = f32::from(svg.rotation);

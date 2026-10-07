@@ -242,7 +242,8 @@ fn from_color(color: cosmic_text::Color) -> Color {
 
 #[derive(Debug, Clone, Default)]
 struct GlyphCache {
-    entries: FxHashMap<(cosmic_text::CacheKey, [u8; 3]), Option<(Vec<u32>, cosmic_text::Placement)>>,
+    entries:
+        FxHashMap<(cosmic_text::CacheKey, [u8; 3]), Option<(Vec<u32>, cosmic_text::Placement)>>,
     recently_used: FxHashSet<(cosmic_text::CacheKey, [u8; 3])>,
     trim_count: usize,
 }
@@ -365,26 +366,55 @@ mod tests {
         let fonts = fonts.raw();
         let mut buffer = cosmic_text::Buffer::new(fonts, cosmic_text::Metrics::new(16.0, 20.0));
         buffer.set_size(Some(100.0), Some(20.0));
-        buffer.set_text(" x", &cosmic_text::Attrs::new(), cosmic_text::Shaping::Basic, None);
+        buffer.set_text(
+            " x",
+            &cosmic_text::Attrs::new(),
+            cosmic_text::Shaping::Basic,
+            None,
+        );
         buffer.shape_until_scroll(fonts, false);
-        let keys: Vec<_> = buffer.layout_runs().flat_map(|run| {
-            run.glyphs.iter().map(|glyph| glyph.physical((0.0, 0.0), 1.0).cache_key)
-        }).collect();
+        let keys: Vec<_> = buffer
+            .layout_runs()
+            .flat_map(|run| {
+                run.glyphs
+                    .iter()
+                    .map(|glyph| glyph.physical((0.0, 0.0), 1.0).cache_key)
+            })
+            .collect();
         assert_eq!(keys.len(), 2, "a real font must shape a space and x");
         let mut cache = GlyphCache::new();
         let mut swash = cosmic_text::SwashCache::new();
-        assert!(cache.allocate(keys[0], Color::WHITE, fonts, &mut swash).is_none());
-        assert!(cache.allocate(keys[1], Color::WHITE, fonts, &mut swash).is_some());
+        assert!(
+            cache
+                .allocate(keys[0], Color::WHITE, fonts, &mut swash)
+                .is_none()
+        );
+        assert!(
+            cache
+                .allocate(keys[1], Color::WHITE, fonts, &mut swash)
+                .is_some()
+        );
         for _ in 0..50 {
-            assert!(cache.allocate(keys[0], Color::WHITE, fonts, &mut swash).is_none());
+            assert!(
+                cache
+                    .allocate(keys[0], Color::WHITE, fonts, &mut swash)
+                    .is_none()
+            );
         }
         assert_eq!(cache.entries.len(), 2);
         assert!(cache.entries[&(keys[0], [255; 3])].is_none());
         cache.trim_count = GlyphCache::TRIM_INTERVAL + 1;
         cache.trim();
-        assert_eq!(cache.entries.len(), 2, "active empty glyphs survive trimming");
+        assert_eq!(
+            cache.entries.len(),
+            2,
+            "active empty glyphs survive trimming"
+        );
         cache.trim_count = GlyphCache::TRIM_INTERVAL + 1;
         cache.trim();
-        assert!(cache.entries.is_empty(), "unused negative entries are bounded too");
+        assert!(
+            cache.entries.is_empty(),
+            "unused negative entries are bounded too"
+        );
     }
 }
