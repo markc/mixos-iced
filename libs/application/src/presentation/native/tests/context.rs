@@ -528,16 +528,25 @@ async fn held_physical_job_is_not_replaced_until_it_finishes_and_latest_context_
         ui.drain_with(|| Some(1), |_| panic!("obsolete physical result activated"))
             .is_empty()
     );
-    // Draining publishes the desired capture again, but keeps the one offer.
-    assert_eq!(lane.drive().await, Progress::Updated);
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), lane.drive())
-            .await
-            .unwrap(),
-        Progress::Wake
-    );
+    // The worker may finish the latest capture before consuming the repeated
+    // mailbox offer. Accept either scheduling order, but require the actual
+    // latest completion and exactly one activation under the same deadline.
+    let applied = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match lane.drive().await {
+                Progress::Updated => {}
+                Progress::Wake => {
+                    let applied = ui.drain_with(|| Some(1), |_| {});
+                    if !applied.is_empty() {
+                        break applied;
+                    }
+                }
+                other => panic!("live lane stopped before activation: {other:?}"),
+            }
+        }
+    }).await.expect("latest context completes");
     assert_eq!(arrivals.recv().await, Some(40));
-    assert_eq!(ui.drain_with(|| Some(1), |_| {}).len(), 1);
+    assert_eq!(applied.len(), 1);
     assert_eq!(*ui.session().host().presentation().unwrap().content(), 40);
     assert!(ui.preparation_evidence().current);
     assert!(arrivals.try_recv().is_err());
