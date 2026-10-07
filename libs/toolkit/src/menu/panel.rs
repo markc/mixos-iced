@@ -354,19 +354,24 @@ fn panel_layout<Message, Renderer: text::Renderer>(
     ))
 }
 
-fn panel_update<Message, Renderer: text::Renderer>(
-    items: &[Item<Message>],
+struct PanelInput<'a, Message, F> {
+    items: &'a [Item<Message>],
     selected: Option<usize>,
     style: Option<MenuStyle>,
-    text: Option<TextStyle<Renderer::Font>>,
-    on_hover: Option<&dyn Fn(Option<usize>) -> Message>,
-    on_press: Option<&dyn Fn(usize) -> Message>,
+    text: Option<TextStyle<F>>,
+    on_hover: Option<&'a dyn Fn(Option<usize>) -> Message>,
+    on_press: Option<&'a dyn Fn(usize) -> Message>,
+}
+
+fn panel_update<Message, Renderer: text::Renderer>(
+    input: PanelInput<'_, Message, Renderer::Font>,
     tree: &mut Tree,
     event: &Event,
     layout: Layout<'_>,
     cursor: mouse::Cursor,
     shell: &mut Shell<'_, Message>,
 ) {
+    let PanelInput { items, selected, style, text, on_hover, on_press } = input;
     let bounds = layout.bounds();
     let state = tree.state.downcast_mut::<PanelState>();
     let metrics = || style.unwrap_or_default();
@@ -472,12 +477,14 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         _viewport: &Rectangle,
     ) {
         panel_update::<Message, Renderer>(
-            self.items,
-            self.selected,
-            self.style,
-            None,
-            self.on_hover.as_deref(),
-            self.on_press.as_deref(),
+            PanelInput {
+                items: self.items,
+                selected: self.selected,
+                style: self.style,
+                text: None,
+                on_hover: self.on_hover.as_deref(),
+                on_press: self.on_press.as_deref(),
+            },
             tree,
             event,
             layout,
@@ -566,12 +573,14 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         _viewport: &Rectangle,
     ) {
         panel_update::<Message, Renderer>(
-            self.panel.items,
-            self.panel.selected,
-            self.panel.style,
-            Some(self.text_style),
-            self.panel.on_hover.as_deref(),
-            self.panel.on_press.as_deref(),
+            PanelInput {
+                items: self.panel.items,
+                selected: self.panel.selected,
+                style: self.panel.style,
+                text: Some(self.text_style),
+                on_hover: self.panel.on_hover.as_deref(),
+                on_press: self.panel.on_press.as_deref(),
+            },
             tree,
             event,
             layout,
