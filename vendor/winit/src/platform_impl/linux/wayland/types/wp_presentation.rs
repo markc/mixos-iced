@@ -188,16 +188,16 @@ impl PresentationState {
             let weak_charge = Arc::downgrade(&data.charge);
             let window = data.charge.window.clone();
             let seen = Arc::new(std::sync::atomic::AtomicU8::new(0));
-            let inner = queue.make_data::<wp_presentation_feedback::WpPresentationFeedback, FeedbackData>(data);
-            let feedback: wp_presentation_feedback::WpPresentationFeedback = self.global.send_constructor(
-                wp_presentation::Request::Feedback { surface: surface.clone() },
-                Arc::new(NativeTap { inner, seen: seen.clone() }),
-            ).expect("new native presentation feedback");
-            let observation = NativeRequest {
-                id: feedback.id(),
-                charge: weak_charge,
-                seen,
-            };
+            let inner = queue
+                .make_data::<wp_presentation_feedback::WpPresentationFeedback, FeedbackData>(data);
+            let feedback: wp_presentation_feedback::WpPresentationFeedback = self
+                .global
+                .send_constructor(
+                    wp_presentation::Request::Feedback { surface: surface.clone() },
+                    Arc::new(NativeTap { inner, seen: seen.clone() }),
+                )
+                .expect("new native presentation feedback");
+            let observation = NativeRequest { id: feedback.id(), charge: weak_charge, seen };
             *window.native_request.lock().unwrap() = Some(observation);
         }
         Ok(id)
