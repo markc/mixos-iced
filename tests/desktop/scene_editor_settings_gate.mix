@@ -512,9 +512,10 @@ try
   capture("real-pinned",$R.real.window,$light,900,$R.a,"scene-editor-real-gate")
   -- The production menu order is File, Edit, Scene; the last Scene entry is
   -- Remove. With the installed calendar selected it opens the confirmation
-  -- dialogue instead of removing anything.
+  -- dialogue instead of removing anything. comp.input.key takes XKB keysym
+  -- names, and the supported name for the Enter key is Return.
   comp("comp.window.focus",$R.real.window)
-  for each $key in ["F10","Right","Right","End","Enter"]
+  for each $key in ["F10","Right","Right","End","Return"]
     comp("comp.input.key",{seat:"human",key:$key})
   end
   $deadline=time()+5
@@ -700,7 +701,20 @@ try
     if not $compositor_gone then sleep(0.1) end
   end
   check($compositor_gone,"Owned real compositor did not retire before the verdict")
+  -- Both owned brokers are part of the verdict too: stop each and confirm its
+  -- absence (a zombie counts as retired) before the acceptance is recorded.
   $h.stop($R.a.pid)
+  $h.stop($R.b.pid)
+  $deadline=time()+5
+  $brokers_retired=false
+  while time() < $deadline and not $brokers_retired
+    $brokers_retired=true
+    for each $pid in [$R.a.pid,$R.b.pid]
+      if $pid != nil and not proc_retired($pid) then $brokers_retired=false end
+    end
+    if not $brokers_retired then sleep(0.1) end
+  end
+  check($brokers_retired,"Owned brokers did not retire before the verdict")
   write_file($root .. "/acceptance.json",json_encode({current:true,cached:true,embedded:true,
     selection_retained:true,dialogue_retained:true,outage_seconds:65,same_window:true,
     initial_collision_forwarded:true,shutdown_receipts:true,
