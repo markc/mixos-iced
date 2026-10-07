@@ -136,6 +136,8 @@ fn maximised_geometry_uses_the_offline_mirror_without_repeated_reflow() {
     assert!(!surface.is_maximized());
     assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
     assert!(host.comp.maximize_restore(id).is_none());
+    assert_eq!(geometry::refresh_usable(&mut host.comp, &mut host.space.state, &candidates), GeometryChange::default());
+    assert!(!surface.is_maximized(), "automatic refresh cannot recreate cleared intent");
 }
 
 /// The four X11 requests reach the comp policy's queue. An X11 window's

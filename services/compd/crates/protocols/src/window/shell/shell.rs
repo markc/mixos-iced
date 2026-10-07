@@ -483,6 +483,24 @@ pub fn close(window: &Window) -> bool {
     }
 }
 
+/// Write maximise intent without changing placement or size. xdg stages it for
+/// a following configure; X11 updates its state mirror before property I/O,
+/// including when the write fails. Geometry and restore ownership stay above
+/// this protocol facade.
+pub fn set_maximized(window: &Window, maximized: bool) {
+    if let Some(x11) = window.x11_surface() {
+        if let Err(err) = x11.set_maximized(maximized) {
+            warn!("x11 set_maximized failed: {err:?}");
+        }
+        return;
+    }
+    let Some(toplevel) = window.toplevel() else { return };
+    toplevel.with_pending_state(|state| match maximized {
+        true => state.states.set(xdg_toplevel::State::Maximized),
+        false => state.states.unset(xdg_toplevel::State::Maximized),
+    });
+}
+
 /// Write the protocol's fullscreen flag. xdg stages it for the configure that
 /// follows; X11 has no configure to ride on — `_NET_WM_STATE_FULLSCREEN` is a
 /// property, set immediately and separately from the geometry.
