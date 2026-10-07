@@ -7,35 +7,6 @@ $repo = args()[0]
 $bin = args()[1]
 $renderer = if len(args()) == 3 then args()[2] else "pixman" end
 if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
-$n = require("nested_host_lib.mix")
-for each $name in ["compd","noded","testkit-queue-retirement"]
-  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
-end
-$owned = {run:nil,bus:nil,session:nil,ok:false}
-try
-  $owned.run = $n.new_run("/var/tmp/queue-retirement")
-  $root = $owned.run.path
-  $owned.bus = $n.private_bus({dir:$root,name:"queue-retirement",noded:$bin .. "/noded"})
-  mkdir($root .. "/cfg",{parents:true})
-  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
-  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
-  $owned.session = $n.start({bin:$bin .. "/compd",tag:"queue-retirement",run:$owned.run,
-    config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:120,
-    env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
-  if not $n.wait_ready($owned.session,30) then raise("SETUP","Owned compositor did not register") end
-  for each $role in ["weston","compd"]
-    $extra = if $role == "weston" then {WAYLAND_DISPLAY:"wl-host"} else {} end
-    $result = run_argv([$bin .. "/testkit-queue-retirement"],{timeout:20,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
-    write_file($root .. "/queue-" .. $role .. ".log",$result.stdout)
-    if not $result.ok or $result.stdout_truncated or not contains($result.stdout,"QUEUE_RETIREMENT PASS native_undrained=true late_delivery=true typed_dispatch=false") then
-      raise("QUEUE_RETIREMENT",$role .. " native ownership failed: " .. $result.stdout)
-    end
-    print($role .. " " .. trim($result.stdout))
-  end
-  $owned.ok = true
-finally
-  if $owned.session != nil then $n.stop($owned.session) end
-  if $owned.bus != nil then $n.stop_bus($owned.bus) end
-  $n.finish_run($owned.run,$owned.ok)
-end
+$probe = require("native_probe_lib.mix")
+$probe.run_probe($repo,$bin,"testkit-queue-retirement","QUEUE_RETIREMENT PASS native_undrained=true late_delivery=true typed_dispatch=false",$renderer)
 print("PASS native queue retirement on owned Weston/compd: " .. $renderer)

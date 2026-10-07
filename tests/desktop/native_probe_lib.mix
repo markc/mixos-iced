@@ -1,0 +1,39 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- One owned native host runner for queue and presentation ownership probes.
+fn run_probe($repo,$bin,$probe,$marker,$renderer)
+  if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
+  if not contains(["testkit-queue-retirement","native-frame-winit-probe"],$probe) then raise("ARGS","Unknown native ownership probe") end
+  $n = require("nested_host_lib.mix")
+  for each $name in ["compd","noded",$probe]
+    if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
+  end
+  $owned = {run:nil,bus:nil,session:nil,ok:false}
+  try
+    $owned.run = $n.new_run("/var/tmp/native-probe")
+    $root = $owned.run.path
+    $owned.bus = $n.private_bus({dir:$root,name:"native-probe",noded:$bin .. "/noded"})
+    mkdir($root .. "/cfg",{parents:true})
+    write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+    write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+    $owned.session = $n.start({bin:$bin .. "/compd",tag:"native-probe",run:$owned.run,
+      config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:150,
+      env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
+    if not $n.wait_ready($owned.session,30) then raise("SETUP","Owned compositor did not register") end
+    for each $role in ["weston","compd"]
+      $extra = if $role == "weston" then {WAYLAND_DISPLAY:"wl-host"} else {} end
+      $result = run_argv([$bin .. "/" .. $probe],{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
+      write_file($root .. "/" .. $probe .. "-" .. $role .. ".log",$result.stdout)
+      if not $result.ok or $result.stdout_truncated or not contains($result.stdout,$marker) then
+        raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $result.stdout)
+      end
+      print($role .. " " .. trim($result.stdout))
+    end
+    $owned.ok = true
+  finally
+    if $owned.session != nil then $n.stop($owned.session) end
+    if $owned.bus != nil then $n.stop_bus($owned.bus) end
+    $n.finish_run($owned.run,$owned.ok)
+  end
+  return $owned.run.path
+end
