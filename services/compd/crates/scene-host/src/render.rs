@@ -324,6 +324,10 @@ impl Surface {
         self.handle
     }
 
+    pub(crate) fn input_geometry(&self) -> (HandleId, Rectangle<i32, Physical>, f32) {
+        (self.handle, self.rect, self.factor)
+    }
+
     /// The output it is drawn on (empty: not bound to one).
     pub(crate) fn output(&self) -> &str {
         &self.output

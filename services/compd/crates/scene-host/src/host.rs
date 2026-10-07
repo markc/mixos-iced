@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use serde_json::{Value, json};
+use smithay::utils::{Physical, Rectangle};
 
 use crate::port::{HostConfig, Inbound, Port, Request, Waker};
 use crate::render::{Action, Surface, Wiring};
@@ -640,8 +641,8 @@ pub struct SceneHost {
 #[derive(PartialEq)]
 struct InputGeometry {
     placed: BTreeMap<String, (f32, f32, f32, f32)>,
-    handles: BTreeMap<String, ui::HandleId>,
-    menu_handle: Option<ui::HandleId>,
+    handles: BTreeMap<String, (ui::HandleId, Rectangle<i32, Physical>, f32)>,
+    menu_handle: Option<(ui::HandleId, Rectangle<i32, Physical>, f32)>,
     outputs: Vec<(String, Vec<SceneSurface>)>,
 }
 
@@ -1018,9 +1019,17 @@ impl SceneHost {
             seat.and_then(|scene| self.placed.get(&scene).map(|&(_, _, w, h)| (scene, w, h)));
         let input_geometry = InputGeometry {
             placed: self.placed.clone(),
-            handles: self.surfaces.iter().map(|(name, surface)| (name.clone(), surface.handle())).collect(),
-            menu_handle: self.menu_surface.as_ref().map(|menu| menu.handle),
-            outputs: self.output_names.values().map(|name| (name.clone(), self.surfaces(name))).collect(),
+            handles: self
+                .surfaces
+                .iter()
+                .map(|(name, surface)| (name.clone(), surface.input_geometry()))
+                .collect(),
+            menu_handle: self.menu_surface.as_ref().map(|menu| menu.input_geometry()),
+            outputs: self
+                .output_names
+                .values()
+                .map(|name| (name.clone(), self.surfaces(name)))
+                .collect(),
         };
         let input_changed = self.input_geometry.as_ref() != Some(&input_geometry);
         self.input_geometry = Some(input_geometry);

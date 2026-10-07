@@ -111,12 +111,16 @@ fn refresh_scene_reserved(lp: &mut Loop) {
 pub(crate) fn reconcile_scene_geometry(lp: &mut Loop) {
     refresh_scene_reserved(lp);
     policy_host::control::refresh_usable(lp);
-    if world::comp::scenes::geometry_dirty(lp) {
+    #[cfg(feature = "backend-native")]
+    let parked = native::render::execute::execute::frames_parked(lp);
+    #[cfg(not(feature = "backend-native"))]
+    let parked = false;
+    if !parked && world::comp::scenes::geometry_dirty(lp) {
         // The previous frame has now applied pending iced sizes/scales. Publish
         // current scene rows before routing the unchanged pointer. Existing
         // queued-iced handling schedules the hover frame after this pass.
         refresh_scene_surfaces(lp);
-        if seat::pointer::input::retarget_stationary(lp) {
+        if policy_host::input::try_retarget_pointer(lp) {
             world::comp::scenes::clear_geometry_dirty(lp);
         }
     }

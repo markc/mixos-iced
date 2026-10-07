@@ -1,13 +1,13 @@
+use dispatcher::state::state::Dispatch;
+use protocols::window::find::find;
 use smithay::input::pointer::{MotionEvent, PointerHandle, RelativeMotionEvent};
 use smithay::utils::{Logical, Physical, Point, Serial};
 use world::camera::transform::translate::translate;
 use world::state::Loop;
-use dispatcher::state::state::Dispatch;
 use world::state::state::{CoordinateTrait, Orchestrator as State};
 use world::surface::interface::hit::SurfaceHit;
 use world::surface::interface::hit::{self, surface_under_filtered};
 use world::window::interface::draw::visible::DrawWindow;
-use protocols::window::find::find;
 
 pub fn dispatch(
     _loop: &mut Loop,
@@ -153,7 +153,11 @@ pub fn dispatch(
     crate::pointer::input::chrome::motion(_loop, if hand { None } else { chrome_target });
 
     // The focus actually handed to `motion` above — none under the hand tool.
-    let new_focus = if hand { None } else { under_hit.map(|(target, _)| target) };
+    let new_focus = if hand {
+        None
+    } else {
+        under_hit.map(|(target, _)| target)
+    };
 
     if prev_focus.as_ref() != new_focus.as_ref() {
         // The unlock-restoration warp is queued by `remove_constraint` (smithay

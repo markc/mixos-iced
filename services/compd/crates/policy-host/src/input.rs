@@ -29,24 +29,28 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde_json::{Value, json};
 use smithay::backend::input::{AxisSource, KeyState};
 use smithay::desktop::{PopupKeyboardGrab, PopupPointerGrab};
-use smithay::wayland::seat::WaylandFocus;
 use smithay::input::keyboard::{FilterResult, Keycode, Keysym, xkb};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, ClickGrab, MotionEvent};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER};
 use smithay::wayland::input_method::InputMethodSeat as _;
+use smithay::wayland::seat::WaylandFocus;
 
 use comp_model::reply::ControlReply;
-use comp_model::request::{InputOp, KeySpec, PointerMoveTarget, PressAction, ScrollSource, WindowOp};
-use comp_model::snapshot::{OutputSnapshot, SeatFocusSnapshot, SeatPointerSnapshot, SeatSnapshot, output_key};
+use comp_model::request::{
+    InputOp, KeySpec, PointerMoveTarget, PressAction, ScrollSource, WindowOp,
+};
+use comp_model::snapshot::{
+    OutputSnapshot, SeatFocusSnapshot, SeatPointerSnapshot, SeatSnapshot, output_key,
+};
 use dispatcher::state::state::Dispatch;
 use dispatcher::wire::trait_::surface_event::SurfaceHandle;
 use dispatcher::wire::trait_::wire_trait::WireTrait;
 use policy::agent::{
     AgentSeatFacts, AgentTarget, AgentTargetedFacts, AgentTargetedPlan, Hold, HumanTargetedFacts,
-    HumanTargetedPlan, agent_preflight, agent_refusal, agent_targeted_preflight, human_targeted_preflight,
-    release_order, target_unfocusable,
+    HumanTargetedPlan, agent_preflight, agent_refusal, agent_targeted_preflight,
+    human_targeted_preflight, release_order, target_unfocusable,
 };
 use surfaces::{SeatKind, SurfaceId, SurfaceRole};
 use world::camera::transform::translate::transform::Transform;
@@ -75,7 +79,12 @@ pub fn input(lp: &mut Loop, op: &InputOp) -> ControlReply {
         ControlReply::Body(body) | ControlReply::Refused { detail: body, .. } => {
             body["seat"] = json!(seat.name());
         }
-        _ => return ControlReply::WithInputSeat { seat, reply: Box::new(reply) },
+        _ => {
+            return ControlReply::WithInputSeat {
+                seat,
+                reply: Box::new(reply),
+            };
+        }
     }
     reply
 }
@@ -94,7 +103,12 @@ pub fn run_step(lp: &mut Loop, run: u64, op: &InputOp) -> ControlReply {
 pub fn release_run(lp: &mut Loop, run: u64) {
     let time = now_ms(lp);
     for seat in [SeatKind::Human, SeatKind::Agent] {
-        let orphaned = lp.inner.comp.injection.holds_mut(seat).drop_owner(Some(run));
+        let orphaned = lp
+            .inner
+            .comp
+            .injection
+            .holds_mut(seat)
+            .drop_owner(Some(run));
         release_holds(lp, seat, orphaned, time);
     }
 }
@@ -115,7 +129,9 @@ pub fn release_keys_for_lock(lp: &mut Loop) {
 /// bumps the agent epoch and answers the agent's runs `input_cleared`.
 pub fn clear_agent(lp: &mut Loop) {
     dismiss_agent_popups(lp);
-    let Some(agent) = lp.state.seat.agent.clone() else { return };
+    let Some(agent) = lp.state.seat.agent.clone() else {
+        return;
+    };
     let time = now_ms(lp);
     if let Some(keyboard) = agent.get_keyboard() {
         keyboard.unset_grab(&mut lp.state);
@@ -148,7 +164,11 @@ pub fn clear_agent(lp: &mut Loop) {
         pointer.motion(
             &mut lp.state,
             None,
-            &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time },
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
         );
         pointer.frame(&mut lp.state);
     }
@@ -159,7 +179,12 @@ pub fn clear_agent(lp: &mut Loop) {
 
 /// Inject one op on one seat, then reply with
 /// the `input_seq` minted for it and where it went.
-fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u64, u64)>) -> ControlReply {
+fn payload(
+    lp: &mut Loop,
+    seat: SeatKind,
+    op: &InputOp,
+    target_window: Option<(u64, u64)>,
+) -> ControlReply {
     if seat == SeatKind::Agent {
         let facts = agent_seat_facts(lp);
         if let Err(reply) = agent_preflight(op, &facts) {
@@ -172,7 +197,12 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
     let mut button_delivery = None;
     let keyboard = match op {
         InputOp::OnSeat { .. } => return input(lp, op),
-        InputOp::Targeted { id, generation, raise, op } => {
+        InputOp::Targeted {
+            id,
+            generation,
+            raise,
+            op,
+        } => {
             return match seat {
                 SeatKind::Agent => agent_targeted(lp, *id, *generation, *raise, op),
                 SeatKind::Human => human_targeted(lp, *id, *generation, *raise, op),
@@ -189,8 +219,11 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
             false
         }
         InputOp::PointerButton { button, action } => {
-            let expected = target_window
-                .or_else(|| (seat == SeatKind::Agent).then(|| delivery_target(lp, seat, false)).flatten());
+            let expected = target_window.or_else(|| {
+                (seat == SeatKind::Agent)
+                    .then(|| delivery_target(lp, seat, false))
+                    .flatten()
+            });
             for pressed in press_states(*action) {
                 if seat == SeatKind::Agent
                     && *pressed
@@ -210,11 +243,20 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
             }
             false
         }
-        InputOp::PointerScroll { dx, dy, source, v120 } => {
+        InputOp::PointerScroll {
+            dx,
+            dy,
+            source,
+            v120,
+        } => {
             inject_scroll(lp, seat, *dx, *dy, *source, *v120, time);
             false
         }
-        InputOp::Key { key, action, modifiers } => {
+        InputOp::Key {
+            key,
+            action,
+            modifiers,
+        } => {
             let index = keymap_index(lp, seat);
             let Some((keycode, shifted)) = resolve_key(&index, key) else {
                 return unknown_key(key);
@@ -249,8 +291,11 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
                     events.push((*modifier, false, false));
                 }
             }
-            let delivery = target_window
-                .or_else(|| (seat == SeatKind::Agent).then(|| delivery_target(lp, seat, true)).flatten());
+            let delivery = target_window.or_else(|| {
+                (seat == SeatKind::Agent)
+                    .then(|| delivery_target(lp, seat, true))
+                    .flatten()
+            });
             key_result = inject_keys(lp, seat, events, delivery, time);
             true
         }
@@ -290,8 +335,11 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
                     events.push((shift, false, false));
                 }
             }
-            let delivery = target_window
-                .or_else(|| (seat == SeatKind::Agent).then(|| delivery_target(lp, seat, true)).flatten());
+            let delivery = target_window.or_else(|| {
+                (seat == SeatKind::Agent)
+                    .then(|| delivery_target(lp, seat, true))
+                    .flatten()
+            });
             key_result = inject_keys(lp, seat, events, delivery, time);
             true
         }
@@ -323,7 +371,11 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
     });
     lp.inner.comp.presentation.stats.mark_input(
         window,
-        ledger::presentation_stats::InputMark { seat, input_seq, injected_at_us },
+        ledger::presentation_stats::InputMark {
+            seat,
+            input_seq,
+            injected_at_us,
+        },
     );
     let pointer = pointer_position(lp, seat);
     let body = json!({
@@ -344,8 +396,15 @@ fn payload(lp: &mut Loop, seat: SeatKind, op: &InputOp, target_window: Option<(u
 
 /// The refusal ladder, then `comp.window.focus`
 /// (with `raise`), then the op with the focus verified.
-fn human_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &InputOp) -> ControlReply {
-    let window = window_record(lp, id, generation).and_then(|sid| crate::control::window_of(lp, sid));
+fn human_targeted(
+    lp: &mut Loop,
+    id: u64,
+    generation: u64,
+    raise: bool,
+    op: &InputOp,
+) -> ControlReply {
+    let window =
+        window_record(lp, id, generation).and_then(|sid| crate::control::window_of(lp, sid));
     let human = lp.state.seat.seat.clone();
     let facts = HumanTargetedFacts {
         region_select: false,
@@ -353,11 +412,17 @@ fn human_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &Inp
         exclusive_layer: exclusive_layer(lp),
         current_workspace: lp.inner.comp.current_workspace(),
         input_presentable: true,
-        visible: window.as_ref().is_some_and(|window| crate::control::drawn(lp, window)),
-        keyboard_grab: human.get_keyboard().is_some_and(|keyboard| keyboard.is_grabbed())
+        visible: window
+            .as_ref()
+            .is_some_and(|window| crate::control::drawn(lp, window)),
+        keyboard_grab: human
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.is_grabbed())
             || human.input_method().keyboard_grabbed(),
         pointer_grab: lp.inner.comp.interactive.is_some()
-            || (human.get_pointer().is_some_and(|pointer| pointer.is_grabbed())
+            || (human
+                .get_pointer()
+                .is_some_and(|pointer| pointer.is_grabbed())
                 && delivery_target(lp, SeatKind::Human, false) != Some((id, generation))),
     };
     let plan = human_targeted_preflight(&lp.inner.comp.registry, id, generation, op, &facts);
@@ -365,7 +430,14 @@ fn human_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &Inp
         Err(reply) => reply,
         Ok(HumanTargetedPlan::Release) => payload(lp, SeatKind::Human, op, Some((id, generation))),
         Ok(HumanTargetedPlan::FocusThenDeliver) => {
-            let focused = crate::control::window(lp, &WindowOp::Focus { id, generation, raise });
+            let focused = crate::control::window(
+                lp,
+                &WindowOp::Focus {
+                    id,
+                    generation,
+                    raise,
+                },
+            );
             if !matches!(&focused, Some(ControlReply::Body(body)) if body["focused"] == true)
                 || delivery_target(lp, SeatKind::Human, true) != Some((id, generation))
             {
@@ -379,18 +451,39 @@ fn human_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &Inp
 
 /// The button goes to the named window
 /// without the device hit-test (which would raise it regardless of `raise`).
-fn targeted_human_button(lp: &mut Loop, id: u64, generation: u64, button: u32, pressed: bool, time: u32) {
-    let Some(pointer) = lp.state.seat.seat.get_pointer() else { return };
+fn targeted_human_button(
+    lp: &mut Loop,
+    id: u64,
+    generation: u64,
+    button: u32,
+    pressed: bool,
+    time: u32,
+) {
+    let Some(pointer) = lp.state.seat.seat.get_pointer() else {
+        return;
+    };
     if !pointer.is_grabbed() {
-        let Some(sid) = window_record(lp, id, generation) else { return };
-        let Some(window) = crate::control::window_of(lp, sid) else { return };
-        let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else { return };
-        let Some(origin) = surface_origin(lp, &window) else { return };
+        let Some(sid) = window_record(lp, id, generation) else {
+            return;
+        };
+        let Some(window) = crate::control::window_of(lp, sid) else {
+            return;
+        };
+        let Some(surface) = window.wl_surface().map(|surface| surface.into_owned()) else {
+            return;
+        };
+        let Some(origin) = surface_origin(lp, &window) else {
+            return;
+        };
         let location = pointer.current_location();
         pointer.motion(
             &mut lp.state,
             Some((surface, origin)),
-            &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time },
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
         );
         pointer.frame(&mut lp.state);
     }
@@ -410,7 +503,12 @@ fn targeted_human_button(lp: &mut Loop, id: u64, generation: u64, button: u32, p
 
 /// A pointer move on the human seat, delivered through the engine's pointer
 /// path (corners, edge pan, focus).
-fn move_human_pointer(lp: &mut Loop, target: &PointerMoveTarget, corners: bool, time: u32) -> Result<(), ControlReply> {
+fn move_human_pointer(
+    lp: &mut Loop,
+    target: &PointerMoveTarget,
+    corners: bool,
+    time: u32,
+) -> Result<(), ControlReply> {
     let moved = match target {
         PointerMoveTarget::Relative { dx, dy } => Moved::By(*dx, *dy),
         PointerMoveTarget::Output { output, x, y } => {
@@ -429,17 +527,31 @@ fn move_human_pointer(lp: &mut Loop, target: &PointerMoveTarget, corners: bool, 
             }
             Moved::To(Point::from((x * row.scale, y * row.scale)))
         }
-        PointerMoveTarget::Window { id, generation, x, y, require_hit } => {
+        PointerMoveTarget::Window {
+            id,
+            generation,
+            x,
+            y,
+            require_hit,
+        } => {
             let world = window_point(lp, *id, *generation, *x, *y)?;
             if *require_hit {
                 check_hit(lp, *id, *x, *y, world)?;
             }
-            let transform: Transform = (Point::<f64, Logical>::from(world), lp.size_ctx_all()).into();
+            let transform: Transform =
+                (Point::<f64, Logical>::from(world), lp.size_ctx_all()).into();
             Moved::To(transform.into())
         }
     };
     // A region selection holds the seat: the move is its.
-    if let Some(run) = lp.inner.comp.region.run.as_ref().filter(|run| run.result.is_none()) {
+    if let Some(run) = lp
+        .inner
+        .comp
+        .region
+        .run
+        .as_ref()
+        .filter(|run| run.result.is_none())
+    {
         let at = match moved {
             Moved::By(dx, dy) => (run.pointer.0 + dx, run.pointer.1 + dy),
             Moved::To(position) => (position.x / run.scale, position.y / run.scale),
@@ -472,7 +584,10 @@ fn check_hit(lp: &Loop, id: u64, x: f64, y: f64, world: (f64, f64)) -> Result<()
             && (f64::from(row.y)..f64::from(row.y) + f64::from(row.height)).contains(&world.1)
     });
     if !on_output {
-        return Err(ControlReply::refused("off_output", json!({"id": id, "x": x, "y": y})));
+        return Err(ControlReply::refused(
+            "off_output",
+            json!({"id": id, "x": x, "y": y}),
+        ));
     }
     let under = human_root_at(lp, world);
     if under.map(|(under, _)| under) != Some(id) {
@@ -493,7 +608,8 @@ fn human_root_at(lp: &Loop, world: (f64, f64)) -> Option<(u64, u64)> {
     let hit = surface_under_filtered(lp, Point::from(world), &|hit| visible_hit(lp, hit))?;
     let id = match hit.surface() {
         Some(surface) => record_of(lp, surface)?,
-        None => SurfaceHandle::of_window(hit.window()?).and_then(|handle| lp.inner.comp.registry.id_for_handle(&handle))?,
+        None => SurfaceHandle::of_window(hit.window()?)
+            .and_then(|handle| lp.inner.comp.registry.id_for_handle(&handle))?,
     };
     let root = root_of(lp, id);
     let record = lp.inner.comp.registry.get(root)?;
@@ -503,13 +619,22 @@ fn human_root_at(lp: &Loop, world: (f64, f64)) -> Option<(u64, u64)> {
 // ── the agent seat ───────────────────────────────────────────────────────────
 
 /// A `{window}`-targeted op on the agent seat.
-fn agent_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &InputOp) -> ControlReply {
+fn agent_targeted(
+    lp: &mut Loop,
+    id: u64,
+    generation: u64,
+    raise: bool,
+    op: &InputOp,
+) -> ControlReply {
     let Some(agent) = lp.state.seat.agent.clone() else {
         return ControlReply::Busy;
     };
     let keyboard_op = matches!(op, InputOp::Key { .. } | InputOp::Text(_));
-    let window = window_record(lp, id, generation).and_then(|sid| crate::control::window_of(lp, sid));
-    let surface = window.as_ref().and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
+    let window =
+        window_record(lp, id, generation).and_then(|sid| crate::control::window_of(lp, sid));
+    let surface = window
+        .as_ref()
+        .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
     let pointer_on_target = delivery_target(lp, SeatKind::Agent, false) == Some((id, generation));
     // Resolve every pointer check before changing either device's focus.
     let position = lp
@@ -526,25 +651,40 @@ fn agent_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &Inp
     };
     let facts = AgentTargetedFacts {
         session_lock: world::comp::session_lock::active(lp),
-        target: surface.as_ref().and_then(|surface| agent_target(lp, surface)),
-        keyboard_grabbed: agent.get_keyboard().is_some_and(|keyboard| keyboard.is_grabbed()),
+        target: surface
+            .as_ref()
+            .and_then(|surface| agent_target(lp, surface)),
+        keyboard_grabbed: agent
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.is_grabbed()),
         // A popup grab whose delivery target is the named window keeps its
         // keyboard focus.
         matching_popup: agent
             .get_keyboard()
-            .and_then(|keyboard| keyboard.with_grab(|_, grab| grab.is::<PopupKeyboardGrab<Dispatch>>()))
+            .and_then(|keyboard| {
+                keyboard.with_grab(|_, grab| grab.is::<PopupKeyboardGrab<Dispatch>>())
+            })
             .unwrap_or(false)
             && delivery_target(lp, SeatKind::Agent, true) == Some((id, generation)),
-        pointer_grabbed: agent.get_pointer().is_some_and(|pointer| pointer.is_grabbed()),
+        pointer_grabbed: agent
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed()),
         pointer_on_target,
-        hit: hit.as_ref().and_then(|(surface, _)| agent_target(lp, surface)),
+        hit: hit
+            .as_ref()
+            .and_then(|(surface, _)| agent_target(lp, surface)),
     };
     let plan = agent_targeted_preflight(&lp.inner.comp.registry, id, generation, raise, op, &facts);
     match plan {
         Err(reply) => reply,
         Ok(AgentTargetedPlan::Release) => payload(lp, SeatKind::Agent, op, Some((id, generation))),
-        Ok(AgentTargetedPlan::Deliver { focus_keyboard, move_pointer }) => {
-            if focus_keyboard && let (Some(keyboard), Some(surface)) = (agent.get_keyboard(), surface) {
+        Ok(AgentTargetedPlan::Deliver {
+            focus_keyboard,
+            move_pointer,
+        }) => {
+            if focus_keyboard
+                && let (Some(keyboard), Some(surface)) = (agent.get_keyboard(), surface)
+            {
                 keyboard.set_focus(&mut lp.state, Some(surface), SERIAL_COUNTER.next_serial());
             }
             if move_pointer && let (Some(hit), Some(position)) = (hit, position) {
@@ -556,7 +696,11 @@ fn agent_targeted(lp: &mut Loop, id: u64, generation: u64, raise: bool, op: &Inp
 }
 
 /// Move the agent pointer.
-fn move_agent_pointer(lp: &mut Loop, target: &PointerMoveTarget, time: u32) -> Result<(), ControlReply> {
+fn move_agent_pointer(
+    lp: &mut Loop,
+    target: &PointerMoveTarget,
+    time: u32,
+) -> Result<(), ControlReply> {
     let (hit, position) = resolve_agent_motion(lp, target)?;
     agent_motion(lp, hit, position, time);
     injected(lp, SeatKind::Agent);
@@ -566,15 +710,29 @@ fn move_agent_pointer(lp: &mut Loop, target: &PointerMoveTarget, time: u32) -> R
 /// Where an agent move lands and what it hits,
 /// without moving anything (the delivery and the coalescing preview share
 /// it, so a discarded preview never changes focus).
-fn resolve_agent_motion(lp: &Loop, target: &PointerMoveTarget) -> Result<AgentMotion, ControlReply> {
+fn resolve_agent_motion(
+    lp: &Loop,
+    target: &PointerMoveTarget,
+) -> Result<AgentMotion, ControlReply> {
     let pointer = agent_pointer(lp).ok_or(ControlReply::Busy)?;
     let (root, position) = match target {
-        PointerMoveTarget::Window { id, generation, x, y, .. } => {
-            let sid = window_record(lp, *id, *generation).ok_or_else(|| stale(lp, *id, *generation))?;
+        PointerMoveTarget::Window {
+            id,
+            generation,
+            x,
+            y,
+            ..
+        } => {
+            let sid =
+                window_record(lp, *id, *generation).ok_or_else(|| stale(lp, *id, *generation))?;
             let window = crate::control::window_of(lp, sid);
-            let surface = window.as_ref().and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
+            let surface = window
+                .as_ref()
+                .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
             policy::agent::validate_agent_surface(
-                surface.as_ref().and_then(|surface| agent_target(lp, surface)),
+                surface
+                    .as_ref()
+                    .and_then(|surface| agent_target(lp, surface)),
                 false,
                 false,
             )?;
@@ -630,7 +788,10 @@ pub fn coalesce_agent_motion(lp: &Loop, previous: &InputOp, next: &InputOp) -> O
         return None;
     }
     let motion = |op: &InputOp| match op {
-        InputOp::OnSeat { seat: SeatKind::Agent, op } => match op.as_ref() {
+        InputOp::OnSeat {
+            seat: SeatKind::Agent,
+            op,
+        } => match op.as_ref() {
             InputOp::PointerMove { target, .. } => Some(target.clone()),
             _ => None,
         },
@@ -639,18 +800,34 @@ pub fn coalesce_agent_motion(lp: &Loop, previous: &InputOp, next: &InputOp) -> O
     let previous = motion(previous)?;
     let next = motion(next)?;
     let combined = match (&previous, &next) {
-        (PointerMoveTarget::Relative { dx, dy }, PointerMoveTarget::Relative { dx: nx, dy: ny }) => {
-            PointerMoveTarget::Relative { dx: dx + nx, dy: dy + ny }
-        }
         (
-            PointerMoveTarget::Window { id, generation, require_hit, .. },
-            PointerMoveTarget::Window { id: next_id, generation: next_generation, require_hit: next_hit, .. },
+            PointerMoveTarget::Relative { dx, dy },
+            PointerMoveTarget::Relative { dx: nx, dy: ny },
+        ) => PointerMoveTarget::Relative {
+            dx: dx + nx,
+            dy: dy + ny,
+        },
+        (
+            PointerMoveTarget::Window {
+                id,
+                generation,
+                require_hit,
+                ..
+            },
+            PointerMoveTarget::Window {
+                id: next_id,
+                generation: next_generation,
+                require_hit: next_hit,
+                ..
+            },
         ) if (id, generation, require_hit) == (next_id, next_generation, next_hit) => next.clone(),
-        (PointerMoveTarget::Output { output, .. }, PointerMoveTarget::Output { output: next_output, .. })
-            if output == next_output =>
-        {
-            next.clone()
-        }
+        (
+            PointerMoveTarget::Output { output, .. },
+            PointerMoveTarget::Output {
+                output: next_output,
+                ..
+            },
+        ) if output == next_output => next.clone(),
         _ => return None,
     };
     let (before, _) = resolve_agent_motion(lp, &previous).ok()?;
@@ -660,7 +837,10 @@ pub fn coalesce_agent_motion(lp: &Loop, previous: &InputOp, next: &InputOp) -> O
     }
     Some(InputOp::OnSeat {
         seat: SeatKind::Agent,
-        op: Box::new(InputOp::PointerMove { target: combined, corners: false }),
+        op: Box::new(InputOp::PointerMove {
+            target: combined,
+            corners: false,
+        }),
     })
 }
 
@@ -699,9 +879,16 @@ fn agent_hit(
     }
 }
 
-fn agent_motion(lp: &mut Loop, focus: Option<(WlSurface, Point<f64, Logical>)>, position: (f64, f64), time: u32) {
+fn agent_motion(
+    lp: &mut Loop,
+    focus: Option<(WlSurface, Point<f64, Logical>)>,
+    position: (f64, f64),
+    time: u32,
+) {
     lp.inner.comp.injection.agent_pointer = Some(position);
-    let Some(pointer) = agent_pointer(lp) else { return };
+    let Some(pointer) = agent_pointer(lp) else {
+        return;
+    };
     pointer.motion(
         &mut lp.state,
         focus,
@@ -725,7 +912,9 @@ fn agent_seat_facts(lp: &Loop) -> AgentSeatFacts {
         session_lock: world::comp::session_lock::active(lp),
         keyboard_grab: keyboard
             .as_ref()
-            .and_then(|keyboard| keyboard.with_grab(|_, grab| !grab.is::<PopupKeyboardGrab<Dispatch>>()))
+            .and_then(|keyboard| {
+                keyboard.with_grab(|_, grab| !grab.is::<PopupKeyboardGrab<Dispatch>>())
+            })
             .unwrap_or(false),
         pointer_grab: pointer
             .as_ref()
@@ -737,7 +926,9 @@ fn agent_seat_facts(lp: &Loop) -> AgentSeatFacts {
             .unwrap_or(false),
         popup_pointer_grab: pointer
             .as_ref()
-            .and_then(|pointer| pointer.with_grab(|_, grab| grab.is::<PopupPointerGrab<Dispatch>>()))
+            .and_then(|pointer| {
+                pointer.with_grab(|_, grab| grab.is::<PopupPointerGrab<Dispatch>>())
+            })
             .unwrap_or(false),
         keyboard_target: keyboard
             .as_ref()
@@ -800,7 +991,9 @@ fn inject_button(lp: &mut Loop, seat: SeatKind, button: u32, pressed: bool, time
     match seat {
         SeatKind::Human => seat::inject::button(lp, button, pressed, time),
         SeatKind::Agent => {
-            let Some(pointer) = agent_pointer(lp) else { return };
+            let Some(pointer) = agent_pointer(lp) else {
+                return;
+            };
             pointer.button(
                 &mut lp.state,
                 &ButtonEvent {
@@ -850,7 +1043,8 @@ fn inject_scroll(
                 (smithay::backend::input::Axis::Vertical, dy, v120.1),
             ] {
                 let Some(amount) = amount else { continue };
-                let stops = amount == 0.0 && matches!(source, AxisSource::Finger | AxisSource::Continuous);
+                let stops =
+                    amount == 0.0 && matches!(source, AxisSource::Finger | AxisSource::Continuous);
                 if !stops && amount == 0.0 && v120.is_none_or(|value| value == 0) {
                     continue;
                 }
@@ -891,7 +1085,13 @@ fn inject_keys(
             failure = Some("target_changed");
             break;
         }
-        let was_held = lp.inner.comp.injection.holds_mut(seat).owners_of(Hold::Key(keycode.raw())) > 0;
+        let was_held = lp
+            .inner
+            .comp
+            .injection
+            .holds_mut(seat)
+            .owners_of(Hold::Key(keycode.raw()))
+            > 0;
         let (handled, delivered) = inject_key(lp, seat, keycode, pressed, time);
         completed += 1;
         if required && (pressed || !payload_seen) {
@@ -913,14 +1113,25 @@ fn inject_keys(
         }
     }
     if failure.is_some() {
-        release_holds(lp, seat, pressed_here.into_iter().map(Hold::Key).collect(), time);
+        release_holds(
+            lp,
+            seat,
+            pressed_here.into_iter().map(Hold::Key).collect(),
+            time,
+        );
     }
     (failure, completed, delivery)
 }
 
 /// One key edge on a seat. Returns whether something took it and the
 /// window it was delivered to.
-fn inject_key(lp: &mut Loop, seat: SeatKind, keycode: Keycode, pressed: bool, time: u32) -> (bool, Option<(u64, u64)>) {
+fn inject_key(
+    lp: &mut Loop,
+    seat: SeatKind,
+    keycode: Keycode,
+    pressed: bool,
+    time: u32,
+) -> (bool, Option<(u64, u64)>) {
     // A region selection takes the human seat's keys: handled, no target.
     if seat == SeatKind::Human && world::comp::region::key(lp, keycode.raw(), pressed) {
         injected(lp, seat);
@@ -948,7 +1159,11 @@ fn inject_key(lp: &mut Loop, seat: SeatKind, keycode: Keycode, pressed: bool, ti
             if let Some(edge) = lp.inner.comp.bindings.last_edge
                 && (edge.took || edge.modifier)
             {
-                let delivered = if edge.took { None } else { delivery_target(lp, seat, true) };
+                let delivered = if edge.took {
+                    None
+                } else {
+                    delivery_target(lp, seat, true)
+                };
                 return (true, delivered);
             }
             if iced_held {
@@ -956,8 +1171,18 @@ fn inject_key(lp: &mut Loop, seat: SeatKind, keycode: Keycode, pressed: bool, ti
             }
         }
         SeatKind::Agent => {
-            if let Some(keyboard) = lp.state.seat.agent.as_ref().and_then(|agent| agent.get_keyboard()) {
-                let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+            if let Some(keyboard) = lp
+                .state
+                .seat
+                .agent
+                .as_ref()
+                .and_then(|agent| agent.get_keyboard())
+            {
+                let state = if pressed {
+                    KeyState::Pressed
+                } else {
+                    KeyState::Released
+                };
                 keyboard.input::<(), _>(
                     &mut lp.state,
                     keycode,
@@ -991,7 +1216,9 @@ fn dismiss_agent_popups(lp: &mut Loop) {
     if let Some(mut grab) = lp.state.agent_popup_grab.take() {
         grab.ungrab(smithay::desktop::PopupUngrabStrategy::All);
     }
-    let Some(agent) = lp.state.seat.agent.clone() else { return };
+    let Some(agent) = lp.state.seat.agent.clone() else {
+        return;
+    };
     if let Some(keyboard) = agent.get_keyboard()
         && keyboard
             .with_grab(|_, grab| grab.is::<PopupKeyboardGrab<Dispatch>>())
@@ -1012,9 +1239,17 @@ fn dismiss_agent_popups(lp: &mut Loop) {
 /// Release the given holds the seat still has pressed: keys newest code
 /// first, then buttons (policy `release_order`).
 fn release_holds(lp: &mut Loop, seat: SeatKind, holds: Vec<Hold>, time: u32) {
-    let Some(handle) = seat_of(lp, seat) else { return };
-    let pressed_keys = handle.get_keyboard().map(|keyboard| keyboard.pressed_keys()).unwrap_or_default();
-    let pressed_buttons = handle.get_pointer().map(|pointer| pointer.current_pressed()).unwrap_or_default();
+    let Some(handle) = seat_of(lp, seat) else {
+        return;
+    };
+    let pressed_keys = handle
+        .get_keyboard()
+        .map(|keyboard| keyboard.pressed_keys())
+        .unwrap_or_default();
+    let pressed_buttons = handle
+        .get_pointer()
+        .map(|pointer| pointer.current_pressed())
+        .unwrap_or_default();
     for hold in release_order(&holds, |_| false) {
         match hold {
             Hold::Key(raw) if pressed_keys.contains(&Keycode::new(raw)) => {
@@ -1060,13 +1295,20 @@ fn seat_of(lp: &Loop, seat: SeatKind) -> Option<smithay::input::Seat<Dispatch>> 
 }
 
 fn agent_pointer(lp: &Loop) -> Option<smithay::input::pointer::PointerHandle<Dispatch>> {
-    lp.state.seat.agent.as_ref().and_then(|agent| agent.get_pointer())
+    lp.state
+        .seat
+        .agent
+        .as_ref()
+        .and_then(|agent| agent.get_pointer())
 }
 
 /// The registry record of a surface (an Xwayland surface resolves to its X
 /// window's record).
 fn record_of(lp: &Loop, surface: &WlSurface) -> Option<SurfaceId> {
-    lp.inner.comp.registry.id_for_handle(&SurfaceHandle::resolve(surface))
+    lp.inner
+        .comp
+        .registry
+        .id_for_handle(&SurfaceHandle::resolve(surface))
 }
 
 /// A record's root (its parents walked up).
@@ -1085,7 +1327,9 @@ fn root_of(lp: &Loop, mut id: SurfaceId) -> SurfaceId {
 fn tree_mapped(lp: &Loop, mut id: SurfaceId) -> bool {
     let registry = &lp.inner.comp.registry;
     for _ in 0..64 {
-        let Some(record) = registry.get(id) else { return false };
+        let Some(record) = registry.get(id) else {
+            return false;
+        };
         if !record.mapped() || record.role() == SurfaceRole::Dormant {
             return false;
         }
@@ -1121,7 +1365,11 @@ fn delivery_target(lp: &Loop, seat: SeatKind, keyboard: bool) -> Option<(u64, u6
 /// Whether a compositor iced surface holds the human keyboard (the iced
 /// registry's keyboard focus): keys go to it ahead of the seat's client.
 fn iced_keyboard_held(lp: &Loop) -> bool {
-    lp.inner.surface().registry.as_ref().is_some_and(|registry| registry.keyboard_focus().is_some())
+    lp.inner
+        .surface()
+        .registry
+        .as_ref()
+        .is_some_and(|registry| registry.keyboard_focus().is_some())
 }
 
 /// The scene surface holding the keyboard as `{id, generation}` (its
@@ -1130,7 +1378,11 @@ fn iced_keyboard_held(lp: &Loop) -> bool {
 fn scene_keyboard_target(lp: &Loop) -> Option<(u64, u64)> {
     let scenes = &lp.inner.comp.scenes;
     let id = scenes.focus?;
-    scenes.rows.iter().find(|row| row.id == id).map(|row| (id.0, row.generation))
+    scenes
+        .rows
+        .iter()
+        .find(|row| row.id == id)
+        .map(|row| (id.0, row.generation))
 }
 
 /// A live `{id, generation}` window's record.
@@ -1144,18 +1396,32 @@ fn window_record(lp: &Loop, id: u64, generation: u64) -> Option<SurfaceId> {
 }
 
 fn stale(lp: &Loop, id: u64, generation: u64) -> ControlReply {
-    match lp.inner.comp.registry.resolve_window_target(id, Some(generation)) {
+    match lp
+        .inner
+        .comp
+        .registry
+        .resolve_window_target(id, Some(generation))
+    {
         Err(error) => ControlReply::WindowTarget { id, error },
         Ok(_) => ControlReply::Busy,
     }
 }
 
 /// Window-local `(x, y)` (from the window-geometry origin) in the host Space.
-fn window_point(lp: &Loop, id: u64, generation: u64, x: f64, y: f64) -> Result<(f64, f64), ControlReply> {
+fn window_point(
+    lp: &Loop,
+    id: u64,
+    generation: u64,
+    x: f64,
+    y: f64,
+) -> Result<(f64, f64), ControlReply> {
     let sid = window_record(lp, id, generation).ok_or_else(|| stale(lp, id, generation))?;
     let origin = crate::control::window_of(lp, sid)
         .and_then(|window| lp.inner.host_space().state.element_location(&window))
-        .ok_or(ControlReply::WindowTarget { id, error: surfaces::WindowTargetError::NotMapped })?;
+        .ok_or(ControlReply::WindowTarget {
+            id,
+            error: surfaces::WindowTargetError::NotMapped,
+        })?;
     Ok((f64::from(origin.x) + x, f64::from(origin.y) + y))
 }
 
@@ -1163,7 +1429,10 @@ fn window_point(lp: &Loop, id: u64, generation: u64, x: f64, y: f64) -> Result<(
 fn window_center(lp: &Loop, window: &smithay::desktop::Window) -> Option<(f64, f64)> {
     let origin = lp.inner.host_space().state.element_location(window)?;
     let size = window.geometry().size;
-    Some((f64::from(origin.x) + f64::from(size.w) / 2.0, f64::from(origin.y) + f64::from(size.h) / 2.0))
+    Some((
+        f64::from(origin.x) + f64::from(size.w) / 2.0,
+        f64::from(origin.y) + f64::from(size.h) / 2.0,
+    ))
 }
 
 /// Where a window's root surface sits in the host Space (its geometry origin
@@ -1176,7 +1445,12 @@ fn surface_origin(lp: &Loop, window: &smithay::desktop::Window) -> Option<Point<
 /// Re-run the human pointer's hit-test where it stands: stacking or visibility moved
 /// what is under the cursor, so focus follows without the cursor moving.
 pub fn retarget_pointer(lp: &mut Loop) {
-    seat::pointer::input::retarget_stationary(lp);
+    try_retarget_pointer(lp);
+}
+
+/// Return whether routing ran so deferred scene work survives a parked seat.
+pub fn try_retarget_pointer(lp: &mut Loop) -> bool {
+    seat::pointer::input::retarget_stationary(lp)
 }
 
 /// A hit the draw would show (hidden windows take no pointer).
@@ -1186,14 +1460,24 @@ fn visible_hit(lp: &Loop, hit: &SurfaceHit) -> bool {
 
 /// `{output, x, y}`: the output's row (by key or name; `None` is the default
 /// output) with `(x, y)` inside it (`unknown_output` / `out_of_bounds` otherwise).
-fn output_row(lp: &Loop, output: Option<&str>, x: f64, y: f64) -> Result<(String, OutputSnapshot), ControlReply> {
+fn output_row(
+    lp: &Loop,
+    output: Option<&str>,
+    x: f64,
+    y: f64,
+) -> Result<(String, OutputSnapshot), ControlReply> {
     let (rows, _, _) = crate::project::project_outputs(lp);
     let row = match output {
-        Some(requested) => rows.into_iter().find(|(key, row)| key == requested || row.name == requested),
+        Some(requested) => rows
+            .into_iter()
+            .find(|(key, row)| key == requested || row.name == requested),
         None => rows.into_iter().find(|(_, row)| row.default),
     };
     let Some((key, row)) = row else {
-        return Err(ControlReply::refused("unknown_output", json!({"output": output})));
+        return Err(ControlReply::refused(
+            "unknown_output",
+            json!({"output": output}),
+        ));
     };
     let (width, height) = (f64::from(row.width), f64::from(row.height));
     if !(0.0..width).contains(&x) || !(0.0..height).contains(&y) {
@@ -1210,7 +1494,10 @@ fn output_row(lp: &Loop, output: Option<&str>, x: f64, y: f64) -> Result<(String
 fn pointer_position(lp: &Loop, seat: SeatKind) -> Option<(String, String, f64, f64)> {
     match seat {
         SeatKind::Human => {
-            if matches!(lp.inner.status_session, world::state::state::StatusSession::Paused) {
+            if matches!(
+                lp.inner.status_session,
+                world::state::state::StatusSession::Paused
+            ) {
                 return None;
             }
             // The engine's cursor: physical pixels on the cursor's output.
@@ -1230,8 +1517,9 @@ fn pointer_position(lp: &Loop, seat: SeatKind) -> Option<(String, String, f64, f
             let (rows, _, _) = crate::project::project_outputs(lp);
             rows.into_iter().find_map(|(key, row)| {
                 let local = (x - f64::from(row.x), y - f64::from(row.y));
-                ((0.0..f64::from(row.width)).contains(&local.0) && (0.0..f64::from(row.height)).contains(&local.1))
-                    .then(|| (key, row.name.clone(), local.0, local.1))
+                ((0.0..f64::from(row.width)).contains(&local.0)
+                    && (0.0..f64::from(row.height)).contains(&local.1))
+                .then(|| (key, row.name.clone(), local.0, local.1))
             })
         }
     }
@@ -1258,25 +1546,34 @@ pub(crate) fn project_seats(lp: &Loop) -> BTreeMap<&'static str, SeatSnapshot> {
                 generation: record.generation(),
             })
     };
-    [(SeatKind::Human, PRIMARY_SEAT), (SeatKind::Agent, AGENT_SEAT)]
-        .into_iter()
-        .filter_map(|(kind, name)| {
-            let seat = seat_of(lp, kind)?;
-            Some((
-                kind.name(),
-                SeatSnapshot {
-                    name,
-                    keyboard_focus: focus(seat.get_keyboard().and_then(|keyboard| keyboard.current_focus())),
-                    pointer_focus: focus(seat.get_pointer().and_then(|pointer| pointer.current_focus())),
-                    // No coordinates under a session lock.
-                    pointer: pointer_position(lp, kind)
-                        .filter(|_| !world::comp::session_lock::active(lp))
-                        .map(|(_, output, x, y)| SeatPointerSnapshot { output, x, y }),
-                    last_input_us: lp.inner.comp.injection.last_input_us(kind),
-                },
-            ))
-        })
-        .collect()
+    [
+        (SeatKind::Human, PRIMARY_SEAT),
+        (SeatKind::Agent, AGENT_SEAT),
+    ]
+    .into_iter()
+    .filter_map(|(kind, name)| {
+        let seat = seat_of(lp, kind)?;
+        Some((
+            kind.name(),
+            SeatSnapshot {
+                name,
+                keyboard_focus: focus(
+                    seat.get_keyboard()
+                        .and_then(|keyboard| keyboard.current_focus()),
+                ),
+                pointer_focus: focus(
+                    seat.get_pointer()
+                        .and_then(|pointer| pointer.current_focus()),
+                ),
+                // No coordinates under a session lock.
+                pointer: pointer_position(lp, kind)
+                    .filter(|_| !world::comp::session_lock::active(lp))
+                    .map(|(_, output, x, y)| SeatPointerSnapshot { output, x, y }),
+                last_input_us: lp.inner.comp.injection.last_input_us(kind),
+            },
+        ))
+    })
+    .collect()
 }
 
 /// An exclusive-keyboard layer surface on Overlay or Top (seat
@@ -1330,7 +1627,10 @@ fn keymap_index(lp: &mut Loop, seat: SeatKind) -> KeymapIndex {
         return empty();
     };
     keyboard.with_xkb_state(&mut lp.state, |context| {
-        let xkb = context.xkb().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let xkb = context
+            .xkb()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         build_keymap_index(&xkb)
     })
 }
@@ -1342,7 +1642,11 @@ fn build_keymap_index(keyboard: &smithay::input::keyboard::Xkb) -> KeymapIndex {
     let locked = live.serialize_mods(xkb::STATE_MODS_LOCKED);
     let layout = live.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
     let shift_index = keymap.mod_get_index(xkb::MOD_NAME_SHIFT);
-    let shift = if shift_index == xkb::MOD_INVALID { 0 } else { 1 << shift_index };
+    let shift = if shift_index == xkb::MOD_INVALID {
+        0
+    } else {
+        1 << shift_index
+    };
     let mut index = KeymapIndex {
         by_sym: HashMap::new(),
         by_char: HashMap::new(),
@@ -1360,10 +1664,16 @@ fn build_keymap_index(keyboard: &smithay::input::keyboard::Xkb) -> KeymapIndex {
             if sym == Keysym::NoSymbol {
                 continue;
             }
-            index.by_sym.entry(sym.raw()).or_insert((keycode, uses_shift));
+            index
+                .by_sym
+                .entry(sym.raw())
+                .or_insert((keycode, uses_shift));
             let character = xkb::keysym_to_utf32(sym);
             if character != 0 {
-                index.by_char.entry(character).or_insert((keycode, uses_shift));
+                index
+                    .by_char
+                    .entry(character)
+                    .or_insert((keycode, uses_shift));
             }
         }
     }

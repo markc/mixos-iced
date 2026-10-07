@@ -15,7 +15,8 @@ use surfaces::SurfaceId;
 
 /// Installed by the scene host above world. The point is output-local
 /// physical hardware position, after clamp/teleport and before client routing.
-pub type PointerHook = fn(&mut crate::state::Loop, Option<smithay::utils::Point<f64, smithay::utils::Physical>>);
+pub type PointerHook =
+    fn(&mut crate::state::Loop, Option<smithay::utils::Point<f64, smithay::utils::Physical>>);
 /// Topmost scene hotspot route; true consumes this button event.
 pub type ButtonHook = fn(&mut crate::state::Loop, u32, bool) -> bool;
 
@@ -33,10 +34,15 @@ pub fn register_button_hook(hook: ButtonHook) {
 }
 
 pub fn pointer_button(lp: &mut crate::state::Loop, button: u32, pressed: bool) -> bool {
-    BUTTON_HOOK.get().is_some_and(|hook| hook(lp, button, pressed))
+    BUTTON_HOOK
+        .get()
+        .is_some_and(|hook| hook(lp, button, pressed))
 }
 
-pub fn pointer_motion(lp: &mut crate::state::Loop, point: Option<smithay::utils::Point<f64, smithay::utils::Physical>>) {
+pub fn pointer_motion(
+    lp: &mut crate::state::Loop,
+    point: Option<smithay::utils::Point<f64, smithay::utils::Physical>>,
+) {
     if let Some(hook) = POINTER_HOOK.get() {
         hook(lp, point);
     }
@@ -143,11 +149,17 @@ mod tests {
         comp.set_scene_surfaces(vec![dialog(880.0)], Some("scene:editor"));
         assert_eq!(comp.revision(), r1, "nothing changed, no revision");
         comp.set_scene_surfaces(vec![dialog(860.0)], Some("scene:editor"));
-        assert_eq!(comp.scenes.rows[0].generation, first.generation, "still mapped: same generation");
+        assert_eq!(
+            comp.scenes.rows[0].generation, first.generation,
+            "still mapped: same generation"
+        );
         // Hidden (no row, the focus gone), then shown again: same id, new generation.
         comp.set_scene_surfaces(vec![], Some("scene:editor"));
         assert!(comp.scenes.rows.is_empty());
-        assert_eq!(comp.scenes.focus, None, "an unmapped scene holds no keyboard");
+        assert_eq!(
+            comp.scenes.focus, None,
+            "an unmapped scene holds no keyboard"
+        );
         comp.set_scene_surfaces(vec![dialog(880.0)], None);
         assert_eq!(comp.scenes.rows[0].id, first.id);
         assert!(comp.scenes.rows[0].generation > first.generation);

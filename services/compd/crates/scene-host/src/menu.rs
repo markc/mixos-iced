@@ -464,6 +464,12 @@ pub(crate) struct Surface {
     appearance_generation: u64,
 }
 
+impl Surface {
+    pub(crate) fn input_geometry(&self) -> (HandleId, Rectangle<i32, Physical>, f32) {
+        (self.handle, self.rect, self.factor)
+    }
+}
+
 /// Shares the scene host's registry, scale, output affinity and action channel.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconcile(
