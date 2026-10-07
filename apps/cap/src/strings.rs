@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cap's English catalogue through the shared toolkit formatter. Message IDs
-//! are explicit call sites; there is no line-key scanner.
+//! are explicit call sites; there is no line-key scanner. The Fluent bundle
+//! is thread-local (it is neither Send nor Sync); the finite placeholder map
+//! is ordinary Sync data.
 use std::{collections::BTreeMap, sync::OnceLock};
 use toolkit::catalogue::Catalogue;
-fn catalogue() -> &'static Catalogue {
-    static CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
-    CATALOGUE.get_or_init(|| {
-        Catalogue::english(include_str!("../i18n/en/cap.ftl")).expect("valid Cap catalogue")
-    })
+thread_local! {
+    static CATALOGUE: Catalogue =
+        Catalogue::english(include_str!("../i18n/en/cap.ftl")).expect("valid Cap catalogue");
 }
 pub fn label(key: &str) -> String {
-    catalogue().label(key).unwrap_or_else(|_| key.into())
+    CATALOGUE.with(|catalogue| catalogue.label(key).unwrap_or_else(|_| key.into()))
 }
 /// A finite owned set of placeholders that must outlive a view borrow. Every
 /// other string goes through [`label`].
@@ -19,7 +19,7 @@ pub fn label_ref(key: &'static str) -> &'static str {
     let placeholders = PLACEHOLDERS.get_or_init(|| {
         ["text-placeholder", "text-size-range"]
             .into_iter()
-            .map(|key| (*key, label(key)))
+            .map(|key| (key, label(key)))
             .collect()
     });
     placeholders

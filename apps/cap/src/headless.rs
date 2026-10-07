@@ -30,15 +30,15 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        let mut jobs:FuturesUnordered<Job>=FuturesUnordered::new();let mut cancellation:Option<tokio::sync::watch::Sender<bool>>=None;let mut metadata=Value::Null;
+        let mut jobs:FuturesUnordered<Job>=FuturesUnordered::new();let mut cancellation:Option<tokio::sync::watch::Sender<bool>>=None;let mut metadata=Value::Null;let mut capture_generation=0u64;
         loop {tokio::select! {
             completed=jobs.next(),if !jobs.is_empty()=>{
                 if let Some((id,result))=completed {
                     cancellation=None;
                     let reply=match result {
-                        Ok(Finished::Captured(c))=>{document=Some(c.document);current_path=Some(c.path);metadata=c.metadata;Ok(info(&document,&current_path,&metadata,false))},
-                        Ok(Finished::Opened(p,d))=>{document=Some(d);current_path=Some(p);metadata=Value::Null;Ok(info(&document,&current_path,&metadata,false))},
-                        Ok(Finished::Exported(p))=>{if let Some(d)=&mut document{d.mark_saved()}current_path=Some(p);Ok(info(&document,&current_path,&metadata,false))},
+                        Ok(Finished::Captured(c))=>{document=Some(c.document);current_path=Some(c.path);metadata=c.metadata;Ok(info(&mut settings_ui,&handle,&document,&current_path,&metadata,false))},
+                        Ok(Finished::Opened(p,d))=>{document=Some(d);current_path=Some(p);metadata=Value::Null;Ok(info(&mut settings_ui,&handle,&document,&current_path,&metadata,false))},
+                        Ok(Finished::Exported(p))=>{if let Some(d)=&mut document{d.mark_saved()}current_path=Some(p);Ok(info(&mut settings_ui,&handle,&document,&current_path,&metadata,false))},
                         Err(e)=>Err(e)
                     };respond(&handle,id,reply);
                 }
@@ -55,7 +55,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
                 };
                 let id=command.id;let verb=command.verb.as_str();
                 let value=match verbs::parse(verb,&command.body){Ok(v)=>v,Err(e)=>{respond(&handle,id,Err(e));continue}};
-                if matches!(verb,"cap.ping"|"cap.info"){respond(&handle,id,Ok(info(&document,&current_path,&metadata,!jobs.is_empty())));continue}
+                if matches!(verb,"cap.ping"|"cap.info"){respond(&handle,id,Ok(info(&mut settings_ui,&handle,&document,&current_path,&metadata,!jobs.is_empty())));continue}
                 if verb=="app.describe"{respond(&handle,id,Ok(describe(&mut settings_ui,&handle)));continue}
                 if verb=="cap.cancel"{if let Some(tx)=&cancellation{let _=tx.send(true);}respond(&handle,id,Ok(json!({"cancelling":cancellation.is_some()})));continue}
                 if !jobs.is_empty(){respond(&handle,id,Err("busy".into()));continue}
@@ -64,8 +64,9 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
                 match verbs::operation(verb,value) {
                     Ok(Operation::Capture(request))=>{
                         let(tx,rx)=tokio::sync::watch::channel(false);cancellation=Some(tx);
-                        let future=capture::take(handle.clone(),comp.into(),request,None,directory.clone(),rx);
-                        jobs.push(async move{(id,future.await.map(Finished::Captured))}.boxed());
+                        capture_generation=capture_generation.checked_add(1).expect("capture generations exhausted");
+                        let future=capture::take(handle.clone(),comp.into(),request,None,directory.clone(),capture_generation,rx);
+                        jobs.push(async move{(id,future.await.map(Finished::Captured).map_err(|e|e.message))}.boxed());
                     },
                     Ok(Operation::Open(path))=>match capture::absolute(&path){Ok(path)=>jobs.push(async move {
                         let result=tokio::task::spawn_blocking(move||Document::open(&path).map(|d|Finished::Opened(path,d))).await.map_err(|e|e.to_string()).and_then(|r|r);(id,result)
@@ -87,8 +88,19 @@ fn respond(handle: &bus::BusHandle, id: u64, result: Result<Value, String>) {
         Err(e) => handle.respond(id, 10, json!({"error":e}).to_string()),
     }
 }
-fn info(document: &Option<Document>, path: &Option<PathBuf>, capture: &Value, busy: bool) -> Value {
-    json!({"schema":"cap.v1","headless":true,"busy":busy,"document":document.as_ref().map(Document::info),"path":path,"capture":capture,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()})
+fn info(
+    settings_ui: &mut Ui<()>,
+    handle: &bus::BusHandle,
+    document: &Option<Document>,
+    path: &Option<PathBuf>,
+    capture: &Value,
+    busy: bool,
+) -> Value {
+    settings_ui.reconcile(handle.settings_generation());
+    let mut info = json!({"schema":"cap.v1","headless":true,"busy":busy,"document":document.as_ref().map(Document::info),"path":path,"capture":capture,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
+    info["settings"] = json!(settings_ui.session().host().consumer().evidence());
+    info["settings_cache"] = json!(settings_ui.session().cache_evidence());
+    info
 }
 fn describe(settings_ui: &mut Ui<()>, handle: &bus::BusHandle) -> Value {
     settings_ui.reconcile(handle.settings_generation());

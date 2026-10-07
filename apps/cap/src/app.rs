@@ -12,7 +12,7 @@ use crate::{
 };
 use application::presentation::native::Ui;
 use application::{Element, Renderer, iced};
-use iced::futures::{StreamExt, channel::mpsc::UnboundedReceiver};
+use iced::futures::{StreamExt, channel::mpsc::Receiver};
 use iced::{
     Subscription, Task, mouse,
     widget::{self, button, canvas, column, container, row, slider, text_input},
@@ -26,6 +26,9 @@ use std::{
 };
 use toolkit::{Theme, requester};
 pub const APP_ID: &str = "dev.mixos.cap";
+/// A failed cancellation cleanup retries at most this many real Connected
+/// events before the target is abandoned with a visible status.
+const MAX_CLEANUP_ATTEMPTS: u32 = 3;
 
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -101,7 +104,10 @@ pub enum Message {
     Pointer(bool),
     Take,
     Cancel,
-    Captured(Result<capture::Captured, String>),
+    /// The capture attempt's generation fences stale completions: a late
+    /// result never updates a newer capture.
+    Captured(u64, Result<capture::Captured, capture::CaptureError>),
+    CleanupRetried(Result<capture::CleanupOutcome, String>),
     Preview(u64, Result<image::RgbaImage, String>),
     Tool(Tool),
     Gesture(Gesture),
@@ -134,7 +140,7 @@ impl From<requester::Event> for Message {
         Self::Request(value)
     }
 }
-static DELIVERIES: OnceLock<Mutex<Option<UnboundedReceiver<Delivery>>>> = OnceLock::new();
+static DELIVERIES: OnceLock<Mutex<Option<Receiver<Delivery>>>> = OnceLock::new();
 fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     let rx = DELIVERIES
         .get()
@@ -188,6 +194,13 @@ pub struct App {
     /// A user interacted with the window; fences a late successful handoff
     /// from closing it under the user.
     touched: bool,
+    /// The capture attempt generation: increments per attempt, never reused.
+    capture_generation: u64,
+    /// A failed cancellation cleanup, retained for one explicit bounded
+    /// retry on a later real Connected event — never rebuilt for another
+    /// compositor.
+    failed_cleanup: Option<capture::Cleanup>,
+    cleanup_attempts: u32,
     launched: std::time::Instant,
 }
 impl App {
@@ -244,6 +257,9 @@ impl App {
             dialog: None,
             refused: false,
             touched: false,
+            capture_generation: 0,
+            failed_cleanup: None,
+            cleanup_attempts: 0,
             launched: std::time::Instant::now(),
         }
     }
@@ -496,6 +512,11 @@ impl App {
             self.error(error);
             return Task::none();
         }
+        let generation = self
+            .capture_generation
+            .checked_add(1)
+            .expect("capture generations exhausted");
+        self.capture_generation = generation;
         let (tx, rx) = tokio::sync::watch::channel(false);
         self.cancel = Some(tx);
         self.busy = true;
@@ -505,10 +526,12 @@ impl App {
         let directory = self.directory.clone();
         Task::perform(
             async move {
-                let own = capture::own_window(&bus, &comp).await?;
-                capture::take(bus, comp, request, Some(own), directory, rx).await
+                let own = capture::own_window(&bus, &comp)
+                    .await
+                    .map_err(capture::CaptureError::plain)?;
+                capture::take(bus, comp, request, Some(own), directory, generation, rx).await
             },
-            Message::Captured,
+            move |result| Message::Captured(generation, result),
         )
     }
     fn file_picker(&mut self, mode: requester::Mode) {
@@ -542,6 +565,24 @@ impl App {
                 Ok(path)
             }),
             Message::Saved,
+        )
+    }
+    /// One explicit bounded retry of a failed cancellation cleanup, submitted
+    /// only while idle; the exact retained identity is never rebuilt for a
+    /// replacement compositor.
+    fn retry_cleanup(&mut self) -> Task<Message> {
+        if self.busy {
+            return Task::none();
+        }
+        let Some(cleanup) = self.failed_cleanup.clone() else {
+            return Task::none();
+        };
+        self.busy = true;
+        let bus = self.bus.clone();
+        let comp = self.comp.clone();
+        Task::perform(
+            async move { capture::retry_cleanup(&bus, &comp, &cleanup).await },
+            Message::CleanupRetried,
         )
     }
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -729,7 +770,12 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Captured(result) => {
+            Message::Captured(generation, result) => {
+                if generation != self.capture_generation {
+                    // A late result from an older attempt never updates a
+                    // newer capture.
+                    return Task::none();
+                }
                 self.busy = false;
                 self.cancel = None;
                 match result {
@@ -743,7 +789,17 @@ impl App {
                         self.selected = None;
                         self.status = label("capture-complete");
                     }
-                    Err(error) => self.error(error),
+                    Err(error) => {
+                        if error.cleanup.is_some() {
+                            // A failed cancellation cleanup supersedes any
+                            // earlier retained target; a plain failure keeps
+                            // the outstanding obligation.
+                            self.failed_cleanup = error.cleanup;
+                            self.status = error.message;
+                        } else {
+                            self.error(error.message);
+                        }
+                    }
                 }
                 if let Some(id) = self.pending_reply.take() {
                     let value =
@@ -759,6 +815,33 @@ impl App {
                     return Task::batch([task, self.request_pending(action)]);
                 }
                 Task::batch([task, self.refresh()])
+            }
+            Message::CleanupRetried(result) => {
+                self.busy = false;
+                match result {
+                    Ok(capture::CleanupOutcome::Restored) => {
+                        self.failed_cleanup = None;
+                        self.cleanup_attempts = 0;
+                        self.status = label("ready");
+                    }
+                    Ok(capture::CleanupOutcome::StaleInstance) => {
+                        // The compositor restarted: the old identity is
+                        // retired by the owner, never retargeted here.
+                        self.failed_cleanup = None;
+                        self.cleanup_attempts = 0;
+                        self.status = label("ready");
+                    }
+                    Err(error) => {
+                        self.cleanup_attempts += 1;
+                        self.status = format!("{}: cleanup failed: {error}", label("error"));
+                        if self.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS {
+                            self.failed_cleanup = None;
+                            self.status =
+                                format!("{}: cleanup abandoned: {error}", label("error"));
+                        }
+                    }
+                }
+                Task::none()
             }
             Message::Preview(revision, result) => {
                 self.rendering = false;
@@ -1080,7 +1163,13 @@ impl App {
         match delivery {
             Delivery::Command(command) => self.command(command),
             Delivery::Settings => Task::none(),
-            Delivery::Changed | Delivery::Connected => self.refresh(),
+            Delivery::Connected => {
+                // A real Connected event retries a failed cancellation
+                // cleanup; no polling, no second connection, no retargeting.
+                let cleanup = self.retry_cleanup();
+                Task::batch([cleanup, self.refresh()])
+            }
+            Delivery::Changed => self.refresh(),
             Delivery::Disconnected => {
                 self.error("Bus disconnected");
                 Task::none()
@@ -1766,6 +1855,29 @@ mod tests {
         assert!(matches!(app.dialog, Some(Dialog::About)));
     }
     #[test]
+    fn handoff_never_closes_a_touched_window_and_keeps_dirty_work() {
+        // A user who touched the window is never closed by a late handoff.
+        let mut app = test_app();
+        app.touched = true;
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(app.pending.is_none());
+        // An untouched window with dirty work keeps the work behind its
+        // confirm dialogue instead of quitting under it.
+        let mut app = test_app();
+        app.document = Some(Document::new(image::RgbaImage::new(10, 10)).unwrap());
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
+        assert!(app.confirm);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        assert!(app.document.is_some());
+        // A failed forward leaves the refusal visible and never quits.
+        let mut app = test_app();
+        let _ = app.update(Message::Bus(Delivery::Forwarded(Err(
+            "the running instance refused the handoff".into()
+        ))));
+        assert_eq!(app.status, "the running instance refused the handoff");
+        assert!(app.pending.is_none());
+    }
+    #[test]
     fn activation_preserves_save_as_for_pending_dirty_close() {
         let directory = tempfile::tempdir().unwrap();
         let mut app = test_app();
@@ -1915,11 +2027,14 @@ mod tests {
             10,
             vec![255; 400],
         ));
-        let _ = app.update(Message::Captured(Ok(capture::Captured {
-            document: Document::new(image::RgbaImage::new(40, 50)).unwrap(),
-            path: PathBuf::from("/tmp/captured.png"),
-            metadata: json!({"output":"new"}),
-        })));
+        let _ = app.update(Message::Captured(
+            0,
+            Ok(capture::Captured {
+                document: Document::new(image::RgbaImage::new(40, 50)).unwrap(),
+                path: PathBuf::from("/tmp/captured.png"),
+                metadata: json!({"output":"new"}),
+            }),
+        ));
         assert!(app.preview.is_none());
         assert_eq!(app.document.as_ref().unwrap().dimensions(), (40, 50));
     }
@@ -1943,11 +2058,83 @@ mod tests {
         app.cancel = Some(cancel);
         let _ = app.update(Message::Quit);
         assert!(*rx.borrow());
-        let _ = app.update(Message::Captured(Err("cancelled".into())));
+        let _ = app.update(Message::Captured(0, Err(capture::CaptureError::cancelled(None))));
         assert!(app.confirm);
         assert!(matches!(app.pending, Some(Pending::Quit)));
         assert!(app.document.as_ref().unwrap().dirty());
         assert_eq!(app.document.as_ref().unwrap().objects().len(), 1);
+    }
+    #[test]
+    fn stale_capture_generations_never_update_a_newer_capture() {
+        let mut app = test_app();
+        app.capture_generation = 4;
+        let _ = app.update(Message::Captured(
+            3,
+            Ok(capture::Captured {
+                document: Document::new(image::RgbaImage::new(40, 50)).unwrap(),
+                path: PathBuf::from("/tmp/stale.png"),
+                metadata: json!({"output":"stale"}),
+            }),
+        ));
+        assert!(
+            app.document.is_none(),
+            "a late completion from an older attempt installs nothing"
+        );
+        let _ = app.update(Message::Captured(
+            4,
+            Ok(capture::Captured {
+                document: Document::new(image::RgbaImage::new(20, 30)).unwrap(),
+                path: PathBuf::from("/tmp/current.png"),
+                metadata: json!({"output":"current"}),
+            }),
+        ));
+        assert_eq!(app.document.as_ref().unwrap().dimensions(), (20, 30));
+    }
+    #[test]
+    fn failed_cleanup_is_retained_and_reported_truthfully() {
+        let mut app = test_app();
+        let cleanup = capture::Cleanup {
+            selection: Some(capture::Selection {
+                instance: "itest".into(),
+                owner: "owner".into(),
+                generation: 2,
+            }),
+            window: Some(Target {
+                id: 1,
+                generation: 2,
+            }),
+        };
+        let _ = app.update(Message::Captured(
+            0,
+            Err(capture::CaptureError {
+                message: "cancelled; cleanup failed: broker gone".into(),
+                cleanup: Some(cleanup.clone()),
+            }),
+        ));
+        assert_eq!(app.status, "cancelled; cleanup failed: broker gone");
+        assert_eq!(app.failed_cleanup, Some(cleanup));
+        // The bounded retry abandons the target after the attempt cap.
+        for _ in 0..MAX_CLEANUP_ATTEMPTS {
+            let _ = app.update(Message::CleanupRetried(Err("still gone".into())));
+        }
+        assert!(app.failed_cleanup.is_none());
+        assert!(app.status.contains("cleanup abandoned"));
+        // A stale compositor instance retires the target without retargeting.
+        let mut app = test_app();
+        app.failed_cleanup = Some(capture::Cleanup {
+            selection: Some(capture::Selection {
+                instance: "itest".into(),
+                owner: "owner".into(),
+                generation: 2,
+            }),
+            window: Some(Target {
+                id: 1,
+                generation: 2,
+            }),
+        });
+        let _ = app.update(Message::CleanupRetried(Ok(capture::CleanupOutcome::StaleInstance)));
+        assert!(app.failed_cleanup.is_none());
+        assert_eq!(app.status, label("ready"));
     }
     #[test]
     fn full_freehand_stroke_keeps_its_accumulated_geometry() {

@@ -5,13 +5,20 @@
 //! traffic; channel overflow and lifecycle loss are explicit. An explicit
 //! typed name collision hands the launch paths to the running instance on this
 //! same worker — never from reply text, and only when no connection was ever
-//! established. Replies are tracked tasks fenced to the connection generation
-//! they arrived on; quit drains accepted replies, capture restoration calls,
-//! the settings cache and the client close against one shared deadline.
+//! established.
+//!
+//! The GUI outbox is bounded and reliable: commands await their slot, while
+//! settings wakes, lifecycle edges and refresh nudges coalesce. Accepted
+//! replies travel through one ordered writer with a fixed admission sum
+//! (pending + queued + in flight), so an accepted reply is never shed;
+//! refusals use a separate capped pool with diagnosed shedding. Quit drains
+//! the accepted writer, refusals, capture restoration calls, the settings
+//! cache and the client close against one shared deadline.
 use ::bus::native_client::{
     BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
-    SupervisedClient,
+    SupervisedClient, SupervisedError,
 };
+use application::iced::futures::SinkExt;
 use application::iced::futures::channel::{mpsc, oneshot};
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
@@ -197,7 +204,7 @@ impl Pending {
     }
     /// Take a reply, fenced to `live`: `None` when the command belongs to
     /// another connection or is unknown. The authoritative fence is the
-    /// client's own generation check at send time; this avoids spawning a
+    /// client's own generation check at send time; this avoids enqueuing a
     /// doomed reply at all.
     fn take(&mut self, id: u64, live: u64) -> Option<IncomingCommand> {
         match self.commands.get(&id) {
@@ -205,6 +212,51 @@ impl Pending {
             _ => None,
         }
     }
+}
+
+/// The fixed sum across accepted work: pending commands plus replies queued
+/// or in flight. Admission refuses a new command before the sum can reach
+/// the cap, so an accepted reply is never shed and the accepted pipeline
+/// never exceeds its channel.
+const ACCEPTED_CAP: usize = 32;
+/// Separate capped pool for refusal replies; saturation is diagnosed.
+const REFUSAL_CAP: usize = 16;
+/// Outbound operations (calls, delays).
+const OPERATION_CAP: usize = 32;
+/// The GUI outbox: commands await a slot; edges coalesce or are dropped only
+/// when the app is already behind (they carry no exclusive data).
+const OUTBOX_CAP: usize = 64;
+
+/// Mirrors the accepted sum for admission and the truthful shutdown receipt.
+#[derive(Default)]
+struct AcceptedGate {
+    pending: usize,
+    queued: usize,
+}
+impl AcceptedGate {
+    fn admit(&self) -> bool {
+        self.pending + self.queued < ACCEPTED_CAP
+    }
+    fn accepted(&mut self) {
+        self.pending += 1;
+    }
+    fn replied(&mut self) {
+        self.pending -= 1;
+        self.queued += 1;
+    }
+    fn sent(&mut self) {
+        self.queued -= 1;
+    }
+}
+
+/// The single-instance handoff gate: only an explicit typed name collision
+/// on a connection that never established, with launch paths to forward.
+fn handoff_gate(
+    kind: RegistrationRejectionKind,
+    generation: u64,
+    handoff: &Option<Vec<String>>,
+) -> bool {
+    kind == RegistrationRejectionKind::NameTaken && generation == 0 && handoff.is_some()
 }
 
 /// Start the bus thread registered as `service`, connecting to `url`
@@ -224,11 +276,11 @@ pub fn start(
         BusHandle,
         Ui<()>,
         appearance::settings::Prepared,
-        mpsc::UnboundedReceiver<Delivery>,
+        mpsc::Receiver<Delivery>,
     ),
     String,
 > {
-    let (send, receive) = mpsc::unbounded();
+    let (send, receive) = mpsc::channel(OUTBOX_CAP);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
     let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -281,23 +333,32 @@ type Ready = std::sync::mpsc::Sender<
         String,
     >,
 >;
-fn settings_wake(send: &mpsc::UnboundedSender<Delivery>, needed: bool) {
+/// A settings wake is a poke, coalesced by the mailbox itself; it carries no
+/// exclusive data, so a full outbox only delays a wake the queued deliveries
+/// already imply.
+fn settings_wake(send: &mut mpsc::Sender<Delivery>, needed: bool) {
     if needed {
-        let _ = send.unbounded_send(Delivery::Settings);
+        let _ = send.try_send(Delivery::Settings);
     }
 }
 
 /// Refusal for a saturated command queue.
 const BUSY_BODY: &str = "{\"error\":\"too many pending Cap commands\"}";
-/// The one total shutdown budget: accepted replies, capture restoration
-/// calls, the settings cache and the client close.
+/// The one total shutdown budget: accepted replies, refusals, capture
+/// restoration calls, the settings cache and the client close.
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    Connected,
+    Disconnected,
+}
 
 async fn worker(
     service: String,
     url: String,
     mut handoff: Option<Vec<String>>,
-    send: mpsc::UnboundedSender<Delivery>,
+    mut send: mpsc::Sender<Delivery>,
     mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
 ) {
@@ -334,7 +395,7 @@ async fn worker(
         None => Worker::offline(build),
     };
     let (ui, mut lane) = bridge(Session::new(consumer), settings_worker);
-    settings_wake(&send, lane.connect(Arc::clone(&client)));
+    settings_wake(&mut send, lane.connect(Arc::clone(&client)));
     if ready
         .send(Ok((Arc::clone(&client), ui, bootstrap)))
         .is_err()
@@ -348,61 +409,116 @@ async fn worker(
         eprintln!("cap: static assets: {error}");
     }
     let mut pending = Pending::default();
-    let mut replies = tokio::task::JoinSet::new();
+    let mut gate = AcceptedGate::default();
+    // One ordered accepted-reply writer: a single serial task sends replies
+    // in admission order, so accepted capture and quit replies reach the
+    // wire in FIFO. The acks keep the admission sum exact.
+    let (accepted_tx, mut accepted_rx) =
+        tokio::sync::mpsc::channel::<(u8, String, IncomingCommand)>(ACCEPTED_CAP);
+    let (acks, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let faults = Arc::new(Mutex::new(Vec::<String>::new()));
+    let accepted_writer = tokio::spawn({
+        let client = client.clone();
+        let faults = faults.clone();
+        let acks = acks.clone();
+        async move {
+            while let Some((rc, body, command)) = accepted_rx.recv().await {
+                let result = client.respond(&command, rc, &body).await;
+                if let Err(error) = result {
+                    faults
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(format!("reply: {error}"));
+                }
+                let _ = acks.send(());
+            }
+        }
+    });
+    let mut refusals: tokio::task::JoinSet<Result<(), SupervisedError>> =
+        tokio::task::JoinSet::new();
     let mut operations = tokio::task::JoinSet::new();
+    let mut shed_refusals = 0u64;
+    let mut busy_rejected = 0u64;
     let mut next_id = 0;
+    let mut handoff_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut incoming_open = true;
     let mut connection_open = true;
     let mut lifecycle = None;
+    let mut last_edge = None;
+    let mut changed_out = false;
     let mut deadline = None;
-    let mut faults = Vec::new();
     // Sample once before waiting: fast registration may already have completed.
     loop {
+        while let Ok(()) = ack_rx.try_recv() {
+            gate.sent();
+        }
+        // Reap the finished single-instance handoff, its result already
+        // delivered; a panicked handoff is recorded, never silent.
+        if handoff_task.as_mut().is_some_and(|task| task.is_finished()) {
+            if let Err(error) = handoff_task.take().expect("finished handoff").await {
+                faults
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(error.to_string());
+                eprintln!("cap: handoff: {error}");
+            }
+        }
         let now = *connection.borrow_and_update();
         if lifecycle != Some(now) {
             lifecycle = Some(now);
-            settings_wake(&send, lane.publish(SettingsEvent::Wake));
+            settings_wake(&mut send, lane.publish(SettingsEvent::Wake));
             match now {
                 ConnState::Connected => {
-                    let _ = send.unbounded_send(Delivery::Connected);
+                    if last_edge != Some(Edge::Connected) {
+                        last_edge = Some(Edge::Connected);
+                        let _ = send.try_send(Delivery::Connected);
+                    }
                 }
                 ConnState::Fatal | ConnState::ShuttingDown => {
                     let rejection = client.registration_rejection();
-                    let name_taken = rejection.as_ref().is_some_and(|reason| {
-                        reason.kind() == RegistrationRejectionKind::NameTaken
-                    });
                     let message = rejection
+                        .clone()
                         .map_or_else(|| "connection stopped".into(), |reason| reason.message);
-                    let _ = send.unbounded_send(Delivery::Refused { message });
-                    if name_taken
-                        && client.connection_generation() == 0
-                        && let Some(paths) = handoff.take()
+                    let _ = send.try_send(Delivery::Refused { message });
+                    if rejection.as_ref().is_some_and(|reason| {
+                        handoff_gate(reason.kind(), client.connection_generation(), &handoff)
+                    }) && let Some(paths) = handoff.take()
                     {
                         let url = url.clone();
                         let service = service.clone();
-                        let send = send.clone();
-                        operations.spawn(async move {
+                        let mut send = send.clone();
+                        handoff_task = Some(tokio::spawn(async move {
                             let result = forward_async(&url, &service, &paths).await;
-                            let _ = send.unbounded_send(Delivery::Forwarded(result));
-                        });
+                            let _ = send.send(Delivery::Forwarded(result)).await;
+                        }));
                     }
                 }
                 ConnState::Disconnected => {
-                    let _ = send.unbounded_send(Delivery::Disconnected);
+                    if last_edge != Some(Edge::Disconnected) {
+                        last_edge = Some(Edge::Disconnected);
+                        let _ = send.try_send(Delivery::Disconnected);
+                    }
                 }
                 ConnState::Connecting => {}
             }
         }
         tokio::select! {
-            result = replies.join_next(), if !replies.is_empty() => {
+            biased;
+            result = refusals.join_next(), if !refusals.is_empty() => {
                 match result {
                     Some(Ok(Ok(()))) => {}
                     Some(Ok(Err(error))) => {
-                        faults.push(error.clone());
+                        faults
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("refusal: {error}"));
                         eprintln!("cap: Bus reply: {error}");
                     }
                     Some(Err(error)) => {
-                        faults.push(error.to_string());
+                        faults
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("refusal task: {error}"));
                         eprintln!("cap: Bus reply task: {error}");
                     }
                     None => {}
@@ -410,34 +526,108 @@ async fn worker(
             }
             result = operations.join_next(), if !operations.is_empty() => {
                 if let Some(Err(error)) = result {
-                    faults.push(error.to_string());
+                    faults
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(error.to_string());
                     eprintln!("cap: Bus work: {error}");
                 }
             }
             progress = lane.drive() => match progress {
-                Progress::Wake => settings_wake(&send, true),
+                Progress::Wake => settings_wake(&mut send, true),
                 Progress::UiClosed => break,
                 Progress::Updated => {}
             },
+            effect = effects.recv() => {
+                let Some(effect) = effect else { break };
+                match effect {
+                    Effect::Respond { id, rc, body } => {
+                        if let Some(command) = pending.take(id, client.connection_generation()) {
+                            gate.replied();
+                            match accepted_tx.try_send((rc, body, command)) {
+                                Ok(()) => {}
+                                Err(_) => {
+                                    faults
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .push("accepted reply enqueue failed".into());
+                                }
+                            }
+                        }
+                    }
+                    Effect::Call { service, verb, args, limit, reply } => {
+                        // The app's refresh reaction releases the Changed
+                        // coalescing flag.
+                        if verb == "comp.windows.list" {
+                            changed_out = false;
+                        }
+                        if operations.len() >= OPERATION_CAP {
+                            busy_rejected += 1;
+                            let _ = reply.send(Err("Bus worker busy".into()));
+                        } else {
+                            let client = client.clone();
+                            operations.spawn(async move {
+                                let result = tokio::time::timeout(
+                                    limit,
+                                    client.call(&service, &verb, args),
+                                )
+                                .await
+                                .map_err(|_| "Bus request timed out".to_string())
+                                .and_then(|result| result.map_err(|error| error.to_string()));
+                                let _ = reply.send(result);
+                            });
+                        }
+                    }
+                    Effect::Delay { duration, reply } => {
+                        if operations.len() >= OPERATION_CAP {
+                            busy_rejected += 1;
+                            drop(reply);
+                        } else {
+                            operations.spawn(async move {
+                                tokio::time::sleep(duration).await;
+                                let _ = reply.send(());
+                            });
+                        }
+                    }
+                    Effect::Quit => {
+                        deadline = Some(Instant::now() + SHUTDOWN_BUDGET);
+                        // FIFO: replies accepted before this quit are queued
+                        // ahead of it, and the ordered accepted writer puts
+                        // every accepted reply — the quit reply above all —
+                        // on the wire before the client closes.
+                        for (_, rc, body, command) in take_queued_replies(
+                            &mut effects,
+                            &mut pending,
+                            client.connection_generation(),
+                        ) {
+                            gate.replied();
+                            let _ = accepted_tx.try_send((rc, body, command));
+                        }
+                        break;
+                    }
+                }
+            }
             command = incoming.recv(), if incoming_open => {
                 match command {
                     Some(BoundedIncomingEvent::Command(command)) => {
                         // Native settings frames decode before ordinary traffic.
                         if let Some(wake) = lane.delivery(&command) {
-                            settings_wake(&send, wake);
+                            settings_wake(&mut send, wake);
                             continue;
                         }
                         if command.topic().is_some() || command.command.is_empty() {
                             continue;
                         }
-                        if pending.len() >= 32 {
-                            let client = client.clone();
-                            replies.spawn(async move {
-                                client
-                                    .respond(&command, 10, BUSY_BODY)
-                                    .await
-                                    .map_err(|error| format!("busy reply: {error}"))
-                            });
+                        if !gate.admit() {
+                            if refusals.len() < REFUSAL_CAP {
+                                let client = client.clone();
+                                refusals.spawn(async move {
+                                    client.respond(&command, 10, BUSY_BODY).await
+                                });
+                            } else {
+                                shed_refusals += 1;
+                                eprintln!("cap: refusal shed: refusal pool saturated");
+                            }
                             continue;
                         }
                         next_id += 1;
@@ -452,71 +642,21 @@ async fn worker(
                             caller_key: caller_key(&command),
                         });
                         pending.insert(next_id, command);
-                        let _ = send.unbounded_send(delivery);
+                        gate.accepted();
+                        // Reliable: an accepted command awaits its outbox slot.
+                        let _ = send.send(delivery).await;
                     }
                     Some(BoundedIncomingEvent::Overflow { .. }) => {
-                        settings_wake(&send, lane.publish(SettingsEvent::Lost));
-                        let _ = send.unbounded_send(Delivery::Changed);
+                        settings_wake(&mut send, lane.publish(SettingsEvent::Lost));
+                        if !changed_out
+                            && send.try_send(Delivery::Changed).is_ok()
+                        {
+                            changed_out = true;
+                        }
                     }
                     None => {
                         incoming_open = false;
-                        settings_wake(&send, lane.publish(SettingsEvent::Wake));
-                    }
-                }
-            }
-            effect = effects.recv() => {
-                let Some(effect) = effect else { break };
-                match effect {
-                    Effect::Respond { id, rc, body } => {
-                        if let Some(command) = pending.take(id, client.connection_generation()) {
-                            let client = client.clone();
-                            replies.spawn(async move {
-                                client
-                                    .respond(&command, rc, &body)
-                                    .await
-                                    .map_err(|error| format!("reply {rc}: {error}"))
-                            });
-                        }
-                    }
-                    Effect::Call { service, verb, args, limit, reply } => {
-                        let client = client.clone();
-                        operations.spawn(async move {
-                            let result = tokio::time::timeout(
-                                limit,
-                                client.call(&service, &verb, args),
-                            )
-                            .await
-                            .map_err(|_| "Bus request timed out".to_string())
-                            .and_then(|result| result.map_err(|error| error.to_string()));
-                            let _ = reply.send(result);
-                        });
-                    }
-                    Effect::Delay { duration, reply } => {
-                        operations.spawn(async move {
-                            tokio::time::sleep(duration).await;
-                            let _ = reply.send(());
-                        });
-                    }
-                    Effect::Quit => {
-                        deadline = Some(Instant::now() + SHUTDOWN_BUDGET);
-                        // FIFO: replies accepted before this quit are queued
-                        // ahead of it. Spawn them here so the drain below puts
-                        // every accepted reply — the quit reply above all —
-                        // on the wire before the client closes.
-                        for (_, rc, body, command) in take_queued_replies(
-                            &mut effects,
-                            &mut pending,
-                            client.connection_generation(),
-                        ) {
-                            let client = client.clone();
-                            replies.spawn(async move {
-                                client
-                                    .respond(&command, rc, &body)
-                                    .await
-                                    .map_err(|error| format!("reply {rc}: {error}"))
-                            });
-                        }
-                        break;
+                        settings_wake(&mut send, lane.publish(SettingsEvent::Wake));
                     }
                 }
             }
@@ -529,33 +669,123 @@ async fn worker(
     }
     let deadline = deadline.unwrap_or(Instant::now() + SHUTDOWN_BUDGET);
     let at = || tokio::time::Instant::from_std(deadline);
-    // Accepted replies flush first, against the one shared deadline.
-    while !replies.is_empty() {
-        match tokio::time::timeout_at(at(), replies.join_next()).await {
+    // The ordered accepted writer drains the queue, then exits on channel
+    // close, against the one shared deadline.
+    drop(accepted_tx);
+    match tokio::time::timeout_at(at(), accepted_writer).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("accepted writer: {error}")),
+        Err(_) => faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push("accepted reply drain timed out".into()),
+    }
+    // Every send is followed by its ack before the writer exits, so draining
+    // the acks now leaves only replies that never reached the wire.
+    while let Ok(()) = ack_rx.try_recv() {
+        gate.sent();
+    }
+    let queued_accepted = gate.queued;
+    // Refusals flush within the same budget.
+    while !refusals.is_empty() {
+        match tokio::time::timeout_at(at(), refusals.join_next()).await {
             Ok(Some(Ok(Ok(())))) => {}
-            Ok(Some(Ok(Err(error)))) => faults.push(format!("reply: {error}")),
-            Ok(Some(Err(error))) => faults.push(format!("reply task: {error}")),
-            _ => break,
+            Ok(Some(Ok(Err(error)))) => faults
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("refusal: {error}")),
+            Ok(Some(Err(error))) => faults
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("refusal task: {error}")),
+            Ok(None) => break,
+            Err(_) => {
+                faults
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("refusal drain timed out".into());
+                break;
+            }
         }
     }
-    replies.abort_all();
+    refusals.abort_all();
     // Accepted capture restoration and other calls complete within the same
     // budget before being aborted.
     while !operations.is_empty() {
         match tokio::time::timeout_at(at(), operations.join_next()).await {
             Ok(Some(Ok(()))) => {}
-            Ok(Some(Err(error))) => faults.push(format!("Bus work: {error}")),
-            _ => break,
+            Ok(Some(Err(error))) => faults
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("Bus work: {error}")),
+            Ok(None) => break,
+            Err(_) => {
+                faults
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(format!(
+                        "operation drain timed out with {} operations queued",
+                        operations.len()
+                    ));
+                break;
+            }
         }
     }
     operations.abort_all();
+    // The one handoff permit drains within the same budget.
+    if let Some(mut task) = handoff_task.take() {
+        if !task.is_finished() {
+            match tokio::time::timeout_at(at(), &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => faults
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(format!("handoff task: {error}")),
+                Err(_) => {
+                    faults
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push("handoff drain timed out".into());
+                    task.abort();
+                }
+            }
+        }
+    }
     if let Err(error) = lane.flush_cache(deadline).await {
-        faults.push(format!("settings cache: {}: {}", error.code, error.message));
+        faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("settings cache: {}: {}", error.code, error.message));
     }
     if tokio::time::timeout_at(at(), client.close()).await.is_err() {
-        faults.push("Bus close timed out".into());
+        faults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push("Bus close timed out".into());
     }
-    eprintln!("CAP_SHUTDOWN {}", json!({"faults":faults}));
+    let faults = Arc::try_unwrap(faults)
+        .map(|lock| {
+            lock.into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        })
+        .unwrap_or_else(|faults| {
+            faults
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
+    eprintln!(
+        "CAP_SHUTDOWN {}",
+        json!({
+            "faults": faults,
+            "queued_accepted": queued_accepted,
+            "shed_refusals": shed_refusals,
+            "busy_rejected": busy_rejected,
+        })
+    );
 }
 
 /// Drain replies queued ahead of a quit, in FIFO order, fenced to `live`.
@@ -664,6 +894,28 @@ mod tests {
     }
 
     #[test]
+    fn admission_keeps_the_accepted_sum_fixed_and_never_sheds_accepted() {
+        let mut gate = AcceptedGate::default();
+        for _ in 0..ACCEPTED_CAP {
+            assert!(gate.admit());
+            gate.accepted();
+        }
+        assert!(
+            !gate.admit(),
+            "the accepted pipeline admits no command beyond its fixed sum"
+        );
+        // A reply transfers the command from pending to the accepted queue;
+        // the sum is unchanged and still saturated.
+        gate.replied();
+        assert!(!gate.admit());
+        // Only a sent (acked) reply frees admission.
+        gate.sent();
+        assert!(gate.admit());
+        gate.accepted();
+        assert!(!gate.admit());
+    }
+
+    #[test]
     fn quit_drains_accepted_replies_in_fifo_order_and_fences_the_rest() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut pending = Pending::default();
@@ -724,5 +976,176 @@ mod tests {
             "mesh:svc@beta"
         );
         assert_eq!(caller_key(&command(1)), "anon");
+    }
+
+    #[test]
+    fn handoff_gate_requires_a_typed_name_collision_on_a_never_established_connection() {
+        let paths = Some(vec!["/tmp/image.png".into()]);
+        assert!(handoff_gate(
+            RegistrationRejectionKind::NameTaken,
+            0,
+            &paths
+        ));
+        assert!(
+            !handoff_gate(RegistrationRejectionKind::Unknown, 0, &paths),
+            "an admission refusal never forwards"
+        );
+        assert!(
+            !handoff_gate(RegistrationRejectionKind::NameTaken, 1, &paths),
+            "a later generation never forwards"
+        );
+        assert!(
+            !handoff_gate(RegistrationRejectionKind::NameTaken, 0, &None),
+            "no handoff payload, no forward"
+        );
+    }
+
+    #[test]
+    fn operation_cap_rejects_calls_busy_and_quit_bounds_stalled_work() {
+        let (send, _receive) = mpsc::channel(OUTBOX_CAP);
+        let (effects, effects_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ready, ready_rx) = std::sync::mpsc::channel();
+        let worker_thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(worker(
+                "cap-test".into(),
+                "ws://127.0.0.1:1/ws".into(),
+                None,
+                send,
+                effects_rx,
+                ready,
+            ));
+            runtime.shutdown_timeout(Duration::from_millis(100));
+        });
+        let (client, ui, _bootstrap) = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let _client = client;
+        let _ui = ui;
+        // Occupy every operation permit with stalled work.
+        for _ in 0..OPERATION_CAP {
+            let (reply, _rx) = oneshot::channel();
+            effects
+                .send(Effect::Delay {
+                    duration: Duration::from_secs(60),
+                    reply,
+                })
+                .unwrap();
+        }
+        let (reply, rx) = oneshot::channel();
+        effects
+            .send(Effect::Call {
+                service: "comp".into(),
+                verb: "comp.windows.list".into(),
+                args: json!({}),
+                limit: Duration::from_secs(5),
+                reply,
+            })
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), rx)
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+                "Bus worker busy",
+                "an exhausted operation pool rejects the call immediately"
+            );
+        });
+        effects.send(Effect::Quit).unwrap();
+        worker_thread.join().unwrap();
+    }
+
+    #[test]
+    fn operation_permits_release_after_a_dynamic_wave() {
+        let (send, _receive) = mpsc::channel(OUTBOX_CAP);
+        let (effects, effects_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ready, ready_rx) = std::sync::mpsc::channel();
+        let worker_thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(worker(
+                "cap-test".into(),
+                "ws://127.0.0.1:1/ws".into(),
+                None,
+                send,
+                effects_rx,
+                ready,
+            ));
+            runtime.shutdown_timeout(Duration::from_millis(100));
+        });
+        let (client, ui, _bootstrap) = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let _client = client;
+        let _ui = ui;
+        // A wave of short operations saturates the pool...
+        for _ in 0..OPERATION_CAP {
+            let (reply, _rx) = oneshot::channel();
+            effects
+                .send(Effect::Delay {
+                    duration: Duration::from_millis(300),
+                    reply,
+                })
+                .unwrap();
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (reply, rx) = oneshot::channel();
+            effects
+                .send(Effect::Call {
+                    service: "comp".into(),
+                    verb: "comp.windows.list".into(),
+                    args: json!({}),
+                    limit: Duration::from_secs(5),
+                    reply,
+                })
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), rx)
+                    .await
+                    .unwrap()
+                    .unwrap_err(),
+                "Bus worker busy",
+                "the wave saturates the pool"
+            );
+            // ...and the wave's completion releases real permits.
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let (reply, rx) = oneshot::channel();
+            effects
+                .send(Effect::Call {
+                    service: "comp".into(),
+                    verb: "comp.windows.list".into(),
+                    args: json!({}),
+                    limit: Duration::from_secs(5),
+                    reply,
+                })
+                .unwrap();
+            let error = tokio::time::timeout(Duration::from_secs(5), rx)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_ne!(
+                error, "Bus worker busy",
+                "the call left the pool instead of a busy rejection"
+            );
+        });
+        effects.send(Effect::Quit).unwrap();
+        worker_thread.join().unwrap();
     }
 }
