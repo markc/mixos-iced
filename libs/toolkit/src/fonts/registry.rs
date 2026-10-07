@@ -833,9 +833,6 @@ struct FaceKey {
 struct FaceRecord {
     /// The renderer database ID, assigned by the committed transaction.
     id: fontdb::ID,
-    static_weight: u16,
-    /// The `wght` variation axis range, when the face is variable.
-    wght: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1785,8 +1782,6 @@ fn stage(
                 ))?;
         let record = FaceRecord {
             id: fontdb::ID::default(),
-            static_weight: parsed_face.static_weight,
-            wght: parsed_face.wght,
         };
         let canonical = ledger
             .sources

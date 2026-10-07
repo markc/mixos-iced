@@ -2582,8 +2582,7 @@ mod tests {
         assert_eq!(messages, [Host::Act(9)]);
     }
 
-    // iced_core implements `Renderer` for `()` only with debug assertions,
-    // like the other UserInterface tests here: run without --release.
+    // Use the real paragraph-backed layout renderer in release and debug.
     #[test]
     fn open_operation_opens_the_named_bar_entry_by_keyboard() {
         let bar = || {
