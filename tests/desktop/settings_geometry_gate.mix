@@ -2,14 +2,15 @@
 -- version: 0.1.0
 -- Native settings -> Quoin reservation -> real xdg configure -> captured pixels
 -- and stationary human pointer, wholly within an owned nested desktop.
--- Usage: mix tests/desktop/settings_geometry_gate.mix REPO BUILD_BIN_DIR
-if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+-- Usage: mix tests/desktop/settings_geometry_gate.mix REPO BUILD_BIN_DIR [--ced]
+if len(args()) < 2 or len(args()) > 3 or (len(args()) == 3 and args()[2] != "--ced") then raise("ARGS","REPO BUILD_BIN_DIR [--ced]") end
+$joint = len(args()) == 3
 $repo = args()[0]
 $bin = args()[1]
 $n = require("nested_host_lib.mix")
 $capture = require("capture_lib.mix")
 $mix = env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
-for each $name in ["compd","settingsd","noded","testkit-input-probe","testkit-screenshot"]
+for each $name in concat(["compd","settingsd","noded","testkit-input-probe","testkit-screenshot"],if $joint then ["ced","editd"] else [] end)
   if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing " .. $name) end
 end
 $R = {run:nil,bus:nil,session:nil,children:[],ok:false}
@@ -139,6 +140,61 @@ fn await_point($path,$offset,$x,$y)
   end
   raise("INPUT","No fresh client point within Wayland fixed-point tolerance")
 end
+fn ced($verb,$body)
+  return require_ok($n.call("ced-settings-geometry",$verb,$body),$verb)
+end
+fn snapshot_identity($snapshot)
+  return {incarnation:$snapshot.incarnation,revision:$snapshot.revision,
+    design_revision:$snapshot.design_revision,source_digest:$snapshot.source_digest}
+end
+fn joint_evidence($accepted)
+  $shell_evidence = shell("shell.props.get",{path:"settings"})
+  $app_evidence = ced("app.describe",{}).settings
+  for each $entry in [{evidence:$shell_evidence,context:"desktop"},{evidence:$app_evidence,context:"app:ced"}]
+    if ($entry.evidence == nil or $entry.evidence.kind != "current" or not $entry.evidence.confirmed or
+      not deep_eq($entry.evidence.binding,$binding) or $entry.evidence.context != $entry.context or
+      not deep_eq($entry.evidence.current,snapshot_identity($accepted)) or
+      not deep_eq($entry.evidence.applied,snapshot_identity($accepted))) then return false end
+  end
+  return true
+end
+fn await_joint($accepted)
+  for $attempt = 1 to 100
+    $reply = $n.call("ced-settings-geometry","app.describe",{})
+    if $reply.rc == 0 and joint_evidence($accepted) then return end
+    sleep(0.1)
+  end
+  raise("JOINT","Ced and Quoin did not apply the same accepted identity")
+end
+fn capture_joint($label,$accepted,$layout,$ced_window,$ced_width)
+  -- Alternate committed widths so an old buffer cannot satisfy the size fence.
+  comp("comp.window.place",merge($ced_window,{x:0,y:0,width:$ced_width,height:600}))
+  $row = comp("comp.window.wait",{match:$ced_window,until:"size",width:$ced_width,height:600,timeout_ms:5000}).window
+  if $row == nil or $row.id != $ced_window.id or $row.generation != $ced_window.generation then raise("JOINT","Ced placement/identity changed") end
+  if not joint_evidence($accepted) then raise("JOINT","Stale evidence before shared frame") end
+  $path = $R.run.path .. "/" .. $label .. ".ppm"
+  print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})}))
+  $image = ppm($path)
+  $app_pixel = $capture.pixel($image,200,400)
+  $base = $accepted.effective["app:ced"].design.pairs.base.rendered_surface
+  $cell = nil
+  for each $candidate in $accepted.effective.desktop.design.buttons
+    if ($candidate.variant == "primary" and $candidate.size == "md" and
+      $candidate.interaction == "resting" and not $candidate.focus_visible) then $cell=$candidate; break end
+  end
+  if $cell == nil or $cell.pair.surface[3] != 1 then raise("JOINT","Missing opaque shell button token") end
+  $button = $layout.nodes.go
+  if $layout.surface.y+$button.y+8 <= 600 then raise("JOINT","Ced overlaps shell sample") end
+  $shell_pixel = $capture.pixel($image,$layout.surface.x+$button.x+8,$layout.surface.y+$button.y+8)
+  for $channel = 0 to 2
+    if (abs($app_pixel[$channel]-$capture.srgb($base[$channel])) > 8 or
+      abs($shell_pixel[$channel]-$capture.srgb($cell.pair.surface[$channel])) > 8) then
+      raise("JOINT","Shared frame does not match both applied palettes")
+    end
+  end
+  if not joint_evidence($accepted) then raise("JOINT","Evidence changed during shared frame") end
+  print("captured joint " .. $label .. " revision " .. $accepted.revision .. " Ced " .. json_encode($app_pixel) .. " Quoin " .. json_encode($shell_pixel))
+end
 try
   $R.run = $n.new_run("/tmp/settings-geometry")
   $root = $R.run.path
@@ -253,6 +309,63 @@ try
   sleep(0.3)
   if len(re_find(tail_after($probe_log,$quiet_offset),"PROBE (?:enter|leave|motion)")) != 0 then
     raise("INPUT","Unchanged frames repeatedly retargeted the stationary pointer")
+  end
+  if $joint then
+    $editd = spawn([$bin .. "/editd","serve"],{stdout:{file:$root .. "/editd.log"},stderr:"stdout",detach:true})
+    $R.children = concat($R.children,[$editd])
+    $edit_ready = false
+    for $attempt = 1 to 60
+      if $n.call("edit","edit.ping",{}).rc == 0 then $edit_ready=true; break end
+      sleep(0.1)
+    end
+    if not $edit_ready then raise("JOINT","Owned editd did not register") end
+    $file = $root .. "/joint-document.txt"
+    write_file($file,"joint native settings editor\n")
+    $ced_log = $root .. "/ced.log"
+    $ced_pid = spawn([$bin .. "/ced","--service","ced-settings-geometry",$file],
+      {env:$n.client_env($R.session,{HOME:$root .. "/home",MIXOS_APP_HOME:$root .. "/ced-home",
+        MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1"}),
+        stdout:{file:$ced_log},stderr:"stdout",detach:true})
+    $R.children = concat($R.children,[$ced_pid])
+    $ced_row = comp("comp.window.wait",{match:{app_id:"dev.mixos.ced"},until:"presented",timeout_ms:5000}).window
+    if $ced_row == nil or $ced_row.pid != $ced_pid then raise("JOINT","Ced window ownership missing") end
+    $ced_window = {id:$ced_row.id,generation:$ced_row.generation}
+    await_joint($changed)
+    $tabs = ced("ced.tabs",{}).tabs
+    if len($tabs) != 1 then raise("JOINT","Document not opened exactly once") end
+    $tab = $tabs[0].tab
+    ced("ced.wait",{tab:$tab,phase:"live",timeout_ms:5000})
+    ced("ced.select",{tab:$tab,anchor:5,head:5})
+    $document_before = ced("ced.state",{tab:$tab,text:true})
+    comp("comp.input.pointer.move",{seat:"human",x:$width-1,y:1})
+    capture_joint("joint-current-dark",$changed,$layout,$ced_window,1000)
+    $heights = []
+    for each $stage in [{mode:"light",scale:1.1,thickness:80,width:1002},{mode:"dark",scale:1.25,thickness:96,width:1000}]
+      $offset = len(read_file($probe_log))
+      $accepted = apply({"appearance.mode":$stage.mode,"ui.text_scale":$stage.scale,
+        "shell.panels.bottom":{edge:"bottom",mode:"dock",thickness:$stage.thickness}},"joint-" .. $stage.mode)
+      await_panel("docked",$stage.thickness,$stage.thickness,$accepted.revision)
+      $joint_layout = await_layout($stage.thickness)
+      $truth = wait_size($width,$height-$stage.thickness,$offset)
+      if $truth.outputs[keys($truth.outputs)[0]].usable.height != $height-$stage.thickness then raise("JOINT","Joint work area did not converge") end
+      await_joint($accepted)
+      capture_joint("joint-" .. $stage.mode,$accepted,$joint_layout,$ced_window,$stage.width)
+      push($heights,{app:ced("ced.layout",{tab:$tab}).line_height,shell:$joint_layout.nodes.go.h})
+      $document_after = ced("ced.state",{tab:$tab,text:true})
+      if ($document_before.buffer != $document_after.buffer or $document_before.rev != $document_after.rev or
+        $document_before.text != $document_after.text or not deep_eq($document_before.selection,$document_after.selection)) then
+        raise("JOINT","Joint appearance changed document identity/text/caret")
+      end
+      if shell("shell.panel.state",{edge:"bottom"}).page != $panel.page then raise("JOINT","Joint batch replaced shell page") end
+    end
+    if $heights[1].app <= $heights[0].app or $heights[1].shell <= $heights[0].shell then raise("JOINT","Text-scale layout metrics did not grow in both hosts") end
+    if not ced("app.quit",{}).quitting then raise("JOINT","Ced quit reply missing") end
+    for $attempt = 1 to 60
+      if not process_alive($ced_pid) then break end
+      sleep(0.05)
+    end
+    if process_alive($ced_pid) or not contains(read_file($ced_log),"CED_SHUTDOWN {\"faults\":[]}") then raise("JOINT","Ced shutdown exceeded budget or reported faults") end
+    print("PASS joint native settings: one authority, matching identities, shared captured frame, work area, text layout, retained document/caret")
   end
   print("PASS native settings geometry: matching applied revisions, occupied panel reservation, real configure/slot, captured pixels and stationary pointer leave/click/re-entry")
   $R.ok = true
