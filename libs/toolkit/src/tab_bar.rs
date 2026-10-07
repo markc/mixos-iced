@@ -477,8 +477,15 @@ where
     /// exact resolved style; an unprepared role keeps its legacy allowances.
     /// Layout, drawing, hit testing and operations all consume this one
     /// hierarchy.
-    fn resolved_row<'b, M: 'b>(&self, tab: &'b TabLabel, resolved: &Resolved) -> Row<'b, M, Theme, Renderer>
-    where Theme: 'b, Renderer: 'b {
+    fn resolved_row<'b, M: 'b>(
+        &self,
+        tab: &'b TabLabel,
+        resolved: &Resolved,
+    ) -> Row<'b, M, Theme, Renderer>
+    where
+        Theme: 'b,
+        Renderer: 'b,
+    {
         // Unprepared roles keep the legacy `+1.0` measurement allowance;
         // prepared roles measure their exact resolved styles.
         let measured_icon = TextStyle {
@@ -552,7 +559,10 @@ where
 }
 
 /// The prepared icon text of a tab label.
-fn styled_icon<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(icon: char, text: TextStyle) -> Text<'a, Theme, Renderer>
+fn styled_icon<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(
+    icon: char,
+    text: TextStyle,
+) -> Text<'a, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
 {
@@ -568,7 +578,10 @@ where
 }
 
 /// The prepared label text of a tab.
-fn styled_label<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(label: &'a str, text: TextStyle) -> Text<'a, Theme, Renderer>
+fn styled_label<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(
+    label: &'a str,
+    text: TextStyle,
+) -> Text<'a, Theme, Renderer>
 where
     Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
 {
@@ -1268,8 +1281,8 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
-    use iced_core::layout;
     use crate::typography::TextStyle;
+    use iced_core::layout;
 
     type TestBar<'a> = TabBar<'a, u8, u8, iced_core::Theme, LayoutRenderer>;
 

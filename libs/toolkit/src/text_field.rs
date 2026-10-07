@@ -1247,28 +1247,70 @@ mod widget_tests {
     #[test]
     fn active_preedit_survives_a_prepared_style_swap_and_commits_once() {
         let (mut original, mut tree) = field("abcd");
-        tree.children[0].state.downcast_mut::<raw::State<LayoutRenderer>>()
+        tree.children[0]
+            .state
+            .downcast_mut::<raw::State<LayoutRenderer>>()
             .select_range(position(3), position(1));
-        assert!(send(&mut original, &mut tree,
-            Event::InputMethod(input_method::Event::Preedit("界".into(), Some(0..3)))).0.is_empty());
+        assert!(
+            send(
+                &mut original,
+                &mut tree,
+                Event::InputMethod(input_method::Event::Preedit("界".into(), Some(0..3)))
+            )
+            .0
+            .is_empty()
+        );
         let mut styled: Field = TextField::new("placeholder", "abcd")
             .on_input(std::convert::identity)
-            .text_style(TextStyle { font: iced_core::Font::MONOSPACE, size: 18.0, line_height: Some(26.0) })
+            .text_style(TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 18.0,
+                line_height: Some(26.0),
+            })
             .padding([8.0, 12.0]);
         styled.diff(&mut tree);
         assert!(tree.state.downcast_ref::<History>().composing);
-        let (_, ime) = send(&mut styled, &mut tree,
-            Event::Window(iced_core::window::Event::RedrawRequested(Instant::now())));
-        assert!(matches!(ime, input_method::InputMethod::Enabled { preedit: Some(preedit), .. }
-            if preedit.content == "界"));
-        assert_eq!(Selection::from(tree.children[0].state.downcast_ref::<raw::State<LayoutRenderer>>().cursor()),
-            Selection::Selection { start: 3, end: 1 });
-        assert_eq!(send(&mut styled, &mut tree,
-            Event::InputMethod(input_method::Event::Commit("界".into()))).0, ["a界d"]);
+        let (_, ime) = send(
+            &mut styled,
+            &mut tree,
+            Event::Window(iced_core::window::Event::RedrawRequested(Instant::now())),
+        );
+        assert!(
+            matches!(ime, input_method::InputMethod::Enabled { preedit: Some(preedit), .. }
+            if preedit.content == "界")
+        );
+        assert_eq!(
+            Selection::from(
+                tree.children[0]
+                    .state
+                    .downcast_ref::<raw::State<LayoutRenderer>>()
+                    .cursor()
+            ),
+            Selection::Selection { start: 3, end: 1 }
+        );
+        assert_eq!(
+            send(
+                &mut styled,
+                &mut tree,
+                Event::InputMethod(input_method::Event::Commit("界".into()))
+            )
+            .0,
+            ["a界d"]
+        );
         assert_eq!(tree.state.downcast_ref::<History>().undo.len(), 1);
-        assert_eq!(send(&mut styled, &mut tree, key("z", keyboard::Modifiers::CTRL)).0, ["abcd"]);
-        assert_eq!(Selection::from(tree.children[0].state.downcast_ref::<raw::State<LayoutRenderer>>().cursor()),
-            Selection::Selection { start: 3, end: 1 });
+        assert_eq!(
+            send(&mut styled, &mut tree, key("z", keyboard::Modifiers::CTRL)).0,
+            ["abcd"]
+        );
+        assert_eq!(
+            Selection::from(
+                tree.children[0]
+                    .state
+                    .downcast_ref::<raw::State<LayoutRenderer>>()
+                    .cursor()
+            ),
+            Selection::Selection { start: 3, end: 1 }
+        );
     }
 
     #[test]

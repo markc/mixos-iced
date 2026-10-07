@@ -3,7 +3,7 @@
 
 use std::sync::Once;
 
-use iced_core::text::{Paragraph as _, Editor as _};
+use iced_core::text::{Editor as _, Paragraph as _};
 use iced_core::{Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation};
 use iced_core::{image, renderer, text};
 
@@ -169,11 +169,17 @@ impl text::Paragraph for FaceParagraph {
     }
 
     fn compare(&self, current: text::Text<(), Face>) -> text::Difference {
-        let Some(old) = &self.metadata else { return text::Difference::Shape; };
-        if old.font != current.font || old.size != current.size
-            || old.line_height != current.line_height || old.align_x != current.align_x
-            || old.align_y != current.align_y || old.shaping != current.shaping
-            || old.wrapping != current.wrapping || old.ellipsis != current.ellipsis
+        let Some(old) = &self.metadata else {
+            return text::Difference::Shape;
+        };
+        if old.font != current.font
+            || old.size != current.size
+            || old.line_height != current.line_height
+            || old.align_x != current.align_x
+            || old.align_y != current.align_y
+            || old.shaping != current.shaping
+            || old.wrapping != current.wrapping
+            || old.ellipsis != current.ellipsis
             || old.hint_factor != current.hint_factor
         {
             text::Difference::Shape
@@ -201,27 +207,39 @@ impl text::Paragraph for FaceParagraph {
     }
 
     fn align_x(&self) -> text::Alignment {
-        self.metadata.as_ref().map_or(text::Alignment::Left, |text| text.align_x)
+        self.metadata
+            .as_ref()
+            .map_or(text::Alignment::Left, |text| text.align_x)
     }
 
     fn align_y(&self) -> iced_core::alignment::Vertical {
-        self.metadata.as_ref().map_or(iced_core::alignment::Vertical::Top, |text| text.align_y)
+        self.metadata
+            .as_ref()
+            .map_or(iced_core::alignment::Vertical::Top, |text| text.align_y)
     }
 
     fn wrapping(&self) -> text::Wrapping {
-        self.metadata.as_ref().map_or(text::Wrapping::None, |text| text.wrapping)
+        self.metadata
+            .as_ref()
+            .map_or(text::Wrapping::None, |text| text.wrapping)
     }
 
     fn ellipsis(&self) -> text::Ellipsis {
-        self.metadata.as_ref().map_or(text::Ellipsis::None, |text| text.ellipsis)
+        self.metadata
+            .as_ref()
+            .map_or(text::Ellipsis::None, |text| text.ellipsis)
     }
 
     fn shaping(&self) -> text::Shaping {
-        self.metadata.as_ref().map_or(text::Shaping::Advanced, |text| text.shaping)
+        self.metadata
+            .as_ref()
+            .map_or(text::Shaping::Advanced, |text| text.shaping)
     }
 
     fn bounds(&self) -> Size {
-        self.metadata.as_ref().map_or(Size::INFINITE, |text| text.bounds)
+        self.metadata
+            .as_ref()
+            .map_or(Size::INFINITE, |text| text.bounds)
     }
 
     fn min_bounds(&self) -> Size {

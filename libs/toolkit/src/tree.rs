@@ -1465,7 +1465,12 @@ mod tests {
             assert!(initial_node.size().height > 0.0);
             drop(element);
             nodes.set_expanded(&"a", false);
-            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+            let mut element: Element<
+                '_,
+                Msg,
+                iced_core::Theme,
+                crate::test_renderer::LayoutRenderer,
+            > = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
                 .expanders(expanders())
                 .on_toggle(Msg::Toggle)
                 .on_select(Msg::Select)

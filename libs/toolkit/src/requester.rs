@@ -1150,16 +1150,16 @@ mod tests {
         ] {
             let mut shell = iced_core::Shell::new(&Headless, Waker::noop(), &mut bus);
             styled.as_widget_mut().update(
-            &mut tree,
-            &iced_core::Event::Mouse(event),
-            iced_core::Layout::new(&node),
-            iced_core::mouse::Cursor::Available(iced_core::Point::new(
-                row.bounds().center_x(),
-                row.bounds().y + row_height - 0.5,
-            )),
-            &renderer,
-            &mut shell,
-            &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
+                &mut tree,
+                &iced_core::Event::Mouse(event),
+                iced_core::Layout::new(&node),
+                iced_core::mouse::Cursor::Available(iced_core::Point::new(
+                    row.bounds().center_x(),
+                    row.bounds().y + row_height - 0.5,
+                )),
+                &renderer,
+                &mut shell,
+                &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
             );
             if matches!(event, iced_core::mouse::Event::ButtonPressed(_)) {
                 assert!(bus.is_empty(), "press retains state until release");
