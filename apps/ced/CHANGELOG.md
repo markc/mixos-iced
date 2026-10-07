@@ -1,5 +1,12 @@
 # Ced Bus contract
 
+## Unreleased
+
+Retain measured viewport rows and bounded text bytes across cursor redraws and
+overlapping scrolls. Borrow contiguous ASCII runs and use binary lookup for
+checkpoints/cells. Syntax and decorations continue updating independently;
+glyph-overhang guard rows and native Bus contracts are preserved.
+
 ## 0.1.6
 
 Use the shared application host for native bootstrap, window configuration and

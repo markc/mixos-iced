@@ -1,5 +1,13 @@
 # Term Bus contract
 
+## Unreleased
+
+Reuse existing CPU pixels across terminal scroll rows and repaint exposed or
+changed content. Preserve immutable retained bands, cursor repair and complete
+moved-region presentation damage. Bound scroll detection on repetitive full
+redraws and share glyph masks across foreground colours. Native session verbs
+and wire contracts are unchanged.
+
 ## 0.3.5
 
 Share the native application bootstrap and task worker. CPU/GPU selection and

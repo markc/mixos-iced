@@ -108,7 +108,7 @@ mod tests {
                         line_height: Pixels(18.0),
                         font: Font::default(),
                         align_x: Default::default(),
-                        align_y: Default::default(),
+                        align_y: crate::core::alignment::Vertical::Top,
                         shaping: Default::default(),
                         wrapping: Default::default(),
                         ellipsis: Default::default(),
