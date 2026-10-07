@@ -30,7 +30,7 @@ use iced_core::text::{
     Alignment, Difference, Ellipsis, LineHeight, Paragraph as _, Shaping, Text, Wrapping,
 };
 use iced_core::{Font, Pixels, Size};
-use iced_graphics::text::{font_system, Paragraph};
+use iced_graphics::text::{Paragraph, font_system};
 
 /// The packaged Noto Sans fixture: real Latin coverage for the paragraph
 /// guard, unlike an icon-only face.
@@ -42,7 +42,9 @@ const NOTO_SANS: &[u8] = include_bytes!("../../../vendor/cosmic-text/fonts/NotoS
 /// take this lock.
 fn wrapper_lock() -> MutexGuard<'static, ()> {
     static WRAPPER_GUARDS: Mutex<()> = Mutex::new(());
-    WRAPPER_GUARDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    WRAPPER_GUARDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Parse font bytes into a binary `FaceInfo`; the scratch database supplies
@@ -137,11 +139,7 @@ fn registration_changes_version_and_noops_stay_stable() {
     // facts untouched. Noto Sans is static at its parsed weight, so a
     // different sealed weight cannot be provided.
     let faces_before = system.raw().db().len();
-    let aliases_before: Vec<String> = system
-        .raw()
-        .pinned_aliases()
-        .map(str::to_owned)
-        .collect();
+    let aliases_before: Vec<String> = system.raw().pinned_aliases().map(str::to_owned).collect();
     let rebound = if weight.0 == 900 {
         fontdb::Weight(100)
     } else {
