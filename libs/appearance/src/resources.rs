@@ -1260,10 +1260,15 @@ fn icon_plan(
 /// process ledger charges each distinct source/variant once; capacity
 /// exhaustion is a fault, never a visible-name substitution. The returned
 /// charge tokens stay attached to the receipt.
+struct DecodedImages {
+    images: Vec<(String, Ready, IconEvidence)>,
+    charges: Vec<Arc<VariantCharge>>,
+}
+
 fn decode_images(
     plan: &IconPlan,
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
-) -> Result<(Vec<(String, Ready, IconEvidence)>, Vec<Arc<VariantCharge>>), Diagnostic> {
+) -> Result<DecodedImages, Diagnostic> {
     let mut images = Vec::new();
     let mut charges = Vec::new();
     let usage = image_store().usage();
@@ -1348,7 +1353,7 @@ fn decode_images(
             evidence,
         ));
     }
-    Ok((images, charges))
+    Ok(DecodedImages { images, charges })
 }
 
 /// The binding this compact identity produces: the exact verified set ID and
@@ -1392,20 +1397,16 @@ fn effective_chain(
 ) -> (Vec<String>, bool) {
     let mut chain = Vec::new();
     let mut remapped = false;
-    if compact.packaged {
-        if let Some((role, set_role)) = packaged_role(name) {
-            let default = design::default_typography(role);
-            if default.family == record.family
-                && default.fallbacks == record.fallbacks
-                && default.generic == record.generic
-            {
-                if let Some((_, claim)) = compact.roles.get(set_role) {
-                    if claim != &record.family {
-                        remapped = true;
-                        chain.push(claim.clone());
-                    }
-                }
-            }
+    if compact.packaged && let Some((role, set_role)) = packaged_role(name) {
+        let default = design::default_typography(role);
+        if default.family == record.family
+            && default.fallbacks == record.fallbacks
+            && default.generic == record.generic
+            && let Some((_, claim)) = compact.roles.get(set_role)
+            && claim != &record.family
+        {
+            remapped = true;
+            chain.push(claim.clone());
         }
     }
     let mut push = |value: &str| {
@@ -1444,7 +1445,7 @@ fn registration_batch(
     plan: &IconPlan,
 ) -> RegistrationBatch {
     let mut families: BTreeMap<String, BTreeSet<SourceFace>> = BTreeMap::new();
-    for (_, (slot, claim)) in &compact.roles {
+    for (slot, claim) in compact.roles.values() {
         families
             .entry(claim.clone())
             .or_default()
@@ -1453,16 +1454,14 @@ fn registration_batch(
                 index: 0,
             });
     }
-    if let Some(catalogue) = &compact.catalogue {
-        if !catalogue.family.is_empty() {
-            families
-                .entry(catalogue.family.clone())
-                .or_default()
-                .insert(SourceFace {
-                    source: catalogue.source,
-                    index: catalogue.face_index,
-                });
-        }
+    if let Some(catalogue) = &compact.catalogue && !catalogue.family.is_empty() {
+        families
+            .entry(catalogue.family.clone())
+            .or_default()
+            .insert(SourceFace {
+                source: catalogue.source,
+                index: catalogue.face_index,
+            });
     }
     let sources = compact
         .sources
@@ -1508,20 +1507,15 @@ fn registration_batch(
         })
         .collect();
     let mut icon_requests = Vec::new();
-    if !plan.glyphs.is_empty() {
-        if let Some(catalogue) = &compact.catalogue {
-            let mut names = BTreeSet::new();
-            for glyph in &plan.glyphs {
-                names.insert(glyph.name.clone());
-            }
-            icon_requests.push(IconSelectionRequest {
-                key: ICON_KEY.to_owned(),
-                family: catalogue.family.clone(),
-                style: catalogue.style.clone(),
-                weight: catalogue.weight,
-                required_names: names.into_iter().collect(),
-            });
-        }
+    if !plan.glyphs.is_empty() && let Some(catalogue) = &compact.catalogue {
+        let names = plan.glyphs.iter().map(|glyph| glyph.name.clone()).collect::<BTreeSet<_>>();
+        icon_requests.push(IconSelectionRequest {
+            key: ICON_KEY.to_owned(),
+            family: catalogue.family.clone(),
+            style: catalogue.style.clone(),
+            weight: catalogue.weight,
+            required_names: names.into_iter().collect(),
+        });
     }
     RegistrationBatch {
         collection: FontCollection {
@@ -1546,18 +1540,16 @@ fn reuse(
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<Prepared, Diagnostic> {
     let binding = binding_for(compact);
-    if let Some(expected) = &identity.expected {
-        if binding != *expected {
-            return Err(fault(
-                "resources",
-                "verified resource identity differs from the recorded binding",
-            ));
-        }
+    if let Some(expected) = &identity.expected && binding != *expected {
+        return Err(fault(
+            "resources",
+            "verified resource identity differs from the recorded binding",
+        ));
     }
     image_store()
         .preflight(compact, &[])
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
-    let (images, charges) = decode_images(plan, check)?;
+    let DecodedImages { images, charges } = decode_images(plan, check)?;
     let admission = image_store()
         .preflight(compact, &charges)
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
@@ -1625,18 +1617,16 @@ fn register(
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<(Prepared, CompactSet), Diagnostic> {
     let binding = binding_for(&compact);
-    if let Some(expected) = &identity.expected {
-        if binding != *expected {
-            return Err(fault(
-                "resources",
-                "verified resource identity differs from the recorded binding",
-            ));
-        }
+    if let Some(expected) = &identity.expected && binding != *expected {
+        return Err(fault(
+            "resources",
+            "verified resource identity differs from the recorded binding",
+        ));
     }
     image_store()
         .preflight(&compact, &[])
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
-    let (images, charges) = decode_images(plan, check)?;
+    let DecodedImages { images, charges } = decode_images(plan, check)?;
     let admission = image_store()
         .preflight(&compact, &charges)
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
