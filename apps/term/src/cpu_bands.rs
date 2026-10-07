@@ -3,7 +3,7 @@ use super::*;
 
 /// Four terminal rows bound retained-buffer copies on echo (damage is per cell),
 /// without creating a widget for every physical scanline.
-const ROWS_PER_BAND: usize = 4;
+pub(super) const ROWS_PER_BAND: usize = 4;
 
 #[derive(Default)]
 pub struct Surface {
@@ -12,6 +12,8 @@ pub struct Surface {
     width: u32,
     height: u32,
     cell: (u32, u32),
+    #[cfg(test)]
+    pub(super) disable_scroll: bool,
 }
 
 impl Surface {
@@ -58,6 +60,7 @@ impl Surface {
         self.bands.clear();
         let (width, height) = raster.target_size(screen);
         let rows = height as usize / raster.height as usize;
+        let shift = self.scroll_shift(raster, screen, dirty, width, height, rows);
         if (self.width, self.height, self.cell) != (width, height, (raster.width, raster.height)) {
             self.invalidate();
         }
@@ -67,6 +70,15 @@ impl Surface {
         self.tiles
             .resize_with(rows.div_ceil(ROWS_PER_BAND), PixelBand::default);
         let valid_damage = rows == screen.rows && dirty.len() == rows;
+        // Retain immutable source generations until every destination is done.
+        let sources: Vec<_> = if shift.is_some() {
+            self.tiles
+                .iter()
+                .map(|tile| (tile.native.clone(), tile.state.cursor_row()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for (index, tile) in self.tiles.iter_mut().enumerate() {
             let first = index * ROWS_PER_BAND;
             let end = (first + ROWS_PER_BAND).min(rows);
@@ -88,7 +100,12 @@ impl Surface {
             } else {
                 &[]
             };
-            for damage in tile.paint_inner(raster, &part, dirty) {
+            let damage = if let Some(shift) = shift {
+                tile.paint_scrolled(raster, &part, first, shift, rows, &sources)
+            } else {
+                tile.paint_inner(raster, &part, dirty)
+            };
+            for damage in damage {
                 self.bands.push(DamageBand {
                     x: damage.x,
                     width: damage.width,
@@ -98,6 +115,62 @@ impl Surface {
             }
         }
         &self.bands
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scroll_shift(
+        &self,
+        raster: &Raster,
+        screen: &Screen,
+        dirty: &[bool],
+        width: u32,
+        height: u32,
+        rows: usize,
+    ) -> Option<isize> {
+        #[cfg(test)]
+        if self.disable_scroll {
+            return None;
+        }
+        if rows < 3
+            || rows != screen.rows
+            || dirty.len() != rows
+            || dirty.iter().any(|&row| !row)
+            || (self.width, self.height, self.cell)
+                != (width, height, (raster.width, raster.height))
+            || self.tiles.len() != rows.div_ceil(ROWS_PER_BAND)
+        {
+            return None;
+        }
+        let matches = |old: usize, new: usize| {
+            raster.matches_cached_row(
+                screen,
+                &self.tiles[old / ROWS_PER_BAND].state,
+                old % ROWS_PER_BAND,
+                new,
+                PixelFormat::Bgra,
+            )
+        };
+        // Echo and cursor movement belong on the tiny-damage path. Relocate
+        // only when most visible rows actually changed, not merely dirty hints.
+        if (0..rows)
+            .filter(|&row| dirty[row] && !matches(row, row))
+            .count()
+            <= rows / 2
+        {
+            return None;
+        }
+        // Prefer small shifts and retain at least half the viewport. Exact
+        // row checks make ambiguous duplicate/blank rows harmless.
+        for amount in 1..=rows / 2 {
+            for shift in [amount as isize, -(amount as isize)] {
+                let first = if shift < 0 { amount } else { 0 };
+                let end = if shift > 0 { rows - amount } else { rows };
+                if (first..end).all(|new| matches((new as isize + shift) as usize, new)) {
+                    return Some(shift);
+                }
+            }
+        }
+        None
     }
 
     pub fn cache_handle(&mut self, generation: u64) {
@@ -137,6 +210,90 @@ mod tests {
     use super::*;
     use std::time::Instant;
     use term_core::{config::Cursor, terminal::Cell};
+
+    #[test]
+    fn scrolling_reuses_pixels_across_bands_and_preserves_retained_generations() {
+        for scale in [1.0, 1.25, 2.5] {
+            for cursor in [Cursor::Block, Cursor::Underline] {
+                let mut raster = Raster::for_test(scale, 13.0, cursor).unwrap();
+                let mut surface = Surface::default();
+                let mut screen = term_core::terminal::Terminal::from_test_vt(12, 11,
+                    "\x1b[1;1Hα one\x1b[2;1H界 two\x1b[3;1H👍🏽 three\x1b[4;1H👩‍💻 four\x1b[5;1Hfive\x1b[6;1Hsix\x1b[7;1Hseven\x1b[8;1Height\x1b[9;1Hnine\x1b[10;1Hten\x1b[11;1Heleven".as_bytes()).screen(false);
+                screen.cursor = (2, 4);
+                screen.cursor_visible = true;
+                surface.paint(&mut raster, &screen, &[]);
+                surface.cache_handle(1);
+                let mut retained = Vec::new();
+                for (n, shift) in [1_isize, 3, -1, -4, 2, -2, 5, -5].into_iter().enumerate() {
+                    retained.extend(surface.images(scale).into_iter().map(|(handle, _)| {
+                        let pixels = handle.pixels().to_vec();
+                        (handle, pixels)
+                    }));
+                    let count = shift.unsigned_abs() * screen.cols;
+                    if shift > 0 {
+                        screen.cells.rotate_left(count);
+                    } else {
+                        screen.cells.rotate_right(count);
+                    }
+                    let exposed = if shift > 0 {
+                        screen.rows - shift as usize..screen.rows
+                    } else {
+                        0..shift.unsigned_abs()
+                    };
+                    for row in exposed {
+                        for cell in &mut screen.cells[row * screen.cols..(row + 1) * screen.cols] {
+                            cell.c = char::from(b'A' + n as u8);
+                            cell.extra = 0;
+                            cell.width = Default::default();
+                            cell.bg = [n as u8 * 19, row as u8 * 13, 37];
+                        }
+                    }
+                    screen.display_offset += 1;
+                    screen.cursor = (n % screen.cols, n % screen.rows);
+                    screen.cursor_visible = n % 3 != 0;
+                    assert_eq!(
+                        surface.scroll_shift(
+                            &raster,
+                            &screen,
+                            &[true; 11],
+                            surface.width,
+                            surface.height,
+                            11
+                        ),
+                        Some(shift)
+                    );
+                    assert!(!surface.paint(&mut raster, &screen, &[true; 11]).is_empty());
+                    surface.cache_handle(n as u64 + 2);
+                    assert_eq!(
+                        surface.rgba(),
+                        raster.render(&screen),
+                        "scale={scale} shift={shift}"
+                    );
+                    for (handle, pixels) in &retained {
+                        assert_eq!(handle.pixels().as_ref(), pixels);
+                    }
+                    assert!(surface.paint(&mut raster, &screen, &[false; 11]).is_empty());
+                }
+                // A new cluster table can reuse the same IDs for other text;
+                // none of those old pixels are eligible for copying.
+                screen.clusters = Default::default();
+                screen.cells.rotate_left(screen.cols);
+                assert_eq!(
+                    surface.scroll_shift(
+                        &raster,
+                        &screen,
+                        &[true; 11],
+                        surface.width,
+                        surface.height,
+                        11
+                    ),
+                    None
+                );
+                surface.paint(&mut raster, &screen, &[true; 11]);
+                assert_eq!(surface.rgba(), raster.render(&screen));
+            }
+        }
+    }
 
     #[test]
     fn unicode_band_snapshots_retain_text_and_expand_spacer_damage() {

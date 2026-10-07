@@ -53,6 +53,71 @@ pub(super) struct PixelBand {
 }
 
 impl PixelBand {
+    #[allow(clippy::too_many_arguments)]
+    fn paint_scrolled(
+        &mut self,
+        raster: &mut Raster,
+        screen: &Screen,
+        first: usize,
+        shift: isize,
+        rows: usize,
+        sources: &[(Bytes, Option<usize>)],
+    ) -> &[DamageBand] {
+        let (width, height) = raster.target_size(screen);
+        let row_bytes = width as usize * raster.height as usize * 4;
+        let mut pixels = BytesMut::zeroed(width as usize * height as usize * 4);
+        let mut reused = [false; bands::ROWS_PER_BAND];
+        let reused = &mut reused[..screen.rows];
+        for (row, copied) in reused.iter_mut().enumerate() {
+            let old = (first + row) as isize + shift;
+            if old < 0 || old >= rows as isize {
+                continue;
+            }
+            let old = old as usize;
+            let (source, cursor) = &sources[old / bands::ROWS_PER_BAND];
+            let local = old % bands::ROWS_PER_BAND;
+            if *cursor == Some(local) {
+                // Cursor pixels are baked into the source. Restore its whole
+                // row instead of moving the old cursor with the text.
+                continue;
+            }
+            pixels[row * row_bytes..(row + 1) * row_bytes]
+                .copy_from_slice(&source[local * row_bytes..(local + 1) * row_bytes]);
+            *copied = true;
+        }
+        self.cached = None;
+        raster.paint_copied_rows(
+            screen,
+            &mut pixels,
+            width as usize * 4,
+            &mut self.state,
+            reused,
+            PixelFormat::Bgra,
+        );
+        self.native = pixels.freeze();
+        self.width = width;
+        self.height = height;
+        self.cell = (raster.width, raster.height);
+        self.bands.clear();
+        // Relocation saves glyph work, not Wayland damage: moved destination
+        // pixels still differ from the previous presented frame.
+        self.bands.push(DamageBand {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        self.damage
+            .as_mut()
+            .expect("painted scroll source")
+            .mark(self.bands.iter().map(|b| application::iced::Rectangle {
+                x: b.x,
+                y: b.y,
+                width: b.width,
+                height: b.height,
+            }));
+        &self.bands
+    }
     #[cfg(test)]
     pub fn width(&self) -> u32 {
         self.width

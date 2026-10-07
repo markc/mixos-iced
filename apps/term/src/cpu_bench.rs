@@ -17,6 +17,69 @@ use std::time::Instant;
 use term_core::{config::Cursor, terminal::Cell};
 
 #[test]
+#[ignore = "release-only scrolling pixel-reuse measurement"]
+fn tiny_skia_scroll_bench() {
+    for reuse in [false, true] {
+        let mut raster = Raster::for_test(2.5, 13.0, Cursor::Underline).unwrap();
+        raster.width = 25;
+        raster.height = 50;
+        let mut screen = Screen {
+            clusters: Default::default(),
+            cols: 90,
+            rows: 25,
+            cursor: (0, 24),
+            cursor_visible: true,
+            display_offset: 0,
+            updated: Instant::now(),
+            cells: (0..2250)
+                .map(|i| Cell {
+                    extra: 0,
+                    width: Default::default(),
+                    c: char::from(b'!' + (i % 90) as u8),
+                    fg: [210, 220, 230],
+                    bg: [20 + (i / 90) as u8, 25, 30],
+                    bold: false,
+                })
+                .collect(),
+        };
+        let mut surface = Surface::default();
+        surface.disable_scroll = !reuse;
+        surface.paint(&mut raster, &screen, &[]);
+        surface.cache_handle(0);
+        let mut samples = Vec::new();
+        let mut history = std::collections::VecDeque::new();
+        for n in 0..220 {
+            // Retain generations as the renderer's three-buffer age history
+            // does, so neither path gets an unrealistic unique-owner shortcut.
+            history.push_back(surface.images(2.5));
+            if history.len() > 3 {
+                history.pop_front();
+            }
+            screen.cells.rotate_left(90);
+            for cell in &mut screen.cells[24 * 90..] {
+                cell.bg[0] = (n % 200 + 40) as u8;
+            }
+            let start = Instant::now();
+            surface.paint(&mut raster, &screen, &[true; 25]);
+            surface.cache_handle(n as u64 + 1);
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            std::hint::black_box(surface.images(2.5));
+            if n >= 20 {
+                samples.push(ms);
+            }
+        }
+        assert_eq!(surface.rgba(), raster.render(&screen));
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "scroll pixel reuse={reuse} 2250x1250 retained=3: mean={:.3} p50={:.3} p99={:.3} ms",
+            samples.iter().sum::<f64>() / samples.len() as f64,
+            samples[100],
+            samples[198]
+        );
+    }
+}
+
+#[test]
 fn band_widget_matches_exact_pixels_at_fractional_scales_and_offsets() {
     for (scale, cell_height) in [
         (1.0, 20),

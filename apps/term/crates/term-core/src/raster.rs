@@ -87,6 +87,10 @@ impl PixelFormat {
 }
 
 impl PaintState {
+    /// Row containing pixels of the previously composited cursor.
+    pub fn cursor_row(&self) -> Option<usize> {
+        self.cursor.map(|(_, row)| row)
+    }
     /// Cells, as of the last paint.
     pub fn grid(&self) -> (usize, usize) {
         (self.cols, self.rows)
@@ -385,7 +389,7 @@ pub struct Raster {
     /// one: a zoom step reuses the bytes instead of reading the file again.
     data: Arc<[u8]>,
     context: ScaleContext,
-    cache: HashMap<(char, bool, [u8; 3]), Option<Image>>,
+    cache: HashMap<(char, bool), Option<Image>>,
     unicode: UnicodeRaster,
     /// Cell dimensions in PHYSICAL device pixels: the texture is rasterised at
     /// the display's true resolution so the compositor never has to upscale
@@ -579,6 +583,80 @@ impl Raster {
             .all(|((now, old), dirty)| !*dirty || now == old)
     }
 
+    /// Whether a captured row can reuse this raster's old pixels. Viewport
+    /// position may change; font, channel order and cluster identity may not.
+    /// Numeric extended-cluster IDs alone are not a text identity.
+    pub fn matches_cached_row(
+        &self,
+        screen: &Screen,
+        state: &PaintState,
+        old_row: usize,
+        new_row: usize,
+        format: PixelFormat,
+    ) -> bool {
+        state.cols == screen.cols
+            && state.cell == (self.width, self.height)
+            && state.format == format
+            && state.scale == self.scale.to_bits()
+            && state
+                .raster
+                .as_ref()
+                .is_some_and(|id| Arc::ptr_eq(id, &self.identity))
+            && state
+                .clusters
+                .as_ref()
+                .is_some_and(|id| Arc::ptr_eq(id, &screen.clusters.identity))
+            && old_row < state.rows
+            && new_row < paintable_rows(screen)
+            && state.cells[old_row * screen.cols..(old_row + 1) * screen.cols]
+                == screen.cells[new_row * screen.cols..(new_row + 1) * screen.cols]
+    }
+
+    /// Paint after the caller has copied previously rendered, cursor-free
+    /// rows into `dst`. `reused[row]` certifies exact pixels for that row using
+    /// this raster, cluster table, dimensions and format. All other rows are
+    /// painted in full. A current cursor is painted over its restored row.
+    /// Like `PaintState::rebind`, this is an explicit pixel-content contract;
+    /// the caller must retain and validate source generations before copying.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_copied_rows<'a>(
+        &mut self,
+        screen: &Screen,
+        dst: &mut [u8],
+        stride: usize,
+        state: &'a mut PaintState,
+        reused: &[bool],
+        format: PixelFormat,
+    ) -> &'a [DamageBand] {
+        let (width, height, rows) = target(self, screen);
+        if screen.cols == 0
+            || rows != screen.rows
+            || reused.len() != rows
+            || stride < width * 4
+            || dst.len() < stride * height
+        {
+            state.invalidate();
+            return self.paint_format(screen, dst, stride, state, &[], format);
+        }
+        state.cols = screen.cols;
+        state.rows = rows;
+        state.cell = (self.width, self.height);
+        state.buffer = (dst.as_ptr() as usize, dst.len());
+        state.format = format;
+        state.cursor = None;
+        state.cursor_span = 0;
+        state.display_offset = screen.display_offset;
+        state.stride = stride;
+        state.scale = self.scale.to_bits();
+        state.raster = Some(self.identity.clone());
+        state.clusters = Some(screen.clusters.identity.clone());
+        state.cells.clear();
+        state
+            .cells
+            .extend_from_slice(&screen.cells[..screen.cols * rows]);
+        self.paint_format_inner(screen, dst, stride, state, reused, format, Some(reused))
+    }
+
     /// Whether painting is guaranteed to overwrite every cell. A dirty-row
     /// hint alone is insufficient: equal cells now retain their old pixels.
     pub fn overwrites_all(
@@ -751,6 +829,20 @@ impl Raster {
         dirty: &[bool],
         format: PixelFormat,
     ) -> &'a [DamageBand] {
+        self.paint_format_inner(screen, dst, stride, state, dirty, format, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_format_inner<'a>(
+        &mut self,
+        screen: &Screen,
+        dst: &mut [u8],
+        stride: usize,
+        state: &'a mut PaintState,
+        dirty: &[bool],
+        format: PixelFormat,
+        reused: Option<&[bool]>,
+    ) -> &'a [DamageBand] {
         if state.format != format {
             state.invalidate();
             state.format = format;
@@ -800,6 +892,13 @@ impl Raster {
         if !full {
             changed.clear();
             changed.resize(screen.cols * rows, false);
+            if let Some(reused) = reused {
+                for (row, &copied) in reused.iter().enumerate() {
+                    if !copied {
+                        changed[row * screen.cols..(row + 1) * screen.cols].fill(true);
+                    }
+                }
+            }
             if cursor_changed {
                 for (position, span) in [(state.cursor, state.cursor_span), (cursor, span)] {
                     if let Some((col, row)) = position {
@@ -838,7 +937,7 @@ impl Raster {
                         .into_iter()
                         .chain(cursor)
                         .any(|(_, y)| y == row);
-                if !dirty[row] && !cursor_row {
+                if !dirty[row] && !cursor_row && reused.is_none() {
                     continue;
                 }
                 let row_changed = &mut changed[start..start + screen.cols];
@@ -896,7 +995,7 @@ impl Raster {
                 if cell.c == ' ' || cell.c == '\0' {
                     continue;
                 }
-                let key = (cell.c, cell.bold, cell.fg);
+                let key = (cell.c, cell.bold);
                 if !self.cache.contains_key(&key) {
                     if self.cache.len() >= 4096 {
                         self.cache.clear();
@@ -925,7 +1024,7 @@ impl Raster {
                     let x = col * self.width as usize + (left + gx0) as usize;
                     // Reorder colours once per glyph, never in the mask loop;
                     // the blend is per channel, so reordering first is exact.
-                    // The cache key above keeps the original foreground.
+                    // Glyph masks are independent of foreground/background.
                     let fg = format.colour(cell.fg).map(u32::from);
                     let bg = format.colour(cell.bg).map(u32::from);
                     let opaque = destination_pixel(format.colour(cell.fg));
@@ -1062,7 +1161,7 @@ impl Raster {
             let x = (i % screen.cols) as i32 * self.width as i32;
             let y = (i / screen.cols) as i32 * self.height as i32;
             // Reorder colours once per cell, not the fill/blend inner loops.
-            // Keep the original foreground in the glyph cache key.
+            // The mask is independent of foreground colour.
             let bg = format.colour(cell.bg);
             let fg = format.colour(cell.fg);
             for cy in 0..self.height as usize {
@@ -1074,7 +1173,7 @@ impl Raster {
             if cell.c == ' ' || cell.c == '\0' {
                 continue;
             }
-            let key = (cell.c, cell.bold, cell.fg);
+            let key = (cell.c, cell.bold);
             if !self.cache.contains_key(&key) {
                 if self.cache.len() >= 4096 {
                     self.cache.clear();
@@ -1223,6 +1322,24 @@ mod tests {
     use crate::config::Cursor;
     use crate::terminal::Cell;
     use std::time::Instant;
+
+    #[test]
+    fn ascii_masks_are_shared_across_foreground_colours() {
+        let mut raster = raster_with(Cursor::Underline);
+        let mut grid = screen(8, 3, 'M');
+        let mut surface = Surface::default();
+        for colour in 0..256 {
+            for cell in &mut grid.cells {
+                cell.fg = [colour as u8, 31, 127];
+            }
+            raster.render_into(&grid, &[true; 3], &mut surface);
+            assert_eq!(
+                raster.cache.len(),
+                1,
+                "foreground colours duplicated one glyph mask"
+            );
+        }
+    }
 
     #[test]
     fn fully_changed_rows_record_cells_for_the_next_partial_paint() {
