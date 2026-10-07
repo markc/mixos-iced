@@ -256,8 +256,10 @@ impl<T, C> Session<T, C> {
                 changed = self.complete_resource(ResourceOutcome::Prepared(ready), &mut activate);
             }
             Event::Fallback(request, result) if self.accepts_legacy() => {
-                changed = self
-                    .complete_resource(ResourceOutcome::Fallback(Box::new(request), result), &mut activate);
+                changed = self.complete_resource(
+                    ResourceOutcome::Fallback(Box::new(request), result),
+                    &mut activate,
+                );
             }
             Event::Prepared(_) | Event::Fallback(..) => {}
             Event::Resource(completion) => {
@@ -351,12 +353,14 @@ impl<T, C> Session<T, C> {
                     epoch: source.epoch,
                     revision: self.local.revision,
                 };
-                let current = !self.activation_exhausted && self.active.as_ref().is_some_and(|active| {
-                    active.epoch == source.epoch
-                        && active.request.update.same_stage(&source.request.update)
-                        && active.request.context == source.request.context
-                        && active.binding == source.binding
-                }) && self.host.consumer().pending().is_none();
+                let current = !self.activation_exhausted
+                    && self.active.as_ref().is_some_and(|active| {
+                        active.epoch == source.epoch
+                            && active.request.update.same_stage(&source.request.update)
+                            && active.request.context == source.request.context
+                            && active.binding == source.binding
+                    })
+                    && self.host.consumer().pending().is_none();
                 if !current {
                     return None;
                 }
@@ -552,31 +556,34 @@ impl<T, C> Session<T, C> {
         } else {
             now + BOOTSTRAP_BUDGET
         };
-        let kind = if self.activation_exhausted { None } else { self
-            .prepare
-            .clone()
-            .map(ResourceKind::Prepare)
-            .or_else(|| {
-                self.fallback
-                    .clone()
-                    .filter(|_| self.active.is_none())
-                    .map(|r| ResourceKind::Fallback(Box::new(r)))
-            })
-            .or_else(|| {
-                self.active
-                    .as_ref()
-                    .filter(|source| {
-                        self.host.consumer().pending().is_none()
-                            && self.applied_revision != Some(self.local.revision)
-                            && self.failed_local
-                                != Some(LocalKey {
-                                    epoch: source.epoch,
-                                    revision: self.local.revision,
-                                })
-                    })
-                    .cloned()
-                    .map(|source| ResourceKind::Reprepare(Box::new(source)))
-            }) };
+        let kind = if self.activation_exhausted {
+            None
+        } else {
+            self.prepare
+                .clone()
+                .map(ResourceKind::Prepare)
+                .or_else(|| {
+                    self.fallback
+                        .clone()
+                        .filter(|_| self.active.is_none())
+                        .map(|r| ResourceKind::Fallback(Box::new(r)))
+                })
+                .or_else(|| {
+                    self.active
+                        .as_ref()
+                        .filter(|source| {
+                            self.host.consumer().pending().is_none()
+                                && self.applied_revision != Some(self.local.revision)
+                                && self.failed_local
+                                    != Some(LocalKey {
+                                        epoch: source.epoch,
+                                        revision: self.local.revision,
+                                    })
+                        })
+                        .cloned()
+                        .map(|source| ResourceKind::Reprepare(Box::new(source)))
+                })
+        };
         Jobs {
             work: self.host.consumer().current_work().cloned(),
             deadline,

@@ -11,11 +11,11 @@ use ::bus::native_client::{
     BoundedIncomingEvent, BoundedIncomingReceiver, ConnState, IncomingCommand,
     RegistrationRejectionKind, SupervisedClient,
 };
+use application::message::Once;
+use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
 };
-use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
-use application::message::Once;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -346,7 +346,8 @@ async fn worker(
     let mut served = false;
     // A tracked describe keeps the client that received it, so its reply is
     // sent on the SAME connection whatever happened to the shared handle.
-    let mut pending: HashMap<u64, (Arc<SupervisedClient>, IncomingCommand, Permit)> = HashMap::new();
+    let mut pending: HashMap<u64, (Arc<SupervisedClient>, IncomingCommand, Permit)> =
+        HashMap::new();
     let mut next_id = 0u64;
     let mut lifecycle = None;
     let mut incoming_open = true;
@@ -366,11 +367,20 @@ async fn worker(
         // the moment capacity frees; an unused permit returns immediately.
         submit_replies(&mut retained_replies, &mut operations);
         if deliveries.flush_with(|describe| match describes.try_send(describe) {
-            Ok(()) => { wake_ui(&wake, true); Ok(()) }
+            Ok(()) => {
+                wake_ui(&wake, true);
+                Ok(())
+            }
             Err(tokio::sync::mpsc::error::TrySendError::Full(value)) => Err(SendError::Full(value)),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(value)) => Err(SendError::Closed(value)),
-        }) == Flush::Closed {
-            eprintln!("{service} frontend closed with {} accepted requests", pending.len());
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(value)) => {
+                Err(SendError::Closed(value))
+            }
+        }) == Flush::Closed
+        {
+            eprintln!(
+                "{service} frontend closed with {} accepted requests",
+                pending.len()
+            );
             break;
         }
         // Retry a retained overflow into the verb queue the moment capacity
@@ -449,16 +459,27 @@ async fn worker(
                         client.connection_generation(),
                     );
                     if let Some(fallback) = fallback {
-                        if tokio::time::timeout(Duration::from_secs(2), client.close()).await.is_err() {
-                            eprintln!("{service} old supervisor did not retire; refusing name fallback");
+                        if tokio::time::timeout(Duration::from_secs(2), client.close())
+                            .await
+                            .is_err()
+                        {
+                            eprintln!(
+                                "{service} old supervisor did not retire; refusing name fallback"
+                            );
                             break;
                         }
                         // Replies from the old connection can never be sent:
                         // fence both the pending describes and any retained
                         // accepted replies on the replaced generation.
-                        for (_, (_, _, permit)) in pending.drain() { permit.finish(); }
-                        for reply in retained_replies.drain() { reply.permit.finish(); }
-                        for delivery in deliveries.drain() { let _ = delivery.ticket.take(); }
+                        for (_, (_, _, permit)) in pending.drain() {
+                            permit.finish();
+                        }
+                        for reply in retained_replies.drain() {
+                            reply.permit.finish();
+                        }
+                        for delivery in deliveries.drain() {
+                            let _ = delivery.ticket.take();
+                        }
                         name = fallback;
                         client = Arc::new(
                             SupervisedClient::connect_options(&name, &url)
@@ -490,10 +511,15 @@ async fn worker(
             // client is still THIS one, at the connection generation the
             // command arrived on. A reply may never ride current-generation
             // evidence back to an old connection.
-            let stale: Vec<_> = pending.iter().filter_map(|(id, (stored, command, _))| {
-                (!Arc::ptr_eq(stored, &client) || now != ConnState::Connected
-                    || generation != command.generation).then_some(*id)
-            }).collect();
+            let stale: Vec<_> = pending
+                .iter()
+                .filter_map(|(id, (stored, command, _))| {
+                    (!Arc::ptr_eq(stored, &client)
+                        || now != ConnState::Connected
+                        || generation != command.generation)
+                        .then_some(*id)
+                })
+                .collect();
             for id in stale {
                 if let Some((_, _, permit)) = pending.remove(&id) {
                     eprintln!("{service} retired stale describe {id}");
@@ -682,7 +708,9 @@ async fn worker(
         faults.push("accepted describe retired without frontend reply".into());
         permit.finish();
     }
-    for delivery in deliveries.drain() { let _ = delivery.ticket.take(); }
+    for delivery in deliveries.drain() {
+        let _ = delivery.ticket.take();
+    }
     if let Some(mut task) = serve_task.take() {
         tokio::select! {
             result = &mut task => {
@@ -700,7 +728,9 @@ async fn worker(
         submit_replies(&mut retained_replies, &mut operations);
         match tokio::time::timeout_at(deadline_at, operations.join_next()).await {
             Ok(Some(Ok((permit, result)))) => {
-                if let Err(error) = result { faults.push(error); }
+                if let Err(error) = result {
+                    faults.push(error);
+                }
                 permit.finish();
             }
             Ok(Some(Err(error))) => faults.push(format!("term Bus reply: {error}")),
@@ -710,11 +740,15 @@ async fn worker(
                 operations.abort_all();
                 while let Some(result) = operations.join_next().await {
                     if let Ok((permit, result)) = result {
-                        if let Err(error) = result { faults.push(error); }
+                        if let Err(error) = result {
+                            faults.push(error);
+                        }
                         permit.finish();
                     }
                 }
-                for reply in retained_replies.drain() { reply.permit.finish(); }
+                for reply in retained_replies.drain() {
+                    reply.permit.finish();
+                }
                 if undelivered > 0 {
                     faults.push(format!(
                         "term Bus reply drain timed out with {undelivered} undelivered replies"
@@ -735,9 +769,12 @@ async fn worker(
     }
     let accepted = admitted.counts();
     let refused = refusals.counts();
-    eprintln!("TERM_SHUTDOWN {}", json!({"faults": faults,
+    eprintln!(
+        "TERM_SHUTDOWN {}",
+        json!({"faults": faults,
         "describes": {"active":accepted.active,"finished":accepted.finished,"abandoned":accepted.abandoned},
-        "refusals": {"active":refused.active,"finished":refused.finished,"abandoned":refused.abandoned}}));
+        "refusals": {"active":refused.active,"finished":refused.finished,"abandoned":refused.abandoned}})
+    );
 }
 
 /// One bounded reply on the client that received the command. Spawned as a
@@ -748,13 +785,13 @@ async fn respond(
     rc: u8,
     body: String,
 ) -> Result<(), String> {
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            SupervisedClient::respond(&client, &command, rc, &body),
-        )
-        .await
-        .map_err(|_| "Bus reply timed out".to_owned())?
-        .map_err(|error| format!("Bus reply: {error}"))
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        SupervisedClient::respond(&client, &command, rc, &body),
+    )
+    .await
+    .map_err(|_| "Bus reply timed out".to_owned())?
+    .map_err(|error| format!("Bus reply: {error}"))
 }
 
 /// Start one bounded reply task if a permit remains. A refusal under
@@ -1003,9 +1040,14 @@ mod tests {
                     (permit, Ok::<(), String>(()))
                 });
             }
-            for _ in 0..PENDING_CAP { completion.recv().await.unwrap(); }
+            for _ in 0..PENDING_CAP {
+                completion.recv().await.unwrap();
+            }
             tokio::task::yield_now().await;
-            assert!(admission.try_acquire().is_none(), "finished tasks retain accepted credit until reap");
+            assert!(
+                admission.try_acquire().is_none(),
+                "finished tasks retain accepted credit until reap"
+            );
             assert_eq!(admission.counts().active, PENDING_CAP);
             let (permit, result) = tasks.join_next().await.unwrap().unwrap();
             result.unwrap();
@@ -1029,11 +1071,17 @@ mod tests {
         let mut handle = Handle::sink();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         handle.tx = tx;
-        let describe = Describe {id: 42, ticket: Once::new(42)};
+        let describe = Describe {
+            id: 42,
+            ticket: Once::new(42),
+        };
         handle.reply(&describe, 0, json!({"app":"term"}));
         handle.reply(&describe.clone(), 0, json!({"app":"term"}));
         assert!(matches!(rx.try_recv(), Ok(Effect::Reply(42, 0, _))));
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     /// A describe flood with a silent frontend is refused BUSY rather than
@@ -1091,8 +1139,15 @@ mod tests {
             // Observe the actual supervised client's registration watch.
             // This silent frontend deliberately does not drain the settings
             // mailbox, whose notifications are coalesced until UI consumption.
-            let mut connection = started.handle.shared.read().unwrap().client.as_ref()
-                .expect("actual supervised client").subscribe_state();
+            let mut connection = started
+                .handle
+                .shared
+                .read()
+                .unwrap()
+                .client
+                .as_ref()
+                .expect("actual supervised client")
+                .subscribe_state();
             while *connection.borrow_and_update() != ConnState::Connected {
                 tokio::time::timeout_at(deadline, connection.changed())
                     .await

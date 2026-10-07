@@ -1133,21 +1133,28 @@ mod tests {
             r##"<stop offset="0" stop-color="#ff0000"/>"##.repeat(256),
             r##"<rect width="16" height="16" fill="url(#g)"/>"##.repeat(257),
         );
-        assert!(matches!(decode_owned(expensive.into_bytes().into(), ImageFormat::Svg, 16, None),
-            Err(IconDecodeError::SvgComplexity { .. })));
+        assert!(matches!(
+            decode_owned(expensive.into_bytes().into(), ImageFormat::Svg, 16, None),
+            Err(IconDecodeError::SvgComplexity { .. })
+        ));
     }
 
     #[test]
     fn svg_nested_viewports_and_excessive_group_depth_are_refused() {
         let nested = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><svg width="1000000000" height="1000000000"><rect width="16" height="16"/></svg></svg>"#;
-        assert!(matches!(decode_owned(nested.as_bytes().into(), ImageFormat::Svg, 16, None),
-            Err(IconDecodeError::SvgUnsupported)));
+        assert!(matches!(
+            decode_owned(nested.as_bytes().into(), ImageFormat::Svg, 16, None),
+            Err(IconDecodeError::SvgUnsupported)
+        ));
         let deep = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">{}<rect width="16" height="16"/>{}</svg>"#,
-            "<g>".repeat(65), "</g>".repeat(65),
+            "<g>".repeat(65),
+            "</g>".repeat(65),
         );
-        assert!(matches!(decode_owned(deep.into_bytes().into(), ImageFormat::Svg, 16, None),
-            Err(IconDecodeError::SvgUnsupported)));
+        assert!(matches!(
+            decode_owned(deep.into_bytes().into(), ImageFormat::Svg, 16, None),
+            Err(IconDecodeError::SvgUnsupported)
+        ));
     }
 
     #[test]

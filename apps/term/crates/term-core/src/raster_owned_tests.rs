@@ -26,31 +26,63 @@ fn fira_mono() -> OwnedFace {
 
 #[test]
 fn approved_default_mono_300_drives_owned_ascii_and_unicode_pixels() {
-    let bytes: Arc<[u8]> = include_bytes!(
-        "../../../../../libs/appearance/assets/test-fonts/JetBrainsMono.ttf"
-    ).as_slice().into();
+    let bytes: Arc<[u8]> =
+        include_bytes!("../../../../../libs/appearance/assets/test-fonts/JetBrainsMono.ttf")
+            .as_slice()
+            .into();
     let font = FontRef::from_index(&bytes, 0).unwrap();
     assert_eq!(family(font), "JetBrains Mono");
-    let mono = OwnedFace { bytes: Arc::clone(&bytes), index: 0 };
+    let mono = OwnedFace {
+        bytes: Arc::clone(&bytes),
+        index: 0,
+    };
     let mut light = Raster::from_owned(
-        OwnedFontPolicy { groups: vec![vec![mono.clone()]], weight: 300 },
-        1.0, 21.333334, Cursor::Underline,
-    ).unwrap();
+        OwnedFontPolicy {
+            groups: vec![vec![mono.clone()]],
+            weight: 300,
+        },
+        1.0,
+        21.333334,
+        Cursor::Underline,
+    )
+    .unwrap();
     let mut bold = Raster::from_owned(
-        OwnedFontPolicy { groups: vec![vec![mono]], weight: 700 },
-        1.0, 21.333334, Cursor::Underline,
-    ).unwrap();
+        OwnedFontPolicy {
+            groups: vec![vec![mono]],
+            weight: 700,
+        },
+        1.0,
+        21.333334,
+        Cursor::Underline,
+    )
+    .unwrap();
     assert_eq!(light.weight, 300);
     assert_eq!(bold.weight, 700);
     assert!(Arc::ptr_eq(&light.unicode.fonts.primary.source(), &bytes));
     assert_eq!((light.width, light.height), (bold.width, bold.height));
-    assert_ne!(render_char(&mut light, 'M'), render_char(&mut bold, 'M'),
-        "same-cell ASCII pixels must follow the real variation coordinates");
+    assert_ne!(
+        render_char(&mut light, 'M'),
+        render_char(&mut bold, 'M'),
+        "same-cell ASCII pixels must follow the real variation coordinates"
+    );
     let expected = light.unicode.fonts.primary.key();
-    let image = light.unicode.image("é", 1, light.px, (light.width, light.height), light.baseline);
+    let image = light.unicode.image(
+        "é",
+        1,
+        light.px,
+        (light.width, light.height),
+        light.baseline,
+    );
     assert_eq!(image.font, Some(expected));
-    assert!(image.glyphs > 0 && !image.layers.is_empty(), "owned Unicode primary must paint real ink");
-    let retained = light.prepared_snapshot().resized_with_cursor(2.0, 22.0, Cursor::Underline).unwrap().activate();
+    assert!(
+        image.glyphs > 0 && !image.layers.is_empty(),
+        "owned Unicode primary must paint real ink"
+    );
+    let retained = light
+        .prepared_snapshot()
+        .resized_with_cursor(2.0, 22.0, Cursor::Underline)
+        .unwrap()
+        .activate();
     assert_eq!(retained.weight, 300);
     assert!(Arc::ptr_eq(&light.unicode.fonts, &retained.unicode.fonts));
 }

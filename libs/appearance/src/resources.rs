@@ -1400,7 +1400,9 @@ fn effective_chain(
 ) -> (Vec<String>, bool) {
     let mut chain = Vec::new();
     let mut remapped = false;
-    if compact.packaged && let Some((role, set_role)) = packaged_role(name) {
+    if compact.packaged
+        && let Some((role, set_role)) = packaged_role(name)
+    {
         let default = design::default_typography(role);
         if default.family == record.family
             && default.fallbacks == record.fallbacks
@@ -1457,7 +1459,9 @@ fn registration_batch(
                 index: 0,
             });
     }
-    if let Some(catalogue) = &compact.catalogue && !catalogue.family.is_empty() {
+    if let Some(catalogue) = &compact.catalogue
+        && !catalogue.family.is_empty()
+    {
         families
             .entry(catalogue.family.clone())
             .or_default()
@@ -1510,8 +1514,14 @@ fn registration_batch(
         })
         .collect();
     let mut icon_requests = Vec::new();
-    if !plan.glyphs.is_empty() && let Some(catalogue) = &compact.catalogue {
-        let names = plan.glyphs.iter().map(|glyph| glyph.name.clone()).collect::<BTreeSet<_>>();
+    if !plan.glyphs.is_empty()
+        && let Some(catalogue) = &compact.catalogue
+    {
+        let names = plan
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.name.clone())
+            .collect::<BTreeSet<_>>();
         icon_requests.push(IconSelectionRequest {
             key: ICON_KEY.to_owned(),
             family: catalogue.family.clone(),
@@ -1543,7 +1553,9 @@ fn reuse(
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<Prepared, Diagnostic> {
     let binding = binding_for(compact);
-    if let Some(expected) = &identity.expected && binding != *expected {
+    if let Some(expected) = &identity.expected
+        && binding != *expected
+    {
         return Err(fault(
             "resources",
             "verified resource identity differs from the recorded binding",
@@ -1620,7 +1632,9 @@ fn register(
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<(Prepared, CompactSet), Diagnostic> {
     let binding = binding_for(&compact);
-    if let Some(expected) = &identity.expected && binding != *expected {
+    if let Some(expected) = &identity.expected
+        && binding != *expected
+    {
         return Err(fault(
             "resources",
             "verified resource identity differs from the recorded binding",

@@ -39,8 +39,8 @@ mod cpu_grid;
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
 use ::bus::native_client::ConnState;
-use application::iced::widget::{Row, column, container, row, space};
 use application::Element;
+use application::iced::widget::{Row, column, container, row, space};
 use application::iced::{Length, Size, Subscription, Task};
 use application::presentation::native::Ui;
 use frame::Painter;
