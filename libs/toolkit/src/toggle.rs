@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Latching mute/solo-style button.
+use iced_core::text::Paragraph as _;
 use iced_core::{Element, Event, Length, Padding, Point, Rectangle, Size};
 use iced_core::{
     Layout, Shell, Widget, layout, mouse, renderer, text,
     widget::{Tree, tree},
 };
-use iced_core::text::Paragraph as _;
 
 use crate::AudioStyle;
 use crate::audio_style::quad;
@@ -133,8 +133,7 @@ impl<'a, Message, F> StyledToggle<'a, Message, F> {
     }
 }
 
-impl<Message, Theme, Renderer, F> Widget<Message, Theme, Renderer>
-    for StyledToggle<'_, Message, F>
+impl<Message, Theme, Renderer, F> Widget<Message, Theme, Renderer> for StyledToggle<'_, Message, F>
 where
     Theme: Catalog,
     Renderer: text::Renderer<Font = F>,
@@ -465,11 +464,14 @@ mod tests {
                 line_height: None,
             })
             .padding(Padding::ZERO);
-        let narrow = styled_layout(&mut Toggle::new("M", false).text_style(TextStyle {
-            font: iced_core::Font::MONOSPACE,
-            size: 14.0,
-            line_height: None,
-        }), Size::new(400.0, 100.0));
+        let narrow = styled_layout(
+            &mut Toggle::new("M", false).text_style(TextStyle {
+                font: iced_core::Font::MONOSPACE,
+                size: 14.0,
+                line_height: None,
+            }),
+            Size::new(400.0, 100.0),
+        );
         let node = styled_layout(&mut wide, Size::new(400.0, 100.0));
         assert!(node.size().width > narrow.size().width);
     }

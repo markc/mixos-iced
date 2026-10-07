@@ -723,18 +723,19 @@ impl Requester {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.clone());
                 let msg = Message::from(Event::Recent(path.clone()));
-                let entry = match styles {
-                    Some(style) => button(label(name, style.button)).on_press(msg).style(
-                        move |_, status| {
-                            theme::button::text(&crate::Theme::new(tokens), status)
-                        },
-                    ),
-                    None => button(text(name).size(m.text.sm)).on_press(msg).style(
-                        move |_, status| {
-                            theme::button::text(&crate::Theme::new(tokens), status)
-                        },
-                    ),
-                };
+                let entry =
+                    match styles {
+                        Some(style) => button(label(name, style.button)).on_press(msg).style(
+                            move |_, status| {
+                                theme::button::text(&crate::Theme::new(tokens), status)
+                            },
+                        ),
+                        None => button(text(name).size(m.text.sm)).on_press(msg).style(
+                            move |_, status| {
+                                theme::button::text(&crate::Theme::new(tokens), status)
+                            },
+                        ),
+                    };
                 recent = recent.push(entry);
             }
             body = body.push(
@@ -1031,11 +1032,9 @@ mod tests {
             model.view_for(Tokens::default(), &strings);
         let mut tree = iced_core::widget::Tree::new(legacy.as_widget());
         legacy.as_widget_mut().diff(&mut tree);
-        let node = legacy.as_widget_mut().layout(
-            &mut tree,
-            &FaceRenderer::default(),
-            &limits,
-        );
+        let node = legacy
+            .as_widget_mut()
+            .layout(&mut tree, &FaceRenderer::default(), &limits);
         assert!(node.size().width > 0.0 && node.size().height > 0.0);
         let styles = TextStyles::new(
             TextStyle {
@@ -1058,7 +1057,9 @@ mod tests {
             model.view_styled_for(Tokens::default(), &strings, styles);
         let mut tree = iced_core::widget::Tree::new(styled.as_widget());
         styled.as_widget_mut().diff(&mut tree);
-        let node = styled.as_widget_mut().layout(&mut tree, &FaceRenderer::default(), &limits);
+        let node = styled
+            .as_widget_mut()
+            .layout(&mut tree, &FaceRenderer::default(), &limits);
         assert!(node.size().width > 0.0 && node.size().height > 0.0);
     }
 
@@ -1159,7 +1160,10 @@ mod tests {
             &mut shell,
             &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
         );
-        assert_eq!(bus.drain().collect::<Vec<_>>(), [ViewMessage(Event::Select(3))]);
+        assert_eq!(
+            bus.drain().collect::<Vec<_>>(),
+            [ViewMessage(Event::Select(3))]
+        );
         // The styled draw changes every recorded text role.
         let mut draw = LayoutRenderer::new();
         styled.as_widget().draw(
@@ -1208,7 +1212,10 @@ mod tests {
             &mut shell,
             &iced_core::Rectangle::with_size(iced_core::Size::new(420.0, 420.0)),
         );
-        assert_eq!(bus.drain().collect::<Vec<_>>(), [ViewMessage(Event::Submit)]);
+        assert_eq!(
+            bus.drain().collect::<Vec<_>>(),
+            [ViewMessage(Event::Submit)]
+        );
         match model.update(Event::Submit) {
             Some(Outcome::Open(paths)) => {
                 assert_eq!(paths.len(), 1);

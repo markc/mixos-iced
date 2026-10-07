@@ -515,18 +515,12 @@ where
                         .align_x(Alignment::Center)
                         .push(label)
                         .push(icon),
-                    Position::Left => Column::new().align_x(Alignment::Center).push(
-                        Row::new()
-                            .align_y(Alignment::Center)
-                            .push(icon)
-                            .push(label),
-                    ),
-                    Position::Right => Column::new().align_x(Alignment::Center).push(
-                        Row::new()
-                            .align_y(Alignment::Center)
-                            .push(label)
-                            .push(icon),
-                    ),
+                    Position::Left => Column::new()
+                        .align_x(Alignment::Center)
+                        .push(Row::new().align_y(Alignment::Center).push(icon).push(label)),
+                    Position::Right => Column::new()
+                        .align_x(Alignment::Center)
+                        .push(Row::new().align_y(Alignment::Center).push(label).push(icon)),
                 };
                 column.width(self.tab_width).height(self.height)
             }
@@ -1214,7 +1208,11 @@ fn draw_tab<Theme, Renderer>(
                 // reserves before hit testing.
                 size: Pixels(
                     resolved.close.size
-                        + if !resolved.close_prepared && is_mouse_over_cross { 1.0 } else { 0.0 },
+                        + if !resolved.close_prepared && is_mouse_over_cross {
+                            1.0
+                        } else {
+                            0.0
+                        },
                 ),
                 font: resolved.close.font,
                 align_x: text::Alignment::Center,
@@ -1326,13 +1324,12 @@ mod tests {
         fn allocate_image(
             &mut self,
             handle: &iced_core::image::Handle,
-            callback: impl FnOnce(
-                    Result<iced_core::image::Allocation, iced_core::image::Error>,
-                ) + Send
-                + 'static,
+            callback: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
+            + Send
+            + 'static,
         ) {
             let _ = handle;
-        callback(Err(iced_core::image::Error::Unsupported));
+            callback(Err(iced_core::image::Error::Unsupported));
         }
     }
 
@@ -1488,7 +1485,12 @@ mod tests {
 
     #[test]
     fn prepared_rows_keep_deterministic_label_then_close_children() {
-        for position in [Position::Top, Position::Right, Position::Bottom, Position::Left] {
+        for position in [
+            Position::Top,
+            Position::Right,
+            Position::Bottom,
+            Position::Left,
+        ] {
             let mut bar = prepared_bar::<LayoutRenderer>(true).set_position(position);
             let (_, node) = layout_bar(&mut bar);
             let mut tabs = Layout::new(&node).children();
@@ -1501,7 +1503,11 @@ mod tests {
                 "one deterministic row child per tab"
             );
             let slot = close_style().minimum_height();
-            assert_eq!(close.bounds().height, slot, "the close slot fits its line box");
+            assert_eq!(
+                close.bounds().height,
+                slot,
+                "the close slot fits its line box"
+            );
             assert_eq!(close.bounds().width, slot);
             // The label content children follow the position variant.
             let content_children: Vec<_> = content.children().collect();
@@ -1579,7 +1585,11 @@ mod tests {
         let tab = Layout::new(&node).children().next().expect("one tab");
         let content = tab.children().next().expect("label content");
         let label = content.children().next().expect("label");
-        assert_eq!(label.bounds().x - content.bounds().x, 5.0, "five pixels left");
+        assert_eq!(
+            label.bounds().x - content.bounds().x,
+            5.0,
+            "five pixels left"
+        );
         assert_eq!(
             content.bounds().width - label.bounds().width,
             10.0,
@@ -1623,7 +1633,10 @@ mod tests {
             line_height: Some(30.0),
         }));
         assert_eq!(partial.0, legacy.0, "the unset close slot is not tightened");
-        assert_eq!(partial.1, legacy.1, "the unset icon allowance is not tightened");
+        assert_eq!(
+            partial.1, legacy.1,
+            "the unset icon allowance is not tightened"
+        );
         // The prepared text role measures its exact resolved line box.
         assert_eq!(partial.2, 30.0);
         assert_ne!(partial.2, legacy.2);
@@ -1687,13 +1700,19 @@ mod tests {
         ui.update(
             &iced_core::window::Headless,
             &iced_core::shell::Waker::noop(),
-            &[Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))],
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
             mouse::Cursor::Available(close_bounds.center()),
             &mut renderer,
             &mut bus,
         );
         messages.extend(bus);
-        assert_eq!(messages, [201], "the retained cache relays the new close target");
+        assert_eq!(
+            messages,
+            [201],
+            "the retained cache relays the new close target"
+        );
         // The tab order is unchanged: the first tab's label selects id 0.
         let first = Layout::new(&node).children().next().expect("first tab");
         let label_bounds = first.children().next().expect("label").bounds();
@@ -1701,7 +1720,9 @@ mod tests {
         ui.update(
             &iced_core::window::Headless,
             &iced_core::shell::Waker::noop(),
-            &[Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))],
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
             mouse::Cursor::Available(label_bounds.center()),
             &mut renderer,
             &mut bus,

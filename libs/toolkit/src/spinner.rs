@@ -11,8 +11,8 @@ use iced_core::layout::{Limits, Node};
 use iced_core::mouse::Cursor;
 use iced_core::renderer;
 use iced_core::time::{Duration, Instant};
-use iced_core::widget::tree::{State, Tag};
 use iced_core::widget::Tree;
+use iced_core::widget::tree::{State, Tag};
 use iced_core::window::{self, RedrawRequest};
 use iced_core::{
     Border, Color, Element, Event, Layout, Length, Rectangle, Shell, Size, Vector, Widget,
@@ -109,7 +109,12 @@ fn is_visible(bounds: &Rectangle, viewport: &Rectangle) -> bool {
     bounds.width > 0.0 && bounds.height > 0.0 && bounds.intersects(viewport)
 }
 
-fn fill_circle(renderer: &mut impl renderer::Renderer, position: Vector, radius: f32, color: Color) {
+fn fill_circle(
+    renderer: &mut impl renderer::Renderer,
+    position: Vector,
+    radius: f32,
+    color: Color,
+) {
     if radius > 0. {
         renderer.fill_quad(
             renderer::Quad {
@@ -140,12 +145,11 @@ where
     }
 
     fn layout(&mut self, _tree: &mut Tree, _renderer: &Renderer, limits: &Limits) -> Node {
-        Node::new(
-            limits
-                .width(self.width)
-                .height(self.height)
-                .resolve(self.width, self.height, Size::new(f32::INFINITY, f32::INFINITY)),
-        )
+        Node::new(limits.width(self.width).height(self.height).resolve(
+            self.width,
+            self.height,
+            Size::new(f32::INFINITY, f32::INFINITY),
+        ))
     }
 
     fn draw(
@@ -259,8 +263,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced_core::shell::{Bus, Waker};
     use crate::test_renderer::LayoutRenderer;
+    use iced_core::shell::{Bus, Waker};
 
     fn frame<Message: 'static>(
         spinner: &mut Spinner,
@@ -284,7 +288,8 @@ mod tests {
 
     fn spinner<Message: 'static>() -> (Spinner, Tree) {
         let mut spinner = Spinner::new();
-        let mut tree = Tree::new(&spinner as &dyn Widget<Message, iced_core::Theme, LayoutRenderer>);
+        let mut tree =
+            Tree::new(&spinner as &dyn Widget<Message, iced_core::Theme, LayoutRenderer>);
         Widget::<Message, iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         (spinner, tree)
     }
@@ -316,7 +321,8 @@ mod tests {
         let origin = Instant::now();
         frame(&mut spinner, &mut tree, origin, &mut shell);
         assert_eq!(
-            tree.state.downcast_ref::<SpinnerState>().t, 0.0,
+            tree.state.downcast_ref::<SpinnerState>().t,
+            0.0,
             "the first frame advances zero"
         );
         let next = origin + Duration::from_millis(1000 / 60);
@@ -341,7 +347,12 @@ mod tests {
         Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
         frame(&mut spinner, &mut tree, now, &mut shell);
         assert!(matches!(shell.redraw_request(), RedrawRequest::None));
-        assert!(tree.state.downcast_ref::<SpinnerState>().last_update.is_none());
+        assert!(
+            tree.state
+                .downcast_ref::<SpinnerState>()
+                .last_update
+                .is_none()
+        );
         // Zero rate.
         let (mut spinner, mut tree) = spinner::<()>();
         let mut shell = shell::<()>();
@@ -361,10 +372,7 @@ mod tests {
             mouse::Cursor::Unavailable,
             &LayoutRenderer::default(),
             &mut shell,
-            &Rectangle::new(
-                iced_core::Point::new(100.0, 100.0),
-                Size::new(20.0, 20.0),
-            ),
+            &Rectangle::new(iced_core::Point::new(100.0, 100.0), Size::new(20.0, 20.0)),
         );
         assert!(matches!(shell.redraw_request(), RedrawRequest::None));
     }
@@ -382,11 +390,21 @@ mod tests {
         let t = tree.state.downcast_ref::<SpinnerState>().t;
         spinner = spinner.animated(false);
         Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
-        frame(&mut spinner, &mut tree, now + Duration::from_secs(5), &mut shell);
+        frame(
+            &mut spinner,
+            &mut tree,
+            now + Duration::from_secs(5),
+            &mut shell,
+        );
         // The phase survives; the widget schedules nothing of its own and
         // never replaces the independently supplied earlier deadline.
         assert_eq!(tree.state.downcast_ref::<SpinnerState>().t, t);
-        assert!(tree.state.downcast_ref::<SpinnerState>().last_update.is_none());
+        assert!(
+            tree.state
+                .downcast_ref::<SpinnerState>()
+                .last_update
+                .is_none()
+        );
         assert!(matches!(
             shell.redraw_request(),
             RedrawRequest::At(at) if at == deadline
@@ -406,7 +424,12 @@ mod tests {
         // A long pause without animation: the origin clears.
         spinner = spinner.animated(false);
         Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);
-        frame(&mut spinner, &mut tree, next + Duration::from_secs(60), &mut shell);
+        frame(
+            &mut spinner,
+            &mut tree,
+            next + Duration::from_secs(60),
+            &mut shell,
+        );
         // Resume: the first active frame advances zero and keeps the phase.
         spinner = spinner.animated(true);
         Widget::<(), iced_core::Theme, LayoutRenderer>::diff(&mut spinner, &mut tree);

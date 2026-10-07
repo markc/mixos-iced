@@ -393,11 +393,8 @@ impl text::Renderer for FaceRenderer {
         Pixels(14.0)
     }
     fn fill_paragraph(&mut self, paragraph: &FaceParagraph, _: Point, _: Color, _: Rectangle) {
-        self.paragraphs.push((
-            paragraph.font(),
-            paragraph.size(),
-            paragraph.line_height(),
-        ));
+        self.paragraphs
+            .push((paragraph.font(), paragraph.size(), paragraph.line_height()));
     }
     fn fill_editor(&mut self, editor: &FaceEditor, _: Point, _: Color, _: Rectangle) {
         self.editors.push((editor.font(), editor.text_size()));

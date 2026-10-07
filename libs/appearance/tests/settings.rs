@@ -232,7 +232,10 @@ fn ui_and_small_roles_have_typed_accessors() {
     );
     assert_eq!(
         prepared.small_text(),
-        prepared.typography().get("small").expect("prepared small role")
+        prepared
+            .typography()
+            .get("small")
+            .expect("prepared small role")
     );
     assert_eq!(
         prepared.ui_text().size,

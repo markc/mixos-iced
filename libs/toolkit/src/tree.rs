@@ -245,7 +245,9 @@ where
     }
 
     pub fn get_mut(&mut self, key: &K) -> Option<&mut T> {
-        self.index.get(key).map(|index| &mut self.nodes[*index].data)
+        self.index
+            .get(key)
+            .map(|index| &mut self.nodes[*index].data)
     }
 
     pub fn parent(&self, key: &K) -> Option<&K> {
@@ -305,7 +307,10 @@ where
 
     /// Expands every ancestor of `key`, so it is visible.
     pub fn expand_to(&mut self, key: &K) {
-        let mut current = self.index.get(key).and_then(|index| self.nodes[*index].parent);
+        let mut current = self
+            .index
+            .get(key)
+            .and_then(|index| self.nodes[*index].parent);
         while let Some(index) = current {
             if !self.nodes[index].expanded {
                 self.nodes[index].expanded = true;
@@ -504,7 +509,11 @@ where
         let toggle_keys = self.on_toggle.clone();
         let mut list = self
             .list
-            .key(move |row| nodes.visible(row).map_or(row as u64, |row| row_key(row.key)))
+            .key(move |row| {
+                nodes
+                    .visible(row)
+                    .map_or(row as u64, |row| row_key(row.key))
+            })
             .selection(&selection)
             .on_key(move |press| {
                 let cursor = press.cursor?;
@@ -562,7 +571,9 @@ where
                 children: row.children,
                 indent,
                 expanders,
-                on_toggle: toggle.map(|toggle| Box::new(move || toggle(key.clone())) as Box<dyn Fn() -> Message + 'a>),
+                on_toggle: toggle.map(|toggle| {
+                    Box::new(move || toggle(key.clone())) as Box<dyn Fn() -> Message + 'a>
+                }),
             };
             iced_widget::Row::with_children([Element::new(guides), build(row)])
                 .height(Length::Fill)
@@ -761,7 +772,8 @@ where
         // This row's own elbow: down from the top, and (unless last) on
         // through the bottom, then across to the expander or content.
         if self.depth > 0 {
-            let x = (bounds.x + (self.depth as f32 - 1.0) * self.indent + self.indent / 2.0).round();
+            let x =
+                (bounds.x + (self.depth as f32 - 1.0) * self.indent + self.indent / 2.0).round();
             let mid = (bounds.y + bounds.height / 2.0).round();
             line(
                 renderer,
@@ -781,7 +793,12 @@ where
                 Rectangle {
                     x,
                     y: mid,
-                    width: self.indent / 2.0 + if self.children == Children::None { self.indent / 2.0 } else { 0.0 },
+                    width: self.indent / 2.0
+                        + if self.children == Children::None {
+                            self.indent / 2.0
+                        } else {
+                            0.0
+                        },
                     height: 1.0,
                 },
             );
@@ -974,7 +991,10 @@ mod tests {
         let keys: Vec<_> = nodes.visible_rows().map(|row| *row.key).collect();
         assert_eq!(keys, ["a", "a1", "a2", "x", "y", "b"]);
         assert_eq!(nodes.visible(3).unwrap().depth, 2);
-        assert_eq!(nodes.children(&"a2").copied().collect::<Vec<_>>(), ["x", "y"]);
+        assert_eq!(
+            nodes.children(&"a2").copied().collect::<Vec<_>>(),
+            ["x", "y"]
+        );
         // Replacing children drops the old keys.
         assert!(nodes.set_children(&"a2", vec![("z", 7, Children::None)]));
         assert!(!nodes.contains(&"x"));
@@ -1082,13 +1102,12 @@ mod tests {
             fn allocate_image(
                 &mut self,
                 handle: &iced_core::image::Handle,
-                callback: impl FnOnce(
-                        Result<iced_core::image::Allocation, iced_core::image::Error>,
-                    ) + Send
-                    + 'static,
+                callback: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
+                + Send
+                + 'static,
             ) {
                 let _ = handle;
-        callback(Err(iced_core::image::Error::Unsupported));
+                callback(Err(iced_core::image::Error::Unsupported));
             }
         }
 
@@ -1127,7 +1146,8 @@ mod tests {
             fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
 
             fn fill_text(&mut self, text: text::Text, _: Point, _: Color, _: Rectangle) {
-                self.texts.push((text.content, text.font, text.size, text.line_height));
+                self.texts
+                    .push((text.content, text.font, text.size, text.line_height));
             }
         }
 
@@ -1161,19 +1181,17 @@ mod tests {
             crate::test_renderer::LayoutRenderer::new();
             let mut nodes = nodes();
             nodes.set_expanded(&"a", true);
-            let mut element: Element<'_, Msg, iced_core::Theme, Recorder> = TreeView::new(
-                &nodes,
-                |row| {
+            let mut element: Element<'_, Msg, iced_core::Theme, Recorder> =
+                TreeView::new(&nodes, |row| {
                     iced_widget::text(*row.data)
                         .font(Font::MONOSPACE)
                         .size(13.0)
                         .line_height(text::LineHeight::Absolute(Pixels(20.0)))
-                },
-            )
-            .expanders(expanders())
-            .on_toggle(Msg::Toggle)
-            .on_select(Msg::Select)
-            .into();
+                })
+                .expanders(expanders())
+                .on_toggle(Msg::Toggle)
+                .on_select(Msg::Select)
+                .into();
             let mut tree = Tree::new(element.as_widget());
             let recorder = draw(&mut element, &mut tree);
             // The expanded root draws the ▼ glyph at its own resolved style.
@@ -1248,12 +1266,16 @@ mod tests {
         fn prepared_expander_clicks_are_confined_to_the_expander_rectangle() {
             let mut nodes = nodes();
             nodes.set_expanded(&"a", true);
-            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
-                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
-                    .expanders(expanders())
-                    .on_toggle(Msg::Toggle)
-                    .on_select(Msg::Select)
-                    .into();
+            let mut element: Element<
+                '_,
+                Msg,
+                iced_core::Theme,
+                crate::test_renderer::LayoutRenderer,
+            > = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                .expanders(expanders())
+                .on_toggle(Msg::Toggle)
+                .on_select(Msg::Select)
+                .into();
             let mut tree = Tree::new(element.as_widget());
             element.as_widget_mut().diff(&mut tree);
             let renderer = crate::test_renderer::LayoutRenderer::new();
@@ -1279,12 +1301,21 @@ mod tests {
             let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
             // The expander rectangle of the first row (indent 20, box 12:
             // x 4..16, y 8..20). A click inside toggles and selects nothing.
-            assert_eq!(send(press.clone(), Point::new(10.0, 14.0)), [Msg::Toggle("a")]);
+            assert_eq!(
+                send(press.clone(), Point::new(10.0, 14.0)),
+                [Msg::Toggle("a")]
+            );
             // The prepared hit region does not pad the rectangle: a click
             // beside it (still in the guides area) selects the row instead.
-            assert_eq!(send(press.clone(), Point::new(1.0, 14.0)), [Msg::Select(Selection::single(0))]);
+            assert_eq!(
+                send(press.clone(), Point::new(1.0, 14.0)),
+                [Msg::Select(Selection::single(0))]
+            );
             // A neighbouring row's content selects that row only.
-            assert_eq!(send(press.clone(), Point::new(150.0, 42.0)), [Msg::Select(Selection::single(1))]);
+            assert_eq!(
+                send(press.clone(), Point::new(150.0, 42.0)),
+                [Msg::Select(Selection::single(1))]
+            );
         }
 
         #[test]
@@ -1299,16 +1330,28 @@ mod tests {
                 tokens.metrics.spacing.sm *= density;
                 tokens.metrics.spacing.lg *= density;
                 let metrics = controls::Metrics::from_tokens(tokens);
-                let text = TextStyle { font: Font::DEFAULT, size, line_height: None };
-                let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
-                    TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
-                        .metrics(metrics, text)
-                        .expanders(Expanders::new(None, None))
-                        .on_select(Msg::Select)
-                        .into();
+                let text = TextStyle {
+                    font: Font::DEFAULT,
+                    size,
+                    line_height: None,
+                };
+                let mut element: Element<
+                    '_,
+                    Msg,
+                    iced_core::Theme,
+                    crate::test_renderer::LayoutRenderer,
+                > = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                    .metrics(metrics, text)
+                    .expanders(Expanders::new(None, None))
+                    .on_select(Msg::Select)
+                    .into();
                 let tree = retained.get_or_insert_with(|| Tree::new(element.as_widget()));
                 element.as_widget_mut().diff(tree);
-                let node = element.as_widget_mut().layout(tree, &renderer, &layout::Limits::new(Size::ZERO, VIEW));
+                let node = element.as_widget_mut().layout(
+                    tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, VIEW),
+                );
                 let mut bus = Bus::new();
                 let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
                 element.as_widget_mut().update(
@@ -1320,7 +1363,10 @@ mod tests {
                     &mut shell,
                     &Rectangle::with_size(VIEW),
                 );
-                assert_eq!(bus.drain().collect::<Vec<_>>(), [Msg::Select(Selection::single(expected_row))]);
+                assert_eq!(
+                    bus.drain().collect::<Vec<_>>(),
+                    [Msg::Select(Selection::single(expected_row))]
+                );
                 assert!(nodes.is_expanded(&"a"));
                 assert_eq!(nodes.visible_len(), 2);
             }
@@ -1340,13 +1386,17 @@ mod tests {
             assert_eq!(metrics.indent(&text), 30.0);
             let mut nodes = nodes();
             nodes.set_expanded(&"a", true);
-            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
-                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
-                    .metrics(metrics, text)
-                    .expanders(expanders())
-                    .on_toggle(Msg::Toggle)
-                    .on_select(Msg::Select)
-                    .into();
+            let mut element: Element<
+                '_,
+                Msg,
+                iced_core::Theme,
+                crate::test_renderer::LayoutRenderer,
+            > = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                .metrics(metrics, text)
+                .expanders(expanders())
+                .on_toggle(Msg::Toggle)
+                .on_select(Msg::Select)
+                .into();
             let mut tree = Tree::new(element.as_widget());
             element.as_widget_mut().diff(&mut tree);
             let renderer = crate::test_renderer::LayoutRenderer::new();
@@ -1372,11 +1422,17 @@ mod tests {
             let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
             // The expander rectangle of the first row: indent 30, box 16
             // (0.6 × 30 clamped), x 7..23, y 6..22. A click inside toggles.
-            assert_eq!(send(press.clone(), Point::new(15.0, 14.0)), [Msg::Toggle("a")]);
+            assert_eq!(
+                send(press.clone(), Point::new(15.0, 14.0)),
+                [Msg::Toggle("a")]
+            );
             // A click at x 4 is inside the legacy indent-20 rectangle
             // (x 4..16) but outside the metrics-derived one, so it selects
             // the row instead of toggling.
-            assert_eq!(send(press.clone(), Point::new(4.0, 14.0)), [Msg::Select(Selection::single(0))]);
+            assert_eq!(
+                send(press.clone(), Point::new(4.0, 14.0)),
+                [Msg::Select(Selection::single(0))]
+            );
         }
 
         #[test]
@@ -1384,13 +1440,17 @@ mod tests {
             let mut nodes = nodes();
             nodes.set_expanded(&"a", true);
             let selection = Selection::single(1);
-            let mut element: Element<'_, Msg, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
-                TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
-                    .expanders(expanders())
-                    .on_toggle(Msg::Toggle)
-                    .on_select(Msg::Select)
-                    .selection(&selection)
-                    .into();
+            let mut element: Element<
+                '_,
+                Msg,
+                iced_core::Theme,
+                crate::test_renderer::LayoutRenderer,
+            > = TreeView::new(&nodes, |_| Element::new(iced_widget::Space::new()))
+                .expanders(expanders())
+                .on_toggle(Msg::Toggle)
+                .on_select(Msg::Select)
+                .selection(&selection)
+                .into();
             let mut tree = Tree::new(element.as_widget());
             element.as_widget_mut().diff(&mut tree);
             let renderer = crate::test_renderer::LayoutRenderer::new();
@@ -1450,9 +1510,9 @@ mod tests {
         fn view<'a>(nodes: &'a Nodes<&'static str, u32>, selection: &Selection) -> El<'a> {
             TreeView::new(nodes, |_row| Element::new(iced_widget::Space::new()))
                 .on_toggle(Msg::Toggle)
-            .on_select(Msg::Select)
-            .selection(selection)
-            .into()
+                .on_select(Msg::Select)
+                .selection(selection)
+                .into()
         }
 
         fn layout(element: &mut El<'_>, tree: &mut Tree) -> layout::Node {
@@ -1464,7 +1524,13 @@ mod tests {
             )
         }
 
-        fn send(element: &mut El<'_>, tree: &mut Tree, node: &layout::Node, event: Event, cursor: mouse::Cursor) -> Vec<Msg> {
+        fn send(
+            element: &mut El<'_>,
+            tree: &mut Tree,
+            node: &layout::Node,
+            event: Event,
+            cursor: mouse::Cursor,
+        ) -> Vec<Msg> {
             let mut bus = Bus::new();
             let mut shell = Shell::new(&Headless, Waker::noop(), &mut bus);
             element.as_widget_mut().update(
@@ -1518,7 +1584,13 @@ mod tests {
             element = view(&nodes, &selection);
             node = layout(&mut element, &mut tree);
             assert_eq!(
-                send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
+                send(
+                    &mut element,
+                    &mut tree,
+                    &node,
+                    arrow(Named::ArrowRight),
+                    click_row(0)
+                ),
                 [Msg::Toggle("a")]
             );
             drop(element);
@@ -1527,7 +1599,13 @@ mod tests {
             element = view(&nodes, &selection);
             node = layout(&mut element, &mut tree);
             assert_eq!(
-                send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
+                send(
+                    &mut element,
+                    &mut tree,
+                    &node,
+                    arrow(Named::ArrowRight),
+                    click_row(0)
+                ),
                 [Msg::Select(Selection::single(1))]
             );
             selection = Selection::single(1);
@@ -1536,19 +1614,37 @@ mod tests {
             element = view(&nodes, &selection);
             node = layout(&mut element, &mut tree);
             assert_eq!(
-                send(&mut element, &mut tree, &node, arrow(Named::ArrowLeft), click_row(0)),
+                send(
+                    &mut element,
+                    &mut tree,
+                    &node,
+                    arrow(Named::ArrowLeft),
+                    click_row(0)
+                ),
                 [Msg::Select(Selection::single(0))]
             );
             selection = Selection::single(0);
             element = view(&nodes, &selection);
             node = layout(&mut element, &mut tree);
             assert_eq!(
-                send(&mut element, &mut tree, &node, arrow(Named::ArrowLeft), click_row(0)),
+                send(
+                    &mut element,
+                    &mut tree,
+                    &node,
+                    arrow(Named::ArrowLeft),
+                    click_row(0)
+                ),
                 [Msg::Toggle("a")]
             );
             // Down and Up are the list's own.
             assert_eq!(
-                send(&mut element, &mut tree, &node, arrow(Named::ArrowDown), click_row(0)),
+                send(
+                    &mut element,
+                    &mut tree,
+                    &node,
+                    arrow(Named::ArrowDown),
+                    click_row(0)
+                ),
                 [Msg::Select(Selection::single(1))]
             );
             // A press on the expander toggles without selecting.
@@ -1587,7 +1683,13 @@ mod tests {
             let mut tree = Tree::new(element.as_widget());
             let node = layout(&mut element, &mut tree);
             assert_eq!(
-                send(&mut element, &mut tree, &node, arrow(Named::ArrowRight), click_row(0)),
+                send(
+                    &mut element,
+                    &mut tree,
+                    &node,
+                    arrow(Named::ArrowRight),
+                    click_row(0)
+                ),
                 Vec::<Msg>::new(),
                 "Right on an expanded childless node must not select its sibling"
             );

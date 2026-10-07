@@ -1348,11 +1348,7 @@ mod widget_tests {
         node.size().height
     }
 
-    fn send_batch(
-        field: &mut Field,
-        tree: &mut widget::Tree,
-        events: &[Event],
-    ) -> Vec<String> {
+    fn send_batch(field: &mut Field, tree: &mut widget::Tree, events: &[Event]) -> Vec<String> {
         let bounds = Size::new(300.0, 120.0);
         let node = Widget::layout(
             field,
@@ -1394,8 +1390,7 @@ mod widget_tests {
                 .on_input(std::convert::identity)
                 .padding(Padding::ZERO)
                 .text_style(style);
-            let mut tree =
-                widget::Tree::new(&field as &dyn Widget<String, Theme, LayoutRenderer>);
+            let mut tree = widget::Tree::new(&field as &dyn Widget<String, Theme, LayoutRenderer>);
             field.diff(&mut tree);
             (field, tree)
         };
@@ -1517,7 +1512,10 @@ mod widget_tests {
             send_batch(
                 &mut rebuilt,
                 &mut tree,
-                &[key("z", keyboard::Modifiers::CTRL), key("d", keyboard::Modifiers::empty())],
+                &[
+                    key("z", keyboard::Modifiers::CTRL),
+                    key("d", keyboard::Modifiers::empty())
+                ],
             ),
             ["界", "d"]
         );

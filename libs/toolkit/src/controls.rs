@@ -60,8 +60,7 @@ impl Metrics {
     /// [`crate::tree::TreeView::metrics`] consumes this for its prepared
     /// rows.
     pub fn indent<F>(self, text: &TextStyle<F>) -> f32 {
-        self.row_height(text)
-            .max(self.spacing.lg + self.spacing.sm)
+        self.row_height(text).max(self.spacing.lg + self.spacing.sm)
     }
 }
 
