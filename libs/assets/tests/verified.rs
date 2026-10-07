@@ -11,7 +11,7 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use assets::{
-    AssetSet, MANIFEST_FILE, SCHEMA, STYLESHEET_FILE, ReadLimits, VerifiedFile, VerifiedSet,
+    AssetSet, MANIFEST_FILE, ReadLimits, SCHEMA, STYLESHEET_FILE, VerifiedFile, VerifiedSet,
 };
 use sha2::Digest;
 
@@ -58,7 +58,13 @@ fn publish(root: &Path, id: &str, sans: &[u8], icon_font: &[u8], catalogue: &[u8
 }
 
 fn fixture(root: &Path, id: &str) -> PathBuf {
-    publish(root, id, b"font bytes", b"icon font", b"delete e872\nfolder e2c7\n")
+    publish(
+        root,
+        id,
+        b"font bytes",
+        b"icon font",
+        b"delete e872\nfolder e2c7\n",
+    )
 }
 
 fn verified(root: &Path, id: &str) -> VerifiedSet {
@@ -87,8 +93,14 @@ fn read_verified_captures_owned_bytes_identity_and_icons() {
     let sans = set.font("sans").unwrap();
     assert_eq!(sans.path(), "fonts/Sans.ttf");
     assert_eq!(sans.bytes(), b"font bytes");
-    assert_eq!(sans.sha256(), hex::encode(sha2::Sha256::digest(b"font bytes")));
-    assert_eq!(sans.blake3(), blake3::hash(b"font bytes").to_hex().to_string());
+    assert_eq!(
+        sans.sha256(),
+        hex::encode(sha2::Sha256::digest(b"font bytes"))
+    );
+    assert_eq!(
+        sans.blake3(),
+        blake3::hash(b"font bytes").to_hex().to_string()
+    );
     assert_eq!(
         set.file("fonts/Sans.ttf").map(VerifiedFile::bytes),
         Some(b"font bytes".as_slice())
@@ -148,7 +160,13 @@ fn replacement_after_descriptor_open_reads_the_pinned_inode() {
     // reachable through the held descriptor) and replaced at the old
     // path. The verified read is bound to the pinned inode, not the path.
     fs::rename(&dir, temp.path().join("sets/original")).unwrap();
-    publish(temp.path(), "one", b"substituted!", b"new icons", b"new e123\n");
+    publish(
+        temp.path(),
+        "one",
+        b"substituted!",
+        b"new icons",
+        b"new e123\n",
+    );
     let set = VerifiedSet::read_in(directory, "one", ReadLimits::default()).unwrap();
     assert_eq!(set.font("sans").unwrap().bytes(), b"font bytes");
     assert_eq!(set.manifest_bytes(), original_manifest);

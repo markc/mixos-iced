@@ -21,8 +21,7 @@ use sha2::Digest;
 
 use crate::error::{Error, Result, invalid, io};
 use crate::manifest::{
-    AssetFile, MANIFEST_FILE, Manifest, STYLESHEET_FILE, parse_codepoints, validate,
-    valid_set_id,
+    AssetFile, MANIFEST_FILE, Manifest, STYLESHEET_FILE, parse_codepoints, valid_set_id, validate,
 };
 use crate::set::{CATALOGUE_LIMIT, MANIFEST_LIMIT};
 
@@ -79,7 +78,11 @@ impl ReadLimits {
             }
             Ok(())
         };
-        bound("manifest", self.max_manifest_bytes, Self::MAX_MANIFEST_BYTES)?;
+        bound(
+            "manifest",
+            self.max_manifest_bytes,
+            Self::MAX_MANIFEST_BYTES,
+        )?;
         bound("file", self.max_file_bytes, Self::MAX_FILE_BYTES)?;
         bound("total", self.max_total_bytes, Self::MAX_TOTAL_BYTES)?;
         Ok(self)
@@ -204,8 +207,15 @@ impl VerifiedSet {
     /// does).
     pub fn read_in(directory: File, set_id: &str, limits: ReadLimits) -> Result<Self> {
         let display = PathBuf::from(format!("sets/{set_id}"));
-        if !directory.metadata().map_err(io("inspect", &display))?.is_dir() {
-            return Err(invalid(format!("{} must be a directory", display.display())));
+        if !directory
+            .metadata()
+            .map_err(io("inspect", &display))?
+            .is_dir()
+        {
+            return Err(invalid(format!(
+                "{} must be a directory",
+                display.display()
+            )));
         }
         read_in_at(directory, set_id, limits, &display)
     }
@@ -389,7 +399,10 @@ fn read_limited(
                 display.display()
             )));
         }
-        return Err(invalid(format!("{} exceeds {cap} bytes", display.display())));
+        return Err(invalid(format!(
+            "{} exceeds {cap} bytes",
+            display.display()
+        )));
     }
     *staged += bytes.len() as u64;
     Ok(bytes)
@@ -522,23 +535,29 @@ mod tests {
     #[test]
     fn limits_refuse_zero_and_oversized_requests() {
         assert!(ReadLimits::default().checked().is_ok());
-        assert!(ReadLimits {
-            max_manifest_bytes: 0,
-            ..ReadLimits::default()
-        }
-        .checked()
-        .is_err());
-        assert!(ReadLimits {
-            max_file_bytes: ReadLimits::MAX_FILE_BYTES + 1,
-            ..ReadLimits::default()
-        }
-        .checked()
-        .is_err());
-        assert!(ReadLimits {
-            max_total_bytes: ReadLimits::MAX_TOTAL_BYTES + 1,
-            ..ReadLimits::default()
-        }
-        .checked()
-        .is_err());
+        assert!(
+            ReadLimits {
+                max_manifest_bytes: 0,
+                ..ReadLimits::default()
+            }
+            .checked()
+            .is_err()
+        );
+        assert!(
+            ReadLimits {
+                max_file_bytes: ReadLimits::MAX_FILE_BYTES + 1,
+                ..ReadLimits::default()
+            }
+            .checked()
+            .is_err()
+        );
+        assert!(
+            ReadLimits {
+                max_total_bytes: ReadLimits::MAX_TOTAL_BYTES + 1,
+                ..ReadLimits::default()
+            }
+            .checked()
+            .is_err()
+        );
     }
 }

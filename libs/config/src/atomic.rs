@@ -116,12 +116,16 @@ pub fn open_nested(dir: &File, relative: &Path) -> io::Result<File> {
     use std::os::unix::ffi::OsStrExt;
     let raw = relative.as_os_str().as_bytes();
     if raw.is_empty() || raw[0] == b'/' {
-        return Err(io::Error::other("expected a relative path of plain components"));
+        return Err(io::Error::other(
+            "expected a relative path of plain components",
+        ));
     }
     let mut names: Vec<&[u8]> = Vec::new();
     for part in raw.split(|byte| *byte == b'/') {
         if part.is_empty() || part == b"." || part == b".." {
-            return Err(io::Error::other("expected a relative path of plain components"));
+            return Err(io::Error::other(
+                "expected a relative path of plain components",
+            ));
         }
         if part.contains(&0) {
             return Err(io::Error::other("component contains a NUL byte"));
@@ -414,7 +418,8 @@ mod tests {
 
     #[test]
     fn open_nested_refuses_symlinks_at_every_level() {
-        let root = std::env::temp_dir().join(format!("settings-nested-link-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("settings-nested-link-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a")).unwrap();
         std::fs::create_dir_all(root.join("outside")).unwrap();
@@ -441,7 +446,8 @@ mod tests {
     #[test]
     fn open_nested_refuses_escapes_and_non_regular_components() {
         use std::os::unix::ffi::OsStrExt;
-        let root = std::env::temp_dir().join(format!("settings-nested-refuse-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("settings-nested-refuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a")).unwrap();
         std::fs::write(root.join("a/file.txt"), b"data").unwrap();
@@ -476,7 +482,11 @@ mod tests {
         assert!(open_nested(&held, Path::new("a/file.txt/")).is_err());
         assert!(open_nested(&held, Path::new(OsStr::from_bytes(b"a/fi\0le.txt"))).is_err());
         // A plain non-UTF-8 component still walks and reads.
-        std::fs::write(root.join("a").join(OsStr::from_bytes(b"fi\xffle.txt")), b"plain").unwrap();
+        std::fs::write(
+            root.join("a").join(OsStr::from_bytes(b"fi\xffle.txt")),
+            b"plain",
+        )
+        .unwrap();
         let nested = OsStr::from_bytes(b"a/fi\xffle.txt");
         let mut file = open_nested(&held, Path::new(nested)).unwrap();
         let mut bytes = Vec::new();
