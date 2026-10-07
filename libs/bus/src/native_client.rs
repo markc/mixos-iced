@@ -14,7 +14,10 @@ pub use crate::client::{
     ConnState, MAX_INITIAL_ATTEMPTS, SubscriptionRegistry, SupervisedClient, SupervisedError,
 };
 pub use bounded::{BoundedIncomingEvent, BoundedIncomingReceiver};
-pub use native::{NameCollision, NativeIncomingReceiver, NodedClient, RegistrationRejected};
+pub use native::{
+    NameCollision, NativeIncomingReceiver, NodedClient, RegistrationRejected,
+    RegistrationRejectionKind,
+};
 pub use types::IncomingCommand;
 pub use unix::{
     BrokerAccount, ConnectError, Delivery, UnixConnectOptions, UnixConnectOutcome, VerifiedCommand,

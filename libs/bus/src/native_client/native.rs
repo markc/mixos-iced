@@ -14,7 +14,7 @@
 //! retains only the explicit-URL primitives `NodedClient::connect()`
 //! and `NodedClient::connect_anonymous()`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
@@ -260,10 +260,9 @@ pub struct NodedClient {
 
 /// Compatibility type retained for consumers compiled against 0.4.0.
 ///
-/// Current brokers do not expose a machine-readable registration rejection
-/// reason: collisions and admission refusals both use `rc=10` plus diagnostic
-/// text. New code therefore receives [`RegistrationRejected`] and must not
-/// infer a collision by matching that text.
+/// This crate never constructs it: the machine-readable classification now
+/// lives on [`RegistrationRejected::kind`], and a [`RegistrationRejected`]
+/// is what every connect/register path surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameCollision {
     service: String,
@@ -288,16 +287,52 @@ impl std::fmt::Display for NameCollision {
 
 impl std::error::Error for NameCollision {}
 
+/// Machine-readable classification of a broker's `noded.register` refusal,
+/// decoded strictly from the structured rejection body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationRejectionKind {
+    /// Another live connection already holds the requested name. Produced
+    /// only when the broker sent the structured v1 rejection body
+    /// (`error_code: NAME_TAKEN`); never inferred from diagnostic text.
+    NameTaken,
+    /// Any other refusal: admission policy, a reserved or invalid name, a
+    /// legacy broker carrying only `rc=10` plus text, a body this client
+    /// does not recognise, or a missing, malformed or oversized body.
+    Unknown,
+}
+
 /// A broker application-level refusal of `noded.register`.
 ///
-/// This deliberately preserves only the machine-readable return code and the
-/// broker's diagnostic message. It does not claim that the refusal was a name
-/// collision: current `noded` replies do not distinguish collision from
-/// admission policy with a separate code.
+/// `rc` and `message` stay public, so field reads and the tuple accessors
+/// are source-compatible with the earlier two-field type. Struct literals
+/// no longer compile: the classification is a private field, so
+/// construction goes through [`new`](Self::new) and reading through
+/// [`kind`](Self::kind) — the typed classification decoded from the
+/// structured rejection body (schema `noded.registration-rejection.v1`).
+/// Anything the client does not recognise — including an absent, malformed
+/// or oversized body — classifies as [`RegistrationRejectionKind::Unknown`].
+/// Classification is never inferred by matching the message text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrationRejected {
     pub rc: u8,
     pub message: String,
+    kind: RegistrationRejectionKind,
+}
+
+impl RegistrationRejected {
+    /// Build a rejection with an explicit classification.
+    pub fn new(rc: u8, message: impl Into<String>, kind: RegistrationRejectionKind) -> Self {
+        Self {
+            rc,
+            message: message.into(),
+            kind,
+        }
+    }
+
+    /// The typed classification of this refusal.
+    pub fn kind(&self) -> RegistrationRejectionKind {
+        self.kind
+    }
 }
 
 impl std::fmt::Display for RegistrationRejected {
@@ -311,6 +346,48 @@ impl std::fmt::Display for RegistrationRejected {
 }
 
 impl std::error::Error for RegistrationRejected {}
+
+/// The largest `noded.register` rejection body this client will decode.
+/// Real rejection bodies are ~100 bytes; anything larger is not a
+/// structured rejection and classifies as [`RegistrationRejectionKind::Unknown`]
+/// without being parsed.
+const REGISTRATION_REJECTION_BODY_MAX_BYTES: usize = 4096;
+
+/// The structural envelope of a v1 registration-rejection body. Only
+/// `schema` and `error_code` are structural for classification; the
+/// `message` field is diagnostic-only and deliberately excluded here — it
+/// is surfaced through the `rc`/`message` accessors via the wire-level
+/// `error_message` precedence. The derived `Deserialize` rejects duplicate
+/// and mistyped fields, so a body with conflicting `schema`/`error_code`
+/// entries classifies as `Unknown` rather than trusting a last-wins entry;
+/// unknown extra fields are ignored (additive-safe).
+#[derive(serde::Deserialize)]
+struct RegistrationRejectionEnvelope {
+    schema: String,
+    error_code: String,
+}
+
+/// Classify a `noded.register` refusal strictly from its BOUNDED structured
+/// body. Only an object carrying the exact v1 schema marker and the
+/// `NAME_TAKEN` code classifies as [`RegistrationRejectionKind::NameTaken`];
+/// an empty, oversized, malformed, mistyped or unrecognised body is
+/// [`RegistrationRejectionKind::Unknown`]. The diagnostic `message` is
+/// never consulted — wording varies, the body does not.
+fn classify_registration_rejection(body: &str) -> RegistrationRejectionKind {
+    if body.len() > REGISTRATION_REJECTION_BODY_MAX_BYTES {
+        return RegistrationRejectionKind::Unknown;
+    }
+    let Ok(envelope) = serde_json::from_str::<RegistrationRejectionEnvelope>(body) else {
+        return RegistrationRejectionKind::Unknown;
+    };
+    if envelope.schema == crate::REGISTRATION_REJECTION_SCHEMA
+        && envelope.error_code == crate::REGISTRATION_REJECTION_NAME_TAKEN
+    {
+        RegistrationRejectionKind::NameTaken
+    } else {
+        RegistrationRejectionKind::Unknown
+    }
+}
 
 impl NodedClient {
     /// Opt into central HELP handling. Install before publishing the service
@@ -1042,10 +1119,18 @@ impl NodedClient {
     }
 
     /// Inspect an error returned by a connect/register operation without
-    /// guessing at the broker's diagnostic text.
+    /// guessing at the broker's diagnostic text. The tuple/string
+    /// compatibility accessor; the typed classification is
+    /// [`registration_rejection_typed`](Self::registration_rejection_typed).
     pub fn registration_rejection(error: &anyhow::Error) -> Option<(u8, &str)> {
-        let rejection = error.downcast_ref::<RegistrationRejected>()?;
+        let rejection = Self::registration_rejection_typed(error)?;
         Some((rejection.rc, rejection.message.as_str()))
+    }
+
+    /// The structured registration refusal, when that is what this error is,
+    /// with the typed [`RegistrationRejected::kind`] classification.
+    pub fn registration_rejection_typed(error: &anyhow::Error) -> Option<&RegistrationRejected> {
+        error.downcast_ref::<RegistrationRejected>()
     }
 
     // ── Internal ──
@@ -1054,19 +1139,31 @@ impl NodedClient {
         // Send build provenance in the register body when present, so it
         // surfaces in noded.list/noded.info; re-sent on every register so
         // a reconnect re-publishes it. Absent → empty body (old citizen).
-        let body = match &self.provenance {
-            Some(p) => serde_json::to_value(p).unwrap_or(serde_json::Value::Null),
-            None => serde_json::Value::Null,
+        let request_body = match &self.provenance {
+            Some(p) => serde_json::to_string(p).unwrap_or_default(),
+            None => String::new(),
         };
-        match self.call_typed("noded", "noded.register", body).await? {
-            crate::PortReply::Ok { .. } => Ok(()),
-            // Collision and admission refusal currently share rc=10 and only
-            // differ in human diagnostic text. Preserve what the broker
-            // actually supplied; never string-match it into NameCollision.
-            crate::PortReply::AppError { rc, message } => {
-                Err(RegistrationRejected { rc, message }.into())
-            }
+        // `call_with_headers_raw` returns the reply body even on `rc >= 10`,
+        // so the structured rejection body survives for classification
+        // (`call_typed` folds it into a message string). Success semantics
+        // are unchanged: any `rc < 10` is a successful register.
+        let (rc, reply_body, error_header) = self
+            .call_with_headers_raw("noded", "noded.register", &BTreeMap::new(), &request_body)
+            .await?;
+        if rc < crate::RC_ERROR {
+            return Ok(());
         }
+        // Classify from the BOUNDED structured body only — never by matching
+        // the diagnostic text. An absent, oversized, malformed or
+        // unrecognised body is Unknown.
+        let kind = classify_registration_rejection(&reply_body);
+        // Reuse the wire-level `error_message` precedence (error header, then
+        // structured body fields, then raw body) for the diagnostic string.
+        let mut reply = BusMessage::new().with_body(&reply_body);
+        if let Some(error) = error_header {
+            reply.set("error", &error);
+        }
+        Err(RegistrationRejected::new(rc, reply.error_message(), kind).into())
     }
 
     /// Deregister this connection's service name from the broker and
@@ -1551,5 +1648,188 @@ mod connect_cancellation_tests {
             .expect("cancelled connect must not retain the reader/socket")
             .unwrap();
         broker.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod registration_rejection_classification_tests {
+    use super::*;
+
+    fn structured(error_code: &str) -> String {
+        serde_json::json!({
+            "schema": crate::REGISTRATION_REJECTION_SCHEMA,
+            "error_code": error_code,
+            "message": "diagnostic wording that must not matter",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn v1_name_taken_body_classifies() {
+        assert_eq!(
+            classify_registration_rejection(&structured(crate::REGISTRATION_REJECTION_NAME_TAKEN)),
+            RegistrationRejectionKind::NameTaken
+        );
+    }
+
+    #[test]
+    fn extra_fields_are_additive_safe() {
+        // An extended future body with the same schema and code is still a
+        // name collision; unknown keys are ignored.
+        let body = serde_json::json!({
+            "schema": crate::REGISTRATION_REJECTION_SCHEMA,
+            "error_code": crate::REGISTRATION_REJECTION_NAME_TAKEN,
+            "message": "diagnostic wording that must not matter",
+            "detail": {"owner_pid": 42},
+        })
+        .to_string();
+        assert_eq!(
+            classify_registration_rejection(&body),
+            RegistrationRejectionKind::NameTaken
+        );
+    }
+
+    #[test]
+    fn wording_alone_never_classifies() {
+        // The diagnostic text of a collision, in every wrong envelope: none
+        // may classify. Classification is structural, never textual.
+        let taken = "service name 'x' is already registered";
+        for body in [
+            taken.to_string(),
+            format!(r#""{taken}""#),
+            format!(r#"{{"message": "{taken}"}}"#),
+        ] {
+            assert_eq!(
+                classify_registration_rejection(&body),
+                RegistrationRejectionKind::Unknown,
+                "body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_schema_is_unknown() {
+        let body = serde_json::json!({
+            "schema": "noded.registration-rejection.v2",
+            "error_code": crate::REGISTRATION_REJECTION_NAME_TAKEN,
+            "message": "ignored",
+        })
+        .to_string();
+        assert_eq!(
+            classify_registration_rejection(&body),
+            RegistrationRejectionKind::Unknown
+        );
+    }
+
+    #[test]
+    fn unknown_error_code_is_unknown() {
+        assert_eq!(
+            classify_registration_rejection(&structured("ADMISSION_REFUSED")),
+            RegistrationRejectionKind::Unknown
+        );
+    }
+
+    #[test]
+    fn duplicate_schema_or_error_code_fields_are_unknown() {
+        // serde_json::Value parses duplicate keys last-wins; the typed
+        // envelope must reject them instead of trusting the survivor.
+        let schema = crate::REGISTRATION_REJECTION_SCHEMA;
+        let taken = crate::REGISTRATION_REJECTION_NAME_TAKEN;
+        for body in [
+            format!(r#"{{"schema":"evil","schema":"{schema}","error_code":"{taken}"}}"#),
+            format!(r#"{{"schema":"{schema}","schema":"{schema}","error_code":"{taken}"}}"#),
+            format!(r#"{{"schema":"{schema}","error_code":"OTHER","error_code":"{taken}"}}"#),
+            format!(r#"{{"schema":"{schema}","error_code":"{taken}","error_code":"{taken}"}}"#),
+        ] {
+            assert_eq!(
+                classify_registration_rejection(&body),
+                RegistrationRejectionKind::Unknown,
+                "body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mistyped_schema_or_error_code_is_unknown() {
+        let schema = crate::REGISTRATION_REJECTION_SCHEMA;
+        for body in [
+            r#"{"schema":42,"error_code":"NAME_TAKEN"}"#.to_string(),
+            format!(r#"{{"schema":"{schema}","error_code":42}}"#),
+            r#"{"schema":null,"error_code":"NAME_TAKEN"}"#.to_string(),
+            r#"{"schema":["noded.registration-rejection.v1"],"error_code":"NAME_TAKEN"}"#
+                .to_string(),
+        ] {
+            assert_eq!(
+                classify_registration_rejection(&body),
+                RegistrationRejectionKind::Unknown,
+                "body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_fields_are_unknown() {
+        for body in [
+            "{}".to_string(),
+            format!(
+                r#"{{"schema": "{}"}}"#,
+                crate::REGISTRATION_REJECTION_SCHEMA
+            ),
+            format!(
+                r#"{{"error_code": "{}"}}"#,
+                crate::REGISTRATION_REJECTION_NAME_TAKEN
+            ),
+        ] {
+            assert_eq!(
+                classify_registration_rejection(&body),
+                RegistrationRejectionKind::Unknown,
+                "body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_non_object_json_is_unknown() {
+        for body in [
+            "not json".to_string(),
+            "{unclosed".to_string(),
+            "null".to_string(),
+            "42".to_string(),
+            r#"["noded.registration-rejection.v1"]"#.to_string(),
+        ] {
+            assert_eq!(
+                classify_registration_rejection(&body),
+                RegistrationRejectionKind::Unknown,
+                "body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_body_is_unknown_without_being_parsed() {
+        let mut body = structured(crate::REGISTRATION_REJECTION_NAME_TAKEN);
+        body.push_str(&" ".repeat(REGISTRATION_REJECTION_BODY_MAX_BYTES));
+        assert_eq!(
+            classify_registration_rejection(&body),
+            RegistrationRejectionKind::Unknown
+        );
+    }
+
+    #[test]
+    fn rejection_kind_survives_construction_and_comparison() {
+        let named = RegistrationRejected::new(10, "held", RegistrationRejectionKind::NameTaken);
+        assert_eq!(named.kind(), RegistrationRejectionKind::NameTaken);
+        assert_eq!(named.rc, 10);
+        assert_eq!(named.message, "held");
+        assert_ne!(
+            RegistrationRejected::new(10, "held", RegistrationRejectionKind::NameTaken),
+            RegistrationRejected::new(10, "held", RegistrationRejectionKind::Unknown),
+            "same rc and wording, different classification"
+        );
+        // Display keeps the historical rc + message shape.
+        assert_eq!(
+            named.to_string(),
+            "Bus registration rejected with rc 10: held"
+        );
     }
 }
