@@ -3960,6 +3960,16 @@ async fn handle_noded_command(
                         "error",
                         &format!("service name '{from}' is already registered"),
                     );
+                    // Additive structured rejection body: the rc and error
+                    // header above are unchanged, so legacy text-matchers
+                    // keep working, while clients classify the refusal from
+                    // this body instead of the wording.
+                    resp.body = serde_json::json!({
+                        "schema": bus::REGISTRATION_REJECTION_SCHEMA,
+                        "error_code": bus::REGISTRATION_REJECTION_NAME_TAKEN,
+                        "message": format!("service name '{from}' is already registered"),
+                    })
+                    .to_string();
                     let _ = tx.try_send(resp.to_wire());
                     return;
                 }
@@ -7642,8 +7652,93 @@ mod tests {
             response.get("error"),
             Some("noded.register 'from' must match ^[a-z][a-z0-9-]{1,30}$")
         );
+        assert!(
+            response.body.is_empty(),
+            "a grammar refusal must not carry a structured rejection body: {}",
+            response.body
+        );
 
         raw_register(&mut sink, &mut stream, "valid-after-refusal").await;
+    }
+
+    /// A genuine different-channel collision is the only register refusal
+    /// that carries the structured v1 rejection body, so a client can
+    /// classify `NAME_TAKEN` without matching diagnostic text. Non-collision
+    /// refusals (reserved names here; grammar above) keep their legacy
+    /// shapes and must never carry that body. The same live broker also
+    /// pins the real native client decoder: a `NodedClient` collision
+    /// classifies `NameTaken` and a reserved-name refusal classifies
+    /// `Unknown`, straight from the broker's actual reply.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn noded_register_collision_sends_structured_rejection_body() {
+        let url = spawn_broker().await.expect("live broker required");
+        let (mut s_owner, mut r_owner) = raw_connect(&url).await;
+        raw_register(&mut s_owner, &mut r_owner, "contested").await;
+
+        let (mut s_second, mut r_second) = raw_connect(&url).await;
+        let id = "collision-1";
+        let request = BusMessage::new()
+            .with_header("command", "noded.register")
+            .with_header("from", "contested")
+            .with_header("to", "noded")
+            .with_header("type", "request")
+            .with_header("id", id);
+        let response = raw_call(&mut s_second, &mut r_second, request, id).await;
+        assert_eq!(response.get("rc"), Some("10"));
+        assert_eq!(
+            response.get("error"),
+            Some("service name 'contested' is already registered")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&response.body).expect("structured rejection body");
+        assert_eq!(body["schema"], bus::REGISTRATION_REJECTION_SCHEMA);
+        assert_eq!(body["error_code"], bus::REGISTRATION_REJECTION_NAME_TAKEN);
+        assert_eq!(
+            body["message"],
+            "service name 'contested' is already registered"
+        );
+
+        // A reserved-name refusal on the same connection is a different
+        // refusal class: rc 10 but no rejection schema to misread.
+        let reserved_id = "reserved-1";
+        let reserved = BusMessage::new()
+            .with_header("command", "noded.register")
+            .with_header("from", "noded")
+            .with_header("to", "noded")
+            .with_header("type", "request")
+            .with_header("id", reserved_id);
+        let response = raw_call(&mut s_second, &mut r_second, reserved, reserved_id).await;
+        assert_eq!(response.get("rc"), Some("10"));
+        assert!(
+            !response.body.contains("registration-rejection"),
+            "a non-collision refusal must not carry the rejection schema: {}",
+            response.body
+        );
+
+        // The real native register decoder against the live broker: a
+        // duplicate register classifies NameTaken from the actual body.
+        let collision = match bus::native_client::NodedClient::connect("contested", &url).await {
+            Ok(_) => panic!("duplicate registration must fail"),
+            Err(error) => error,
+        };
+        let rejection = bus::native_client::NodedClient::registration_rejection_typed(&collision)
+            .expect("a real broker collision is a typed rejection");
+        assert_eq!(rejection.kind(), bus::RegistrationRejectionKind::NameTaken);
+        assert_eq!(rejection.rc, 10);
+
+        // And a reserved-name refusal through the same decoder is Unknown:
+        // it carries a body but no rejection schema.
+        let reserved = match bus::native_client::NodedClient::connect("noded", &url).await {
+            Ok(_) => panic!("the broker name is reserved"),
+            Err(error) => error,
+        };
+        let rejection = bus::native_client::NodedClient::registration_rejection_typed(&reserved)
+            .expect("a reserved-name refusal is a typed rejection");
+        assert_eq!(rejection.kind(), bus::RegistrationRejectionKind::Unknown);
+
+        // The collision left this connection's identity untouched, so a
+        // fresh name still registers.
+        raw_register(&mut s_second, &mut r_second, "contested-2").await;
     }
 
     /// Consumers treat `from: noded` as the broker (comp's port gates

@@ -20,12 +20,15 @@ pub mod native_session;
 mod protocol;
 pub mod service_info;
 pub use protocol::*;
-pub use service_info::{NodeInfo, RegisterProvenance, SCHEMA_VERSION, ServiceInfo};
+pub use service_info::{
+    NodeInfo, REGISTRATION_REJECTION_NAME_TAKEN, REGISTRATION_REJECTION_SCHEMA, RegisterProvenance,
+    SCHEMA_VERSION, ServiceInfo,
+};
 
 #[cfg(feature = "client")]
-pub mod native_client;
-#[cfg(feature = "client")]
 pub mod client_helpers;
+#[cfg(feature = "client")]
+pub mod native_client;
 
 pub use wire::{
     BusMessage, EMPTY_MESSAGE, MAX_HEADERS, MAX_MESSAGE_BYTES, ParseError, ParseReport,
@@ -46,6 +49,6 @@ pub mod client;
 #[cfg(feature = "client")]
 pub use client::{
     ClientError, ConnState, Connection, DEFAULT_NODED_URL, IncomingCommand, MAX_INITIAL_ATTEMPTS,
-    RegistrationRejected, SubscriptionRegistry, SupervisedClient, SupervisedConnectOptions,
-    SupervisedError, noded_url,
+    RegistrationRejected, RegistrationRejectionKind, SubscriptionRegistry, SupervisedClient,
+    SupervisedConnectOptions, SupervisedError, noded_url,
 };
