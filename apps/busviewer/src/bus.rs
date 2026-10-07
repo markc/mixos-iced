@@ -297,7 +297,10 @@ impl Outbox {
     fn push(&mut self, delivery: Delivery) {
         match delivery {
             // A later terminal edge must not overwrite the typed reason.
-            Delivery::Refused { name_taken, message } => {
+            Delivery::Refused {
+                name_taken,
+                message,
+            } => {
                 if self.refused.is_none() {
                     self.refused = Some((name_taken, message));
                 }
@@ -317,9 +320,10 @@ impl Outbox {
     /// Put a delivery that could not be sent back where it was taken from.
     fn restore(&mut self, delivery: Delivery) {
         match delivery {
-            Delivery::Refused { name_taken, message } => {
-                self.refused = Some((name_taken, message))
-            }
+            Delivery::Refused {
+                name_taken,
+                message,
+            } => self.refused = Some((name_taken, message)),
             Delivery::Forwarded(result) => self.forwarded = Some(result),
             Delivery::Connected | Delivery::Disconnected => self.connection = Some(delivery),
             Delivery::Changed => self.changed = true,
@@ -331,22 +335,28 @@ impl Outbox {
     /// the newest connection edge, then the coalesced refreshes.
     fn next(&mut self) -> Option<Delivery> {
         if let Some((name_taken, message)) = self.refused.take() {
-            return Some(Delivery::Refused { name_taken, message });
+            return Some(Delivery::Refused {
+                name_taken,
+                message,
+            });
         }
         if let Some(result) = self.forwarded.take() {
             return Some(Delivery::Forwarded(result));
         }
-        self.connection.take().or_else(|| {
-            self.changed.then(|| {
-                self.changed = false;
-                Delivery::Changed
+        self.connection
+            .take()
+            .or_else(|| {
+                self.changed.then(|| {
+                    self.changed = false;
+                    Delivery::Changed
+                })
             })
-        }).or_else(|| {
-            self.settings.then(|| {
-                self.settings = false;
-                Delivery::Settings
+            .or_else(|| {
+                self.settings.then(|| {
+                    self.settings = false;
+                    Delivery::Settings
+                })
             })
-        })
     }
     /// Flush everything current capacity allows; false when deliveries remain
     /// (full or closed — the capacity branch observes closure and exits the
@@ -377,13 +387,10 @@ fn reply_refused(
 ) {
     let client = Arc::clone(client);
     replies.spawn(async move {
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            client.respond(&command, 10, &body),
-        )
-        .await
-        .map_err(|_| "Bus reply timed out".to_owned())?
-        .map_err(|error| format!("Bus reply: {error}"))
+        tokio::time::timeout(Duration::from_secs(2), client.respond(&command, 10, &body))
+            .await
+            .map_err(|_| "Bus reply timed out".to_owned())?
+            .map_err(|error| format!("Bus reply: {error}"))
     });
 }
 
@@ -393,11 +400,8 @@ async fn drain_aborted<T: Send + 'static>(
     deadline: std::time::Instant,
 ) -> Option<String> {
     while !tasks.is_empty() {
-        match tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            tasks.join_next(),
-        )
-        .await
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), tasks.join_next())
+            .await
         {
             Ok(Some(_)) => {}
             Ok(None) => break,
@@ -699,8 +703,11 @@ async fn worker(
     forwards.abort_all();
     calls.abort_all();
     while !replies.is_empty() {
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), replies.join_next())
-            .await
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            replies.join_next(),
+        )
+        .await
         {
             Ok(Some(Ok(Ok(())))) => {}
             Ok(Some(Ok(Err(error)))) => faults.push(error),
@@ -913,7 +920,10 @@ mod tests {
     #[test]
     fn sink_handle_reads_connected_without_a_client() {
         let handle = Handle::sink();
-        assert!(handle.connected(), "a sink without a client reads as connected");
+        assert!(
+            handle.connected(),
+            "a sink without a client reads as connected"
+        );
         assert!(!handle.ever_registered());
         assert_eq!(handle.settings_generation(), None);
         assert_eq!(handle.forward_count(), 0);
@@ -942,14 +952,20 @@ mod tests {
         );
         let mailbox = application::presentation::native::Mailbox::<()>::default();
         assert!(mailbox.publish(SettingsEvent::Wake));
-        assert!(!mailbox.publish(SettingsEvent::Wake), "notification coalesced");
+        assert!(
+            !mailbox.publish(SettingsEvent::Wake),
+            "notification coalesced"
+        );
         assert!(receive.try_next().unwrap().is_some());
         assert!(
             outbox.flush(&mut send),
             "the retained wake is delivered once capacity returns"
         );
         let parked = mailbox.take();
-        assert!(!parked.is_empty(), "parked settings events survive the wake");
+        assert!(
+            !parked.is_empty(),
+            "parked settings events survive the wake"
+        );
         assert!(mailbox.take().is_empty(), "the mailbox drains exactly once");
         let mut settings = 0;
         for _ in 0..=filled {
@@ -1077,7 +1093,10 @@ mod tests {
             ),
             "the typed refusal reaches the GUI after the stall"
         );
-        assert!(outbox.flush(&mut send), "remaining retained deliveries flush");
+        assert!(
+            outbox.flush(&mut send),
+            "remaining retained deliveries flush"
+        );
         let mut tail = Vec::new();
         while let Ok(Some(delivery)) = receive.try_next() {
             tail.push(delivery);

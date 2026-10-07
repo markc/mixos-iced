@@ -695,15 +695,17 @@ dependencies = [
 
 [[package]]
 name = "busviewer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "appearance",
  "application",
  "buildinfo",
  "bus",
+ "config",
  "fluent-bundle",
  "serde",
  "serde_json",
+ "settings",
  "tokio",
  "toolkit",
 ]

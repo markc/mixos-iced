@@ -570,8 +570,7 @@ impl App {
             "busviewer.info" => {
                 self.settings_ui.reconcile(self.bus.settings_generation());
                 let mut info = self.info();
-                info["settings"] =
-                    json!(self.settings_ui.session().host().consumer().evidence());
+                info["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
                 info["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
                 self.bus.reply(id, 0, info);
             }
@@ -828,7 +827,10 @@ impl App {
                         }
                     }
                     Delivery::Settings => Task::none(),
-                    Delivery::Refused { name_taken, message } => {
+                    Delivery::Refused {
+                        name_taken,
+                        message,
+                    } => {
                         self.refused = true;
                         self.connected = false;
                         self.status = message;
@@ -987,8 +989,9 @@ impl App {
             .font(mono.font)
             .size(mono.size);
         if let Some(height) = mono.line_height {
-            reply =
-                reply.line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(height)));
+            reply = reply.line_height(iced::advanced::text::LineHeight::Absolute(iced::Pixels(
+                height,
+            )));
         }
         let right = column![
             widget::scrollable(self.text(details)).height(t.metrics.text.md * 9.0),
@@ -1257,8 +1260,14 @@ mod tests {
                 .iter()
                 .any(|v| v["name"] == "busviewer.call")
         );
-        assert!(replies[3].2["settings"]["kind"].is_string(), "app.describe carries canonical consumer evidence");
-        assert!(replies[3].2["settings_cache"].is_object(), "app.describe carries cache evidence");
+        assert!(
+            replies[3].2["settings"]["kind"].is_string(),
+            "app.describe carries canonical consumer evidence"
+        );
+        assert!(
+            replies[3].2["settings_cache"].is_object(),
+            "app.describe carries cache evidence"
+        );
         let _ = app.command(
             5,
             "busviewer.select",
@@ -1507,12 +1516,15 @@ mod tests {
         }));
         assert_eq!(app.bus.forward_count(), 1, "one forward per collision");
         let _ = app.update(Message::Bus(Delivery::Forwarded(Err(
-            "target disappeared".into(),
+            "target disappeared".into()
         ))));
         assert!(!app.quitting);
         assert_eq!(app.status, "target disappeared");
         let _ = app.update(Message::Bus(Delivery::Forwarded(Ok(()))));
-        assert!(!app.quitting, "a stale completion must not close the window");
+        assert!(
+            !app.quitting,
+            "a stale completion must not close the window"
+        );
         let mut untouched = super::tests::app();
         let _ = untouched.update(Message::Bus(Delivery::Refused {
             name_taken: true,
