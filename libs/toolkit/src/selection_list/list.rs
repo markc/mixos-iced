@@ -116,10 +116,11 @@ pub struct ListState {
 // height, and keep the same [`ListState`] tree.
 trait Rows<'a, 'c, T, Message, Theme, Renderer>
 where
-    T: Clone + Display + Eq + Hash,
+    T: Clone + Display + Eq + Hash + 'a,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn options(&self) -> &'a [T];
     fn font(&self) -> Renderer::Font;
@@ -349,7 +350,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn options(&self) -> &'a [T] {
         self.options
@@ -387,7 +389,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn options(&self) -> &'a [T] {
         self.list.options
@@ -434,7 +437,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn tag(&self) -> Tag {
         Rows::tag(self)
@@ -510,7 +514,8 @@ where
     T: Clone + Display + Eq + Hash,
     [T]: ToOwned<Owned = Vec<T>>,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: Catalog + iced_core::widget::text::Catalog,
+    Theme: Catalog + iced_core::widget::text::Catalog + 'a,
+    'c: 'a,
 {
     fn tag(&self) -> Tag {
         Rows::tag(self)
@@ -627,15 +632,16 @@ mod tests {
     fn list<'a>(options: &'a [String]) -> TestList<'a> {
         // Leak the (capture-free) class and callback so the returned rows
         // can borrow them for the caller's lifetime.
-        let class: <iced_core::Theme as Catalog>::Class<'a> =
-            <iced_core::Theme as Catalog>::default();
-        let on_selected =
-            Box::leak(Box::new(|_: usize, _: String| String::new())
-                as Box<dyn Fn(usize, String) -> String>);
+        let class: &'a <iced_core::Theme as Catalog>::Class<'a> =
+            Box::leak(<iced_core::Theme as Catalog>::default());
+        let on_selected: &'a dyn Fn(usize, String) -> String = Box::leak(
+            Box::new(|_: usize, _: String| String::new())
+                as Box<dyn Fn(usize, String) -> String>,
+        );
         List {
             options,
             font: iced_core::Font::DEFAULT,
-            class: Box::leak(class),
+            class,
             on_selected,
             padding: 5.0.into(),
             text_size: 12.0,
@@ -669,7 +675,7 @@ mod tests {
         assert_eq!(Widget::tag(&rows), Tag::of::<ListState>());
         assert_eq!(layout_height(rows, &renderer), (12.0 + 10.0) * 3.0);
         // A prepared line height drives the same, taller rows everywhere.
-        let rows: TestStyled<'_> = list(&options).line_height(30.0);
+        let rows: TestStyled<'_> = list(&options).line_height(30.0_f32);
         assert_eq!(layout_height(rows, &renderer), (30.0 + 10.0) * 3.0);
         // A prepared style without a line height uses the 1.3 default
         // factor, unlike the legacy rows above.
@@ -684,7 +690,7 @@ mod tests {
     #[test]
     fn pointer_hover_maps_rows_with_the_prepared_line_height() {
         let options = options();
-        let mut rows: TestStyled<'_> = list(&options).line_height(30.0);
+        let mut rows: TestStyled<'_> = list(&options).line_height(30.0_f32);
         let mut tree = Tree::new(&rows as &dyn Widget<String, iced_core::Theme, LayoutRenderer>);
         Widget::diff(&mut rows, &mut tree);
         let renderer = LayoutRenderer::new();

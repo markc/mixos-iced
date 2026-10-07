@@ -3,8 +3,8 @@
 //! its own surface (xdg_popup), plus the panel geometry both modes share.
 use iced_core::widget::{Tree, tree};
 use iced_core::{
-    Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Widget, layout, mouse, renderer,
-    text, touch,
+    Element, Event, Font, Layout, Length, Point, Rectangle, Shell, Size, Widget, layout, mouse,
+    renderer, text, touch,
 };
 
 use super::{Item, Kind, MenuStyle, label, quad, resolve, resolve_text, text_width};
@@ -21,7 +21,7 @@ pub const SEPARATOR_HEIGHT: f32 = 8.0;
 /// (the text size and the requested line height, whichever is larger; an
 /// absent line height is the 1.3 default factor). Separators keep
 /// `SEPARATOR_HEIGHT`.
-pub(crate) fn row_height<Message, F>(
+pub(crate) fn row_height<Message, F: Copy>(
     item: &Item<Message>,
     style: MenuStyle,
     text: Option<TextStyle<F>>,
@@ -130,7 +130,7 @@ pub fn row_bounds<Message>(
     width: f32,
     style: MenuStyle,
 ) -> Option<Rectangle> {
-    row_bounds_with(items, index, width, style, None)
+    row_bounds_with::<Message, Font>(items, index, width, style, None)
 }
 
 /// `row_bounds` with a prepared text style; the font does not change row
@@ -170,7 +170,7 @@ pub(crate) fn row_at_with<Message, F: Copy>(
 /// The row at panel-relative `y`, if any (separators and disabled rows
 /// included; the navigator decides what they do).
 pub fn row_at<Message>(items: &[Item<Message>], y: f32, style: MenuStyle) -> Option<usize> {
-    row_at_with(items, y, style, None)
+    row_at_with::<Message, Font>(items, y, style, None)
 }
 
 /// `row_at` with a prepared text style; the font does not change row heights,
@@ -471,7 +471,7 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        panel_update(
+        panel_update::<Message, Renderer>(
             self.items,
             self.selected,
             self.style,
@@ -514,7 +514,7 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        panel_interaction(self.items, self.metrics(), None, layout, cursor)
+        panel_interaction::<Message, Renderer>(self.items, self.metrics(), None, layout, cursor)
     }
 }
 
@@ -565,7 +565,7 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        panel_update(
+        panel_update::<Message, Renderer>(
             self.panel.items,
             self.panel.selected,
             self.panel.style,
@@ -608,7 +608,7 @@ impl<Message, Theme: Catalog, Renderer: text::Renderer> Widget<Message, Theme, R
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        panel_interaction(
+        panel_interaction::<Message, Renderer>(
             self.panel.items,
             self.panel.metrics(),
             Some(self.text_style),
@@ -743,7 +743,7 @@ mod tests {
             line_height: None,
         };
         assert_eq!(row_height(&items[0], style, Some(text)), 26.0);
-        assert_eq!(row_height(&items[0], style, None), 20.0);
+        assert_eq!(row_height::<u8, Font>(&items[0], style, None), 20.0);
     }
 
     #[test]

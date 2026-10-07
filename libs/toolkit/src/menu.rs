@@ -448,7 +448,7 @@ pub(crate) fn resolve_text<Renderer: text::Renderer>(
 }
 
 fn text_width<Renderer: text::Renderer>(
-    renderer: &Renderer,
+    _renderer: &Renderer,
     value: &str,
     text: TextStyle<Renderer::Font>,
 ) -> f32 {
@@ -1127,7 +1127,7 @@ impl<Message: Clone, Renderer: text::Renderer> Popup<'_, Message, Renderer> {
         &self,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        renderer: &Renderer,
+        _renderer: &Renderer,
     ) -> Option<(usize, Option<usize>)> {
         let panels: Vec<_> = layout.children().collect();
         for (depth, panel) in panels.iter().enumerate().rev() {
@@ -1507,7 +1507,7 @@ mod tests {
         }
 
         fn bounds(&self) -> Size {
-            Size::INFINITY
+            Size::INFINITE
         }
 
         fn min_bounds(&self) -> Size {
@@ -1710,10 +1710,10 @@ mod tests {
         }
         fn fill_paragraph(&mut self, paragraph: &FaceParagraph, _: Point, _: Color, _: Rectangle) {
             self.paragraphs
-                .push((paragraph.font(), paragraph.size(), paragraph.line_height()));
+                .push((paragraph.font, paragraph.size, paragraph.line_height));
         }
         fn fill_editor(&mut self, editor: &FaceEditor, _: Point, _: Color, _: Rectangle) {
-            self.editors.push((editor.font(), editor.text_size()));
+            self.editors.push((editor.font, editor.text_size));
         }
         fn fill_text(&mut self, text: text::Text<String, Face>, _: Point, _: Color, _: Rectangle) {
             self.texts.push((text.font, text.size, text.line_height));
@@ -2993,7 +2993,7 @@ mod tests {
         // The legacy panel is renderer-neutral: no font parameter.
         let mut panel: Panel<'_, u8> = Panel::new(&items, Some(0));
         let mut tree = Tree::new(&panel as &dyn Widget<u8, iced_core::Theme, FaceRenderer>);
-        panel.diff(&mut tree);
+        Widget::<u8, iced_core::Theme, FaceRenderer>::diff(&mut panel, &mut tree);
         let node = Widget::<u8, iced_core::Theme, FaceRenderer>::layout(
             &mut panel,
             &mut tree,
@@ -3009,7 +3009,7 @@ mod tests {
             line_height: Some(30.0),
         });
         let mut tree = Tree::new(&panel as &dyn Widget<u8, iced_core::Theme, FaceRenderer>);
-        panel.diff(&mut tree);
+        Widget::<u8, iced_core::Theme, FaceRenderer>::diff(&mut panel, &mut tree);
         let node = Widget::<u8, iced_core::Theme, FaceRenderer>::layout(
             &mut panel,
             &mut tree,
@@ -3179,7 +3179,7 @@ mod tests {
         let panel_items = host_items[0].children();
         let mut panel = Panel::new(panel_items, Some(0)).text_style(big);
         let mut tree = Tree::new(&panel as &dyn Widget<Host, iced_core::Theme, ()>);
-        panel.diff(&mut tree);
+        Widget::<Host, iced_core::Theme, ()>::diff(&mut panel, &mut tree);
         let node = Widget::<Host, iced_core::Theme, ()>::layout(
             &mut panel,
             &mut tree,
