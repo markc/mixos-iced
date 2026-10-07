@@ -40,7 +40,7 @@ pub struct Handle {
     tx: tokio::sync::mpsc::Sender<Effect>,
     done: Arc<(Mutex<bool>, Condvar)>,
     #[cfg(test)]
-    records: Arc<Mutex<Vec<(u64,u8,Value)>>>,
+    records: Arc<Mutex<Vec<(u64, u8, Value)>>>,
     #[cfg(test)]
     stopped: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -58,12 +58,13 @@ impl Handle {
     }
     pub fn reply(&self, id: u64, rc: u8, body: Value) {
         #[cfg(test)]
-        self.records.lock().unwrap().push((id,rc,body.clone()));
+        self.records.lock().unwrap().push((id, rc, body.clone()));
         let _ = self.tx.try_send(Effect::Reply(id, rc, body));
     }
     pub fn quit(&self) {
         #[cfg(test)]
-        self.stopped.store(true,std::sync::atomic::Ordering::SeqCst);
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.tx.try_send(Effect::Quit);
     }
     pub fn wait_done(&self) {
@@ -86,14 +87,24 @@ impl Handle {
         }
     }
     #[cfg(test)]
-    pub fn responses(&self)->Vec<(u64,u8,Value)>{self.records.lock().unwrap().clone()}
+    pub fn responses(&self) -> Vec<(u64, u8, Value)> {
+        self.records.lock().unwrap().clone()
+    }
     #[cfg(test)]
-    pub fn has_quit(&self)->bool{self.stopped.load(std::sync::atomic::Ordering::SeqCst)}
+    pub fn has_quit(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 struct Finished(Arc<(Mutex<bool>, Condvar)>);
 impl Drop for Finished {
-    fn drop(&mut self){let(lock,changed)=&*self.0;*lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=true;changed.notify_all();}
+    fn drop(&mut self) {
+        let (lock, changed) = &*self.0;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        changed.notify_all();
+    }
 }
 
 pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Delivery>), String> {
@@ -107,7 +118,7 @@ pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Deliver
     std::thread::Builder::new()
         .name("busviewer-bus".into())
         .spawn(move || {
-            let _finished=Finished(finished);
+            let _finished = Finished(finished);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build();
@@ -122,7 +133,17 @@ pub fn start(service: &str, url: &str) -> Result<(Handle, mpsc::Receiver<Deliver
     ready_receive
         .recv_timeout(Duration::from_secs(15))
         .map_err(|e| format!("Bus startup: {e}"))??;
-    Ok((Handle { tx, done, #[cfg(test)] records:Arc::new(Mutex::new(Vec::new())), #[cfg(test)] stopped:Arc::new(std::sync::atomic::AtomicBool::new(false)) }, receive))
+    Ok((
+        Handle {
+            tx,
+            done,
+            #[cfg(test)]
+            records: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(test)]
+            stopped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
+        receive,
+    ))
 }
 async fn worker(
     service: String,
@@ -246,7 +267,7 @@ fn anonymous(url: &str, service: &str, verb: &str, args: Value) -> Result<Reply,
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
         // Activation may arrive after registration but before the first map.
-        let budget=if verb=="busviewer.show"{20}else{5};
+        let budget = if verb == "busviewer.show" { 20 } else { 5 };
         tokio::time::timeout(Duration::from_secs(budget), async {
             let client = NodedClient::connect_anonymous(url)
                 .await
