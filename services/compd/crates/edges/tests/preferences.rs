@@ -203,13 +203,22 @@ fn managed_hidden_toggle_and_release_keep_time_and_baseline_contracts() {
     let baseline = model.persistent_panel(Edge::Bottom);
     let at = Duration::from_secs(1);
     model.set_preferences(policy(Edge::Bottom, PanelMode::Hidden, 40.0), at);
-    assert!(model.panel_input(Edge::Bottom, Duration::ZERO, PanelInput::ToggleShown).is_err());
-    let update = model.panel_input(Edge::Bottom, at, PanelInput::ToggleShown).unwrap();
+    assert!(
+        model
+            .panel_input(Edge::Bottom, Duration::ZERO, PanelInput::ToggleShown)
+            .is_err()
+    );
+    let update = model
+        .panel_input(Edge::Bottom, at, PanelInput::ToggleShown)
+        .unwrap();
     assert_eq!(update.snapshot.mode, PanelMode::Hidden);
     assert!(update.snapshot.transient_revealed);
     assert_eq!(model.persistent_panel(Edge::Bottom), baseline);
     model.restore_thickness(Edge::Bottom, 40.0).unwrap();
-    assert_eq!(model.restore_thickness(Edge::Bottom, 80.0), Err(PanelConfigError::SettingsManaged(Edge::Bottom)));
+    assert_eq!(
+        model.restore_thickness(Edge::Bottom, 80.0),
+        Err(PanelConfigError::SettingsManaged(Edge::Bottom))
+    );
     model.set_preferences(policy(Edge::Bottom, PanelMode::Docked, 80.0), at);
     let concealed = model.set_preferences([None; 4], at);
     assert!(concealed[Edge::Bottom.index()]);

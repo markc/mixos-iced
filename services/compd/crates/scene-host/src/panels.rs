@@ -1639,8 +1639,19 @@ mod tests {
         let mut panels = panels_with("DP-1");
         panels.ensure("DP-1", (300.0, 800.0));
         let mut shell = settings::Shell::default();
-        for (id, edge, thickness) in [("left", "left", 256), ("right", "right", 256), ("top", "top", 16)] {
-            shell.panels.insert(id.into(), settings::Panel { edge: edge.into(), mode: "dock".into(), thickness });
+        for (id, edge, thickness) in [
+            ("left", "left", 256),
+            ("right", "right", 256),
+            ("top", "top", 16),
+        ] {
+            shell.panels.insert(
+                id.into(),
+                settings::Panel {
+                    edge: edge.into(),
+                    mode: "dock".into(),
+                    thickness,
+                },
+            );
         }
         panels.set_preferences(crate::preferences::Preferences::prepare(&shell).unwrap());
         register(&mut panels, "DP-1", Edge::Left, "left-page", 120.0);
@@ -1649,7 +1660,10 @@ mod tests {
         let left = panels.state("DP-1", Edge::Left);
         assert_eq!(left["settings"]["constraints"], json!(["output_budget"]));
         assert!(left["settings"]["fitted_px"].as_f64().unwrap() < 256.0);
-        assert_eq!(panels.state("DP-1", Edge::Top)["settings"]["constraints"], json!(["edge_range"]));
+        assert_eq!(
+            panels.state("DP-1", Edge::Top)["settings"]["constraints"],
+            json!(["edge_range"])
+        );
     }
 
     #[test]
