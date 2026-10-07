@@ -102,8 +102,8 @@ pub use fonts::{
         CollectionId, FaceEvidence, FamilyGroup, FontBlob, FontCollection, FontRegistry,
         IconCatalogue, IconSelectionRequest, OwnedFace, OwnedSelection, Registration,
         RegistrationBatch, RegistrationError, RegistrationEvidence, RegistryUsage, Resource,
-        Selection as FontSelectionReceipt, SelectionEvidence, SelectionRequest, SourceEvidence, SourceFace,
-        SubstitutionEvidence, WeightPolicy,
+        Selection as FontSelectionReceipt, SelectionEvidence, SelectionRequest, SourceEvidence,
+        SourceFace, SubstitutionEvidence, WeightPolicy,
     },
 };
 pub use grip::Grip;

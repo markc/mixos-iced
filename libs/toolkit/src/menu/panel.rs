@@ -688,10 +688,19 @@ mod tests {
 
     #[test]
     fn panel_size_has_a_minimum_width_and_sums_rows() {
-        let size = panel_size(&crate::test_renderer::LayoutRenderer::new(), &items(), MenuStyle::default());
+        let size = panel_size(
+            &crate::test_renderer::LayoutRenderer::new(),
+            &items(),
+            MenuStyle::default(),
+        );
         assert_eq!(size, Size::new(MIN_PANEL_WIDTH, 64.0));
         assert_eq!(
-            panel_size::<u8, crate::test_renderer::LayoutRenderer>(&crate::test_renderer::LayoutRenderer::new(), &[], MenuStyle::default()).height,
+            panel_size::<u8, crate::test_renderer::LayoutRenderer>(
+                &crate::test_renderer::LayoutRenderer::new(),
+                &[],
+                MenuStyle::default()
+            )
+            .height,
             0.0
         );
     }
@@ -710,14 +719,26 @@ mod tests {
         };
         // Legacy helpers keep the style's own row height without a prepared
         // text: 20 + 8 (separator) + 20.
-        assert_eq!(panel_size(&crate::test_renderer::LayoutRenderer::new(), &items, style).height, 48.0);
+        assert_eq!(
+            panel_size(&crate::test_renderer::LayoutRenderer::new(), &items, style).height,
+            48.0
+        );
         assert_eq!(row_at(&items, 19.9, style), Some(0));
         assert_eq!(row_at(&items, 20.0, style), Some(1));
         // A prepared text style drives one height everywhere: rows are never
         // shorter than the 30px content height.
         assert_eq!(row_height(&items[0], style, Some(text)), 30.0);
         assert_eq!(row_height(&items[1], style, Some(text)), SEPARATOR_HEIGHT);
-        assert_eq!(panel_size_text(&crate::test_renderer::LayoutRenderer::new(), &items, style, text).height, 68.0);
+        assert_eq!(
+            panel_size_text(
+                &crate::test_renderer::LayoutRenderer::new(),
+                &items,
+                style,
+                text
+            )
+            .height,
+            68.0
+        );
         assert_eq!(
             row_bounds_text(&items, 2, 200.0, style, text).map(|row| row.y),
             Some(38.0)
@@ -746,7 +767,16 @@ mod tests {
             line_height: Some(10.0),
         };
         assert_eq!(row_height(&items[0], style, Some(text)), 40.0);
-        assert_eq!(panel_size_text(&crate::test_renderer::LayoutRenderer::new(), &items, style, text).height, 88.0);
+        assert_eq!(
+            panel_size_text(
+                &crate::test_renderer::LayoutRenderer::new(),
+                &items,
+                style,
+                text
+            )
+            .height,
+            88.0
+        );
         assert_eq!(
             row_bounds_text(&items, 2, 200.0, style, text).map(|row| row.y),
             Some(48.0)

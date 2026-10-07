@@ -1326,7 +1326,9 @@ fn selection_digest(
     hasher.update(&requested.to_le_bytes());
     hasher.update(&effective.to_le_bytes());
     match policy {
-        WeightPolicy::Exact => { hasher.update(&[0]); }
+        WeightPolicy::Exact => {
+            hasher.update(&[0]);
+        }
         WeightPolicy::Substitute { reason, .. } => {
             hasher.update(&[1]);
             write_bytes(&mut hasher, reason.as_bytes());

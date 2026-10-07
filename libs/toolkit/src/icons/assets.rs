@@ -1137,9 +1137,8 @@ mod tests {
         ] {
             let mut encoded = Cursor::new(Vec::new());
             bitmap.write_to(&mut encoded, format).unwrap();
-            let decoded =
-                decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None)
-                    .unwrap_or_else(|error| panic!("{format:?}: {error}"));
+            let decoded = decode_owned(encoded.into_inner().into(), ImageFormat::Raster, 24, None)
+                .unwrap_or_else(|error| panic!("{format:?}: {error}"));
             assert_eq!(decoded.dimensions(), (32, 16), "{format:?}");
             assert_eq!(decoded.byte_charge(), 32 * 16 * 4);
             assert!(

@@ -185,6 +185,7 @@ dependencies = [
  "design",
  "hex",
  "iced_core",
+ "iced_tiny_skia",
  "iced_widget",
  "serde_json",
  "settings",

@@ -316,7 +316,11 @@ fn registry_end_to_end_scenarios() {
     let with_b = registry
         .register_batch(RegistrationBatch {
             collection: arabic_collection.clone(),
-            selections: vec![selection_request("ar", &["Noto Sans", "Noto Sans Arabic"], 400)],
+            selections: vec![selection_request(
+                "ar",
+                &["Noto Sans", "Noto Sans Arabic"],
+                400,
+            )],
             icons: Vec::new(),
         })
         .expect("arabic fallback");
