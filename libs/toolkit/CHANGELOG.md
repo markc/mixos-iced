@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.6
+
+- `typography::TextStyle` is generic over the font (`TextStyle<F = Font>`), so
+  a prepared role applies to any renderer's font. The `text` and `input`
+  builders plus new `line_box` and `line_height_or_default` helpers use one
+  source for font, size and line height.
+- `Menu` and its popup accept an optional prepared `.text_style`, overriding
+  `MenuStyle::text_size` and the renderer's default font regardless of
+  builder order. Prepared rows are never shorter than the content height
+  (the text size and the requested line height, whichever is larger — the
+  1.3 default factor without one), consistently across layout, hit testing,
+  anchors and sizing, while the renderer still receives the requested line
+  height. `panel_size_text`, `row_at_text` and `row_bounds_text` give
+  external hosts the same typed geometry, while `panel_size`, `row_at` and
+  `row_bounds` keep their default-based behaviour. `Panel<'a, Message>` is
+  unchanged and stays renderer-neutral; `Panel::text_style(text)` returns
+  the new `StyledPanel<'a, Message, F>`.
+- `SelectionList` gains `.text_style` and `.line_height`; one prepared row
+  height drives layout, hit testing, visible rows and virtual operations.
+  The original `List` literal and its legacy `text_size + padding` rows are
+  unchanged; the consuming `List::line_height` and `List::text_style`
+  builders return the new `StyledList` wrapper, sharing the same `ListState`
+  tree and row engine.
+
 ## 0.2.5
 
 - Share the gallery's real Fluent formatter as optional `catalogue::Catalogue`
