@@ -239,6 +239,18 @@ impl<P: Program> Daemon<P> {
         }
     }
 
+    /// Bind native presentation observations to the constructed view.
+    pub fn frame_presentation(
+        self,
+        f: impl Fn(&P::State, window::Id) -> Option<window::presentation::FrameBinding>,
+    ) -> Daemon<impl Program<State = P::State, Message = P::Message, Theme = P::Theme>> {
+        Daemon {
+            raw: program::with_frame_presentation(self.raw, f),
+            settings: self.settings,
+            presets: self.presets,
+        }
+    }
+
     /// Sets the executor of the [`Daemon`].
     pub fn executor<E>(
         self,
@@ -321,6 +333,13 @@ impl<P: Program> Program for Daemon<P> {
         debug::hot(|| self.raw.scale_factor(state, window))
     }
 
+    fn frame_presentation(
+        &self,
+        state: &Self::State,
+        window: window::Id,
+    ) -> Option<window::presentation::FrameBinding> {
+        debug::hot(|| self.raw.frame_presentation(state, window))
+    }
     fn presets(&self) -> &[Preset<Self::State, Self::Message>] {
         &self.presets
     }

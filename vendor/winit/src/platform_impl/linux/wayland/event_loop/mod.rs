@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sctk::reexports::calloop::Error as CalloopError;
 use sctk::reexports::calloop_wayland_source::WaylandSource;
-use sctk::reexports::client::{globals, Connection, QueueHandle};
+use sctk::reexports::client::{Connection, QueueHandle, globals};
 
 use crate::cursor::OnlyCursorImage;
 use crate::dpi::LogicalSize;
@@ -33,8 +33,7 @@ pub use proxy::EventLoopProxy;
 use sink::EventSink;
 
 use super::state::{WindowCompositorUpdate, WinitState};
-use super::window::state::FrameCallbackState;
-use super::{logical_to_physical_rounded, DeviceId, WaylandError, WindowId};
+use super::{DeviceId, WaylandError, WindowId, logical_to_physical_rounded};
 
 type WaylandDispatcher = calloop::Dispatcher<'static, WaylandSource<WinitState>, WinitState>;
 
@@ -46,6 +45,10 @@ pub struct EventLoop<T: 'static> {
     buffer_sink: EventSink,
     compositor_updates: Vec<WindowCompositorUpdate>,
     window_ids: Vec<WindowId>,
+
+    // Event-loop lifetime owns the strong capacity subscriber. Native feedback
+    // and process bookkeeping cannot retain this loop through their leases.
+    _presentation_capacity_wake: Option<Arc<super::types::wp_presentation::CapacityWake>>,
 
     /// Sender of user events.
     user_events_sender: calloop::channel::Sender<T>,
@@ -135,9 +138,17 @@ impl<T: 'static> EventLoop<T> {
             WaylandError::Calloop
         )?;
 
+        let presentation_capacity_wake = winit_state
+            .presentation
+            .as_ref()
+            .map(|presentation| presentation.subscribe_capacity(event_loop_awakener.clone()));
+        let capacity_wake = presentation_capacity_wake.as_ref().map(Arc::downgrade);
         let result = event_loop
             .handle()
             .insert_source(event_loop_awakener_source, move |_, _, winit_state: &mut WinitState| {
+                if let Some(wake) = capacity_wake.as_ref().and_then(std::sync::Weak::upgrade) {
+                    wake.acknowledge();
+                }
                 // Mark that we have something to dispatch.
                 winit_state.dispatched_events = true;
             })
@@ -159,6 +170,7 @@ impl<T: 'static> EventLoop<T> {
             compositor_updates: Vec::new(),
             buffer_sink: EventSink::default(),
             window_ids: Vec::new(),
+            _presentation_capacity_wake: presentation_capacity_wake,
             connection,
             wayland_dispatcher,
             user_events_sender,
@@ -450,7 +462,9 @@ impl<T: 'static> EventLoop<T> {
         for window_id in window_ids.iter() {
             let event = self.with_state(|state| {
                 let closed = state.window_requests.get_mut().get(window_id).unwrap().take_closed();
-                if closed { state.drag_close_window(*window_id); }
+                if closed {
+                    state.drag_close_window(*window_id);
+                }
                 let window_requests = state.window_requests.get_mut();
                 if closed {
                     mem::drop(window_requests.remove(window_id));
@@ -461,12 +475,10 @@ impl<T: 'static> EventLoop<T> {
                 let mut window =
                     state.windows.get_mut().get_mut(window_id).unwrap().lock().unwrap();
 
-                if window.frame_callback_state() == FrameCallbackState::Requested {
+                if !window.prepare_redraw() {
                     return None;
                 }
 
-                // Reset the frame callbacks state.
-                window.frame_callback_reset();
                 let mut redraw_requested =
                     window_requests.get(window_id).unwrap().take_redraw_requested();
 
@@ -631,6 +643,91 @@ pub struct ActiveEventLoop {
 
     /// Connection to the wayland server.
     pub connection: Connection,
+}
+
+#[cfg(test)]
+mod presentation_native_guards {
+    use super::*;
+    use crate::platform_impl::wayland::types::wp_presentation::{
+        NativeRequest, native_process_count,
+    };
+    use crate::platform_impl::wayland::window::Window;
+
+    fn read_actual_terminal(connection: &Connection, observation: &NativeRequest) {
+        // A server may defer its remaining surface owners beyond a protocol
+        // sync. Drive native backend reads only; never dispatch the typed queue.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut roundtrips = 0;
+        while !observation.discarded() && std::time::Instant::now() < deadline {
+            connection.roundtrip().expect("native server progress");
+            roundtrips += 1;
+        }
+        assert!(
+            observation.discarded(),
+            "no real Discarded after {roundtrips} native roundtrips; object_alive={}",
+            connection.backend().info(observation.object_id()).is_ok()
+        );
+        println!("WINIT_CHARGE native_roundtrips={roundtrips} terminal=discarded");
+    }
+
+    #[test]
+    #[ignore = "requires an owned native compositor with wp_presentation"]
+    fn actual_charge_retires_with_undrained_and_closed_queues() {
+        for schedule in 0..3 {
+            let baseline = native_process_count();
+            let event_loop = EventLoop::<()>::new().expect("owned Wayland server");
+            let connection = event_loop.connection.clone();
+            let observation = {
+                let target = match &event_loop.window_target.p {
+                    PlatformActiveEventLoop::Wayland(target) => target,
+                    #[cfg(x11_platform)]
+                    _ => unreachable!(),
+                };
+                let window = Window::new(target, crate::window::WindowAttributes::default())
+                    .expect("actual configured native window");
+                let window_id = window.id();
+                window.request_presentation_feedback().expect("presentation global");
+                let observation = window.take_native_request().expect("real request observation");
+                assert!(observation.charge_alive());
+                assert_eq!(native_process_count(), baseline + 1);
+                // No buffer attachment or post-request commit: unseen pending
+                // feedback is discarded by actual surface destruction.
+                drop(window);
+                let mut state = target.state.borrow_mut();
+                state.drag_close_window(window_id);
+                drop(state.window_requests.get_mut().remove(&window_id));
+                drop(state.windows.get_mut().remove(&window_id));
+                observation
+            };
+            if schedule == 0 {
+                read_actual_terminal(&connection, &observation);
+                assert!(observation.discarded(), "real Discarded before typed dispatch");
+                assert!(connection.backend().info(observation.object_id()).is_err());
+                assert!(observation.charge_alive(), "undrained queue owns actual charge");
+                assert_eq!(native_process_count(), baseline + 1);
+            }
+            drop(event_loop);
+            if schedule == 0 {
+                assert!(!observation.charge_alive());
+                assert_eq!(native_process_count(), baseline);
+                connection.roundtrip().expect("connection survives retired queue");
+            } else {
+                assert!(observation.charge_alive(), "backend still owns unread feedback");
+                assert_eq!(native_process_count(), baseline + 1);
+                if schedule == 1 {
+                    read_actual_terminal(&connection, &observation);
+                    assert!(observation.discarded(), "actual late Discarded");
+                    assert!(!observation.charge_alive());
+                    assert_eq!(native_process_count(), baseline);
+                }
+            }
+            drop(connection);
+            assert!(!observation.charge_alive(), "actual backend retirement releases lease");
+            assert_eq!(native_process_count(), baseline);
+            println!("WINIT_CHARGE schedule={schedule} baseline_restored=true");
+        }
+        println!("WINIT_CHARGE PASS queued=true late=true backend_retired=true");
+    }
 }
 
 impl ActiveEventLoop {

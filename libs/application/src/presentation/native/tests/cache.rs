@@ -9,7 +9,10 @@ use std::time::Duration;
 fn activated() -> Session<u64> {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    session.handle(Event::Prepared(ready(jobs.prepare.unwrap())), Some(1));
+    session.handle(
+        Event::Prepared(ready(jobs.prepare_request().unwrap())),
+        Some(1),
+    );
     session
 }
 async fn next(worker: &mut Worker<u64>) -> Event<u64> {
@@ -21,7 +24,11 @@ async fn next(worker: &mut Worker<u64>) -> Event<u64> {
 }
 fn cache_worker(directory: &std::path::Path) -> Worker<u64> {
     install_fonts();
-    Worker::offline_with_cache(directory.to_owned(), |_, snapshot| Ok(snapshot.revision.0))
+    Worker::offline_with_cache_and_host(
+        directory.to_owned(),
+        |_, snapshot| Ok(snapshot.revision.0),
+        hermetic_host(),
+    )
 }
 fn cache_path(directory: &std::path::Path) -> std::path::PathBuf {
     directory.join(format!(
@@ -65,7 +72,7 @@ async fn applied_capture_survives_loss_and_cold_cache_does_not_seed_authority() 
     );
     let mut cold_worker = cache_worker(&root);
     let (_, jobs) = cold.handle(Event::Wake, None);
-    assert!(jobs.fallback.is_some());
+    assert!(jobs.fallback_request().is_some());
     cold_worker.replace(jobs);
     assert!(cold.handle(next(&mut cold_worker).await, None).0.is_some());
     assert_eq!(cold.host.kind(), Some(PresentationKind::Cached));
@@ -99,17 +106,21 @@ async fn unavailable_cached_resources_fall_through_to_prepared_embedded() {
         .unwrap();
     drop(writer);
     install_fonts();
-    let mut worker = Worker::offline_with_cache(dir.path().to_owned(), |_, snapshot| {
-        if snapshot.revision == Revision(1) {
-            Err(Diagnostic::new(
-                "fixture_missing_resource",
-                "resource",
-                "missing",
-            ))
-        } else {
-            Ok(snapshot.revision.0)
-        }
-    });
+    let mut worker = Worker::offline_with_cache_and_host(
+        dir.path().to_owned(),
+        |_, snapshot| {
+            if snapshot.revision == Revision(1) {
+                Err(Diagnostic::new(
+                    "fixture_missing_resource",
+                    "resource",
+                    "missing",
+                ))
+            } else {
+                Ok(snapshot.revision.0)
+            }
+        },
+        hermetic_host(),
+    );
     let mut cold = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     let (_, jobs) = cold.handle(Event::Wake, None);
     worker.replace(jobs);
@@ -230,6 +241,35 @@ async fn producer_replacement_retires_writer_after_inflight_save() {
 }
 
 #[tokio::test]
+async fn expired_shutdown_does_not_start_a_queued_cache_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("uncreated/settings");
+    let mut session = activated();
+    let mut worker = cache_worker(&root);
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(worker.running.is_none());
+    let error = worker.flush_cache(Instant::now()).await.unwrap_err();
+    assert_eq!(error.code, "cache_drain_timeout");
+    assert!(worker.running.is_none(), "no physical cache task started");
+    assert!(
+        !root.exists(),
+        "expired shutdown cannot create the cache root"
+    );
+    worker
+        .flush_cache(Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        cache::load(&root, session.host.consumer())
+            .unwrap()
+            .snapshot()
+            .revision,
+        Revision(1)
+    );
+}
+
+#[tokio::test]
 async fn bounded_shutdown_drains_the_latest_activated_capture() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = activated();
@@ -295,7 +335,10 @@ async fn bridge_shutdown_flushes_newest_capture_without_consuming_watch_notifica
 
 #[test]
 fn absent_cache_root_is_configuration_evidence_not_a_write_or_consumer_failure() {
-    let (ui, _lane) = super::super::bridge(activated(), Worker::offline(|_, _| Ok(0_u64)));
+    let (ui, _lane) = super::super::bridge(
+        activated(),
+        Worker::offline_with_host(|_, _| Ok(0_u64), hermetic_host()),
+    );
     let cache = ui.session().cache_evidence();
     assert_eq!(cache.configuration.unwrap().code, "cache_unconfigured");
     assert!(cache.fault.is_none());

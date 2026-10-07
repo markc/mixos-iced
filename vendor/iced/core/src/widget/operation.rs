@@ -29,6 +29,13 @@ pub trait Operation<T = ()>: Send {
     /// Operates on a widget that contains other widgets.
     fn container(&mut self, _id: Option<&Id>, _bounds: Rectangle) {}
 
+    /// Operates on a widget that clips its children to a drawing rectangle.
+    ///
+    /// Clipped containers call this before requesting traversal of their
+    /// children, so read-only traversals can compute truthful clipped bounds.
+    /// Ordinary containers without a drawing clip must not claim one.
+    fn clip(&mut self, _bounds: Rectangle) {}
+
     /// Operates on a widget that can be scrolled.
     fn scrollable(
         &mut self,
@@ -68,6 +75,10 @@ where
 
     fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
         self.as_mut().container(id, bounds);
+    }
+
+    fn clip(&mut self, bounds: Rectangle) {
+        self.as_mut().clip(bounds);
     }
 
     fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
@@ -151,6 +162,10 @@ where
             self.operation.container(id, bounds);
         }
 
+        fn clip(&mut self, bounds: Rectangle) {
+            self.operation.clip(bounds);
+        }
+
         fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
             self.operation.focusable(id, bounds, state);
         }
@@ -225,6 +240,10 @@ where
                     operation.container(id, bounds);
                 }
 
+                fn clip(&mut self, bounds: Rectangle) {
+                    self.operation.clip(bounds);
+                }
+
                 fn scrollable(
                     &mut self,
                     id: Option<&Id>,
@@ -271,6 +290,10 @@ where
 
         fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
             self.operation.container(id, bounds);
+        }
+
+        fn clip(&mut self, bounds: Rectangle) {
+            self.operation.clip(bounds);
         }
 
         fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
@@ -352,6 +375,10 @@ where
 
         fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
             self.operation.container(id, bounds);
+        }
+
+        fn clip(&mut self, bounds: Rectangle) {
+            self.operation.clip(bounds);
         }
 
         fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
@@ -438,5 +465,58 @@ pub fn scope<T: 'static>(target: Id, operation: impl Operation<T> + 'static) -> 
         target,
         current: None,
         operation: Box::new(operation),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Point, Size};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default, Clone)]
+    struct Recorder {
+        clips: Arc<Mutex<Vec<Rectangle>>>,
+    }
+
+    impl Operation for Recorder {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn clip(&mut self, bounds: Rectangle) {
+            self.clips.lock().unwrap().push(bounds);
+        }
+    }
+
+    fn recorded(recorder: &Recorder) -> Vec<Rectangle> {
+        recorder.clips.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn clip_hook_forwards_through_every_adapter() {
+        let rect = Rectangle::new(Point::new(1.0, 2.0), Size::new(3.0, 4.0));
+
+        let recorder = Recorder::default();
+        let mut boxed: Box<dyn Operation> = Box::new(recorder.clone());
+        boxed.clip(rect);
+        assert_eq!(recorded(&recorder), vec![rect]);
+
+        let recorder = Recorder::default();
+        let mut mapped = map(recorder.clone(), |()| ());
+        mapped.clip(rect);
+        assert_eq!(recorded(&recorder), vec![rect]);
+
+        let recorder = Recorder::default();
+        let mut chained = then::<(), (), Recorder>(recorder.clone(), |_: ()| Recorder::default());
+        chained.clip(rect);
+        assert_eq!(recorded(&recorder), vec![rect]);
+
+        let recorder = Recorder::default();
+        let mut owned = recorder.clone();
+        let erased: &mut dyn Operation = &mut owned;
+        let mut black = black_box::<(), ()>(erased);
+        black.clip(rect);
+        assert_eq!(recorded(&recorder), vec![rect]);
     }
 }

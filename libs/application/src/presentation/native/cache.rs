@@ -16,7 +16,16 @@ pub(super) struct Lane {
     last: Option<Save>,
     queued: Option<Save>,
     retry: u64,
+    #[cfg(test)]
+    write_gate: Option<WriteGate>,
 }
+
+#[cfg(test)]
+struct WriteGate {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
 impl Lane {
     pub fn new(directory: PathBuf) -> Self {
         Self {
@@ -26,7 +35,28 @@ impl Lane {
             last: None,
             queued: None,
             retry: 0,
+            #[cfg(test)]
+            write_gate: None,
         }
+    }
+
+    /// Hold one physical task after opening the real writer. Dropping the
+    /// release sender also unblocks it, including during a test panic.
+    #[cfg(test)]
+    pub fn hold_next_write(
+        &mut self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        assert!(self.write_gate.is_none());
+        let (entered, notification) = tokio::sync::oneshot::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        self.write_gate = Some(WriteGate {
+            entered,
+            release: gate,
+        });
+        (notification, release)
     }
 
     pub fn replace(&mut self, target: &Target, save: Option<&Save>, retry: u64) {
@@ -54,13 +84,15 @@ impl Lane {
         Some((self.directory.clone(), self.target.clone()?))
     }
 
-    pub fn start<T>(&mut self) -> Option<Running<T>> {
+    pub fn start<T, C>(&mut self) -> Option<Running<T, C>> {
         let save = self.queued.take()?;
         let target = self.target.clone().expect("captured target");
         let writer = self.writer.take();
         let directory = self.directory.clone();
         let capture = save.clone();
         let open_target = target.clone();
+        #[cfg(test)]
+        let write_gate = self.write_gate.take();
         let task = tokio::task::spawn_blocking(move || {
             // Provision only on the blocking lane, through the shared
             // no-follow filesystem owner. A read never creates paths.
@@ -81,6 +113,11 @@ impl Lane {
                     }
                 },
             };
+            #[cfg(test)]
+            if let Some(gate) = write_gate {
+                let _ = gate.entered.send(());
+                let _ = gate.release.recv();
+            }
             let outcome = writer.write(&save);
             // Keep the lock and attempted-serial fence even on an ambiguous
             // or failed write. Only producer retirement releases them.

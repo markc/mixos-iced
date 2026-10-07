@@ -15,7 +15,7 @@ use bus::native_client::BoundedIncomingEvent;
 use bus::{BusMessage, ConnState, Connection, SupervisedClient, SupervisedError};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Default)]
@@ -54,6 +54,24 @@ enum RejectionShape {
     Malformed,
 }
 
+/// A per-topic `topic.subscribe` behaviour the stub enforces, the barrier
+/// mechanism the declaration tests drive.
+#[derive(Clone)]
+enum SubscribeAction {
+    /// Reply rc 0 (the default).
+    Ack,
+    /// Reply with this rc and an `error` header.
+    Refuse(u8),
+    /// Signal `entered`, wait for `release`, then reply `rc`.
+    Hold {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+        rc: u8,
+    },
+    /// Close the socket without replying.
+    Disconnect,
+}
+
 struct Stub {
     state: Mutex<StubState>,
     /// Fired by a test to drop connection #1 (the simulated bounce).
@@ -65,11 +83,29 @@ struct Stub {
     reject_register_on_reconnect: bool,
     /// Refuse this topic name on every connection.
     reject_topic: Option<String>,
+    /// Reject `topic.unsubscribe` for this topic on every connection.
+    reject_unsubscribe: Option<String>,
     /// The shape of a collision reply.
     rejection_shape: RejectionShape,
     flood_on_register: usize,
+    /// Extra commands flooded right after the FIRST register ACK only.
+    first_register_flood: usize,
     replay_delay: Duration,
     register_delay: Duration,
+    /// Delay every subscribe reply (after receipt, before the record).
+    subscribe_delay: Duration,
+    /// Delay the FIRST connection's subscribe replies only.
+    initial_subscribe_delay: Duration,
+    /// Close the socket right after ACKing registration on connection 1.
+    drop_after_register_first: bool,
+    /// Send a HELP request on reconnected sockets (connection >= 2).
+    help_on_reconnect: bool,
+    /// Per-topic subscribe actions for the first connection.
+    initial_actions: HashMap<String, SubscribeAction>,
+    /// Per-topic subscribe actions for reconnected sockets (connection >= 2).
+    replay_actions: HashMap<String, SubscribeAction>,
+    /// Per-topic subscribe actions on every connection (checked first).
+    all_actions: HashMap<String, SubscribeAction>,
 }
 
 impl Stub {
@@ -80,10 +116,19 @@ impl Stub {
             fail_replay_on_reconnect: false,
             reject_register_on_reconnect: false,
             reject_topic: None,
+            reject_unsubscribe: None,
             rejection_shape: RejectionShape::Structured,
             flood_on_register: commands,
+            first_register_flood: 0,
             replay_delay: Duration::ZERO,
             register_delay: Duration::ZERO,
+            subscribe_delay: Duration::ZERO,
+            initial_subscribe_delay: Duration::ZERO,
+            drop_after_register_first: false,
+            help_on_reconnect: false,
+            initial_actions: HashMap::new(),
+            replay_actions: HashMap::new(),
+            all_actions: HashMap::new(),
         })
     }
     fn new(fail_replay_on_reconnect: bool, reject_register_on_reconnect: bool) -> Arc<Stub> {
@@ -124,10 +169,19 @@ impl Stub {
             fail_replay_on_reconnect,
             reject_register_on_reconnect,
             reject_topic: None,
+            reject_unsubscribe: None,
             rejection_shape,
             flood_on_register: 0,
+            first_register_flood: 0,
             replay_delay: Duration::ZERO,
             register_delay: Duration::ZERO,
+            subscribe_delay: Duration::ZERO,
+            initial_subscribe_delay: Duration::ZERO,
+            drop_after_register_first: false,
+            help_on_reconnect: false,
+            initial_actions: HashMap::new(),
+            replay_actions: HashMap::new(),
+            all_actions: HashMap::new(),
         })
     }
 
@@ -138,12 +192,57 @@ impl Stub {
             fail_replay_on_reconnect: false,
             reject_register_on_reconnect: false,
             reject_topic: Some(topic.to_string()),
+            reject_unsubscribe: None,
             rejection_shape: RejectionShape::Structured,
             flood_on_register: 0,
+            first_register_flood: 0,
             replay_delay: Duration::ZERO,
             register_delay: Duration::ZERO,
+            subscribe_delay: Duration::ZERO,
+            initial_subscribe_delay: Duration::ZERO,
+            drop_after_register_first: false,
+            help_on_reconnect: false,
+            initial_actions: HashMap::new(),
+            replay_actions: HashMap::new(),
+            all_actions: HashMap::new(),
         })
     }
+
+    fn action_for(&self, name: &str, conn_index: usize) -> SubscribeAction {
+        if let Some(action) = self.all_actions.get(name) {
+            return action.clone();
+        }
+        if conn_index == 1 {
+            if let Some(action) = self.initial_actions.get(name) {
+                return action.clone();
+            }
+        } else if let Some(action) = self.replay_actions.get(name) {
+            return action.clone();
+        }
+        if self.reject_topic.as_deref() == Some(name) {
+            return SubscribeAction::Refuse(10);
+        }
+        if conn_index >= 2 && self.fail_replay_on_reconnect {
+            return SubscribeAction::Refuse(10);
+        }
+        SubscribeAction::Ack
+    }
+}
+
+/// A hold action plus its two barriers: `entered` fires when the stub
+/// receives the subscribe, `release` lets the reply go.
+fn hold_action() -> (SubscribeAction, Arc<Notify>, Arc<Notify>) {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    (
+        SubscribeAction::Hold {
+            entered: entered.clone(),
+            release: release.clone(),
+            rc: 0,
+        },
+        entered,
+        release,
+    )
 }
 
 /// A `type: response` reply correlated to `req`.
@@ -245,7 +344,12 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                                 }
                             }
                         };
-                        tokio::time::sleep(stub.register_delay).await;
+                        if !stub.register_delay.is_zero() {
+                            tokio::select! {
+                                _ = tokio::time::sleep(stub.register_delay) => {}
+                                _ = stream.next() => break 'conn,
+                            }
+                        }
                         if collision {
                             // Keep the socket open, as the real broker does;
                             // the client must close its half-built
@@ -255,7 +359,18 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                             continue;
                         }
                         let _ = sink.send(Message::Text(reply(&req, "0").into())).await;
-                        for sequence in 0..stub.flood_on_register {
+                        // A transport failure right after registration: the
+                        // client's next subscribe write fails.
+                        if stub.drop_after_register_first && conn_index == 1 {
+                            let _ = sink.close().await;
+                            break 'conn;
+                        }
+                        let flood = if conn_index == 1 {
+                            stub.flood_on_register + stub.first_register_flood
+                        } else {
+                            stub.flood_on_register
+                        };
+                        for sequence in 0..flood {
                             let event = BusMessage::new()
                                 .with_header("type", "request")
                                 .with_header("command", "world.test.flood")
@@ -275,28 +390,79 @@ async fn run_stub(listener: TcpListener, stub: Arc<Stub>) {
                                 .with_header("id", "ping-1")
                                 .to_wire();
                             let _ = sink.send(Message::Text(ping.into())).await;
+                            if stub.help_on_reconnect {
+                                let help = BusMessage::new()
+                                    .with_header("type", "request")
+                                    .with_header("command", "HELP")
+                                    .with_header("from", "noded")
+                                    .with_header("id", "help-1")
+                                    .to_wire();
+                                let _ = sink.send(Message::Text(help.into())).await;
+                            }
                         }
                     }
                     "topic.subscribe" => {
                         let name = req.get("name").unwrap_or("").to_string();
-                        let reject = (stub.fail_replay_on_reconnect && conn_index >= 2)
-                            || stub.reject_topic.as_deref() == Some(name.as_str());
-                        {
-                            let mut s = stub.state.lock().await;
-                            s.subscribe_attempts += 1;
-                            if !reject {
-                                s.subscribed.push(name);
+                        let action = stub.action_for(&name, conn_index);
+                        stub.state.lock().await.subscribe_attempts += 1;
+                        let (rc, disconnect) = match action {
+                            SubscribeAction::Ack => (0, false),
+                            SubscribeAction::Refuse(rc) => (rc, false),
+                            SubscribeAction::Hold {
+                                entered,
+                                release,
+                                rc,
+                            } => {
+                                entered.notify_one();
+                                tokio::select! {
+                                    _ = release.notified() => {}
+                                    _ = stream.next() => break 'conn,
+                                }
+                                (rc, false)
+                            }
+                            SubscribeAction::Disconnect => (0, true),
+                        };
+                        if disconnect {
+                            let _ = sink.close().await;
+                            break 'conn;
+                        }
+                        let delay = if !stub.subscribe_delay.is_zero() {
+                            stub.subscribe_delay
+                        } else if conn_index == 1 {
+                            stub.initial_subscribe_delay
+                        } else {
+                            Duration::ZERO
+                        } + if conn_index >= 2 {
+                            stub.replay_delay
+                        } else {
+                            Duration::ZERO
+                        };
+                        if !delay.is_zero() {
+                            // Keep the broker's transport reader alive while
+                            // withholding an ACK. A closed abandoned attempt
+                            // must release its name before the next dial.
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => {}
+                                _ = stream.next() => break 'conn,
                             }
                         }
-                        let rc = if reject { "10" } else { "0" };
-                        if conn_index >= 2 {
-                            tokio::time::sleep(stub.replay_delay).await;
+                        let mut response = bus::parse(&reply(&req, &rc.to_string()))
+                            .expect("stub subscribe reply parses");
+                        if rc != 0 {
+                            response.set("error", "stub refused topic");
                         }
-                        let _ = sink.send(Message::Text(reply(&req, rc).into())).await;
+                        // Only a reply that actually reached a live client
+                        // counts as an acknowledgement: a ghost ACK to a
+                        // socket the client already abandoned must not.
+                        let sent = sink.send(Message::Text(response.to_wire().into())).await;
+                        if rc == 0 && sent.is_ok() {
+                            stub.state.lock().await.subscribed.push(name);
+                        }
                     }
                     "topic.unsubscribe" => {
                         let name = req.get("name").unwrap_or("").to_string();
-                        let reject = stub.reject_topic.as_deref() == Some(name.as_str());
+                        let reject = stub.reject_topic.as_deref() == Some(name.as_str())
+                            || stub.reject_unsubscribe.as_deref() == Some(name.as_str());
                         if !reject {
                             stub.state.lock().await.unsubscribed.push(name);
                         }
@@ -1465,4 +1631,1054 @@ async fn reconnect_resends_provenance() {
     }
     // (No deregister: the contract under test — provenance re-sent on
     // reconnect — is already asserted; the client drops at scope end.)
+}
+
+/// Wait for the first fully established generation on `client`.
+async fn wait_connected(client: &SupervisedClient, secs: u64) {
+    assert!(
+        wait_until(secs, || client.is_connected()).await,
+        "expected Connected within {secs}s"
+    );
+}
+
+/// Wait for the stub's rc-0 `subscribed` list to reach `expected` exactly.
+/// The stub records an acknowledgement just after its reply write, so it can
+/// lag the client's publication by a schedule quantum.
+async fn wait_subscribed(stub: &Arc<Stub>, expected: &[&str], secs: u64) {
+    let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+    assert!(
+        wait_until(secs, || stub
+            .state
+            .try_lock()
+            .map(|s| s.subscribed == expected)
+            .unwrap_or(false))
+        .await,
+        "expected subscribed to become {expected:?}"
+    );
+}
+
+/// Wait for a `Fatal` edge on `states`.
+async fn wait_fatal(states: &mut tokio::sync::watch::Receiver<ConnState>, secs: u64) {
+    tokio::time::timeout(Duration::from_secs(secs), async {
+        while *states.borrow_and_update() != ConnState::Fatal {
+            states.changed().await.expect("state sender remains live");
+        }
+    })
+    .await
+    .expect("expected a terminal Fatal edge");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_start_holds_until_all_acked_then_publishes_once() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.flood_on_register = 1;
+    let (action, entered, release) = hold_action();
+    stub0.initial_actions.insert("decl.two".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("declared", &url)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .start();
+    // The original receiver, taken before establishment completes.
+    let mut incoming = client.incoming().expect("incoming taken once");
+
+    // Second ACK held: Connecting, generation zero, empty registry, all
+    // outbound APIs fail fast, and no delivery has gone out.
+    entered.notified().await;
+    assert_eq!(client.state(), ConnState::Connecting);
+    assert_eq!(client.connection_generation(), 0);
+    assert!(client.subscription_registry().is_empty());
+    assert!(matches!(
+        client
+            .call("noded", "noded.list", serde_json::Value::Null)
+            .await,
+        Err(SupervisedError::Disconnected)
+    ));
+    assert!(matches!(
+        client.subscribe_topic("world.late").await,
+        Err(SupervisedError::Disconnected)
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), incoming.recv())
+            .await
+            .is_err(),
+        "no delivery may go out before the generation is published"
+    );
+    {
+        let s = stub.state.lock().await;
+        assert_eq!(s.subscribed, vec!["decl.one".to_string()]);
+        assert_eq!(s.connections, 1);
+    }
+
+    release.notify_one();
+    wait_connected(&client, 5).await;
+    assert_eq!(client.connection_generation(), 1);
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.one".to_string(), "decl.two".to_string()]
+    );
+    wait_subscribed(&stub, &["decl.one", "decl.two"], 5).await;
+    assert_eq!(
+        stub.state.lock().await.connections,
+        1,
+        "one subscribe per declaration, in declaration order, on one socket"
+    );
+    // The flooded command waited in the native lane and is forwarded with
+    // the published generation on the original receiver.
+    let got = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await
+        .expect("queued delivery forwards after publication")
+        .expect("a command, not channel close");
+    assert_eq!(got.command, "world.test.flood");
+    assert_eq!(got.generation, 1);
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finite_connect_waits_for_all_declarations() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    let (action, entered, release) = hold_action();
+    stub0.initial_actions.insert("decl.two".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let (result_tx, mut result_rx) = oneshot::channel();
+    let connect = tokio::spawn(async move {
+        let result = SupervisedClient::connect_options("finite-hold", &url)
+            .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+            .connect()
+            .await;
+        let _ = result_tx.send(result);
+    });
+    entered.notified().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut result_rx)
+            .await
+            .is_err(),
+        "connect must not return while an ACK is held"
+    );
+
+    release.notify_one();
+    let client = result_rx
+        .await
+        .expect("the finite connect reports its result")
+        .expect("establishment succeeds");
+    assert_eq!(client.connection_generation(), 1);
+    assert_eq!(client.state(), ConnState::Connected);
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.one".to_string(), "decl.two".to_string()]
+    );
+    client.close().await;
+    connect.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finite_deadline_exhausts_the_budget_with_a_typed_timeout() {
+    // The broker ACKs registration but withholds every subscribe reply
+    // beyond the configured attempt deadline: five timed-out attempts, then
+    // InitialConnectFailed whose source is a Timeout, never a refusal.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.subscribe_delay = Duration::from_secs(2);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let error = SupervisedClient::connect_options("five-timeouts", &url)
+        .with_initial_topics(vec!["decl.slow".to_string()])
+        .establishment_timeout(Duration::from_millis(300))
+        .connect()
+        .await
+        .err()
+        .expect("the finite budget must be exhausted");
+    match error {
+        SupervisedError::InitialConnectFailed { attempts, source } => {
+            assert_eq!(attempts, bus::MAX_INITIAL_ATTEMPTS);
+            assert!(
+                matches!(source, bus::ClientError::Timeout { ref to } if to == "noded"),
+                "a deadline is a typed Timeout, got {source}"
+            );
+        }
+        other => panic!("expected InitialConnectFailed, got {other}"),
+    }
+    assert_eq!(
+        stub.state.lock().await.connections,
+        bus::MAX_INITIAL_ATTEMPTS as usize,
+        "exactly the finite budget of dials"
+    );
+    assert!(
+        wait_until(10, || stub
+            .state
+            .try_lock()
+            .map(|s| s.open_connections == 0)
+            .unwrap_or(false))
+        .await,
+        "every timed-out attempt must close its socket"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_attempt_disconnect_then_retry_sends_both_in_order() {
+    // The first declaration ACKs, the second disconnects the socket: the
+    // whole attempt fails (native Closed), the registry and generation stay
+    // untouched, and the retry re-sends both declarations in order.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .initial_actions
+        .insert("decl.two".to_string(), SubscribeAction::Disconnect);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("disconnect-mid", &url)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .start();
+    wait_connected(&client, 10).await;
+    assert_eq!(client.connection_generation(), 1);
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.one".to_string(), "decl.two".to_string()]
+    );
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "the failed attempt is retried once"
+    );
+    wait_subscribed(&stub, &["decl.one", "decl.one", "decl.two"], 5).await;
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_failure_after_register_fails_the_attempt_and_recovers() {
+    // The socket drops right after registration: the first subscribe write
+    // fails (typed Send), and the retry establishes on a fresh socket.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.drop_after_register_first = true;
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("send-failure", &url)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .start();
+    wait_connected(&client, 10).await;
+    assert_eq!(client.connection_generation(), 1);
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "the retry re-sent both declarations on a fresh socket"
+    );
+    wait_subscribed(&stub, &["decl.one", "decl.two"], 5).await;
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attempt_deadline_closes_the_still_open_socket_and_recovers() {
+    // Registration ACKs but the first subscribe reply never arrives within
+    // the attempt deadline while the socket stays open. The supervisor
+    // deadline (not the native 60s response timeout) closes that socket,
+    // releases the name, backs off and succeeds on the same outward
+    // receiver. No failed attempt is externally visible.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.initial_subscribe_delay = Duration::from_secs(2);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("deadline-recovery", &url)
+        .with_initial_topics(vec!["decl.slow".to_string()])
+        .establishment_timeout(Duration::from_millis(500))
+        .start();
+    let mut incoming = client.incoming().expect("incoming taken once");
+
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| s.connections >= 1)
+            .unwrap_or(false))
+        .await
+    );
+    assert_eq!(client.state(), ConnState::Connecting);
+    assert_eq!(client.connection_generation(), 0);
+
+    wait_connected(&client, 10).await;
+    assert_eq!(client.connection_generation(), 1);
+    wait_subscribed(&stub, &["decl.slow"], 5).await;
+    assert!(
+        wait_until(10, || stub
+            .state
+            .try_lock()
+            .map(|s| s.connections == 2 && s.open_connections == 1)
+            .unwrap_or(false))
+        .await,
+        "the deadline must close the still-open first socket while the second lives"
+    );
+    // The same outward receiver survives: the reconnect ping arrives with
+    // the published generation.
+    let got = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await
+        .expect("the outward receiver survives the failed attempt")
+        .expect("a command, not channel close");
+    assert_eq!(got.command, "world.test.ping");
+    assert_eq!(got.generation, 1);
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_refusal_is_exact_terminal_fatal_and_never_retried() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .all_actions
+        .insert("decl.bad".to_string(), SubscribeAction::Refuse(10));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("decl-refused", &url)
+        .with_initial_topics(vec!["decl.ok".to_string(), "decl.bad".to_string()])
+        .start();
+    let mut incoming = client.incoming().expect("incoming taken once");
+    let mut states = client.subscribe_state();
+    wait_fatal(&mut states, 5).await;
+
+    // The diagnostic is sampleable at the Fatal edge, exact and structured.
+    let diagnostic = client
+        .subscription_declaration_error()
+        .expect("Fatal is observed only after the diagnostic is sampleable");
+    assert_eq!(
+        diagnostic,
+        bus::SubscriptionDeclarationError::Rejected {
+            topic: "decl.bad".to_string(),
+            rc: 10,
+            message: "stub refused topic".to_string(),
+        }
+    );
+    assert!(
+        client.registration_rejection().is_none(),
+        "a subscription refusal never manufactures a registration rejection"
+    );
+    assert_eq!(client.connection_generation(), 0);
+    let end = tokio::time::timeout(Duration::from_secs(2), incoming.recv())
+        .await
+        .expect("the incoming lane closes promptly after Fatal");
+    assert!(end.is_none());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s = stub.state.lock().await;
+    assert_eq!(s.connections, 1, "an explicit refusal is never retried");
+    assert_eq!(s.open_connections, 0, "every socket is released");
+    assert_eq!(s.subscribed, vec!["decl.ok".to_string()]);
+    client.close().await;
+    assert_eq!(client.state(), ConnState::Fatal, "Fatal is sticky");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_warning_rc_is_a_refusal_not_an_ack() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .all_actions
+        .insert("decl.warn".to_string(), SubscribeAction::Refuse(5));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("decl-warn", &url)
+        .with_initial_topics(vec!["decl.warn".to_string()])
+        .start();
+    let mut states = client.subscribe_state();
+    wait_fatal(&mut states, 5).await;
+    let diagnostic = client.subscription_declaration_error().unwrap();
+    assert_eq!(
+        diagnostic,
+        bus::SubscriptionDeclarationError::Rejected {
+            topic: "decl.warn".to_string(),
+            rc: 5,
+            message: "stub refused topic".to_string(),
+        },
+        "a nonzero warning response is not an exact ACK"
+    );
+    assert_eq!(client.connection_generation(), 0);
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finite_declared_refusal_is_a_typed_error() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .all_actions
+        .insert("decl.bad".to_string(), SubscribeAction::Refuse(10));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let error = SupervisedClient::connect_options("finite-refused", &url)
+        .with_initial_topics(vec!["decl.bad".to_string()])
+        .connect()
+        .await
+        .err()
+        .expect("a refused declaration is an error");
+    match error {
+        SupervisedError::SubscriptionDeclaration(rejection) => {
+            assert_eq!(
+                rejection,
+                bus::SubscriptionDeclarationError::Rejected {
+                    topic: "decl.bad".to_string(),
+                    rc: 10,
+                    message: "stub refused topic".to_string(),
+                }
+            );
+        }
+        other => panic!("expected SubscriptionDeclaration, got {other}"),
+    }
+    assert_eq!(
+        stub.state.lock().await.connections,
+        1,
+        "a refused declaration is never retried"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_replays_declared_then_dynamic_in_recorded_order() {
+    let stub = Stub::new(false, false);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("replay-order", &url)
+        .with_initial_topics(vec!["decl.a".to_string(), "decl.b".to_string()])
+        .connect()
+        .await
+        .expect("initial establish");
+    client
+        .subscribe_topic("dyn.c")
+        .await
+        .expect("dynamic subscribe");
+
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    wait_subscribed(
+        &stub,
+        &["decl.a", "decl.b", "dyn.c", "decl.a", "decl.b", "dyn.c"],
+        5,
+    )
+    .await;
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_replay_refusal_is_terminal_but_ordinary_replay_keeps_retrying() {
+    // A declared topic refused during REPLAY is terminal; the ordinary
+    // replay-refusal retry contract is unchanged for non-declared topics.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .replay_actions
+        .insert("decl.x".to_string(), SubscribeAction::Refuse(10));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("replay-refused", &url)
+        .with_initial_topics(vec!["decl.x".to_string()])
+        .connect()
+        .await
+        .expect("initial establish");
+    assert_eq!(client.connection_generation(), 1);
+    let mut states = client.subscribe_state();
+
+    stub.drop_conn1.notify_one();
+    wait_fatal(&mut states, 5).await;
+    let diagnostic = client.subscription_declaration_error().unwrap();
+    assert_eq!(
+        diagnostic,
+        bus::SubscriptionDeclarationError::Rejected {
+            topic: "decl.x".to_string(),
+            rc: 10,
+            message: "stub refused topic".to_string(),
+        }
+    );
+    assert_eq!(
+        client.connection_generation(),
+        1,
+        "the generation is unchanged by the terminal replay refusal"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "a declared replay refusal is never retried"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_replay_warning_rc_is_a_success_not_a_refusal() {
+    // Legacy ordinary replay accepted any rc < 10: a warning reply to a
+    // non-declared topic is a successful replay, not a refusal loop. Only
+    // declared topics demand an exact rc 0.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .replay_actions
+        .insert("dyn.warn".to_string(), SubscribeAction::Refuse(5));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect("warn-replay", &url)
+        .await
+        .unwrap();
+    client
+        .subscribe_topic("dyn.warn")
+        .await
+        .expect("dynamic subscribe");
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    assert_eq!(client.state(), ConnState::Connected);
+    assert!(client.subscription_declaration_error().is_none());
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["dyn.warn".to_string()],
+        "a warning replay neither drops nor duplicates the recorded topic"
+    );
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "a warning replay must not loop"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readded_declared_name_keeps_its_exact_rc0_declared_classification() {
+    // A declared name that was unsubscribed and later re-added dynamically
+    // retains its declared classification: on the next replay it needs an
+    // exact rc 0, so a warning reply is a terminal typed refusal — ordinary
+    // topics would have accepted rc 5 as success.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .replay_actions
+        .insert("decl.x".to_string(), SubscribeAction::Refuse(5));
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("readd", &url)
+        .with_initial_topics(vec!["decl.x".to_string()])
+        .connect()
+        .await
+        .expect("initial establish");
+    client
+        .unsubscribe_topic("decl.x")
+        .await
+        .expect("unsubscribe");
+    client
+        .subscribe_topic("decl.x")
+        .await
+        .expect("re-add dynamically");
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.x".to_string()]
+    );
+    let mut states = client.subscribe_state();
+
+    stub.drop_conn1.notify_one();
+    wait_fatal(&mut states, 5).await;
+    let diagnostic = client.subscription_declaration_error().unwrap();
+    assert_eq!(
+        diagnostic,
+        bus::SubscriptionDeclarationError::Rejected {
+            topic: "decl.x".to_string(),
+            rc: 5,
+            message: "stub refused topic".to_string(),
+        },
+        "the re-added declared name keeps its declared classification on replay"
+    );
+    assert!(client.registration_rejection().is_none());
+    assert_eq!(client.connection_generation(), 1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        stub.state.lock().await.connections,
+        2,
+        "a classified refusal is terminal, never retried"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_declarations_are_one_request_in_first_seen_order() {
+    let stub = Stub::new(false, false);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("dedup", &url)
+        .with_initial_topics(vec![
+            "dup.a".to_string(),
+            "dup.b".to_string(),
+            "dup.a".to_string(),
+            "dup.c".to_string(),
+        ])
+        .connect()
+        .await
+        .expect("initial establish");
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec![
+            "dup.a".to_string(),
+            "dup.b".to_string(),
+            "dup.c".to_string()
+        ]
+    );
+    wait_subscribed(&stub, &["dup.a", "dup.b", "dup.c"], 5).await;
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_declarations_never_dial_and_are_fatal_or_typed() {
+    let stub = Stub::new(false, false);
+    let (url, _acceptor) = start(&stub).await;
+
+    let cases: Vec<Vec<String>> = vec![
+        vec![String::new()],
+        vec!["a\rb".to_string()],
+        vec!["a\nb".to_string()],
+        vec!["a\0b".to_string()],
+        vec!["x".repeat(1025)],
+        (0..65).map(|i| format!("topic.{i}")).collect(),
+        (0..64)
+            .map(|i| format!("{i:03}-{}", "x".repeat(300)))
+            .collect(),
+    ];
+    for topics in cases {
+        let error = SupervisedClient::connect_options("invalid", &url)
+            .with_initial_topics(topics)
+            .connect()
+            .await
+            .err()
+            .expect("invalid declarations must be a typed error");
+        assert!(
+            matches!(
+                error,
+                SupervisedError::SubscriptionDeclaration(
+                    bus::SubscriptionDeclarationError::Invalid { .. }
+                )
+            ),
+            "got {error}"
+        );
+    }
+    // A zero establishment timeout is invalid configuration too.
+    let error = SupervisedClient::connect_options("invalid", &url)
+        .with_initial_topics(vec!["fine.topic".to_string()])
+        .establishment_timeout(Duration::ZERO)
+        .connect()
+        .await
+        .err()
+        .expect("a zero deadline is invalid");
+    assert!(matches!(
+        error,
+        SupervisedError::SubscriptionDeclaration(bus::SubscriptionDeclarationError::Invalid { .. })
+    ));
+    assert_eq!(
+        stub.state.lock().await.connections,
+        0,
+        "invalid declarations cause zero connection attempts"
+    );
+
+    // start() yields a Fatal client with the diagnostic sampleable, the
+    // incoming producer closed, and no socket opened.
+    let client = SupervisedClient::connect_options("invalid", &url)
+        .with_initial_topics(vec![String::new()])
+        .start();
+    assert_eq!(client.state(), ConnState::Fatal);
+    assert_eq!(
+        client.subscription_declaration_error(),
+        Some(bus::SubscriptionDeclarationError::Invalid {
+            index: Some(0),
+            message: "topic names must not be empty".to_string(),
+        })
+    );
+    assert!(client.incoming().unwrap().recv().await.is_none());
+    let client = SupervisedClient::connect_options("invalid", &url)
+        .bounded_incoming(2)
+        .with_initial_topics(vec![String::new()])
+        .start();
+    assert!(client.incoming_bounded().unwrap().recv().await.is_none());
+    assert_eq!(stub.state.lock().await.connections, 0);
+    client.close().await;
+    assert_eq!(client.state(), ConnState::Fatal);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_unsubscribe_survives_reconnect_and_refused_unsubscribe_replays() {
+    // A successful unsubscribe of a declared topic removes it permanently.
+    let stub = Stub::new(false, false);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("unsub-ok", &url)
+        .with_initial_topics(vec!["decl.keep".to_string(), "decl.drop".to_string()])
+        .connect()
+        .await
+        .expect("initial establish");
+    client
+        .unsubscribe_topic("decl.drop")
+        .await
+        .expect("unsubscribe");
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.keep".to_string()]
+    );
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    wait_subscribed(&stub, &["decl.keep", "decl.drop", "decl.keep"], 5).await;
+    client.close().await;
+
+    // A refused unsubscribe leaves the registry and the replay requirement
+    // intact.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.reject_unsubscribe = Some("decl.keep".to_string());
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("unsub-refused", &url)
+        .with_initial_topics(vec!["decl.keep".to_string()])
+        .connect()
+        .await
+        .expect("initial establish");
+    let error = client
+        .unsubscribe_topic("decl.keep")
+        .await
+        .expect_err("a refused unsubscribe errors");
+    assert!(
+        matches!(error, SupervisedError::Transport(_)),
+        "got {error}"
+    );
+    assert_eq!(
+        client.subscription_registry().snapshot(),
+        vec!["decl.keep".to_string()]
+    );
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    wait_subscribed(&stub, &["decl.keep", "decl.keep"], 5).await;
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_subscribe_ack_never_enters_the_reconnect_snapshot() {
+    // The socket dies while a subscribe is in flight and no ACK ever lands:
+    // the topic never enters the registry, and the reconnect snapshot (taken
+    // after the transaction lock) replays the pre-ACK set only.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0
+        .initial_actions
+        .insert("dyn.slow".to_string(), SubscribeAction::Disconnect);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect("stale-ack", &url).await.unwrap();
+    let error = client
+        .subscribe_topic("dyn.slow")
+        .await
+        .expect_err("the subscribe dies with the socket");
+    assert!(
+        matches!(error, SupervisedError::Transport(_)),
+        "got {error}"
+    );
+    assert!(
+        client.subscription_registry().is_empty(),
+        "a lost ACK never enters the registry"
+    );
+    // The reconnect replays nothing: the pre-ACK set is what was snapshotted.
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    assert!(
+        stub.state.lock().await.subscribed.is_empty(),
+        "the never-ACKed subscribe must not replay"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_finite_connect_during_a_held_ack_cleans_up() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    let (action, entered, release) = hold_action();
+    stub0
+        .initial_actions
+        .insert("decl.held".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let connect = tokio::spawn(async move {
+        SupervisedClient::connect_options("finite-cancel", &url)
+            .with_initial_topics(vec!["decl.a".to_string(), "decl.held".to_string()])
+            .connect()
+            .await
+    });
+    entered.notified().await;
+    connect.abort();
+    let _ = connect.await;
+
+    release.notify_one();
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| s.open_connections == 0 && s.active_registrations.is_empty())
+            .unwrap_or(false))
+        .await,
+        "a cancelled finite connect must release the socket and the name"
+    );
+    assert_eq!(stub.state.lock().await.connections, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_drop_and_deregister_during_held_declarations_never_publish() {
+    // Shutdown in the middle of the FIRST held declaration ACK.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    let (action, entered, release) = hold_action();
+    stub0.initial_actions.insert("decl.one".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("close-held", &url)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .start();
+    let mut incoming = client.incoming().unwrap();
+    let states = client.subscribe_state();
+    entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(1), client.close())
+        .await
+        .expect("close must not wait for the held ACK");
+    assert_eq!(client.state(), ConnState::ShuttingDown);
+    assert_eq!(client.connection_generation(), 0);
+    // The late ACK racing the stop must not publish.
+    release.notify_one();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*states.borrow(), ConnState::ShuttingDown);
+    assert_eq!(client.connection_generation(), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), incoming.recv())
+            .await
+            .expect("the lane closes")
+            .is_none()
+    );
+    assert_eq!(stub.state.lock().await.connections, 1);
+
+    // Deregister during the LAST held declaration ACK.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    let (action, entered, release) = hold_action();
+    stub0.initial_actions.insert("decl.two".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("dereg-held", &url)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .start();
+    let states = client.subscribe_state();
+    entered.notified().await;
+    assert!(matches!(
+        client.deregister().await,
+        Err(SupervisedError::Disconnected)
+    ));
+    release.notify_one();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*states.borrow(), ConnState::ShuttingDown);
+    assert_eq!(client.connection_generation(), 0);
+    assert_eq!(stub.state.lock().await.connections, 1);
+
+    // Dropping the incoming receiver during a held declaration stops the
+    // supervisor and releases the socket and the name.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    let (action, entered, release) = hold_action();
+    stub0.initial_actions.insert("decl.one".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+    let client = SupervisedClient::connect_options("consumer-drop", &url)
+        .with_initial_topics(vec!["decl.one".to_string()])
+        .start();
+    let states = client.subscribe_state();
+    // The subscribe is in flight (held) with the consumer still alive.
+    entered.notified().await;
+    drop(client.incoming().unwrap());
+    release.notify_one();
+    assert!(wait_until(5, || *states.borrow() == ConnState::ShuttingDown).await);
+    assert_eq!(client.connection_generation(), 0);
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| s.open_connections == 0 && s.active_registrations.is_empty())
+            .unwrap_or(false))
+        .await
+    );
+    assert_eq!(stub.state.lock().await.connections, 1);
+    drop(client);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_during_retry_backoff_stops_dialing() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+    let accepted = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counts = accepted.clone();
+    let acceptor = tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            counts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(socket);
+        }
+    });
+    let client = SupervisedClient::connect_options("backoff-cancel", &url).start();
+    let states = client.subscribe_state();
+
+    // Settle into a backoff window: the dial count is stable across an
+    // observation shorter than the smallest backoff (250 ms).
+    let mut settled = 0;
+    for _ in 0..100 {
+        let now = accepted.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if now >= 2 && accepted.load(std::sync::atomic::Ordering::SeqCst) == now {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            if accepted.load(std::sync::atomic::Ordering::SeqCst) == now {
+                settled = now;
+                break;
+            }
+        }
+    }
+    assert!(
+        settled >= 2,
+        "expected the supervisor to settle into backoff"
+    );
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        settled,
+        "a dropped client must stop dialing during backoff"
+    );
+    assert_eq!(*states.borrow(), ConnState::ShuttingDown);
+    acceptor.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_flood_before_final_ack_delivers_overflow_only_after_publication() {
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.flood_on_register = 32;
+    let (action, entered, release) = hold_action();
+    stub0.initial_actions.insert("decl.two".to_string(), action);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("flood-held", &url)
+        .bounded_incoming(2)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .start();
+    let mut incoming = client
+        .incoming_bounded()
+        .expect("bounded receiver available exactly once");
+    entered.notified().await;
+    // The native lane has already overflowed, but nothing is forwarded
+    // before the generation is published.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), incoming.recv())
+            .await
+            .is_err(),
+        "no overflow may be reported before publication"
+    );
+    release.notify_one();
+    wait_connected(&client, 5).await;
+    assert_eq!(client.connection_generation(), 1);
+
+    let mut saw_overflow = false;
+    let mut commands = 0;
+    for _ in 0..3 {
+        match tokio::time::timeout(Duration::from_secs(2), incoming.recv())
+            .await
+            .expect("the lane yields promptly")
+        {
+            Some(BoundedIncomingEvent::Overflow { dropped }) => {
+                assert_eq!(dropped, 30, "capacity 2 retains two of 32");
+                saw_overflow = true;
+            }
+            Some(BoundedIncomingEvent::Command(command)) => {
+                assert_eq!(command.generation, 1);
+                commands += 1;
+            }
+            None => panic!("the lane closed before delivering"),
+        }
+    }
+    assert!(saw_overflow, "the overflow must be delivered after success");
+    assert_eq!(commands, 2, "the two retained commands follow");
+    assert_eq!(incoming.overflow_count(), 30);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), incoming.recv())
+            .await
+            .is_err(),
+        "only one overflow notice and two retained commands are emitted"
+    );
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_attempt_discards_its_queued_lane() {
+    // The first attempt is flooded then fails on the second declaration; its
+    // queued commands and overflow belong to a never-published generation
+    // and must not leak into the outward lane of the successful retry.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.first_register_flood = 64;
+    stub0
+        .initial_actions
+        .insert("decl.two".to_string(), SubscribeAction::Disconnect);
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+
+    let client = SupervisedClient::connect_options("discard-lane", &url)
+        .bounded_incoming(2)
+        .with_initial_topics(vec!["decl.one".to_string(), "decl.two".to_string()])
+        .connect()
+        .await
+        .expect("the retry establishes");
+    let mut incoming = client
+        .incoming_bounded()
+        .expect("bounded receiver available exactly once");
+    assert_eq!(
+        incoming.overflow_count(),
+        0,
+        "the failed attempt's overflow must not leak"
+    );
+    let first = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await
+        .expect("the retry's delivery arrives")
+        .expect("a command, not channel close");
+    match first {
+        BoundedIncomingEvent::Command(command) => {
+            assert_eq!(command.command, "world.test.ping");
+            assert_eq!(command.generation, 1);
+        }
+        BoundedIncomingEvent::Overflow { dropped } => {
+            panic!("unexpected overflow from the failed attempt: {dropped}")
+        }
+    }
+    client.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_resends_verb_descriptors() {
+    // The manifest is carried on every connection: a reconnected client's
+    // reader answers HELP with the same verbs, re-sent from scratch.
+    let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
+    stub0.help_on_reconnect = true;
+    let stub = Arc::new(stub0);
+    let (url, _acceptor) = start(&stub).await;
+    let verbs = vec![bus::VerbDescriptor::new(
+        "verbs.report",
+        &["id"],
+        "Report a value",
+        false,
+    )];
+    let client = SupervisedClient::connect_options("verbs-svc", &url)
+        .with_verbs(verbs)
+        .connect()
+        .await
+        .expect("initial establish");
+
+    stub.drop_conn1.notify_one();
+    assert!(wait_until(10, || client.connection_generation() == 2).await);
+    assert!(
+        wait_until(5, || stub
+            .state
+            .try_lock()
+            .map(|s| !s.responses.is_empty())
+            .unwrap_or(false))
+        .await,
+        "the reconnected reader must answer HELP"
+    );
+    let s = stub.state.lock().await;
+    let reply = &s.responses[0];
+    assert_eq!(reply.get("command"), Some("HELP"));
+    assert_eq!(reply.get("from"), Some("verbs-svc"));
+    assert_eq!(reply.get("rc"), Some("0"));
+    assert!(
+        reply.body.contains("verbs.report"),
+        "the verb manifest is re-sent from the reconnected client: {}",
+        reply.body
+    );
+    drop(s);
+    client.close().await;
 }

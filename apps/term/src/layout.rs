@@ -31,9 +31,12 @@ pub const MAX_COLS: u16 = 240;
 pub const MAX_ROWS: u16 = 100;
 pub const MAX_TEXTURE: u32 = 4096;
 
-/// Logical height of the tab strip. Fixed so the pane area is known before
-/// iced lays anything out — the grid size has to reach the PTY from `update`.
-pub const STRIP_HEIGHT: f32 = 30.0;
+/// Vertical padding around a tab label (the `TabBar`'s own padding) and
+/// around the strip itself (the strip row's padding). One formula — the
+/// prepared UI line box plus both paddings — feeds the strip widget, the
+/// pane area, PTY sizing and the IME cursor geometry.
+pub const TAB_V_PADDING: f32 = 3.0;
+pub const STRIP_V_PADDING: f32 = 3.0;
 
 /// The active tab's pane tree with the terminals taken out: what `view`
 /// needs, without holding the `TabSet` lock while it builds widgets.
@@ -135,21 +138,28 @@ pub fn border(scale: f32) -> f32 {
     scale.round().max(1.0) / scale
 }
 
-/// The tab strip's height on this output: [`STRIP_HEIGHT`] on a whole
-/// physical pixel, so the panes below it start on one. `view` sizes the strip
-/// with this and [`content`] starts below it — one number, not two.
-pub fn strip_height(scale: f32) -> f32 {
-    snap(STRIP_HEIGHT, scale)
+/// The tab strip's height: the prepared UI text's line height (falling back
+/// to 1.4 × size when the design leaves it unset) plus the paddings above,
+/// snapped to whole physical pixels. Computed ONCE per wake into
+/// `State.chrome`; `view` sizes the strip with it and [`content`] starts the
+/// panes below it — one number, not two, so the widget, the PTY grids and the
+/// IME cursor cannot disagree.
+pub fn strip_height(scale: f32, ui: toolkit::typography::TextStyle) -> f32 {
+    snap(
+        2.0 * (TAB_V_PADDING + STRIP_V_PADDING) + ui.line_height.unwrap_or(ui.size * 1.4),
+        scale,
+    )
 }
 
-/// The area below the tab strip, for a window of `width` x `height` logical.
-pub fn content(width: f32, height: f32, scale: f32) -> Geometry {
-    let top = strip_height(scale);
+/// The area below the tab strip, for a window of `width` x `height` logical
+/// and a strip of `strip` logical height (the one value [`strip_height`]
+/// computed for this frame).
+pub fn content(width: f32, height: f32, strip: f32) -> Geometry {
     Geometry {
         x: 0.0,
-        y: top,
+        y: strip,
         w: width.max(0.0),
-        h: (height - top).max(0.0),
+        h: (height - strip).max(0.0),
     }
 }
 
@@ -237,6 +247,17 @@ pub fn test_tabs() -> TabSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use application::iced::Font;
+
+    /// 13 px with an 18 px line height reproduces the historical 30 px
+    /// strip, so the existing geometry expectations stay exact.
+    fn test_ui() -> toolkit::typography::TextStyle {
+        toolkit::typography::TextStyle {
+            font: Font::default(),
+            size: 13.0,
+            line_height: Some(18.0),
+        }
+    }
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Geometry {
         Geometry { x, y, w, h }
@@ -293,8 +314,8 @@ mod tests {
                 second: leaf(3),
             }),
         };
-        let bounds = content(900.0, 560.0, 1.0);
-        assert_eq!(bounds, rect(0.0, STRIP_HEIGHT, 900.0, 560.0 - STRIP_HEIGHT));
+        let bounds = content(900.0, 560.0, strip_height(1.0, test_ui()));
+        assert_eq!(bounds, rect(0.0, 30.0, 900.0, 530.0));
         let placed = panes(&tree, bounds, 1.0);
         assert_eq!(
             placed,
@@ -306,6 +327,36 @@ mod tests {
         );
         let area: f32 = placed.iter().map(|(_, g)| g.w * g.h).sum();
         assert_eq!(area, bounds.w * bounds.h);
+    }
+
+    /// One computed chrome height: it follows the prepared UI typography,
+    /// lands on whole physical pixels, and the pane area shrinks by exactly
+    /// what the strip grows — no other layout truth.
+    #[test]
+    fn the_chrome_height_follows_prepared_ui_typography_and_lands_on_pixels() {
+        let ui = test_ui();
+        assert_eq!(strip_height(1.0, ui), 30.0);
+        for scale in [1.0, 1.25, 1.5, 2.0, 2.5] {
+            let strip = strip_height(scale, ui);
+            assert!(on_pixel_grid(strip, scale), "strip {strip} @{scale}");
+        }
+        let tall = toolkit::typography::TextStyle {
+            line_height: Some(24.0),
+            ..ui
+        };
+        let strip = strip_height(1.0, tall);
+        assert_eq!(strip, 36.0);
+        let bounds = content(900.0, 560.0, strip);
+        assert_eq!(bounds.h, 560.0 - strip);
+        // Without a prepared line box the fallback is 1.4 × size.
+        let unset = toolkit::typography::TextStyle {
+            line_height: None,
+            ..ui
+        };
+        assert_eq!(
+            strip_height(1.0, unset),
+            snap(2.0 * (TAB_V_PADDING + STRIP_V_PADDING) + 13.0 * 1.4, 1.0)
+        );
     }
 
     #[test]

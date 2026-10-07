@@ -1,0 +1,3 @@
+# Vendored archive fixtures are literal checked bytes, without LFS filters.
+*.png -filter -diff -merge -text
+*.ttf -filter -diff -merge -text

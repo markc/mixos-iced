@@ -5,9 +5,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use swash::{
-    CacheKey, FontRef,
+    CacheKey, FontRef, NormalizedCoord,
     scale::{Render, ScaleContext, Source, StrikeWith, image::Content},
     shape::ShapeContext,
+    tag_from_bytes,
     text::{
         Codepoint, Script,
         cluster::{CharCluster, Parser, Status, Token},
@@ -25,6 +26,10 @@ pub(super) struct Face {
     pub(super) index: u32,
     offset: u32,
     key: CacheKey,
+    /// Normalised variation coordinates, indexed by fvar axis. Static faces
+    /// and the discovery route carry none; the owned route pins the exact
+    /// policy weight here so shaper, scaler and metrics agree per face.
+    pub(super) variations: Vec<NormalizedCoord>,
 }
 
 impl Face {
@@ -35,13 +40,36 @@ impl Face {
     fn at_index(data: Arc<[u8]>, index: u32) -> Option<Self> {
         let font = FontRef::from_index(&data, index as usize)?;
         let (offset, key) = (font.offset, font.key);
-        Some(Self {
+        Some(Self::from_parts(data, index, offset, key, Vec::new()))
+    }
+
+    /// An owned-route face at the exact policy weight: variable faces carry
+    /// their normalised `wght` coordinates, static faces an empty vector.
+    pub(super) fn with_weight(data: Arc<[u8]>, index: u32, weight: u16) -> Option<Self> {
+        let font = FontRef::from_index(&data, index as usize)?;
+        let variations: Vec<NormalizedCoord> = font
+            .variations()
+            .normalized_coords([(tag_from_bytes(b"wght"), f32::from(weight))])
+            .collect();
+        let (offset, key) = (font.offset, font.key);
+        Some(Self::from_parts(data, index, offset, key, variations))
+    }
+
+    fn from_parts(
+        data: Arc<[u8]>,
+        _index: u32,
+        offset: u32,
+        key: CacheKey,
+        variations: Vec<NormalizedCoord>,
+    ) -> Self {
+        Self {
             data,
             #[cfg(test)]
-            index,
+            index: _index,
             offset,
             key,
-        })
+            variations,
+        }
     }
 
     pub(super) fn font(&self) -> FontRef<'_> {
@@ -51,10 +79,20 @@ impl Face {
             key: self.key,
         }
     }
+
+    pub(super) fn source(&self) -> Arc<[u8]> {
+        Arc::clone(&self.data)
+    }
+
+    #[cfg(test)]
+    pub(super) fn key(&self) -> CacheKey {
+        self.key
+    }
 }
 
 pub(super) struct Fonts {
     pub(super) primary: Face,
+    pub(super) managed: bool,
     fallbacks: OnceLock<Arc<Fallbacks>>,
 }
 
@@ -89,8 +127,32 @@ impl Fonts {
     pub(super) fn discover(primary: Arc<[u8]>, index: u32) -> Option<Arc<Self>> {
         Some(Arc::new(Self {
             primary: Face::at_index(primary, index)?,
+            managed: false,
             fallbacks: OnceLock::new(),
         }))
+    }
+
+    /// The managed resource route: the validated primary plus the ordered
+    /// declared fallback candidates, and nothing else. The fallback set is
+    /// pre-sealed so the lazy accessor can never reach the shared global
+    /// OnceLock: no discovery, no installed role, no system symbols.
+    pub(super) fn owned(primary: Face, coverage: Vec<Face>) -> Arc<Self> {
+        Arc::new(Self {
+            primary,
+            managed: true,
+            fallbacks: OnceLock::from(Arc::new(Fallbacks {
+                coverage,
+                emoji: None,
+                symbols: None,
+            })),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn declared_coverage(&self) -> &[Face] {
+        self.fallbacks
+            .get()
+            .map_or(&[], |fallbacks| &fallbacks.coverage)
     }
 
     fn fallbacks(&self) -> &Fallbacks {
@@ -126,6 +188,7 @@ impl Fonts {
     pub(super) fn without_fallbacks(primary: Arc<[u8]>, index: u32) -> Arc<Self> {
         Arc::new(Self {
             primary: Face::at_index(primary, index).unwrap(),
+            managed: false,
             fallbacks: OnceLock::from(Arc::new(Fallbacks::default())),
         })
     }
@@ -158,9 +221,11 @@ impl Layer {
 
 pub(super) struct ClusterImage {
     pub(super) layers: Vec<Layer>,
-    // Font selection is deterministic for the immutable font set. Keeping its
-    // identity here makes cache entries font-specific without another lookup.
-    font: Option<CacheKey>,
+    /// Identity of the declared face that supplied this image, if any.
+    /// Font selection is deterministic for the immutable font set; keeping
+    /// its identity here makes cache entries font-specific without another
+    /// lookup.
+    pub(super) font: Option<CacheKey>,
     #[cfg(test)]
     pub(super) glyphs: usize,
 }
@@ -288,7 +353,16 @@ impl UnicodeRaster {
             if !covers(font, text, script) {
                 continue;
             }
-            let mut shaper = self.shape.builder(font).script(script).size(px).build();
+            // The face's exact normalised coordinates: empty for static and
+            // discovered faces, pinned to the policy weight for owned ones.
+            let coords = &face.variations;
+            let mut shaper = self
+                .shape
+                .builder(font)
+                .script(script)
+                .size(px)
+                .normalized_coords(coords)
+                .build();
             shaper.add_str(text);
             let mut glyphs = Vec::new();
             shaper.shape_with(|cluster| glyphs.extend_from_slice(cluster.glyphs));
@@ -308,7 +382,7 @@ impl UnicodeRaster {
                 let x = pen + glyph.x;
                 let y = baseline as f32 - glyph.y;
                 pen += glyph.advance;
-                match glyph_layers(&mut self.scale, font, glyph.id, px, x, y) {
+                match glyph_layers(&mut self.scale, font, coords, glyph.id, px, x, y) {
                     Some((mut next, is_colour)) => {
                         colour |= is_colour;
                         layers.append(&mut next);
@@ -397,6 +471,7 @@ fn covers(font: FontRef<'_>, text: &str, script: Script) -> bool {
 fn glyph_layers(
     context: &mut ScaleContext,
     font: FontRef<'_>,
+    coords: &[NormalizedCoord],
     glyph: u16,
     px: f32,
     x: f32,
@@ -408,7 +483,11 @@ fn glyph_layers(
         && strike.ppem() != 0
         && png_strike(font, glyph, strike.ppem())
     {
-        let mut native = context.builder(font).size(f32::from(strike.ppem())).build();
+        let mut native = context
+            .builder(font)
+            .size(f32::from(strike.ppem()))
+            .normalized_coords(coords)
+            .build();
         if let Some(mut image) = native.scale_color_bitmap(glyph, StrikeWith::ExactSize)
             && image.content == Content::Color
             && image.placement.width > 0
@@ -433,7 +512,12 @@ fn glyph_layers(
             return Some((vec![layer], true));
         }
     }
-    let mut scaler = context.builder(font).size(px).hint(true).build();
+    let mut scaler = context
+        .builder(font)
+        .size(px)
+        .hint(true)
+        .normalized_coords(coords)
+        .build();
     // Colour outlines are handled layer-by-layer, so currentColor is an alpha
     // mask and CPAL layers are premultiplied exactly once. We never reinterpret
     // Swash's already composited Content::Color as straight PNG pixels.

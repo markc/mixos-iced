@@ -29,6 +29,8 @@ pub struct UserInterface<'a, Message, Theme, Renderer> {
     state: widget::Tree,
     overlay: Option<Overlay>,
     bounds: Size,
+    layout_sequence: u64,
+    frame_presentation: Option<crate::core::window::presentation::FrameBinding>,
 }
 
 struct Overlay {
@@ -118,6 +120,8 @@ where
             state,
             overlay: None,
             bounds,
+            layout_sequence: 1,
+            frame_presentation: None,
         }
     }
 
@@ -222,6 +226,7 @@ where
 
             let mut overlay = maybe_overlay.as_mut().unwrap();
             let mut layout = overlay.layout(renderer, bounds);
+            self.layout_sequence += 1;
             let mut event_statuses = Vec::new();
 
             for event in events {
@@ -249,6 +254,7 @@ where
                         renderer,
                         &layout::Limits::new(Size::ZERO, self.bounds),
                     );
+                    self.layout_sequence += 1;
 
                     maybe_overlay = self
                         .root
@@ -271,6 +277,7 @@ where
                     shell.revalidate_layout(|_diff| {
                         layout = overlay.layout(renderer, bounds);
                         has_layout_changed = true;
+                        self.layout_sequence += 1;
                     });
                 }
 
@@ -359,6 +366,7 @@ where
                         renderer,
                         &layout::Limits::new(Size::ZERO, self.bounds),
                     );
+                    self.layout_sequence += 1;
 
                     if let Some(mut overlay) = self
                         .root
@@ -373,6 +381,7 @@ where
                         .map(overlay::Nested::new)
                     {
                         let layout = overlay.layout(renderer, self.bounds);
+                        self.layout_sequence += 1;
                         let interaction =
                             overlay.mouse_interaction(Layout::new(&layout), cursor, renderer);
 
@@ -579,6 +588,7 @@ where
                     layout: overlay.layout(renderer, self.bounds),
                     interaction: mouse::Interaction::None,
                 });
+                self.layout_sequence += 1;
             }
 
             overlay.operate(
@@ -589,10 +599,102 @@ where
         }
     }
 
+    /// Inspects the given layout layer with a read-only [`widget::Operation`].
+    ///
+    /// This is the cached-layout counterpart of [`UserInterface::operate`]:
+    /// the base layout is always walked, while the overlay is only walked when
+    /// it has already been laid out. No overlay is laid out to answer the
+    /// query, and no state is changed. The operation's current viewport is
+    /// clipped to the client viewport first, so reported visible bounds are in
+    /// client logical coordinates.
+    ///
+    /// Returns `false` when the requested layer is unavailable: the overlay
+    /// does not exist or has not been laid out yet. The caller reports
+    /// `NOT_READY`.
+    #[cfg(feature = "selector")]
+    pub fn inspect(
+        &mut self,
+        renderer: &Renderer,
+        layer: crate::widget::selector::Layer,
+        operation: &mut dyn widget::Operation,
+    ) -> bool {
+        let viewport = Rectangle::with_size(self.bounds);
+
+        match layer {
+            crate::widget::selector::Layer::Base => {
+                operation.clip(viewport);
+
+                self.root.as_widget_mut().operate(
+                    &mut self.state,
+                    Layout::new(&self.base),
+                    renderer,
+                    operation,
+                );
+
+                true
+            }
+            crate::widget::selector::Layer::Overlay => {
+                let Some(Overlay { layout, .. }) = &self.overlay else {
+                    return false;
+                };
+
+                let mut maybe_overlay = self
+                    .root
+                    .as_widget_mut()
+                    .overlay(
+                        &mut self.state,
+                        Layout::new(&self.base),
+                        renderer,
+                        &viewport,
+                        Vector::ZERO,
+                    )
+                    .map(overlay::Nested::new);
+
+                let Some(mut nested) = maybe_overlay else {
+                    return false;
+                };
+
+                operation.clip(viewport);
+                nested.operate(Layout::new(layout), renderer, operation);
+
+                true
+            }
+        }
+    }
+
+    /// The layout sequence of the current layouts: the number of layouts
+    /// completed or replaced since this interface was built. Layout evidence
+    /// only, never a presentation or settings revision counter.
+    pub fn layout_sequence(&self) -> u64 {
+        self.layout_sequence
+    }
+
+    /// The client logical size of this interface.
+    pub fn logical_size(&self) -> Size {
+        self.bounds
+    }
+
+    /// Associate evidence with this constructed view, never with its cache.
+    pub fn with_frame_presentation(
+        mut self,
+        binding: Option<crate::core::window::presentation::FrameBinding>,
+    ) -> Self {
+        self.frame_presentation = binding;
+        self
+    }
+
+    /// Identity and observer of the interface that will actually be drawn.
+    pub fn frame_presentation(&self) -> Option<&crate::core::window::presentation::FrameBinding> {
+        self.frame_presentation.as_ref()
+    }
+
     /// Relayouts and returns a new  [`UserInterface`] using the provided
     /// bounds.
     pub fn relayout(self, bounds: Size, renderer: &mut Renderer) -> Self {
-        Self::build(self.root, bounds, Cache { state: self.state }, renderer)
+        let mut interface = Self::build(self.root, bounds, Cache { state: self.state }, renderer);
+        interface.layout_sequence = self.layout_sequence + 1;
+        interface.frame_presentation = self.frame_presentation;
+        interface
     }
 
     /// Extract the [`Cache`] of the [`UserInterface`], consuming it in the

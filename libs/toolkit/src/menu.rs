@@ -14,7 +14,10 @@ mod nav;
 mod panel;
 
 pub use nav::{MenuState, NavOutcome, Navigator, PanelSpec};
-pub use panel::{MIN_PANEL_WIDTH, Panel, SEPARATOR_HEIGHT, panel_size, row_at, row_bounds};
+pub use panel::{
+    MIN_PANEL_WIDTH, Panel, SEPARATOR_HEIGHT, StyledPanel, panel_size, panel_size_text, row_at,
+    row_at_text, row_bounds, row_bounds_text,
+};
 
 use iced_core::{
     Border, Color, Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Vector, Widget,
@@ -23,8 +26,9 @@ use iced_core::{
 };
 
 use crate::theme::Catalog;
+use crate::typography::TextStyle;
 use nav::next;
-use panel::{draw_panel, panel_width, row_height};
+use panel::{draw_panel, panel_width, row_at_with, row_bounds_with, row_height};
 
 /// An action, submenu, or separator. Disabled entries cannot be selected.
 #[derive(Debug, Clone)]
@@ -175,16 +179,25 @@ pub(crate) fn resolve<Theme: Catalog>(style: Option<MenuStyle>, theme: &Theme) -
 type OnState<'a, Message> = Box<dyn Fn(MenuState) -> Message + 'a>;
 
 /// A horizontal menu bar, or a context-menu wrapper around arbitrary content.
-pub struct Menu<'a, Message, Theme, Renderer> {
+pub struct Menu<'a, Message, Theme, Renderer>
+where
+    Renderer: text::Renderer,
+{
     items: Vec<Item<Message>>,
     content: Option<Element<'a, Message, Theme, Renderer>>,
     style: Option<MenuStyle>,
+    /// Optional prepared text style; overrides the style's text size and the
+    /// renderer's default font, regardless of builder order.
+    text_style: Option<TextStyle<Renderer::Font>>,
     external: Option<OnState<'a, Message>>,
     host_state: Option<MenuState>,
     id: Option<iced_core::widget::Id>,
 }
 
-impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
+impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer>
+where
+    Renderer: text::Renderer,
+{
     /// A full-width bar whose top-level `items` are usually submenus. A
     /// top-level action publishes directly. F10 activates the bar.
     pub fn bar(items: Vec<Item<Message>>) -> Self {
@@ -192,6 +205,7 @@ impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
             items,
             content: None,
             style: None,
+            text_style: None,
             external: None,
             host_state: None,
             id: None,
@@ -208,6 +222,7 @@ impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
             items,
             content: Some(content.into()),
             style: None,
+            text_style: None,
             external: None,
             host_state: None,
             id: None,
@@ -227,9 +242,35 @@ impl<'a, Message, Theme, Renderer> Menu<'a, Message, Theme, Renderer> {
         self
     }
 
+    /// A prepared text style for labels, accelerators and submenu arrows.
+    /// It overrides the style's `text_size` and the renderer's default font
+    /// no matter the builder order, and rows are never shorter than its
+    /// line box.
+    pub fn text_style(mut self, text: TextStyle<Renderer::Font>) -> Self {
+        self.text_style = Some(text);
+        self
+    }
+
     /// The metrics layout uses: the explicit style, else the defaults.
     fn metrics(&self) -> MenuStyle {
         self.style.unwrap_or_default()
+    }
+
+    /// The text layout, drawing and anchors use: the supplied style, else
+    /// the menu style's text size with the renderer's default font.
+    fn text(&self, renderer: &Renderer, style: MenuStyle) -> TextStyle<Renderer::Font> {
+        resolve_text(renderer, style, self.text_style)
+    }
+
+    /// Height of the bar: the style's row height, grown to the content
+    /// height (the text size and the requested line height, whichever is
+    /// larger) of a supplied text style.
+    fn bar_height(&self) -> f32 {
+        self.text_style.map_or(self.metrics().row_height, |text| {
+            self.metrics()
+                .row_height
+                .max(text.size.max(text.line_box()))
+        })
     }
 
     /// Draws no popup. Every change to the open state (including its
@@ -392,14 +433,32 @@ fn modal_input(event: &Event) -> bool {
     }
 }
 
-fn text_width<Renderer: text::Renderer>(renderer: &Renderer, value: &str, style: MenuStyle) -> f32 {
+/// The text a menu or panel uses: the supplied text style when given, else
+/// the menu style's text size with the renderer's default font.
+pub(crate) fn resolve_text<Renderer: text::Renderer>(
+    renderer: &Renderer,
+    style: MenuStyle,
+    supplied: Option<TextStyle<Renderer::Font>>,
+) -> TextStyle<Renderer::Font> {
+    supplied.unwrap_or(TextStyle {
+        font: renderer.default_font(),
+        size: style.text_size,
+        line_height: None,
+    })
+}
+
+fn text_width<Renderer: text::Renderer>(
+    _renderer: &Renderer,
+    value: &str,
+    text: TextStyle<Renderer::Font>,
+) -> f32 {
     use text::Paragraph;
     Renderer::Paragraph::with_text(text::Text {
         content: value,
         bounds: Size::INFINITE,
-        size: style.text_size.into(),
-        line_height: text::LineHeight::default(),
-        font: renderer.default_font(),
+        size: text.size.into(),
+        line_height: text.line_height_or_default(),
+        font: text.font,
         align_x: text::Alignment::Left,
         align_y: iced_core::alignment::Vertical::Top,
         shaping: text::Shaping::Advanced,
@@ -415,12 +474,13 @@ fn bar_rects<Message, Renderer: text::Renderer>(
     items: &[Item<Message>],
     bounds: Rectangle,
     style: MenuStyle,
+    text: TextStyle<Renderer::Font>,
 ) -> Vec<Rectangle> {
     let mut x = bounds.x;
     items
         .iter()
         .map(|item| {
-            let width = text_width(renderer, &item.label, style) + style.padding * 2.0;
+            let width = text_width(renderer, &item.label, text) + style.padding * 2.0;
             let rect = Rectangle {
                 x,
                 y: bounds.y,
@@ -458,16 +518,16 @@ fn label<Renderer: text::Renderer>(
     value: &str,
     bounds: Rectangle,
     color: Color,
-    style: MenuStyle,
+    text: TextStyle<Renderer::Font>,
     right: bool,
 ) {
     renderer.fill_text(
         text::Text {
             content: value.to_owned(),
             bounds: bounds.size(),
-            size: style.text_size.into(),
-            line_height: text::LineHeight::default(),
-            font: renderer.default_font(),
+            size: text.size.into(),
+            line_height: text.line_height_or_default(),
+            font: text.font,
             align_x: if right {
                 text::Alignment::Right
             } else {
@@ -500,13 +560,16 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
         let Some(root) = state.nav.root else {
             return Vec::new();
         };
+        let style = self.metrics();
+        let text = self.text(renderer, style);
         let mut anchors = Vec::with_capacity(state.nav.path.len());
         anchors.push(if nav.is_bar() {
             bar_rects(
                 renderer,
                 &self.items,
                 bounds + state.translation,
-                self.metrics(),
+                style,
+                text,
             )
             .get(root)
             .copied()
@@ -516,10 +579,10 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
         });
         for level in 1..state.nav.path.len() {
             let parent = nav.panel(&state.nav, level - 1);
-            let width = panel_width(renderer, parent, self.metrics());
+            let width = panel_width(renderer, parent, style, text);
             anchors.push(
                 state.nav.path[level - 1]
-                    .and_then(|row| row_bounds(parent, row, width, self.metrics()))
+                    .and_then(|row| row_bounds_with(parent, row, width, style, self.text_style))
                     .unwrap_or_default(),
             );
         }
@@ -606,9 +669,16 @@ impl<Message: Clone, Theme, Renderer: text::Renderer> Menu<'_, Message, Theme, R
         if !self.navigator().is_bar() {
             return None;
         }
-        bar_rects(renderer, &self.items, bounds, self.metrics())
-            .iter()
-            .position(|rect| cursor.is_over(*rect))
+        let style = self.metrics();
+        bar_rects(
+            renderer,
+            &self.items,
+            bounds,
+            style,
+            self.text(renderer, style),
+        )
+        .iter()
+        .position(|rect| cursor.is_over(*rect))
     }
 
     fn finish(&self, outcome: NavOutcome<Message>, shell: &mut Shell<'_, Message>) {
@@ -634,10 +704,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, T
         self.content
             .as_ref()
             .map(|content| content.as_widget().size())
-            .unwrap_or(Size::new(
-                Length::Fill,
-                Length::Fixed(self.metrics().row_height),
-            ))
+            .unwrap_or(Size::new(Length::Fill, Length::Fixed(self.bar_height())))
     }
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -689,7 +756,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, T
         } else {
             layout::Node::new(limits.resolve(
                 Length::Fill,
-                Length::Fixed(self.metrics().row_height),
+                Length::Fixed(self.bar_height()),
                 Size::ZERO,
             ))
         }
@@ -718,11 +785,18 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, T
         }
         let state = tree.state.downcast_ref::<State>();
         let style = resolve(self.style, theme);
+        let text = resolve_text(renderer, style, self.text_style);
         quad(renderer, layout.bounds(), style.background, style);
         for (index, (item, rect)) in self
             .items
             .iter()
-            .zip(bar_rects(renderer, &self.items, layout.bounds(), style))
+            .zip(bar_rects(
+                renderer,
+                &self.items,
+                layout.bounds(),
+                style,
+                text,
+            ))
             .enumerate()
         {
             let selected = if state.nav.is_open() {
@@ -749,7 +823,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, T
                     ..rect
                 },
                 color,
-                style,
+                text,
                 false,
             );
         }
@@ -820,6 +894,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, T
                     anchor: bounds + translation,
                     translation,
                     style: self.style,
+                    text: self.text_style,
                 }));
             let node = popup.as_overlay_mut().layout(renderer, overlay_bounds);
             popup.as_overlay_mut().update(
@@ -995,6 +1070,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer> Widget<Message, T
             anchor: layout.bounds() + translation,
             translation,
             style: self.style,
+            text: self.text_style,
         }));
         let mut overlays = vec![popup];
         if !open
@@ -1024,27 +1100,47 @@ impl<'a, Message: Clone + 'a, Theme: Catalog + 'a, Renderer: text::Renderer + 'a
     }
 }
 
-struct Popup<'a, Message> {
+struct Popup<'a, Message, Renderer>
+where
+    Renderer: text::Renderer,
+{
     nav: Navigator<'a, Message>,
     state: &'a mut State,
     anchor: Rectangle,
     translation: Vector,
     style: Option<MenuStyle>,
+    text: Option<TextStyle<Renderer::Font>>,
 }
 
-impl<Message: Clone> Popup<'_, Message> {
+impl<Message: Clone, Renderer: text::Renderer> Popup<'_, Message, Renderer> {
     fn metrics(&self) -> MenuStyle {
         self.style.unwrap_or_default()
     }
 
-    fn hit(&self, layout: Layout<'_>, cursor: mouse::Cursor) -> Option<(usize, Option<usize>)> {
+    /// The text layout and drawing use: the supplied style, else the menu
+    /// style's text size with the renderer's default font.
+    fn text(&self, renderer: &Renderer) -> TextStyle<Renderer::Font> {
+        resolve_text(renderer, self.metrics(), self.text)
+    }
+
+    fn hit(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+    ) -> Option<(usize, Option<usize>)> {
         let panels: Vec<_> = layout.children().collect();
         for (depth, panel) in panels.iter().enumerate().rev() {
             if let Some(position) = cursor.position_over(panel.bounds()) {
                 let items = self.nav.panel(&self.state.nav, depth);
                 return Some((
                     depth,
-                    row_at(items, position.y - panel.bounds().y, self.metrics()),
+                    row_at_with(
+                        items,
+                        position.y - panel.bounds().y,
+                        self.metrics(),
+                        self.text,
+                    ),
                 ));
             }
         }
@@ -1053,16 +1149,18 @@ impl<Message: Clone> Popup<'_, Message> {
 }
 
 impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
-    overlay::Overlay<Message, Theme, Renderer> for Popup<'_, Message>
+    overlay::Overlay<Message, Theme, Renderer> for Popup<'_, Message, Renderer>
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
         self.state.overlay_bounds = Some(bounds);
         let Some(root) = self.state.nav.root else {
             return layout::Node::new(bounds);
         };
+        let style = self.metrics();
+        let text = self.text(renderer);
         let mut panels = Vec::new();
         let mut position = if self.nav.is_bar() {
-            bar_rects(renderer, self.nav.items, self.anchor, self.metrics())
+            bar_rects(renderer, self.nav.items, self.anchor, style, text)
                 .get(root)
                 .map(|rect| Point::new(rect.x, rect.y + rect.height))
                 .unwrap_or(self.anchor.position())
@@ -1071,10 +1169,10 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
         };
         for depth in 0..self.state.nav.path.len() {
             let items = self.nav.panel(&self.state.nav, depth);
-            let width = panel_width(renderer, items, self.metrics()).min(bounds.width);
+            let width = panel_width(renderer, items, style, text).min(bounds.width);
             let height = items
                 .iter()
-                .map(|item| row_height(item, self.metrics()))
+                .map(|item| row_height(item, style, self.text))
                 .sum::<f32>();
             if position.x + width > bounds.width && depth > 0 {
                 let previous: &layout::Node = &panels[depth - 1];
@@ -1087,7 +1185,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
             let offset = items
                 .iter()
                 .take(selected)
-                .map(|item| row_height(item, self.metrics()))
+                .map(|item| row_height(item, style, self.text))
                 .sum::<f32>();
             position = Point::new(position.x + width, position.y + offset);
         }
@@ -1115,6 +1213,7 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
                 self.nav.panel(&self.state.nav, depth),
                 self.state.nav.path[depth],
                 style,
+                self.text,
             );
         }
     }
@@ -1159,13 +1258,14 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
         );
         let (hit, title) = if pointer {
             let title = if nav.is_bar() {
-                bar_rects(renderer, nav.items, self.anchor, self.metrics())
+                let style = self.metrics();
+                bar_rects(renderer, nav.items, self.anchor, style, self.text(renderer))
                     .iter()
                     .position(|rect| cursor.is_over(*rect))
             } else {
                 None
             };
-            (self.hit(layout, cursor), title)
+            (self.hit(layout, cursor, renderer), title)
         } else {
             (None, None)
         };
@@ -1212,15 +1312,17 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
         &self,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _renderer: &Renderer,
+        renderer: &Renderer,
     ) -> mouse::Interaction {
         if !self.state.nav.is_open() {
             return mouse::Interaction::None;
         }
-        let selectable = self.hit(layout, cursor).is_some_and(|(depth, row)| {
-            row.and_then(|row| self.nav.panel(&self.state.nav, depth).get(row))
-                .is_some_and(Item::selectable)
-        });
+        let selectable = self
+            .hit(layout, cursor, renderer)
+            .is_some_and(|(depth, row)| {
+                row.and_then(|row| self.nav.panel(&self.state.nav, depth).get(row))
+                    .is_some_and(Item::selectable)
+            });
         if selectable {
             mouse::Interaction::Pointer
         } else {
@@ -1231,7 +1333,6 @@ impl<Message: Clone, Theme: Catalog, Renderer: text::Renderer>
 
 #[cfg(test)]
 mod tests {
-    #[cfg(debug_assertions)]
     fn update_ui<Message, Renderer: iced_core::Renderer>(
         ui: &mut iced_runtime::UserInterface<'_, Message, iced_core::Theme, Renderer>,
         events: &[Event],
@@ -1257,13 +1358,11 @@ mod tests {
     use super::*;
     use keyboard::key::Named;
 
-    #[cfg(debug_assertions)]
     #[derive(Default)]
     struct Recorder {
         quads: Vec<Rectangle>,
     }
 
-    #[cfg(debug_assertions)]
     impl renderer::Renderer for Recorder {
         fn start_layer(&mut self, _: Rectangle) {}
         fn end_layer(&mut self) {}
@@ -1284,20 +1383,19 @@ mod tests {
         }
         fn allocate_image(
             &mut self,
-            handle: &iced_core::image::Handle,
+            _: &iced_core::image::Handle,
             callback: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
             + Send
             + 'static,
         ) {
-            renderer::Renderer::allocate_image(&mut (), handle, callback);
+            callback(Err(iced_core::image::Error::Unsupported));
         }
     }
 
-    #[cfg(debug_assertions)]
     impl text::Renderer for Recorder {
         type Font = iced_core::Font;
-        type Paragraph = ();
-        type Editor = ();
+        type Paragraph = iced_graphics::text::Paragraph;
+        type Editor = iced_graphics::text::Editor;
         const ICON_FONT: iced_core::Font = iced_core::Font::DEFAULT;
         const CHECKMARK_ICON: char = 'x';
         const ARROW_DOWN_ICON: char = 'v';
@@ -1312,13 +1410,304 @@ mod tests {
         fn default_size(&self) -> iced_core::Pixels {
             iced_core::Pixels(14.0)
         }
-        fn fill_paragraph(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
-        fn fill_editor(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
+        fn fill_paragraph(&mut self, _: &Self::Paragraph, _: Point, _: Color, _: Rectangle) {}
+        fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
         fn fill_text(&mut self, _: text::Text<String>, _: Point, _: Color, _: Rectangle) {}
     }
 
+    // A text renderer whose font is not iced's `Font`: proves the generic
+    // `TextStyle<Renderer::Font>` contract end to end. The measured width of
+    // a label depends on the face, so the assertions can tell the supplied
+    // face from the renderer's default one.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    struct Face(u8);
+
+    struct FaceParagraph {
+        font: Face,
+        size: iced_core::Pixels,
+        line_height: text::LineHeight,
+        content: String,
+    }
+
+    impl Default for FaceParagraph {
+        fn default() -> Self {
+            Self {
+                font: Face(0),
+                size: iced_core::Pixels(0.0),
+                line_height: text::LineHeight::default(),
+                content: String::new(),
+            }
+        }
+    }
+
+    impl text::Paragraph for FaceParagraph {
+        type Font = Face;
+
+        fn with_text(text: text::Text<&str, Face>) -> Self {
+            Self {
+                font: text.font,
+                size: text.size,
+                line_height: text.line_height,
+                content: text.content.to_owned(),
+            }
+        }
+
+        fn with_spans<Link>(_text: text::Text<&[text::Span<'_, Link, Face>], Face>) -> Self {
+            Self::default()
+        }
+
+        fn resize(&mut self, _new_bounds: Size) {}
+
+        fn compare(&self, _text: text::Text<(), Face>) -> text::Difference {
+            text::Difference::None
+        }
+
+        fn size(&self) -> iced_core::Pixels {
+            self.size
+        }
+
+        fn hint_factor(&self) -> Option<f32> {
+            None
+        }
+
+        fn font(&self) -> Face {
+            self.font
+        }
+
+        fn line_height(&self) -> text::LineHeight {
+            self.line_height
+        }
+
+        fn align_x(&self) -> text::Alignment {
+            text::Alignment::Left
+        }
+
+        fn align_y(&self) -> iced_core::alignment::Vertical {
+            iced_core::alignment::Vertical::Top
+        }
+
+        fn wrapping(&self) -> text::Wrapping {
+            text::Wrapping::None
+        }
+
+        fn ellipsis(&self) -> text::Ellipsis {
+            text::Ellipsis::None
+        }
+
+        fn shaping(&self) -> text::Shaping {
+            text::Shaping::Advanced
+        }
+
+        fn bounds(&self) -> Size {
+            Size::INFINITE
+        }
+
+        fn min_bounds(&self) -> Size {
+            // The face changes the measured width, so the measurement and
+            // the drawing provably use the same supplied font.
+            Size::new(
+                self.content.len() as f32 * 6.0 + self.font.0 as f32 * 100.0,
+                self.size.0,
+            )
+        }
+
+        fn hit_test(&self, _point: Point) -> Option<text::Hit> {
+            None
+        }
+
+        fn hit_span(&self, _point: Point) -> Option<usize> {
+            None
+        }
+
+        fn span_bounds(&self, _index: usize) -> Vec<Rectangle> {
+            Vec::new()
+        }
+    }
+
+    // A minimal `Face` editor, so widgets that edit text (like
+    // `TextInput`) work with the non-`Font` renderer.
+    #[derive(Default)]
+    struct FaceEditor {
+        text: String,
+        font: Face,
+        size: iced_core::Pixels,
+        line_height: text::LineHeight,
+    }
+
+    impl text::Editor for FaceEditor {
+        type Font = Face;
+
+        fn with_text(text: &str) -> Self {
+            Self {
+                text: text.to_owned(),
+                ..Self::default()
+            }
+        }
+
+        fn is_empty(&self) -> bool {
+            self.text.is_empty()
+        }
+
+        fn cursor(&self) -> text::editor::Cursor {
+            text::editor::Cursor {
+                position: text::Position { line: 0, index: 0 },
+                selection: None,
+            }
+        }
+
+        fn selection(&self) -> text::editor::Selection {
+            text::editor::Selection::Caret(Point::ORIGIN)
+        }
+
+        fn copy(&self) -> Option<String> {
+            None
+        }
+
+        fn line(&self, index: usize) -> Option<text::editor::Line<'_>> {
+            (index == 0).then(|| text::editor::Line {
+                text: self.text.as_str().into(),
+                ending: text::editor::LineEnding::None,
+            })
+        }
+
+        fn line_count(&self) -> usize {
+            usize::from(!self.text.is_empty())
+        }
+
+        fn perform(&mut self, action: text::editor::Action) {
+            let text::editor::Action::Edit(text::editor::Edit::Insert(c)) = action else {
+                return;
+            };
+            self.text.push(c);
+        }
+
+        fn move_to(&mut self, _cursor: text::editor::Cursor) {}
+
+        fn bounds(&self) -> Size {
+            Size::ZERO
+        }
+
+        fn min_bounds(&self) -> Size {
+            Size::ZERO
+        }
+
+        fn hint_factor(&self) -> Option<f32> {
+            None
+        }
+
+        fn update(
+            &mut self,
+            _new_bounds: Size,
+            new_font: Self::Font,
+            new_size: iced_core::Pixels,
+            new_line_height: text::LineHeight,
+            _new_wrapping: text::Wrapping,
+            _new_alignment: text::Alignment,
+            _new_hint_factor: Option<f32>,
+            _new_highlighter: &mut impl text::highlighter::Highlighter,
+        ) {
+            self.font = new_font;
+            self.size = new_size;
+            self.line_height = new_line_height;
+        }
+
+        fn overwrite(&mut self, new_text: &str) {
+            self.text.clear();
+            self.text.push_str(new_text);
+        }
+
+        fn highlight<H: text::highlighter::Highlighter>(
+            &mut self,
+            _font: Self::Font,
+            _highlighter: &mut H,
+            _format_highlight: impl Fn(&H::Highlight) -> text::highlighter::Format<Self::Font>,
+        ) {
+        }
+
+        fn font(&self) -> Self::Font {
+            self.font
+        }
+
+        fn text_size(&self) -> iced_core::Pixels {
+            self.size
+        }
+
+        fn line_height(&self) -> text::LineHeight {
+            self.line_height
+        }
+    }
+
+    #[derive(Default)]
+    struct FaceRenderer {
+        quads: Vec<Rectangle>,
+        texts: Vec<(Face, iced_core::Pixels, text::LineHeight)>,
+        paragraphs: Vec<(Face, iced_core::Pixels, text::LineHeight)>,
+        editors: Vec<(Face, iced_core::Pixels)>,
+    }
+
+    impl renderer::Renderer for FaceRenderer {
+        fn start_layer(&mut self, _: Rectangle) {}
+        fn end_layer(&mut self) {}
+        fn start_transformation(&mut self, _: iced_core::Transformation) {}
+        fn end_transformation(&mut self) {}
+        fn hint(&mut self, _: renderer::Scale) {}
+        fn scale(&self) -> Option<renderer::Scale> {
+            None
+        }
+        fn settings(&self) -> renderer::Settings {
+            renderer::Settings::default()
+        }
+        fn fill_quad(&mut self, quad: renderer::Quad, _: impl Into<iced_core::Background>) {
+            self.quads.push(quad.bounds);
+        }
+        fn reset(&mut self, _: Rectangle) {
+            self.quads.clear();
+            self.texts.clear();
+            self.paragraphs.clear();
+            self.editors.clear();
+        }
+        fn allocate_image(
+            &mut self,
+            _: &iced_core::image::Handle,
+            callback: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
+            + Send
+            + 'static,
+        ) {
+            callback(Err(iced_core::image::Error::Unsupported));
+        }
+    }
+
+    impl text::Renderer for FaceRenderer {
+        type Font = Face;
+        type Paragraph = FaceParagraph;
+        type Editor = FaceEditor;
+        const ICON_FONT: Face = Face(0);
+        const CHECKMARK_ICON: char = 'x';
+        const ARROW_DOWN_ICON: char = 'v';
+        const SCROLL_UP_ICON: char = '^';
+        const SCROLL_DOWN_ICON: char = 'v';
+        const SCROLL_LEFT_ICON: char = '<';
+        const SCROLL_RIGHT_ICON: char = '>';
+        const ICED_LOGO: char = 'i';
+        fn default_font(&self) -> Face {
+            Face(0)
+        }
+        fn default_size(&self) -> iced_core::Pixels {
+            iced_core::Pixels(14.0)
+        }
+        fn fill_paragraph(&mut self, paragraph: &FaceParagraph, _: Point, _: Color, _: Rectangle) {
+            self.paragraphs
+                .push((paragraph.font, paragraph.size, paragraph.line_height));
+        }
+        fn fill_editor(&mut self, editor: &FaceEditor, _: Point, _: Color, _: Rectangle) {
+            self.editors.push((editor.font, editor.size));
+        }
+        fn fill_text(&mut self, text: text::Text<String, Face>, _: Point, _: Color, _: Rectangle) {
+            self.texts.push((text.font, text.size, text.line_height));
+        }
+    }
+
     #[test]
-    #[cfg(debug_assertions)]
     fn runtime_open_and_release_batch_keeps_drawn_overlay_and_close_keeps_tail() {
         let mut renderer = Recorder::default();
         let menu: Menu<'_, u8, iced_core::Theme, Recorder> =
@@ -1393,7 +1782,6 @@ mod tests {
         );
     }
 
-    #[cfg(debug_assertions)]
     fn character(value: &'static str) -> Event {
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Character(value.into()),
@@ -1409,7 +1797,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn runtime_focused_child_opens_context_and_receives_modifiers_and_ime() {
         let id = iced_core::widget::Id::new("field");
         let field = iced_widget::text_input("", "")
@@ -1499,7 +1886,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn runtime_captured_sibling_click_unfocuses_context_child() {
         let id = iced_core::widget::Id::new("field");
         let menu: Menu<'_, String, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
@@ -1555,19 +1941,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn runtime_nested_context_prefers_inner_and_touch_can_activate_it() {
         let inner = Menu::context(
             iced_widget::Space::new().width(200).height(100),
             vec![Item::action("inner", 1)],
         );
-        let outer: Menu<'_, u8, iced_core::Theme, ()> =
+        let outer: Menu<'_, u8, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
             Menu::context(inner, vec![Item::action("outer", 2)]);
         let mut ui = iced_runtime::UserInterface::build(
             outer,
             Size::new(400.0, 300.0),
             iced_runtime::user_interface::Cache::new(),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
         );
         let mut messages = vec![];
         update_ui(
@@ -1576,7 +1961,7 @@ mod tests {
                 mouse::Button::Right,
             ))],
             mouse::Cursor::Available(Point::new(20.0, 20.0)),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         update_ui(
@@ -1586,17 +1971,16 @@ mod tests {
                 position: Point::new(25.0, 25.0),
             })],
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert_eq!(messages, [1]);
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn runtime_same_batch_popup_hit_testing_uses_scrolled_window_coordinates() {
         let id = iced_core::widget::Id::new("scroll");
-        let menu: Menu<'_, u8, iced_core::Theme, ()> =
+        let menu: Menu<'_, u8, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
             Menu::bar(vec![Item::submenu("file", vec![Item::action("run", 9)])]);
         let root = iced_widget::scrollable(iced_widget::column![
             iced_widget::Space::new().height(100),
@@ -1610,10 +1994,10 @@ mod tests {
             root,
             Size::new(400.0, 300.0),
             iced_runtime::user_interface::Cache::new(),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
         );
         ui.operate(
-            &(),
+            &crate::test_renderer::LayoutRenderer::new(),
             &mut iced_core::widget::operation::scrollable::scroll_to::<()>(
                 id,
                 iced_core::widget::operation::scrollable::AbsoluteOffset {
@@ -1630,7 +2014,7 @@ mod tests {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             ],
             mouse::Cursor::Available(Point::new(10.0, 50.0)),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert_eq!(statuses.len(), 2);
@@ -1642,15 +2026,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn runtime_touch_opens_bar_and_dismisses_outside_without_hover_leak() {
-        let menu: Menu<'_, u8, iced_core::Theme, ()> =
+        let menu: Menu<'_, u8, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
             Menu::bar(vec![Item::submenu("file", items())]);
         let mut ui = iced_runtime::UserInterface::build(
             menu,
             Size::new(400.0, 300.0),
             iced_runtime::user_interface::Cache::new(),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
         );
         let mut messages = vec![];
         update_ui(
@@ -1660,14 +2043,14 @@ mod tests {
                 position: Point::new(5.0, 5.0),
             })],
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         let (state, _) = update_ui(
             &mut ui,
             &[],
             mouse::Cursor::Available(Point::new(5.0, 35.0)),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert!(
@@ -1690,7 +2073,7 @@ mod tests {
                 character("x"),
             ],
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert_eq!(
@@ -1703,21 +2086,23 @@ mod tests {
         assert!(messages.is_empty());
     }
 
-    #[cfg(debug_assertions)]
     struct Harness {
-        menu: Menu<'static, u8, iced_core::Theme, ()>,
+        menu: Menu<'static, u8, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
         tree: Tree,
         node: layout::Node,
     }
 
-    #[cfg(debug_assertions)]
     impl Harness {
-        fn new(mut menu: Menu<'static, u8, iced_core::Theme, ()>) -> Self {
-            let mut tree = Tree::new(&menu as &dyn Widget<u8, iced_core::Theme, ()>);
+        fn new(
+            mut menu: Menu<'static, u8, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+        ) -> Self {
+            let mut tree = Tree::new(
+                &menu as &dyn Widget<u8, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+            );
             menu.diff(&mut tree);
             let node = menu.layout(
                 &mut tree,
-                &(),
+                &crate::test_renderer::LayoutRenderer::new(),
                 &layout::Limits::new(Size::ZERO, Size::new(400.0, 300.0)),
             );
             Self { menu, tree, node }
@@ -1742,17 +2127,20 @@ mod tests {
                     .overlay(
                         &mut self.tree,
                         Layout::new(&self.node),
-                        &(),
+                        &crate::test_renderer::LayoutRenderer::new(),
                         &viewport,
                         Vector::ZERO,
                     )
                     .expect("menu is open");
-                let node = overlay.as_overlay_mut().layout(&(), viewport.size());
+                let node = overlay.as_overlay_mut().layout(
+                    &crate::test_renderer::LayoutRenderer::new(),
+                    viewport.size(),
+                );
                 overlay.as_overlay_mut().update(
                     &event,
                     Layout::new(&node),
                     cursor,
-                    &(),
+                    &crate::test_renderer::LayoutRenderer::new(),
                     &mut shell,
                 );
             } else {
@@ -1761,7 +2149,7 @@ mod tests {
                     &event,
                     Layout::new(&self.node),
                     cursor,
-                    &(),
+                    &crate::test_renderer::LayoutRenderer::new(),
                     &mut shell,
                     &viewport,
                 );
@@ -1772,7 +2160,6 @@ mod tests {
         }
     }
 
-    #[cfg(debug_assertions)]
     fn key_event(key: Named, modifiers: keyboard::Modifiers) -> Event {
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(key),
@@ -1788,7 +2175,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn widget_hover_redraws_only_when_highlight_changes() {
         let mut harness = Harness::new(Menu::bar(vec![Item::submenu("menu", items())]));
         let position = Point::new(5.0, 5.0);
@@ -1816,7 +2202,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn closing_clears_the_title_highlight_and_host_state_needs_external_mode() {
         let mut harness = Harness::new(Menu::bar(vec![Item::submenu("menu", items())]));
         let at = Point::new(5.0, 5.0);
@@ -1861,7 +2246,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn widget_bar_keyboard_and_overlay_pointer_emit_actions() {
         let mut harness = Harness::new(Menu::bar(vec![Item::submenu("menu", items())]));
         let (_, captured, _) = harness.event(
@@ -1886,7 +2270,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn newly_opened_menu_handles_rest_of_base_event_batch() {
         let mut harness = Harness::new(Menu::bar(vec![Item::submenu("menu", items())]));
         let cursor = mouse::Cursor::Unavailable;
@@ -1931,7 +2314,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn context_overlay_skips_disabled_and_captures_outside_dismissal() {
         let mut harness = Harness::new(Menu::context(
             iced_widget::Space::new().width(200).height(100),
@@ -1978,14 +2360,12 @@ mod tests {
         assert!(harness.tree.state.downcast_ref::<State>().nav.is_open());
     }
 
-    #[cfg(debug_assertions)]
     #[derive(Debug, Clone, PartialEq)]
     enum Host {
         State(MenuState),
         Act(u8),
     }
 
-    #[cfg(debug_assertions)]
     fn host_items() -> Vec<Item<Host>> {
         vec![
             Item::submenu(
@@ -1999,21 +2379,87 @@ mod tests {
         ]
     }
 
-    #[cfg(debug_assertions)]
     fn host_ui(
-        menu: Menu<'_, Host, iced_core::Theme, ()>,
-    ) -> iced_runtime::UserInterface<'_, Host, iced_core::Theme, ()> {
+        menu: Menu<'_, Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+    ) -> iced_runtime::UserInterface<'_, Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>
+    {
         iced_runtime::UserInterface::build(
             menu,
             Size::new(400.0, 300.0),
             iced_runtime::user_interface::Cache::new(),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
         )
     }
 
-    #[cfg(debug_assertions)]
+    fn host_ui_with_cache(
+        menu: Menu<'_, Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+        cache: iced_runtime::user_interface::Cache,
+    ) -> iced_runtime::UserInterface<'_, Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>
+    {
+        iced_runtime::UserInterface::build(
+            menu,
+            Size::new(400.0, 300.0),
+            cache,
+            &mut crate::test_renderer::LayoutRenderer::new(),
+        )
+    }
+
+    fn draw_face_menu(
+        renderer: &mut FaceRenderer,
+        menu: Menu<'_, u8, iced_core::Theme, FaceRenderer>,
+    ) {
+        let mut ui = iced_runtime::UserInterface::build(
+            menu,
+            Size::new(400.0, 300.0),
+            iced_runtime::user_interface::Cache::new(),
+            renderer,
+        );
+        let mut messages = vec![];
+        update_ui(
+            &mut ui,
+            &[key_event(Named::F10, keyboard::Modifiers::empty())],
+            mouse::Cursor::Unavailable,
+            renderer,
+            &mut messages,
+        );
+        ui.draw(
+            renderer,
+            &iced_core::Theme::Dark,
+            &renderer::Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+    }
+
+    fn open_submenu(
+        ui: &mut iced_runtime::UserInterface<
+            '_,
+            u8,
+            iced_core::Theme,
+            crate::test_renderer::LayoutRenderer,
+        >,
+        renderer: &mut crate::test_renderer::LayoutRenderer,
+        messages: &mut Vec<u8>,
+    ) {
+        update_ui(
+            ui,
+            &[
+                key_event(Named::F10, keyboard::Modifiers::empty()),
+                key_event(Named::ArrowDown, keyboard::Modifiers::empty()),
+                key_event(Named::ArrowRight, keyboard::Modifiers::empty()),
+            ],
+            mouse::Cursor::Unavailable,
+            renderer,
+            messages,
+        );
+    }
+
     fn send(
-        ui: &mut iced_runtime::UserInterface<'_, Host, iced_core::Theme, ()>,
+        ui: &mut iced_runtime::UserInterface<
+            '_,
+            Host,
+            iced_core::Theme,
+            crate::test_renderer::LayoutRenderer,
+        >,
         events: &[Event],
     ) -> (Vec<iced_core::event::Status>, Vec<Host>) {
         let mut messages = Vec::new();
@@ -2021,21 +2467,45 @@ mod tests {
             ui,
             events,
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         (statuses, messages)
     }
 
-    // With the null renderer text has no width: bar titles are 20 px
-    // (padding only) and panels take the minimum width.
-    #[cfg(debug_assertions)]
+    // Independent text-engine measurement of the fixed host labels, plus
+    // the documented 10px padding on each side. State tests keep exact
+    // anchors without assuming a zero-width null paragraph.
     fn title(index: usize) -> Rectangle {
-        Rectangle::new(Point::new(20.0 * index as f32, 0.0), Size::new(20.0, 28.0))
+        use text::Paragraph as _;
+        let widths: Vec<f32> = ["file", "go"]
+            .into_iter()
+            .map(|label| {
+                iced_graphics::text::Paragraph::with_text(text::Text {
+                    content: label,
+                    bounds: Size::INFINITE,
+                    size: 14.0.into(),
+                    line_height: text::LineHeight::Relative(1.3),
+                    font: iced_core::Font::DEFAULT,
+                    align_x: text::Alignment::Left,
+                    align_y: iced_core::alignment::Vertical::Top,
+                    shaping: text::Shaping::Advanced,
+                    wrapping: text::Wrapping::None,
+                    ellipsis: text::Ellipsis::None,
+                    hint_factor: None,
+                })
+                .min_width()
+                    + 20.0
+            })
+            .collect();
+        assert!(widths[0] > 20.0 && widths[0] < 80.0);
+        Rectangle::new(
+            Point::new(widths[..index].iter().sum(), 0.0),
+            Size::new(widths[index], 28.0),
+        )
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn external_bar_reports_state_with_anchors_and_draws_no_popup() {
         let mut ui = host_ui(Menu::bar(host_items()).external_popups(Host::State));
         let (statuses, messages) = send(
@@ -2080,15 +2550,17 @@ mod tests {
         assert_eq!(statuses[1], iced_core::event::Status::Captured);
         assert_eq!(messages, [Host::Act(2), Host::State(MenuState::default()),]);
 
-        let mut menu: Menu<'_, Host, iced_core::Theme, ()> =
+        let mut menu: Menu<'_, Host, iced_core::Theme, crate::test_renderer::LayoutRenderer> =
             Menu::bar(host_items()).external_popups(Host::State);
-        let mut tree = Tree::new(&menu as &dyn Widget<Host, iced_core::Theme, ()>);
+        let mut tree = Tree::new(
+            &menu as &dyn Widget<Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+        );
         let node = layout::Node::new(Size::new(400.0, 28.0));
         assert!(
             menu.overlay(
                 &mut tree,
                 Layout::new(&node),
-                &(),
+                &crate::test_renderer::LayoutRenderer::new(),
                 &Rectangle::with_size(Size::new(400.0, 300.0)),
                 Vector::ZERO,
             )
@@ -2097,7 +2569,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     fn external_bar_follows_host_state_and_fills_its_anchors() {
         let host = MenuState {
             root: Some(0),
@@ -2151,20 +2622,18 @@ mod tests {
             &[Event::Mouse(mouse::Event::ButtonPressed(
                 mouse::Button::Left,
             ))],
-            mouse::Cursor::Available(Point::new(25.0, 5.0)),
-            &mut (),
+            mouse::Cursor::Available(Point::new(title(1).x + 5.0, 5.0)),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert_eq!(messages, [Host::Act(9)]);
     }
 
-    // iced_core implements `Renderer` for `()` only with debug assertions,
-    // like the other UserInterface tests here: run without --release.
+    // Use the real paragraph-backed layout renderer in release and debug.
     #[test]
-    #[cfg(debug_assertions)]
     fn open_operation_opens_the_named_bar_entry_by_keyboard() {
         let bar = || {
-            Menu::<'_, u8, iced_core::Theme, ()>::bar(vec![
+            Menu::<'_, u8, iced_core::Theme, crate::test_renderer::LayoutRenderer>::bar(vec![
                 Item::submenu("file", items()),
                 Item::submenu("edit", vec![Item::action("seven", 7)]),
                 Item::submenu("off", vec![Item::action("nine", 9)]).enabled(false),
@@ -2175,42 +2644,606 @@ mod tests {
             bar(),
             Size::new(400.0, 300.0),
             iced_runtime::user_interface::Cache::new(),
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
         );
         // A different id and a disabled entry are no-ops.
-        ui.operate(&(), &mut open_operation("other", 1));
-        ui.operate(&(), &mut open_operation("bar", 2));
+        ui.operate(
+            &crate::test_renderer::LayoutRenderer::new(),
+            &mut open_operation("other", 1),
+        );
+        ui.operate(
+            &crate::test_renderer::LayoutRenderer::new(),
+            &mut open_operation("bar", 2),
+        );
         let mut messages = vec![];
         update_ui(
             &mut ui,
             &[key_event(Named::Enter, keyboard::Modifiers::empty())],
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert!(messages.is_empty(), "nothing was opened");
-        ui.operate(&(), &mut open_operation("bar", 1));
+        ui.operate(
+            &crate::test_renderer::LayoutRenderer::new(),
+            &mut open_operation("bar", 1),
+        );
         update_ui(
             &mut ui,
             &[key_event(Named::Enter, keyboard::Modifiers::empty())],
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert_eq!(messages, [7], "Enter activates the first row of entry 1");
         // Rebuilt from a fresh view, the menu is closed again.
         let cache = ui.into_cache();
-        let mut ui =
-            iced_runtime::UserInterface::build(bar(), Size::new(400.0, 300.0), cache, &mut ());
+        let mut ui = iced_runtime::UserInterface::build(
+            bar(),
+            Size::new(400.0, 300.0),
+            cache,
+            &mut crate::test_renderer::LayoutRenderer::new(),
+        );
         messages.clear();
         update_ui(
             &mut ui,
             &[key_event(Named::Enter, keyboard::Modifiers::empty())],
             mouse::Cursor::Unavailable,
-            &mut (),
+            &mut crate::test_renderer::LayoutRenderer::new(),
             &mut messages,
         );
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn supplied_text_style_agrees_across_measure_draw_and_a_non_font_renderer() {
+        let mut renderer = FaceRenderer::default();
+        let text_style = TextStyle {
+            font: Face(1),
+            size: 18.0,
+            line_height: Some(40.0),
+        };
+        // Measurement uses the supplied font: the face changes the measured
+        // width of the label, so Face(1) is wider than the default Face(0).
+        assert_eq!(text_width(&renderer, "file", text_style), 124.0);
+        assert_eq!(
+            text_width(
+                &renderer,
+                "file",
+                TextStyle {
+                    font: Face(0),
+                    ..text_style
+                }
+            ),
+            24.0,
+            "the default face must measure differently"
+        );
+        let menu: Menu<'_, u8, iced_core::Theme, FaceRenderer> =
+            Menu::bar(vec![Item::submenu("file", items())]).text_style(text_style);
+        let mut ui = iced_runtime::UserInterface::build(
+            menu,
+            Size::new(400.0, 300.0),
+            iced_runtime::user_interface::Cache::new(),
+            &mut renderer,
+        );
+        let mut messages = vec![];
+        update_ui(
+            &mut ui,
+            &[key_event(Named::F10, keyboard::Modifiers::empty())],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
+        ui.draw(
+            &mut renderer,
+            &iced_core::Theme::Dark,
+            &renderer::Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        // Every drawn label uses the supplied font, size and line height,
+        // not the defaults.
+        assert!(!renderer.texts.is_empty());
+        assert!(
+            renderer.texts.iter().all(|(font, size, line_height)| {
+                *font == Face(1)
+                    && size.0 == 18.0
+                    && *line_height == text::LineHeight::Absolute(iced_core::Pixels(40.0))
+            }),
+            "drawing must use the supplied text style"
+        );
+        // The open bar entry measured with Face(1) is 144px wide ("file" is
+        // 4 * 6 + 100) plus padding, and 40px tall: the bar grew to the line
+        // box.
+        assert!(
+            renderer
+                .quads
+                .iter()
+                .any(|rect| *rect == Rectangle::new(Point::ORIGIN, Size::new(144.0, 40.0))),
+            "the open bar entry must be measured with the supplied font: {:#?}",
+            renderer.quads
+        );
+        // The panel starts below the 40px bar and its four rows take the
+        // line box: 40 + 8 (separator) + 40 + 40.
+        assert!(
+            renderer
+                .quads
+                .iter()
+                .any(|rect| rect.y == 40.0 && rect.height == 128.0),
+            "the open panel must lay out with line-box row heights: {:#?}",
+            renderer.quads
+        );
+    }
+
+    #[test]
+    fn external_bar_anchors_use_the_supplied_text_line_box() {
+        let mut ui = host_ui(
+            Menu::bar(host_items())
+                .external_popups(Host::State)
+                .text_style(TextStyle {
+                    font: iced_core::Font::DEFAULT,
+                    size: 14.0,
+                    line_height: Some(40.0),
+                }),
+        );
+        let (statuses, messages) = send(
+            &mut ui,
+            &[key_event(Named::F10, keyboard::Modifiers::empty())],
+        );
+        assert_eq!(statuses, [iced_core::event::Status::Captured]);
+        // The bar row grew to the line box while preserving measured width.
+        assert_eq!(
+            messages,
+            [Host::State(MenuState {
+                root: Some(0),
+                path: vec![Some(0)],
+                anchors: vec![Rectangle {
+                    height: 40.0,
+                    ..title(0)
+                }],
+            })]
+        );
+        // ArrowDown selects the submenu, ArrowRight opens it; the submenu
+        // panel anchors below the 40px parent row.
+        let (_, messages) = send(
+            &mut ui,
+            &[
+                key_event(Named::ArrowDown, keyboard::Modifiers::empty()),
+                key_event(Named::ArrowRight, keyboard::Modifiers::empty()),
+            ],
+        );
+        assert_eq!(
+            messages.last(),
+            Some(&Host::State(MenuState {
+                root: Some(0),
+                path: vec![Some(1), Some(0)],
+                anchors: vec![
+                    Rectangle {
+                        height: 40.0,
+                        ..title(0)
+                    },
+                    Rectangle::new(Point::new(0.0, 40.0), Size::new(MIN_PANEL_WIDTH, 40.0)),
+                ],
+            }))
+        );
+    }
+
+    #[test]
+    fn text_style_overrides_the_menu_style_in_either_builder_order() {
+        let text = TextStyle {
+            font: Face(1),
+            size: 18.0,
+            line_height: Some(40.0),
+        };
+        let style = MenuStyle {
+            text_size: 50.0,
+            row_height: 20.0,
+            ..MenuStyle::default()
+        };
+        for menu in [
+            Menu::bar(vec![Item::submenu("file", items())])
+                .style(style)
+                .text_style(text),
+            Menu::bar(vec![Item::submenu("file", items())])
+                .text_style(text)
+                .style(style),
+        ] {
+            let mut renderer = FaceRenderer::default();
+            draw_face_menu(&mut renderer, menu);
+            assert!(
+                renderer.texts.iter().all(|(font, size, line_height)| {
+                    *font == Face(1)
+                        && size.0 == 18.0
+                        && *line_height == text::LineHeight::Absolute(iced_core::Pixels(40.0))
+                }),
+                "the prepared text style must win over the menu style"
+            );
+            // Rows grew to the 40px content height, not the style's 20px
+            // rows nor its 50px text size.
+            assert!(
+                renderer
+                    .quads
+                    .iter()
+                    .any(|rect| rect.y == 40.0 && rect.height == 128.0),
+                "the open panel must use the prepared content height"
+            );
+        }
+    }
+
+    #[test]
+    fn rows_never_clip_text_taller_than_the_requested_line_height() {
+        let mut renderer = FaceRenderer::default();
+        // The requested line height (10) is smaller than the text size (40):
+        // rows still allocate the full text size, and the renderer still
+        // receives the requested line height.
+        let menu: Menu<'_, u8, iced_core::Theme, FaceRenderer> =
+            Menu::bar(vec![Item::submenu("file", items())]).text_style(TextStyle {
+                font: Face(1),
+                size: 40.0,
+                line_height: Some(10.0),
+            });
+        draw_face_menu(&mut renderer, menu);
+        assert!(
+            renderer.texts.iter().all(|(font, size, line_height)| {
+                *font == Face(1)
+                    && size.0 == 40.0
+                    && *line_height == text::LineHeight::Absolute(iced_core::Pixels(10.0))
+            }),
+            "the renderer keeps the requested line height"
+        );
+        // The bar entry is 40px tall (the text size), never clipped to 10.
+        assert!(
+            renderer
+                .quads
+                .iter()
+                .any(|rect| *rect == Rectangle::new(Point::ORIGIN, Size::new(144.0, 40.0))),
+            "rows must allocate the full text size: {:#?}",
+            renderer.quads
+        );
+        // Panel rows are 40 too: 40 + 8 (separator) + 40 + 40.
+        assert!(
+            renderer
+                .quads
+                .iter()
+                .any(|rect| rect.y == 40.0 && rect.height == 128.0),
+            "the open panel must not clip rows to the requested line height"
+        );
+    }
+
+    #[test]
+    fn a_prepared_style_without_a_line_height_grows_rows_to_the_default_factor() {
+        let style = MenuStyle {
+            row_height: 20.0,
+            ..MenuStyle::default()
+        };
+        // Legacy: the bar keeps the style's own 20px row height, drawn with
+        // the renderer's default face.
+        let mut renderer = FaceRenderer::default();
+        draw_face_menu(
+            &mut renderer,
+            Menu::bar(vec![Item::submenu("file", items())]).style(style),
+        );
+        assert!(
+            renderer
+                .quads
+                .iter()
+                .any(|rect| *rect == Rectangle::new(Point::ORIGIN, Size::new(44.0, 20.0))),
+            "the legacy bar keeps the style's own row height: {:#?}",
+            renderer.quads
+        );
+        // Prepared without a line height: rows grow to the 1.3 default
+        // factor of the 20px text size (26), and the drawn text keeps the
+        // default relative line height.
+        let mut renderer = FaceRenderer::default();
+        draw_face_menu(
+            &mut renderer,
+            Menu::bar(vec![Item::submenu("file", items())])
+                .style(style)
+                .text_style(TextStyle {
+                    font: Face(1),
+                    size: 20.0,
+                    line_height: None,
+                }),
+        );
+        assert!(
+            renderer
+                .quads
+                .iter()
+                .any(|rect| *rect == Rectangle::new(Point::ORIGIN, Size::new(144.0, 26.0))),
+            "prepared rows use the 1.3 default factor: {:#?}",
+            renderer.quads
+        );
+        assert!(
+            renderer.texts.iter().all(|(font, size, line_height)| {
+                *font == Face(1) && size.0 == 20.0 && *line_height == text::LineHeight::default()
+            }),
+            "a prepared style without a line height keeps the default relative factor"
+        );
+    }
+
+    #[test]
+    fn text_style_text_and_input_builders_accept_a_non_font_renderer() {
+        let mut renderer = FaceRenderer::default();
+        let style = TextStyle {
+            font: Face(1),
+            size: 18.0,
+            line_height: Some(40.0),
+        };
+        let root: Element<'_, u8, iced_core::Theme, FaceRenderer> =
+            iced_widget::column![style.text("hello"), style.input("placeholder", "value")].into();
+        let mut ui = iced_runtime::UserInterface::build(
+            root,
+            Size::new(400.0, 300.0),
+            iced_runtime::user_interface::Cache::new(),
+            &mut renderer,
+        );
+        ui.draw(
+            &mut renderer,
+            &iced_core::Theme::Dark,
+            &renderer::Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        // The label draws through the paragraph recorder with the supplied
+        // face, size and line height.
+        assert!(
+            renderer.paragraphs.iter().any(|(font, size, line_height)| {
+                *font == Face(1)
+                    && size.0 == 18.0
+                    && *line_height == text::LineHeight::Absolute(iced_core::Pixels(40.0))
+            }),
+            "the label must draw with the supplied text style: {:#?}",
+            renderer.paragraphs
+        );
+        // The input's editor was prepared with the same face and size.
+        assert!(
+            renderer
+                .editors
+                .iter()
+                .all(|(font, size)| *font == Face(1) && size.0 == 18.0),
+            "the input editor must use the supplied text style: {:#?}",
+            renderer.editors
+        );
+    }
+
+    #[test]
+    fn panels_work_with_a_non_font_renderer_styled_or_not() {
+        let items = items();
+        let renderer = FaceRenderer::default();
+        // The legacy panel is renderer-neutral: no font parameter.
+        let mut panel: Panel<'_, u8> = Panel::new(&items, Some(0));
+        let mut tree = Tree::new(&panel as &dyn Widget<u8, iced_core::Theme, FaceRenderer>);
+        Widget::<u8, iced_core::Theme, FaceRenderer>::diff(&mut panel, &mut tree);
+        let node = Widget::<u8, iced_core::Theme, FaceRenderer>::layout(
+            &mut panel,
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(200.0, 200.0)),
+        );
+        // Legacy geometry: every entry is a row, at the default 28px row
+        // height and the 8px separator: 28 + 8 + 28 + 28.
+        assert_eq!(node.size().height, 92.0);
+        // The styled panel takes the prepared text: rows 30/8/30/30.
+        let mut panel = Panel::new(&items, Some(0)).text_style(TextStyle {
+            font: Face(1),
+            size: 14.0,
+            line_height: Some(30.0),
+        });
+        let mut tree = Tree::new(&panel as &dyn Widget<u8, iced_core::Theme, FaceRenderer>);
+        Widget::<u8, iced_core::Theme, FaceRenderer>::diff(&mut panel, &mut tree);
+        let node = Widget::<u8, iced_core::Theme, FaceRenderer>::layout(
+            &mut panel,
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(200.0, 200.0)),
+        );
+        assert_eq!(node.size().height, 98.0);
+    }
+
+    #[test]
+    fn retained_cache_keeps_navigation_and_relays_styled_geometry() {
+        let small = TextStyle {
+            font: iced_core::Font::DEFAULT,
+            size: 14.0,
+            line_height: None,
+        };
+        let big = TextStyle {
+            font: iced_core::Font::DEFAULT,
+            size: 20.0,
+            line_height: Some(30.0),
+        };
+        let menu =
+            |text: TextStyle| Menu::bar(vec![Item::submenu("file", items())]).text_style(text);
+        // Open the bar and its submenu with the small style.
+        let mut renderer = crate::test_renderer::LayoutRenderer::new();
+        let mut ui = iced_runtime::UserInterface::build(
+            menu(small),
+            Size::new(400.0, 300.0),
+            iced_runtime::user_interface::Cache::new(),
+            &mut renderer,
+        );
+        let mut messages = vec![];
+        open_submenu(&mut ui, &mut renderer, &mut messages);
+        let cache = ui.into_cache();
+        // Rebuild with the bigger prepared style: the retained cache keeps
+        // the navigation, and the popup relays the new extents (a 30px bar
+        // and 30px rows).
+        let mut ui = iced_runtime::UserInterface::build(
+            menu(big),
+            Size::new(400.0, 300.0),
+            cache,
+            &mut renderer,
+        );
+        // iced establishes overlays during the update pass, not the build:
+        // the rebuilt interface draws them after the next frame's event
+        // batch (a redraw request in a real loop). The cache keeps the open
+        // submenu and its selection, so no state is reset here.
+        update_ui(
+            &mut ui,
+            &[Event::Window(iced_core::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
+        let mut draw = crate::test_renderer::LayoutRenderer::new();
+        ui.draw(
+            &mut draw,
+            &iced_core::Theme::Dark,
+            &renderer::Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        assert!(
+            draw.quads
+                .iter()
+                .any(|(rect, _)| rect.y == 30.0 && rect.height == 98.0),
+            "the retained submenu must relay the bigger rows: {:#?}",
+            draw.quads
+        );
+        // Clicking "two" in the open submenu uses the new boundaries.
+        messages.clear();
+        update_ui(
+            &mut ui,
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
+            mouse::Cursor::Available(Point::new(170.0, 120.0)),
+            &mut renderer,
+            &mut messages,
+        );
+        assert_eq!(messages, [2]);
+        // Reopen and rebuild with the small style again: the retained cache
+        // relays the smaller geometry and the click boundaries move back.
+        open_submenu(&mut ui, &mut renderer, &mut messages);
+        let cache = ui.into_cache();
+        let mut ui = iced_runtime::UserInterface::build(
+            menu(small),
+            Size::new(400.0, 300.0),
+            cache,
+            &mut renderer,
+        );
+        // The rebuilt interface draws the overlay after its update pass,
+        // exactly as a real frame does.
+        update_ui(
+            &mut ui,
+            &[Event::Window(iced_core::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))],
+            mouse::Cursor::Unavailable,
+            &mut renderer,
+            &mut messages,
+        );
+        let mut draw = crate::test_renderer::LayoutRenderer::new();
+        ui.draw(
+            &mut draw,
+            &iced_core::Theme::Dark,
+            &renderer::Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        assert!(
+            draw.quads
+                .iter()
+                .any(|(rect, _)| rect.y == 28.0 && rect.height == 92.0),
+            "the retained submenu must relay the smaller rows: {:#?}",
+            draw.quads
+        );
+        // A press that lands on the separator row (the small rows put it at
+        // window y 56..64) publishes nothing.
+        messages.clear();
+        update_ui(
+            &mut ui,
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
+            mouse::Cursor::Available(Point::new(10.0, 60.0)),
+            &mut renderer,
+            &mut messages,
+        );
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn external_anchors_republish_after_a_styled_rebuild_without_pointer_movement() {
+        let small = TextStyle {
+            font: iced_core::Font::DEFAULT,
+            size: 14.0,
+            line_height: None,
+        };
+        let mut ui = host_ui(
+            Menu::bar(host_items())
+                .external_popups(Host::State)
+                .text_style(small),
+        );
+        let (_, messages) = send(
+            &mut ui,
+            &[key_event(Named::F10, keyboard::Modifiers::empty())],
+        );
+        // Prepared without a line height: the default metrics keep the 28px
+        // bar (max(28, max(14, 18.2)) = 28).
+        assert_eq!(
+            messages,
+            [Host::State(MenuState {
+                root: Some(0),
+                path: vec![Some(0)],
+                anchors: vec![title(0)],
+            })]
+        );
+        let cache = ui.into_cache();
+        let big = TextStyle {
+            font: iced_core::Font::DEFAULT,
+            size: 14.0,
+            line_height: Some(40.0),
+        };
+        let mut ui = host_ui_with_cache(
+            Menu::bar(host_items())
+                .external_popups(Host::State)
+                .text_style(big),
+            cache,
+        );
+        // An ordinary redraw republishes the changed anchors, without any
+        // pointer movement.
+        let (_, messages) = send(
+            &mut ui,
+            &[Event::Window(iced_core::window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))],
+        );
+        assert_eq!(
+            messages,
+            [Host::State(MenuState {
+                root: Some(0),
+                path: vec![Some(0)],
+                anchors: vec![Rectangle {
+                    height: 40.0,
+                    ..title(0)
+                }],
+            })]
+        );
+        // The host rebuilds its popup surface with the same prepared text:
+        // the styled panel's layout matches the typed panel size exactly.
+        let host_items = host_items();
+        let panel_items = host_items[0].children();
+        let mut panel = Panel::new(panel_items, Some(0)).text_style(big);
+        let mut tree = Tree::new(
+            &panel as &dyn Widget<Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>,
+        );
+        Widget::<Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>::diff(
+            &mut panel, &mut tree,
+        );
+        let node = Widget::<Host, iced_core::Theme, crate::test_renderer::LayoutRenderer>::layout(
+            &mut panel,
+            &mut tree,
+            &crate::test_renderer::LayoutRenderer::new(),
+            &layout::Limits::new(Size::ZERO, Size::new(400.0, 300.0)),
+        );
+        assert_eq!(
+            node.size(),
+            panel_size_text(
+                &crate::test_renderer::LayoutRenderer::new(),
+                panel_items,
+                MenuStyle::default(),
+                big
+            )
+        );
     }
 
     fn items() -> Vec<Item<u8>> {

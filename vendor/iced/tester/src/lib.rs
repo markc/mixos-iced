@@ -100,6 +100,23 @@ where
             .and_then(theme::Base::seed)
             .map(|seed| Theme::custom("Tester", seed))
     }
+
+    fn frame_presentation(
+        &self,
+        tester: &Self::State,
+        window: window::Id,
+    ) -> Option<window::presentation::FrameBinding> {
+        match &tester.state {
+            State::Empty => None,
+            State::Idle { state } => self.program.frame_presentation(state, window),
+            State::Asserting { state, window, .. } => {
+                self.program.frame_presentation(state, *window)
+            }
+            State::Recording { emulator } | State::Playing { emulator, .. } => {
+                emulator.frame_presentation(&self.program)
+            }
+        }
+    }
 }
 
 /// A tester decorates a [`Program`] definition and attaches a test recorder on top.

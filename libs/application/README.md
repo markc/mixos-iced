@@ -17,6 +17,32 @@ CPU, image, GPU and raster diagnostic support are selected with the
 `runtime` namespaces expose the selected host interfaces to app adapters.
 Applications do not depend directly on the iced crates.
 
+The default-off `native-inspect` feature adds `inspect`: register alias/id/
+kind targets once, batch the returned channel task into bootstrap, and query
+the real cached layout through `Handle::query`. Queries travel as narrow
+selector-only iced query actions on the existing executor: no application
+message, no forced redraw, one query in flight, and `NotReady` — never
+manufactured layout — for a missing interface or an overlay that has not been
+laid out. Snapshots carry raw layout bounds, clipped visible bounds, the
+layer and layout-sequence evidence, and per-alias found/missing/ambiguous
+outcomes.
+
+The default-off `acceptance` feature adds `acceptance::barrier` (one
+process-wide hold, run/instance fences, one `wait_reached` waiter, an
+absolute ten-second lifetime, cancellation-safe driving on the existing Bus
+worker, release-as-cancellation on shutdown or expiry) and
+`acceptance::track`, which parses `app.acceptance.*` commands into the
+tracked reply future for the same client. Diagnostic verbs exist only when a
+fixture launch configuration registers them; default launches register none,
+and ordinary product mutation policy is unchanged.
+
+`barrier.arm` returns `run`, `instance`, `generation`, `sequence` and `token`.
+Supply that identity to `barrier.wait`, `barrier.release` and `barrier.state`;
+the generation must match the actual incoming Bus registration. An expired
+hold cancels its operation and allows a fresh arm. A reused token cannot make
+an old native request address its replacement. These are operation holds;
+their receipts do not prove frame presentation.
+
 The host does not own Bus connections, editor buffers, filesystem operations,
 PTYs or their shutdown. Applications retain those lifetimes. Portable compound
 widgets live in toolkit and receive neutral models and typed actions.

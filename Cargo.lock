@@ -185,6 +185,7 @@ dependencies = [
  "design",
  "hex",
  "iced_core",
+ "iced_tiny_skia",
  "iced_widget",
  "serde_json",
  "settings",
@@ -202,12 +203,15 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.10"
+version = "0.1.18"
 dependencies = [
  "appearance",
+ "assets",
+ "blake3",
  "bus",
  "config",
  "design",
+ "hex",
  "iced",
  "iced_program",
  "iced_runtime",
@@ -217,6 +221,8 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2 0.10.9",
+ "strict",
  "tempfile",
  "tokio",
  "toolkit",
@@ -313,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "assets"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "config",
@@ -695,15 +701,18 @@ dependencies = [
 
 [[package]]
 name = "busviewer"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "appearance",
  "application",
  "buildinfo",
  "bus",
+ "config",
  "fluent-bundle",
  "serde",
  "serde_json",
+ "settings",
+ "term-test-broker",
  "tokio",
  "toolkit",
 ]
@@ -1171,8 +1180,6 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73"
 dependencies = [
  "bitflags 2.13.1",
  "fontdb",
@@ -2930,6 +2937,7 @@ dependencies = [
  "bytes",
  "iced_core",
  "iced_futures",
+ "iced_selector",
  "thiserror 2.0.20",
 ]
 
@@ -4445,7 +4453,9 @@ dependencies = [
  "iced_futures",
  "serde_json",
  "sha2 0.10.9",
+ "softbuffer",
  "toolkit",
+ "winit 0.30.8",
 ]
 
 [[package]]
@@ -6438,7 +6448,7 @@ dependencies = [
 
 [[package]]
 name = "scene-editor"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "appearance",
  "application",
@@ -6661,7 +6671,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "blake3",
  "bus",
@@ -6678,7 +6688,7 @@ dependencies = [
 
 [[package]]
 name = "settingsd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "buildinfo",
@@ -7331,17 +7341,18 @@ dependencies = [
 
 [[package]]
 name = "term"
-version = "0.3.5"
+version = "0.3.10"
 dependencies = [
  "appearance",
  "application",
+ "assets",
  "buildinfo",
  "bus",
  "bytes",
  "config",
- "design",
  "libc",
  "serde_json",
+ "settings",
  "term-core",
  "term-test-broker",
  "tiny-skia 0.11.4",
@@ -7767,8 +7778,10 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toolkit"
-version = "0.2.5"
+version = "0.2.9"
 dependencies = [
+ "blake3",
+ "cosmic-text",
  "edit",
  "fluent-bundle",
  "iced",
@@ -7785,9 +7798,11 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "resvg 0.45.1",
+ "roxmltree 0.20.0",
  "serde_json",
  "tempfile",
  "tiny-skia 0.11.4",
+ "ttf-parser",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -8439,8 +8454,6 @@ dependencies = [
 [[package]]
 name = "wayland-client"
 version = "0.31.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3c36a0f861ad76d0901f2800b46321410d9f73f2ea88aac0650d86c32688073"
 dependencies = [
  "bitflags 2.13.1",
  "rustix 1.1.4",

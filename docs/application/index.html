@@ -246,6 +246,49 @@ asynchronous task worker and supplies consistent window settings. Applications
 add their own title, theme and subscriptions before running the event loop.</p>
 <p>The optional <code>test-support</code> feature exposes the pinned UI simulator through
 the host, so app tests need no direct iced-family manifest dependency.</p>
+<p>With <code>settings-native</code> or <code>acceptance</code>, <code>application::frames::Handle</code> observes the actual native
+runtime without posting a widget message or requesting a redraw. Construct one
+handle for each window incarnation and retain it. Bind its stable observer using
+<code>Session::frame_stamp()</code> alongside the immutable view; this stamp describes the
+installed content, including LastGood while a replacement is pending or failed.
+The Iced builder's <code>frame_presentation</code> getter carries that binding through
+layout and the exact buffer submission. An aborted submission cannot become
+successful evidence when its native feedback later arrives.</p>
+<p>The handle retains two copied metadata slots: latest status and latest presented
+frame. <code>snapshot()</code> is read-only. <code>wait(Expected, deadline)</code> admits one waiter and
+matches the exact window, activation epoch and applied local revision under a
+caller-owned lifecycle fence and absolute deadline. It does not retry rendering.
+Unsupported evidence is explicit; a settings ACK alone cannot satisfy the wait.
+Native hosts must call <code>set_live_generation</code> before admitting requests and <code>close</code>
+before draining shutdown work or replacing/removing a binding. Receipt history
+does not prove current registration: Bus generation and settings authority are
+separate evidence. Nested receipts describe nested presentation; they do not
+attest physical scanout.</p>
+<p>The non-default <code>acceptance</code> feature supplies a fixture-only Bus facade. A host
+must also require an explicit owned fixture launch identity; enabling the build
+feature alone does not authorise registration. All eight verbs are registered
+under the shared application contract: <code>app.acceptance.describe</code>, <code>layout</code>,
+<code>barrier.arm</code>, <code>barrier.wait</code>, <code>barrier.release</code>, <code>barrier.state</code>, <code>frame.state</code>
+and <code>frame.wait</code> (each with the <code>app.acceptance.</code> prefix). Normal launches omit
+these verbs. Every request carries <code>run</code> and <code>instance</code>; optional <code>generation</code>
+must match the incoming native connection. Unknown fields and verbs are refused.
+The owning actor retains admission until the result-bearing <code>track_result</code>
+future and final reply complete and are reaped. The compatibility <code>track</code>
+wrapper discards send errors; new hosts use the result-bearing entry point.</p>
+<p><code>acceptance::frames::Endpoint</code> shares the actual frame handle and one target
+mailbox. The UI publishes its actual window id and installed stamp after window
+creation and activation. <code>frame.state</code> returns this target separately from the
+latest status and latest presented receipt. <code>frame.wait</code> additionally requires
+numeric <code>window</code>, nonzero <code>activation_epoch</code>, <code>local_revision</code> and optional
+<code>timeout_ms</code> (default 2000, range 1–10000). It captures a native lifecycle fence
+at admission. A caller cannot supply that fence through JSON. An already
+presented exact stamp may satisfy immediately; this does not promise a fresh
+frame after the call. Discard, capacity or submission failure wait for natural
+progress, while unsupported evidence, exhausted identities, closure, wrong
+window, lifecycle loss, timeout and a second waiter fail explicitly. The final
+reply has a separate two-second deadline and remains on its receiving socket.
+Close frame, inspector and barrier owners before draining actor tasks; reserve
+control capacity so a wait cannot block its own release or shutdown.</p>
 <p>Portable controls live in <code>libs/toolkit</code>. <code>EditorPane</code> takes a bounded document
 provider and emits editing intents; Ced adapts its editor engine to that
 interface. <code>FilePane</code> takes a borrowed listing and a transfer bridge; DOpus
@@ -267,6 +310,22 @@ RPCs, deadlines and one coalesced resource job; <code>Mailbox</code> bounds pend
 events behind one wake. <code>Worker::offline</code> prepares fallback resources while the
 host's connection attempt continues. The live lifecycle/generation sample fences
 every activation, including queued completions after connection loss.</p>
+<p>Hosts with local zoom, output scale or painter coordinates use
+<code>Session::with_context</code> and <code>Worker::contextual</code>. Requirements and content
+preparation receive the same immutable context on the existing blocking lane.
+<code>Ui::set_context</code> coalesces changes; equal contexts do no work. A checked local
+revision fences old results, including failures and panics, before activation
+or acknowledgement. Context does not require cloning or serialisation.</p>
+<p>Local preparation retains the active settings snapshot and exact verified asset
+binding. A generic fallback retains its already prepared appearance rather than
+discovering a new set. Success runs the same synchronous activation hook without
+refreshing settingsd, advancing its revision or writing another cache capture.
+Failure keeps the previous presentation and exposes a separate local diagnostic
+through <code>preparation_evidence</code>. <code>retry_preparation</code> retries that context without
+retrying settings authority or cache writes. Hosts publish their latest context
+before draining queued completions in the same UI turn. Legacy unit-context
+constructors retain their two-argument callbacks; exhaustive event matches must
+also handle the new opaque <code>Event::Resource</code> variant.</p>
 <p>Ced and compd's scene-host use this path. Hosts that also activate renderer
 resources use <code>Host::complete_with</code> or <code>Session::handle_with</code>: the synchronous,
 total hook runs after successful preparation and current-stage fencing, before

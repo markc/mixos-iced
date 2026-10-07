@@ -195,7 +195,7 @@ impl State {
     fn hit(&self, position: Point, target: Option<u64>) -> Option<Hit> {
         let tree = self.shape.tree.as_ref()?;
         let scale = self.painter.scale();
-        let bounds = layout::content(self.window.width, self.window.height, scale);
+        let bounds = layout::content(self.window.width, self.window.height, self.chrome);
         let (pane, rect) = layout::panes(tree, bounds, scale)
             .into_iter()
             .find(|(id, rect)| {
@@ -212,7 +212,7 @@ impl State {
         let cell = self.painter.logical_cell();
         let relative = Point::new(position.x - rect.x, position.y - rect.y);
         let border = layout::border(scale);
-        let (col, row) = input::pointer_cell(relative, border, cell, *self.grids.get(&pane)?);
+        let (col, row) = input::pointer_cell(relative, border, cell, self.grids.get(&pane)?.grid());
         let side = if relative.x - border - f32::from(col) * cell.0 < cell.0 / 2.0 {
             SelectionSide::Left
         } else {

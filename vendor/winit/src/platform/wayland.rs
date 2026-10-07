@@ -73,6 +73,22 @@ impl<T> EventLoopBuilderExtWayland for EventLoopBuilder<T> {
 
 /// Additional methods on [`Window`] that are specific to Wayland.
 pub trait WindowExtWayland {
+    /// Request one recovery redraw after a recoverable presentation failure
+    /// following `pre_present_notify`. Retains and reuses the outstanding
+    /// pacing callback; creates no callback, commit or presentation receipt.
+    fn request_redraw_after_present_failure(&self);
+    /// Read native capacity after an existing event-loop wake. Reservation
+    /// release wakes all live Wayland loops; this does not reserve a slot.
+    fn presentation_capacity(
+        &self,
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError>;
+    /// Request feedback for the immediately following commit on this window's
+    /// real surface. Call synchronously after painting and before buffer commit.
+    /// Outstanding native objects and retained receipt copies share a bounded
+    /// budget of eight per window and 128 per process.
+    fn request_presentation_feedback(
+        &self,
+    ) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError>;
     /// Queue a native drag from a still-held press on this window. The event
     /// loop validates the token again before sending wl_data_device.start_drag.
     fn start_drag(
@@ -105,6 +121,34 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn presentation_capacity(
+        &self,
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError>
+    {
+        match &self.window {
+            crate::platform_impl::Window::Wayland(window) => window.presentation_capacity(),
+            #[cfg(x11_platform)]
+            _ => Err(crate::presentation::PresentationError::Unsupported),
+        }
+    }
+    fn request_redraw_after_present_failure(&self) {
+        match &self.window {
+            crate::platform_impl::Window::Wayland(window) => {
+                window.request_redraw_after_present_failure()
+            },
+            #[cfg(x11_platform)]
+            _ => self.request_redraw(),
+        }
+    }
+    fn request_presentation_feedback(
+        &self,
+    ) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {
+        match &self.window {
+            crate::platform_impl::Window::Wayland(window) => window.request_presentation_feedback(),
+            #[cfg(x11_platform)]
+            _ => Err(crate::presentation::PresentationError::Unsupported),
+        }
+    }
     fn start_drag(
         &self,
         gesture: crate::drag::Gesture,

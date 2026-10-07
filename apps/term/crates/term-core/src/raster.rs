@@ -8,9 +8,15 @@ mod primary_font_tests;
 #[path = "unicode_raster.rs"]
 mod unicode;
 use unicode::{Fonts, Pixels, UnicodeRaster};
+#[path = "raster_owned.rs"]
+mod owned;
+#[cfg(test)]
+#[path = "raster_owned_tests.rs"]
+mod owned_tests;
 #[cfg(test)]
 #[path = "raster_unicode_tests.rs"]
 mod unicode_tests;
+pub use owned::{OwnedFace, OwnedFontPolicy, PreparedRaster};
 use std::{collections::HashMap, path::Path, sync::Arc};
 use swash::{
     scale::{Render, ScaleContext, Source, image::Image},
@@ -402,6 +408,9 @@ pub struct Raster {
     pub scale: f32,
     px: f32,
     baseline: i32,
+    /// Effective weight this Raster renders at: the policy weight on the
+    /// owned route, the primary face's intrinsic weight on the legacy one.
+    pub weight: u16,
 }
 impl Raster {
     pub fn new(scale: f32, logical_px: f32, cursor: crate::config::Cursor) -> Result<Self, String> {
@@ -431,6 +440,20 @@ impl Raster {
         Self::from_font(primary.data, primary.index, scale, logical_px, cursor)
     }
 
+    /// The managed resource route: build a raster from an owned, validated
+    /// candidate policy — exact source bytes, face indices, ordered declared
+    /// fallback groups and the effective weight. No discovery, environment
+    /// override, installed role or system face is consulted here; missing
+    /// glyphs stay missing unless a declared candidate covers them.
+    pub fn from_owned(
+        policy: OwnedFontPolicy,
+        scale: f32,
+        logical_px: f32,
+        cursor: crate::config::Cursor,
+    ) -> Result<Self, String> {
+        PreparedRaster::prepare(policy, scale, logical_px, cursor).map(PreparedRaster::activate)
+    }
+
     /// The same font at another scale or size: no file read and no
     /// DIAGNOSTIC line. This is the runtime path — a held Ctrl+= steps the
     /// size at key-repeat rate. This preserves font identities and avoids
@@ -443,7 +466,14 @@ impl Raster {
             scale,
             logical_px,
             self.cursor,
+            self.weight,
         )
+    }
+
+    /// Capture the actual already resolved startup or managed source. Workers
+    /// may prepare local geometry from this immutable seed without rediscovery.
+    pub fn prepared_snapshot(&self) -> PreparedRaster {
+        PreparedRaster::from_raster(self)
     }
 
     fn from_font(
@@ -454,7 +484,8 @@ impl Raster {
         cursor: crate::config::Cursor,
     ) -> Result<Self, String> {
         let fonts = Fonts::discover(data.clone(), index).ok_or("Invalid primary font")?;
-        Self::from_fonts(data, fonts, scale, logical_px, cursor)
+        let weight = fonts.primary.font().attributes().weight().0;
+        Self::from_fonts(data, fonts, scale, logical_px, cursor, weight)
     }
 
     fn from_fonts(
@@ -463,25 +494,18 @@ impl Raster {
         scale: f32,
         logical_px: f32,
         cursor: crate::config::Cursor,
+        weight: u16,
     ) -> Result<Self, String> {
-        let scale = scale.clamp(0.5, 8.0);
-        // Startup resolves logical size once; scale makes it physical for HiDPI.
-        let px = logical_px * scale;
-        let font = fonts.primary.font();
-        let metrics = font.metrics(&[]).scale(px);
-        let advance = font
-            .glyph_metrics(&[])
-            .scale(px)
-            .advance_width(font.charmap().map('M'));
-        let width = advance.ceil().max(1.0) as u32;
-        let height = (metrics.ascent + metrics.descent.abs() + metrics.leading)
-            .ceil()
-            .max(1.0) as u32;
-        let baseline = metrics.ascent.ceil() as i32;
-        // Physical-pixel cells scale with the display; allow generous HiDPI room.
-        if width > 512 || height > 1024 {
-            return Err("font metrics exceed cell limits".into());
-        }
+        let (width, height, baseline, px, scale) = owned::geometry(
+            fonts.primary.font(),
+            &fonts.primary.variations,
+            if fonts.managed {
+                scale
+            } else {
+                scale.clamp(0.5, 8.0)
+            },
+            logical_px,
+        )?;
         Ok(Self {
             identity: Arc::new(()),
             cursor,
@@ -494,6 +518,7 @@ impl Raster {
             scale,
             px,
             baseline,
+            weight,
         })
     }
     /// Logical (unscaled) cell dimensions, for sizing the on-screen node.
@@ -1047,7 +1072,16 @@ impl Raster {
                         self.cache.clear();
                     }
                     let font = self.unicode.fonts.primary.font();
-                    let mut scaler = self.context.builder(font).size(self.px).hint(true).build();
+                    // The primary face's exact coordinates: empty on the
+                    // legacy route and for static owned faces, pinned to the
+                    // policy weight for an owned variable primary.
+                    let mut scaler = self
+                        .context
+                        .builder(font)
+                        .size(self.px)
+                        .hint(true)
+                        .normalized_coords(&self.unicode.fonts.primary.variations)
+                        .build();
                     let glyph = Render::new(&[Source::Outline])
                         .format(Format::Alpha)
                         .render(&mut scaler, font.charmap().map(cell.c));
@@ -1225,7 +1259,13 @@ impl Raster {
                     self.cache.clear();
                 }
                 let font = self.unicode.fonts.primary.font();
-                let mut scaler = self.context.builder(font).size(self.px).hint(true).build();
+                let mut scaler = self
+                    .context
+                    .builder(font)
+                    .size(self.px)
+                    .hint(true)
+                    .normalized_coords(&self.unicode.fonts.primary.variations)
+                    .build();
                 let glyph = Render::new(&[Source::Outline])
                     .format(Format::Alpha)
                     .render(&mut scaler, font.charmap().map(cell.c));

@@ -1,6 +1,6 @@
 [package]
 name = "term"
-version = "0.3.5"
+version = "0.3.10"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,6 +19,10 @@ mod_module_files = "deny"
 
 [features]
 default = ["tiny-skia"]
+acceptance = ["application/acceptance"]
+# The term stays on the explicit CPU renderer (application rendering
+# decision): `wgpu` is opt-in only, never enabled by dependency unification
+# with compd's GPU co-enable, so combined GPU builds keep the tiny-skia path.
 raster-probe = ["tiny-skia", "application/raster-probe"]
 wgpu = ["application/wgpu"]
 tiny-skia = ["application/native-grid", "dep:bytes", "dep:tiny-skia"]
@@ -28,19 +32,21 @@ buildinfo.workspace = true
 
 [dependencies]
 bytes = { version = "1.12", optional = true }
-application.workspace = true
+application = { workspace = true, features = ["settings-cache"] }
 term-core = { path = "crates/term-core" }
-design.workspace = true
 appearance.workspace = true
 config.workspace = true
-toolkit = { workspace = true, features = [] }
+settings = { workspace = true, features = ["native"] }
+bus = { workspace = true, features = ["native"] }
+toolkit = { workspace = true, features = ["i18n"] }
 buildinfo.workspace = true
 libc.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 tiny-skia = { version = "0.11", optional = true, default-features = false, features = ["std", "simd"] }
 
 [dev-dependencies]
+assets.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 term-test-broker = { path = "crates/term-test-broker" }
 bus = { workspace = true, features = ["native"] }

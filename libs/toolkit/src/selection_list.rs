@@ -8,13 +8,11 @@ pub mod list;
 use iced_core::layout::{Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
-use iced_core::text::paragraph::{self, Paragraph};
 use iced_core::text::Text;
-use iced_core::widget::tree::{self, Tree};
+use iced_core::text::paragraph::{self, Paragraph};
 use iced_core::widget::Operation;
-use iced_core::{
-    Border, Element, Event, Layout, Length, Padding, Rectangle, Shell, Size, Widget,
-};
+use iced_core::widget::tree::{self, Tree};
+use iced_core::{Border, Element, Event, Layout, Length, Padding, Rectangle, Shell, Size, Widget};
 use iced_widget::container::{self, Container};
 use iced_widget::scrollable::{self, Scrollable};
 use iced_widget::text::{LineHeight, Wrapping};
@@ -23,7 +21,8 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-pub use list::List;
+use crate::typography::TextStyle;
+pub use list::{List, StyledList};
 
 /// The interaction status of a [`SelectionList`] row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -105,6 +104,12 @@ where
     padding: Padding,
     /// The text size.
     text_size: f32,
+    /// The requested absolute line height of the rows, when one was set.
+    line_height: Option<f32>,
+    /// A prepared text style was supplied (via [`SelectionList::line_height`]
+    /// or [`SelectionList::text_style`]): rows are prepared even when its
+    /// line height is `None`.
+    prepared: bool,
     /// The style class.
     class: <Theme as Catalog>::Class<'a>,
     #[allow(clippy::missing_docs_in_private_items)]
@@ -115,11 +120,8 @@ impl<'a, T, L, Message, Theme, Renderer> SelectionList<'a, T, L, Message, Theme,
 where
     Message: 'a + Clone,
     Renderer: 'a + renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: 'a
-        + Catalog
-        + container::Catalog
-        + scrollable::Catalog
-        + iced_core::widget::text::Catalog,
+    Theme:
+        'a + Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog,
     T: Clone + Display + Eq + Hash,
     L: Borrow<[T]>,
     [T]: ToOwned<Owned = Vec<T>>,
@@ -137,6 +139,8 @@ where
             height: Length::Fill,
             padding: 5.0.into(),
             text_size: 12.0,
+            line_height: None,
+            prepared: false,
             phantomdata: PhantomData,
         }
     }
@@ -159,6 +163,26 @@ where
     #[must_use]
     pub fn text_size(mut self, text_size: impl Into<f32>) -> Self {
         self.text_size = text_size.into();
+        self
+    }
+
+    /// Sets the absolute line height of the rows. Rows are never shorter
+    /// than the text size, and the same prepared height drives layout, hit
+    /// testing, drawing and operations.
+    #[must_use]
+    pub fn line_height(mut self, line_height: impl Into<f32>) -> Self {
+        self.line_height = Some(line_height.into());
+        self.prepared = true;
+        self
+    }
+
+    /// Applies a prepared text style: font, size and line height together.
+    #[must_use]
+    pub fn text_style(mut self, text: TextStyle) -> Self {
+        self.font = text.font;
+        self.text_size = text.size;
+        self.line_height = text.line_height;
+        self.prepared = true;
         self
     }
 
@@ -200,9 +224,20 @@ where
         self
     }
 
-    /// Builds the internal scrollable list container from the options.
+    /// The iced line height the labels lay out with: the absolute height
+    /// when set, else the default relative factor.
+    fn text_line_height(&self) -> LineHeight {
+        match self.line_height {
+            Some(height) => LineHeight::Absolute(height.into()),
+            None => LineHeight::default(),
+        }
+    }
+
+    /// Builds the internal scrollable list container from the options,
+    /// wrapping the original [`List`] with the prepared style when one was
+    /// supplied.
     fn list_container(&self) -> Container<'_, Message, Theme, Renderer> {
-        Container::new(Scrollable::new(List {
+        let list = List {
             options: self.options.borrow(),
             font: self.font,
             text_size: self.text_size,
@@ -211,8 +246,18 @@ where
             on_selected: self.on_selected.as_ref(),
             selected: self.selected,
             phantomdata: PhantomData,
-        }))
-        .padding(1)
+        };
+        let rows: Element<'_, Message, Theme, Renderer> = if self.prepared {
+            list.text_style(TextStyle {
+                font: self.font,
+                size: self.text_size,
+                line_height: self.line_height,
+            })
+            .into()
+        } else {
+            list.into()
+        };
+        Container::new(Scrollable::new(rows)).padding(1)
     }
 }
 
@@ -224,7 +269,8 @@ where
     [T]: ToOwned<Owned = Vec<T>>,
     Message: 'static + Clone,
     Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font> + 'a,
-    Theme: Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
+    Theme:
+        Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog + 'a,
 {
     fn diff(&mut self, tree: &mut Tree) {
         tree.diff_children(&mut [&mut self.list_container() as &mut dyn Widget<_, _, _>]);
@@ -267,7 +313,7 @@ where
                     let text = Text {
                         content: s,
                         size: self.text_size.into(),
-                        line_height: LineHeight::default(),
+                        line_height: self.text_line_height(),
                         bounds: Size::INFINITE,
                         font: self.font,
                         align_x: iced_core::text::Alignment::Left,
@@ -402,7 +448,8 @@ where
     [T]: ToOwned<Owned = Vec<T>>,
     Message: 'static + Clone,
     Renderer: 'a + renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
-    Theme: 'a + Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog,
+    Theme:
+        'a + Catalog + container::Catalog + scrollable::Catalog + iced_core::widget::text::Catalog,
 {
     fn from(selection_list: SelectionList<'a, T, L, Message, Theme, Renderer>) -> Self {
         Element::new(selection_list)

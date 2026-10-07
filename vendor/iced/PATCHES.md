@@ -1,5 +1,71 @@
 # vendor/iced: local patches
 
+## Failed pre-commit presentation and capacity recovery
+
+The shared native presentation helper tracks whether the actual pre-present hook
+ran. Recoverable Lost/Outdated and ordinary Other failures request Winit's one-shot
+pacing retry only for that failed window; pre-hook failures use ordinary redraw,
+and Occluded/OutOfMemory retain their visibility/fatal policies. The original
+native callback and unsuccessful feedback tombstones remain owned until actual
+retirement. No resize, extra commit, observer message or timer supplies recovery.
+
+The actual commit ledger marks local/native capacity refusal independently of
+already-proven or successfully pending bindings. At AboutToWait, before the idle
+shortcut, one process release epoch reconciles live blocked windows against their
+own native availability. A queued retry consumes its blocked flag; losing native
+admission rearms it. An untracked successful commit is allowed to drain failed
+requests, whose eventual native Presented still cannot prove success. Actual
+Charge retirement wakes this path even when the original window's event is
+suppressed. Epoch exhaustion reconciles each existing native wake without wrapping.
+Ledger guards use this production module, including the root embedding.
+
+The non-default core fault scope also supports BeforeCommit. Tiny-skia consumes
+it after the actual pre-present callback and before buffer submission; AfterCommit
+retains its original meaning. The recovery fixture presents its baseline and
+consumes startup completion before changing to one fixed draw. It records one or
+nine real BeforeCommit faults, requiring failed native-ID retirement and a fresh
+successful proof. Failure nine still arms from the drawn binding when feedback
+capacity suppresses its candidate; the later successful untracked commit must
+drain the backlog. An additional unheld AfterCommit schedule accepts either real
+terminal outcome and independently requires successful recovery. No fixture
+redraw, resize or raw commit assists these recovery schedules. Physical draw size
+and observer owner stay fixed. Metadata/observations are bounded and the runner
+supplies finite execution/cleanup deadlines. Shared process-capacity native
+acceptance remains separate required work.
+
+## Non-default native frame ordering acceptance
+
+`native-frame-probe` forwards through core, graphics, runtime, tiny-skia,
+renderer, winit and the umbrella crate. Ordinary builds omit the scope, runtime
+gate and holder. The separate native-gallery probe enables it explicitly.
+
+The core thread-local scope is bound to one synchronous draw and cannot move
+between threads. Its default AfterCommit point is consumed only after the actual
+buffer commit succeeds. The strict ordering schedule then holds that window's
+submissions until the failed ID's real terminal passes normal ledger delivery and
+native lease retirement. Production error recovery still runs unchanged; the
+probe releases one ordinary redraw after delivery. This preserves a real
+Presented-on-failed-ID suppression proof even when faster production retries
+could legitimately supersede that commit and cause Discarded. The separate
+unheld recovery schedules establish automatic production retry behaviour.
+Failed submissions cannot reach the production observer as Presented.
+
+Each window gate can retain at most one actual successful old feedback lease.
+It releases that lease only after recording a successful replacement submission,
+using the same conversion/ledger-resolution/drop-before-observer delivery helper
+as ordinary feedback. Shared fixture control retains bounded copied metadata and
+two single-use notifications; no global native leases, observer-driven redraw,
+extra application transport or second runtime is introduced. Window retirement
+drops the holder and cancels unfinished waits. A separate close-held schedule
+checks that retirement instead of fabricating successful replacement evidence.
+The held notification waits for both the actual old successful lease and the
+failed request's actual terminal, so out-of-order native dispatch cannot close
+the window before the failed-ID terminal has been inspected.
+
+The ordering schedule does not establish automatic pre-commit recovery after
+winit has requested its pacing callback. The unheld recovery fixture above is
+the separate owning acceptance path for that behaviour.
+
 iced 0.15.0-dev from git master. The code delta is a local port of
 `iced_wgpu` to the wgpu 30 snapshot in `vendor/wgpu`, plus the manifest
 re-wiring that makes iced build against `vendor/wgpu` and `vendor/cryoglyph`,
@@ -38,7 +104,9 @@ Further out the curve climbs fast (2,176 lines at 08-29, 28,382 at 10-02).
 
 To re-check: `git diff 3de451447 <tree> -- . ':!Cargo.lock'` must list only the
 files below (plus compd's guard: `wgpu/src/compd_patch_guard.rs` and the
-`mod compd_patch_guard` line in `wgpu/src/lib.rs`).
+`mod compd_patch_guard` line in `wgpu/src/lib.rs`), plus `core/src/font.rs`
+and `graphics/src/text.rs` from the "Numeric weights and the pinned
+registration seam" section further down.
 
 ## Local delta (+152/−103 in 8 files)
 
@@ -90,6 +158,62 @@ and all seven fail on a pristine extract of upstream `3de451447` + cryoglyph
 Retire the API-port part of this delta (and the corresponding guards) when a
 re-vendor lands an upstream iced that already targets wgpu ≥ 30; keep the
 re-wiring guards for as long as the forks are vendored.
+
+## Numeric weights and the pinned registration seam
+
+`graphics/src/text.rs::Version::value()` exposes a read-only numeric revision
+for bounded registry accounting and exact registration-delta guards. The
+counter remains private; callers cannot construct or advance a Version.
+
+`core/src/font.rs` adds `Weight::Numeric(u16)` and
+`const fn value(self) -> u16`, so exact CSS weights are representable without
+bucketing. The four exhaustive `Weight` matches in this tree now convert
+through `value()`: `graphics/src/text.rs` (`to_weight`),
+`libs/toolkit/src/fonts.rs` (`registered_font`),
+`services/compd/crates/scene-host/src/appearance.rs` and
+`apps/dopus/src/app.rs`. No other exhaustive match on `Weight` exists in the
+tree (audited 2026-10-08; `apps/dopus/src/icons.rs` only constructs weights).
+
+`graphics/src/text.rs::FontSystem::register_fonts` forwards the
+cosmic-text registration transaction (see `vendor/cosmic-text/PATCHES.md`)
+and bumps `Version` exactly once when faces or policies were actually added;
+identical transactions do not bump, and the hypothetical version overflow is
+checked before the cosmic commit. `load_font` now refreshes the derived
+database indexes after a successful mutation instead of relying on the match
+cache clear alone.
+
+The fontdb 0.23 loader returns all inserted IDs (including collections), so
+`load_font` tests that this result is non-empty before refreshing indexes or
+advancing the version. Malformed input leaves the version unchanged.
+
+The guard tests live in the root-owned toolkit integration target
+(`libs/toolkit/tests/font_registration.rs`, feature
+`font-registration-guards`), which path-includes the cosmic seam sources
+(see `vendor/cosmic-text/PATCHES.md`) and ports the wrapper scenarios below
+through the public font system, registration, version and paragraph APIs.
+The exact-delta assertions use the read-only `Version::value()` accessor.
+The guard feature also forwards the cosmic `monospace_fallback` feature
+through a test-only toolkit alias, so the path-included per-script
+monospace index guards run their full assertions. The private `cfg(test)` duplicates previously carried in this file and in
+`core/src/font.rs` were removed so the patch documentation names one
+executable owner; no upstream unit test was touched. The ported scenarios
+use the packaged Noto Sans fixture for their text (an icon-only face does
+not establish Latin paragraph coverage) and assert non-empty raster ink,
+not just a returned image.
+
+Run from the repository root at the checked/updated lock SHA:
+
+```
+cargo test --locked --profile release-fast -p toolkit --features font-registration-guards,tiny-skia --test font_registration
+```
+
+| test | fails when |
+|---|---|
+| `named_and_numeric_weights_keep_their_exact_values` | a named weight loses its 100..=900 value, or a numeric weight loses its exact value (1, 350, 650, 1000) |
+| `registration_changes_version_and_noops_stay_stable` | a successful registration does not advance the version by exactly one, an identical or empty transaction advances it, or a failed registration changes the version or the live database/policy facts |
+| `one_transaction_with_many_faces_activates_once` | one transaction with several faces and policies advances the version by more than one, or the no-op that follows it advances it again |
+| `retained_paragraph_stays_pinned_across_registration_version` | a retained paragraph does not report a Shape difference through the comparison path after a version bump, its re-shape loses the original face/metrics, or it stops rasterising non-empty ink from the pinned face |
+
 
 ## Toolkit input accessors retired
 
@@ -162,6 +286,54 @@ Term adds end-to-end sparse-damage and offscreen pixel comparisons.
 The optional raster-probe counts copies; reference-raster disables the fast
 path for comparative tests. Neither feature is enabled in production.
 
+## Native layout inspection hooks
+
+Read-only layout queries, enabled by the existing `selector` features and
+not by any default:
+
+- `core/src/widget/operation.rs`: a default-no-op `Operation::clip(Rectangle)`
+  hook that clipped containers call within a traversal scope. It forwards
+  through the `Box`, `black_box`, `map`, `map-ref` and `then` adapters. Guard:
+  `clip_hook_forwards_through_every_adapter`.
+- `core/src/window/id.rs`: `Id::from_raw(u64)` / `Id::raw()` for diagnostic
+  queries that select an explicit window.
+- `selector/src/find.rs`: the `Finder` gains an initial viewport
+  (`with_viewport`), bounded traversal limits (`with_limits`), a visited
+  count, a `truncated` flag, and a `clip` intersection scoped by its
+  `traverse` save/restore so a clip cannot leak into the next subtree.
+- `selector/src/query.rs`: a bounded raw-record traversal (`query`) that
+  records alias index, candidate kind, layout bounds and clipped visible
+  bounds only — never text, editor state, unique id debug strings or
+  reconstructed rectangles. Guards: `clip_intersects_the_viewport_and_never_leaks_siblings`,
+  `nested_clips_intersect_and_restore`, `limits_truncate_the_traversal`.
+- `runtime/src/lib.rs` (feature `selector`): an `Action::Query` carrying a
+  `QueryTarget`, a `Layer`, a bounded query operation and a oneshot reply.
+- `runtime/src/widget/selector.rs`: the public `query` helper, which accepts
+  a `Selector<Output = u8>` (alias indices), never a mutating `Operation`.
+- `runtime/src/user_interface.rs`: `UserInterface::inspect` walks the real
+  base layout or the already-laid-out cached overlay (`false` = `NOT_READY`);
+  it never calls `overlay.layout` merely to answer. `UserInterface` records a
+  `layout_sequence` whenever a real layout is completed or replaced — layout
+  evidence only, never a presentation revision counter.
+- `winit/src/lib.rs` (feature `selector`): the `Action::Query` branch routes
+  to the chosen live interface without the `Action::Widget` redraw branch; no
+  update, message or redraw is produced by a query. `window::Manager::len`
+  lets `QueryTarget::Only` fail on more than one window instead of silently
+  picking the first.
+- `test/src/emulator.rs` (feature `selector`): the equivalent handling for
+  the headless test runtime.
+
+Run the guards:
+
+```
+cargo test --manifest-path vendor/iced/selector/Cargo.toml
+cargo test --manifest-path vendor/iced/core/Cargo.toml clip_hook_forwards
+```
+
+The toolkit `VirtualList` advertises its exact row drawing clip through the
+new hook (its own guard tests in `libs/toolkit`). Retire this delta when a
+re-vendor lands an upstream iced that already carries a read-only query.
+
 ## Primary selection and CPU presentation
 
 Term and Ced need primary selection independently of the regular clipboard.
@@ -196,3 +368,28 @@ starts; the real reset operation and drawn style are regression-tested.
 The Transition/Responsive relayout test also asserts that an active
 transition continues requesting frames. Run `cargo test -p ui --lib`.
 Retire this patch when upstream handles idle same-instant retries.
+# Rendered-view presentation binding
+
+The ledger also retains one latest drawn binding, including request refusal or
+deduplicated proof, so unsupported-only windows notify their owner on retirement.
+Replacing or removing a host's observer requires explicitly closing that host;
+the ledger is bounded and cannot retain an archive of forgotten observers.
+
+`Program::frame_presentation` supplies an owned immutable stamp and metadata
+observer beside construction of each view. All standard decorators, application
+and daemon builders, devtools and the tester preserve that actual state/window
+binding. UserInterface retains it during relayout, never in a reusable Cache.
+
+The Winit runtime requests native feedback synchronously after painting just
+before its renderer commits the real surface. A bounded per-window ledger
+records success or abort of each requested submission. Only terminal feedback
+for a successful matching submission reaches the captured observer; an aborted
+request cannot attest a later buffer. Deduplication includes observer identity.
+Metadata observation goes directly to the sink after native event retirement,
+without an app message, UI event, redraw or view rebuild. Ordinary rendering
+continues on unsupported backends with explicit evidence unavailability.
+
+Ledger guards cover late/superseded feedback, same-stamp replacement observers,
+aborted submissions and duplicate feedback. Actual renderer/native and complete
+application adaptation gates remain required; these unit guards are not native
+presentation acceptance.

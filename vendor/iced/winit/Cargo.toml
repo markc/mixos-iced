@@ -14,8 +14,10 @@ keywords.workspace = true
 workspace = true
 
 [features]
+native-frame-probe = ["iced_runtime/native-frame-probe"]
 default = ["x11", "wayland"]
 debug = ["iced_debug/enable"]
+selector = ["iced_runtime/selector"]
 sysinfo = ["dep:sysinfo"]
 unconditional-rendering = []
 linux-theme-detection = ["dep:mundy", "mundy/async-io", "mundy/color-scheme"]

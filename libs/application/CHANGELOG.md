@@ -1,9 +1,111 @@
 # Changelog
 
+## 0.1.18
+
+- Forward the opt-in `native-frame-probe` developer acceptance feature through
+  the shared renderer facade. Ordinary applications do not enable the probe.
+
+## 0.1.17
+
+Retire selected native outbox entries without moving surviving slots or reliable
+deliveries. Reconnect cleanup can release stale command retention before admitting
+replacement work, while preserving the position of pending settings wakes.
+Test support forwards selector support to the window handler as well as the
+test runtime, so default application tests compile without acceptance enabled.
+
+## 0.1.16
+
+Add consuming native operation factories and finite abort reports. Report
+unconfirmed cancellation separately from completed work. Share exact acceptance
+control/wait classification. Expired shutdown cannot start a queued cache write.
+
+## 0.1.15
+
+- Share bounded native task sets that retain admission credit through completed
+  but unreaped outputs. Full task sets return retained work without invoking its
+  factory; cancellation and panic remain explicitly abandoned work.
+- Share origin-owning accepted commands and retained replies with absolute send
+  deadlines, so queued delay cannot extend the reply budget or change the
+  receiving supervisor. Hosts keep their existing actors and shutdown deadlines.
+
+## 0.1.14
+
+- Share fixture frame state, exact-stamp waits, native metadata encoding and
+  one actual window target. Expose frame observation with the acceptance
+  feature independently of settings. Queries never redraw or refresh settings.
+- Register the eight exact fixture verbs. Validate run, process instance and
+  optional receiving generation for every read and mutation. Unknown prefix
+  matches remain the caller's responsibility. Existing fixture callers must
+  include their run and instance in describe and layout requests.
+- Add result-bearing tracked replies with a bounded final send. The original
+  unit-returning wrapper remains for compatibility; actors should track the
+  result and retain admission through reply completion and task reaping.
+
+## 0.1.13
+
+- Add a shared, bounded frame observation handle with a stable immutable view
+  binding, read-only snapshots and one cancellation-safe waiter. Native
+  registration changes fence waits without relabelling pixel history. Waiting
+  never requests a redraw or sends an application message.
+- Expose the installed preparation stamp while LastGood remains visible during
+  pending or failed replacement. Authority epochs and applied local revisions
+  remain separate from compositor timestamps and output sequences.
+
+## 0.1.12
+
+- Capture typed, immutable local preparation context on the existing worker
+  lane. Zoom and output-scale changes use a separate checked revision, retain
+  the active verified binding and do not refresh settingsd or rewrite its cache.
+  Failed local preparation preserves the presentation and waits for explicit
+  retry or a new context. Contextual constructors complement the existing unit
+  constructors; contexts need not implement Clone or serialisation.
+- Add opaque `Event::Resource` completions fenced before activation, faults and
+  acknowledgement. External exhaustive event matches must handle the new
+  variant. Legacy manually constructed unit completions remain accepted only
+  before the first local revision change. Superseded physical jobs retire before
+  another job starts, and their errors and panics cannot poison a requeued job.
+
+## 0.1.11
+
+- The central verified resource host takes over live worker preparation: one
+  serial blocking job reads the authored or recorded resource identity once,
+  verifies the bytes, decodes required image variants and registers exactly
+  one atomic toolkit batch. The exact binding of what was verified is
+  acknowledged with the synchronous activation fence, so the captured cache
+  save records precisely what was prepared. `Worker::with_resource_requirements`
+  adds an application's pure icon requirements; `Worker::offline_with_host`
+  and `Worker::offline_with_cache_and_host` accept an explicit host policy for
+  tests and embeddings. Fallback preparation carries its verified binding
+  through the ladder. The legacy `prepare_registered_checked` compat path
+  remains available; the worker no longer uses it.
+
 ## 0.1.10
+
+- Operation holds enforce expiry at each transition, permit rearming after
+  expiry and cancel stale waiters independently of replacement holds. Native
+  wait, release and state requests require the returned run, instance and
+  monotonic sequence; connection generation comes from the incoming Bus
+  command. Idle driving waits for notification, and permits retain their own
+  immutable deadline. Hold-identity exhaustion refuses new work.
 
 Paired cache evidence explicitly reports an unconfigured persistent root,
 separately from write faults, saved identities and usable fallback state.
+
+- Opt-in `native-inspect` adds the shared read-only layout inspector:
+  registered alias/id/kind targets, a bounded one-query-in-flight channel
+  task, and cached-layout snapshots with raw and clipped visible bounds,
+  layer and layout-sequence evidence. Queries run through a narrow
+  selector-only iced query action on the existing executor and never emit an
+  application message or request a redraw; missing interfaces and unlaid-out
+  overlays return `NotReady`.
+- Opt-in `acceptance` adds the shared process-wide native operation barrier
+  (`acceptance::barrier`): one armed hold, one `wait_reached` waiter, run and
+  instance fences, an absolute ten-second lifetime, cancellation-safe driving
+  on the existing Bus worker, and release-as-cancellation on shutdown, expiry
+  or permit drop. The `acceptance::track` facade parses `app.acceptance.*`
+  commands and returns the tracked reply future for the same client, without
+  owning it. Diagnostic verbs are registered only by an explicit fixture
+  launch configuration; default launches register none.
 
 ## 0.1.9
 

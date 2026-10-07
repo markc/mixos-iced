@@ -1,0 +1,135 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- One owned native host runner for queue and presentation ownership probes.
+fn run_probe($repo,$bin,$probe,$marker,$renderer)
+  if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
+  if not contains(["testkit-queue-retirement","native-frame-winit-probe","native-frame-iced-probe","native-frame-iced-recovery-probe","native-winit-charge-test"],$probe) then raise("ARGS","Unknown native ownership probe") end
+  $n = require("nested_host_lib.mix")
+  $h = require("settings_host_lib.mix")
+  for each $name in ["compd","noded",$probe]
+    if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
+  end
+  $owned = {run:nil,bus:nil,session:nil,probe:nil,ok:false}
+  $host_budget = if $probe == "native-frame-iced-recovery-probe" then 360 elif $probe == "native-frame-iced-probe" then 240 else 150 end
+  try
+    $owned.run = $n.new_run("/var/tmp/native-probe")
+    $root = $owned.run.path
+    $owned.bus = $n.private_bus({dir:$root,name:"native-probe",noded:$bin .. "/noded"})
+    mkdir($root .. "/cfg",{parents:true})
+    write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+    write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+    $owned.session = $n.start({bin:$bin .. "/compd",tag:"native-probe",run:$owned.run,
+      config:$root .. "/cfg/settings.json",host_renderer:$renderer,software:true,max_secs:$host_budget,width:1280,height:720,
+      env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
+    if not $n.wait_ready($owned.session,30) then raise("SETUP","Owned compositor did not register") end
+    for each $role in ["weston","compd"]
+      $extra = if $role == "weston" then {WAYLAND_DISPLAY:"wl-host"} else {} end
+      $command = if $probe == "native-winit-charge-test" then [$bin .. "/" .. $probe,"actual_charge_retires_with_undrained_and_closed_queues","--ignored","--nocapture","--test-threads=1"] else [$bin .. "/" .. $probe] end
+      $log=$root .. "/" .. $probe .. "-" .. $role .. ".log"
+      if $role == "compd" and $probe == "native-frame-winit-probe" then
+        $owned.probe=spawn($command,{env:$n.client_env($owned.session,$extra),stdout:{file:$log},stderr:"stdout",detach:true})
+        $deadline=time()+10
+        $windows=[]
+        while time() < $deadline and process_alive($owned.probe)
+          $listed=$n.call($owned.session.service,"comp.windows.list",{})
+          if $listed.rc != 0 then raise("NATIVE_PROBE","Cannot inspect owned windows") end
+          $windows=filter($listed.result.windows,fn($row) = $row.pid == $owned.probe)
+          if len($windows) == 17 then break end
+          sleep(0.02)
+        end
+        if len($windows) != 17 then raise("NATIVE_PROBE","Churn windows did not map: " .. read_file($log)) end
+        -- Hidden surfaces need not be presented. Make every churn window
+        -- visible using the compositor's existing native ABP placement verb.
+        $x=0
+        $y=0
+        for each $window in $windows
+          if contains(read_file($log),$marker) then break end
+          $placed=$n.call($owned.session.service,"comp.window.place",{id:$window.id,generation:$window.generation,
+            x:$x,y:$y,width:120,height:96})
+          if $placed.rc != 0 then
+            -- Native receipts can finish churn and retire the remaining
+            -- windows between enumeration and the next placement call.
+            if contains(read_file($log),$marker) then break end
+            raise("NATIVE_PROBE","Owned grid placement failed: " .. json_encode($placed))
+          end
+          $x=$x+150
+          if $x >= 900 then $x=0; $y=$y+130 end
+        end
+        $deadline=time()+35
+        while time() < $deadline and process_alive($owned.probe)
+          sleep(0.02)
+        end
+        if process_alive($owned.probe) then raise("NATIVE_PROBE","Owned frame probe exceeded its deadline") end
+        $output=read_file($log)
+        $owned.probe=nil
+        if not contains($output,$marker) then raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $output) end
+      else
+        $result = run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,$extra)})
+        write_file($log,$result.stdout)
+        if not $result.ok or $result.stdout_truncated or not contains($result.stdout,$marker) then
+          raise("NATIVE_PROBE",$role .. " " .. $probe .. " failed: " .. $result.stdout)
+        end
+        $output=$result.stdout
+      end
+      print($role .. " " .. trim($output))
+      if $probe == "native-frame-iced-probe" then
+        $closed=run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,merge($extra,{ICED_PROBE_CLOSE_HELD:"1"}))})
+        write_file($root .. "/" .. $probe .. "-" .. $role .. "-close-held.log",$closed.stdout)
+        if not $closed.ok or $closed.stdout_truncated or not contains($closed.stdout,"ICED_FRAME PASS failed_native_presented_suppressed=true ordered_retry_presented=true close_held_retired=true") then
+          raise("NATIVE_PROBE",$role .. " close-held schedule failed: " .. $closed.stdout)
+        end
+        print($role .. " " .. trim($closed.stdout))
+      elif $probe == "native-frame-iced-recovery-probe" then
+        $repeated=run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,merge($extra,{ICED_PROBE_FAILURES:"9"}))})
+        write_file($root .. "/" .. $probe .. "-" .. $role .. "-nine-failures.log",$repeated.stdout)
+        if not $repeated.ok or $repeated.stdout_truncated or not contains($repeated.stdout,"ICED_RECOVERY PASS before_commit=true failures=9 unchanged_view=true failed_success_suppressed=true exact_retry=true") then
+          raise("NATIVE_PROBE",$role .. " nine-failure recovery failed: " .. $repeated.stdout)
+        end
+        print($role .. " " .. trim($repeated.stdout))
+        $after=run_argv($command,{timeout:45,max_output:16000,stderr:"stdout",env:$n.client_env($owned.session,merge($extra,{ICED_PROBE_AFTER_COMMIT:"1"}))})
+        write_file($root .. "/" .. $probe .. "-" .. $role .. "-after-commit.log",$after.stdout)
+        if not $after.ok or $after.stdout_truncated or not contains($after.stdout,"ICED_RECOVERY PASS after_commit=true failures=1 unchanged_view=true failed_success_suppressed=true exact_retry=true") then
+          raise("NATIVE_PROBE",$role .. " unheld after-commit recovery failed: " .. $after.stdout)
+        end
+        print($role .. " " .. trim($after.stdout))
+      end
+    end
+    $owned.ok = true
+  finally
+    if $owned.probe != nil then
+      try
+        $h.stop($owned.probe)
+      catch $error
+        $owned.ok=false
+        print("FAIL probe teardown: " .. $error)
+      end
+    end
+    if $owned.session != nil then
+      try
+        $n.stop($owned.session)
+      catch $error
+        $owned.ok=false
+        print("FAIL host signalling: " .. $error)
+      end
+      for each $child in $owned.session.pids
+        try
+          $h.stop($child)
+        catch $error
+          $owned.ok=false
+          print("FAIL host teardown: " .. $error)
+        end
+      end
+    end
+    if $owned.bus != nil then
+      try
+        $h.stop($owned.bus.pid)
+      catch $error
+        $owned.ok=false
+        print("FAIL broker teardown: " .. $error)
+      end
+    end
+    $n.finish_run($owned.run,$owned.ok)
+  end
+  if not $owned.ok then raise("NATIVE_PROBE","Owned native probe or teardown failed") end
+  return $owned.run.path
+end

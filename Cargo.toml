@@ -151,6 +151,11 @@ calloop = { path = "vendor/calloop" }
 input = { path = "vendor/input" }
 smithay-client-toolkit = { path = "vendor/sctk" }
 dirs-sys = { path = "vendor/dirs-sys" }
+wayland-client = { path = "vendor/wayland-client" }
+# cosmic-text 0.19.0 with the pinned-shaping and atomic-registration seam;
+# see vendor/cosmic-text/PATCHES.md. Same version and dependency closure as
+# the crates.io package already in the lock, so resolution stays offline.
+cosmic-text = { path = "vendor/cosmic-text" }
 
 [patch."https://github.com/iced-rs/winit.git"]
 # Native DnD on the iced fork's existing Wayland data-device queue.

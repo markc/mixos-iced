@@ -95,6 +95,20 @@ impl Broker {
         Self::with_grant_limit(32)
     }
 
+    /// Retain the initially bound ephemeral TCP endpoint for later bounces.
+    /// The first socket remains bound throughout: no probe/drop/rebind race.
+    pub fn start_stable() -> Self {
+        let mut broker = Self::start();
+        let address = broker
+            .url
+            .strip_prefix("ws://")
+            .unwrap()
+            .strip_suffix("/ws")
+            .unwrap();
+        broker.tcp_port = Some(address.parse::<std::net::SocketAddr>().unwrap().port());
+        broker
+    }
+
     pub fn with_grant_limit(grant_limit: usize) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root =

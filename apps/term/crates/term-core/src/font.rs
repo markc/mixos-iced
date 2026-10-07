@@ -46,6 +46,19 @@ impl FontSize {
         self.configured
     }
 
+    pub fn steps(&self) -> i32 {
+        self.steps
+    }
+
+    /// Restore bounded local steps against the current themed baseline.
+    pub fn from_steps(configured: f32, steps: i32) -> Result<Self, String> {
+        let size = Self { configured, steps };
+        if !valid_font(configured) || !valid_font(size.current()) {
+            return Err("font baseline or zoom leaves the supported 6..48 range".into());
+        }
+        Ok(size)
+    }
+
     /// One step larger. False, and no change, when the next step would leave
     /// the range the config accepts — the same bounds a hand-written
     /// `font_px` is held to, so zoom cannot reach a size the file could not.

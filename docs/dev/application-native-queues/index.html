@@ -296,6 +296,11 @@ refreshed lifecycle/notice state cannot push a pending Settings wake
 indefinitely backwards.</li>
 <li>Reliable entries keep relative FIFO order; total retention is at most
 <code>reliable_capacity + SLOTS</code>.</li>
+<li><code>retain</code> retires selected payloads and releases their queue capacity without
+moving surviving slot markers or reliable entries. Record command retirement
+first, then purge stale retained deliveries before reusing admission credits
+after reconnect. Commands already handed to the bounded GUI channel need a
+separate origin check before model mutation.</li>
 <li><code>push</code> returns the input unchanged when the reliable FIFO is full;
 <code>replace</code> returns the superseded value explicitly, and invalid indices
 return the input. A returned value is not load-shedding.</li>
@@ -306,14 +311,16 @@ discards an item because the receiver is full or gone; <code>drain</code> is the
 actor's explicit retirement path.</li>
 </ul>
 <p>Flush only after the transport reports readiness, and never hold a taken
-item across an await point:</p>
+item across an await point. Drive the sender's <code>poll_ready</code> through
+<code>std::future::poll_fn</code> in the actor's select, and recover <code>try_send</code> failures
+with <code>is_full()</code>/<code>into_inner()</code>:</p>
 <pre><code class="language-ignore">ready = std::future::poll_fn(|cx| gui.poll_ready(cx)),
     if !outbox.is_empty() =&gt; {
     match ready {
         Ok(()) =&gt; match outbox.flush_with(|item| match gui.try_send(item) {
             Ok(()) =&gt; Ok(()),
-            Err(TrySendError::Full(item)) =&gt; Err(SendError::Full(item)),
-            Err(TrySendError::Closed(item)) =&gt; Err(SendError::Closed(item)),
+            Err(err) if err.is_full() =&gt; Err(SendError::Full(err.into_inner())),
+            Err(err) =&gt; Err(SendError::Closed(err.into_inner())),
         }) {
             Flush::Empty | Flush::Full =&gt; {}
             Flush::Closed =&gt; { /* owned shutdown; retire via drain */ }
@@ -399,6 +406,28 @@ expires before transport invocation, return NotSent and do not send later;
 once the transport may have sent, a timeout is outcome-unknown unless the
 owning Bus error explicitly proves otherwise, and must not be replayed.</p>
 <h2 id="shutdown">Shutdown</h2>
+<p><code>TaskSet::abort_and_report</code> freezes admission, requests cancellation and returns
+only immediately available outcomes. Its <code>unconfirmed</code> count means future
+destruction has not been observed. Dropping the set requests abort; it cannot
+stop non-yielding code or a running blocking operation. Finish credits only for
+recorded outcomes; remaining credits remain active until actually abandoned.
+Check the common deadline before submitting another reply or starting a queued
+cache save. A Bus stop signal may still be attempted at expiry, with incomplete
+close reported. Term has one two-second lane drain and a separate runtime
+teardown allowance capped at 100 ms.</p>
+<p>Native Bus actors can use <code>application::native_actor</code> with the existing
+<code>settings-native</code> or <code>acceptance</code> feature. <code>TaskSet&lt;T&gt;</code> bounds running and
+completed but unreaped tasks, returning each successful task's <code>Permit</code> in
+<code>Completed&lt;T&gt;</code> for explicit host retirement. <code>try_spawn_with</code> checks capacity
+before invoking its factory and returns the original item on Full. Abort and
+panic count unfinished permits as abandoned; the task slot remains until reaped.</p>
+<p><code>Accepted</code> retains the receiving supervisor, command and admission instant.
+<code>is_current</code> requires both supervisor identity and connected generation. <code>Reply</code>
+sends through that captured supervisor using the host-supplied absolute deadline,
+including retained queue delay. <code>submit_replies</code> restores work at its original
+outbox position when the task set is full. The concrete migration owners are
+Term and BusViewer; these shared mechanics introduce no client, receiver, runtime
+or worker loop. Product classification and shutdown ordering remain host-owned.</p>
 <ol>
 <li>Enter once and capture the host's one absolute deadline. Stop new
 ordinary admission. Keep the accepted app.quit response ahead of close.

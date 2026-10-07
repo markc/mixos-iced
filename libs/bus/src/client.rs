@@ -11,8 +11,11 @@
 //! replay-subscriptions, pump loop. Its incoming stream survives broker
 //! restarts, its outbound calls fail fast with a typed error while the
 //! broker is away, and every recorded topic subscription is replayed before
-//! it reports `Connected` again. Services that must stay registered for the
-//! life of a session use it.
+//! it reports `Connected` again. Declared initial topics
+//! ([`SupervisedConnectOptions::with_initial_topics`]) are startup
+//! requirements established — together with replay — before the first
+//! `Connected`, all under one whole-attempt deadline. Services that must
+//! stay registered for the life of a session use it.
 //!
 //! [`noded_url`] finds the broker: `MIXOS_NODED_URL`, else the node
 //! configuration file, else the loopback broker.
@@ -24,7 +27,10 @@ mod supervised;
 
 pub use crate::native_client::IncomingCommand;
 pub use connection::Connection;
-pub use error::{ClientError, RegistrationRejected, RegistrationRejectionKind, SupervisedError};
+pub use error::{
+    ClientError, RegistrationRejected, RegistrationRejectionKind, SubscriptionDeclarationError,
+    SupervisedError,
+};
 pub use locate::{DEFAULT_NODED_URL, node_config_path, noded_url, url_from_node_config};
 pub use supervised::{
     ConnState, MAX_INITIAL_ATTEMPTS, SubscriptionRegistry, SupervisedClient,

@@ -1,0 +1,36 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Owned candidate PTY mount namespace; application traffic remains ABP.
+fn check_support()
+  for each $support in ["bwrap","sudo","setpriv"]
+    if which($support) == nil then raise("TEST_SUPPORT",$support .. " required for owned PTY launch") end
+  end
+  if not is_file("/usr/bin/setpriv") then raise("TEST_SUPPORT","Missing system setpriv") end
+  for each $probe in [["sudo","-n","bwrap","--version"],["sudo","-n","kill","-0","--",to_string(pid())]]
+    if not run_argv($probe,{timeout:10}).ok then raise("TEST_SUPPORT","Non-interactive owned PTY launch/cleanup unavailable") end
+  end
+end
+fn launch_argv($bin,$client)
+  $command=["sudo","-n","bwrap","--die-with-parent","--bind","/","/","--dev","/dev","--ro-bind",$bin .. "/mix","/opt/mixos/bin/mix","--clearenv"]
+  $launch=merge($client,{PATH:env("PATH"),USER:env("USER")})
+  for each $name in keys($launch)
+    if $launch[$name] != nil then $command=concat($command,["--setenv",$name,to_string($launch[$name])]) end
+  end
+  return concat($command,["--","/usr/bin/setpriv","--reuid",to_string(uid()),"--regid",to_string(gid()),"--clear-groups","--no-new-privs",$bin .. "/term"])
+end
+fn stop_child($child)
+  for each $signal in ["TERM","KILL"]
+    if not process_alive($child.pid) then return true end
+    if $child.privileged_launcher then
+      $result=run_argv(["sudo","-n","kill","-" .. $signal,"--",to_string($child.pid)],{timeout:10})
+      if not $result.ok and process_alive($child.pid) then print("Owned launcher signal failed: " .. trim($result.stderr)) end
+    else
+      $sent=kill($child.pid,$signal == "TERM" ? 15 : 9)
+    end
+    for $attempt=1 to 20
+      if not process_alive($child.pid) then return true end
+      sleep(0.1)
+    end
+  end
+  return false
+end

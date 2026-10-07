@@ -6,10 +6,12 @@
 //! from bytes or a path. An [`IconFont`] is a glyph font with a name →
 //! codepoint table in the Material Symbols `.codepoints` format (`name hex`
 //! per line). [`install`] reads them, replaces any preloaded face of the same
-//! family, registers them and binds iced's generic sans-serif, serif and
-//! monospace families to the supplied roles. Nothing here reads a
-//! configuration, an environment variable or a fixed path: the application
-//! decides where its fonts come from.
+//! family (never one pinned by [`registry`]), registers them and binds iced's
+//! generic sans-serif, serif and monospace families to the supplied roles.
+//! Nothing here reads a configuration, an environment variable or a fixed
+//! path: the application decides where its fonts come from.
+
+pub mod registry;
 
 use std::{
     borrow::Cow,
@@ -327,10 +329,12 @@ static INSTALLING: Mutex<()> = Mutex::new(());
 
 /// Register the set and the icon font, once per process. Faces already in
 /// the font system under one of the supplied families are replaced, so the
-/// application's bytes win over a system font of the same name. The
-/// generic sans-serif, serif and monospace families are bound to the sans,
-/// serif and mono roles when supplied. Sources are read and checked before
-/// the installed-once rule applies, so a bad source is always reported.
+/// application's bytes win over a system font of the same name — except
+/// faces pinned by [`fonts::registry`], which are never removed, so a
+/// pinned selection keeps its registered bytes. The generic sans-serif,
+/// serif and monospace families are bound to the sans, serif and mono roles
+/// when supplied. Sources are read and checked before the installed-once
+/// rule applies, so a bad source is always reported.
 pub fn install(mut set: FontSet, icon: Option<IconFont>) -> Result<&'static Fonts, FontError> {
     // Read and identify every face before touching the renderer's collection.
     let mut faces: Vec<(&'static str, Cow<'static, [u8]>, String)> = Vec::new();
@@ -364,16 +368,22 @@ pub fn install(mut set: FontSet, icon: Option<IconFont>) -> Result<&'static Font
     if INSTALLED.get().is_some() {
         return Err(FontError::AlreadyInstalled);
     }
-    {
+    // The registry's pinned faces must survive a legacy install. Snapshot
+    // them while holding the registry lock and keep that lock across the
+    // font system write lock, in registry-before-font-system order: no
+    // registration can interleave between the snapshot and the removal.
+    registry::registry().with_pinned_face_ids(|pinned| {
         let mut system = font_system().write().map_err(|_| FontError::Poisoned)?;
         let conflicts: Vec<_> = system
             .raw()
             .db()
             .faces()
             .filter(|face| {
-                face.families
-                    .iter()
-                    .any(|(name, _)| families.contains(&name.to_ascii_lowercase()))
+                !pinned.contains(&face.id)
+                    && face
+                        .families
+                        .iter()
+                        .any(|(name, _)| families.contains(&name.to_ascii_lowercase()))
             })
             .map(|face| face.id)
             .collect();
@@ -404,7 +414,8 @@ pub fn install(mut set: FontSet, icon: Option<IconFont>) -> Result<&'static Font
                 Role::Display | Role::Emoji => {}
             }
         }
-    }
+        Ok(())
+    })?;
     let fonts = Fonts {
         families: roles
             .into_iter()
@@ -579,17 +590,7 @@ fn registered_font(
         .map(|(candidate, _)| candidate.clone())?;
     let has_light = family_has_light(raw, &name);
     let selected_weight = weight(effective_weight(requested_weight, has_light));
-    let database_weight = fontdb::Weight(match selected_weight {
-        font::Weight::Thin => 100,
-        font::Weight::ExtraLight => 200,
-        font::Weight::Light => 300,
-        font::Weight::Normal => 400,
-        font::Weight::Medium => 500,
-        font::Weight::Semibold => 600,
-        font::Weight::Bold => 700,
-        font::Weight::ExtraBold => 800,
-        font::Weight::Black => 900,
-    });
+    let database_weight = fontdb::Weight(selected_weight.value());
     let id = raw.db().query(&fontdb::Query {
         families: &[fontdb::Family::Name(&name)],
         weight: database_weight,
@@ -736,6 +737,8 @@ mod tests {
         assert_eq!(weight(400), font::Weight::Normal);
         assert_eq!(weight(600), font::Weight::Semibold);
         assert_eq!(weight(900), font::Weight::Black);
+        // Numeric weights keep their exact value through `value()`.
+        assert_eq!(font::Weight::Numeric(650).value(), 650);
     }
 
     #[test]

@@ -15,24 +15,32 @@
 //! - reconnect is unbounded, with exponential backoff and full jitter (base
 //!   250 ms, doubling, capped at 30 s), so a resident service waits out a
 //!   long broker outage without being restarted by its supervisor;
-//! - on every reconnect the [`SubscriptionRegistry`] is replayed in recorded
-//!   order before the client reports `Connected`: a service that looks
-//!   healthy while deaf on a topic is the failure this guards against;
+//! - declared initial topics
+//!   ([`SupervisedConnectOptions::with_initial_topics`]) are subscription
+//!   requirements of the first establishment, and ordinary
+//!   [`SubscriptionRegistry`] entries are replayed in recorded order, all
+//!   before the client reports `Connected`: a service that looks healthy
+//!   while deaf on a topic is the failure this guards against. One
+//!   whole-attempt deadline (default 60 s, configurable) bounds dial,
+//!   registration, every subscribe write and ACK wait together;
 //! - the outward incoming stream survives reconnects and only ends on a
 //!   fatal shutdown;
 //! - while disconnected every outbound call fails fast with a typed error.
 //!   There is no outbound queue.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
+use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, oneshot, watch};
 
 use super::IncomingCommand;
 use super::connection::{Connection, ConnectionOptions};
-use super::error::{ClientError, RegistrationRejected, SupervisedError};
+use super::error::{
+    ClientError, RegistrationRejected, SubscriptionDeclarationError, SupervisedError,
+};
+use crate::BusMessage;
 use crate::native_client::NativeIncomingReceiver;
 use crate::native_client::bounded::{
     BoundedIncomingEvent, BoundedIncomingReceiver, BoundedIncomingSender, bounded_incoming_channel,
@@ -45,6 +53,25 @@ pub const MAX_INITIAL_ATTEMPTS: u32 = 5;
 
 const BACKOFF_BASE_MS: u64 = 250;
 const BACKOFF_CAP_MS: u64 = 30_000;
+
+/// Default whole-attempt establishment deadline: dial, registration, the
+/// transaction-lock wait, every subscribe write and every ACK wait together.
+/// One total deadline, not one per declaration, so an unresponsive broker
+/// does not multiply its budget by the declaration count.
+const DEFAULT_ESTABLISHMENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Bound for explicit attempt cleanup: a blocked close frame must not
+/// prevent subsequent cancellation or a finite completion. The native close
+/// aborts its reader and clears parked callers before any unbounded sink
+/// I/O, so abandoning the graceful close frame here is safe.
+const ATTEMPT_CLOSE_BOUND: Duration = Duration::from_secs(1);
+
+/// Client-side configuration bounds for declared initial topics. These are
+/// documented client limits, not broker limits: raw entries and bytes are
+/// counted before deduplication so duplicates cannot bypass them.
+const MAX_INITIAL_TOPICS: usize = 64;
+const MAX_TOPIC_BYTES: usize = 1024;
+const MAX_AGGREGATE_TOPIC_BYTES: usize = 16 * 1024;
 
 /// The upper bound of the full-jitter window for `attempt` (0-based):
 /// `min(base * 2^attempt, cap)`. Monotonic non-decreasing, saturating.
@@ -89,9 +116,74 @@ pub enum ConnState {
     Disconnected = 2,
     /// Graceful shutdown requested; the supervisor will not reconnect.
     ShuttingDown = 3,
-    /// Terminal: the initial budget was exhausted, or the broker rejected the
-    /// registration and that was configured as fatal.
+    /// Terminal: the initial budget was exhausted, the broker rejected the
+    /// registration and that was configured as fatal, or a declared initial
+    /// topic was invalid or explicitly refused.
     Fatal = 4,
+}
+
+/// Validate declared initial topics: bounded, control-character free,
+/// deduplicated exact names in first-seen order. Raw entries and bytes are
+/// counted BEFORE deduplication, so duplicates cannot bypass the resource
+/// bounds. Names are never trimmed or case-folded.
+fn validate_declarations(topics: &[String]) -> Result<Vec<String>, SubscriptionDeclarationError> {
+    if topics.len() > MAX_INITIAL_TOPICS {
+        return Err(SubscriptionDeclarationError::Invalid {
+            index: None,
+            message: format!(
+                "at most {MAX_INITIAL_TOPICS} initial topics; {} supplied",
+                topics.len()
+            ),
+        });
+    }
+    let mut total_bytes = 0usize;
+    for (index, topic) in topics.iter().enumerate() {
+        if topic.is_empty() {
+            return Err(SubscriptionDeclarationError::Invalid {
+                index: Some(index),
+                message: "topic names must not be empty".to_string(),
+            });
+        }
+        if topic.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
+            return Err(SubscriptionDeclarationError::Invalid {
+                index: Some(index),
+                message: "topic names must not contain CR, LF or NUL".to_string(),
+            });
+        }
+        if topic.len() > MAX_TOPIC_BYTES {
+            return Err(SubscriptionDeclarationError::Invalid {
+                index: Some(index),
+                message: format!("a topic exceeds {MAX_TOPIC_BYTES} UTF-8 bytes"),
+            });
+        }
+        total_bytes = total_bytes.saturating_add(topic.len());
+        if total_bytes > MAX_AGGREGATE_TOPIC_BYTES {
+            return Err(SubscriptionDeclarationError::Invalid {
+                index: None,
+                message: format!(
+                    "declared topics exceed {MAX_AGGREGATE_TOPIC_BYTES} bytes in total"
+                ),
+            });
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut declared = Vec::with_capacity(topics.len());
+    for topic in topics {
+        if seen.insert(topic.as_str()) {
+            declared.push(topic.clone());
+        }
+    }
+    Ok(declared)
+}
+
+/// The broker's diagnostic for a raw reply, using the normal wire-level
+/// precedence (error header, then structured body fields, then raw body).
+fn reply_error_message(body: &str, error_header: Option<String>) -> String {
+    let mut reply = BusMessage::new().with_body(body);
+    if let Some(error) = error_header {
+        reply.set("error", &error);
+    }
+    reply.error_message()
 }
 
 /// Ordered, deduplicated set of subscribed topic names, replayed on every
@@ -162,11 +254,16 @@ impl SubscriptionRegistry {
 /// failed attempt. A service whose public name must never wait out a
 /// rejection opts into a terminal state with
 /// [`fatal_on_registration_rejection`](Self::fatal_on_registration_rejection).
+///
+/// Declared initial topics ([`with_initial_topics`](Self::with_initial_topics))
+/// are subscription requirements established before the first `Connected`.
 pub struct SupervisedConnectOptions {
     service_name: String,
     noded_url: String,
     fatal_on_registration_rejection: bool,
     connection: ConnectionOptions,
+    initial_topics: Vec<String>,
+    establishment_timeout: Option<Duration>,
 }
 
 impl SupervisedConnectOptions {
@@ -192,7 +289,37 @@ impl SupervisedConnectOptions {
         self
     }
 
-    /// Connect with these options.
+    /// Declare the initial topics this client must be subscribed to before
+    /// it reports `Connected`, in declaration order. Replaces any previous
+    /// list; the default is empty.
+    ///
+    /// Declarations are validated once, before any socket is opened: at most
+    /// 64 entries, 1024 UTF-8 bytes per topic, 16 KiB of raw topic bytes in
+    /// total, no empty names, CR, LF or NUL. Exact duplicates are one
+    /// subscription; names are never trimmed or case-folded.
+    ///
+    /// A declared topic the broker refuses (any nonzero rc, warning included)
+    /// is terminal: the client reports `Fatal` with the exact topic, rc and
+    /// diagnostic, and never retries. A successful later unsubscribe removes
+    /// it and it stays removed across reconnects.
+    pub fn with_initial_topics(mut self, topics: Vec<String>) -> Self {
+        self.initial_topics = topics;
+        self
+    }
+
+    /// Bound the WHOLE establishment attempt — dial, registration, the
+    /// transaction-lock wait, every subscribe write and every ACK wait — to
+    /// this duration. Default 60 seconds. Zero and durations that cannot
+    /// form a deadline are invalid configuration.
+    pub fn establishment_timeout(mut self, timeout: Duration) -> Self {
+        self.establishment_timeout = Some(timeout);
+        self
+    }
+
+    /// Connect with these options. Invalid declarations return a typed
+    /// [`SubscriptionDeclarationError`] immediately, before any socket work;
+    /// transient establishment failure keeps the five-attempt budget and
+    /// [`SupervisedError::InitialConnectFailed`].
     pub async fn connect(self) -> Result<SupervisedClient, SupervisedError> {
         SupervisedClient::connect_with_options(self).await
     }
@@ -200,13 +327,68 @@ impl SupervisedConnectOptions {
     /// Start without waiting for a broker. Transport failures are retried
     /// indefinitely by the same supervisor used for reconnects. The client
     /// initially reports `Connecting`, generation zero, and rejects outbound
-    /// work until registration and subscription replay have completed.
+    /// work until registration and every declared/replayed subscription have
+    /// completed.
     ///
     /// Must be called inside the Tokio runtime that will own this client.
-    /// Registration rejection follows the configured fatal policy.
+    /// Registration rejection follows the configured fatal policy. Invalid
+    /// declarations or a zero establishment timeout yield a `Fatal` client
+    /// with the diagnostic already sampleable and its incoming producer
+    /// closed, without dialing.
     pub fn start(self) -> SupervisedClient {
-        SupervisedClient::launch(self, None)
+        let service_name = self.service_name.clone();
+        let capacity = self.connection.capacity;
+        match self.prepare() {
+            Ok(prepared) => SupervisedClient::launch(prepared, None),
+            Err(error) => SupervisedClient::invalid(service_name, capacity, error),
+        }
     }
+
+    /// Validate once, before any dial or spawn work.
+    fn prepare(self) -> Result<PreparedOptions, SubscriptionDeclarationError> {
+        let SupervisedConnectOptions {
+            service_name,
+            noded_url,
+            fatal_on_registration_rejection,
+            connection,
+            initial_topics,
+            establishment_timeout,
+        } = self;
+        let declarations = validate_declarations(&initial_topics)?;
+        let establishment_timeout = establishment_timeout.unwrap_or(DEFAULT_ESTABLISHMENT_TIMEOUT);
+        if establishment_timeout.is_zero() {
+            return Err(SubscriptionDeclarationError::Invalid {
+                index: None,
+                message: "establishment timeout must be non-zero".to_string(),
+            });
+        }
+        Instant::now()
+            .checked_add(establishment_timeout)
+            .ok_or_else(|| SubscriptionDeclarationError::Invalid {
+                index: None,
+                message: "establishment timeout does not form a valid deadline".to_string(),
+            })?;
+        Ok(PreparedOptions {
+            service_name,
+            noded_url,
+            fatal_on_registration_rejection,
+            connection,
+            declarations,
+            establishment_timeout,
+        })
+    }
+}
+
+/// Validated, ready-to-launch options.
+struct PreparedOptions {
+    service_name: String,
+    noded_url: String,
+    fatal_on_registration_rejection: bool,
+    connection: ConnectionOptions,
+    /// Validated, deduplicated, first-seen-ordered declared initial topics.
+    declarations: Vec<String>,
+    /// Whole-attempt deadline, checked non-zero and deadline-formable.
+    establishment_timeout: Duration,
 }
 
 /// A [`Connection`] under a reconnect supervisor.
@@ -225,6 +407,9 @@ pub struct SupervisedClient {
     /// Serialises terminal-state checks with watch publication.
     state_publish: Arc<std::sync::Mutex<()>>,
     registration_rejection: Arc<std::sync::Mutex<Option<RegistrationRejected>>>,
+    /// The terminal declared-subscription refusal or validation failure,
+    /// published before the `Fatal` edge under the same fence.
+    declaration_error: Arc<std::sync::Mutex<Option<SubscriptionDeclarationError>>>,
     /// Count of fully established connections: zero before the first socket,
     /// one for initial success, plus one after every complete reconnect and
     /// replay, so a consumer cannot sample away a fast bounce.
@@ -248,6 +433,8 @@ impl SupervisedClient {
             noded_url: noded_url.to_string(),
             fatal_on_registration_rejection: false,
             connection: ConnectionOptions::default(),
+            initial_topics: Vec::new(),
+            establishment_timeout: None,
         }
     }
 
@@ -284,83 +471,48 @@ impl SupervisedClient {
     async fn connect_with_options(
         options: SupervisedConnectOptions,
     ) -> Result<SupervisedClient, SupervisedError> {
-        let mut last_err: Option<ClientError> = None;
-        let mut connection: Option<Connection> = None;
-        for attempt in 0..MAX_INITIAL_ATTEMPTS {
-            match Connection::connect_with_options(
-                &options.service_name,
-                &options.noded_url,
-                &options.connection,
-            )
-            .await
-            {
-                Ok(c) => {
-                    connection = Some(c);
-                    break;
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        event = "supervised_initial_attempt_failed",
-                        service = %options.service_name,
-                        attempt,
-                        error = %e,
-                        "initial broker connect attempt failed"
-                    );
-                    if options.fatal_on_registration_rejection
-                        && e.registration_rejection().is_some()
-                    {
-                        return Err(SupervisedError::InitialConnectFailed {
-                            attempts: attempt + 1,
-                            source: e,
-                        });
-                    }
-                    last_err = Some(e);
-                    // No sleep after the final attempt: fail fast.
-                    if attempt + 1 < MAX_INITIAL_ATTEMPTS {
-                        tokio::time::sleep(backoff_delay(attempt)).await;
-                    }
-                }
+        // Validate once, before any dial or spawn work: an invalid
+        // declaration or deadline is a typed error with no socket opened.
+        let prepared = options
+            .prepare()
+            .map_err(SupervisedError::SubscriptionDeclaration)?;
+        let (result_tx, result_rx) = oneshot::channel();
+        let client = Self::launch(prepared, Some(result_tx));
+        match result_rx.await {
+            Ok(Ok(())) => Ok(client),
+            Ok(Err(error)) => {
+                // Dropping the client signals shutdown to the same supervisor.
+                drop(client);
+                Err(error)
+            }
+            Err(_) => {
+                // The supervisor stopped without a result: this caller (or
+                // the incoming consumer) went away mid-establishment.
+                drop(client);
+                Err(SupervisedError::ShuttingDown)
             }
         }
-
-        let connection = match connection {
-            Some(c) => c,
-            None => {
-                return Err(SupervisedError::InitialConnectFailed {
-                    attempts: MAX_INITIAL_ATTEMPTS,
-                    source: last_err.unwrap_or(ClientError::Closed),
-                });
-            }
-        };
-
-        Ok(Self::launch(options, Some(connection)))
     }
 
-    fn launch(options: SupervisedConnectOptions, connection: Option<Connection>) -> Self {
-        let SupervisedConnectOptions {
+    fn launch(
+        prepared: PreparedOptions,
+        initial_result: Option<oneshot::Sender<Result<(), SupervisedError>>>,
+    ) -> Self {
+        let PreparedOptions {
             service_name,
             noded_url,
             fatal_on_registration_rejection,
             connection: connection_options,
-        } = options;
-        let established = connection.is_some();
-        let (state_tx, _) = watch::channel(if established {
-            ConnState::Connected
-        } else {
-            ConnState::Connecting
-        });
+            declarations,
+            establishment_timeout,
+        } = prepared;
+        let (state_tx, _) = watch::channel(ConnState::Connecting);
         let state_publish = Arc::new(std::sync::Mutex::new(()));
         let registration_rejection = Arc::new(std::sync::Mutex::new(None));
-        // The supervisor forwards from the first connection's receiver, and
-        // every later one, into the single outward channel.
-        let first_rx = connection.as_ref().map(|connection| {
-            connection
-                .take_native_incoming()
-                .expect("a fresh connection has its incoming receiver")
-        });
+        let declaration_error = Arc::new(std::sync::Mutex::new(None));
 
-        let inner = Arc::new(RwLock::new(connection.map(Arc::new)));
-        let connection_generation = Arc::new(AtomicU64::new(u64::from(established)));
+        let inner = Arc::new(RwLock::new(None));
+        let connection_generation = Arc::new(AtomicU64::new(0));
         let (out_tx, out_rx, bounded_out_rx) = match connection_options.capacity {
             Some(capacity) => {
                 let (sender, receiver) = bounded_incoming_channel(capacity);
@@ -380,6 +532,7 @@ impl SupervisedClient {
             state_tx: state_tx.clone(),
             state_publish: state_publish.clone(),
             registration_rejection: registration_rejection.clone(),
+            declaration_error: declaration_error.clone(),
             connection_generation: connection_generation.clone(),
             registry: registry.clone(),
             subscription_transaction: subscription_transaction.clone(),
@@ -389,7 +542,9 @@ impl SupervisedClient {
             noded_url,
             fatal_on_registration_rejection,
             connection_options,
-            first_rx,
+            declarations,
+            establishment_timeout,
+            initial_result,
         }));
 
         SupervisedClient {
@@ -397,6 +552,7 @@ impl SupervisedClient {
             state_tx,
             state_publish,
             registration_rejection,
+            declaration_error,
             connection_generation,
             registry,
             subscription_transaction,
@@ -404,6 +560,54 @@ impl SupervisedClient {
             bounded_incoming_rx: std::sync::Mutex::new(bounded_out_rx),
             shutdown_tx,
             supervisor: TokioMutex::new(Some(supervisor)),
+            service_name,
+        }
+    }
+
+    /// A client that failed option validation: `Fatal` from construction,
+    /// the diagnostic already sampleable, the incoming producer closed, no
+    /// socket opened.
+    fn invalid(
+        service_name: String,
+        capacity: Option<usize>,
+        error: SubscriptionDeclarationError,
+    ) -> Self {
+        let (state_tx, _) = watch::channel(ConnState::Fatal);
+        let state_publish = Arc::new(std::sync::Mutex::new(()));
+        let registration_rejection = Arc::new(std::sync::Mutex::new(None));
+        let declaration_error = Arc::new(std::sync::Mutex::new(Some(error)));
+        let inner = Arc::new(RwLock::new(None));
+        let connection_generation = Arc::new(AtomicU64::new(0));
+        let registry = SubscriptionRegistry::new();
+        let subscription_transaction = Arc::new(TokioMutex::new(()));
+        // The incoming producer is dropped immediately: a receiver taken
+        // from this client ends at once.
+        let (out_rx, bounded_out_rx) = match capacity {
+            Some(capacity) => {
+                let (sender, receiver) = bounded_incoming_channel(capacity);
+                drop(sender);
+                (None, Some(receiver))
+            }
+            None => {
+                let (sender, receiver) = mpsc::unbounded_channel();
+                drop(sender);
+                (Some(receiver), None)
+            }
+        };
+        let (shutdown_tx, _) = watch::channel(false);
+        SupervisedClient {
+            inner,
+            state_tx,
+            state_publish,
+            registration_rejection,
+            declaration_error,
+            connection_generation,
+            registry,
+            subscription_transaction,
+            incoming_rx: std::sync::Mutex::new(out_rx),
+            bounded_incoming_rx: std::sync::Mutex::new(bounded_out_rx),
+            shutdown_tx,
+            supervisor: TokioMutex::new(None),
             service_name,
         }
     }
@@ -439,6 +643,17 @@ impl SupervisedClient {
     /// ordinary dial failures never manufacture a registration refusal.
     pub fn registration_rejection(&self) -> Option<RegistrationRejected> {
         self.registration_rejection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// The terminal declared-subscription refusal or validation failure, if
+    /// one was published. Non-consuming; published before the `Fatal` edge
+    /// under the same fence, so observing `Fatal` guarantees the diagnostic
+    /// is already sampleable. `None` for every other failure mode.
+    pub fn subscription_declaration_error(&self) -> Option<SubscriptionDeclarationError> {
+        self.declaration_error
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
@@ -567,7 +782,7 @@ impl SupervisedClient {
         rc: u8,
         body: &str,
     ) -> Result<(), SupervisedError> {
-        self.reply_connection(generation)
+        self.connection_at_generation(generation)
             .await?
             .respond_parts(to, command, id, rc, body)
             .await
@@ -621,6 +836,37 @@ impl SupervisedClient {
             .map_err(SupervisedError::Transport)
     }
 
+    /// Call only on the connection identified by `generation` on this
+    /// supervisor. Capture [`Self::connection_generation`] when accepting
+    /// work that must not move to a replacement connection while queued.
+    ///
+    /// Zero or a generation replaced before acquisition returns
+    /// [`SupervisedError::Disconnected`] without sending. The generation is
+    /// checked under the same lock that publishes a replacement connection;
+    /// once acquired, that connection is retained through the call, with no
+    /// retry on a later generation. Generations are local to this supervisor,
+    /// so callers must also retain the originating client.
+    ///
+    /// Headers, body and response have the same wire representation as
+    /// [`Self::call_with_headers_raw`]. The caller owns any queue deadline.
+    pub async fn call_with_headers_raw_at_generation(
+        &self,
+        generation: u64,
+        to: &str,
+        command: &str,
+        headers: &BTreeMap<String, String>,
+        body: &str,
+    ) -> Result<(u8, String, Option<String>), SupervisedError> {
+        self.gate()?;
+        let connection = self.connection_at_generation(generation).await?;
+        // A lifecycle transition may have happened while acquisition waited.
+        self.gate()?;
+        connection
+            .call_with_headers_raw(to, command, headers, body)
+            .await
+            .map_err(SupervisedError::Transport)
+    }
+
     /// See [`Connection::respond_parts`]. Gated like every other outbound
     /// call: a reply attempted while disconnected fails fast.
     pub async fn respond_parts(
@@ -633,17 +879,20 @@ impl SupervisedClient {
         body: &str,
     ) -> Result<(), SupervisedError> {
         self.gate()?;
-        self.reply_connection(generation)
+        self.connection_at_generation(generation)
             .await?
             .respond_parts(to, command, id, rc, body)
             .await
             .map_err(SupervisedError::Transport)
     }
 
-    async fn reply_connection(&self, generation: u64) -> Result<Arc<Connection>, SupervisedError> {
+    async fn connection_at_generation(
+        &self,
+        generation: u64,
+    ) -> Result<Arc<Connection>, SupervisedError> {
         // Reconnect publishes its connection and generation while holding
         // this write lock. Retain the selected connection for the whole send:
-        // a later reconnect cannot redirect a reply onto its replacement.
+        // a later reconnect cannot redirect work onto its replacement.
         let connection = self.inner.read().await;
         if generation == 0 || generation != self.connection_generation() {
             return Err(SupervisedError::Disconnected);
@@ -819,6 +1068,7 @@ struct SupervisorCtx {
     state_tx: watch::Sender<ConnState>,
     state_publish: Arc<std::sync::Mutex<()>>,
     registration_rejection: Arc<std::sync::Mutex<Option<RegistrationRejected>>>,
+    declaration_error: Arc<std::sync::Mutex<Option<SubscriptionDeclarationError>>>,
     connection_generation: Arc<AtomicU64>,
     registry: SubscriptionRegistry,
     subscription_transaction: Arc<TokioMutex<()>>,
@@ -828,7 +1078,33 @@ struct SupervisorCtx {
     noded_url: String,
     fatal_on_registration_rejection: bool,
     connection_options: ConnectionOptions,
-    first_rx: Option<NativeIncomingReceiver>,
+    /// The original declared identities, retained solely to classify a later
+    /// replay refusal of the same name; never unioned back into a snapshot.
+    declarations: Vec<String>,
+    /// Whole-attempt establishment deadline duration.
+    establishment_timeout: Duration,
+    /// Finite-connect establishment result; `None` for `start()`.
+    initial_result: Option<oneshot::Sender<Result<(), SupervisedError>>>,
+}
+
+impl SupervisorCtx {
+    /// The topics this attempt must establish: on generation zero the stable
+    /// union of declarations first, then acknowledged registry entries not
+    /// already present; on later generations the acknowledged registry alone,
+    /// so a successfully unsubscribed declaration stays unsubscribed.
+    fn attempt_topics(&self) -> Vec<String> {
+        let recorded = self.registry.snapshot();
+        if self.connection_generation.load(Ordering::SeqCst) != 0 {
+            return recorded;
+        }
+        let mut topics = self.declarations.clone();
+        for topic in recorded {
+            if !topics.iter().any(|t| t == &topic) {
+                topics.push(topic);
+            }
+        }
+        topics
+    }
 }
 
 /// `true` once a stop has been requested (an explicit shutdown, or the
@@ -880,17 +1156,436 @@ fn publish_registration_rejection(ctx: &SupervisorCtx, error: &ClientError) {
     ctx.state_tx.send_replace(ConnState::Fatal);
 }
 
-async fn supervisor_loop(mut ctx: SupervisorCtx) {
-    let current_rx = ctx.first_rx.take();
-    supervisor_run(&mut ctx, current_rx).await;
-    publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::ShuttingDown);
-    let connection = ctx.inner.read().await.clone();
-    if let Some(connection) = connection {
-        connection.close().await;
+/// Publish a declared-subscription terminal diagnostic and `Fatal` under the
+/// same fence as every other terminal transition, so a watch observer never
+/// sees an empty declaration diagnostic after `Fatal`.
+fn publish_declaration_rejection(ctx: &SupervisorCtx, error: &SubscriptionDeclarationError) {
+    let _publish = ctx
+        .state_publish
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if matches!(
+        *ctx.state_tx.borrow(),
+        ConnState::ShuttingDown | ConnState::Fatal
+    ) {
+        return;
+    }
+    *ctx.declaration_error
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
+    ctx.state_tx.send_replace(ConnState::Fatal);
+}
+
+/// Deliver a terminal failure to a finite connect and stop the supervisor.
+///
+/// `attempts` keeps the pre-change finite loop's counting exactly: an
+/// in-attempt terminal (a fatal registration rejection) reports the 1-based
+/// attempt index (`attempt + 1` for the 0-based `attempt`), and budget
+/// exhaustion always reports [`MAX_INITIAL_ATTEMPTS`] — the loop's post-loop
+/// value. The count is dial/establishment attempts, never subscribe count.
+fn fail_initial(ctx: &mut SupervisorCtx, attempts: u32, source: ClientError) {
+    if let Some(result) = ctx.initial_result.take() {
+        let _ = result.send(Err(SupervisedError::InitialConnectFailed {
+            attempts,
+            source,
+        }));
     }
 }
 
-async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: Option<NativeIncomingReceiver>) {
+/// Deliver the finite-connect success. `false` means the waiting caller has
+/// cancelled: the supervisor must stop and close the freshly published
+/// connection instead of pumping frames nobody consumes.
+fn complete_initial(ctx: &mut SupervisorCtx) -> bool {
+    match ctx.initial_result.take() {
+        Some(result) => result.send(Ok(())).is_ok(),
+        None => true,
+    }
+}
+
+/// Owner of a connection from dial until it is either published under
+/// `inner` or torn down. Every exit after acquisition goes through
+/// [`abort`](Self::abort), which bounds the native close so a blocked close
+/// frame cannot stall teardown, a later cancellation or a finite completion.
+struct AttemptOwner {
+    connection: Option<Arc<Connection>>,
+}
+
+impl AttemptOwner {
+    fn new(connection: Arc<Connection>) -> Self {
+        Self {
+            connection: Some(connection),
+        }
+    }
+
+    async fn abort(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            let _ = tokio::time::timeout(ATTEMPT_CLOSE_BOUND, connection.close()).await;
+        }
+    }
+}
+
+/// Why the fenced publication was refused.
+enum PublishBlock {
+    /// A stop (shutdown, consumer loss, terminal state): the supervisor ends.
+    Stop,
+    /// A transient establishment failure: retry on a fresh socket.
+    Retry(ClientError),
+}
+
+enum EstablishOutcome {
+    /// Published: generation advanced, `Connected` published, the forward
+    /// phase takes this receiver.
+    Published(NativeIncomingReceiver),
+    /// Transient failure: back off and retry on a fresh socket.
+    Retry,
+    /// The supervisor must stop.
+    Stop,
+}
+
+fn attempt_failed(
+    ctx: &SupervisorCtx,
+    attempt: u32,
+    phase: &str,
+    topic: Option<&str>,
+    error: &ClientError,
+) {
+    tracing::warn!(
+        event = "supervised_establish_failed",
+        service = %ctx.service_name,
+        attempt = attempt + 1,
+        phase,
+        topic = topic.unwrap_or(""),
+        error = %error,
+        "establishment attempt failed; retrying on a fresh socket"
+    );
+}
+
+/// Classify a transient attempt failure against the initial policy: retry,
+/// or deliver the finite budget exhaustion and stop. A deadline is a
+/// [`ClientError::Timeout`], never a subscription refusal — `is_connected`
+/// is deliberately still true on the native client until close.
+///
+/// `attempt` is the 0-based index of the failing attempt; exhaustion means
+/// `attempt + 1 >= MAX_INITIAL_ATTEMPTS`, reported as exactly
+/// [`MAX_INITIAL_ATTEMPTS`] — the pre-change finite loop's own post-loop
+/// value, so legacy callers see the same count.
+fn retry_or_fail(
+    ctx: &mut SupervisorCtx,
+    attempt: u32,
+    error: ClientError,
+    phase: &str,
+    topic: Option<&str>,
+) -> EstablishOutcome {
+    attempt_failed(ctx, attempt, phase, topic, &error);
+    if ctx.initial_result.is_some() && attempt + 1 >= MAX_INITIAL_ATTEMPTS {
+        fail_initial(ctx, MAX_INITIAL_ATTEMPTS, error);
+        EstablishOutcome::Stop
+    } else {
+        EstablishOutcome::Retry
+    }
+}
+
+/// An explicit nonzero declared-topic reply is terminal: the wire has no
+/// reliable transient/permanent refusal classifier, so the exact topic, rc
+/// and diagnostic are published once and never retried.
+fn declaration_terminal(
+    ctx: &mut SupervisorCtx,
+    error: SubscriptionDeclarationError,
+) -> EstablishOutcome {
+    publish_declaration_rejection(ctx, &error);
+    if let Some(result) = ctx.initial_result.take() {
+        let _ = result.send(Err(SupervisedError::SubscriptionDeclaration(error)));
+    }
+    EstablishOutcome::Stop
+}
+
+/// One establishment attempt: dial, register, declarations, replay and the
+/// fenced publication. No failed attempt changes the generation, the live
+/// inner connection or the acknowledged registry.
+async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOutcome {
+    let deadline = match Instant::now().checked_add(ctx.establishment_timeout) {
+        Some(deadline) => deadline,
+        None => {
+            return retry_or_fail(
+                ctx,
+                attempt,
+                ClientError::Timeout {
+                    to: "noded".to_string(),
+                },
+                "deadline",
+                None,
+            );
+        }
+    };
+    tracing::debug!(
+        event = "supervised_establish_attempt",
+        service = %ctx.service_name,
+        attempt = attempt + 1,
+        "dialing and establishing on a fresh socket"
+    );
+
+    // 1. Dial and register, bounded by the whole-attempt deadline and
+    //    selected against shutdown and consumer closure.
+    let result = tokio::select! {
+        biased;
+        _ = ctx.out_tx.closed() => return EstablishOutcome::Stop,
+        _ = ctx.shutdown_rx.changed() => return EstablishOutcome::Stop,
+        _ = tokio::time::sleep_until(deadline.into()) => {
+            return retry_or_fail(
+                ctx, attempt,
+                ClientError::Timeout { to: "noded".to_string() },
+                "dial", None,
+            );
+        }
+        result = Connection::connect_with_options(
+            &ctx.service_name, &ctx.noded_url, &ctx.connection_options,
+        ) => result,
+    };
+    let connection = match result {
+        Ok(connection) => connection,
+        Err(error) => {
+            if ctx.fatal_on_registration_rejection && error.registration_rejection_typed().is_some()
+            {
+                publish_registration_rejection(ctx, &error);
+                tracing::debug!(
+                    event = "supervised_registration_rejected",
+                    service = %ctx.service_name,
+                    error = %error,
+                    "service registration was rejected; supervisor stopped"
+                );
+                fail_initial(ctx, attempt + 1, error);
+                return EstablishOutcome::Stop;
+            }
+            return retry_or_fail(ctx, attempt, error, "dial", None);
+        }
+    };
+
+    // 2. Explicit unpublished-attempt owner: every exit from here on closes.
+    let connection = Arc::new(connection);
+    let mut owner = AttemptOwner::new(connection.clone());
+
+    // 3. Transaction mutex, preserving the old-socket ACK / new-socket
+    //    snapshot ordering, selected against stop and the deadline. Lock a
+    //    local Arc clone: the guard is held for the whole attempt, so its
+    //    borrow must not be on `ctx`, which every exit below needs mutably.
+    let transaction = ctx.subscription_transaction.clone();
+    let _transaction = tokio::select! {
+        biased;
+        _ = ctx.out_tx.closed() => {
+            owner.abort().await;
+            return EstablishOutcome::Stop;
+        }
+        _ = ctx.shutdown_rx.changed() => {
+            owner.abort().await;
+            return EstablishOutcome::Stop;
+        }
+        _ = tokio::time::sleep_until(deadline.into()) => {
+            owner.abort().await;
+            return retry_or_fail(
+                ctx, attempt,
+                ClientError::Timeout { to: "noded".to_string() },
+                "transaction", None,
+            );
+        }
+        guard = transaction.lock() => guard,
+    };
+
+    // 4. The topics this attempt must establish.
+    let topics = ctx.attempt_topics();
+
+    // 5. Sequential subscribes. Declared identities require an exact rc 0;
+    //    any explicit nonzero reply is terminal. Ordinary replay keeps the
+    //    legacy success/refusal interpretation and retry policy. ACKed
+    //    declarations are staged locally; the registry is only mutated at
+    //    publication.
+    let mut staged: Vec<String> = Vec::new();
+    for topic in &topics {
+        let declared = ctx.declarations.iter().any(|d| d == topic);
+        let headers = topic_headers(topic);
+        let reply = tokio::select! {
+            biased;
+            _ = ctx.out_tx.closed() => {
+                owner.abort().await;
+                return EstablishOutcome::Stop;
+            }
+            _ = ctx.shutdown_rx.changed() => {
+                owner.abort().await;
+                return EstablishOutcome::Stop;
+            }
+            _ = tokio::time::sleep_until(deadline.into()) => {
+                owner.abort().await;
+                return retry_or_fail(
+                    ctx, attempt,
+                    ClientError::Timeout { to: "noded".to_string() },
+                    "subscribe", Some(topic),
+                );
+            }
+            result = connection.call_with_headers_raw(
+                "noded", "topic.subscribe", &headers, "",
+            ) => result,
+        };
+        match reply {
+            // An explicit nonzero declared reply is terminal: the wire has no
+            // reliable transient/permanent refusal classifier. A warning rc
+            // is a refusal too — a declared topic needs an exact rc 0.
+            Ok((rc, body, error_header)) if declared && rc != crate::RC_SUCCESS => {
+                let error = SubscriptionDeclarationError::Rejected {
+                    topic: topic.clone(),
+                    rc,
+                    message: reply_error_message(&body, error_header),
+                };
+                owner.abort().await;
+                return declaration_terminal(ctx, error);
+            }
+            // Ordinary replay keeps the legacy success interpretation: any
+            // rc < 10 (a warning rc 5 included) is a successful subscription.
+            Ok((rc, _, _)) if rc < crate::RC_ERROR => {
+                staged.push(topic.clone());
+            }
+            // rc >= 10 on an ordinary topic: the legacy refusal contract,
+            // retried on a fresh socket.
+            Ok((rc, body, error_header)) => {
+                let error = ClientError::Refused {
+                    rc,
+                    message: reply_error_message(&body, error_header),
+                };
+                owner.abort().await;
+                return retry_or_fail(ctx, attempt, error, "replay", Some(topic));
+            }
+            Err(error) => {
+                owner.abort().await;
+                return retry_or_fail(ctx, attempt, error, "subscribe", Some(topic));
+            }
+        }
+    }
+
+    // 8. Pre-publication checks: a stop, receiver closure, elapsed deadline
+    //    or a dropped native connection during the last ACK must not publish.
+    if stop_requested(&ctx.shutdown_rx) || ctx.out_tx.is_closed() {
+        owner.abort().await;
+        return EstablishOutcome::Stop;
+    }
+    if Instant::now() >= deadline {
+        owner.abort().await;
+        return retry_or_fail(
+            ctx,
+            attempt,
+            ClientError::Timeout {
+                to: "noded".to_string(),
+            },
+            "publication",
+            None,
+        );
+    }
+    if !connection.is_connected() {
+        owner.abort().await;
+        return retry_or_fail(ctx, attempt, ClientError::Closed, "publication", None);
+    }
+
+    // The native lane (retained publications/commands from this attempt)
+    // either publishes with this generation or is discarded with the
+    // connection: there is no staging queue. An absent receiver is an
+    // internal invariant failure: close the attempt through the owner and
+    // retry/fail as a typed Closed rather than leaking the socket behind a
+    // panic.
+    let Some(rx) = connection.take_native_incoming() else {
+        owner.abort().await;
+        return retry_or_fail(ctx, attempt, ClientError::Closed, "publication", None);
+    };
+
+    let inner = ctx.inner.clone();
+    let mut live = tokio::select! {
+        biased;
+        _ = ctx.out_tx.closed() => {
+            owner.abort().await;
+            return EstablishOutcome::Stop;
+        }
+        _ = ctx.shutdown_rx.changed() => {
+            owner.abort().await;
+            return EstablishOutcome::Stop;
+        }
+        _ = tokio::time::sleep_until(deadline.into()) => {
+            owner.abort().await;
+            return retry_or_fail(
+                ctx, attempt,
+                ClientError::Timeout { to: "noded".to_string() },
+                "publication", None,
+            );
+        }
+        guard = inner.write() => guard,
+    };
+
+    // 9. Commit the staged declarations, swap the live connection, advance
+    //    the generation once and publish Connected in one fenced section,
+    //    re-checking stop, deadline and the actual socket inside.
+    let blocked = {
+        let _fence = ctx
+            .state_publish
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let current = *ctx.state_tx.borrow();
+        if matches!(current, ConnState::ShuttingDown | ConnState::Fatal)
+            || stop_requested(&ctx.shutdown_rx)
+            || ctx.out_tx.is_closed()
+        {
+            Some(PublishBlock::Stop)
+        } else if Instant::now() >= deadline {
+            Some(PublishBlock::Retry(ClientError::Timeout {
+                to: "noded".to_string(),
+            }))
+        } else if !connection.is_connected() {
+            Some(PublishBlock::Retry(ClientError::Closed))
+        } else {
+            for topic in &staged {
+                ctx.registry.record(topic);
+            }
+            *live = Some(connection.clone());
+            ctx.connection_generation.fetch_add(1, Ordering::SeqCst);
+            ctx.state_tx.send_replace(ConnState::Connected);
+            None
+        }
+    };
+    drop(live);
+    match blocked {
+        Some(PublishBlock::Stop) => {
+            owner.abort().await;
+            EstablishOutcome::Stop
+        }
+        Some(PublishBlock::Retry(error)) => {
+            owner.abort().await;
+            retry_or_fail(ctx, attempt, error, "publication", None)
+        }
+        None => {
+            tracing::info!(
+                event = "supervised_established",
+                service = %ctx.service_name,
+                attempt = attempt + 1,
+                subscriptions = topics.len(),
+                "registered and subscribed (declarations and replay complete)"
+            );
+            // 10. Notify the finite caller; if it cancelled, stop and close
+            //     the published connection rather than pump frames nobody
+            //     consumes.
+            if !complete_initial(ctx) {
+                return EstablishOutcome::Stop;
+            }
+            EstablishOutcome::Published(rx)
+        }
+    }
+}
+
+async fn supervisor_loop(mut ctx: SupervisorCtx) {
+    supervisor_run(&mut ctx).await;
+    publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::ShuttingDown);
+    let connection = ctx.inner.read().await.clone();
+    if let Some(connection) = connection {
+        let _ = tokio::time::timeout(ATTEMPT_CLOSE_BOUND, connection.close()).await;
+    }
+}
+
+async fn supervisor_run(ctx: &mut SupervisorCtx) {
+    let mut current_rx: Option<NativeIncomingReceiver> = None;
+    let mut attempt: u32 = 0;
     loop {
         // Forward phase: pump the live connection's frames outward until it
         // drops or a stop is requested.
@@ -938,192 +1633,281 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: Option<NativeIn
             return;
         }
 
-        // Reconnect phase: unbounded backoff.
+        // Establishment phase. A transport failure after a live generation
+        // is Disconnected; the initial Connecting state stays until the
+        // first full establishment or a terminal outcome.
         let initial = ctx.connection_generation.load(Ordering::SeqCst) == 0;
         if !initial {
             publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::Disconnected);
         }
-        let down_since = Instant::now();
         tracing::warn!(
             event = "supervised_disconnect",
             service = %ctx.service_name,
             "broker connection lost; reconnecting (unbounded backoff)"
         );
 
-        let mut attempt: u32 = 0;
-        let new_rx = loop {
-            let delay = if initial && attempt == 0 {
-                Duration::ZERO
-            } else {
-                backoff_delay(attempt)
-            };
-            tokio::select! {
-                _ = ctx.out_tx.closed() => return,
-                changed = ctx.shutdown_rx.changed() => {
-                    if changed.is_err() || stop_requested(&ctx.shutdown_rx) {
-                        return;
-                    }
-                }
-                _ = tokio::time::sleep(delay) => {}
-            }
-            if stop_requested(&ctx.shutdown_rx)
-                || matches!(
-                    *ctx.state_tx.borrow(),
-                    ConnState::ShuttingDown | ConnState::Fatal
-                )
-            {
-                return;
-            }
-
-            let connected = tokio::select! {
-                biased;
-                _ = ctx.out_tx.closed() => return,
-                _ = ctx.shutdown_rx.changed() => return,
-                result = Connection::connect_with_options(
-                    &ctx.service_name, &ctx.noded_url, &ctx.connection_options,
-                ) => result,
-            };
-            match connected {
-                Ok(connection) => {
-                    // A stop requested during the connect must not leave a
-                    // registered connection behind: a bare drop would keep
-                    // the detached reader, and so the name, alive while
-                    // `deregister()` reports `Disconnected`.
-                    if stop_requested(&ctx.shutdown_rx) || ctx.out_tx.is_closed() {
-                        connection.close().await;
-                        return;
-                    }
-
-                    // Replay the whole registry in recorded order before
-                    // declaring Connected. Any failure fails the whole
-                    // attempt: close, stay Disconnected, back off, retry.
-                    // A successful old-socket acknowledgement commits its
-                    // registry update before this snapshot, or a waiting
-                    // operation uses the fully published new connection.
-                    let _transaction = tokio::select! {
-                        _ = ctx.out_tx.closed() => {
-                            connection.close().await;
-                            return;
-                        }
-                        _ = ctx.shutdown_rx.changed() => {
-                            connection.close().await;
-                            return;
-                        }
-                        guard = ctx.subscription_transaction.lock() => guard,
-                    };
-                    let topics = ctx.registry.snapshot();
-                    let mut replay_ok = true;
-                    for topic in &topics {
-                        let headers = topic_headers(topic);
-                        let replay = tokio::select! {
-                            biased;
-                            _ = ctx.out_tx.closed() => {
-                                connection.close().await;
-                                return;
-                            }
-                            _ = ctx.shutdown_rx.changed() => {
-                                connection.close().await;
-                                return;
-                            }
-                            result = connection.call_with_headers(
-                                "noded", "topic.subscribe", &headers, "",
-                            ) => result,
-                        };
-                        if let Err(e) = replay {
-                            tracing::warn!(
-                                event = "supervised_replay_failed",
-                                service = %ctx.service_name,
-                                topic = %topic,
-                                error = %e,
-                                "subscription replay failed; failing the whole reconnect attempt"
-                            );
-                            replay_ok = false;
-                            break;
-                        }
-                    }
-                    if !replay_ok {
-                        connection.close().await;
-                        attempt += 1;
-                        continue;
-                    }
-
-                    let rx = connection
-                        .take_native_incoming()
-                        .expect("a fresh connection has its incoming receiver");
-                    // Final stop check before the swap, so a stop that landed
-                    // during replay does not publish a live connection.
-                    if stop_requested(&ctx.shutdown_rx) || ctx.out_tx.is_closed() {
-                        connection.close().await;
-                        return;
-                    }
-                    let connection = Arc::new(connection);
-                    let mut live = ctx.inner.write().await;
-                    let published = {
-                        // Close publishes its terminal state under this same
-                        // fence before selecting a socket. It therefore sees
-                        // this new socket, or prevents this swap entirely.
-                        let _fence = ctx
-                            .state_publish
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner());
-                        let current = *ctx.state_tx.borrow();
-                        if matches!(current, ConnState::ShuttingDown | ConnState::Fatal)
-                            || stop_requested(&ctx.shutdown_rx)
-                        {
-                            false
-                        } else {
-                            *live = Some(connection.clone());
-                            ctx.connection_generation.fetch_add(1, Ordering::SeqCst);
-                            ctx.state_tx.send_replace(ConnState::Connected);
-                            true
-                        }
-                    };
-                    drop(live);
-                    if !published {
-                        connection.close().await;
-                        return;
-                    }
-                    tracing::info!(
-                        event = "supervised_reconnect",
-                        service = %ctx.service_name,
-                        attempts = attempt + 1,
-                        downtime_ms = down_since.elapsed().as_millis() as u64,
-                        replayed_subscriptions = topics.len(),
-                        "reconnected to broker (full registry replayed)"
-                    );
-                    break rx;
-                }
-                Err(e) => {
-                    if ctx.fatal_on_registration_rejection && e.registration_rejection().is_some() {
-                        publish_registration_rejection(ctx, &e);
-                        tracing::debug!(
-                            event = "supervised_registration_rejected",
-                            service = %ctx.service_name,
-                            error = %e,
-                            "service registration was rejected during reconnect; supervisor stopped"
-                        );
-                        return;
-                    }
-                    tracing::debug!(
-                        event = "supervised_reconnect_attempt_failed",
-                        service = %ctx.service_name,
-                        attempt = attempt + 1,
-                        error = %e,
-                        "reconnect attempt failed"
-                    );
-                    attempt += 1;
-                    continue;
-                }
-            }
+        let delay = if attempt == 0 {
+            Duration::ZERO
+        } else {
+            backoff_delay(attempt - 1)
         };
+        tokio::select! {
+            _ = ctx.out_tx.closed() => return,
+            changed = ctx.shutdown_rx.changed() => {
+                if changed.is_err() || stop_requested(&ctx.shutdown_rx) {
+                    return;
+                }
+            }
+            _ = tokio::time::sleep(delay) => {}
+        }
+        if stop_requested(&ctx.shutdown_rx)
+            || matches!(
+                *ctx.state_tx.borrow(),
+                ConnState::ShuttingDown | ConnState::Fatal
+            )
+        {
+            return;
+        }
 
-        current_rx = Some(new_rx);
+        match establish_attempt(ctx, attempt).await {
+            EstablishOutcome::Published(rx) => {
+                attempt = 0;
+                current_rx = Some(rx);
+            }
+            EstablishOutcome::Retry => {
+                attempt += 1;
+            }
+            EstablishOutcome::Stop => return,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real ABP WebSocket framing and correlation, with a barrier after
+    /// receipt of the first application call. Registration is always ACKed.
+    async fn raw_call_stub(
+        mut release: Option<oneshot::Receiver<()>>,
+    ) -> (
+        String,
+        mpsc::UnboundedReceiver<BusMessage>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        let (seen, requests) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(frame) = websocket.next().await {
+                let text = match frame {
+                    Ok(Message::Text(text)) => text,
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(_) => continue,
+                };
+                let request = crate::parse(&text).unwrap();
+                let command = request.get("command").unwrap();
+                if command != "noded.register" {
+                    seen.send(request.clone()).unwrap();
+                    if let Some(release) = release.take() {
+                        release.await.unwrap();
+                    }
+                }
+                let mut reply = BusMessage::new()
+                    .with_header("type", "response")
+                    .with_header("command", command)
+                    .with_header("from", request.get("to").unwrap_or("noded"))
+                    .with_header("rc", "0")
+                    .with_body(&request.body);
+                if let Some(id) = request.get("id") {
+                    reply = reply.with_header("id", id);
+                }
+                if websocket
+                    .send(Message::Text(reply.to_wire().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (url, requests, task)
+    }
+
+    #[tokio::test]
+    async fn raw_call_generation_is_checked_after_waiting_for_connection_acquisition() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (url, mut original_requests, original_stub) = raw_call_stub(None).await;
+            let client = SupervisedClient::connect("generation-owner", &url)
+                .await
+                .unwrap();
+            assert_eq!(client.connection_generation(), 1);
+            let (replacement_url, mut replacement_requests, replacement_stub) =
+                raw_call_stub(None).await;
+            let replacement = Arc::new(
+                Connection::connect("generation-owner", &replacement_url)
+                    .await
+                    .unwrap(),
+            );
+            let headers = BTreeMap::from([("fixture".to_owned(), "preserved".to_owned())]);
+
+            // Force the real acquisition await, then publish the replacement
+            // under the exact lock used by establish_attempt. A pre-lock
+            // generation check would incorrectly send through this socket.
+            let mut live = client.inner.write().await;
+            let call = client.call_with_headers_raw_at_generation(
+                1,
+                "example",
+                "old-intent",
+                &headers,
+                "old",
+            );
+            tokio::pin!(call);
+            assert!(futures_util::poll!(call.as_mut()).is_pending());
+            let original = live.replace(replacement).unwrap();
+            client.connection_generation.store(2, Ordering::SeqCst);
+            drop(live);
+            assert!(matches!(call.await, Err(SupervisedError::Disconnected)));
+            assert!(matches!(
+                client
+                    .call_with_headers_raw_at_generation(
+                        0,
+                        "example",
+                        "zero-intent",
+                        &headers,
+                        "zero",
+                    )
+                    .await,
+                Err(SupervisedError::Disconnected)
+            ));
+
+            assert_eq!(
+                client
+                    .call_with_headers_raw_at_generation(
+                        2,
+                        "example",
+                        "current-intent",
+                        &headers,
+                        "current",
+                    )
+                    .await
+                    .unwrap(),
+                (0, "current".to_owned(), None)
+            );
+            let received = replacement_requests.recv().await.unwrap();
+            assert_eq!(received.get("command"), Some("current-intent"));
+            assert_eq!(received.get("fixture"), Some("preserved"));
+            assert_eq!(received.body, "current");
+
+            // Ordinary callers retain their current-connection behaviour.
+            assert_eq!(
+                client
+                    .call_with_headers_raw("example", "ordinary", &headers, "body")
+                    .await
+                    .unwrap(),
+                (0, "body".to_owned(), None)
+            );
+            assert_eq!(
+                replacement_requests.recv().await.unwrap().get("command"),
+                Some("ordinary")
+            );
+            assert!(matches!(
+                original_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                replacement_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            client.close().await;
+            original.close().await;
+            original_stub.await.unwrap();
+            replacement_stub.await.unwrap();
+        })
+        .await
+        .expect("generation fence and native socket cleanup are bounded");
+    }
+
+    #[tokio::test]
+    async fn raw_call_retains_the_acquired_connection_across_replacement() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (release, held) = oneshot::channel();
+            let (url, mut original_requests, original_stub) = raw_call_stub(Some(held)).await;
+            let client = Arc::new(
+                SupervisedClient::connect("generation-owner", &url)
+                    .await
+                    .unwrap(),
+            );
+            let (replacement_url, mut replacement_requests, replacement_stub) =
+                raw_call_stub(None).await;
+            let replacement = Arc::new(
+                Connection::connect("generation-owner", &replacement_url)
+                    .await
+                    .unwrap(),
+            );
+            let calling = client.clone();
+            let call = tokio::spawn(async move {
+                calling
+                    .call_with_headers_raw_at_generation(
+                        1,
+                        "example",
+                        "already-sent",
+                        &BTreeMap::new(),
+                        "original-response",
+                    )
+                    .await
+            });
+            assert_eq!(
+                original_requests.recv().await.unwrap().get("command"),
+                Some("already-sent")
+            );
+            let mut live = client.inner.write().await;
+            let original = live.replace(replacement).unwrap();
+            client.connection_generation.store(2, Ordering::SeqCst);
+            drop(live);
+            release.send(()).unwrap();
+            assert_eq!(
+                call.await.unwrap().unwrap(),
+                (0, "original-response".to_owned(), None)
+            );
+            assert_eq!(
+                client
+                    .call_with_headers_raw_at_generation(
+                        2,
+                        "example",
+                        "replacement-call",
+                        &BTreeMap::new(),
+                        "replacement-response",
+                    )
+                    .await
+                    .unwrap(),
+                (0, "replacement-response".to_owned(), None)
+            );
+            assert_eq!(
+                replacement_requests.recv().await.unwrap().get("command"),
+                Some("replacement-call")
+            );
+            assert!(matches!(
+                original_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                replacement_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            client.close().await;
+            original.close().await;
+            original_stub.await.unwrap();
+            replacement_stub.await.unwrap();
+        })
+        .await
+        .expect("a started call remains on its original socket");
+    }
 
     #[test]
     fn backoff_ceiling_is_monotonic_and_capped() {
@@ -1214,5 +1998,320 @@ mod tests {
         reconnect.join().expect("reconnect publisher");
 
         assert_eq!(*state_rx.borrow(), ConnState::ShuttingDown);
+    }
+
+    #[test]
+    fn declarations_validate_dedupe_and_keep_first_seen_order() {
+        let topics: Vec<String> = ["a", "b", "a", "c", "b"]
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        assert_eq!(validate_declarations(&topics).unwrap(), vec!["a", "b", "c"]);
+        assert_eq!(validate_declarations(&[]).unwrap(), Vec::<String>::new());
+        // Names are exact: no trimming, no case folding.
+        let spaced: Vec<String> = ["x ", " x", "X"].iter().map(|t| t.to_string()).collect();
+        assert_eq!(validate_declarations(&spaced).unwrap(), spaced);
+    }
+
+    #[test]
+    fn declarations_reject_bad_entries_with_the_reported_index() {
+        for bad in ["", "a\rb", "a\nb", "a\0b"] {
+            // Every case places the bad topic second: the reported index is 1.
+            let topics = vec!["ok".to_string(), bad.to_string()];
+            let err = validate_declarations(&topics).unwrap_err();
+            match err {
+                SubscriptionDeclarationError::Invalid { index, message } => {
+                    assert_eq!(index, Some(1), "entry {bad:?}");
+                    assert!(!message.is_empty());
+                }
+                other => panic!("expected Invalid, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn declarations_enforce_entry_and_byte_bounds_on_raw_input() {
+        // 65 raw entries, duplicates included: the count bound is pre-dedup.
+        let too_many: Vec<String> = (0..65).map(|i| format!("topic.{i}")).collect();
+        assert!(matches!(
+            validate_declarations(&too_many),
+            Err(SubscriptionDeclarationError::Invalid { index: None, .. })
+        ));
+        // Exactly 64 entries is fine.
+        let boundary: Vec<String> = (0..64).map(|i| format!("topic.{i}")).collect();
+        assert_eq!(validate_declarations(&boundary).unwrap().len(), 64);
+        // One oversized topic.
+        let big = "x".repeat(MAX_TOPIC_BYTES + 1);
+        assert_eq!(
+            validate_declarations(std::slice::from_ref(&big)).unwrap_err(),
+            SubscriptionDeclarationError::Invalid {
+                index: Some(0),
+                message: format!("a topic exceeds {MAX_TOPIC_BYTES} UTF-8 bytes"),
+            }
+        );
+        assert!(validate_declarations(&["x".repeat(MAX_TOPIC_BYTES)]).is_ok());
+        // The aggregate bound counts raw bytes: 64 topics x 300 bytes is
+        // fine per-topic but exceeds 16 KiB in total.
+        let aggregate: Vec<String> = (0..64)
+            .map(|i| format!("{i:03}-{}", "x".repeat(300)))
+            .collect();
+        assert!(matches!(
+            validate_declarations(&aggregate),
+            Err(SubscriptionDeclarationError::Invalid { index: None, .. })
+        ));
+        // Duplicates cannot bypass the aggregate bound: 40 identical
+        // 900-byte entries are 36 KiB raw, though the deduplicated set is
+        // one small valid topic.
+        let dup_heavy: Vec<String> = (0..40).map(|_| "z".repeat(900)).collect();
+        assert!(matches!(
+            validate_declarations(&dup_heavy),
+            Err(SubscriptionDeclarationError::Invalid { index: None, .. })
+        ));
+    }
+
+    // ── Establishment cancellation guards ────────────────────────────────
+    //
+    // These drive the real `establish_attempt` against a real local native
+    // WebSocket stub, holding the exact private await the guard protects, so
+    // the cancellation is exercised deterministically rather than raced.
+
+    /// A one-connection native stub: ACK `noded.register` and each
+    /// `topic.subscribe` with rc 0, signal the first register and the first
+    /// subscribe receipt, and signal the socket's close/EOF so the tests
+    /// observe the owner's teardown.
+    async fn mini_stub(
+        listener: tokio::net::TcpListener,
+        mut register_seen: Option<oneshot::Sender<()>>,
+        mut subscribe_seen: Option<oneshot::Sender<()>>,
+        eof: oneshot::Sender<()>,
+    ) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::tungstenite::Message;
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(socket).await.unwrap();
+        loop {
+            let text = match websocket.next().await {
+                Some(Ok(Message::Text(text))) => text.to_string(),
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => continue,
+                Some(Err(_)) => break,
+            };
+            let Ok(request) = crate::parse(&text) else {
+                continue;
+            };
+            let command = request.get("command").unwrap_or("").to_string();
+            let mut reply = BusMessage::new()
+                .with_header("type", "response")
+                .with_header("command", &command)
+                .with_header("from", "noded")
+                .with_header("rc", "0");
+            if let Some(id) = request.get("id") {
+                reply = reply.with_header("id", id);
+            }
+            let send_ok = websocket
+                .send(Message::Text(reply.to_wire().into()))
+                .await
+                .is_ok();
+            if command == "noded.register" {
+                if let Some(seen) = register_seen.take() {
+                    let _ = seen.send(());
+                }
+            } else if command == "topic.subscribe"
+                && let Some(seen) = subscribe_seen.take()
+            {
+                let _ = seen.send(());
+            }
+            if !send_ok {
+                break;
+            }
+        }
+        let _ = eof.send(());
+    }
+
+    /// A supervisor context wired for the guard tests, plus the shutdown
+    /// sender and the outward receiver (held so the producer never closes).
+    fn guard_test_ctx(
+        noded_url: &str,
+        declarations: Vec<String>,
+    ) -> (
+        SupervisorCtx,
+        watch::Sender<bool>,
+        mpsc::UnboundedReceiver<IncomingCommand>,
+    ) {
+        let (state_tx, _) = watch::channel(ConnState::Connecting);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        (
+            SupervisorCtx {
+                inner: Arc::new(RwLock::new(None)),
+                state_tx,
+                state_publish: Arc::new(std::sync::Mutex::new(())),
+                registration_rejection: Arc::new(std::sync::Mutex::new(None)),
+                declaration_error: Arc::new(std::sync::Mutex::new(None)),
+                connection_generation: Arc::new(AtomicU64::new(0)),
+                registry: SubscriptionRegistry::new(),
+                subscription_transaction: Arc::new(TokioMutex::new(())),
+                out_tx: SupervisorOutgoing::Unbounded(out_tx),
+                shutdown_rx,
+                service_name: "guard-test".to_string(),
+                noded_url: noded_url.to_string(),
+                fatal_on_registration_rejection: false,
+                connection_options: ConnectionOptions::default(),
+                declarations,
+                establishment_timeout: Duration::from_secs(60),
+                initial_result: None,
+            },
+            shutdown_tx,
+            out_rx,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transaction_lock_wait_shutdown_closes_the_attempt() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (register_seen_tx, register_seen_rx) = oneshot::channel();
+        let (eof_tx, eof_rx) = oneshot::channel();
+        let stub = tokio::spawn(mini_stub(listener, Some(register_seen_tx), None, eof_tx));
+
+        let (mut ctx, shutdown_tx, _out_rx) =
+            guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
+        let state_rx = ctx.state_tx.subscribe();
+        let inner = ctx.inner.clone();
+        let registry = ctx.registry.clone();
+        let generation = ctx.connection_generation.clone();
+        // Hold the transaction lock: the attempt can never pass the lock
+        // wait, so the shutdown that resolves it is consumed exactly there.
+        let transaction = ctx.subscription_transaction.clone();
+        let held = transaction.lock().await;
+        let handle = tokio::spawn(async move { establish_attempt(&mut ctx, 0).await });
+
+        // Registration was received; with the lock held the attempt cannot
+        // pass the lock wait, so the shutdown that resolves the attempt is
+        // consumed by the lock-wait select itself (or, if the register ACK
+        // has not yet been processed, by the equally guarded dial select —
+        // both abort the attempt).
+        register_seen_rx.await.unwrap();
+        shutdown_tx.send(true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the lock wait must resolve on shutdown, not hang")
+            .expect("attempt task joined");
+        assert!(matches!(outcome, EstablishOutcome::Stop));
+        drop(held);
+
+        // Nothing was published and the owner closed the socket.
+        assert_eq!(*state_rx.borrow(), ConnState::Connecting);
+        assert!(inner.read().await.is_none());
+        assert!(registry.is_empty());
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), eof_rx)
+            .await
+            .expect("the unpublished attempt must close its socket")
+            .unwrap();
+        stub.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publication_barrier_deadline_retries_without_publishing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (register_seen_tx, register_seen_rx) = oneshot::channel();
+        let (subscribe_seen_tx, subscribe_seen_rx) = oneshot::channel();
+        let (eof_tx, eof_rx) = oneshot::channel();
+        let stub = tokio::spawn(mini_stub(
+            listener,
+            Some(register_seen_tx),
+            Some(subscribe_seen_tx),
+            eof_tx,
+        ));
+
+        let (mut ctx, _shutdown_tx, _out_rx) =
+            guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
+        ctx.establishment_timeout = Duration::from_secs(3);
+        let state_rx = ctx.state_tx.subscribe();
+        let inner = ctx.inner.clone();
+        let registry = ctx.registry.clone();
+        let generation = ctx.connection_generation.clone();
+        // Hold the publication barrier: once the subscribe ACKs, the only
+        // await left is the live-write-lock wait (the section between the
+        // ACK and that await is synchronous), so the attempt deadline is
+        // consumed by the publication select itself.
+        let inner_arc = ctx.inner.clone();
+        let write_guard = inner_arc.write().await;
+        let handle = tokio::spawn(async move { establish_attempt(&mut ctx, 0).await });
+
+        register_seen_rx.await.unwrap();
+        subscribe_seen_rx.await.unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("the publication barrier must yield to the attempt deadline")
+            .expect("attempt task joined");
+        assert!(matches!(outcome, EstablishOutcome::Retry));
+        drop(write_guard);
+
+        assert_eq!(*state_rx.borrow(), ConnState::Connecting);
+        assert!(inner.read().await.is_none());
+        assert!(
+            registry.is_empty(),
+            "staged declarations never commit on a blocked publication"
+        );
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), eof_rx)
+            .await
+            .expect("the unpublished attempt must close its socket")
+            .unwrap();
+        stub.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publication_barrier_shutdown_closes_without_publishing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (register_seen_tx, register_seen_rx) = oneshot::channel();
+        let (subscribe_seen_tx, subscribe_seen_rx) = oneshot::channel();
+        let (eof_tx, eof_rx) = oneshot::channel();
+        let stub = tokio::spawn(mini_stub(
+            listener,
+            Some(register_seen_tx),
+            Some(subscribe_seen_tx),
+            eof_tx,
+        ));
+
+        // The default 60s deadline never interferes: only the shutdown
+        // resolves the held publication barrier.
+        let (mut ctx, shutdown_tx, _out_rx) =
+            guard_test_ctx(&format!("ws://{address}/ws"), vec!["decl.a".to_string()]);
+        let state_rx = ctx.state_tx.subscribe();
+        let inner = ctx.inner.clone();
+        let registry = ctx.registry.clone();
+        let generation = ctx.connection_generation.clone();
+        let inner_arc = ctx.inner.clone();
+        let write_guard = inner_arc.write().await;
+        let handle = tokio::spawn(async move { establish_attempt(&mut ctx, 0).await });
+
+        register_seen_rx.await.unwrap();
+        subscribe_seen_rx.await.unwrap();
+        // Yield so the ACKed attempt reaches the write-lock wait; the proof
+        // is the held lock plus the bounded join below, not this yield.
+        tokio::task::yield_now().await;
+        shutdown_tx.send(true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the publication barrier must resolve on shutdown, not hang")
+            .expect("attempt task joined");
+        assert!(matches!(outcome, EstablishOutcome::Stop));
+        drop(write_guard);
+
+        assert_eq!(*state_rx.borrow(), ConnState::Connecting);
+        assert!(inner.read().await.is_none());
+        assert!(registry.is_empty());
+        assert_eq!(generation.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), eof_rx)
+            .await
+            .expect("the unpublished attempt must close its socket")
+            .unwrap();
+        stub.await.unwrap();
     }
 }

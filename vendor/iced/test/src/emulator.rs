@@ -204,6 +204,60 @@ impl<P: Program + 'static> Emulator<P> {
 
                     self.cache = Some(user_interface.into_cache());
                 }
+                runtime::Action::Query {
+                    target,
+                    layer,
+                    mut operation,
+                    traversal,
+                    reply,
+                } => {
+                    use crate::runtime::widget::selector::{QueryError, QueryReport, QueryTarget};
+
+                    let window = match target {
+                        QueryTarget::Id(id) => Some(id),
+                        QueryTarget::Only => Some(self.window),
+                    };
+
+                    let result = match window.filter(|id| *id == self.window) {
+                        Some(_) => {
+                            let mut user_interface = UserInterface::build(
+                                program.view(&self.state, self.window),
+                                self.size,
+                                self.cache.take().unwrap(),
+                                &mut self.renderer,
+                            );
+
+                            let result = match user_interface.inspect(
+                                &self.renderer,
+                                layer,
+                                operation.as_mut(),
+                            ) {
+                                true => {
+                                    let _ = operation.finish();
+                                    match traversal.lock().unwrap().take() {
+                                        Some(traversal) => Ok(QueryReport {
+                                            layer,
+                                            records: traversal.records,
+                                            visited: traversal.visited,
+                                            truncated: traversal.truncated,
+                                            layout_sequence: user_interface.layout_sequence(),
+                                            logical_size: user_interface.logical_size(),
+                                            window_id: self.window,
+                                        }),
+                                        None => Err(QueryError::NotReady),
+                                    }
+                                }
+                                false => Err(QueryError::NotReady),
+                            };
+
+                            self.cache = Some(user_interface.into_cache());
+                            result
+                        }
+                        None => Err(QueryError::WindowNotFound),
+                    };
+
+                    let _ = reply.send(result);
+                }
                 runtime::Action::Clipboard(action) => {
                     // TODO
                     dbg!(action);
@@ -455,6 +509,11 @@ impl<P: Program + 'static> Emulator<P> {
     /// Returns the current view of the [`Emulator`].
     pub fn view(&self, program: &P) -> Element<'_, P::Message, P::Theme, P::Renderer> {
         program.view(&self.state, self.window)
+    }
+
+    /// Observation binding for the same state and internal window as the view.
+    pub fn frame_presentation(&self, program: &P) -> Option<window::presentation::FrameBinding> {
+        program.frame_presentation(&self.state, self.window)
     }
 
     /// Returns the current theme of the [`Emulator`].

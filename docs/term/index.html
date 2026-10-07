@@ -243,6 +243,16 @@
 <p>Term is the native Wayland terminal. Its toolkit-free core owns PTYs, the VT
 model and native session control; the graphical app uses the shared toolkit
 and the CPU renderer. It requires no D-Bus session.</p>
+<p>Desktop settings supply UI and terminal typography, exact font weight,
+colours and spacing. Font preparation runs on the shared worker; the previous
+complete painter stays active until its replacement is ready. A refused
+preparation preserves the terminal contents, selection and history.</p>
+<p>The configured startup font size supplies the initial raster. After settings
+activation, terminal typography supplies the baseline and local zoom steps
+apply to it. Output scale and zoom retain the activated font sources and asset
+binding. Unsupported geometry is refused rather than silently clamped.
+Colour changes reuse the terminal glyph raster. <code>app.describe</code> distinguishes
+desired preparation from the applied scale, zoom and actual font sources.</p>
 <p>Each tab contains one or more split panes. Ctrl+Shift+T opens a tab,
 Ctrl+Shift+W closes it, and Ctrl+PageUp/PageDown selects adjacent tabs.
 Ctrl+Shift+E splits horizontally; Ctrl+Shift+O splits vertically.

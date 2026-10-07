@@ -1,5 +1,5 @@
 -- nested_host_lib.mix — start, drive and stop a PRIVATE nested compd on its
--- version: 0.2.1
+-- version: 0.2.2
 -- own headless weston host.
 --
 --   $n = require("nested_host_lib.mix")   -- from a script beside it
@@ -21,6 +21,13 @@
 --   finish_run(record|nil, ok)     remove owned scratch only after a full PASS
 --   require_binary(name, override, dirs)
 --   log_has / await_log            read what a child process wrote
+--   private_bus({dir, name, noded?, fixed_port?, listen_ip?, peers?, mesh_open?})
+--                                  one owned broker; returns a self-contained
+--                                  ownership record for restart_private_bus
+--   private_bus_pair({dir, noded?, run_token?})
+--                                  two owned loopback brokers with a native
+--                                  roster-mode mesh; no global env touched
+--   restart_private_bus(record)    restart that broker at its exact endpoint
 
 -- Return the ownership record explicitly: required modules capture state for
 -- reads, so a module-global registry would not persist between helper calls.
@@ -181,6 +188,109 @@ fn _alive($p)
   return $p != nil and exists("/proc/" .. to_string($p))
 end
 
+-- The broker record's explicit per-operation environment. Every helper below
+-- selects its broker THIS way; nothing reads the exports private_bus() sets,
+-- which another broker start may have replaced by now.
+fn _bus_env($broker)
+  return {MIXOS_NODED_URL:$broker.url,COSMIX_NODED_URL:$broker.url,
+    MIXOS_NODE_CONFIG:$broker.conf,COSMIX_NODE_CONFIG:$broker.conf,
+    MIXOS_RUN:$broker.dir .. "/run",MIXOS_ETC:$broker.dir .. "/etc",MIXOS_VAR:$broker.dir .. "/var",
+    HOME:$broker.dir .. "/home",MIXOS_BROKER_ACCOUNT:$broker.account}
+end
+
+-- One Bus request against an EXPLICIT broker record: the child mix gets the
+-- record's own env, so no exported or inherited broker address can leak in.
+fn _call_at($broker, $service, $verb, $args)
+  $body = json_encode($args)
+  $script = "$b = " .. json_encode($body) .. "\nsend " .. json_encode($service) ..
+    " " .. $verb .. " body=$b timeout=30\nprint($rc)\nprint(json_encode($result))\n"
+  $mix = env("MIXOS_TEST_MIX", "/opt/mixos/bin/mix")
+  $r = run_argv([$mix, "-c", $script], {timeout: 60, env: _bus_env($broker)})
+  $lines = split(trim($r.stdout), "\n")
+  if len($lines) < 2 then
+    return {rc: -9, result: trim($r.stdout .. " " .. $r.stderr)}
+  end
+  $result = json_parse(join(slice($lines, 1), "\n"))
+  -- A refusal body can arrive as its JSON text; decode it so callers read
+  -- the fields either way.
+  if type($result) == "string" and starts_with($result, "{") then
+    $result = json_parse($result)
+  end
+  return {rc: to_number(trim($lines[0])), result: $result}
+end
+
+-- Exact-ownership readiness: noded.info must name this node AND the spawned
+-- PID. Any other answer (a generic pong from an unrelated broker on this
+-- port, or a malformed body) is rejected, never accepted as readiness.
+fn _broker_ready($name, $pid, $broker)
+  for $ready = 1 to 60
+    if not process_alive($pid) then return false end
+    $info = _call_at($broker, "noded", "noded.info", {})
+    if $info.rc == 0 then
+      if type($info.result) != "map" or $info.result.noded == nil then return false end
+      return $info.result.node == $name and $info.result.noded.pid == $pid and process_alive($pid)
+    end
+    sleep(0.25)
+  end
+  return false
+end
+
+-- Write the owned node config (and the owned mesh roster when there is one)
+-- and return the exact serve argv. A mesh roster is an explicit isolated
+-- test configuration: Unverified etc-roster-fallback routing, never a
+-- signed/Verified trust root.
+fn _write_owned_config($spec)
+  $endpoint = $spec.dir .. "/run/noded/bus.sock"
+  $noded_cfg = {port: $spec.port, admission: "off", unix_socket: $endpoint}
+  if $spec.mesh_open != nil then $noded_cfg["mesh_open"] = $spec.mesh_open end
+  write_file($spec.conf, json_encode({node: $spec.name, wg_ip: $spec.wg_ip,
+    mesh: $spec.name .. ".invalid", noded: $noded_cfg}))
+  $serve = [$spec.noded, "serve", "--listen", $spec.listen_ip .. ":" .. to_string($spec.port),
+    "--node", $spec.name, "--no-monitor", "--no-log"]
+  if len($spec.peers) > 0 then
+    write_file($spec.mesh_conf, json_encode({node_name: $spec.name, peers: $spec.peers}))
+    push($serve, "--mesh-config")
+    push($serve, $spec.mesh_conf)
+  end
+  return $serve
+end
+
+-- Spawn one owned broker from a complete spec and return its record. The
+-- record is self-contained (root, endpoint, mesh path, listen IP, peer
+-- list, fixed port, exact executable and the captured spawn env), so a
+-- later restart never re-reads globals or exports.
+fn _spawn_owned($spec, $serve)
+  $p = spawn($serve, {clear_env:true, env: {PATH:$spec.path_env, USER:$spec.user_env,
+    HOME:$spec.dir .. "/home", MIXOS_ETC:$spec.dir .. "/etc", MIXOS_VAR:$spec.dir .. "/var",
+    MIXOS_RUN:$spec.dir .. "/run", MIXOS_NODE_CONFIG:$spec.conf},
+    stdout: {file: $spec.log}, stderr: "stdout", detach: true})
+  $mesh_conf = ""
+  if len($spec.peers) > 0 then $mesh_conf = $spec.mesh_conf end
+  return {pid:$p, conf:$spec.conf, url:"ws://" .. $spec.listen_ip .. ":" .. to_string($spec.port) .. "/ws",
+    port:$spec.port, log:$spec.log, node:$spec.name, dir:$spec.dir,
+    endpoint:$spec.dir .. "/run/noded/bus.sock", mesh_conf:$mesh_conf,
+    listen_ip:$spec.listen_ip, peers:$spec.peers, fixed_port:$spec.fixed_port,
+    mesh_open:$spec.mesh_open, wg_ip:$spec.wg_ip, exe:$spec.noded,
+    path_env:$spec.path_env, user_env:$spec.user_env, account:$spec.account}
+end
+
+-- Bounded stop + reap of one owned child. Raises rather than leaving an
+-- unreaped listener behind for the next attempt.
+fn _retire_owned($pid)
+  if $pid == nil or not _alive($pid) then return end
+  $k = kill($pid, 15)
+  for $wait = 1 to 40
+    if not process_alive($pid) then return end
+    sleep(0.05)
+  end
+  $k = kill($pid, 9)
+  for $wait = 1 to 40
+    if not process_alive($pid) then return end
+    sleep(0.05)
+  end
+  raise("BROKER", "Owned child " .. to_string($pid) .. " did not retire")
+end
+
 -- A private broker for a gate whose citizens have FIXED Bus names (editd
 -- registers `edit`, which a host's own editd may hold). Starts noded
 -- (/opt/mixos/bin, or `noded: PATH`) on a random loopback port with
@@ -189,9 +299,21 @@ end
 -- call()'s child mix, the gate's clients) talks to it. Call it before
 -- start(); stop_bus() at the end.
 --
---   private_bus({dir: PATH, name: "desk-gate", noded: PATH?})
+--   private_bus({dir: PATH, name: "desk-gate", noded: PATH?,
+--                fixed_port: N?, listen_ip: "127.0.0.1"?, peers: [...]?,
+--                mesh_open: BOOL?})
 --
--- Returns {pid, conf, url, port, log}, or exits 2 when it never answers.
+-- fixed_port rebinds that exact port on every attempt: a bind/ownership
+-- failure fails this start, it never silently moves to another port.
+-- listen_ip is the explicit loopback bind (default 127.0.0.1). peers is a
+-- roster of {name, mesh_ip, noded_port} written to an owned mesh.conf.mix
+-- and passed with --mesh-config (Unverified etc-roster-fallback routing;
+-- no signed trust root is created or implied). mesh_open is written into
+-- the owned node config explicitly when given.
+--
+-- Returns an owned broker record {pid, conf, url, port, log, node, dir,
+-- endpoint, mesh_conf, listen_ip, peers, fixed_port, mesh_open, wg_ip, exe,
+-- path_env, user_env, account}, or exits 2 when it never answers.
 fn private_bus($opts)
   $dir = $opts["dir"]
   $name = $opts["name"] ?? "gate"
@@ -215,38 +337,47 @@ fn private_bus($opts)
   -- The staged runtime still uses the frozen pre-transplant config names.
   -- Both generations must reach this owned broker, never the host broker.
   export COSMIX_NODE_CONFIG=$conf
+  $listen_ip = $opts["listen_ip"] ?? "127.0.0.1"
+  $peers = $opts["peers"] ?? []
+  $spec = {noded:$noded, dir:$dir, name:$name, listen_ip:$listen_ip,
+    wg_ip:"", peers:$peers, mesh_open:$opts["mesh_open"],
+    conf:$conf, mesh_conf:$dir .. "/mesh.conf.mix", fixed_port:$opts["fixed_port"],
+    path_env:env("PATH"), user_env:env("USER"), account:env("MIXOS_BROKER_ACCOUNT")}
   for $attempt = 1 to 10
     -- first_port is an isolated-fixture seam for forcing a bind collision.
-    $port = if $attempt == 1 and $opts.first_port != nil then $opts.first_port else random(47000,47999) end
-    write_file($conf, json_encode({node: $name, wg_ip: "", mesh: $name .. ".invalid",
-      noded: {port: $port, admission: "off", unix_socket: $dir .. "/run/noded/bus.sock"}}))
-    $url = "ws://127.0.0.1:" .. to_string($port) .. "/ws"
+    -- With fixed_port every attempt keeps that exact port; a failed bind
+    -- then fails this start instead of silently picking another port.
+    $port = random(47000,47999)
+    if $spec.fixed_port != nil then
+      $port = $spec.fixed_port
+    elif $attempt == 1 and $opts.first_port != nil then
+      $port = $opts.first_port
+    end
+    $attempt_log = if $attempt == 1 then $log else $dir .. "/noded-" .. to_string($attempt) .. ".log" end
+    $b_spec = merge($spec, {port: $port, log: $attempt_log})
+    $b = _spawn_owned($b_spec, _write_owned_config($b_spec))
+    $url = $b.url
     export MIXOS_NODED_URL=$url
     export COSMIX_NODED_URL=$url
-    $attempt_log = if $attempt == 1 then $log else $dir .. "/noded-" .. to_string($attempt) .. ".log" end
-    $p = spawn([$noded, "serve", "--listen", "127.0.0.1:" .. to_string($port), "--node", $name, "--no-monitor", "--no-log"],
-      {clear_env:true, env: {PATH:env("PATH"), USER:env("USER"), HOME:$dir .. "/home",
-        MIXOS_ETC:$dir .. "/etc", MIXOS_VAR:$dir .. "/var", MIXOS_RUN:$dir .. "/run",
-        MIXOS_NODE_CONFIG:$conf}, stdout: {file: $attempt_log}, stderr: "stdout", detach: true})
     for $ready = 1 to 60
-      if not process_alive($p) then break end
+      if not process_alive($b.pid) then break end
       $info = call("noded","noded.info",{})
       if $info.rc == 0 then
-        if $info.result.node == $name and $info.result.noded.pid == $p and process_alive($p) then
-          return {pid:$p,conf:$conf,url:$url,port:$port,log:$attempt_log,node:$name}
+        if $info.result.node == $name and $info.result.noded.pid == $b.pid and process_alive($b.pid) then
+          return $b
         end
         -- A generic pong can belong to an unrelated broker on this port.
         break
       end
       sleep(0.25)
     end
-    if process_alive($p) then
-      $k = kill($p,15)
+    if process_alive($b.pid) then
+      $k = kill($b.pid, 15)
       for $stopped = 1 to 40
-        if not process_alive($p) then break end
+        if not process_alive($b.pid) then break end
         sleep(0.05)
       end
-      if process_alive($p) then raise("BROKER","Owned failed broker did not retire") end
+      if process_alive($b.pid) then raise("BROKER","Owned failed broker did not retire") end
     end
     print("private broker retry after failed ownership/bind check: " .. $attempt_log)
   end
@@ -257,6 +388,162 @@ fn stop_bus($bus)
   if $bus != nil and _alive($bus["pid"]) then
     $k = kill($bus["pid"], 15)
   end
+end
+
+-- Restart an owned broker AT ITS RECORDED ENDPOINT. Same node, root, port,
+-- Unix endpoint, mesh roster and exact executable — every one taken from
+-- the record, never from exported or inherited globals. The previous owned
+-- process must retire before rebinding; if another process has acquired the
+-- recorded port, this restart fails instead of silently moving. Returns a
+-- replacement record carrying the new PID.
+fn restart_private_bus($broker)
+  if ($broker == nil or $broker.pid == nil or $broker.node == nil or $broker.port == nil
+    or $broker.listen_ip == nil or $broker.conf == nil or $broker.dir == nil or $broker.exe == nil) then
+    raise("BROKER_RESTART", "broker record is incomplete for a same-endpoint restart")
+  end
+  _retire_owned($broker.pid)
+  $argv = [$broker.exe, "serve", "--listen", $broker.listen_ip .. ":" .. to_string($broker.port),
+    "--node", $broker.node, "--no-monitor", "--no-log"]
+  if $broker.mesh_conf != "" then
+    push($argv, "--mesh-config")
+    push($argv, $broker.mesh_conf)
+  end
+  $log = $broker.dir .. "/noded-restart-" .. to_string(pid()) .. "-" .. to_string(random(1000, 9999)) .. ".log"
+  $p = spawn($argv, {clear_env:true, env: {PATH:$broker.path_env, USER:$broker.user_env,
+    HOME:$broker.dir .. "/home", MIXOS_ETC:$broker.dir .. "/etc", MIXOS_VAR:$broker.dir .. "/var",
+    MIXOS_RUN:$broker.dir .. "/run", MIXOS_NODE_CONFIG:$broker.conf},
+    stdout: {file: $log}, stderr: "stdout", detach: true})
+  $replacement = merge($broker, {pid: $p, log: $log})
+  -- Optional owned ledger: publish the spawned PID before readiness, so an
+  -- interrupted restart still leaves the outer gate enough information to
+  -- retire its child. The filename stays directly under this broker's root.
+  if $broker.restart_record != nil then
+    $record = $broker.restart_record
+    if type($record) != "string" or $record == "" or contains($record,"/") or starts_with($record,"..") then
+      _retire_owned($p)
+      raise("BROKER_RESTART", "invalid owned restart record filename")
+    end
+    try
+      write_atomic($broker.dir .. "/" .. $record,json_encode($replacement))
+    catch $message
+      _retire_owned($p)
+      raise("BROKER_RESTART", "could not publish owned restart record: " .. $message)
+    end
+  end
+  if not _broker_ready($broker.node, $p, $replacement) then
+    _retire_owned($p)
+    raise("BROKER_RESTART", "Restarted broker never confirmed ownership at " .. $broker.url)
+  end
+  return $replacement
+end
+
+-- Two owned loopback brokers with a native roster-mode mesh between them:
+-- distinct fixed ports, and BOTH complete configs (node + mesh) written
+-- BEFORE either broker starts, each roster naming exactly the other node.
+-- Readiness is the exact-PID ownership check. On any collision or ownership
+-- failure BOTH owned candidate children are stopped and awaited, a fresh
+-- port pair is chosen, both files are rewritten, and the attempt budget is
+-- spent. Nothing here kills a process it did not spawn, and no global env
+-- is exported or read: later operations use the returned records only.
+--
+--   private_bus_pair({dir: PATH, noded: PATH?, run_token: "abc123"})
+--     -> {a: broker, b: broker, endpoint_config: {a: {...}, b: {...}}}
+--
+-- run_token is sanitised to short node-name characters; node names become
+-- fixture-a-<token> / fixture-b-<token>. These identities are owned
+-- process/configuration identities, NOT cryptographic source-IP
+-- attestations: two loopback brokers do not establish a WireGuard boundary.
+fn private_bus_pair($opts)
+  $dir = $opts["dir"]
+  if $dir == nil then raise("BROKER_PAIR", "pair needs {dir: PATH}") end
+  $noded = binary("noded", $opts["noded"] ?? "", ["/opt/mixos/bin"])
+  if $noded == "" then
+    print("  ERROR: no noded for the private broker pair (pass --noded PATH, or install it into /opt/mixos/bin)")
+    exit(2)
+  end
+  mkdir($dir, {parents: true})
+  print(run_argv_must(["chmod", "0711", $dir]))
+  $token = _pair_token($opts["run_token"] ?? "")
+  $name_a = "fixture-a-" .. $token
+  $name_b = "fixture-b-" .. $token
+  $account = trim(run_argv_must(["id", "-un"]))
+  $common = {noded:$noded, listen_ip:"127.0.0.1", wg_ip:"127.0.0.1", mesh_open:true,
+    path_env:env("PATH"), user_env:env("USER"), account:$account}
+  $dir_a = $dir .. "/a"
+  $dir_b = $dir .. "/b"
+  for each $root in [$dir_a, $dir_b]
+    mkdir($root, {parents: true})
+    print(run_argv_must(["chmod", "0711", $root]))
+    for each $child in ["etc", "var", "run", "home"]
+      mkdir($root .. "/" .. $child, {parents:true})
+    end
+  end
+  for $attempt = 1 to 5
+    $pa = random(47000, 47999)
+    $pb = random(47000, 47999)
+    while $pb == $pa
+      $pb = random(47000, 47999)
+    end
+    $spec_a = merge($common, {dir:$dir_a, name:$name_a, port:$pa, fixed_port:$pa,
+      peers:[{name:$name_b, mesh_ip:"127.0.0.1", noded_port:$pb}],
+      conf:$dir_a .. "/node.conf.mix", mesh_conf:$dir_a .. "/mesh.conf.mix",
+      log:$dir_a .. "/noded.log"})
+    $spec_b = merge($common, {dir:$dir_b, name:$name_b, port:$pb, fixed_port:$pb,
+      peers:[{name:$name_a, mesh_ip:"127.0.0.1", noded_port:$pa}],
+      conf:$dir_b .. "/node.conf.mix", mesh_conf:$dir_b .. "/mesh.conf.mix",
+      log:$dir_b .. "/noded.log"})
+    -- Both complete configs exist before either broker starts.
+    $serve_a = _write_owned_config($spec_a)
+    $serve_b = _write_owned_config($spec_b)
+    $a = _spawn_owned($spec_a, $serve_a)
+    $b = _spawn_owned($spec_b, $serve_b)
+    if _broker_ready($name_a, $a.pid, $a) and _broker_ready($name_b, $b.pid, $b) then
+      return {a: $a, b: $b, endpoint_config: {
+        a: {node:$name_a, ip:"127.0.0.1", port:$pa, url:$a.url, unix_socket:$a.endpoint,
+          conf:$a.conf, mesh_conf:$a.mesh_conf},
+        b: {node:$name_b, ip:"127.0.0.1", port:$pb, url:$b.url, unix_socket:$b.endpoint,
+          conf:$b.conf, mesh_conf:$b.mesh_conf}}}
+    end
+    -- A half-started pair must never survive into the next attempt: stop and
+    -- await BOTH owned candidate children, whatever each one's state.
+    _retire_pair($a.pid, $b.pid)
+    print("private broker pair retry after ownership/bind failure: " .. to_string($attempt))
+  end
+  raise("BROKER_PAIR", "No owned broker pair after five attempts: " .. $dir)
+end
+
+-- Pair cleanup stops BOTH owned children even if one refuses to retire.
+fn _retire_pair($first, $second)
+  $failure = ""
+  try
+    _retire_owned($first)
+  catch $message
+    $failure = $failure .. " " .. $message
+  end
+  try
+    _retire_owned($second)
+  catch $message
+    $failure = $failure .. " " .. $message
+  end
+  if $failure != "" then raise("BROKER_PAIR", "candidate children did not retire:" .. $failure) end
+end
+
+-- Only supported short node-name characters survive, and the pair names stay
+-- inside the 31-character service-name limit. The cap is 14, not 21: the
+-- mesh bridge registers as `bridge-<node>` (7 extra characters), so
+-- "bridge-fixture-a-" (17) + token must also fit in 31.
+fn _pair_token($token)
+  $allowed = "abcdefghijklmnopqrstuvwxyz0123456789-"
+  $out = ""
+  $i = 0
+  while $i < len($token)
+    $ch = lower(slice($token, $i, $i + 1))
+    if contains($allowed, $ch) then $out = $out .. $ch end
+    $i = $i + 1
+  end
+  if $out == "" then $out = to_string(pid()) end
+  if len($out) > 14 then $out = slice($out, 0, 14) end
+  return $out
 end
 
 -- GUI clients use the same native/compatibility bus choice as their compositor.

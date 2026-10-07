@@ -381,3 +381,97 @@ fn intact_shape_or_compiler_changes_fail_without_automatic_backup_regression() {
     assert!(Store::open(dir.path(), &binding()).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), drift);
 }
+#[test]
+fn golden_omitted_resources_preserve_accepted_profile_bytes_and_digests() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, accepted) = Store::create(dir.path(), binding(), Desktop::default()).unwrap();
+    drop(store);
+    // The accepted document keeps the exact old omitted-resource shape: the
+    // resources field must never appear, authored or effective.
+    let stored = std::fs::read_to_string(dir.path().join("desktop.conf.mix")).unwrap();
+    assert!(
+        !stored.contains("resources"),
+        "omission must not enter accepted bytes"
+    );
+    let parsed: serde_json::Value = strict::from_str(&stored).unwrap();
+    assert!(parsed["desktop"]["appearance"].get("resources").is_none());
+    let from_old: Desktop = serde_json::from_value(parsed["desktop"].clone()).unwrap();
+    assert_eq!(from_old, Desktop::default());
+    // The stored effective interpretation digest equals a fresh resolution of
+    // the stored old desktop: old accepted profile digests stay exact.
+    assert_eq!(
+        settings::digest(
+            &settings::resolve_with_embedded(&from_old, &accepted.embedded_source).unwrap()
+        )
+        .unwrap(),
+        accepted.effective_digest
+    );
+    // Reopening preserves the whole accepted identity byte for byte.
+    let (_, again) = Store::open(dir.path(), &binding()).unwrap();
+    assert_eq!(again.effective_digest, accepted.effective_digest);
+    assert_eq!(again.content_digest, accepted.content_digest);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("desktop.conf.mix")).unwrap(),
+        stored
+    );
+}
+#[test]
+fn resource_reference_apply_and_reset_are_whole_object_and_fenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = authority(dir.path());
+    let before = state.snapshot.clone();
+    let reference = json!({"schema":1,"set_id":"core-icons",
+        "manifest_blake3":"0000000000000000000000000000000000000000000000000000000000000000"});
+    let mut req = request(&state, "resources", "light");
+    req.changes.clear();
+    req.changes.insert("appearance.resources".into(), reference);
+    let receipt = state.apply(req).unwrap();
+    assert_eq!(receipt["status"], "changed");
+    assert_eq!(
+        state
+            .snapshot
+            .desktop
+            .appearance
+            .resources
+            .as_ref()
+            .unwrap()
+            .set_id,
+        "core-icons"
+    );
+    assert_eq!(state.snapshot.revision, Revision(2));
+    assert_eq!(state.snapshot.design_revision, Revision(2));
+    assert_eq!(
+        state.snapshot.effective["desktop"]
+            .resources
+            .as_ref()
+            .unwrap()
+            .set_id,
+        "core-icons"
+    );
+    // Reset restores omission and the exact previous desktop/effective data.
+    let mut reset = request(&state, "resources-reset", "light");
+    reset.changes.clear();
+    reset.reset = vec!["appearance.resources".into()];
+    state.apply(reset).unwrap();
+    assert_eq!(state.snapshot.desktop, before.desktop);
+    assert_eq!(state.snapshot.effective, before.effective);
+    // Nested paths and unsupported subdocument schemas are refused whole.
+    let mut nested = request(&state, "nested", "light");
+    nested.changes = BTreeMap::from([("appearance.resources.set_id".into(), json!("core-icons"))]);
+    assert_eq!(
+        state.apply(nested).unwrap_err()["status"],
+        "validation_failed"
+    );
+    let mut future = request(&state, "future-schema", "light");
+    future.changes = BTreeMap::from([(
+        "appearance.resources".into(),
+        json!({"schema":2,"set_id":"core-icons",
+            "manifest_blake3":"0000000000000000000000000000000000000000000000000000000000000000"}),
+    )]);
+    assert_eq!(
+        state.apply(future).unwrap_err()["status"],
+        "validation_failed"
+    );
+    assert_eq!(state.snapshot.desktop.appearance.resources, None);
+    assert_eq!(state.accepted.revision, Revision(3));
+}

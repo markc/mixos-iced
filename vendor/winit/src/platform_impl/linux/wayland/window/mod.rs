@@ -9,8 +9,8 @@ use sctk::reexports::client::{Proxy, QueueHandle};
 
 use sctk::compositor::{CompositorState, Region, SurfaceData};
 use sctk::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
-use sctk::shell::xdg::window::{Window as SctkWindow, WindowDecorations};
 use sctk::shell::WaylandSurface;
+use sctk::shell::xdg::window::{Window as SctkWindow, WindowDecorations};
 
 use tracing::warn;
 
@@ -29,6 +29,7 @@ use crate::window::{
 use super::event_loop::sink::EventSink;
 use super::output::MonitorHandle;
 use super::state::WinitState;
+use super::types::wp_presentation::{PresentationState, WindowPresentation};
 use super::types::xdg_activation::XdgActivationTokenData;
 use super::{ActiveEventLoop, WaylandError, WindowId};
 
@@ -38,6 +39,8 @@ pub use state::WindowState;
 
 /// The Wayland window.
 pub struct Window {
+    presentation: Option<PresentationState>,
+    presentation_liveness: Arc<WindowPresentation>,
     /// Reference to the underlying SCTK window.
     window: SctkWindow,
 
@@ -210,6 +213,8 @@ impl Window {
         event_loop_awakener.ping();
 
         Ok(Self {
+            presentation: state.presentation.clone(),
+            presentation_liveness: Arc::new(WindowPresentation::default()),
             window,
             display,
             monitors,
@@ -289,6 +294,23 @@ impl Window {
     #[inline]
     pub fn pre_present_notify(&self) {
         self.window_state.lock().unwrap().request_frame_callback();
+    }
+
+    pub fn request_redraw_after_present_failure(&self) {
+        let granted = {
+            let mut state = self.window_state.lock().unwrap();
+            let granted = state.grant_present_retry();
+            if granted {
+                // Publish permission and redraw together under the state lock.
+                // Dispatch must not consume permission before the bit is set.
+                self.window_requests.redraw_requested.store(true, Ordering::Relaxed);
+            }
+            granted
+        };
+        if granted {
+            // Wake even when an earlier redraw already waits at the throttle.
+            self.event_loop_awakener.ping();
+        }
     }
 
     #[inline]
@@ -438,11 +460,7 @@ impl Window {
 
     #[inline]
     pub fn set_maximized(&self, maximized: bool) {
-        if maximized {
-            self.window.set_maximized()
-        } else {
-            self.window.unset_maximized()
-        }
+        if maximized { self.window.set_maximized() } else { self.window.unset_maximized() }
     }
 
     #[inline]
@@ -699,15 +717,53 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        // Feedback has no client destroy request. Closed surfaces keep their
+        // outstanding charges until native terminal/object retirement.
+        self.presentation_liveness.closed.store(true, Ordering::Release);
         self.window_requests.closed.store(true, Ordering::Relaxed);
         self.event_loop_awakener.ping();
     }
 }
 
 impl Window {
-    pub fn queue_drag(&self, request: super::data_device::Request) -> Result<(), crate::drag::Error> {
+    #[cfg(test)]
+    pub(crate) fn take_native_request(
+        &self,
+    ) -> Option<super::types::wp_presentation::NativeRequest> {
+        self.presentation_liveness.take_native_request()
+    }
+
+    pub fn presentation_capacity(
+        &self,
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError>
+    {
+        self.presentation
+            .as_ref()
+            .ok_or(crate::presentation::PresentationError::Unsupported)?
+            .capacity(self.surface(), &self.presentation_liveness)
+    }
+
+    pub fn request_presentation_feedback(
+        &self,
+    ) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {
+        self.presentation
+            .as_ref()
+            .ok_or(crate::presentation::PresentationError::Unsupported)?
+            .request(
+                self.surface(),
+                &self.queue_handle,
+                self.window_id,
+                self.presentation_liveness.clone(),
+            )
+    }
+    pub fn queue_drag(
+        &self,
+        request: super::data_device::Request,
+    ) -> Result<(), crate::drag::Error> {
         let mut requests = self.window_requests.drag.lock().unwrap();
-        if requests.len() >= 256 { return Err(crate::drag::Error::Invalid); }
+        if requests.len() >= 256 {
+            return Err(crate::drag::Error::Invalid);
+        }
         requests.push(request);
         drop(requests);
         self.event_loop_awakener.ping();

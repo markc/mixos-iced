@@ -10,6 +10,8 @@ use std::cell::RefCell;
 
 pub use iced;
 pub mod message;
+#[cfg(any(feature = "settings-native", feature = "acceptance"))]
+pub mod native_actor;
 pub mod native_queue;
 pub use iced_runtime as runtime;
 /// Native app tests use the pinned simulator through their shared host.
@@ -42,6 +44,15 @@ pub mod widget {
 
 #[cfg(feature = "settings")]
 pub mod presentation;
+
+#[cfg(any(feature = "settings-native", feature = "acceptance"))]
+pub mod frames;
+
+#[cfg(feature = "native-inspect")]
+pub mod inspect;
+
+#[cfg(feature = "acceptance")]
+pub mod acceptance;
 
 #[cfg(feature = "native-grid")]
 pub mod native_grid;

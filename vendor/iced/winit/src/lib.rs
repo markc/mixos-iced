@@ -66,6 +66,13 @@ use std::mem::ManuallyDrop;
 use std::slice;
 use std::sync::Arc;
 
+mod native_presentation;
+mod presentation;
+use native_presentation::feedback as request_frame_feedback;
+
+#[cfg(feature = "native-frame-probe")]
+pub mod native_frame_probe;
+
 /// Runs a [`Program`] with the provided settings.
 pub fn run<P>(program: P) -> Result<(), Error>
 where
@@ -489,6 +496,7 @@ async fn run_instance<P>(
     use winit::event_loop::ControlFlow;
 
     let mut window_manager = window::Manager::new();
+    let mut capacity_epoch = presentation::CapacityEpoch::default();
     let mut is_window_opening = !is_daemon;
 
     let mut compositor = None;
@@ -753,6 +761,11 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        #[cfg(feature = "native-frame-probe")]
+                        if window.native_frame_probe.submissions_held() {
+                            continue;
+                        }
+
                         let physical_size = window.state.physical_size();
                         let mut logical_size = window.state.logical_size();
 
@@ -935,13 +948,85 @@ async fn run_instance<P>(
                         window.draw_preedit();
 
                         let present_span = debug::present(id);
-                        match current_compositor.present(
+                        let drawn = interface.frame_presentation().cloned();
+                        window.presentation.drawn(drawn.clone());
+                        let binding = window.presentation.feedback_candidate();
+                        #[cfg(feature = "native-frame-probe")]
+                        let scope = window
+                            .native_frame_probe
+                            .begin(
+                                id,
+                                drawn.as_ref(),
+                                (physical_size.width, physical_size.height),
+                            )
+                            .map(|point| {
+                                core::window::presentation::probe::Scope::arm_at(point)
+                                    .expect("one native draw scope")
+                            });
+                        let mut feedback = None;
+                        let mut pre_present_called = false;
+                        let result = current_compositor.present(
                             &mut window.renderer,
                             &mut window.surface,
                             window.state.viewport(),
                             window.state.background_color(),
-                            || window.raw.pre_present_notify(),
-                        ) {
+                            || {
+                                pre_present_called = true;
+                                window.raw.pre_present_notify();
+                                if binding.is_some() {
+                                    feedback = Some(request_frame_feedback(&window.raw));
+                                }
+                            },
+                        );
+                        #[cfg(feature = "native-frame-probe")]
+                        let fault_consumed = scope.as_ref().map(|scope| scope.consumed());
+                        #[cfg(feature = "native-frame-probe")]
+                        drop(scope);
+                        #[cfg(feature = "native-frame-probe")]
+                        let request = feedback
+                            .as_ref()
+                            .and_then(|result| result.as_ref().ok())
+                            .copied();
+                        if let Some(binding) = binding {
+                            match feedback {
+                                Some(feedback) => {
+                                    match feedback {
+                                        Ok(request_id) => {
+                                            let successful = result.is_ok();
+                                            window.presentation.submitted(
+                                                request_id,
+                                                binding.clone(),
+                                                successful,
+                                            );
+                                            if !successful {
+                                                binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
+                                            }
+                                        }
+                                        Err(reason) => {
+                                            if reason == core::window::presentation::FrameOutcome::Capacity {
+                                            window.presentation.native_capacity_blocked();
+                                        }
+                                            binding.observe(id, None, reason);
+                                        }
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        #[cfg(feature = "native-frame-probe")]
+                        if let Some(drawn) = &drawn {
+                            if let Some(held) = window.native_frame_probe.submitted(
+                                id,
+                                drawn,
+                                request,
+                                result.is_ok(),
+                                fault_consumed,
+                                pre_present_called,
+                            ) {
+                                deliver_frame_feedback(&mut window.presentation, id, held);
+                            }
+                        }
+                        match result {
                             Ok(()) => {
                                 present_span.finish();
                             }
@@ -971,7 +1056,10 @@ async fn run_instance<P>(
                                         );
                                     }
 
-                                    window.raw.request_redraw();
+                                    native_presentation::recover_redraw(
+                                        &window.raw,
+                                        pre_present_called,
+                                    );
                                 }
                                 compositor::SurfaceError::Occluded => {
                                     present_span.finish();
@@ -984,11 +1072,41 @@ async fn run_instance<P>(
                                     log::warn!("Error {error:?} when presenting surface.");
 
                                     // Try rendering all windows again next frame.
-                                    for (_id, window) in window_manager.iter_mut() {
-                                        window.raw.request_redraw();
+                                    for (window_id, window) in window_manager.iter_mut() {
+                                        if window_id == id {
+                                            native_presentation::recover_redraw(
+                                                &window.raw,
+                                                pre_present_called,
+                                            );
+                                        } else {
+                                            window.raw.request_redraw();
+                                        }
                                     }
                                 }
                             },
+                        }
+                    }
+                    event::Event::WindowEvent {
+                        event: winit::event::WindowEvent::PresentationFeedback(feedback),
+                        window_id,
+                    } => {
+                        let Some((id, window)) = window_manager.get_mut_alias(window_id) else {
+                            continue;
+                        };
+                        #[cfg(feature = "native-frame-probe")]
+                        let Some(feedback) =
+                            window
+                                .native_frame_probe
+                                .intercept(id, &window.presentation, feedback)
+                        else {
+                            continue;
+                        };
+                        #[cfg(feature = "native-frame-probe")]
+                        let delivered = feedback.id.get();
+                        deliver_frame_feedback(&mut window.presentation, id, feedback);
+                        #[cfg(feature = "native-frame-probe")]
+                        if window.native_frame_probe.after_delivery(delivered) {
+                            window.raw.request_redraw();
                         }
                     }
                     event::Event::WindowEvent {
@@ -1063,6 +1181,33 @@ async fn run_instance<P>(
                         }
                     }
                     event::Event::AboutToWait => {
+                        let blocked = window_manager
+                            .iter_mut()
+                            .any(|(_, window)| window.presentation.is_capacity_blocked());
+                        if !blocked {
+                            capacity_epoch.idle();
+                        } else {
+                            let epoch = window_manager.iter_mut().find_map(|(_, window)| {
+                                native_presentation::capacity(&window.raw)
+                                    .ok()
+                                    .map(|capacity| capacity.release_epoch)
+                            });
+                            if epoch.is_some_and(|epoch| capacity_epoch.should_scan(epoch)) {
+                                for (_, window) in window_manager.iter_mut() {
+                                    if window.presentation.is_capacity_blocked()
+                                        && let Ok(capacity) =
+                                            native_presentation::capacity(&window.raw)
+                                        && window
+                                            .presentation
+                                            .take_capacity_retry(capacity.available)
+                                    {
+                                        window.raw.request_redraw();
+                                    }
+                                }
+                                // CapacityEpoch retains the generation sampled before this
+                                // scan. A racing release publishes a new epoch and wake.
+                            }
+                        }
                         if actions > 0 {
                             proxy.free_slots(actions);
                             actions = 0;
@@ -1208,6 +1353,46 @@ async fn run_instance<P>(
     let _ = ManuallyDrop::into_inner(user_interfaces);
 }
 
+pub(crate) fn frame_feedback_outcome(
+    feedback: &winit::presentation::PresentationFeedback,
+) -> core::window::presentation::FrameOutcome {
+    use core::window::presentation::FrameOutcome;
+    match feedback.outcome {
+        winit::presentation::PresentationOutcome::Presented {
+            clock_id,
+            seconds,
+            nanoseconds,
+            refresh_ns,
+            output_sequence,
+            flags,
+        } => FrameOutcome::Presented {
+            clock_id,
+            seconds,
+            nanoseconds,
+            refresh_ns,
+            output_sequence,
+            flags,
+        },
+        winit::presentation::PresentationOutcome::Discarded => FrameOutcome::Discarded,
+    }
+}
+
+/// Retire the actual native lease before notifying the metadata-only observer.
+/// Ordinary and acceptance-deferred feedback share this one delivery path.
+fn deliver_frame_feedback(
+    ledger: &mut presentation::Ledger,
+    window: core::window::Id,
+    feedback: winit::presentation::PresentationFeedback,
+) {
+    let request = feedback.id.get();
+    let outcome = frame_feedback_outcome(&feedback);
+    let binding = ledger.resolve(request, outcome);
+    drop(feedback);
+    if let Some(binding) = binding {
+        binding.observe(window, Some(request), outcome);
+    }
+}
+
 /// Builds a window's [`UserInterface`] for the [`Program`].
 fn build_user_interface<'a, P: Program>(
     program: &'a program::Instance<P>,
@@ -1221,10 +1406,12 @@ where
 {
     let view_span = debug::view(id);
     let view = program.view(id);
+    let binding = program.frame_presentation(id);
     view_span.finish();
 
     let layout_span = debug::layout(id);
-    let user_interface = UserInterface::build(view, size, cache, renderer);
+    let user_interface =
+        UserInterface::build(view, size, cache, renderer).with_frame_presentation(binding);
     layout_span.finish();
 
     user_interface
@@ -1721,6 +1908,66 @@ fn run_action<'a, P, C>(
             for (_, window) in window_manager.iter_mut() {
                 window.raw.request_redraw();
             }
+        }
+        #[cfg(feature = "selector")]
+        Action::Query {
+            target,
+            layer,
+            mut operation,
+            traversal,
+            reply,
+        } => {
+            use crate::runtime::widget::selector::{QueryError, QueryReport, QueryTarget};
+
+            let window = match target {
+                QueryTarget::Id(id) => Some(id),
+                QueryTarget::Only => match window_manager.len() {
+                    1 => window_manager.iter_mut().next().map(|(id, _window)| id),
+                    0 => None,
+                    _ => {
+                        let _ = reply.send(Err(QueryError::MultipleWindows));
+                        return;
+                    }
+                },
+            };
+
+            let Some(window) = window else {
+                let _ = reply.send(Err(QueryError::WindowNotFound));
+                return;
+            };
+
+            let Some(win) = window_manager.get(window) else {
+                let _ = reply.send(Err(QueryError::WindowNotFound));
+                return;
+            };
+
+            let Some(ui) = interfaces.get_mut(&window) else {
+                let _ = reply.send(Err(QueryError::NotReady));
+                return;
+            };
+
+            // A read-only query: no update, no message and no redraw. It
+            // only walks layouts that already exist.
+            let result = match ui.inspect(&win.renderer, layer, operation.as_mut()) {
+                true => {
+                    let _ = operation.finish();
+                    match traversal.lock().unwrap().take() {
+                        Some(traversal) => Ok(QueryReport {
+                            layer,
+                            records: traversal.records,
+                            visited: traversal.visited,
+                            truncated: traversal.truncated,
+                            layout_sequence: ui.layout_sequence(),
+                            logical_size: ui.logical_size(),
+                            window_id: window,
+                        }),
+                        None => Err(QueryError::NotReady),
+                    }
+                }
+                false => Err(QueryError::NotReady),
+            };
+
+            let _ = reply.send(result);
         }
         Action::Image(action) => match action {
             image::Action::Allocate(handle, sender) => {

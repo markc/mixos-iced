@@ -1,0 +1,12 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real backend callbacks, deliberately undrained typed queues, on both owned
+-- Weston and compd sockets. This is ownership evidence, not frame presentation.
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [pixman|gl]") end
+$repo = args()[0]
+$bin = args()[1]
+$renderer = if len(args()) == 3 then args()[2] else "pixman" end
+if not contains(["pixman","gl"],$renderer) then raise("ARGS","Renderer must be pixman or gl") end
+$probe = require("native_probe_lib.mix")
+$probe.run_probe($repo,$bin,"testkit-queue-retirement","QUEUE_RETIREMENT PASS native_undrained=true late_delivery=true typed_dispatch=false",$renderer)
+print("PASS native queue retirement on owned Weston/compd: " .. $renderer)

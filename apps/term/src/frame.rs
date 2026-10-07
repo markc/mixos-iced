@@ -172,6 +172,19 @@ impl Painter {
         self.raster.scale
     }
 
+    pub fn bootstrap_raster(&self) -> term_core::raster::PreparedRaster {
+        self.raster.prepared_snapshot()
+    }
+
+    pub fn activate_prepared(&mut self, content: &crate::presentation::Content) {
+        self.font = content.font;
+        self.replace_raster(content.raster.clone().activate());
+    }
+
+    pub fn set_applied_font(&mut self, font: FontSize) {
+        self.font = font;
+    }
+
     // Read by the tests; nothing in the app needs the size back until a
     // font verb exists (T7).
     #[cfg(test)]
@@ -182,6 +195,7 @@ impl Painter {
     /// Rebuild for a new device scale, at the CURRENT font size — not the
     /// configured one, or moving the window to another output would silently
     /// undo the user's zoom. Ok(false) when the scale did not move.
+    #[cfg(test)]
     pub fn set_scale(&mut self, scale: f32) -> Result<bool, String> {
         if (scale - self.raster.scale).abs() < 0.01 {
             return Ok(false);
@@ -194,6 +208,7 @@ impl Painter {
     /// if it changed the size. The new size is committed only once a raster
     /// for it exists: a failed rebuild leaves both the size and the glyphs as
     /// they were, rather than a size nobody is drawing at.
+    #[cfg(test)]
     pub fn zoom(&mut self, change: impl FnOnce(&mut FontSize) -> bool) -> Result<bool, String> {
         let mut font = self.font;
         if !change(&mut font) {

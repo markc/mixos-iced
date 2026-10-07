@@ -1,0 +1,8 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real Winit presentation and receipt credit, separately from generic queues.
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [pixman|gl]") end
+$renderer = if len(args()) == 3 then args()[2] else "pixman" end
+$probe = require("native_probe_lib.mix")
+$probe.run_probe(args()[0],args()[1],"native-frame-winit-probe","WINIT_FRAME PASS presented=147 empty_damage=true typed_delivery_credit=true clone_credit=true process_cap=128 close_retains=true recovered=true",$renderer)
+print("PASS native Winit presentation ownership on owned Weston/compd: " .. $renderer)

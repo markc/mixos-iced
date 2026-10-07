@@ -78,6 +78,9 @@ where
         let _ = self.entries.insert(
             id,
             Window {
+                presentation: crate::presentation::Ledger::new(id),
+                #[cfg(feature = "native-frame-probe")]
+                native_frame_probe: crate::native_frame_probe::Gate::new(),
                 raw: window,
                 waker,
                 state,
@@ -99,6 +102,11 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The number of live windows.
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 
     pub fn is_idle(&self) -> bool {
@@ -175,6 +183,9 @@ where
     C: Compositor<Renderer = P::Renderer>,
     P::Theme: theme::Base,
 {
+    pub(crate) presentation: crate::presentation::Ledger,
+    #[cfg(feature = "native-frame-probe")]
+    pub(crate) native_frame_probe: crate::native_frame_probe::Gate,
     pub raw: Arc<winit::window::Window>,
     pub waker: shell::Waker,
     pub state: State<P>,

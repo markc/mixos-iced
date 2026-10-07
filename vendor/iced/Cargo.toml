@@ -22,6 +22,7 @@ all-features = true
 maintenance = { status = "actively-developed" }
 
 [features]
+native-frame-probe = ["iced_winit/native-frame-probe", "iced_renderer/native-frame-probe"]
 default = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland"]
 # Enables the `wgpu` GPU-accelerated renderer with all its default features (Vulkan, Metal, DX12, OpenGL, and WebGPU)
 wgpu = ["wgpu-bare", "iced_renderer/wgpu"]
@@ -68,7 +69,7 @@ webgl = ["iced_renderer/webgl"]
 # Enables syntax highlighting
 highlighter = ["iced_highlighter", "iced_widget/highlighter"]
 # Enables the `widget::selector` module
-selector = ["iced_runtime/selector"]
+selector = ["iced_runtime/selector", "iced_winit/selector"]
 # Enables the advanced module
 advanced = ["iced_core/advanced", "iced_widget/advanced"]
 # Embeds Fira Sans into the final application; useful for testing and Wasm builds

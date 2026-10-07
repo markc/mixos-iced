@@ -14,6 +14,18 @@ impl Id {
     pub fn unique() -> Id {
         Id(COUNT.fetch_add(1, atomic::Ordering::Relaxed))
     }
+
+    /// Builds an [`Id`] from a raw value previously obtained through
+    /// [`crate::window::raw_id`]; used by diagnostic queries that select an
+    /// explicit window.
+    pub fn from_raw(raw: u64) -> Id {
+        Id(raw)
+    }
+
+    /// The raw value of this [`Id`].
+    pub fn raw(self) -> u64 {
+        self.0
+    }
 }
 
 impl fmt::Display for Id {
