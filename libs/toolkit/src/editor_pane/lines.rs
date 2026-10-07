@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Line measurement for drawing and hit-testing (plan §4.2, D8, D9): walks
-//! `view::clusters` over the visible window of one line, seeking long lines
-//! through `view::line_checkpoints` (cached per text version) so a caret deep
-//! in a 5 MiB line costs O(4 KiB), not O(line).
+//! `view::clusters` over the visible window of one line. Long-line checkpoints
+//! grow only to the requested prefix and are cached per text version; repeat
+//! seeks walk at most one checkpoint interval instead of the entire line.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -292,6 +292,9 @@ pub fn cells_of(
     let end = content_end(text, line);
     let offset = offset.min(end);
     let (from, from_cells) = ck.start(text, cfg, line, Seek::Offset(offset));
+    if from == offset {
+        return (line, from_cells);
+    }
     let mut cell = from_cells;
     for c in text.clusters(cfg, from..end, from_cells) {
         if c.range.end > offset {
