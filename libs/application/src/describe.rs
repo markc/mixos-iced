@@ -480,11 +480,8 @@ pub fn parse_validate(raw: &str) -> Result<OwnedDescription, Violation> {
     }
     let value: Value = serde_json::from_str(raw)
         .map_err(|error| Violation::new("", code::MALFORMED_JSON, error.to_string()))?;
-    let description = validate(&value)?;
-    Ok(OwnedDescription {
-        value,
-        pid: description.pid(),
-    })
+    let pid = validate(&value)?.pid();
+    Ok(OwnedDescription { value, pid })
 }
 
 fn required_nonempty_bounded<'a>(
