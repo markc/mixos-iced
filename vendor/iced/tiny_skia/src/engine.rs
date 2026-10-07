@@ -8,6 +8,11 @@ use crate::text;
 pub struct Engine {
     text_pipeline: text::Pipeline,
 
+    #[cfg(test)]
+    reference_quad: bool,
+    #[cfg(test)]
+    quad_path_bounds: Option<tiny_skia::Rect>,
+
     #[cfg(feature = "image")]
     pub(crate) raster_pipeline: crate::raster::Pipeline,
     #[cfg(feature = "svg")]
@@ -18,6 +23,10 @@ impl Engine {
     pub fn new() -> Self {
         Self {
             text_pipeline: text::Pipeline::new(),
+            #[cfg(test)]
+            reference_quad: false,
+            #[cfg(test)]
+            quad_path_bounds: None,
             #[cfg(feature = "image")]
             raster_pipeline: crate::raster::Pipeline::new(),
             #[cfg(feature = "svg")]
@@ -43,6 +52,41 @@ impl Engine {
         clip_mask.set(clip_bounds);
 
         let transform = into_transform(transformation);
+
+        #[cfg(test)]
+        let optimise_quad = !self.reference_quad;
+        #[cfg(not(test))]
+        let optimise_quad = true;
+
+        if optimise_quad
+            && let Background::Color(color) = background
+            && quad.border.width == 0.0
+            && <[f32; 4]>::from(quad.border.radius) == [0.0; 4]
+            && quad.shadow.color.a == 0.0
+            && !physical_bounds.is_within(&clip_bounds)
+            && let Some(path) = damage_rectangle(quad.bounds, transform, clip_bounds)
+        {
+            #[cfg(test)]
+            {
+                self.quad_path_bounds = Some(path.bounds());
+            }
+            // A full-window quad under a narrow damage mask otherwise still
+            // runs tiny-skia's colour/mask pipeline across the whole window.
+            // Restrict geometry at integer pixel boundaries; the original
+            // mask continues to decide coverage at fractional clip edges.
+            pixels.fill_path(
+                &path,
+                &tiny_skia::Paint {
+                    shader: tiny_skia::Shader::SolidColor(into_color(*color)),
+                    anti_alias: true,
+                    ..tiny_skia::Paint::default()
+                },
+                tiny_skia::FillRule::EvenOdd,
+                tiny_skia::Transform::identity(),
+                Some(clip_mask.mask()),
+            );
+            return;
+        }
 
         // Make sure the border radius is not larger than the bounds
         let border_width = quad
@@ -688,6 +732,348 @@ fn into_transform(transformation: Transformation) -> tiny_skia::Transform {
         sy: transformation.scale_factor(),
         tx: translation.x,
         ty: translation.y,
+    }
+}
+
+/// Preserve the transformed quad's fractional edges and cut only outside
+/// the clip's conservative integer pixel bounds. Using the original path's
+/// transform avoids changing rounding via `(x * scale) + (width * scale)`.
+fn damage_rectangle(
+    bounds: Rectangle,
+    transform: tiny_skia::Transform,
+    clip: Rectangle,
+) -> Option<tiny_skia::Path> {
+    if !transform.sx.is_finite() || transform.sx <= 0.0 {
+        return None;
+    }
+    let path = tiny_skia::PathBuilder::from_rect(tiny_skia::Rect::from_xywh(
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+    )?)
+    .transform(transform)?;
+    let original = path.bounds();
+    let clipped = tiny_skia::Rect::from_ltrb(
+        original.left().max(clip.x.floor()),
+        original.top().max(clip.y.floor()),
+        original.right().min((clip.x + clip.width).ceil()),
+        original.bottom().min((clip.y + clip.height).ceil()),
+    )?;
+    Some(tiny_skia::PathBuilder::from_rect(clipped))
+}
+
+#[cfg(test)]
+mod quad_tests {
+    use super::*;
+    use crate::clip::ClipMask;
+    use crate::core::{Border, Shadow};
+
+    fn draw(
+        engine: &mut Engine,
+        target: &mut tiny_skia::Pixmap,
+        quad: &Quad,
+        background: Background,
+        transform: Transformation,
+        clips: &[Rectangle],
+    ) {
+        let mut storage = tiny_skia::Mask::new(target.width(), target.height()).unwrap();
+        let mut mask = ClipMask::new(&mut storage);
+        for &clip in clips {
+            engine.draw_quad(
+                quad,
+                &background,
+                transform,
+                &mut target.as_mut(),
+                &mut mask,
+                clip,
+            );
+        }
+    }
+
+    #[test]
+    fn solid_quad_damage_matches_full_path_pixel_oracle() {
+        let bounds = [
+            Rectangle {
+                x: -2.75,
+                y: -1.49,
+                width: 70.25,
+                height: 54.5,
+            },
+            Rectangle {
+                x: 3.125,
+                y: 6.75,
+                width: 35.125,
+                height: 21.49,
+            },
+            Rectangle {
+                x: 27.499,
+                y: -20.25,
+                width: 20.01,
+                height: 100.75,
+            },
+            Rectangle {
+                x: 67.875,
+                y: 58.125,
+                width: 50.5,
+                height: 40.75,
+            },
+            Rectangle {
+                x: -100.5,
+                y: 2.125,
+                width: 102.75,
+                height: 40.75,
+            },
+        ];
+        let clips = [
+            Rectangle {
+                x: -5.5,
+                y: -4.75,
+                width: 18.49,
+                height: 26.25,
+            },
+            Rectangle {
+                x: 17.25,
+                y: 10.5,
+                width: 2.5,
+                height: 19.75,
+            },
+            Rectangle {
+                x: 3.49,
+                y: 6.51,
+                width: 0.25,
+                height: 0.5,
+            },
+            Rectangle {
+                x: 27.51,
+                y: 8.49,
+                width: 20.25,
+                height: 4.75,
+            },
+            Rectangle {
+                x: 93.25,
+                y: 68.25,
+                width: 15.5,
+                height: 20.0,
+            },
+            Rectangle {
+                x: 180.0,
+                y: 140.0,
+                width: 4.25,
+                height: 2.5,
+            },
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 96.0,
+                height: 72.0,
+            },
+        ];
+        for scale in [1.0, 1.25, 1.5, 2.5] {
+            for translation in [(0.0, 0.0), (-9.125, 3.49), (7.51, -2.25)] {
+                let transform = Transformation::translate(translation.0, translation.1)
+                    * Transformation::scale(scale);
+                for bounds in bounds {
+                    for alpha in [0.0, 0.17, 0.5, 1.0] {
+                        let quad = Quad {
+                            bounds,
+                            ..Quad::default()
+                        };
+                        let background =
+                            Background::Color(Color::from_rgba(0.71, 0.23, 0.49, alpha));
+                        for clip in clips {
+                            let mut expected = tiny_skia::Pixmap::new(96, 72).unwrap();
+                            expected.fill(tiny_skia::Color::from_rgba8(30, 60, 90, 150));
+                            let mut actual = expected.clone();
+                            let mut original = Engine::new();
+                            original.reference_quad = true;
+                            draw(
+                                &mut original,
+                                &mut expected,
+                                &quad,
+                                background,
+                                transform,
+                                &[clip],
+                            );
+                            draw(
+                                &mut Engine::new(),
+                                &mut actual,
+                                &quad,
+                                background,
+                                transform,
+                                &[clip],
+                            );
+                            assert_eq!(
+                                actual.data(),
+                                expected.data(),
+                                "bounds={bounds:?} scale={scale} translation={translation:?} alpha={alpha} clip={clip:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_damage_bounds_actual_quad_raster_work() {
+        let quad = Quad {
+            bounds: Rectangle {
+                x: -0.25,
+                y: -0.5,
+                width: 2250.5,
+                height: 1250.75,
+            },
+            ..Quad::default()
+        };
+        let clip = Rectangle {
+            x: 500.25,
+            y: 300.5,
+            width: 2.5,
+            height: 27.25,
+        };
+        let mut target = tiny_skia::Pixmap::new(2250, 1250).unwrap();
+        let mut engine = Engine::new();
+        draw(
+            &mut engine,
+            &mut target,
+            &quad,
+            Color::BLACK.into(),
+            Transformation::IDENTITY,
+            &[clip],
+        );
+        let path = engine.quad_path_bounds.expect("production fast path ran");
+        assert_eq!(
+            (path.left(), path.top(), path.right(), path.bottom()),
+            (500.0, 300.0, 503.0, 328.0)
+        );
+        assert_eq!(path.width() * path.height(), 84.0);
+    }
+
+    #[test]
+    fn decorated_and_gradient_quads_keep_original_path() {
+        let base = Quad {
+            bounds: Rectangle {
+                x: 10.25,
+                y: 10.5,
+                width: 50.0,
+                height: 40.0,
+            },
+            ..Quad::default()
+        };
+        let clip = Rectangle {
+            x: 15.25,
+            y: 15.5,
+            width: 2.5,
+            height: 19.75,
+        };
+        let gradient = crate::core::gradient::Linear::new(0.37)
+            .add_stop(0.0, Color::BLACK)
+            .add_stop(1.0, Color::WHITE);
+        for (quad, background) in [
+            (
+                Quad {
+                    border: Border::default().rounded(5.0),
+                    ..base
+                },
+                Color::BLACK.into(),
+            ),
+            (
+                Quad {
+                    border: Border::default().width(1.25).color(Color::WHITE),
+                    ..base
+                },
+                Color::BLACK.into(),
+            ),
+            (
+                Quad {
+                    shadow: Shadow {
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                        blur_radius: 2.0,
+                        ..Shadow::default()
+                    },
+                    ..base
+                },
+                Color::BLACK.into(),
+            ),
+            (base, Background::Gradient(gradient.into())),
+        ] {
+            let mut expected = tiny_skia::Pixmap::new(96, 72).unwrap();
+            let mut actual = expected.clone();
+            let mut original = Engine::new();
+            original.reference_quad = true;
+            let mut engine = Engine::new();
+            draw(
+                &mut original,
+                &mut expected,
+                &quad,
+                background,
+                Transformation::scale(1.25),
+                &[clip],
+            );
+            draw(
+                &mut engine,
+                &mut actual,
+                &quad,
+                background,
+                Transformation::scale(1.25),
+                &[clip],
+            );
+            assert_eq!(actual.data(), expected.data());
+            assert!(engine.quad_path_bounds.is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release benchmark; run on a build node"]
+    fn narrow_quad_damage_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let quad = Quad {
+            bounds: Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: 2250.0,
+                height: 1250.0,
+            },
+            ..Quad::default()
+        };
+        let clip = Rectangle {
+            x: 500.25,
+            y: 300.5,
+            width: 2.5,
+            height: 27.25,
+        };
+        let mut expected = tiny_skia::Pixmap::new(2250, 1250).unwrap();
+        let mut actual = expected.clone();
+        let mut timings = Vec::new();
+        for (target, reference) in [(&mut expected, true), (&mut actual, false)] {
+            let mut engine = Engine::new();
+            engine.reference_quad = reference;
+            let mut storage = tiny_skia::Mask::new(2250, 1250).unwrap();
+            let mut mask = ClipMask::new(&mut storage);
+            mask.set(clip); // Exclude first-mask initialisation from timing.
+            let started = Instant::now();
+            for _ in 0..1000 {
+                engine.draw_quad(
+                    &quad,
+                    &Color::BLACK.into(),
+                    Transformation::IDENTITY,
+                    &mut target.as_mut(),
+                    &mut mask,
+                    black_box(clip),
+                );
+                let _ = black_box(target.data());
+            }
+            timings.push(started.elapsed());
+        }
+        assert_eq!(actual.data(), expected.data());
+        eprintln!(
+            "narrow quad: 2250x1250 full path vs 3x28 damage, 1000 frames; original={:?} bounded={:?} ratio={:.2}x",
+            timings[0],
+            timings[1],
+            timings[0].as_secs_f64() / timings[1].as_secs_f64()
+        );
     }
 }
 

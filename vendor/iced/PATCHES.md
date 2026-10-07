@@ -128,6 +128,15 @@ Guards: `clip::tests` (fractional/offscreen mask
 equivalence and release benchmark) and `text::tests` (real shaped space,
 visible glyph, cache eviction, glyph-ink pixel oracle and narrow-damage benchmark).
 
+Solid rectangular quads with no border, radius or shadow restrict their
+transformed geometry to the outward-rounded integer damage rectangle. The
+original clip mask and tiny-skia antialiasing still determine pixel coverage;
+transformed fractional quad edges are retained exactly. This bounds masked
+colour-pipeline work during narrow caret redraws. Gradients and decorated
+quads keep the upstream path. Guards: `engine::quad_tests` (full-path pixel
+oracle across fractional scales, clips, negative positions and alpha; actual
+path-area bound; decorated fallback; ignored release comparison benchmark).
+
 Ported from the frozen source e0297242305f3a3c3de09f1ca01e8faa771768da.
 The existing tiny-skia crate gains immutable native grid generations and cell
 revision damage, preserving draw order in the image sublayer. Opaque images
