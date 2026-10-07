@@ -59,15 +59,27 @@ pub struct Theme {
 
 /// Deliberate editor syntax/chrome extension of the shared prepared defaults.
 /// Called on the resource worker; no authored source compilation or file read.
-pub fn from_settings(look: &appearance::settings::Prepared, snapshot: &settings::Snapshot) -> Result<Theme, settings::Diagnostic> {
+pub fn from_settings(
+    look: &appearance::settings::Prepared,
+    snapshot: &settings::Snapshot,
+) -> Result<Theme, settings::Diagnostic> {
     let effective = &snapshot.effective["app:ced"];
-    let (palette, chrome) = build_palette(look.dictionary()).map_err(|name| settings::Diagnostic::new("unsupported_content", name, "Editor colour missing"))?;
+    let (palette, chrome) = build_palette(look.dictionary()).map_err(|name| {
+        settings::Diagnostic::new("unsupported_content", name, "Editor colour missing")
+    })?;
     let ui = look.typography().get("ui").expect("validated UI role");
     let mono = look.typography().get("mono").expect("validated mono role");
     Ok(Theme {
-        palette, chrome, tokens: look.tokens(), mono: (family_name(&mono.font), mono.size), ui: (family_name(&ui.font), ui.size),
-        scheme: Scheme::from_name(&effective.scheme).expect("validated scheme"), mode: Mode::from_name(&effective.mode).expect("validated mode"),
-        mono_font: mono.font, ui_font: ui.font, notes: None,
+        palette,
+        chrome,
+        tokens: look.tokens(),
+        mono: (family_name(&mono.font), mono.size),
+        ui: (family_name(&ui.font), ui.size),
+        scheme: Scheme::from_name(&effective.scheme).expect("validated scheme"),
+        mode: Mode::from_name(&effective.mode).expect("validated mode"),
+        mono_font: mono.font,
+        ui_font: ui.font,
+        notes: None,
     })
 }
 

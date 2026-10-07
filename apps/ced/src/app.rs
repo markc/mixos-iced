@@ -50,8 +50,8 @@ use crate::editor::{EditorMsg, EditorView, LayoutReport};
 use crate::keys::{self, Binding, Bindings, Routed};
 use crate::macros::{self, MacroDef, MacroEnv, MacroEvent};
 use crate::theme::{self, Theme};
-use application::presentation::native::{Event as SettingsEvent, Session as SettingsSession};
 use crate::verbs::{LayoutReply, Rect};
+use application::presentation::native::{Event as SettingsEvent, Session as SettingsSession};
 
 pub const APP_ID: &str = "dev.mixos.ced";
 
@@ -207,9 +207,18 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
     let dirs = AppDirs::resolve(COMPONENT);
     // Interim package presentation until native preparation activates. The
     // migrated GUI never reads legacy theme configuration files.
-    let theme = theme::resolve_selection(&theme::Selection { scheme: Default::default(), mode: Default::default(), design_source: None }, Vec::new());
-    let mut settings = SettingsSession::new(settings::consumer::Consumer::for_app(bus.settings_binding(), "ced")
-        .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?);
+    let theme = theme::resolve_selection(
+        &theme::Selection {
+            scheme: Default::default(),
+            mode: Default::default(),
+            design_source: None,
+        },
+        Vec::new(),
+    );
+    let mut settings = SettingsSession::new(
+        settings::consumer::Consumer::for_app(bus.settings_binding(), "ced")
+            .map_err(|fault| anyhow::anyhow!("{}: {}", fault.code, fault.message))?,
+    );
     let (_, jobs) = settings.handle(SettingsEvent::Wake, bus.settings_generation());
     bus.settings_jobs(jobs);
     let ui_font = theme.ui_font;
@@ -543,11 +552,18 @@ impl App {
             }
             Delivery::Settings(mailbox) => {
                 for event in mailbox.take() {
-                    let (changed, jobs) = self.settings.handle(event, self.bus.settings_generation());
+                    let (changed, jobs) =
+                        self.settings.handle(event, self.bus.settings_generation());
                     if changed.is_some() {
                         // No await can interleave the activation and this
                         // replacement of all theme data used by the view.
-                        self.theme = self.settings.host().presentation().expect("activated presentation").content().clone();
+                        self.theme = self
+                            .settings
+                            .host()
+                            .presentation()
+                            .expect("activated presentation")
+                            .content()
+                            .clone();
                     }
                     self.bus.settings_jobs(jobs);
                 }
@@ -1430,7 +1446,9 @@ impl App {
     }
 
     fn reload_theme(&mut self) {
-        let (_, jobs) = self.settings.handle(SettingsEvent::Refresh, self.bus.settings_generation());
+        let (_, jobs) = self
+            .settings
+            .handle(SettingsEvent::Refresh, self.bus.settings_generation());
         self.bus.settings_jobs(jobs);
     }
 

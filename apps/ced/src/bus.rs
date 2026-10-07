@@ -26,7 +26,9 @@ use application::iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSend
 use editor_model::types::{Incoming, ParsedBody};
 
 use crate::controller::{BusCommand, Effect};
-use application::presentation::native::{Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker};
+use application::presentation::native::{
+    Event as SettingsEvent, Jobs, Mailbox, Worker as SettingsWorker,
+};
 
 /// Everything the bus thread delivers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,9 +82,17 @@ pub struct BusHandle {
 }
 
 impl BusHandle {
-    pub fn settings_binding(&self) -> settings::Binding { self.binding.clone() }
-    pub fn settings_generation(&self) -> Option<u64> { self.client.is_connected().then(|| self.client.connection_generation()) }
-    pub fn settings_jobs(&self, jobs: Jobs) { self.settings.send_replace(Some(jobs)); }
+    pub fn settings_binding(&self) -> settings::Binding {
+        self.binding.clone()
+    }
+    pub fn settings_generation(&self) -> Option<u64> {
+        self.client
+            .is_connected()
+            .then(|| self.client.connection_generation())
+    }
+    pub fn settings_jobs(&self, jobs: Jobs) {
+        self.settings.send_replace(Some(jobs));
+    }
     pub fn perform(&self, effect: &Effect) {
         match effect {
             Effect::Send { .. }
@@ -139,7 +149,15 @@ pub fn spawn(service: &str) -> Result<(BusHandle, UnboundedReceiver<Delivery>), 
         })
         .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
     match ready_rx.recv() {
-        Ok(Ok((binding, client))) => Ok((BusHandle { tx: etx, settings, binding, client }, drx)),
+        Ok(Ok((binding, client))) => Ok((
+            BusHandle {
+                tx: etx,
+                settings,
+                binding,
+                client,
+            },
+            drx,
+        )),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(StartError::Unreachable("the Bus thread exited".into())),
     }
@@ -155,7 +173,10 @@ async fn run(
 ) {
     let binding = match settings::session::binding() {
         Ok(binding) => binding,
-        Err(error) => { let _ = ready.send(Err(StartError::Rejected(error.message))); return; }
+        Err(error) => {
+            let _ = ready.send(Err(StartError::Rejected(error.message)));
+            return;
+        }
     };
     let connect = SupervisedClient::connect_options(&service, &url)
         .fatal_on_registration_rejection(true)

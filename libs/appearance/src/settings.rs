@@ -363,7 +363,11 @@ impl Projection {
         self.prepare_registered_checked(package_source, || Ok(()))
     }
     /// Host cancellation is checked between individual registered font probes.
-    pub fn prepare_registered_checked(self, package_source: bool, mut check: impl FnMut() -> Result<(), Diagnostic>) -> Result<Prepared, Diagnostic> {
+    pub fn prepare_registered_checked(
+        self,
+        package_source: bool,
+        mut check: impl FnMut() -> Result<(), Diagnostic>,
+    ) -> Result<Prepared, Diagnostic> {
         self.prepare(|name, t| {
             check()?;
             let default = match name {

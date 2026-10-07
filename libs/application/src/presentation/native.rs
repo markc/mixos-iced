@@ -3,8 +3,20 @@
 //! connection, runtime, receiver or loop is created here.
 use super::*;
 use crate::message::Once;
-use settings::{Snapshot, consumer::Work, native::{Decoded, BOOTSTRAP_BUDGET}};
-use std::{future::Future, pin::Pin, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Instant};
+use settings::{
+    Snapshot,
+    consumer::Work,
+    native::{BOOTSTRAP_BUDGET, Decoded},
+};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 mod mailbox;
 pub use mailbox::Mailbox;
 #[cfg(test)]
@@ -17,7 +29,10 @@ pub enum Event<T> {
     Delivery(Decoded),
     Rpc(Work, Result<Option<Snapshot>, Diagnostic>),
     Prepared(Completion<T>),
-    Fallback(settings::fallback::Request, Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>),
+    Fallback(
+        settings::fallback::Request,
+        Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>,
+    ),
 }
 
 /// One desired job set, sent through the host's existing worker command lane.
@@ -42,9 +57,17 @@ pub struct Session<T> {
 }
 impl<T> Session<T> {
     pub fn new(consumer: Consumer) -> Self {
-        Self { host: Host::new(consumer), bootstrap: Instant::now() + BOOTSTRAP_BUDGET, fallback: None, fallback_attempted: false, prepare: None }
+        Self {
+            host: Host::new(consumer),
+            bootstrap: Instant::now() + BOOTSTRAP_BUDGET,
+            fallback: None,
+            fallback_attempted: false,
+            prepare: None,
+        }
     }
-    pub fn host(&self) -> &Host<T> { &self.host }
+    pub fn host(&self) -> &Host<T> {
+        &self.host
+    }
     /// `live` is the connection's current atomic state, read on the UI loop.
     /// Queued lifecycle notices cannot authorise an activation after real loss.
     pub fn handle(&mut self, event: Event<T>, live: Option<u64>) -> (Option<ChangePlan>, Jobs) {
@@ -52,41 +75,100 @@ impl<T> Session<T> {
         let mut changed = None;
         match event {
             Event::Wake => {}
-            Event::Refresh => { self.host.consumer_mut().refresh(); }
-            Event::Lost => { self.host.consumer_mut().lost(); }
-            Event::Delivery(delivery) => { self.host.consumer_mut().decoded_delivery(delivery); }
-            Event::Rpc(work, result) => { self.host.consumer_mut().complete(&work, result); }
-            Event::Prepared(ready) => { changed = self.host.complete(ready); }
+            Event::Refresh => {
+                self.host.consumer_mut().refresh();
+            }
+            Event::Lost => {
+                self.host.consumer_mut().lost();
+            }
+            Event::Delivery(delivery) => {
+                self.host.consumer_mut().decoded_delivery(delivery);
+            }
+            Event::Rpc(work, result) => {
+                self.host.consumer_mut().complete(&work, result);
+            }
+            Event::Prepared(ready) => {
+                changed = self.host.complete(ready);
+            }
             Event::Fallback(request, result) => match result {
                 Ok((fallback, presentation)) => {
-                    if self.host.consumer_mut().complete_fallback(&request, Ok(fallback)) {
+                    if self
+                        .host
+                        .consumer_mut()
+                        .complete_fallback(&request, Ok(fallback))
+                    {
                         let capture = self.host.request().expect("staged fallback");
-                        changed = self.host.complete(Completion { update: capture.update, result: Ok(presentation) });
+                        changed = self.host.complete(Completion {
+                            update: capture.update,
+                            result: Ok(presentation),
+                        });
                     }
                 }
-                Err(faults) => { self.host.consumer_mut().complete_fallback(&request, Err(faults)); }
+                Err(faults) => {
+                    self.host
+                        .consumer_mut()
+                        .complete_fallback(&request, Err(faults));
+                }
             },
         }
         let now = Instant::now();
-        if self.host.consumer().retry_deadline().is_some_and(|deadline| deadline <= now) {
+        if self
+            .host
+            .consumer()
+            .retry_deadline()
+            .is_some_and(|deadline| deadline <= now)
+        {
             self.host.consumer_mut().retry();
         }
-        if self.fallback.as_ref().is_some_and(|request| !self.host.consumer().is_fallback_current(request)) { self.fallback = None; }
+        if self
+            .fallback
+            .as_ref()
+            .is_some_and(|request| !self.host.consumer().is_fallback_current(request))
+        {
+            self.fallback = None;
+        }
         if now >= self.bootstrap && !self.fallback_attempted {
             let request = self.host.consumer_mut().fallback_request();
-            if request.is_some() { self.fallback_attempted = true; self.fallback = request.clone(); }
+            if request.is_some() {
+                self.fallback_attempted = true;
+                self.fallback = request.clone();
+            }
         }
-        if self.prepare.as_ref().is_some_and(|request| !self.host.consumer().is_current(request.update())) { self.prepare = None; }
-        if let Some(request) = self.host.request() { self.prepare = Some(request); }
+        if self
+            .prepare
+            .as_ref()
+            .is_some_and(|request| !self.host.consumer().is_current(request.update()))
+        {
+            self.prepare = None;
+        }
+        if let Some(request) = self.host.request() {
+            self.prepare = Some(request);
+        }
         let prepare = self.prepare.clone();
-        let wake = self.host.consumer().retry_deadline().into_iter().chain(
-            (now < self.bootstrap && self.host.consumer().applied().is_none()).then_some(self.bootstrap)
-        ).min();
+        let wake = self
+            .host
+            .consumer()
+            .retry_deadline()
+            .into_iter()
+            .chain(
+                (now < self.bootstrap && self.host.consumer().applied().is_none())
+                    .then_some(self.bootstrap),
+            )
+            .min();
         let deadline = if now < self.bootstrap && !self.host.consumer().is_confirmed() {
             self.bootstrap
-        } else { now + BOOTSTRAP_BUDGET };
-        let jobs = Jobs { work: self.host.consumer().current_work().cloned(), deadline, wake, prepare, fallback: self.fallback.clone(),
-            valid: self.host.consumer().pending().cloned(), valid_fallback: self.fallback.clone() };
+        } else {
+            now + BOOTSTRAP_BUDGET
+        };
+        let jobs = Jobs {
+            work: self.host.consumer().current_work().cloned(),
+            deadline,
+            wake,
+            prepare,
+            fallback: self.fallback.clone(),
+            valid: self.host.consumer().pending().cloned(),
+            valid_fallback: self.fallback.clone(),
+        };
         (changed, jobs)
     }
     fn sync(&mut self, live: Option<u64>) {
@@ -94,7 +176,9 @@ impl<T> Session<T> {
             self.fallback = None;
             self.fallback_attempted = false;
             match live {
-                Some(generation) => { self.host.consumer_mut().connected(generation); }
+                Some(generation) => {
+                    self.host.consumer_mut().connected(generation);
+                }
                 None => self.host.consumer_mut().disconnected(),
             }
         }
@@ -124,8 +208,14 @@ struct Running<T> {
 }
 fn valid(resource: &Resource, jobs: &Jobs) -> bool {
     match resource {
-        Resource::Prepare(request) => jobs.valid.as_ref().is_some_and(|update| update.same_stage(request.update())),
-        Resource::Fallback(request) => jobs.valid_fallback.as_ref().is_some_and(|capture| capture.same_request(request)),
+        Resource::Prepare(request) => jobs
+            .valid
+            .as_ref()
+            .is_some_and(|update| update.same_stage(request.update())),
+        Resource::Fallback(request) => jobs
+            .valid_fallback
+            .as_ref()
+            .is_some_and(|capture| capture.same_request(request)),
     }
 }
 
@@ -144,15 +234,29 @@ pub struct Worker<T> {
     offered: Option<Resource>,
 }
 impl<T: Send + 'static> Worker<T> {
-    pub fn new(client: Arc<settings::native::Client>, build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static) -> Self {
+    pub fn new(
+        client: Arc<settings::native::Client>,
+        build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
+    ) -> Self {
         let mut worker = Self::offline(build);
         worker.client = Some(client);
         worker
     }
     /// Resource/fallback jobs may run while the host's existing connection is
     /// still starting. RPCs stay dormant until that same client is attached.
-    pub fn offline(build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static) -> Self {
-        Self { client: None, work: None, rpc: None, wake: None, queued: None, running: None, build: Arc::new(build), offered: None }
+    pub fn offline(
+        build: impl Fn(&Prepared, &Snapshot) -> Result<T, Diagnostic> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            client: None,
+            work: None,
+            rpc: None,
+            wake: None,
+            queued: None,
+            running: None,
+            build: Arc::new(build),
+            offered: None,
+        }
     }
     /// Attach the host's already established connection, then resend its
     /// desired jobs. This method creates no connection or receiver.
@@ -162,10 +266,24 @@ impl<T: Send + 'static> Worker<T> {
         self.rpc = None;
     }
     pub fn replace(&mut self, jobs: Jobs) {
-        if self.offered.as_ref().is_some_and(|resource| !valid(resource, &jobs)) { self.offered = None; }
-        if self.queued.as_ref().is_some_and(|resource| !valid(resource, &jobs)) { self.queued = None; }
+        if self
+            .offered
+            .as_ref()
+            .is_some_and(|resource| !valid(resource, &jobs))
+        {
+            self.offered = None;
+        }
+        if self
+            .queued
+            .as_ref()
+            .is_some_and(|resource| !valid(resource, &jobs))
+        {
+            self.queued = None;
+        }
         if let Some(running) = &self.running {
-            if !valid(&running.capture, &jobs) { running.cancel.store(true, Ordering::Release); }
+            if !valid(&running.capture, &jobs) {
+                running.cancel.store(true, Ordering::Release);
+            }
         }
         if self.work != jobs.work {
             self.rpc = None;
@@ -180,9 +298,16 @@ impl<T: Send + 'static> Worker<T> {
             }
         }
         self.wake = jobs.wake;
-        let offered = jobs.prepare.map(Resource::Prepare).or_else(|| jobs.fallback.map(Resource::Fallback));
+        let offered = jobs
+            .prepare
+            .map(Resource::Prepare)
+            .or_else(|| jobs.fallback.map(Resource::Fallback));
         if let Some(resource) = offered {
-            if self.offered.as_ref().is_none_or(|previous| !previous.same(&resource)) {
+            if self
+                .offered
+                .as_ref()
+                .is_none_or(|previous| !previous.same(&resource))
+            {
                 self.offered = Some(match &resource {
                     Resource::Prepare(request) => Resource::Prepare(request.clone()),
                     Resource::Fallback(request) => Resource::Fallback(request.clone()),
@@ -192,8 +317,12 @@ impl<T: Send + 'static> Worker<T> {
         }
     }
     fn start(&mut self) {
-        if self.running.is_some() { return; }
-        let Some(resource) = self.queued.take() else { return; };
+        if self.running.is_some() {
+            return;
+        }
+        let Some(resource) = self.queued.take() else {
+            return;
+        };
         let capture = match &resource {
             Resource::Prepare(request) => Resource::Prepare(request.clone()),
             Resource::Fallback(request) => Resource::Fallback(request.clone()),
@@ -205,7 +334,10 @@ impl<T: Send + 'static> Worker<T> {
             Resource::Prepare(request) => {
                 let snapshot = request.update().snapshot();
                 let result = prepare(snapshot, &request.context, &cancelled, &build);
-                Event::Prepared(Completion { update: request.update, result })
+                Event::Prepared(Completion {
+                    update: request.update,
+                    result,
+                })
             }
             Resource::Fallback(request) => {
                 let mut presentation = None;
@@ -213,10 +345,17 @@ impl<T: Send + 'static> Worker<T> {
                     presentation = Some(prepare(snapshot, context, &cancelled, &build)?);
                     Ok(())
                 });
-                Event::Fallback(request, prepared.map(|fallback| (fallback, presentation.expect("validated resources"))))
+                Event::Fallback(
+                    request,
+                    prepared.map(|fallback| (fallback, presentation.expect("validated resources"))),
+                )
             }
         });
-        self.running = Some(Running { capture, task, cancel });
+        self.running = Some(Running {
+            capture,
+            task,
+            cancel,
+        });
     }
     pub async fn next(&mut self) -> Once<Event<T>> {
         self.start();
@@ -250,15 +389,39 @@ impl<T: Send + 'static> Worker<T> {
 }
 impl<T> Drop for Worker<T> {
     fn drop(&mut self) {
-        if let Some(running) = &self.running { running.cancel.store(true, Ordering::Release); }
+        if let Some(running) = &self.running {
+            running.cancel.store(true, Ordering::Release);
+        }
     }
 }
-fn prepare<T>(snapshot: &Snapshot, context: &str, cancel: &AtomicBool, build: &Builder<T>) -> Result<Presentation<T>, Diagnostic> {
-    let check = || if cancel.load(Ordering::Acquire) { Err(Diagnostic::new("preparation_cancelled", "worker", "Preparation superseded")) } else { Ok(()) };
+fn prepare<T>(
+    snapshot: &Snapshot,
+    context: &str,
+    cancel: &AtomicBool,
+    build: &Builder<T>,
+) -> Result<Presentation<T>, Diagnostic> {
+    let check = || {
+        if cancel.load(Ordering::Acquire) {
+            Err(Diagnostic::new(
+                "preparation_cancelled",
+                "worker",
+                "Preparation superseded",
+            ))
+        } else {
+            Ok(())
+        }
+    };
     check()?;
-    let effective = snapshot.effective.get(context).ok_or_else(|| Diagnostic::new("missing_context", "effective", "Context missing"))?;
-    let appearance = Projection::new(effective)?.prepare_registered_checked(snapshot.desktop.appearance.source.is_none(), check)?;
+    let effective = snapshot
+        .effective
+        .get(context)
+        .ok_or_else(|| Diagnostic::new("missing_context", "effective", "Context missing"))?;
+    let appearance = Projection::new(effective)?
+        .prepare_registered_checked(snapshot.desktop.appearance.source.is_none(), check)?;
     let content = build(&appearance, snapshot)?;
     check()?;
-    Ok(Presentation { appearance, content })
+    Ok(Presentation {
+        appearance,
+        content,
+    })
 }

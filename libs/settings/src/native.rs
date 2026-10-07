@@ -5,9 +5,9 @@ use crate::{
     consumer::{Consumer, Work, WorkKind},
     *,
 };
+use Client as SupervisedClient;
 use bus::native_client::IncomingCommand;
 pub use bus::native_client::SupervisedClient as Client;
-use Client as SupervisedClient;
 use std::time::Duration;
 
 pub const BOOTSTRAP_BUDGET: Duration = Duration::from_secs(1);
@@ -173,12 +173,13 @@ impl Decoded {
                 "Canonical delivery exceeds inline budget",
             ))
         } else {
-            serde_json::from_str::<Snapshot>(&command.body).map_err(|error| Diagnostic::new(
-                "invalid_delivery",
-                "snapshot",
-                error.to_string(),
-            ))
+            serde_json::from_str::<Snapshot>(&command.body)
+                .map_err(|error| Diagnostic::new("invalid_delivery", "snapshot", error.to_string()))
         };
-        Some(Self { binding: binding.clone(), generation: command.generation, result })
+        Some(Self {
+            binding: binding.clone(),
+            generation: command.generation,
+            result,
+        })
     }
 }

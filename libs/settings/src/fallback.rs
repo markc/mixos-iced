@@ -58,7 +58,9 @@ impl Prepared {
 }
 impl Request {
     pub fn same_request(&self, other: &Self) -> bool {
-        self.owner == other.owner && self.serial == other.serial && self.generation == other.generation
+        self.owner == other.owner
+            && self.serial == other.serial
+            && self.generation == other.generation
     }
     /// Resource validation covers every reference used by this context/host.
     /// It may inspect preloaded assets/fonts on the worker; it must only succeed

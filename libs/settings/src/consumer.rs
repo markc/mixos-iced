@@ -62,7 +62,9 @@ pub struct Update {
 impl Update {
     /// Compare a stage capture without walking its potentially large snapshot.
     pub fn same_stage(&self, other: &Self) -> bool {
-        self.owner == other.owner && self.serial == other.serial && self.generation == other.generation
+        self.owner == other.owner
+            && self.serial == other.serial
+            && self.generation == other.generation
     }
     pub fn kind(&self) -> PresentationKind {
         self.kind
