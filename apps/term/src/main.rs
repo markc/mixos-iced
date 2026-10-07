@@ -209,6 +209,8 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
             raster: bootstrap_raster,
             #[cfg(feature = "acceptance")]
             fixture,
+            #[cfg(all(test,feature = "acceptance"))]
+            fixture_admission: None,
         },
     )
     .map_err(|e| format!("Bus startup: {e}"))?;
@@ -1111,13 +1113,12 @@ fn apply(tabs: &mut TabSet, action: Action) -> Vec<Removed> {
 impl State {
     fn publish_frame_target(&self) {
         #[cfg(feature = "acceptance")]
-        if let (Some(endpoint), Some(window)) = (&self.fixture_frames, self.window_id) {
-            if let Err(error) = endpoint.publish(application::acceptance::frames::Target {
+        if let (Some(endpoint), Some(window)) = (&self.fixture_frames, self.window_id)
+            && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
                 window,
                 stamp: self.settings.session().frame_stamp(),
             }) {
                 eprintln!("term: fixture frame target: {error}");
-            }
         }
     }
     fn scroll(&mut self, id: u64, delta: application::iced::mouse::ScrollDelta) {

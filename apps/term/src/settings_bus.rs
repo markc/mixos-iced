@@ -171,6 +171,8 @@ pub(crate) struct PreparationSeed {
     pub raster: term_core::raster::PreparedRaster,
     #[cfg(feature = "acceptance")]
     pub fixture: Option<crate::acceptance::Fixture>,
+    #[cfg(all(test,feature = "acceptance"))]
+    pub fixture_admission: Option<tokio::sync::mpsc::UnboundedSender<usize>>,
 }
 
 struct WorkerChannels {
@@ -299,6 +301,8 @@ async fn worker(
         raster,
         #[cfg(feature = "acceptance")]
         mut fixture,
+        #[cfg(all(test,feature = "acceptance"))]
+        fixture_admission,
     } = seed;
     // The shared session binding, following the existing diagnostics: a
     // binding failure is reported and startup stops — a terminal never
@@ -694,8 +698,8 @@ async fn worker(
                     continue;
                 }
                 #[cfg(feature = "acceptance")]
-                if let Some(fixture) = &fixture {
-                    if application::acceptance::recognises(&command.command) {
+                if let Some(fixture) = &fixture
+                    && application::acceptance::recognises(&command.command) {
                         frames.set_live_generation(settings::native::live_generation(&client));
                         let waiting = matches!(command.command.as_str(), "app.acceptance.frame.wait" | "app.acceptance.barrier.wait");
                         let full = if waiting { fixture_waits.len() >= 2 } else { operations.len() >= OPERATIONS_CAP };
@@ -709,8 +713,9 @@ async fn worker(
                             &fixture.describe,&fixture.inspector,&fixture.controller,fixture_frames.as_ref()).expect("exact fixture verb");
                         let operation = async move {(permit,future.await.map_err(|error| format!("acceptance: {error:?}")))};
                         if waiting { fixture_waits.spawn(operation); } else { operations.spawn(operation); }
+                        #[cfg(all(test,feature = "acceptance"))]
+                        if waiting && let Some(probe) = &fixture_admission { let _ = probe.send(fixture_waits.len()); }
                         continue;
-                    }
                 }
                 if command.command == "app.describe" {
                     if client.state() != ConnState::Connected
@@ -1039,6 +1044,7 @@ mod tests {
         })
         .unwrap();
         let initial = LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap();
+        let (admission_tx, mut admission_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut started = start(
             "term",
             broker.url.clone(),
@@ -1052,6 +1058,7 @@ mod tests {
                     .unwrap()
                     .prepared_snapshot(),
                 fixture: Some(fixture),
+                fixture_admission: Some(admission_tx),
             },
         )
         .unwrap();
@@ -1083,6 +1090,14 @@ mod tests {
                 tokio::spawn(async move {caller.call("term","app.acceptance.frame.wait",json!({"run":"actor-owned","instance":51,
                     "window":window.raw(),"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision,"timeout_ms":10000})).await})
             };
+            tokio::time::timeout(Duration::from_secs(2),async {
+                assert_eq!(admission_rx.recv().await,Some(1));
+                assert_eq!(admission_rx.recv().await,Some(2));
+            }).await.expect("both actual native wait operations admitted");
+            assert!(!barrier_wait.is_finished());
+            assert!(!frame_wait.is_finished());
+            let held = caller.call("term","app.acceptance.barrier.state",reference.clone()).await.unwrap();
+            assert_eq!(held["state"],"armed","control progresses while both wait operations are retained");
             let mut next = initial; next.zoom_steps = 1;
             started.ui.set_context(next,started.handle.settings_generation()).unwrap();
             let reached = tokio::time::timeout(Duration::from_secs(3),barrier_wait).await.unwrap().unwrap().unwrap();
@@ -1132,6 +1147,8 @@ mod tests {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
                 #[cfg(feature = "acceptance")]
                 fixture: None,
+                #[cfg(feature = "acceptance")]
+                fixture_admission: None,
                 raster: term_core::raster::Raster::for_test(
                     1.0,
                     13.0,
@@ -1338,6 +1355,8 @@ mod tests {
                 local: LocalContext::new(1.0, term_core::config::Cursor::Underline).unwrap(),
                 #[cfg(feature = "acceptance")]
                 fixture: None,
+                #[cfg(feature = "acceptance")]
+                fixture_admission: None,
                 raster: term_core::raster::Raster::for_test(
                     1.0,
                     13.0,
