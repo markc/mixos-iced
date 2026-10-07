@@ -24,7 +24,7 @@
 //! consults `current`; a request that names an expected binding uses
 //! `read_at`, which never does.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
