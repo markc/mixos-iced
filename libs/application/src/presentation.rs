@@ -51,6 +51,11 @@ impl<T> Host<T> {
     pub fn presentation(&self) -> Option<&Presentation<T>> {
         self.presentation.as_ref()
     }
+    #[cfg(feature = "settings-native")]
+    fn replace_local(&mut self, presentation: Presentation<T>, activate: impl FnOnce(&Presentation<T>)) {
+        activate(&presentation);
+        self.presentation = Some(presentation);
+    }
     pub fn kind(&self) -> Option<PresentationKind> {
         self.consumer.presentation_kind()
     }

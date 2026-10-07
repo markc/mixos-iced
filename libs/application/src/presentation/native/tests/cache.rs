@@ -9,7 +9,7 @@ use std::time::Duration;
 fn activated() -> Session<u64> {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    session.handle(Event::Prepared(ready(jobs.prepare.unwrap())), Some(1));
+    session.handle(Event::Prepared(ready(jobs.prepare_request().unwrap())), Some(1));
     session
 }
 async fn next(worker: &mut Worker<u64>) -> Event<u64> {
@@ -69,7 +69,7 @@ async fn applied_capture_survives_loss_and_cold_cache_does_not_seed_authority() 
     );
     let mut cold_worker = cache_worker(&root);
     let (_, jobs) = cold.handle(Event::Wake, None);
-    assert!(jobs.fallback.is_some());
+    assert!(jobs.fallback_request().is_some());
     cold_worker.replace(jobs);
     assert!(cold.handle(next(&mut cold_worker).await, None).0.is_some());
     assert_eq!(cold.host.kind(), Some(PresentationKind::Cached));

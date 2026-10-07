@@ -314,6 +314,24 @@ events behind one wake. `Worker::offline` prepares fallback resources while the
 host's connection attempt continues. The live lifecycle/generation sample fences
 every activation, including queued completions after connection loss.
 
+Hosts with local zoom, output scale or painter coordinates use
+`Session::with_context` and `Worker::contextual`. Requirements and content
+preparation receive the same immutable context on the existing blocking lane.
+`Ui::set_context` coalesces changes; equal contexts do no work. A checked local
+revision fences old results, including failures and panics, before activation
+or acknowledgement. Context does not require cloning or serialisation.
+
+Local preparation retains the active settings snapshot and exact verified asset
+binding. A generic fallback retains its already prepared appearance rather than
+discovering a new set. Success runs the same synchronous activation hook without
+refreshing settingsd, advancing its revision or writing another cache capture.
+Failure keeps the previous presentation and exposes a separate local diagnostic
+through `preparation_evidence`. `retry_preparation` retries that context without
+retrying settings authority or cache writes. Hosts publish their latest context
+before draining queued completions in the same UI turn. Legacy unit-context
+constructors retain their two-argument callbacks; exhaustive event matches must
+also handle the new opaque `Event::Resource` variant.
+
 Ced and compd's scene-host use this path. Hosts that also activate renderer
 resources use `Host::complete_with` or `Session::handle_with`: the synchronous,
 total hook runs after successful preparation and current-stage fencing, before
@@ -1175,7 +1193,7 @@ checked separately by the layering gate.
 | [term-test-broker](https://github.com/markc/mixos/blob/main/apps/term/crates/term-test-broker/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [mix-shell](https://github.com/markc/mixos/blob/main/cli/mix-shell/Cargo.toml) | mix-shell | cli | mix | public | 0.109.4 |
 | [appearance](https://github.com/markc/mixos/blob/main/libs/appearance/Cargo.toml) | appearance | lib | desktop | none | 0.1.1 |
-| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.10 |
+| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.12 |
 | [assets](https://github.com/markc/mixos/blob/main/libs/assets/Cargo.toml) | assets | lib | core | public | 0.1.2 |
 | [buildinfo](https://github.com/markc/mixos/blob/main/libs/buildinfo/Cargo.toml) | buildinfo | lib | core | none | 0.1.1 |
 | [bus](https://github.com/markc/mixos/blob/main/libs/bus/Cargo.toml) | bus | lib | core | none | 0.1.1 |

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.12
+
+- Capture typed, immutable local preparation context on the existing worker
+  lane. Zoom and output-scale changes use a separate checked revision, retain
+  the active verified binding and do not refresh settingsd or rewrite its cache.
+  Failed local preparation preserves the presentation and waits for explicit
+  retry or a new context. Contextual constructors complement the existing unit
+  constructors; contexts need not implement Clone or serialisation.
+- Add opaque `Event::Resource` completions fenced before activation, faults and
+  acknowledgement. External exhaustive event matches must handle the new
+  variant. Legacy manually constructed unit completions remain accepted only
+  before the first local revision change. Superseded physical jobs retire before
+  another job starts, and their errors and panics cannot poison a requeued job.
+
 ## 0.1.11
 
 - The central verified resource host takes over live worker preparation: one

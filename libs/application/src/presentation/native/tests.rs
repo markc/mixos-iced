@@ -5,6 +5,7 @@ use settings::{Binding, Desktop, Revision};
 use sha2::Digest;
 use toolkit::fonts::{FontChoice, FontSelection, FontSet};
 mod bridge;
+mod context;
 #[cfg(feature = "settings-cache")]
 mod cache;
 
@@ -202,7 +203,7 @@ fn foreign_snapshot_binding_cannot_activate_despite_matching_broker_stamp() {
     foreign.binding.instance = "other".into();
     let (change, jobs) = session.handle(Event::Delivery(decoded_snapshot(foreign)), Some(1));
     assert!(change.is_none());
-    assert!(jobs.prepare.is_none());
+    assert!(jobs.prepare_request().is_none());
     assert_eq!(
         session.host().consumer().fault().unwrap().code,
         "wrong_target"
@@ -214,10 +215,10 @@ fn foreign_snapshot_binding_cannot_activate_despite_matching_broker_stamp() {
 fn session_activation_hook_fences_stale_and_failed_preparations() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let stale = ready(jobs.prepare.unwrap());
+    let stale = ready(jobs.prepare_request().unwrap());
     session.host.consumer_mut().observe(1, snapshot(2, true));
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let current = ready(jobs.prepare.unwrap());
+    let current = ready(jobs.prepare_request().unwrap());
     let mut activated = Vec::new();
     assert!(
         session
@@ -238,7 +239,7 @@ fn session_activation_hook_fences_stale_and_failed_preparations() {
     session.host.consumer_mut().observe(1, snapshot(3, false));
     let (_, jobs) = session.handle(Event::Wake, Some(1));
     let failed = jobs
-        .prepare
+        .prepare_request()
         .unwrap()
         .failed(Diagnostic::new("fixture", "policy", "invalid"));
     assert!(
@@ -260,7 +261,7 @@ fn current_embedded_fallback_runs_activation_hook_once() {
     let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     session.bootstrap = Instant::now();
     let (_, jobs) = session.handle(Event::Wake, None);
-    let request = jobs.fallback.unwrap();
+    let request = jobs.fallback_request().unwrap();
     let mut presentation = None;
     let fallback = request
         .prepare(None, |snapshot, context, _| {
@@ -298,7 +299,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
     let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     session.bootstrap = Instant::now();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let request = jobs.fallback.unwrap();
+    let request = jobs.fallback_request().unwrap();
     let mut presentation = None;
     let fallback = request
         .prepare(None, |snapshot, context, _| {
@@ -321,7 +322,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
         Event::Rpc(jobs.work.unwrap(), Ok(Some(snapshot(1, false)))),
         Some(1),
     );
-    let ready = ready(jobs.prepare.unwrap());
+    let ready = ready(jobs.prepare_request().unwrap());
     let mut activated = Vec::new();
     let (change, jobs) = session.handle_with(
         Event::Fallback(request, Box::new(Ok((fallback, presentation.unwrap())))),
@@ -330,7 +331,7 @@ fn live_stage_fences_a_ready_fallback_on_the_same_connection() {
     );
     assert!(change.is_none());
     assert!(activated.is_empty());
-    assert!(jobs.prepare.is_some());
+    assert!(jobs.prepare_request().is_some());
     let (change, _) = session.handle(Event::Prepared(ready), Some(1));
     assert!(change.is_some());
     assert_eq!(*session.host().presentation().unwrap().content(), 1);
@@ -366,27 +367,27 @@ fn coalesced_jobs_retain_capture_and_atomic_loss_rejects_queued_ready() {
     let (_, repeated) = session.handle(Event::Wake, Some(1));
     assert!(
         first
-            .prepare
+            .prepare_request()
             .unwrap()
             .update()
-            .same_stage(repeated.prepare.as_ref().unwrap().update())
+            .same_stage(repeated.prepare_request().as_ref().unwrap().update())
     );
-    let result = ready(repeated.prepare.unwrap());
+    let result = ready(repeated.prepare_request().unwrap());
     let (change, after_loss) = session.handle(Event::Prepared(result), None);
     assert!(change.is_none());
     assert!(session.host().presentation().is_none());
-    assert!(after_loss.prepare.is_none());
+    assert!(after_loss.prepare_request().is_none());
 }
 #[test]
 fn no_op_revision_advances_evidence_without_a_resource_job() {
     let mut session = session();
     let (_, jobs) = session.handle(Event::Wake, Some(1));
-    let (change, _) = session.handle(Event::Prepared(ready(jobs.prepare.unwrap())), Some(1));
+    let (change, _) = session.handle(Event::Prepared(ready(jobs.prepare_request().unwrap())), Some(1));
     assert!(change.is_some());
     session.host.consumer_mut().observe(1, snapshot(2, false));
     let (change, jobs) = session.handle(Event::Wake, Some(1));
     assert!(change.is_none());
-    assert!(jobs.prepare.is_none());
+    assert!(jobs.prepare_request().is_none());
     assert_eq!(
         session.host().consumer().applied().unwrap().revision,
         Revision(2)
@@ -398,7 +399,7 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
     let mut session = Session::<u64>::new(Consumer::for_app(binding(), "ced").unwrap());
     session.bootstrap = Instant::now();
     let (_, jobs) = session.handle(Event::Wake, None);
-    let request = jobs.fallback.unwrap();
+    let request = jobs.fallback_request().unwrap();
     let mut activated = false;
     session.handle_with(
         Event::Fallback(
@@ -414,17 +415,17 @@ fn fallback_attempt_is_fenced_and_does_not_retry_a_failed_resource_in_a_loop() {
     );
     assert!(!activated);
     let (_, jobs) = session.handle(Event::Wake, None);
-    assert!(jobs.fallback.is_none());
+    assert!(jobs.fallback_request().is_none());
     assert!(jobs.wake.is_none());
     assert!(session.host().consumer().fallback_fault().is_some());
     for _ in 0..100 {
         let (_, jobs) = session.handle(Event::Wake, None);
-        assert!(jobs.fallback.is_none());
+        assert!(jobs.fallback_request().is_none());
         assert!(jobs.wake.is_none());
     }
     let (_, jobs) = session.handle(Event::Refresh, None);
     assert!(
-        jobs.fallback.is_some(),
+        jobs.fallback_request().is_some(),
         "explicit refresh can heal offline resource failure"
     );
 }

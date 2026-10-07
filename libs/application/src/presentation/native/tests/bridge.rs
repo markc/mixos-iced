@@ -13,10 +13,10 @@ fn pair() -> (Ui<u64>, Lane<u64>) {
 fn bridge_fences_completion_and_activates_current_content_once() {
     let mut original = session();
     let (_, jobs) = original.handle(Event::Wake, Some(1));
-    let stale = ready(jobs.prepare.unwrap());
+    let stale = ready(jobs.prepare_request().unwrap());
     original.host.consumer_mut().observe(1, snapshot(2, true));
     let (_, jobs) = original.handle(Event::Wake, Some(1));
-    let fresh = ready(jobs.prepare.unwrap());
+    let fresh = ready(jobs.prepare_request().unwrap());
     let (mut ui, lane) = super::super::bridge(
         original,
         Worker::offline_with_host(|_, s| Ok(s.revision.0), hermetic_host()),
@@ -91,7 +91,7 @@ async fn cancelled_bridge_drive_keeps_one_resource_job_and_completion() {
 fn bridge_coalesces_wakes_and_samples_generation_for_each_event() {
     let mut original = session();
     let (_, jobs) = original.handle(Event::Wake, Some(1));
-    let completion = ready(jobs.prepare.unwrap());
+    let completion = ready(jobs.prepare_request().unwrap());
     let (mut ui, lane) = super::super::bridge(
         original,
         Worker::offline_with_host(|_, s| Ok(s.revision.0), hermetic_host()),
