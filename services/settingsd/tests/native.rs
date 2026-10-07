@@ -171,6 +171,9 @@ fn broker_restart_republishes_without_authority_restart_and_shared_consumer_reco
         let update = consumer.pending().unwrap().clone();
         assert!(update.changes().text && update.changes().layout);
         assert!(consumer.acknowledge(&update));
+        let cache_directory = tempfile::tempdir().unwrap();
+        let mut cache_writer = settings::cache::Writer::open(cache_directory.path(), &consumer).unwrap();
+        cache_writer.write(&consumer.cache_save().unwrap()).unwrap();
         let generation = client.connection_generation();
         broker.stop();
         tokio::time::timeout(Duration::from_secs(10),async {
@@ -178,6 +181,22 @@ fn broker_restart_republishes_without_authority_restart_and_shared_consumer_reco
         }).await.unwrap();
         consumer.disconnected();
         assert_eq!(consumer.applied().unwrap().revision,settings::Revision(2));
+        assert_eq!(consumer.presentation_kind(), Some(settings::fallback::PresentationKind::LastGood));
+        // A newly launched consumer can stage persisted data with an empty,
+        // offline broker. The resource inventory here is a headless fixture,
+        // not proof that a renderer has activated or presented these fonts.
+        let mut cold = Consumer::for_app(settings::Binding { instance:"fixture".into(), profile:"default".into() }, "ced").unwrap();
+        let cached = settings::cache::load(cache_directory.path(), &cold).unwrap();
+        let request = cold.fallback_request().unwrap();
+        let prepared = request.prepare(Some(cached), |snapshot, context, _| {
+            assert!(!snapshot.effective[context].design.typography.is_empty());
+            Ok(())
+        }).unwrap();
+        assert!(cold.complete_fallback(&request, Ok(prepared)));
+        assert!(cold.acknowledge(&cold.pending().unwrap().clone()));
+        assert_eq!(cold.presentation_kind(), Some(settings::fallback::PresentationKind::Cached));
+        assert!(cold.current().is_none());
+        assert!(cold.cache_save().is_none());
         assert!(authority.0.as_mut().unwrap().try_wait().unwrap().is_none(),"authority survives broker loss");
         assert!(!Command::new(env!("CARGO_BIN_EXE_settingsd")).args(["seed","--instance","fixture","--root"]).arg(root.path()).status().unwrap().success(),"live authority keeps exclusive writer while offline");
         broker.restart();
@@ -193,6 +212,11 @@ fn broker_restart_republishes_without_authority_restart_and_shared_consumer_reco
         assert_eq!(consumer.current().unwrap().revision,settings::Revision(2));
         assert_eq!(consumer.current().unwrap().incarnation,original.incarnation);
         assert!(consumer.pending().is_none(),"same render data needs no redraw after reconnect");
+        let work = cold.connected(client.connection_generation());
+        drive(&mut cold, &client, work).await;
+        assert_eq!(cold.presentation_kind(), Some(settings::fallback::PresentationKind::Current));
+        assert_eq!(cold.current().unwrap().revision, settings::Revision(2));
+        assert!(cold.pending().is_none(), "cache-to-current evidence promotion needs no redundant swap");
         // The restarted broker has no old retained state: fresh delivery proves
         // authority reconnect/republication, even without a new mutation.
         tokio::time::timeout(Duration::from_secs(10),async {

@@ -37,7 +37,7 @@ buildinfo.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-settings = { workspace = true, features = ["native"] }
+settings = { workspace = true, features = ["native", "cache"] }
 
 [build-dependencies]
 buildinfo.workspace = true

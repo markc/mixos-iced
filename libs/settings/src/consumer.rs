@@ -4,6 +4,7 @@
 //! event loop. This engine owns neither a connection nor a renderer runtime.
 use crate::{
     domains::ChangePlan,
+    fallback::{PresentationKind, Prepared, Request},
     reducer::{Decision, Reducer},
     *,
 };
@@ -53,11 +54,13 @@ impl Work {
 pub struct Update {
     owner: u64,
     serial: u64,
-    generation: u64,
+    generation: Option<u64>,
+    kind: PresentationKind,
     snapshot: Arc<Snapshot>,
     changes: ChangePlan,
 }
 impl Update {
+    pub fn kind(&self) -> PresentationKind { self.kind }
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
@@ -86,6 +89,10 @@ pub struct Consumer {
     failures: u8,
     pending: Option<Update>,
     applied: Option<Arc<Snapshot>>,
+    applied_kind: PresentationKind,
+    #[cfg(feature = "cache")]
+    applied_serial: u64,
+    fallback_serial: u64,
     fault: Option<Diagnostic>,
 }
 impl Consumer {
@@ -135,6 +142,10 @@ impl Consumer {
             failures: 0,
             pending: None,
             applied: None,
+            applied_kind: PresentationKind::Embedded,
+            #[cfg(feature = "cache")]
+            applied_serial: 0,
+            fallback_serial: 0,
             fault: None,
         })
     }
@@ -144,11 +155,58 @@ impl Consumer {
     pub fn context(&self) -> &str {
         &self.context
     }
+    pub fn shell_consumer(&self) -> bool { self.shell }
     pub fn current(&self) -> Option<&Snapshot> {
         self.reducer.current()
     }
     pub fn applied(&self) -> Option<&Snapshot> {
         self.applied.as_deref()
+    }
+    /// Current requires fresh authority evidence matching the installed data.
+    /// Cached/retained/embedded values never become mutation/readback fences.
+    pub fn presentation_kind(&self) -> Option<PresentationKind> {
+        self.applied.as_ref().map(|applied| {
+            if self.applied_kind == PresentationKind::Current
+                && (!self.confirmed || self.current() != Some(applied.as_ref())) {
+                PresentationKind::LastGood
+            } else { self.applied_kind }
+        })
+    }
+    /// Called after the shared bootstrap deadline. Preparation stays on the
+    /// host's worker, with one pending fallback job and no extra connection.
+    pub fn fallback_request(&mut self) -> Option<Request> {
+        if self.current().is_some() || self.applied.is_some() || self.pending.is_some() || self.fallback_serial != 0 {
+            return None;
+        }
+        self.fallback_serial = self.serial();
+        Some(Request {
+            owner: self.owner, serial: self.fallback_serial, generation: self.generation,
+            binding: self.binding.clone(), context: self.context.clone(), shell: self.shell,
+            retained: self.buffered.clone(),
+        })
+    }
+    pub fn complete_fallback(&mut self, request: &Request, result: Result<Prepared, Vec<Diagnostic>>) -> bool {
+        if request.owner != self.owner || request.serial != self.fallback_serial || request.generation != self.generation
+            || self.current().is_some() || self.applied.is_some() || self.pending.is_some() {
+            return false;
+        }
+        self.fallback_serial = 0;
+        let prepared = match result {
+            Ok(prepared) if prepared.request.owner == request.owner && prepared.request.serial == request.serial => prepared,
+            Ok(_) => return false,
+            Err(errors) => { self.fault = errors.into_iter().next(); return false; }
+        };
+        let changes = ChangePlan::between(None, &prepared.snapshot, &self.context, self.shell);
+        let serial = self.serial();
+        self.pending = Some(Update { owner: self.owner, serial, generation: self.generation,
+            snapshot: prepared.snapshot, changes, kind: prepared.kind });
+        true
+    }
+    #[cfg(feature = "cache")]
+    pub fn cache_save(&self) -> Option<crate::cache::Save> {
+        let snapshot = self.applied.as_ref()?;
+        if !matches!(self.applied_kind, PresentationKind::Current | PresentationKind::Retained) { return None; }
+        Some(crate::cache::Save::capture(self.owner, self.applied_serial, snapshot.clone(), self.context.clone(), self.shell))
     }
     pub fn pending(&self) -> Option<&Update> {
         self.pending.as_ref()
@@ -214,6 +272,7 @@ impl Consumer {
     }
     pub fn disconnected(&mut self) {
         self.serial();
+        self.fallback_serial = 0;
         self.reducer.invalidate_work();
         self.generation = None;
         self.work = None;
@@ -258,6 +317,7 @@ impl Consumer {
     }
     /// Any delivered-lane loss invalidates stages and coalesces one full read.
     pub fn lost(&mut self) -> Option<Work> {
+        self.fallback_serial = 0;
         self.pending = None;
         self.confirmed = false;
         self.buffered = None;
@@ -267,6 +327,7 @@ impl Consumer {
     /// Malformed canonical data is distinct from a dropped delivery. Bound its
     /// recovery and do not reset an existing deadline for every bad frame.
     pub fn rejected_delivery(&mut self, fault: Diagnostic) -> Option<Work> {
+        self.fallback_serial = 0;
         self.pending = None;
         self.confirmed = false;
         self.buffered = None;
@@ -500,10 +561,11 @@ impl Consumer {
         let Some(snapshot) = self.reducer.current().cloned() else {
             return;
         };
+        self.fallback_serial = 0;
         if self
             .pending
             .as_ref()
-            .is_some_and(|p| p.snapshot.as_ref() == &snapshot)
+            .is_some_and(|p| p.kind == PresentationKind::Current && p.snapshot.as_ref() == &snapshot)
         {
             return;
         }
@@ -518,6 +580,9 @@ impl Consumer {
             // Identical render input requires no UI swap or redraw. Revision
             // evidence may advance, but this never claims a presented frame.
             self.applied = Some(snapshot);
+            self.applied_kind = PresentationKind::Current;
+            #[cfg(feature = "cache")]
+            { self.applied_serial = self.serial(); }
             self.pending = None;
             self.fault = None;
         } else if let Some(generation) = self.generation {
@@ -525,7 +590,8 @@ impl Consumer {
             self.pending = Some(Update {
                 owner: self.owner,
                 serial,
-                generation,
+                generation: Some(generation),
+                kind: PresentationKind::Current,
                 snapshot,
                 changes,
             });
@@ -536,7 +602,7 @@ impl Consumer {
     /// after a stale swap cannot undo the renderer mutation.
     pub fn is_current(&self, update: &Update) -> bool {
         update.owner == self.owner
-            && self.generation == Some(update.generation)
+            && self.generation == update.generation
             && self
                 .pending
                 .as_ref()
@@ -548,6 +614,9 @@ impl Consumer {
             return false;
         }
         self.applied = Some(update.snapshot.clone());
+        self.applied_kind = update.kind;
+        #[cfg(feature = "cache")]
+        { self.applied_serial = self.serial(); }
         self.pending = None;
         self.fault = None;
         true

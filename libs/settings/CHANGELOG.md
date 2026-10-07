@@ -1,5 +1,18 @@
 # settings contract changes
 
+## 0.3.0
+
+Add shared retained/cache/embedded fallback preparation with host resource
+validation, immutable stage fencing and explicit presentation labels. Persisted
+data never seeds authority ordering or mutation fences. Optional cache I/O
+uses bounded no-follow directory-relative reads and atomic replacement, with
+schema/target/capability/digest checks plus complete projection recompilation.
+Applied-generation captures and one locked serial writer reject stale saves;
+ambiguous post-rename failure remains visible. Exact JSON float round trips
+preserve compiler projection comparison. The authority wire/schema stay
+0.1.0/1. Real resource loading, GUI/first-map timing and artifact integration
+remain pending.
+
 ## 0.2.0
 
 Add transport-neutral consumer and render-domain change plan, with an optional

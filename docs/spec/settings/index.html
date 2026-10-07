@@ -335,7 +335,7 @@ installed values rather than enter an endless readback loop.
 Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.</p>
-<p>The settings library API is now 0.2.0; authority verbs and snapshot schema remain
+<p>The settings library API is now 0.3.0; authority verbs and snapshot schema remain
 0.1.0 and 1. The shared consumer performs subscribe-before-get over the host's
 existing supervised Bus connection through its optional native executor. It
 owns no transport/task/incoming receiver. Hosts feed connection generations,
@@ -363,7 +363,26 @@ cannot claim application. Hosts must fence the actual swap as well as its report
 Identical render inputs need no swap; application never proves presentation.
 DTO field additions require explicit classification in the shared comparison;
 source/provenance exclusions are deliberate rather than wildcard omissions.
-Local persistent fallback cache and artifact/resource preparation remain pending.</p>
+Shared fallback preparation tries validated retained bootstrap data, then local
+cache, then current embedded defaults. The host supplies readiness checks for
+every reference used by its context and shell capability on its worker. A fenced
+completion produces the same immutable UI stage; it never seeds the authority
+reducer or mutation fences. Installed data has explicit Current, Retained,
+Cached, LastGood and Embedded labels. Identical fresh authority data can promote
+cache/embedded evidence without a redundant swap.</p>
+<p>Optional <code>settings/cache</code> stores applied authority/retained generations in an
+existing isolated absolute cache directory. Its versioned JSON envelope binds
+instance/profile, context, shell capability, interpretation and content digest.
+Bounded directory-relative regular-file reads refuse symlinks in every path
+component and cannot block on FIFOs. Before reuse, complete projections must
+match current compilation of their authored inputs; unavailable old pinned
+package sources and compiler drift are refused visibly. Exact JSON float
+round trips preserve these checks. Digests detect corruption, not file origin;
+valid cache data still supplies no authority evidence. A stable locked serial
+writer fences superseded applied-generation saves, permits retry of the latest
+failed attempt and reports ambiguous post-rename failure. All I/O belongs off
+the UI loop. Cache failure preserves usable applied data. Real font/asset loading,
+artifact preparation and GUI fallback/first-map timing remain pending.</p>
 <h2 id="topics-and-storage">Topics and storage</h2>
 <p>Publish retained <code>settingsd.desktop.changed.&lt;profile&gt;</code>, owned by the registered
 <code>settingsd</code> service. The unscoped base name is reserved too. All clients may
@@ -425,12 +444,15 @@ mutation, forged publish/clear refusal, authority restart and cold broker restar
 against isolated noded instances. Broker loss keeps the authority alive and its
 writer exclusive; the shared consumer reconnects through the same client and
 the authority repopulates the empty retained broker without a semantic edit.
+The broker-restart fixture also starts a headless cold consumer from persisted
+cache while offline, then promotes it to current with no redundant stage after
+fresh ABP readback. Resource readiness is a fixture inventory, not GUI proof.
 Another native fixture keeps an authority registered but deliberately withholds
 read replies, exercising the combined bootstrap deadline and expired work.
 OS process lifecycle here belongs to the test fixture; application calls
 and observations remain native ABP.</p>
 <p>This slice does not claim GUI propagation, renderer acknowledgements, presentation,
-persistent offline cache/fallback presentation, candidate import/watch, immutable artifacts,
+GUI offline-fallback/first-map timing, candidate import/watch, immutable artifacts,
 full field provenance, named-profile management, compatibility, scheduled policy,
 preview, routed observation or replication. Every deferred feature must extend
 the same authority and shared contracts, with appropriate contract versions and

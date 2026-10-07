@@ -1,7 +1,7 @@
 # settings
 
 Headless desktop settings types, validation/resolution and shared consumer.
-Shared by the authority and app/compositor adapters. Library API: 0.2.0;
+Shared by the authority and app/compositor adapters. Library API: 0.3.0;
 authority wire/schema contract remains 0.1.0/schema 1.
 
 `consumer::Consumer` owns ordering, bounded bootstrap buffering, one active
@@ -37,8 +37,15 @@ scheduling follows engine state, not just the last RPC result.
 Each native call has a one-second bound. Pass the same initial deadline to
 `native::execute_until` for subscribe and read to bound their combined bootstrap
 to one second before presenting a labelled fallback;
-complete cancelled work as a timeout so the engine can recover. Persisted local
-cache and resource/artifact preparation remain future integration work.
+complete cancelled work as a timeout so the engine can recover.
+After that deadline the host may capture `fallback_request()` and run
+`Request::prepare` on its worker, passing a loaded cache candidate and a resource
+readiness callback. Retained bootstrap data is tried first, then cache, then
+embedded defaults. Every candidate must pass the callback for all references
+used by its context/host. If none is usable, preparation returns diagnostics.
+`complete_fallback` fences the completion before producing the usual UI stage;
+the usual synchronous pre-swap check and acknowledgement still apply.
+Resource loading and real renderer integration remain host work.
 
 Readback advances `current()`, not `applied()`. Prepare every changed resource
 before entering the renderer loop. Check `is_current(update)` immediately before
@@ -49,5 +56,32 @@ without a swap. Neither readback nor application proves a presented frame.
 Profiles/contexts are immutable for one consumer lifetime. A host rebind cancels
 its old work, retires the old subscription via `unsubscribe_topic`, and creates
 a new consumer; unique consumer tickets reject completions from retired hosts.
+
+`presentation_kind()` labels installed data as Current, Retained, Cached,
+LastGood or Embedded. Fallback never enters `current()` or supplies mutation
+fences. Embedded/cached fallback cannot be saved as authority-derived data.
+An unchanged fresh authority projection promotes evidence without a swap.
+
+The optional `cache` feature provides bounded presentation-cache I/O over
+`config::atomic`. The caller supplies an existing absolute directory inside its
+isolated session; no paths are created and no host preferences are touched.
+Reads reject symlinks in every path component, non-regular files and oversized
+data. A versioned, digest-bound envelope also binds instance/profile, context,
+shell capability and interpretation; the whole projection must match a current
+recompilation. An unavailable old pinned package source is refused visibly.
+JSON parsing preserves floating-point round trips for exact projection checks.
+Digests detect corruption; they do not authenticate local files. Local cache
+never supplies authority evidence, even when its data is valid.
+
+Capture `cache_save()` only after activation (or unchanged evidence advancement),
+then submit it to the host's one serial `cache::Writer` off the UI loop. Captures
+carry immutable applied data and an activation serial. A stable advisory lock
+excludes duplicate writers; superseded saves cannot replace newer attempts.
+The latest failed save can retry, while post-rename sync failure reports
+`cache_write_ambiguous`. Do not delete corrupt/ambiguous data automatically.
+Retire the writer when retiring its producer consumer. The held directory inode
+is the I/O boundary; renaming it cannot redirect a write elsewhere, but may make
+the cache unavailable under the new path. That is a fallback/cache miss, never
+an authority rollback. Cache failure does not change applied renderer state.
 
 See [the settings contract](../../docs/spec/settings/README.md).
