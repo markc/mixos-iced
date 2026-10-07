@@ -24,6 +24,8 @@ mod input;
 mod layout;
 #[cfg(test)]
 mod native_tests;
+mod settings_bus;
+mod strings;
 mod theme;
 
 #[cfg(feature = "wgpu")]
@@ -35,18 +37,20 @@ mod cpu_grid;
 #[cfg(not(any(feature = "wgpu", feature = "tiny-skia")))]
 compile_error!("term needs a renderer: enable the `tiny-skia` (default) or `wgpu` feature");
 
-use application::iced::widget::{Row, column, container, row, space, text};
+use application::iced::widget::{Row, column, container, row, space};
 use application::iced::{Element, Length, Size, Subscription, Task};
+use application::presentation::native::Ui;
 use frame::Painter;
 use input::Action;
 use layout::{Node, Shape};
+use settings_bus::{Describe, Handle};
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use term_core::{
-    bus, config,
+    config as core_config,
     font::FontSize,
     native_lane::NativeLane,
     panes::{Geometry, SplitDir},
@@ -55,6 +59,7 @@ use term_core::{
     version::version_request,
     wake::WakeFd,
 };
+use ::bus::native_client::ConnState;
 
 const DISPLAY_NAME: &str = "MixOS Term";
 /// The Bus name and verb namespace this frontend owns (D1). The Bevy frontend
@@ -103,11 +108,11 @@ fn main() {
         return;
     }
     let settings = resolve_config(
-        config::load(Some(
+        core_config::load(Some(
             &::config::path(::config::Dir::Etc).join("term.conf.mix"),
         )),
         std::env::var("TERM_FONT_PX").ok().as_deref(),
-        config::selected_term(),
+        core_config::selected_term(),
     );
     if std::env::args().any(|arg| arg == "--print-config") {
         println!(
@@ -127,20 +132,20 @@ fn main() {
 }
 
 fn resolve_config(
-    mut config: config::Config,
+    mut config: core_config::Config,
     env_font: Option<&str>,
     term: &'static str,
-) -> config::Settings {
+) -> core_config::Settings {
     if let Some(px) = env_font
         .and_then(|value| value.parse().ok())
-        .filter(|px| config::valid_font(*px))
+        .filter(|px| core_config::valid_font(*px))
     {
         config.font_px = px;
     }
-    config::Settings { config, term }
+    core_config::Settings { config, term }
 }
 
-fn run(settings: config::Settings) -> Result<(), String> {
+fn run(settings: core_config::Settings) -> Result<(), String> {
     // Scale 1.0 to start; the raster is rebuilt at the surface's real
     // fractional scale on the first `Rescaled`, so glyphs are rasterised at
     // physical resolution and the compositor never upscales them.
@@ -176,16 +181,40 @@ fn run(settings: config::Settings) -> Result<(), String> {
         .map(|value| value != "0")
         .unwrap_or(true);
     let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
-    // The `term.*` surface (D1). With no broker the thread says so once and
-    // returns; the terminal works either way.
-    let bus = bus::start(SERVICE, tabs.clone(), cleanup.clone(), notify_rx);
+    // The desktop adapter: one supervised client serves the `term.*` lane AND
+    // the shared settings traffic (no second connection); it starts without
+    // blocking, so an offline bus leaves the terminal working. It publishes
+    // into the same WakeFd every PTY does.
+    let started = settings_bus::start(
+        SERVICE,
+        ::bus::client_helpers::resolve_noded_url(),
+        tabs.clone(),
+        cleanup.clone(),
+        notify_rx,
+        waker.fd.waker(),
+    )
+    .map_err(|e| format!("Bus startup: {e}"))?;
+    let ui = started
+        .bootstrap
+        .typography()
+        .get("ui")
+        .expect("UI typography");
+    // A clone lives outside the State so teardown below can still quit the
+    // adapter after the handle was moved in.
+    let handle = started.handle.clone();
 
     let state = State {
         painter,
         tabs: tabs.clone(),
         cleanup: cleanup.clone(),
         notify: notify_enabled.then_some(notify_tx),
-        tokens: theme::tokens(),
+        tokens: started.bootstrap.tokens(),
+        ui,
+        chrome: layout::strip_height(1.0, ui),
+        settings: started.ui,
+        bootstrap: started.bootstrap,
+        bus: started.handle,
+        describes: started.describes,
         waker,
         window: Size::new(900.0, 560.0),
         shape: Shape::default(),
@@ -206,7 +235,7 @@ fn run(settings: config::Settings) -> Result<(), String> {
         paint_requested: true,
     };
 
-    let ui_font = toolkit::fonts::font_for("sans-serif", &[], 400, false, true);
+    let ui_font = ui.font;
     let result = application::start(
         (state, Task::none()),
         update,
@@ -226,12 +255,25 @@ fn run(settings: config::Settings) -> Result<(), String> {
     })
     .run();
 
-    // Same teardown ordering as bterm: shut the tabs (which releases the Bus
-    // loop through `emptied`), finish bounded Bus replies, then reap each
-    // pane while the native actor is still serving its revoke acknowledgements.
+    // Same teardown ordering as bterm, and the design contract: tabs close
+    // first, then the global Bus finishes (verb-lane drain, tracked replies,
+    // 2 s cache flush and client close inside the adapter), then native
+    // cleanup is released, then the cleanup worker and reaper join. The
+    // settings Lane drops with the adapter thread, last.
     let removed = tabs.lock().expect("tabs").shutdown();
     cleanup.submit(removed);
-    let _ = bus.join();
+    handle.quit();
+    let mut shutdown = Ok(());
+    if let Err(fault) = handle.wait_done() {
+        // The worker prints TERM_SHUTDOWN with its own faults on the normal
+        // path; this is the rare one where it cannot confirm done at all —
+        // a blocking resource job in the settings worker cannot be cancelled,
+        // so its thread is left unjoined rather than hanging this shutdown.
+        eprintln!("term: {fault}");
+        shutdown = Err(fault);
+    } else {
+        let _ = started.worker.join();
+    }
     let native = native
         .join()
         .map_err(|_| "native startup worker panicked")?;
@@ -241,6 +283,7 @@ fn run(settings: config::Settings) -> Result<(), String> {
     let startup = native.startup_result();
     drop(native);
     startup?;
+    shutdown?;
     result.map_err(|error| error.to_string())
 }
 
@@ -270,7 +313,22 @@ struct State {
     cleanup: tabs::Cleanup,
     notify: Option<tokio::sync::mpsc::UnboundedSender<CompletionNote>>,
     painter: Painter,
+    /// Window chrome. Tokens restyle the surface only; `ui`/`chrome` drive
+    /// the one computed strip height (extent). Colours never reflow or
+    /// re-rasterise.
     tokens: toolkit::Tokens,
+    ui: toolkit::typography::TextStyle,
+    chrome: f32,
+    /// The settings session's UI half, reconciled on every wake against the
+    /// generation sampled from the actual shared client.
+    settings: Ui<()>,
+    /// Immediate generic appearance until the first checked preparation.
+    bootstrap: appearance::settings::Prepared,
+    /// The desktop adapter: one client for the verb lane and the settings lane.
+    bus: Handle,
+    /// Queued `app.describe` requests, answered on the UI thread after the
+    /// settings reconcile; bounded upstream (the adapter refuses beyond 32).
+    describes: std::sync::mpsc::Receiver<Describe>,
     waker: Arc<Waker>,
     /// Logical inner size of the window, as the compositor last reported it.
     window: Size,
@@ -453,6 +511,9 @@ fn update_message(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::Wake => {
             state.paint_requested = true;
+            // Clear the wake flag BEFORE draining: everything sync() drains —
+            // PTY damage, the settings reconcile, describe requests — must
+            // publish a fresh wake if it lands after this clear.
             state.waker.pending.store(false, Ordering::Release);
             return state.sync();
         }
@@ -654,8 +715,9 @@ fn on_key_context(
 
 fn view(state: &State) -> Element<'_, Message> {
     let tokens = state.tokens;
+    let ui = state.ui;
     let scale = state.painter.scale();
-    let bounds = layout::content(state.window.width, state.window.height, scale);
+    let bounds = layout::content(state.window.width, state.window.height, state.chrome);
     let panes: Element<'_, Message> = match &state.shape.tree {
         Some(tree) => pane_tree(state, tree, bounds, scale),
         None => space().into(),
@@ -712,7 +774,7 @@ fn view(state: &State) -> Element<'_, Message> {
     };
     let last = std::cell::Cell::new(state.pointer.get().and_then(&hovered));
     let mouse = clipboard::MouseEvents::new(state);
-    let mut content = toolkit::keys::keys(column![tab_strip(state, scale), panes], move |event| {
+    let mut content = toolkit::keys::keys(column![tab_strip(state, scale, ui), panes], move |event| {
         state
             .right_shift
             .set(input::right_shift_after(event, state.right_shift.get()));
@@ -781,8 +843,15 @@ fn pointer_message(
     (last.replace(hovered) != hovered).then_some(Message::Pointer)
 }
 
-/// One button per tab and a `+`, as bterm. Every colour is a design token.
-fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
+/// One button per tab and a `+`, as bterm. Every colour is a design token;
+/// the text carries the prepared UI font and size. (toolkit's `TabBar` has no
+/// `line_height`/`text_style` today, so the prepared line box feeds the strip
+/// geometry but not the label itself — a remaining shared-API need.)
+fn tab_strip(
+    state: &State,
+    scale: f32,
+    ui: toolkit::typography::TextStyle,
+) -> Element<'_, Message> {
     let tokens = state.tokens;
     let mut tabs = toolkit::TabBar::with_tab_labels(
         state
@@ -793,9 +862,10 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
             .collect(),
         Message::SelectTab,
     )
-    .text_size(13.0)
+    .text_font(ui.font)
+    .text_size(ui.size)
     .tab_width(Length::Shrink)
-    .padding([3.0, 12.0])
+    .padding([layout::TAB_V_PADDING, 12.0])
     .spacing(4.0)
     .style(move |_, status| {
         let mut style = toolkit::theme::tab_bar::default(&toolkit::Theme::new(tokens), status);
@@ -810,24 +880,32 @@ fn tab_strip(state: &State, scale: f32) -> Element<'_, Message> {
     if let Some(active) = state.shape.tabs.iter().find(|tab| tab.active) {
         tabs = tabs.set_active_tab(&active.id);
     }
-    let new_tab = toolkit::CenteredButton::new(text("+").size(13.0))
-        .padding([3.0, 12.0])
+    let new_tab = toolkit::CenteredButton::new(ui.text("+"))
+        .padding([layout::TAB_V_PADDING, 12.0])
         .on_press(Message::Action(Action::NewTab))
         .style(move |_, status| {
             let mut style = toolkit::theme::button::text(&toolkit::Theme::new(tokens), status);
             style.text_color = tokens.palette.muted_text;
             style
         });
-    let mut strip = Row::new().spacing(4.0).padding([3.0, 6.0]);
+    let mut strip = Row::new()
+        .spacing(4.0)
+        .padding([layout::STRIP_V_PADDING, 6.0]);
+    // The labelled chrome: the Bus connection provenance while it is not
+    // connected, and the settings-presentation kind while the appearance is
+    // not Current.
+    if let Some(label) = state.chrome_label() {
+        strip = strip.push(ui.text(label).color(tokens.palette.muted_text));
+    }
     if let Some(notice) = &state.paste_notice {
-        strip = strip.push(text(notice).size(13.0).color(tokens.palette.text));
+        strip = strip.push(ui.text(notice).color(tokens.palette.text));
     }
     strip = strip
         .push(tabs.scrollable().width(Length::Fill))
         .push(new_tab);
     container(strip)
         .width(Length::Fill)
-        .height(Length::Fixed(layout::strip_height(scale)))
+        .height(Length::Fixed(layout::strip_height(scale, ui)))
         .style(move |_| container::Style {
             background: Some(tokens.palette.card.into()),
             ..Default::default()
@@ -982,7 +1060,7 @@ impl State {
             return;
         };
         let scale = self.painter.scale();
-        let bounds = layout::content(self.window.width, self.window.height, scale);
+        let bounds = layout::content(self.window.width, self.window.height, self.chrome);
         let Some((_, pane)) = layout::panes(tree, bounds, scale)
             .into_iter()
             .find(|(pane, _)| *pane == id)
@@ -1022,10 +1100,36 @@ impl State {
         }
     }
 
-    /// Everything a wake can mean, in one place: reap exited shells, follow
-    /// the tab set's shape (a Bus verb may have changed it), size any pane
-    /// that needs it. Painting waits for the widget's redraw event.
+    /// Everything a wake can mean, in one place: reconcile the settings lane
+    /// first, reap exited shells, follow the tab set's shape (a Bus verb may
+    /// have changed it), size any pane that needs it. Painting waits for the
+    /// widget's redraw event.
     fn sync(&mut self) -> Task<Message> {
+        // Settings first: reconcile the generation sampled from the actual
+        // shared client, drain every queued lane event (the pending wake flag
+        // was cleared BEFORE this ran), then adopt chrome and answer
+        // describes — so every later reader sees live evidence, not a queued
+        // lifecycle notice.
+        let generation = self.bus.settings_generation();
+        self.settings.reconcile(generation);
+        let changes = self
+            .settings
+            .drain_with(|| self.bus.settings_generation(), |_| {});
+        if !changes.is_empty() {
+            // The settings activation receipt, same shape the other hosts
+            // print: live evidence, cache state and fallback diagnostics.
+            eprintln!(
+                "TERM_SETTINGS {}",
+                serde_json::json!({
+                    "service": self.bus.service_name(),
+                    "evidence": self.settings.session().host().consumer().evidence(),
+                    "settings_cache": self.settings.session().cache_evidence(),
+                    "fallback_diagnostics": self.settings.session().fallback_diagnostics(),
+                })
+            );
+        }
+        self.apply_settings();
+        self.answer_describes();
         let (removed, notes) = self.tabs.lock().expect("tabs").reap_exited();
         self.sync_ime();
         self.cancel_hidden_gesture();
@@ -1051,6 +1155,121 @@ impl State {
         self.shape = shape;
         self.relayout();
         Task::none()
+    }
+
+    /// Adopt the settings presentation's chrome without touching terminal
+    /// state: tokens restyle the window only, and the strip reflows ONLY when
+    /// its computed extent changed. Colours never reflow, rasterise or
+    /// replace — the ANSI palette, PTY content, fonts and local zoom are the
+    /// painter's, not the settings'.
+    fn apply_settings(&mut self) {
+        let (tokens, ui) = {
+            let prepared = self.look();
+            (
+                theme::tokens(prepared),
+                prepared.typography().get("ui").expect("UI typography"),
+            )
+        };
+        self.apply_chrome(ui, tokens);
+    }
+
+    /// The extent-change boundary, split out so tests can drive it directly:
+    /// tokens never reflow; a changed strip height relayouts once.
+    fn apply_chrome(&mut self, ui: toolkit::typography::TextStyle, tokens: toolkit::Tokens) {
+        self.tokens = tokens;
+        self.ui = ui;
+        let chrome = layout::strip_height(self.painter.scale(), ui);
+        if self.chrome != chrome {
+            self.chrome = chrome;
+            self.relayout();
+        }
+    }
+
+    fn look(&self) -> &appearance::settings::Prepared {
+        self.settings
+            .session()
+            .host()
+            .presentation()
+            .map_or(&self.bootstrap, |presentation| presentation.appearance())
+    }
+
+    /// Every queued `app.describe` is answered on the UI thread AFTER the
+    /// settings reconcile above, so the evidence describes the live
+    /// presentation. Bounded: the adapter refuses beyond 32 pending.
+    fn answer_describes(&mut self) {
+        while let Ok(describe) = self.describes.try_recv() {
+            let value = self.describe();
+            self.bus.reply(describe.id, 0, value);
+        }
+    }
+
+    /// The full describe evidence: canonical serialized consumer evidence and
+    /// cache state, the ACTUAL served name (post-fallback), the computed
+    /// chrome extent and the prepared UI typography — never a partial or
+    /// fabricated picture.
+    fn describe(&self) -> serde_json::Value {
+        let service = self.bus.service_name();
+        let ui = self.ui;
+        let mut describe = serde_json::json!({
+            "schema": "term.v1",
+            "app_id": format!("dev.mixos.{SERVICE}"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "transport": "native",
+            "service": service,
+            "verbs": [
+                "term.tabs", "term.tab.new", "term.tab.select", "term.tab.close",
+                "term.tab.title", "term.tab.move", "term.panes", "term.pane.split",
+                "term.pane.select", "term.pane.close", "term.snapshot",
+                "term.scroll", "term.type", "term.props.watch", "term.session",
+                "app.describe"
+            ],
+            "chrome": {"height": self.chrome},
+            "ui": {
+                "font": ui.font.family.to_string(),
+                "size": ui.size,
+                "line_height": ui.line_height,
+            },
+        });
+        describe["settings"] =
+            serde_json::json!(self.settings.session().host().consumer().evidence());
+        describe["settings_cache"] = serde_json::json!(self.settings.session().cache_evidence());
+        describe["fallback_diagnostics"] =
+            serde_json::json!(self.settings.session().fallback_diagnostics());
+        describe
+    }
+
+    /// The label the chrome wears, sampled from the shared handle — the Bus
+    /// connection provenance whenever it is not Connected (with the broker's
+    /// refusal words when refused), and the settings-presentation kind while
+    /// the appearance is not Current. Persistent UI evidence, independent of
+    /// the transient log lines. No extra worker.
+    fn chrome_label(&self) -> Option<String> {
+        let connection = self.bus.connection();
+        match connection.state {
+            ConnState::Connected => self.settings_label(),
+            ConnState::Connecting => Some(strings::label("bus-connecting")),
+            ConnState::Disconnected | ConnState::ShuttingDown => {
+                Some(strings::label("bus-disconnected"))
+            }
+            ConnState::Fatal => match connection.refused {
+                Some(reason) => Some(strings::format("bus-refused", &[("reason", reason)])),
+                None => Some(strings::label("bus-unavailable")),
+            },
+        }
+    }
+
+    /// The settings kind label: every non-Current presentation kind, from the
+    /// Fluent catalogue, and nothing once the appearance is Current.
+    fn settings_label(&self) -> Option<String> {
+        use settings::fallback::PresentationKind;
+        match self.settings.session().host().consumer().evidence().kind {
+            Some(PresentationKind::Current) => None,
+            Some(PresentationKind::Cached) => Some(strings::label("settings-cached")),
+            Some(PresentationKind::Retained) => Some(strings::label("settings-retained")),
+            Some(PresentationKind::LastGood) => Some(strings::label("settings-last-good")),
+            Some(PresentationKind::Embedded) => Some(strings::label("settings-embedded")),
+            None => Some(strings::label("settings-bootstrap")),
+        }
     }
 
     fn needs_paint(&self) -> bool {
@@ -1178,7 +1397,7 @@ impl State {
         if cell.0 == 0 || cell.1 == 0 {
             return;
         }
-        let bounds = layout::content(self.window.width, self.window.height, scale);
+        let bounds = layout::content(self.window.width, self.window.height, self.chrome);
         let placed = layout::panes(tree, bounds, scale);
         let mut resize = Vec::new();
         {
@@ -1265,9 +1484,9 @@ mod tests {
 
     #[test]
     fn an_env_font_size_overrides_the_config_only_when_it_is_valid() {
-        let base = config::Config {
+        let base = core_config::Config {
             font_px: 13.0,
-            ..config::Config::default()
+            ..core_config::Config::default()
         };
         assert_eq!(
             resolve_config(base, Some("18.5"), "xterm").config.font_px,
@@ -1642,7 +1861,9 @@ mod tests {
         assert!(!show_focus_ring(&split, 8));
     }
 
-    /// A real `State` with a PTY-backed tab set, no window and no Bus.
+    /// A real `State` with a PTY-backed tab set, no window and no Bus: the
+    /// settings session owns an explicit fixture binding, and the adapter
+    /// handle is a sink, so no live lane is behind the fixture.
     fn test_state() -> (State, std::thread::JoinHandle<()>) {
         let (cleanup, reaper) = tabs::Cleanup::start().expect("cleanup worker");
         let waker = Arc::new(Waker {
@@ -1653,13 +1874,35 @@ mod tests {
         });
         let tabs = Arc::new(Mutex::new(layout::test_tabs()));
         tabs.lock().unwrap().set_wake(waker.fd.waker());
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "term",
+        )
+        .unwrap();
+        let (settings, _lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
+        let bootstrap = appearance::settings::bootstrap().unwrap();
+        let ui = bootstrap.typography().get("ui").expect("UI typography");
+        let (describe_tx, describes) = std::sync::mpsc::channel();
+        drop(describe_tx); // no adapter behind the fixture
         let state = State {
-            painter: Painter::for_test(1.0, FontSize::new(13.0), config::Cursor::Underline)
+            painter: Painter::for_test(1.0, FontSize::new(13.0), core_config::Cursor::Underline)
                 .expect("a monospace font"),
             tabs,
             cleanup,
             notify: None,
-            tokens: theme::tokens(),
+            tokens: bootstrap.tokens(),
+            ui,
+            chrome: layout::strip_height(1.0, ui),
+            settings,
+            bootstrap,
+            bus: Handle::sink(),
+            describes,
             waker,
             window: Size::new(900.0, 560.0),
             shape: Shape::default(),
@@ -1680,6 +1923,99 @@ mod tests {
             paint_requested: true,
         };
         (state, reaper)
+    }
+
+    /// The design boundary, colour side: a token change restyles the chrome
+    /// on the next redraw without touching PTY geometry or any pane's raster.
+    #[test]
+    fn colour_changes_restyle_without_reflow_or_raster_replacement() {
+        use term_core::terminal::Terminal;
+        let (mut state, reaper) = test_state();
+        let _ = state.sync();
+        let _ = state.act(Action::Split(SplitDir::Vertical));
+        let _ = state.sync();
+        let visible = state.shape.visible();
+        assert_eq!(visible.len(), 2);
+        // Quiet fixture content, so no PTY damage races the assertions.
+        for pane in &visible {
+            let terminal = state.tabs.lock().unwrap().pane_by_id(*pane).unwrap();
+            *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
+        }
+        let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
+        let generation =
+            |state: &State, id| state.painter.existing(id).unwrap().lock().unwrap().generation();
+        let grids = state.grids.clone();
+        let force_paint = state.force_paint;
+        let before = [generation(&state, visible[0]), generation(&state, visible[1])];
+        let mut tokens = state.tokens;
+        tokens.palette.surface = tokens.palette.text;
+        state.apply_chrome(state.ui, tokens);
+        assert_eq!(state.grids, grids, "a colour change must not reflow the PTYs");
+        assert_eq!(
+            state.force_paint, force_paint,
+            "a colour change must not replace the raster"
+        );
+        let _ = update(&mut state, Message::Paint(std::time::Instant::now()));
+        assert_eq!(
+            [generation(&state, visible[0]), generation(&state, visible[1])],
+            before,
+            "a colour change must not repaint any pane"
+        );
+        let removed = state.tabs.lock().unwrap().shutdown();
+        state.cleanup.submit(removed);
+        drop(state);
+        reaper.join().unwrap();
+    }
+
+    /// The design boundary, extent side: a chrome height change relayouts once
+    /// — every PTY grid shrinks with the taller strip — and an unchanged
+    /// extent relayouts nothing.
+    #[test]
+    fn extent_changes_relayout_once_and_unchanged_extents_stay_put() {
+        use term_core::terminal::Terminal;
+        let (mut state, reaper) = test_state();
+        let _ = state.sync();
+        let _ = state.act(Action::Split(SplitDir::Vertical));
+        let _ = state.sync();
+        let visible = state.shape.visible();
+        assert_eq!(visible.len(), 2);
+        for pane in &visible {
+            let terminal = state.tabs.lock().unwrap().pane_by_id(*pane).unwrap();
+            *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"abcdefgh");
+        }
+        let grids = state.grids.clone();
+        let chrome = state.chrome;
+        let mut ui = state.ui;
+        ui.line_height = Some(ui.line_height.unwrap_or(ui.size * 1.4) + 4.0);
+        state.apply_chrome(ui, state.tokens);
+        assert_eq!(
+            state.chrome,
+            chrome + 4.0,
+            "the strip grows by exactly the prepared line box"
+        );
+        assert_ne!(
+            state.grids, grids,
+            "a chrome extent change must relayout the PTYs"
+        );
+        for id in &visible {
+            assert!(
+                state.grids[id].1 < grids[id].1,
+                "pane {id} must shrink with a taller strip"
+            );
+            let terminal = state.tabs.lock().unwrap().pane_by_id(*id).unwrap();
+            assert_eq!(
+                terminal.lock().unwrap().screen(false).rows,
+                state.grids[id].1 as usize,
+                "pane {id} content must follow the relaid-out grid"
+            );
+        }
+        let settled = state.grids.clone();
+        state.apply_chrome(ui, state.tokens);
+        assert_eq!(state.grids, settled, "an unchanged extent must not relayout");
+        let removed = state.tabs.lock().unwrap().shutdown();
+        state.cleanup.submit(removed);
+        drop(state);
+        reaper.join().unwrap();
     }
 
     #[test]
@@ -1885,7 +2221,7 @@ mod tests {
         state.grids.insert(id, (8, 3));
         let (cw, ch) = state.painter.logical_cell();
         let border = layout::border(state.painter.scale());
-        let top = layout::strip_height(state.painter.scale()) + border;
+        let top = layout::strip_height(state.painter.scale(), state.ui) + border;
         let start = Point::new(border + cw * 0.1, top + ch * 0.5);
         let end = Point::new(border + cw * 3.9, start.y);
         let events = clipboard::MouseEvents::new(&state);
@@ -1964,7 +2300,7 @@ mod tests {
         let border = layout::border(state.painter.scale());
         let start = Point::new(
             border + cw * 0.1,
-            layout::strip_height(state.painter.scale()) + border + ch * 0.5,
+            layout::strip_height(state.painter.scale(), state.ui) + border + ch * 0.5,
         );
         let end = Point::new(start.x + cw * 3.0, start.y + ch);
         let begin = |state: &mut State| {
@@ -2083,7 +2419,7 @@ mod tests {
         );
         assert!(terminals[0].lock().unwrap().selection_text().is_some());
         let scale = state.painter.scale();
-        let bounds = layout::content(state.window.width, state.window.height, scale);
+        let bounds = layout::content(state.window.width, state.window.height, state.chrome);
         let rect = layout::panes(state.shape.tree.as_ref().unwrap(), bounds, scale)
             .into_iter()
             .find(|(id, _)| *id == second)
@@ -2160,7 +2496,7 @@ mod tests {
         // No PTY sender: a failed report must still NEVER fall back to paste.
         *terminal.lock().unwrap() = Terminal::from_test_vt(8, 3, b"\x1b[?9hword");
         state.grids.insert(id, (8, 3));
-        let position = Point::new(4.0, layout::strip_height(state.painter.scale()) + 4.0);
+        let position = Point::new(4.0, layout::strip_height(state.painter.scale(), state.ui) + 4.0);
         let now = Instant::now();
         assert_eq!(
             state
@@ -2541,7 +2877,7 @@ mod tests {
             let mut fresh = Painter::for_test(
                 state.painter.scale(),
                 state.painter.font(),
-                config::Cursor::Underline,
+                core_config::Cursor::Underline,
             )
             .unwrap();
             fresh.repaint(id, &screen, &vec![true; screen.rows]);

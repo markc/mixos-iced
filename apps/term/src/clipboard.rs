@@ -195,7 +195,7 @@ impl State {
     fn hit(&self, position: Point, target: Option<u64>) -> Option<Hit> {
         let tree = self.shape.tree.as_ref()?;
         let scale = self.painter.scale();
-        let bounds = layout::content(self.window.width, self.window.height, scale);
+        let bounds = layout::content(self.window.width, self.window.height, self.chrome);
         let (pane, rect) = layout::panes(tree, bounds, scale)
             .into_iter()
             .find(|(id, rect)| {
