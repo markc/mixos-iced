@@ -515,29 +515,53 @@ pub fn try_font_for(
     preferred_role: Option<Role>,
     allow_generic: bool,
 ) -> Result<FontSelection, &'static str> {
-    if !(1..=1000).contains(&requested_weight) { return Err("font weight must be in 1..=1000"); }
-    let preferred = preferred_role.and_then(|role| installed().and_then(|fonts| fonts.family(role)));
-    let mut system = font_system().write().map_err(|_| "font system lock poisoned")?;
+    if !(1..=1000).contains(&requested_weight) {
+        return Err("font weight must be in 1..=1000");
+    }
+    let preferred =
+        preferred_role.and_then(|role| installed().and_then(|fonts| fonts.family(role)));
+    let mut system = font_system()
+        .write()
+        .map_err(|_| "font system lock poisoned")?;
     let raw = system.raw();
     // Canonicalise to a name actually in the database before interning: varying
     // case in repeated settings must not allocate unbounded duplicate names.
     let canonical = |name: &str| {
-        raw.db().faces().flat_map(|face| &face.families)
+        raw.db()
+            .faces()
+            .flat_map(|face| &face.families)
             .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
             .map(|(candidate, _)| candidate.clone())
     };
-    let selected = preferred.and_then(canonical).map(|name| (name, FontChoice::InstalledRole))
-        .or_else(|| std::iter::once(family).chain(fallbacks.iter().map(String::as_str))
-            .find_map(canonical).map(|name| (name, FontChoice::Declared)))
+    let selected = preferred
+        .and_then(canonical)
+        .map(|name| (name, FontChoice::InstalledRole))
         .or_else(|| {
-            if !allow_generic { return None; }
-            let generic = raw.db().family_name(&if monospace { fontdb::Family::Monospace } else { fontdb::Family::SansSerif });
+            std::iter::once(family)
+                .chain(fallbacks.iter().map(String::as_str))
+                .find_map(canonical)
+                .map(|name| (name, FontChoice::Declared))
+        })
+        .or_else(|| {
+            if !allow_generic {
+                return None;
+            }
+            let generic = raw.db().family_name(&if monospace {
+                fontdb::Family::Monospace
+            } else {
+                fontdb::Family::SansSerif
+            });
             canonical(generic).map(|name| (name, FontChoice::Generic))
         });
-    let (name, choice) = selected.ok_or("no declared or permitted generic font family is available")?;
+    let (name, choice) =
+        selected.ok_or("no declared or permitted generic font family is available")?;
     let has_light = family_has_light(raw, &name);
     Ok(FontSelection {
-        font: Font { family: font::Family::Name(intern(&name)), weight: weight(effective_weight(requested_weight, has_light)), ..Font::DEFAULT },
+        font: Font {
+            family: font::Family::Name(intern(&name)),
+            weight: weight(effective_weight(requested_weight, has_light)),
+            ..Font::DEFAULT
+        },
         choice,
     })
 }

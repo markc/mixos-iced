@@ -23,9 +23,9 @@
 
 pub mod conversion;
 pub mod fonts;
+pub mod settings;
 pub mod theme;
 pub mod tokens;
-pub mod settings;
 
 use iced_core::font::{Family, Weight};
 use iced_core::{Color, Font};

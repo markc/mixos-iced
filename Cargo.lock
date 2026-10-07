@@ -187,6 +187,7 @@ dependencies = [
  "iced_core",
  "iced_widget",
  "serde_json",
+ "settings",
  "sha2 0.10.9",
  "strict",
  "tempfile",
@@ -201,13 +202,18 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
+ "appearance",
+ "design",
  "iced",
  "iced_program",
  "iced_runtime",
  "iced_test",
  "iced_tiny_skia",
+ "png 0.18.1",
+ "settings",
+ "toolkit",
 ]
 
 [[package]]
@@ -7747,7 +7753,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toolkit"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "edit",
  "fluent-bundle",
