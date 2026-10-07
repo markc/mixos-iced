@@ -512,7 +512,7 @@ mod tests {
         desktop.appearance.resources = resources;
         desktop
     }
-    fn snapshot(resources: Option<crate::ResourceReference>) -> Snapshot {
+    fn fixture_snapshot(resources: Option<crate::ResourceReference>) -> Snapshot {
         let desktop = desktop(resources);
         Snapshot {
             schema: SCHEMA,
@@ -525,7 +525,7 @@ mod tests {
             desktop,
         }
     }
-    fn reference(set_id: &str) -> crate::ResourceReference {
+    fn fixture_reference(set_id: &str) -> crate::ResourceReference {
         crate::ResourceReference {
             schema: crate::RESOURCE_SCHEMA,
             set_id: set_id.into(),
@@ -578,7 +578,7 @@ mod tests {
     fn schema2_envelope_round_trips_and_records_omission_default_without_mutation() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let snapshot = snapshot(None);
+        let snapshot = fixture_snapshot(None);
         let binding = resource_binding("core-icons");
         store_envelope(
             dir.path(),
@@ -602,7 +602,7 @@ mod tests {
     fn explicit_reference_must_equal_binding_on_schema2_load() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let snapshot = snapshot(Some(reference("core-icons")));
+        let snapshot = fixture_snapshot(Some(fixture_reference("core-icons")));
         // A different set ID is a binding mismatch, not silent fallback.
         let binding = resource_binding("other-set");
         store_envelope(
@@ -648,9 +648,9 @@ mod tests {
         };
         // Explicit reference with icons None: a binding that fills in a
         // resolved default selector is a mismatch, never accepted.
-        let mut reference = reference("core-icons");
+        let mut reference = fixture_reference("core-icons");
         reference.icons = None;
-        let snapshot = snapshot(Some(reference));
+        let snapshot = fixture_snapshot(Some(reference));
         let mut binding = resource_binding("core-icons");
         binding.icons = Some(icon.clone());
         store_envelope(
@@ -670,9 +670,9 @@ mod tests {
             "cache_binding_mismatch"
         );
         // Explicit reference with icons Some must carry exactly that selector.
-        let mut reference = reference("core-icons");
+        let mut reference = fixture_reference("core-icons");
         reference.icons = Some(icon.clone());
-        let snapshot = snapshot(Some(reference));
+        let snapshot = fixture_snapshot(Some(reference));
         let mut binding = resource_binding("core-icons");
         binding.icons = None;
         store_envelope(
@@ -692,7 +692,7 @@ mod tests {
             "cache_binding_mismatch"
         );
         // Omission (default pin) must not record any icon selector.
-        let snapshot = snapshot(None);
+        let snapshot = fixture_snapshot(None);
         let mut binding = resource_binding("core-icons");
         binding.icons = Some(icon.clone());
         store_envelope(
@@ -735,7 +735,7 @@ mod tests {
     fn legacy_envelope_loads_under_named_predecessor_and_refuses_explicit_reference() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let snapshot = snapshot(None);
+        let snapshot = fixture_snapshot(None);
         store_envelope(
             dir.path(),
             &Envelope {
@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(candidate.binding(), None);
         // A legacy envelope that somehow carries an explicit reference is not
         // a recognised legacy capture.
-        let with_reference = snapshot(Some(reference("core-icons")));
+        let with_reference = fixture_snapshot(Some(fixture_reference("core-icons")));
         store_envelope(
             dir.path(),
             &Envelope {
@@ -792,7 +792,7 @@ mod tests {
     fn schema2_tampering_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let snapshot = snapshot(None);
+        let snapshot = fixture_snapshot(None);
         let binding = resource_binding("core-icons");
         let envelope = Envelope {
             schema: RESOURCE_CACHE_SCHEMA,
@@ -850,7 +850,7 @@ mod tests {
     fn a_serial_cannot_change_its_resource_binding() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let snapshot = Arc::new(snapshot(None));
+        let snapshot = Arc::new(fixture_snapshot(None));
         let mut writer = Writer::open_for(dir.path(), &target).unwrap();
         let first = Save::capture_resources(
             7,
@@ -883,7 +883,7 @@ mod tests {
     fn writer_refuses_bindings_with_unsupported_selection_semantics() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let snapshot = Arc::new(snapshot(None));
+        let snapshot = Arc::new(fixture_snapshot(None));
         let mut writer = Writer::open_for(dir.path(), &target).unwrap();
         let mut binding = resource_binding("core-icons");
         binding.interpretation = "foreign-selection-semantics".into();
@@ -894,7 +894,7 @@ mod tests {
     fn writer_refuses_persisting_envelopes_its_loader_rejects() {
         let dir = tempfile::tempdir().unwrap();
         let target = target();
-        let authored = reference("core-icons");
+        let authored = fixture_reference("core-icons");
         // A resource-bearing snapshot without a binding would persist a legacy
         // envelope the loader deterministically refuses; the write fails
         // closed and nothing is persisted.
@@ -902,7 +902,7 @@ mod tests {
         let bindingless = Save::capture_resources(
             7,
             4,
-            Arc::new(snapshot(Some(authored.clone()))),
+            Arc::new(fixture_snapshot(Some(authored.clone()))),
             "app:ced".into(),
             false,
             None,
@@ -917,7 +917,7 @@ mod tests {
         let mismatched = Save::capture_resources(
             7,
             5,
-            Arc::new(snapshot(Some(authored.clone()))),
+            Arc::new(fixture_snapshot(Some(authored.clone()))),
             "app:ced".into(),
             false,
             Some(resource_binding("other-set")),
@@ -935,7 +935,7 @@ mod tests {
         let invented = Save::capture_resources(
             7,
             6,
-            Arc::new(snapshot(None)),
+            Arc::new(fixture_snapshot(None)),
             "app:ced".into(),
             false,
             Some(invented),
@@ -949,7 +949,7 @@ mod tests {
         let valid = Save::capture_resources(
             7,
             4,
-            Arc::new(snapshot(Some(authored))),
+            Arc::new(fixture_snapshot(Some(authored))),
             "app:ced".into(),
             false,
             Some(resource_binding("core-icons")),
@@ -959,7 +959,7 @@ mod tests {
         assert_eq!(candidate.binding(), Some(&resource_binding("core-icons")));
         assert_eq!(
             candidate.snapshot().desktop.appearance.resources,
-            Some(reference("core-icons"))
+            Some(fixture_reference("core-icons"))
         );
         // A later refusal leaves the persisted envelope byte-identical.
         let file = dir
@@ -969,7 +969,7 @@ mod tests {
         let newer = Save::capture_resources(
             7,
             7,
-            Arc::new(snapshot(Some(reference("core-icons")))),
+            Arc::new(fixture_snapshot(Some(fixture_reference("core-icons")))),
             "app:ced".into(),
             false,
             Some(resource_binding("other-set")),

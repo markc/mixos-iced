@@ -349,7 +349,7 @@ mod tests {
             desktop,
         }
     }
-    fn request(
+    fn fixture_request(
         retained: Option<Snapshot>,
         retained_binding: Option<crate::ResourceBinding>,
     ) -> Request {
@@ -377,7 +377,7 @@ mod tests {
         let expected = binding("expected");
         // A different returned binding rejects the retained candidate and the
         // ladder continues; the diagnostic names the disagreement.
-        let request = request(Some(snapshot()), Some(expected.clone()));
+        let request = fixture_request(Some(snapshot()), Some(expected.clone()));
         let prepared = request
             .prepare_resources_with_cache(
                 || Ok(None),
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(prepared.diagnostics()[0].code, "binding_mismatch");
         assert!(prepared.resources().is_none());
         // Returning the exact expected binding accepts the retained candidate.
-        let request = request(Some(snapshot()), Some(expected.clone()));
+        let request = fixture_request(Some(snapshot()), Some(expected.clone()));
         let prepared = request
             .prepare_resources_with_cache(
                 || panic!("a validated retained candidate must win"),
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn cached_expected_binding_must_match_exactly() {
         let pinned = binding("pinned");
-        let request = request(None, None);
+        let request = fixture_request(None, None);
         // The exact recorded binding accepts the cached candidate.
         let prepared = request
             .prepare_resources_with_cache(
@@ -444,7 +444,7 @@ mod tests {
     }
     #[test]
     fn legacy_prepare_with_cache_cannot_claim_a_resource_bound_candidate() {
-        let request = request(None, None);
+        let request = fixture_request(None, None);
         // The legacy wrapper returns no binding, so a schema-2 candidate's
         // expected binding can never be satisfied: it falls through instead of
         // pretending the recorded resources were verified.

@@ -541,7 +541,7 @@ mod tests {
         bad.schema = 2;
         assert_eq!(bad.validate().unwrap_err().code, "unsupported_resources");
         let mut bad = binding;
-        bad.set_id = "";
+        bad.set_id = String::new();
         assert!(bad.validate().is_err());
         let value = serde_json::to_value(ResourceBinding {
             schema: RESOURCE_SCHEMA,
