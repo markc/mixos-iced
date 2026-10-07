@@ -254,7 +254,10 @@ pub fn load(directory: &Path, consumer: &Consumer) -> Result<Candidate, Diagnost
     // schema with new fields is unsupported rather than labelled corrupt.
     let header: Header = serde_json::from_slice(&bytes).map_err(|e| fault("invalid_cache", e))?;
     if header.schema != CACHE_SCHEMA || header.interpretation != interpretation() {
-        return Err(fault("unsupported_cache", "Cache schema/interpretation differs"));
+        return Err(fault(
+            "unsupported_cache",
+            "Cache schema/interpretation differs",
+        ));
     }
     let envelope: Envelope =
         serde_json::from_slice(&bytes).map_err(|e| fault("invalid_cache", e))?;
