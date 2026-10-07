@@ -66,8 +66,8 @@ use std::mem::ManuallyDrop;
 use std::slice;
 use std::sync::Arc;
 
-mod presentation;
 mod native_presentation;
+mod presentation;
 use native_presentation::feedback as request_frame_feedback;
 
 #[cfg(feature = "native-frame-probe")]
@@ -981,25 +981,27 @@ async fn run_instance<P>(
                                 .and_then(|result| result.as_ref().ok())
                                 .copied();
                             match feedback {
-                                Some(feedback) => match feedback {
-                                    Ok(request_id) => {
-                                        let successful = result.is_ok();
-                                        window.presentation.submitted(
-                                            request_id,
-                                            binding.clone(),
-                                            successful,
-                                        );
-                                        if !successful {
-                                            binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
+                                Some(feedback) => {
+                                    match feedback {
+                                        Ok(request_id) => {
+                                            let successful = result.is_ok();
+                                            window.presentation.submitted(
+                                                request_id,
+                                                binding.clone(),
+                                                successful,
+                                            );
+                                            if !successful {
+                                                binding.observe(id, Some(request_id), core::window::presentation::FrameOutcome::SubmissionFailed);
+                                            }
                                         }
-                                    }
-                                    Err(reason) => {
-                                        if reason == core::window::presentation::FrameOutcome::Capacity {
+                                        Err(reason) => {
+                                            if reason == core::window::presentation::FrameOutcome::Capacity {
                                             window.presentation.native_capacity_blocked();
                                         }
-                                        binding.observe(id, None, reason);
+                                            binding.observe(id, None, reason);
+                                        }
                                     }
-                                },
+                                }
                                 None => {}
                             }
                             #[cfg(feature = "native-frame-probe")]
@@ -1043,7 +1045,10 @@ async fn run_instance<P>(
                                         );
                                     }
 
-                                    native_presentation::recover_redraw(&window.raw, pre_present_called);
+                                    native_presentation::recover_redraw(
+                                        &window.raw,
+                                        pre_present_called,
+                                    );
                                 }
                                 compositor::SurfaceError::Occluded => {
                                     present_span.finish();
@@ -1058,7 +1063,10 @@ async fn run_instance<P>(
                                     // Try rendering all windows again next frame.
                                     for (window_id, window) in window_manager.iter_mut() {
                                         if window_id == id {
-                                            native_presentation::recover_redraw(&window.raw, pre_present_called);
+                                            native_presentation::recover_redraw(
+                                                &window.raw,
+                                                pre_present_called,
+                                            );
                                         } else {
                                             window.raw.request_redraw();
                                         }
@@ -1156,18 +1164,25 @@ async fn run_instance<P>(
                         }
                     }
                     event::Event::AboutToWait => {
-                        let blocked = window_manager.iter_mut().any(|(_, window)| window.presentation.is_capacity_blocked());
+                        let blocked = window_manager
+                            .iter_mut()
+                            .any(|(_, window)| window.presentation.is_capacity_blocked());
                         if !blocked {
                             capacity_epoch.idle();
                         } else {
                             let epoch = window_manager.iter_mut().find_map(|(_, window)| {
-                                native_presentation::capacity(&window.raw).ok().map(|capacity| capacity.release_epoch)
+                                native_presentation::capacity(&window.raw)
+                                    .ok()
+                                    .map(|capacity| capacity.release_epoch)
                             });
                             if epoch.is_some_and(|epoch| capacity_epoch.should_scan(epoch)) {
                                 for (_, window) in window_manager.iter_mut() {
                                     if window.presentation.is_capacity_blocked()
-                                        && let Ok(capacity) = native_presentation::capacity(&window.raw)
-                                        && window.presentation.take_capacity_retry(capacity.available)
+                                        && let Ok(capacity) =
+                                            native_presentation::capacity(&window.raw)
+                                        && window
+                                            .presentation
+                                            .take_capacity_retry(capacity.available)
                                     {
                                         window.raw.request_redraw();
                                     }

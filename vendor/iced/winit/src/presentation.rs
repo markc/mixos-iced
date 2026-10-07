@@ -58,9 +58,9 @@ impl Ledger {
     }
     fn requires_evidence(&self, binding: &FrameBinding) -> bool {
         !self
-                .proven
-                .as_ref()
-                .is_some_and(|(_, proven)| proven.same_presentation(binding))
+            .proven
+            .as_ref()
+            .is_some_and(|(_, proven)| proven.same_presentation(binding))
             && !self
                 .pending
                 .values()
@@ -166,9 +166,15 @@ mod tests {
         assert!(epoch.should_scan(1));
         assert!(!epoch.should_scan(1));
         epoch.idle();
-        assert!(epoch.should_scan(1), "a newly blocked runtime gets its initial availability check");
+        assert!(
+            epoch.should_scan(1),
+            "a newly blocked runtime gets its initial availability check"
+        );
         assert!(epoch.should_scan(u64::MAX));
-        assert!(epoch.should_scan(u64::MAX), "terminal epoch must reconcile each real native wake");
+        assert!(
+            epoch.should_scan(u64::MAX),
+            "terminal epoch must reconcile each real native wake"
+        );
     }
 
     #[test]
@@ -181,16 +187,28 @@ mod tests {
         }
         assert!(ledger.feedback_candidate().is_none());
         assert!(ledger.is_capacity_blocked());
-        assert!(!ledger.take_capacity_retry(true), "local entries must actually retire");
-        assert!(ledger.resolve(1, presented()).is_none(), "failed ID cannot prove its eventual native commit");
+        assert!(
+            !ledger.take_capacity_retry(true),
+            "local entries must actually retire"
+        );
+        assert!(
+            ledger.resolve(1, presented()).is_none(),
+            "failed ID cannot prove its eventual native commit"
+        );
         assert!(!ledger.take_capacity_retry(false));
         assert!(ledger.take_capacity_retry(true));
-        assert!(!ledger.take_capacity_retry(true), "repeated wakes cannot enqueue another retry");
+        assert!(
+            !ledger.take_capacity_retry(true),
+            "repeated wakes cannot enqueue another retry"
+        );
         let candidate = ledger.feedback_candidate().unwrap();
         assert!(candidate.same_presentation(&target));
         ledger.submitted(9, candidate, true);
         ledger.native_capacity_blocked();
-        assert!(!ledger.take_capacity_retry(true), "successful pending proof suppresses redundant work");
+        assert!(
+            !ledger.take_capacity_retry(true),
+            "successful pending proof suppresses redundant work"
+        );
         assert!(!ledger.is_capacity_blocked());
     }
 
