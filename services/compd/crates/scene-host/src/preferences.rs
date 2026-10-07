@@ -67,7 +67,7 @@ impl Preferences {
             }
             let preference =
                 PanelPreference::new(mode, panel.thickness as f32).map_err(|error| {
-                    Diagnostic::new("unsupported_presentation", &path, &error.to_string())
+                    Diagnostic::new("unsupported_presentation", &path, error.to_string())
                 })?;
             policy.records[edge.index()] = Some(Record {
                 id: id.clone(),

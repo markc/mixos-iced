@@ -163,3 +163,24 @@ fn empty_edges_and_migration_keep_policy_and_local_baseline() {
     assert!(!next.has_remembered_thickness(Edge::Top));
     assert_eq!(next.panel(Edge::Top).mode, PanelMode::Hidden);
 }
+
+#[test]
+fn first_and_last_page_reconcile_opposite_managed_reservations() {
+    let mut model = model();
+    model.set_geometry(LogicalSize::new(300.0, 600.0).unwrap());
+    model.suppress_empty_edges(true);
+    model.carousel_mut(Edge::Left).register("left-page").unwrap();
+    let mut values = policy(Edge::Left, PanelMode::Docked, 256.0);
+    values[Edge::Right.index()] = values[Edge::Left.index()];
+    model.set_preferences(values, Duration::ZERO);
+    assert_eq!(model.panel(Edge::Right).exclusive_zone_px, 0.0);
+    model.carousel_mut(Edge::Right).register("right-page").unwrap();
+    model.reconcile_preferences();
+    assert!(model.panel(Edge::Left).exclusive_zone_px + model.panel(Edge::Right).exclusive_zone_px <= 299.01);
+    assert_eq!(model.carousel(Edge::Left).active_id(), Some("left-page"));
+    assert_eq!(model.carousel(Edge::Right).active_id(), Some("right-page"));
+    model.carousel_mut(Edge::Right).remove("right-page").unwrap();
+    model.reconcile_preferences();
+    assert_eq!(model.panel(Edge::Right).exclusive_zone_px, 0.0);
+    assert_eq!(model.panel(Edge::Left).thickness_px, 256.0);
+}

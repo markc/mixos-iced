@@ -883,7 +883,12 @@ impl Panels {
                 menu.navigate(direction.signum());
                 return Ok(None);
             }
-            Input::Activate => menu.selected,
+            Input::Activate => {
+                if menu.items.get(menu.selected).is_none_or(|item| !item.enabled()) {
+                    return Ok(None);
+                }
+                menu.selected
+            }
             Input::Choose(index) => index,
         };
         let item = menu
@@ -1180,6 +1185,8 @@ impl Panels {
                         Err(settings_managed())
                     };
                 }
+                // Managed Toggle is transient-only; persistent modes ignore it
+                // before the host releases any interaction holders.
                 PanelVerb::Toggle if mode != PanelMode::Hidden => return Ok(()),
                 _ => {}
             }
@@ -1632,8 +1639,10 @@ mod tests {
         panels
             .open_menu_at("DP-1", Corner::BottomLeft, now)
             .unwrap();
+        panels.menu.as_mut().unwrap().items.truncate(3);
         let menu = panels.menu.clone();
         let row = panels.state("DP-1", Edge::Bottom);
+        assert!(panels.menu_input(menu.as_ref().unwrap().serial, crate::menu::Input::Activate).unwrap().is_none());
         assert_eq!(
             panels
                 .set_mode("DP-1", Edge::Bottom, "pinned")

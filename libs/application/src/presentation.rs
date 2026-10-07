@@ -81,6 +81,8 @@ impl<T> Host<T> {
     /// Activate caller-owned, already prepared UI state after the final fence
     /// and before acknowledgement. The callback is synchronous and total: it
     /// must not perform I/O, await, or discover unsupported resources.
+    /// Use the passed presentation: the host's stored value is replaced after
+    /// this callback returns.
     pub fn complete_with(
         &mut self,
         completion: Completion<T>,

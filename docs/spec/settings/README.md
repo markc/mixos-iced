@@ -179,7 +179,10 @@ Settings owns the mode and thickness of each declared edge. Conflicting legacy
 panel writes refuse `SETTINGS_MANAGED` before changing interaction state; exact
 current mode or settled-size requests are no-ops. Transient show/hide and page
 selection remain available. Persistent toggles cannot undock managed panels.
-Corner-menu mode entries are disabled while managed. Removing a profile record
+For managed edges Toggle changes transient visibility only while hidden; docked
+or pinned modes treat it as a successful no-op. Corner-menu mode entries are
+disabled while managed; activating a disabled selection is an inert action.
+Removing a profile record
 restores that edge's captured local mode and settled thickness. Saving a page
 selection keeps those local values, so profile preferences do not leak into the
 local state file. Thickness or appearance updates retain interaction holders;
