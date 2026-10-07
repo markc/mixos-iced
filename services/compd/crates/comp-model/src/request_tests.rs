@@ -30,8 +30,116 @@ fn region_arguments_are_strict_and_leave_reply_margin() {
         reply_budget + Duration::from_secs(2)
     );
     assert!(
-        matches!(parse_region_select(&json!({})).unwrap(),LongOp::RegionSelect {output:None,timeout} if timeout==Duration::from_secs(30))
+        matches!(parse_region_select(&json!({})).unwrap(),LongOp::RegionSelect {output:None,timeout,selection:None} if timeout==Duration::from_secs(30))
     );
+}
+
+#[test]
+fn region_selection_identity_is_strict_positive_and_echoed() {
+    let identity = json!({
+        "instance": "ab12",
+        "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f",
+        "generation": 7,
+    });
+    let op = parse_region_select(&json!({"selection": identity.clone()})).unwrap();
+    let LongOp::RegionSelect { selection: Some(selection), .. } = op else {
+        panic!("the identity parses");
+    };
+    assert_eq!(selection.instance, "ab12");
+    assert_eq!(selection.generation, 7);
+    assert_eq!(selection.wire_value(), identity, "the reply echoes the wire object");
+    // A null selection reads as absent: the legacy identity-less select.
+    let LongOp::RegionSelect { selection: None, .. } =
+        parse_region_select(&json!({"selection": null})).unwrap()
+    else {
+        panic!("null reads as legacy");
+    };
+    for (args, path) in [
+        (
+            json!({"selection": {"owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 1}}),
+            "selection.instance",
+        ),
+        (
+            json!({"selection": {"instance": "i", "generation": 1}}),
+            "selection.owner",
+        ),
+        (
+            json!({"selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f"}}),
+            "selection.generation",
+        ),
+        (
+            json!({"selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 0}}),
+            "selection.generation",
+        ),
+        (
+            json!({"selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": -1}}),
+            "selection.generation",
+        ),
+        (
+            json!({"selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 2e19}}),
+            "selection.generation",
+        ),
+        (
+            json!({"selection": {"instance": "i", "owner": "not-a-uuid", "generation": 1}}),
+            "selection.owner",
+        ),
+        (
+            json!({"selection": {"instance": "", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 1}}),
+            "selection.instance",
+        ),
+        (json!({"selection": 7}), "selection"),
+    ] {
+        let body = refusal(parse_region_select(&args).expect_err("refused"));
+        assert_eq!(body["error"], "invalid_value", "{args}");
+        assert_eq!(body["path"], path, "{args}");
+    }
+    let body = refusal(
+        parse_region_select(&json!({"selection": {
+            "instance": "i",
+            "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f",
+            "generation": 1,
+            "gen": 2,
+        }}))
+        .expect_err("a typo inside the identity is refused by name"),
+    );
+    assert_eq!(body["error"], "invalid_args");
+    assert_eq!(body["field"], "selection.gen");
+    // The largest generation parses; there is nothing above it to wrap.
+    let max = json!({
+        "selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": u64::MAX},
+    });
+    let Ok(LongOp::RegionSelect { selection: Some(max), .. }) = parse_region_select(&max) else {
+        panic!("u64::MAX parses");
+    };
+    assert_eq!(max.generation, u64::MAX);
+}
+
+#[test]
+fn region_cancel_is_a_discoverable_strict_short_verb() {
+    let identity = json!({
+        "instance": "ab12",
+        "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f",
+        "generation": 7,
+    });
+    let parsed = parse_region_cancel(&json!({"selection": identity})).unwrap();
+    assert_eq!((parsed.instance.as_str(), parsed.generation), ("ab12", 7));
+    assert!(matches!(
+        classify(
+            "comp.region.cancel",
+            &json!({"selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 1}}),
+            false,
+        ),
+        Ok(Request::RegionCancel(_))
+    ));
+    assert_eq!(
+        crate::catalogue::verb_family("comp.region.cancel"),
+        Some(crate::catalogue::VerbFamily::Direct)
+    );
+    let body = refused_body(classify("comp.region.cancel", &Value::Null, true).unwrap_err());
+    assert_eq!(body["range"], "{selection}");
+    for args in [Value::Null, json!({}), json!({"selection": null}), json!({"selection": 3})] {
+        assert!(parse_region_cancel(&args).is_err(), "{args}");
+    }
 }
 
 #[test]
@@ -1157,7 +1265,8 @@ fn classify_refuses_a_malformed_body_per_family_and_ping_ignores_it() {
     );
     for (verb, range) in [
         ("comp.window.focus", "{id, generation}"),
-        ("comp.region.select", "{output?, timeout_ms?}"),
+        ("comp.region.select", "{output?, timeout_ms?, selection?}"),
+        ("comp.region.cancel", "{selection}"),
         ("comp.input.sequence", "{steps, interval_ms?}"),
         ("comp.input.key", "verb arguments"),
         ("comp.panel.hold", "{output, edge, surface, ...}"),

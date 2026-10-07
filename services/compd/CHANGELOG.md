@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.12
+
+- Add owner-scoped native region cancellation. `comp.region.select` takes an
+  optional strict `{instance, owner, generation}` selection identity echoed on
+  terminal replies; the new `comp.region.cancel {selection}` short verb is
+  admitted independently of the long pool and cancels only the exact active
+  run through the existing finish path (focus restore, overlay removal, the
+  original select reply). Bounded per-owner retirement watermarks refuse
+  resurrected generations, and a stale compositor instance is refused without
+  mutating state. Legacy selections without an identity are unchanged and
+  cannot be cancelled through the verb.
+
 ## 0.1.11
 
 - Use application's paired settings bridge for shell activation and worker

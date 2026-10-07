@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use comp_model::observation::{POINTER_TOPIC_SUFFIX, PROPS_TOPIC_SUFFIX, PanelRequest, topic_name};
 use comp_model::reply::ControlReply;
-use comp_model::request::{InputOp, LongOp, WindowOp};
+use comp_model::request::{InputOp, LongOp, SelectionIdentity, WindowOp};
 use comp_model::snapshot::{BROKER_CONNECTED, BROKER_RETRYING, CompSnapshot, PortSnapshot, ReadScopes};
 
 use crate::channel::{CommandSource, Waker};
@@ -130,6 +130,10 @@ pub trait CompEngine {
     fn input(&mut self, op: &InputOp) -> ControlReply;
     /// `comp.panel.hold` / `comp.panel.mode` (`sender` is the broker's).
     fn panel(&mut self, request: &PanelRequest) -> ControlReply;
+    /// `comp.region.cancel {selection}`: a short owner operation, answered
+    /// in this pass. The engine fences the compositor instance and cancels
+    /// only the exact active selection.
+    fn region_cancel(&mut self, selection: &SelectionIdentity) -> ControlReply;
     /// Start a long verb; answer through `reply` when it resolves. Its
     /// deadline runs from `admitted`.
     fn start_long(&mut self, op: LongOp, reply: LongReply, admitted: Instant);
@@ -214,6 +218,7 @@ impl PortService {
                 PortCommand::Window(request) => self.push(PortControl::Window(request)),
                 PortCommand::Input(request) => self.push(PortControl::Input(request)),
                 PortCommand::Long(request) => self.push(PortControl::Long(request)),
+                PortCommand::RegionCancel(request) => self.push(PortControl::RegionCancel(request)),
                 PortCommand::Truth(request) => self.push(PortControl::Truth(request)),
                 PortCommand::WatchState { active, order } => {
                     if self.controls.len() < PORT_QUEUE_CAPACITY {
@@ -312,6 +317,12 @@ impl PortService {
                         let _ = sender.send(reply);
                     }
                 }
+                PortControl::RegionCancel(request) => {
+                    let reply = engine.region_cancel(&request.selection);
+                    if let Some(sender) = request.reply.take() {
+                        let _ = sender.send(reply);
+                    }
+                }
                 PortControl::Set(request) => {
                     let reply = engine.set(&request.path, &request.value, request.generation);
                     if let Some(sender) = request.reply.take() {
@@ -367,6 +378,7 @@ impl PortService {
                 }
                 PortControl::Set(_)
                 | PortControl::Panel(_)
+                | PortControl::RegionCancel(_)
                 | PortControl::Window(_)
                 | PortControl::Input(_)
                 | PortControl::Long(_) => {}

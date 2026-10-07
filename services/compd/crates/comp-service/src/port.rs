@@ -45,8 +45,8 @@ use comp_model::reply::{
     ControlReply, MAX_REPLY_BODY_BYTES, MAX_REPLY_WIRE_BYTES, error, too_large, with_error_code,
 };
 use comp_model::request::{
-    InputOp, LONG_VERB_MAX, LONG_VERB_SLACK, LongOp, PING_BODY, Request, WindowOp,
-    body_is_malformed, classify,
+    InputOp, LONG_VERB_MAX, LONG_VERB_SLACK, LongOp, PING_BODY, Request, SelectionIdentity,
+    WindowOp, body_is_malformed, classify,
 };
 use comp_model::snapshot::{BROKER_CONNECTED, BROKER_RETRYING, CompSnapshot, dispatch_read};
 use surfaces::SeatKind;
@@ -94,6 +94,9 @@ pub enum PortCommand {
     Window(PortWindowRequest),
     Input(PortInputRequest),
     Long(PortLongRequest),
+    /// `comp.region.cancel`: a short owner operation, admitted under the
+    /// ordinary responder capacity, never the long pool.
+    RegionCancel(PortRegionCancelRequest),
     WatchState { active: bool, order: u64 },
     /// [`TRUTH_VERB`].
     Truth(PortReply),
@@ -153,6 +156,12 @@ pub struct PortLongRequest {
     pub admitted: std::time::Instant,
 }
 
+pub struct PortRegionCancelRequest {
+    pub order: u64,
+    pub selection: SelectionIdentity,
+    pub reply: Option<tokio::sync::oneshot::Sender<ControlReply>>,
+}
+
 pub enum PortControl {
     Panel(PortPanelRequest),
     Watch(PortReply),
@@ -161,6 +170,7 @@ pub enum PortControl {
     Window(PortWindowRequest),
     Input(PortInputRequest),
     Long(PortLongRequest),
+    RegionCancel(PortRegionCancelRequest),
     WatchState { active: bool, order: u64 },
     Truth(PortReply),
 }
@@ -205,6 +215,7 @@ impl PortControl {
             Self::Window(request) => request.order,
             Self::Input(request) => request.order,
             Self::Long(request) => request.order,
+            Self::RegionCancel(request) => request.order,
             Self::WatchState { order, .. } => *order,
             Self::Truth(request) => request.order,
         }
@@ -314,6 +325,23 @@ impl PortIngress {
                 order: self.next_control_order(),
                 agent_epoch: self.agent_epoch.load(Ordering::Acquire),
                 op,
+                reply: Some(reply),
+            }),
+            receive,
+        )
+    }
+
+    /// Admit `comp.region.cancel`: a short control, never under the long
+    /// pool, so a saturated long pool cannot starve a cancellation.
+    pub fn request_region_cancel(
+        &self,
+        selection: SelectionIdentity,
+    ) -> Result<ControlAdmission, QueueFull> {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        self.admit(
+            PortCommand::RegionCancel(PortRegionCancelRequest {
+                order: self.next_control_order(),
+                selection,
                 reply: Some(reply),
             }),
             receive,
@@ -1123,8 +1151,10 @@ fn warn_foreign_broker_claim(command: &bus::IncomingCommand) {
 /// One incoming command through the dispatch boundary: the broker's own
 /// lifecycle and registry notices first (only the local broker may speak as
 /// `noded`), then the verb, routed by comp-model's `classify` in family
-/// order. Every reply is queued, never awaited, so a slow engine or a
-/// black-holed caller cannot stall the worker.
+/// order. `comp.region.cancel` is a short control admitted under the
+/// ordinary responder capacity, never the long pool, so a saturated long
+/// pool cannot starve a cancellation. Every reply is queued, never awaited,
+/// so a slow engine or a black-holed caller cannot stall the worker.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_incoming(
     ingress: &PortIngress,
@@ -1280,6 +1310,11 @@ fn dispatch_incoming(
                 } => ingress.request_set_fenced(path, value, generation),
                 Request::Window(op) => ingress.request_window(op),
                 Request::Input(op) => ingress.request_input(op),
+                Request::RegionCancel(selection) => {
+                    // Short capacity only: a cancel never waits behind, or
+                    // for, the selection's own long permit.
+                    ingress.request_region_cancel(selection)
+                }
                 Request::Panel(mut op) => {
                     // Only the broker's stamp names the holder service.
                     op.sender.clone_from(&command.from);

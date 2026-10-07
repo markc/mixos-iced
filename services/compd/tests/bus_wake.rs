@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use comp_service::{CompEngine, LongReply, PortService};
 use comp_model::observation::PanelRequest;
 use comp_model::reply::ControlReply;
-use comp_model::request::{InputOp, LongOp, WindowOp, WorkspaceIndex};
+use comp_model::request::{InputOp, LongOp, SelectionIdentity, WindowOp, WorkspaceIndex};
 use comp_model::snapshot::{CompSnapshot, ReadScopes};
 use dispatcher::state::state::{Dispatch, RedrawReason};
 use policy::workspaces::{DefaultOutput, WorkspaceState, service_switch};
@@ -66,6 +66,9 @@ impl CompEngine for Engine {
         unreachable!()
     }
     fn panel(&mut self, _: &PanelRequest) -> ControlReply {
+        unreachable!()
+    }
+    fn region_cancel(&mut self, _: &SelectionIdentity) -> ControlReply {
         unreachable!()
     }
     fn start_long(&mut self, _: LongOp, _: LongReply, _: Instant) {

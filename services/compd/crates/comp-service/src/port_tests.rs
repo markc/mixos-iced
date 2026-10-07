@@ -530,7 +530,7 @@ async fn region_mesh_dispatch_uses_long_pool_and_replies_once() {
         panic!("region must use LongAdmission");
     };
     assert!(
-        matches!(request.op.take(),Some(LongOp::RegionSelect{output:Some(name),timeout})
+        matches!(request.op.take(),Some(LongOp::RegionSelect{output:Some(name),timeout,selection:None})
         if name=="Output-1" && timeout==Duration::from_secs(55))
     );
     request.slot.take();
@@ -557,6 +557,133 @@ async fn region_mesh_dispatch_uses_long_pool_and_replies_once() {
     assert_eq!(long_permits.available_permits(), 1);
     drop(other_operations);
     assert_eq!(long_permits.available_permits(), LONG_VERB_PERMITS);
+}
+
+/// `comp.region.cancel` is a SHORT verb: with the whole long pool held, a
+/// select is refused bounded `busy` while the cancel is still admitted,
+/// answered, and never touches (or waits for) a long permit.
+#[tokio::test]
+async fn region_cancel_admits_while_the_long_pool_is_saturated() {
+    let (ingress, source, _) = test_ingress();
+    let mut responders = JoinSet::new();
+    let permits = Arc::new(Semaphore::new(PORT_QUEUE_CAPACITY));
+    let long_permits = Arc::new(Semaphore::new(LONG_VERB_PERMITS));
+    let held = long_permits
+        .clone()
+        .try_acquire_many_owned(LONG_VERB_PERMITS as u32)
+        .unwrap();
+    let (reply_sender, mut replies) = tokio_mpsc::channel(8);
+    let reply_timeouts = Arc::new(AtomicU64::new(0));
+    let identity = json!({
+        "instance": "ab12",
+        "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f",
+        "generation": 7,
+    });
+    // A saturated long pool refuses the select immediately, not by hanging.
+    let mut select = command("comp.region.select", 0);
+    select.args = json!({"timeout_ms": 5000, "selection": identity.clone()});
+    select.body = select.args.to_string();
+    dispatch_incoming(
+        &ingress,
+        &mut responders,
+        &permits,
+        &long_permits,
+        &reply_sender,
+        &reply_timeouts,
+        "comp-nested",
+        select,
+    );
+    let busy = replies.try_recv().unwrap();
+    assert_eq!(busy.id.as_deref(), Some("0"));
+    assert_eq!(busy.rc, 10);
+    assert_eq!(
+        serde_json::from_str::<Value>(&busy.body).unwrap()["error"],
+        "busy"
+    );
+    // The cancel never touches the long pool: admitted and answered.
+    let mut cancel = command("comp.region.cancel", 1);
+    cancel.args = json!({"selection": identity});
+    cancel.body = cancel.args.to_string();
+    dispatch_incoming(
+        &ingress,
+        &mut responders,
+        &permits,
+        &long_permits,
+        &reply_sender,
+        &reply_timeouts,
+        "comp-nested",
+        cancel,
+    );
+    let Ok(PortCommand::RegionCancel(request)) = source.try_recv() else {
+        panic!("cancel is a short command, never a long admission");
+    };
+    assert_eq!(request.selection.generation, 7);
+    assert_eq!(long_permits.available_permits(), 0, "no long permit was spent");
+    request
+        .reply
+        .take()
+        .unwrap()
+        .send(ControlReply::Body(json!({
+            "version": 1,
+            "status": "retired",
+            "selection": {"instance": "ab12", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 7},
+        })))
+        .unwrap();
+    responders.join_next().await.unwrap().unwrap();
+    let reply = replies.try_recv().unwrap();
+    assert_eq!(reply.id.as_deref(), Some("1"));
+    assert_eq!(reply.rc, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&reply.body).unwrap()["status"],
+        "retired"
+    );
+    drop(held);
+    assert_eq!(long_permits.available_permits(), LONG_VERB_PERMITS);
+}
+
+/// A malformed cancel is refused before admission: the typo can never act
+/// on the wrong generation.
+#[tokio::test]
+async fn malformed_region_cancel_is_refused_before_admission() {
+    let (ingress, source, _) = test_ingress();
+    let mut responders = JoinSet::new();
+    let permits = Arc::new(Semaphore::new(PORT_QUEUE_CAPACITY));
+    let long_permits = Arc::new(Semaphore::new(LONG_VERB_PERMITS));
+    let (reply_sender, mut replies) = tokio_mpsc::channel(2);
+    let reply_timeouts = Arc::new(AtomicU64::new(0));
+    for (id, args, path) in [
+        (
+            0,
+            json!({"selection": {"instance": "i", "owner": "a3f9c2d1-4e7b-4a1c-9d8e-5f6b7c8d9e0f", "generation": 0}}),
+            "selection.generation",
+        ),
+        (
+            1,
+            json!({"selection": {"instance": "i", "owner": "nope", "generation": 1}}),
+            "selection.owner",
+        ),
+    ] {
+        let mut incoming = command("comp.region.cancel", id);
+        incoming.args = args;
+        incoming.body = incoming.args.to_string();
+        dispatch_incoming(
+            &ingress,
+            &mut responders,
+            &permits,
+            &long_permits,
+            &reply_sender,
+            &reply_timeouts,
+            "comp-nested",
+            incoming,
+        );
+        let reply = replies.try_recv().unwrap();
+        assert_eq!(reply.rc, 10);
+        let body = serde_json::from_str::<Value>(&reply.body).unwrap();
+        assert_eq!(body["error"], "invalid_value");
+        assert_eq!(body["path"], path);
+    }
+    assert!(matches!(source.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    assert_eq!(ingress.depth(), 0);
 }
 
 /// noded's registry diffs reach the compositor as the full live set,

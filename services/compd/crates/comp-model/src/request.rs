@@ -320,6 +320,9 @@ pub enum LongOp {
     RegionSelect {
         output: Option<String>,
         timeout: Duration,
+        /// The optional caller identity (`selection`); legacy selections
+        /// have none and keep their legacy reply shape.
+        selection: Option<SelectionIdentity>,
     },
     Sequence(Vec<SequenceStep>),
     SeatedSequence { seat: SeatKind, steps: Vec<SequenceStep> },
@@ -483,6 +486,126 @@ pub fn parse_window_op(verb: &str, args: &Value) -> Result<WindowOp, ControlRepl
 /// The canonical `&'static` name of a window-family verb.
 pub fn window_verb(verb: &str) -> Option<&'static str> {
     WINDOW_VERBS.iter().copied().find(|known| *known == verb)
+}
+
+/// A parsed `comp.region.select` identity or a typed `comp.region.cancel`:
+/// the compositor process instance the selection was sent to (the
+/// `comp.info` instance), the caller's owner capability and the positive
+/// capture generation. All three are required together; the identity is
+/// echoed on terminal replies and is what `comp.region.cancel` matches
+/// exactly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectionIdentity {
+    pub instance: String,
+    pub owner: String,
+    pub generation: u64,
+}
+
+impl SelectionIdentity {
+    /// The strict `{instance, owner, generation}` wire object.
+    pub fn wire_value(&self) -> Value {
+        json!({
+            "instance": self.instance,
+            "owner": self.owner,
+            "generation": self.generation,
+        })
+    }
+}
+
+/// A random UUID v4, lowercase hyphenated: the owner capability shape
+/// (`xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`). The owner is a targeting
+/// capability, not an authentication claim.
+pub fn valid_owner_capability(owner: &str) -> bool {
+    let bytes = owner.as_bytes();
+    if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|at| bytes[*at] != b'-') {
+        return false;
+    }
+    [0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 12, 16, 17, 21, 22]
+        .into_iter()
+        .chain(24..36)
+        .all(|at| bytes[at].is_ascii_hexdigit())
+        && bytes[14] == b'4'
+        && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+}
+
+/// The strict `{instance, owner, generation}` identity object. Unknown
+/// fields are refused by name, so a typo can never act on the wrong
+/// generation. `None` (or `null`) with `required` false is the legacy
+/// identity-less selection.
+fn selection_arg(
+    value: Option<&Value>,
+    required: bool,
+) -> Result<Option<SelectionIdentity>, ControlReply> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return if required {
+            Err(invalid_argument(
+                "selection",
+                "object",
+                "{instance, owner, generation}",
+            ))
+        } else {
+            Ok(None)
+        };
+    };
+    const SELECTION: &[&str] = &["instance", "owner", "generation"];
+    let object = match value {
+        Value::Object(object) => object,
+        _ => {
+            return Err(invalid_argument(
+                "selection",
+                "object",
+                "{instance, owner, generation}",
+            ));
+        }
+    };
+    if let Some(field) = object.keys().find(|field| !SELECTION.contains(&field.as_str())) {
+        return Err(ControlReply::InvalidArgs {
+            field: format!("selection.{field}"),
+            allowed: SELECTION,
+        });
+    }
+    let instance = match object.get("instance") {
+        Some(Value::String(instance)) if !instance.is_empty() && instance.is_ascii() && instance.len() <= 128 => {
+            instance.clone()
+        }
+        _ => {
+            return Err(invalid_argument(
+                "selection.instance",
+                "string",
+                "the comp.info instance (1..=128 ascii bytes)",
+            ));
+        }
+    };
+    let owner = match object.get("owner") {
+        Some(Value::String(owner)) if valid_owner_capability(owner) => owner.clone(),
+        _ => {
+            return Err(invalid_argument(
+                "selection.owner",
+                "string",
+                "a random UUID v4",
+            ));
+        }
+    };
+    let generation = match object.get("generation") {
+        Some(value) => value
+            .as_u64()
+            .filter(|generation| *generation >= 1)
+            .ok_or_else(|| {
+                invalid_argument("selection.generation", "unsigned integer", "1..=u64::MAX")
+            })?,
+        None => {
+            return Err(invalid_argument(
+                "selection.generation",
+                "unsigned integer",
+                "required (positive)",
+            ));
+        }
+    };
+    Ok(Some(SelectionIdentity {
+        instance,
+        owner,
+        generation,
+    }))
 }
 
 /// The defaults for `comp.window.wait` and `comp.window.close {force}`.
@@ -1280,11 +1403,13 @@ fn delay_arg(value: Option<&Value>, name: &'static str) -> Result<Option<Duratio
     }
 }
 
-/// `comp.region.select {output?, timeout_ms?}`: the selection deadline is
-/// 1..=55000 ms (default 30 s), leaving reply margin inside the 60 s cap.
+/// `comp.region.select {output?, timeout_ms?, selection?}`: the selection
+/// deadline is 1..=55000 ms (default 30 s), leaving reply margin inside the
+/// 60 s cap. `selection` is the optional strict caller identity; a legacy
+/// select without one keeps its legacy reply shape.
 pub fn parse_region_select(args: &Value) -> Result<LongOp, ControlReply> {
     let empty = serde_json::Map::new();
-    let object = args_object(args, &empty, &["output", "timeout_ms"])?;
+    let object = args_object(args, &empty, &["output", "timeout_ms", "selection"])?;
     let output = match object.get("output") {
         None => None,
         Some(Value::String(name)) if !name.is_empty() => Some(name.clone()),
@@ -1305,10 +1430,23 @@ pub fn parse_region_select(args: &Value) -> Result<LongOp, ControlReply> {
                 invalid_argument("timeout_ms", "integer 1..55000", "selection deadline")
             })?,
     };
+    let selection = selection_arg(object.get("selection"), false)?;
     Ok(LongOp::RegionSelect {
         output,
         timeout: Duration::from_millis(timeout),
+        selection,
     })
+}
+
+/// `comp.region.cancel {selection}`: a short owner operation admitted
+/// independently of the long pool. It cancels only the exact active
+/// selection and otherwise retires the identity, so a reordered mesh
+/// delivery can never resurrect a retired generation.
+pub fn parse_region_cancel(args: &Value) -> Result<SelectionIdentity, ControlReply> {
+    let empty = serde_json::Map::new();
+    let object = args_object(args, &empty, &["selection"])?;
+    selection_arg(object.get("selection"), true)?
+        .ok_or_else(|| invalid_argument("selection", "object", "{instance, owner, generation}"))
 }
 
 /// `comp.input.sequence {steps:[{verb, args?, delay_ms?}], interval_ms?}`.
@@ -1594,6 +1732,9 @@ pub enum Request {
     /// `region.select`, `input.sequence`. Admit with
     /// [`LongOp::admission_timeout`].
     Long(LongOp),
+    /// `comp.region.cancel {selection}`: a short owner operation, admitted
+    /// independently of the long pool.
+    RegionCancel(SelectionIdentity),
     /// A single-step input verb.
     Input(InputOp),
     /// `comp.panel.hold` / `comp.panel.mode`. The transport stamps
@@ -1665,12 +1806,20 @@ pub fn classify(command: &str, args: &Value, malformed: bool) -> Result<Request,
             Err(invalid_argument(
                 "args",
                 "JSON object",
-                "{output?, timeout_ms?}",
+                "{output?, timeout_ms?, selection?}",
             ))
         } else {
             parse_region_select(args)
         };
         return parsed.map(Request::Long).map_err(ControlReply::into_wire);
+    }
+    if command == "comp.region.cancel" {
+        let parsed = if malformed {
+            Err(invalid_argument("args", "JSON object", "{selection}"))
+        } else {
+            parse_region_cancel(args)
+        };
+        return parsed.map(Request::RegionCancel).map_err(ControlReply::into_wire);
     }
     if command == "comp.input.sequence" {
         let parsed = if malformed {
