@@ -1222,9 +1222,16 @@ mod tests {
         assert!(!app.bus.has_quit());
         let _ = app.update(Message::Shown(ticket + 1, Some(90), Ok(json!({}))));
         assert!(app.busy());
-        let _ = app.update(Message::Shown(ticket, Some(90), Err("compd disconnected".into())));
+        let _ = app.update(Message::Shown(
+            ticket,
+            Some(90),
+            Err("compd disconnected".into()),
+        ));
         assert_eq!(app.bus.responses().last().unwrap().0, 90);
-        assert_eq!(app.bus.responses().last().unwrap().2["error_code"], "ACTIVATION");
+        assert_eq!(
+            app.bus.responses().last().unwrap().2["error_code"],
+            "ACTIVATION"
+        );
         assert!(app.bus.has_quit());
         let replies = app.bus.responses().len();
         let _ = app.update(Message::Shown(ticket, Some(90), Ok(json!({}))));
@@ -1254,7 +1261,7 @@ mod tests {
         let ticket = app.call.as_ref().unwrap().ticket;
         let _ = app.update(Message::Completed(ticket, Err("connection lost".into())));
         let replies = app.bus.responses();
-        assert_eq!((replies[0].0,replies[0].1),(92,10));
+        assert_eq!((replies[0].0, replies[0].1), (92, 10));
         assert_eq!(replies[0].2["transport_error"], "connection lost");
         assert_eq!(replies[0].2["outcome_unknown"], true);
         assert_eq!(replies[0].2["retried"], false);
