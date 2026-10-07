@@ -7721,9 +7721,8 @@ mod tests {
             Ok(_) => panic!("duplicate registration must fail"),
             Err(error) => error,
         };
-        let rejection =
-            bus::native_client::NodedClient::registration_rejection_typed(&collision)
-                .expect("a real broker collision is a typed rejection");
+        let rejection = bus::native_client::NodedClient::registration_rejection_typed(&collision)
+            .expect("a real broker collision is a typed rejection");
         assert_eq!(rejection.kind(), bus::RegistrationRejectionKind::NameTaken);
         assert_eq!(rejection.rc, 10);
 
@@ -7733,9 +7732,8 @@ mod tests {
             Ok(_) => panic!("the broker name is reserved"),
             Err(error) => error,
         };
-        let rejection =
-            bus::native_client::NodedClient::registration_rejection_typed(&reserved)
-                .expect("a reserved-name refusal is a typed rejection");
+        let rejection = bus::native_client::NodedClient::registration_rejection_typed(&reserved)
+            .expect("a reserved-name refusal is a typed rejection");
         assert_eq!(rejection.kind(), bus::RegistrationRejectionKind::Unknown);
 
         // The collision left this connection's identity untouched, so a

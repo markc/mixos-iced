@@ -37,7 +37,9 @@ use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, oneshot, watch};
 
 use super::IncomingCommand;
 use super::connection::{Connection, ConnectionOptions};
-use super::error::{ClientError, RegistrationRejected, SubscriptionDeclarationError, SupervisedError};
+use super::error::{
+    ClientError, RegistrationRejected, SubscriptionDeclarationError, SupervisedError,
+};
 use crate::BusMessage;
 use crate::native_client::NativeIncomingReceiver;
 use crate::native_client::bounded::{
@@ -124,9 +126,7 @@ pub enum ConnState {
 /// deduplicated exact names in first-seen order. Raw entries and bytes are
 /// counted BEFORE deduplication, so duplicates cannot bypass the resource
 /// bounds. Names are never trimmed or case-folded.
-fn validate_declarations(
-    topics: &[String],
-) -> Result<Vec<String>, SubscriptionDeclarationError> {
+fn validate_declarations(topics: &[String]) -> Result<Vec<String>, SubscriptionDeclarationError> {
     if topics.len() > MAX_INITIAL_TOPICS {
         return Err(SubscriptionDeclarationError::Invalid {
             index: None,
@@ -473,7 +473,9 @@ impl SupervisedClient {
     ) -> Result<SupervisedClient, SupervisedError> {
         // Validate once, before any dial or spawn work: an invalid
         // declaration or deadline is a typed error with no socket opened.
-        let prepared = options.prepare().map_err(SupervisedError::SubscriptionDeclaration)?;
+        let prepared = options
+            .prepare()
+            .map_err(SupervisedError::SubscriptionDeclaration)?;
         let (result_tx, result_rx) = oneshot::channel();
         let client = Self::launch(prepared, Some(result_tx));
         match result_rx.await {
@@ -1143,7 +1145,10 @@ fn publish_declaration_rejection(ctx: &SupervisorCtx, error: &SubscriptionDeclar
 /// Deliver a terminal failure to a finite connect and stop the supervisor.
 fn fail_initial(ctx: &mut SupervisorCtx, attempts: u32, source: ClientError) {
     if let Some(result) = ctx.initial_result.take() {
-        let _ = result.send(Err(SupervisedError::InitialConnectFailed { attempts, source }));
+        let _ = result.send(Err(SupervisedError::InitialConnectFailed {
+            attempts,
+            source,
+        }));
     }
 }
 
@@ -1259,7 +1264,9 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
             return retry_or_fail(
                 ctx,
                 attempt,
-                ClientError::Timeout { to: "noded".to_string() },
+                ClientError::Timeout {
+                    to: "noded".to_string(),
+                },
                 "deadline",
                 None,
             );
@@ -1292,8 +1299,7 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
     let connection = match result {
         Ok(connection) => connection,
         Err(error) => {
-            if ctx.fatal_on_registration_rejection
-                && error.registration_rejection_typed().is_some()
+            if ctx.fatal_on_registration_rejection && error.registration_rejection_typed().is_some()
             {
                 publish_registration_rejection(ctx, &error);
                 tracing::debug!(
@@ -1410,7 +1416,9 @@ async fn establish_attempt(ctx: &mut SupervisorCtx, attempt: u32) -> EstablishOu
         return retry_or_fail(
             ctx,
             attempt,
-            ClientError::Timeout { to: "noded".to_string() },
+            ClientError::Timeout {
+                to: "noded".to_string(),
+            },
             "publication",
             None,
         );
@@ -1716,10 +1724,7 @@ mod tests {
             .iter()
             .map(|t| t.to_string())
             .collect();
-        assert_eq!(
-            validate_declarations(&topics).unwrap(),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(validate_declarations(&topics).unwrap(), vec!["a", "b", "c"]);
         assert_eq!(validate_declarations(&[]).unwrap(), Vec::<String>::new());
         // Names are exact: no trimming, no case folding.
         let spaced: Vec<String> = ["x ", " x", "X"].iter().map(|t| t.to_string()).collect();

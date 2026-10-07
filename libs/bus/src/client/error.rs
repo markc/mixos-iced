@@ -106,12 +106,19 @@ impl ClientError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscriptionDeclarationError {
     /// Client-side validation failed before any socket was opened.
-    Invalid { index: Option<usize>, message: String },
+    Invalid {
+        index: Option<usize>,
+        message: String,
+    },
     /// The broker answered a declared `topic.subscribe` with a nonzero rc.
     /// Declarations are startup requirements: an explicit refusal is
     /// terminal, never retried. A warning rc is a refusal too, not an
     /// acknowledgement.
-    Rejected { topic: String, rc: u8, message: String },
+    Rejected {
+        topic: String,
+        rc: u8,
+        message: String,
+    },
 }
 
 impl fmt::Display for SubscriptionDeclarationError {
@@ -257,11 +264,8 @@ mod tests {
 
     #[test]
     fn from_native_carries_the_typed_rejection_kind() {
-        let native = RegistrationRejected::new(
-            10,
-            "held elsewhere",
-            RegistrationRejectionKind::NameTaken,
-        );
+        let native =
+            RegistrationRejected::new(10, "held elsewhere", RegistrationRejectionKind::NameTaken);
         let mapped = ClientError::from_native(anyhow::Error::from(native.clone()));
         assert_eq!(
             mapped.registration_rejection_typed(),
@@ -301,22 +305,23 @@ mod tests {
 
     #[test]
     fn declaration_errors_never_manufacture_a_registration_rejection() {
-        let refused = SupervisedError::SubscriptionDeclaration(
-            SubscriptionDeclarationError::Rejected {
+        let refused =
+            SupervisedError::SubscriptionDeclaration(SubscriptionDeclarationError::Rejected {
                 topic: "x.changed".to_string(),
                 rc: 10,
                 message: "refused".to_string(),
-            },
-        );
+            });
         assert!(refused.registration_rejection().is_none());
         assert!(refused.registration_rejection_typed().is_none());
-        assert!(matches!(refused, SupervisedError::SubscriptionDeclaration(_)));
-        let invalid = SupervisedError::SubscriptionDeclaration(
-            SubscriptionDeclarationError::Invalid {
+        assert!(matches!(
+            refused,
+            SupervisedError::SubscriptionDeclaration(_)
+        ));
+        let invalid =
+            SupervisedError::SubscriptionDeclaration(SubscriptionDeclarationError::Invalid {
                 index: None,
                 message: "bogus".to_string(),
-            },
-        );
+            });
         assert!(invalid.registration_rejection().is_none());
         assert!(invalid.registration_rejection_typed().is_none());
     }

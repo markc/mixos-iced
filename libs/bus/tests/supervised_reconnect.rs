@@ -1670,7 +1670,9 @@ async fn declared_start_holds_until_all_acked_then_publishes_once() {
     assert_eq!(client.connection_generation(), 0);
     assert!(client.subscription_registry().is_empty());
     assert!(matches!(
-        client.call("noded", "noded.list", serde_json::Value::Null).await,
+        client
+            .call("noded", "noded.list", serde_json::Value::Null)
+            .await,
         Err(SupervisedError::Disconnected)
     ));
     assert!(matches!(
@@ -2015,7 +2017,10 @@ async fn reconnect_replays_declared_then_dynamic_in_recorded_order() {
         .connect()
         .await
         .expect("initial establish");
-    client.subscribe_topic("dyn.c").await.expect("dynamic subscribe");
+    client
+        .subscribe_topic("dyn.c")
+        .await
+        .expect("dynamic subscribe");
 
     stub.drop_conn1.notify_one();
     assert!(wait_until(10, || client.connection_generation() == 2).await);
@@ -2087,7 +2092,11 @@ async fn duplicate_declarations_are_one_request_in_first_seen_order() {
         .expect("initial establish");
     assert_eq!(
         client.subscription_registry().snapshot(),
-        vec!["dup.a".to_string(), "dup.b".to_string(), "dup.c".to_string()]
+        vec![
+            "dup.a".to_string(),
+            "dup.b".to_string(),
+            "dup.c".to_string()
+        ]
     );
     wait_subscribed(&stub, &["dup.a", "dup.b", "dup.c"], 5).await;
     client.close().await;
@@ -2136,9 +2145,7 @@ async fn invalid_declarations_never_dial_and_are_fatal_or_typed() {
         .expect("a zero deadline is invalid");
     assert!(matches!(
         error,
-        SupervisedError::SubscriptionDeclaration(
-            bus::SubscriptionDeclarationError::Invalid { .. }
-        )
+        SupervisedError::SubscriptionDeclaration(bus::SubscriptionDeclarationError::Invalid { .. })
     ));
     assert_eq!(
         stub.state.lock().await.connections,
@@ -2164,12 +2171,7 @@ async fn invalid_declarations_never_dial_and_are_fatal_or_typed() {
         .bounded_incoming(2)
         .with_initial_topics(vec![String::new()])
         .start();
-    assert!(client
-        .incoming_bounded()
-        .unwrap()
-        .recv()
-        .await
-        .is_none());
+    assert!(client.incoming_bounded().unwrap().recv().await.is_none());
     assert_eq!(stub.state.lock().await.connections, 0);
     client.close().await;
     assert_eq!(client.state(), ConnState::Fatal);
@@ -2185,7 +2187,10 @@ async fn declared_unsubscribe_survives_reconnect_and_refused_unsubscribe_replays
         .connect()
         .await
         .expect("initial establish");
-    client.unsubscribe_topic("decl.drop").await.expect("unsubscribe");
+    client
+        .unsubscribe_topic("decl.drop")
+        .await
+        .expect("unsubscribe");
     assert_eq!(
         client.subscription_registry().snapshot(),
         vec!["decl.keep".to_string()]
@@ -2211,7 +2216,10 @@ async fn declared_unsubscribe_survives_reconnect_and_refused_unsubscribe_replays
         .await
         .err()
         .expect("a refused unsubscribe errors");
-    assert!(matches!(error, SupervisedError::Transport(_)), "got {error}");
+    assert!(
+        matches!(error, SupervisedError::Transport(_)),
+        "got {error}"
+    );
     assert_eq!(
         client.subscription_registry().snapshot(),
         vec!["decl.keep".to_string()]
@@ -2240,7 +2248,10 @@ async fn stale_subscribe_ack_never_enters_the_reconnect_snapshot() {
         .await
         .err()
         .expect("the subscribe dies with the socket");
-    assert!(matches!(error, SupervisedError::Transport(_)), "got {error}");
+    assert!(
+        matches!(error, SupervisedError::Transport(_)),
+        "got {error}"
+    );
     assert!(
         client.subscription_registry().is_empty(),
         "a lost ACK never enters the registry"
@@ -2258,7 +2269,9 @@ async fn stale_subscribe_ack_never_enters_the_reconnect_snapshot() {
 async fn cancelling_finite_connect_during_a_held_ack_cleans_up() {
     let mut stub0 = Arc::try_unwrap(Stub::new(false, false)).ok().unwrap();
     let (action, entered, release) = hold_action();
-    stub0.initial_actions.insert("decl.held".to_string(), action);
+    stub0
+        .initial_actions
+        .insert("decl.held".to_string(), action);
     let stub = Arc::new(stub0);
     let (url, _acceptor) = start(&stub).await;
 
@@ -2396,7 +2409,10 @@ async fn dropping_during_retry_backoff_stops_dialing() {
             }
         }
     }
-    assert!(settled >= 2, "expected the supervisor to settle into backoff");
+    assert!(
+        settled >= 2,
+        "expected the supervisor to settle into backoff"
+    );
     drop(client);
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_eq!(
