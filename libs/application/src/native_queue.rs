@@ -135,7 +135,12 @@ impl<T, const SLOTS: usize> Outbox<T, SLOTS> {
     /// and releases their queue capacity. A removed slot can be occupied again
     /// at the back, while surviving slots keep their original markers.
     pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
-        let Self { order, slots, reliable, .. } = self;
+        let Self {
+            order,
+            slots,
+            reliable,
+            ..
+        } = self;
         order.retain(|entry| match entry {
             Entry::Reliable(value) => {
                 let retained = keep(value);
@@ -145,7 +150,11 @@ impl<T, const SLOTS: usize> Outbox<T, SLOTS> {
                 retained
             }
             Entry::Slot(index) => {
-                let retained = keep(slots[*index].as_ref().expect("an occupied slot marker names an occupied slot"));
+                let retained = keep(
+                    slots[*index]
+                        .as_ref()
+                        .expect("an occupied slot marker names an occupied slot"),
+                );
                 if !retained {
                     slots[*index] = None;
                 }
@@ -496,7 +505,10 @@ mod tests {
         // new position. No command can displace that retained wake.
         drop(outbox.replace(0, Tracked::new(11, &drops)).unwrap());
         outbox.replace(1, Tracked::new(21, &drops)).unwrap();
-        assert_eq!(outbox.drain().map(|item| item.value()).collect::<Vec<_>>(), [11, 2, 4, 5, 21]);
+        assert_eq!(
+            outbox.drain().map(|item| item.value()).collect::<Vec<_>>(),
+            [11, 2, 4, 5, 21]
+        );
         assert_eq!(outbox.reliable_len(), 0);
         assert!(outbox.is_empty());
         assert_eq!(drops.load(Ordering::SeqCst), 9);

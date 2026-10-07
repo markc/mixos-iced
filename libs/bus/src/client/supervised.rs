@@ -1727,7 +1727,11 @@ mod tests {
                 if let Some(id) = request.get("id") {
                     reply = reply.with_header("id", id);
                 }
-                if websocket.send(Message::Text(reply.to_wire().into())).await.is_err() {
+                if websocket
+                    .send(Message::Text(reply.to_wire().into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1739,12 +1743,16 @@ mod tests {
     async fn raw_call_generation_is_checked_after_waiting_for_connection_acquisition() {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (url, mut original_requests, original_stub) = raw_call_stub(None).await;
-            let client = SupervisedClient::connect("generation-owner", &url).await.unwrap();
+            let client = SupervisedClient::connect("generation-owner", &url)
+                .await
+                .unwrap();
             assert_eq!(client.connection_generation(), 1);
             let (replacement_url, mut replacement_requests, replacement_stub) =
                 raw_call_stub(None).await;
             let replacement = Arc::new(
-                Connection::connect("generation-owner", &replacement_url).await.unwrap(),
+                Connection::connect("generation-owner", &replacement_url)
+                    .await
+                    .unwrap(),
             );
             let headers = BTreeMap::from([("fixture".to_owned(), "preserved".to_owned())]);
 
@@ -1753,7 +1761,11 @@ mod tests {
             // generation check would incorrectly send through this socket.
             let mut live = client.inner.write().await;
             let call = client.call_with_headers_raw_at_generation(
-                1, "example", "old-intent", &headers, "old",
+                1,
+                "example",
+                "old-intent",
+                &headers,
+                "old",
             );
             tokio::pin!(call);
             assert!(futures_util::poll!(call.as_mut()).is_pending());
@@ -1762,16 +1774,29 @@ mod tests {
             drop(live);
             assert!(matches!(call.await, Err(SupervisedError::Disconnected)));
             assert!(matches!(
-                client.call_with_headers_raw_at_generation(
-                    0, "example", "zero-intent", &headers, "zero",
-                ).await,
+                client
+                    .call_with_headers_raw_at_generation(
+                        0,
+                        "example",
+                        "zero-intent",
+                        &headers,
+                        "zero",
+                    )
+                    .await,
                 Err(SupervisedError::Disconnected)
             ));
 
             assert_eq!(
-                client.call_with_headers_raw_at_generation(
-                    2, "example", "current-intent", &headers, "current",
-                ).await.unwrap(),
+                client
+                    .call_with_headers_raw_at_generation(
+                        2,
+                        "example",
+                        "current-intent",
+                        &headers,
+                        "current",
+                    )
+                    .await
+                    .unwrap(),
                 (0, "current".to_owned(), None)
             );
             let received = replacement_requests.recv().await.unwrap();
@@ -1781,21 +1806,31 @@ mod tests {
 
             // Ordinary callers retain their current-connection behaviour.
             assert_eq!(
-                client.call_with_headers_raw("example", "ordinary", &headers, "body")
-                    .await.unwrap(),
+                client
+                    .call_with_headers_raw("example", "ordinary", &headers, "body")
+                    .await
+                    .unwrap(),
                 (0, "body".to_owned(), None)
             );
             assert_eq!(
                 replacement_requests.recv().await.unwrap().get("command"),
                 Some("ordinary")
             );
-            assert!(matches!(original_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
-            assert!(matches!(replacement_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+            assert!(matches!(
+                original_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                replacement_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
             client.close().await;
             original.close().await;
             original_stub.await.unwrap();
             replacement_stub.await.unwrap();
-        }).await.expect("generation fence and native socket cleanup are bounded");
+        })
+        .await
+        .expect("generation fence and native socket cleanup are bounded");
     }
 
     #[tokio::test]
@@ -1803,17 +1838,29 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (release, held) = oneshot::channel();
             let (url, mut original_requests, original_stub) = raw_call_stub(Some(held)).await;
-            let client = Arc::new(SupervisedClient::connect("generation-owner", &url).await.unwrap());
+            let client = Arc::new(
+                SupervisedClient::connect("generation-owner", &url)
+                    .await
+                    .unwrap(),
+            );
             let (replacement_url, mut replacement_requests, replacement_stub) =
                 raw_call_stub(None).await;
             let replacement = Arc::new(
-                Connection::connect("generation-owner", &replacement_url).await.unwrap(),
+                Connection::connect("generation-owner", &replacement_url)
+                    .await
+                    .unwrap(),
             );
             let calling = client.clone();
             let call = tokio::spawn(async move {
-                calling.call_with_headers_raw_at_generation(
-                    1, "example", "already-sent", &BTreeMap::new(), "original-response",
-                ).await
+                calling
+                    .call_with_headers_raw_at_generation(
+                        1,
+                        "example",
+                        "already-sent",
+                        &BTreeMap::new(),
+                        "original-response",
+                    )
+                    .await
             });
             assert_eq!(
                 original_requests.recv().await.unwrap().get("command"),
@@ -1824,24 +1871,42 @@ mod tests {
             client.connection_generation.store(2, Ordering::SeqCst);
             drop(live);
             release.send(()).unwrap();
-            assert_eq!(call.await.unwrap().unwrap(), (0, "original-response".to_owned(), None));
             assert_eq!(
-                client.call_with_headers_raw_at_generation(
-                    2, "example", "replacement-call", &BTreeMap::new(), "replacement-response",
-                ).await.unwrap(),
+                call.await.unwrap().unwrap(),
+                (0, "original-response".to_owned(), None)
+            );
+            assert_eq!(
+                client
+                    .call_with_headers_raw_at_generation(
+                        2,
+                        "example",
+                        "replacement-call",
+                        &BTreeMap::new(),
+                        "replacement-response",
+                    )
+                    .await
+                    .unwrap(),
                 (0, "replacement-response".to_owned(), None)
             );
             assert_eq!(
                 replacement_requests.recv().await.unwrap().get("command"),
                 Some("replacement-call")
             );
-            assert!(matches!(original_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
-            assert!(matches!(replacement_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+            assert!(matches!(
+                original_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                replacement_requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
             client.close().await;
             original.close().await;
             original_stub.await.unwrap();
             replacement_stub.await.unwrap();
-        }).await.expect("a started call remains on its original socket");
+        })
+        .await
+        .expect("a started call remains on its original socket");
     }
 
     #[test]
@@ -2052,7 +2117,9 @@ mod tests {
                 if let Some(seen) = register_seen.take() {
                     let _ = seen.send(());
                 }
-            } else if command == "topic.subscribe" && let Some(seen) = subscribe_seen.take() {
+            } else if command == "topic.subscribe"
+                && let Some(seen) = subscribe_seen.take()
+            {
                 let _ = seen.send(());
             }
             if !send_ok {

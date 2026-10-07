@@ -99,7 +99,12 @@ impl Broker {
     /// The first socket remains bound throughout: no probe/drop/rebind race.
     pub fn start_stable() -> Self {
         let mut broker = Self::start();
-        let address = broker.url.strip_prefix("ws://").unwrap().strip_suffix("/ws").unwrap();
+        let address = broker
+            .url
+            .strip_prefix("ws://")
+            .unwrap()
+            .strip_suffix("/ws")
+            .unwrap();
         broker.tcp_port = Some(address.parse::<std::net::SocketAddr>().unwrap().port());
         broker
     }

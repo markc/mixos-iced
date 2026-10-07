@@ -8,7 +8,9 @@ use ::bus::native_client::{
 };
 use application::iced::futures::channel::{mpsc, oneshot};
 use application::message::Once;
-use application::native_actor::{Accepted, Completed, Reply as NativeReply, TaskSet, submit_replies};
+use application::native_actor::{
+    Accepted, Completed, Reply as NativeReply, TaskSet, submit_replies,
+};
 use application::native_queue::{Admission, Flush, Outbox as Queue, Permit, SendError};
 use application::presentation::native::{
     Event as SettingsEvent, Progress, Session, Ui, Worker, bridge,
@@ -22,11 +24,18 @@ use std::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Delivery {
-    Command { id: Request, verb: String, body: String },
+    Command {
+        id: Request,
+        verb: String,
+        body: String,
+    },
     Changed,
     Settings,
     Notice(String),
-    Refused { name_taken: bool, message: String },
+    Refused {
+        name_taken: bool,
+        message: String,
+    },
     Forwarded(Result<(), String>),
     Connected,
     Disconnected,
@@ -45,15 +54,25 @@ pub struct Request {
     generation: u64,
 }
 impl Request {
-    fn new(id: u64, generation: u64) -> Self { Self { id, ticket: Once::new(id), generation } }
+    fn new(id: u64, generation: u64) -> Self {
+        Self {
+            id,
+            ticket: Once::new(id),
+            generation,
+        }
+    }
 }
 #[cfg(test)]
 impl From<u64> for Request {
-    fn from(id: u64) -> Self { Self::new(id, 0) }
+    fn from(id: u64) -> Self {
+        Self::new(id, 0)
+    }
 }
 #[cfg(test)]
 impl From<i32> for Request {
-    fn from(id: i32) -> Self { Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0) }
+    fn from(id: i32) -> Self {
+        Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0)
+    }
 }
 enum Effect {
     Call(
@@ -134,12 +153,22 @@ pub struct Handle {
 impl Handle {
     pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, CallError> {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let permit = self.outgoing.try_acquire()
+        let permit = self
+            .outgoing
+            .try_acquire()
             .ok_or_else(|| CallError::not_sent("Bus call admission exhausted; no call sent"))?;
         let generation = self.settings_generation();
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Effect::Call(service.into(), verb.into(), body, tx, permit, deadline, generation))
+            .send(Effect::Call(
+                service.into(),
+                verb.into(),
+                body,
+                tx,
+                permit,
+                deadline,
+                generation,
+            ))
             .await
             .map_err(|_| CallError::not_sent("Bus stopped; no call sent"))?;
         rx.await
@@ -151,7 +180,9 @@ impl Handle {
             .map_err(|e| e.to_string())
     }
     pub fn reply(&self, request: impl Into<Request>, rc: u8, body: Value) {
-        let Some(id) = request.into().ticket.take() else { return; };
+        let Some(id) = request.into().ticket.take() else {
+            return;
+        };
         #[cfg(test)]
         self.records.lock().unwrap().push((id, rc, body.clone()));
         // Only the GUI sends replies, once per accepted command (at most 32).
@@ -160,7 +191,9 @@ impl Handle {
         let _ = self.control.send(Control::Reply(id, rc, body));
     }
     pub fn forward(&self) {
-        if self.forward_once.take().is_none() { return; }
+        if self.forward_once.take().is_none() {
+            return;
+        }
         #[cfg(test)]
         self.forwards
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -169,7 +202,9 @@ impl Handle {
         let _ = self.control.send(Control::Forward);
     }
     pub fn quit(&self) {
-        if self.quit_once.take().is_none() { return; }
+        if self.quit_once.take().is_none() {
+            return;
+        }
         #[cfg(test)]
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -200,7 +235,9 @@ impl Handle {
             .is_none_or(|client| settings::native::live_generation(client).is_some())
     }
     pub fn is_current(&self, request: &Request) -> bool {
-        self.client.as_ref().is_none_or(|client| settings::native::live_generation(client) == Some(request.generation))
+        self.client.as_ref().is_none_or(|client| {
+            settings::native::live_generation(client) == Some(request.generation)
+        })
     }
     pub fn settings_generation(&self) -> Option<u64> {
         #[cfg(test)]
@@ -268,7 +305,13 @@ pub fn start(
     ),
     String,
 > {
-    start_inner(service, url, 64, #[cfg(test)] None)
+    start_inner(
+        service,
+        url,
+        64,
+        #[cfg(test)]
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -289,7 +332,15 @@ fn start_inner(
     url: &str,
     gui_capacity: usize,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
-) -> Result<(Handle, Ui<()>, appearance::settings::Prepared, mpsc::Receiver<Delivery>), String> {
+) -> Result<
+    (
+        Handle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
     let (send, receive) = mpsc::channel(gui_capacity);
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let (control, controls) = tokio::sync::mpsc::unbounded_channel();
@@ -306,7 +357,16 @@ fn start_inner(
                 .build();
             match runtime {
                 Ok(runtime) => {
-                    runtime.block_on(worker(service, url, send, rx, controls, ready_send, #[cfg(test)] probe));
+                    runtime.block_on(worker(
+                        service,
+                        url,
+                        send,
+                        rx,
+                        controls,
+                        ready_send,
+                        #[cfg(test)]
+                        probe,
+                    ));
                     runtime.shutdown_timeout(Duration::from_millis(100));
                 }
                 Err(error) => {
@@ -365,11 +425,17 @@ struct Outbox {
 }
 impl Default for Outbox {
     fn default() -> Self {
-        Self { queue: Queue::new(34), refused: false, forwarded: false }
+        Self {
+            queue: Queue::new(34),
+            refused: false,
+            forwarded: false,
+        }
     }
 }
 impl Outbox {
-    fn is_empty(&self) -> bool { self.queue.is_empty() }
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
     fn retire_commands(&mut self, keep: impl Fn(&Request) -> bool) {
         self.queue.retain(|delivery| match delivery {
             Delivery::Command { id, .. } => keep(id),
@@ -383,12 +449,16 @@ impl Outbox {
             Delivery::Changed => Some(2),
             Delivery::Settings => Some(3),
             Delivery::Refused { .. } => {
-                if self.refused { return true; }
+                if self.refused {
+                    return true;
+                }
                 self.refused = true;
                 None
             }
             Delivery::Forwarded(_) => {
-                if self.forwarded { return true; }
+                if self.forwarded {
+                    return true;
+                }
                 self.forwarded = true;
                 None
             }
@@ -401,17 +471,26 @@ impl Outbox {
         }
     }
     fn flush(&mut self, send: &mut mpsc::Sender<Delivery>) -> bool {
-        self.queue.flush_with(|delivery| send.try_send(delivery).map_err(|error| {
-            if error.is_full() { SendError::Full(error.into_inner()) }
-            else { SendError::Closed(error.into_inner()) }
-        })) == Flush::Empty
+        self.queue.flush_with(|delivery| {
+            send.try_send(delivery).map_err(|error| {
+                if error.is_full() {
+                    SendError::Full(error.into_inner())
+                } else {
+                    SendError::Closed(error.into_inner())
+                }
+            })
+        }) == Flush::Empty
     }
     #[cfg(test)]
     fn next(&mut self) -> Option<Delivery> {
         let mut first = None;
         self.queue.flush_with(|delivery| {
-            if first.is_some() { Err(SendError::Full(delivery)) }
-            else { first = Some(delivery); Ok(()) }
+            if first.is_some() {
+                Err(SendError::Full(delivery))
+            } else {
+                first = Some(delivery);
+                Ok(())
+            }
         });
         first
     }
@@ -427,11 +506,15 @@ impl Faults {
     fn push(&mut self, mut error: String) {
         if error.len() > 4096 {
             let mut end = 4096;
-            while !error.is_char_boundary(end) { end -= 1; }
+            while !error.is_char_boundary(end) {
+                end -= 1;
+            }
             error.truncate(end);
         }
         self.count = self.count.saturating_add(1);
-        if self.recent.len() == 32 { self.recent.pop_front(); }
+        if self.recent.len() == 32 {
+            self.recent.pop_front();
+        }
         self.recent.push_back(error);
     }
 }
@@ -452,28 +535,47 @@ fn reply_refused(
         return;
     };
     let now = std::time::Instant::now();
-    let reply = Accepted::new(client.clone(), command, permit, now)
-        .reply(10, body, now + Duration::from_secs(2));
+    let reply = Accepted::new(client.clone(), command, permit, now).reply(
+        10,
+        body,
+        now + Duration::from_secs(2),
+    );
     if let Err(reply) = replies.try_spawn_with(reply, NativeReply::into_task) {
         reply.retire().finish();
         eprintln!("busviewer: refusal task capacity invariant failed");
     }
 }
 
-fn reap<T>(label: &str, result: Result<Completed<T>, tokio::task::JoinError>, faults: &mut Faults,
-    record: impl FnOnce(T, &mut Faults)) {
+fn reap<T>(
+    label: &str,
+    result: Result<Completed<T>, tokio::task::JoinError>,
+    faults: &mut Faults,
+    record: impl FnOnce(T, &mut Faults),
+) {
     match result {
-        Ok(Completed {permit,value}) => { record(value,faults); permit.finish(); }
+        Ok(Completed { permit, value }) => {
+            record(value, faults);
+            permit.finish();
+        }
         Err(error) => faults.push(format!("{label}: {error}")),
     }
 }
 
-fn cancel<T: Send + 'static>(label: &str, tasks: TaskSet<T>, faults: &mut Faults,
-    mut record: impl FnMut(T, &mut Faults)) {
+fn cancel<T: Send + 'static>(
+    label: &str,
+    tasks: TaskSet<T>,
+    faults: &mut Faults,
+    mut record: impl FnMut(T, &mut Faults),
+) {
     let report = tasks.abort_and_report();
-    for result in report.ready { reap(label,result,faults,|value,faults|record(value,faults)); }
+    for result in report.ready {
+        reap(label, result, faults, |value, faults| record(value, faults));
+    }
     if report.unconfirmed > 0 {
-        faults.push(format!("{label}: cancellation requested with {} unconfirmed tasks",report.unconfirmed));
+        faults.push(format!(
+            "{label}: cancellation requested with {} unconfirmed tasks",
+            report.unconfirmed
+        ));
     }
 }
 async fn worker(
@@ -531,7 +633,10 @@ async fn worker(
         .send(Ok((Arc::clone(&client), ui, bootstrap)))
         .is_err()
     {
-        if tokio::time::timeout(Duration::from_secs(2), client.close()).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(2), client.close())
+            .await
+            .is_err()
+        {
             eprintln!("busviewer: startup-abandon close exceeded deadline");
         }
         return;
@@ -567,9 +672,12 @@ async fn worker(
         // completed, and every later edge wakes this loop again.
         let now = *connection.borrow_and_update();
         let generation = client.connection_generation();
-        if lifecycle != Some((now,generation)) {
-            lifecycle = Some((now,generation));
-            let stale: Vec<_> = pending.iter().filter_map(|(id,entry)| (!entry.is_current(&client)).then_some(*id)).collect();
+        if lifecycle != Some((now, generation)) {
+            lifecycle = Some((now, generation));
+            let stale: Vec<_> = pending
+                .iter()
+                .filter_map(|(id, entry)| (!entry.is_current(&client)).then_some(*id))
+                .collect();
             for id in stale {
                 if let Some(entry) = pending.remove(&id) {
                     faults.push(format!("accepted command {id} retired on lifecycle change"));
@@ -597,12 +705,19 @@ async fn worker(
                     // Only a typed name-taken collision may ever hand off;
                     // unknown or admission refusals never forward or exit.
                     outbox.push(Delivery::Refused {
-                        name_taken: client.subscription_declaration_error().is_none() && reason.as_ref().is_some_and(|reason| {
-                            reason.kind() == RegistrationRejectionKind::NameTaken
-                        }),
+                        name_taken: client.subscription_declaration_error().is_none()
+                            && reason.as_ref().is_some_and(|reason| {
+                                reason.kind() == RegistrationRejectionKind::NameTaken
+                            }),
                         message: client.subscription_declaration_error().map_or_else(
-                            || reason.map_or_else(|| "connection stopped".into(), |reason| reason.message),
-                            |error| format!("Subscription failed: {error}")),
+                            || {
+                                reason.map_or_else(
+                                    || "connection stopped".into(),
+                                    |reason| reason.message,
+                                )
+                            },
+                            |error| format!("Subscription failed: {error}"),
+                        ),
                     });
                 }
                 ConnState::Disconnected => {
@@ -611,8 +726,7 @@ async fn worker(
                     }
                     outbox.push(Delivery::Disconnected);
                 }
-                ConnState::Connecting => {
-                }
+                ConnState::Connecting => {}
             }
         }
         #[cfg(test)]
@@ -625,7 +739,11 @@ async fn worker(
                 reliable: outbox.queue.reliable_len(),
                 replies: accepted.len(),
                 reply_tasks: replies.len(),
-                invariant_faults: faults.recent.iter().filter(|error| error.contains("invariant")).count(),
+                invariant_faults: faults
+                    .recent
+                    .iter()
+                    .filter(|error| error.contains("invariant"))
+                    .count(),
             });
         }
         tokio::select! {
@@ -832,11 +950,13 @@ async fn worker(
     // drains share one deadline; runtime teardown has a separate 100 ms cap.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     effects.close();
-    while let Ok(Effect::Call(_,_,_,reply,permit,_,_)) = effects.try_recv() {
-        let _ = reply.send(Err(CallError::not_sent("Bus shutdown; queued call not sent")));
+    while let Ok(Effect::Call(_, _, _, reply, permit, _, _)) = effects.try_recv() {
+        let _ = reply.send(Err(CallError::not_sent(
+            "Bus shutdown; queued call not sent",
+        )));
         permit.finish();
     }
-    for (_,entry) in pending.drain() {
+    for (_, entry) in pending.drain() {
         faults.push("accepted command retired without frontend answer".into());
         entry.retire().finish();
     }
@@ -847,10 +967,17 @@ async fn worker(
             faults.push("Bus reply drain timed out; delivery unconfirmed".into());
             break;
         }
-        submit_replies(&mut accepted,&mut replies);
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline),replies.join_next()).await {
-            Ok(Some(result)) => reap("Bus reply",result,&mut faults,|value,faults| {
-                if let Err(error)=value { faults.push(error); }
+        submit_replies(&mut accepted, &mut replies);
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            replies.join_next(),
+        )
+        .await
+        {
+            Ok(Some(result)) => reap("Bus reply", result, &mut faults, |value, faults| {
+                if let Err(error) = value {
+                    faults.push(error);
+                }
             }),
             Ok(None) => break,
             Err(_) => {
@@ -860,34 +987,63 @@ async fn worker(
         }
     }
     let unsent = accepted.len();
-    for reply in accepted.drain() { reply.retire().finish(); }
-    if unsent > 0 { faults.push(format!("{unsent} retained replies retired unsent")); }
-    cancel("Bus reply",replies,&mut faults,|value,faults| {if let Err(error)=value {faults.push(error);}});
-    cancel("Bus call",calls,&mut faults,|(),_|{});
-    cancel("Bus forward",forwards,&mut faults,|value,faults| {if let Err(error)=value {faults.push(error);}});
+    for reply in accepted.drain() {
+        reply.retire().finish();
+    }
+    if unsent > 0 {
+        faults.push(format!("{unsent} retained replies retired unsent"));
+    }
+    cancel("Bus reply", replies, &mut faults, |value, faults| {
+        if let Err(error) = value {
+            faults.push(error);
+        }
+    });
+    cancel("Bus call", calls, &mut faults, |(), _| {});
+    cancel("Bus forward", forwards, &mut faults, |value, faults| {
+        if let Err(error) = value {
+            faults.push(error);
+        }
+    });
     while !refusals.is_empty() && std::time::Instant::now() < deadline {
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline),refusals.join_next()).await {
-            Ok(Some(result)) => reap("Bus refusal",result,&mut faults,|value,faults| {
-                if let Err(error)=value { faults.push(error); }
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            refusals.join_next(),
+        )
+        .await
+        {
+            Ok(Some(result)) => reap("Bus refusal", result, &mut faults, |value, faults| {
+                if let Err(error) = value {
+                    faults.push(error);
+                }
             }),
             Ok(None) | Err(_) => break,
         }
     }
-    cancel("Bus refusal",refusals,&mut faults,|value,faults| {if let Err(error)=value {faults.push(error);}});
+    cancel("Bus refusal", refusals, &mut faults, |value, faults| {
+        if let Err(error) = value {
+            faults.push(error);
+        }
+    });
     if let Err(error) = lane.flush_cache(deadline).await {
-        faults.push(format!("settings cache: {}: {}",error.code,error.message));
+        faults.push(format!("settings cache: {}: {}", error.code, error.message));
     }
     // Even at expiry, the first poll requests supervisor stop. Completion
     // receives no fresh drain budget and is reported separately if uncertain.
-    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline),client.close()).await.is_err() {
+    if tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), client.close())
+        .await
+        .is_err()
+    {
         faults.push("Bus close timed out; stop requested, completion unconfirmed".into());
     }
     let _ = send.try_send(Delivery::Disconnected);
     let accepted = admission.counts();
     let refused = refusal_admission.counts();
-    eprintln!("BUSVIEWER_SHUTDOWN {}",json!({"faults":faults,"retained_unsent":unsent,
+    eprintln!(
+        "BUSVIEWER_SHUTDOWN {}",
+        json!({"faults":faults,"retained_unsent":unsent,
         "accepted":{"active":accepted.active,"finished":accepted.finished,"abandoned":accepted.abandoned},
-        "refusals":{"active":refused.active,"finished":refused.finished,"abandoned":refused.abandoned}}));
+        "refusals":{"active":refused.active,"finished":refused.finished,"abandoned":refused.abandoned}})
+    );
 }
 async fn forward_async(url: &str, service: &str) -> Result<(), String> {
     // Activation may arrive after registration but before the first map.
@@ -1014,7 +1170,7 @@ mod tests {
                         String::new(),
                         reply,
                         handle.outgoing.try_acquire().unwrap(),
-                        std::time::Instant::now()+Duration::from_secs(30),
+                        std::time::Instant::now() + Duration::from_secs(30),
                         Some(1)
                     ))
                     .is_ok()
@@ -1027,7 +1183,10 @@ mod tests {
         handle.quit();
         assert!(matches!(controls.try_recv(), Ok(Control::Reply(42, 0, _))));
         assert!(matches!(controls.try_recv(), Ok(Control::Quit)));
-        assert!(controls.try_recv().is_err(), "cloned replies and repeated quit do not enqueue twice");
+        assert!(
+            controls.try_recv().is_err(),
+            "cloned replies and repeated quit do not enqueue twice"
+        );
         assert!(handle.wait_done().is_ok());
     }
     #[test]
@@ -1212,10 +1371,7 @@ mod tests {
             }
         }
         assert!(
-            matches!(
-                drained.last(),
-                Some(Delivery::Connected)
-            ),
+            matches!(drained.last(), Some(Delivery::Connected)),
             "the newest coalesced edge retains its first FIFO position"
         );
         assert!(
@@ -1228,7 +1384,13 @@ mod tests {
         }
         assert_eq!(
             tail,
-            vec![Delivery::Refused {name_taken:true,message:"already registered".into()}, Delivery::Forwarded(Ok(()))],
+            vec![
+                Delivery::Refused {
+                    name_taken: true,
+                    message: "already registered".into()
+                },
+                Delivery::Forwarded(Ok(()))
+            ],
             "the typed refusal precedes its reliable handoff completion"
         );
     }
@@ -1289,25 +1451,35 @@ mod tests {
     }
     #[test]
     fn cutoff_reports_unconfirmed_operations_without_waiting() {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
             let admission = Admission::new(1);
             let mut calls = TaskSet::new(1);
-            let (entered,started) = tokio::sync::oneshot::channel();
-            let (mut release,held) = tokio::sync::oneshot::channel::<()>();
-            assert!(calls.try_spawn_with(admission.try_acquire().unwrap(),|permit|(permit,async move {
-                entered.send(()).unwrap();
-                let _ = held.await;
-            })).is_ok());
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let (mut release, held) = tokio::sync::oneshot::channel::<()>();
+            assert!(
+                calls
+                    .try_spawn_with(admission.try_acquire().unwrap(), |permit| (
+                        permit,
+                        async move {
+                            entered.send(()).unwrap();
+                            let _ = held.await;
+                        }
+                    ))
+                    .is_ok()
+            );
             started.await.unwrap();
             let mut faults = Faults::default();
-            cancel("Bus call",calls,&mut faults,|(),_|{});
-            assert_eq!(faults.count,1);
+            cancel("Bus call", calls, &mut faults, |(), _| {});
+            assert_eq!(faults.count, 1);
             assert!(faults.recent[0].contains("unconfirmed"));
-            assert_eq!(admission.counts().active,1);
+            assert_eq!(admission.counts().active, 1);
             release.closed().await;
-            assert_eq!(admission.counts().abandoned,1);
-            assert_eq!(admission.counts().finished,0);
+            assert_eq!(admission.counts().abandoned, 1);
+            assert_eq!(admission.counts().finished, 0);
         });
     }
 
@@ -1320,11 +1492,11 @@ mod tests {
             outbox.push(Delivery::Changed);
             outbox.push(Delivery::Settings);
         }
-        assert_eq!(outbox.queue.len(),2);
-        assert_eq!(outbox.next(),Some(Delivery::Changed));
+        assert_eq!(outbox.queue.len(), 2);
+        assert_eq!(outbox.next(), Some(Delivery::Changed));
         outbox.push(Delivery::Changed);
-        assert_eq!(outbox.next(),Some(Delivery::Settings));
-        assert_eq!(outbox.next(),Some(Delivery::Changed));
+        assert_eq!(outbox.next(), Some(Delivery::Settings));
+        assert_eq!(outbox.next(), Some(Delivery::Changed));
         assert!(outbox.is_empty());
     }
 
@@ -1333,19 +1505,29 @@ mod tests {
         let mut outbox = Outbox::default();
         outbox.push(Delivery::Settings);
         for id in 0..32 {
-            assert!(outbox.push(Delivery::Command { id: Request::new(id,1), verb: "old".into(), body: String::new() }));
+            assert!(outbox.push(Delivery::Command {
+                id: Request::new(id, 1),
+                verb: "old".into(),
+                body: String::new()
+            }));
         }
         outbox.push(Delivery::Changed);
-        outbox.retire_commands(|request| request.generation==2);
-        assert_eq!(outbox.queue.reliable_len(),0);
+        outbox.retire_commands(|request| request.generation == 2);
+        assert_eq!(outbox.queue.reliable_len(), 0);
         for id in 32..64 {
-            assert!(outbox.push(Delivery::Command { id: Request::new(id,2), verb: "new".into(), body: String::new() }));
+            assert!(outbox.push(Delivery::Command {
+                id: Request::new(id, 2),
+                verb: "new".into(),
+                body: String::new()
+            }));
         }
         // Coalesced wakes keep their positions ahead of replacement work.
-        assert_eq!(outbox.next(),Some(Delivery::Settings));
-        assert_eq!(outbox.next(),Some(Delivery::Changed));
+        assert_eq!(outbox.next(), Some(Delivery::Settings));
+        assert_eq!(outbox.next(), Some(Delivery::Changed));
         for id in 32..64 {
-            assert!(matches!(outbox.next(),Some(Delivery::Command {id: request,..}) if request.id==id && request.generation==2));
+            assert!(
+                matches!(outbox.next(),Some(Delivery::Command {id: request,..}) if request.id==id && request.generation==2)
+            );
         }
         assert!(outbox.is_empty());
     }
@@ -1358,10 +1540,17 @@ mod tests {
             loop {
                 let state = probe.borrow_and_update().clone();
                 assert_eq!(state.invariant_faults, 0, "actor invariant: {state:?}");
-                if predicate(&state) { return state; }
-                probe.changed().await.expect("actual worker exited before checkpoint");
+                if predicate(&state) {
+                    return state;
+                }
+                probe
+                    .changed()
+                    .await
+                    .expect("actual worker exited before checkpoint");
             }
-        }).await.expect("real actor checkpoint deadline")
+        })
+        .await
+        .expect("real actor checkpoint deadline")
     }
 
     /// The broker and all calls are real production noded/ABP. Only GUI
@@ -1369,13 +1558,20 @@ mod tests {
     fn native_reconnect_with_stalled_gui(gui_capacity: usize) {
         use application::iced::futures::StreamExt;
         let mut broker = term_test_broker::Broker::start_stable();
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
             let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
-            let (handle, _ui, _bootstrap, mut events) = start_inner("actor-viewer", &broker.url, gui_capacity, Some(probe)).unwrap();
+            let (handle, _ui, _bootstrap, mut events) =
+                start_inner("actor-viewer", &broker.url, gui_capacity, Some(probe)).unwrap();
             struct Stop(Handle);
             impl Drop for Stop {
-                fn drop(&mut self) { self.0.quit(); let _ = self.0.wait_done(); }
+                fn drop(&mut self) {
+                    self.0.quit();
+                    let _ = self.0.wait_done();
+                }
             }
             let _stop = Stop(handle.clone());
             let mut state = observed(&mut observation, |state| state.connected).await;
@@ -1390,74 +1586,156 @@ mod tests {
                     let caller = caller.clone();
                     calls.spawn(async move {
                         let body = json!({"batch":batch,"sequence":sequence}).to_string();
-                        tokio::time::timeout(Duration::from_secs(20), caller.call_with_headers_raw("actor-viewer","busviewer.ping",&BTreeMap::new(),&body)).await.unwrap()
+                        tokio::time::timeout(
+                            Duration::from_secs(20),
+                            caller.call_with_headers_raw(
+                                "actor-viewer",
+                                "busviewer.ping",
+                                &BTreeMap::new(),
+                                &body,
+                            ),
+                        )
+                        .await
+                        .unwrap()
                     });
                 }
                 let generation = state.generation;
-                state = observed(&mut observation, |state| state.generation==generation && state.pending==32).await;
-                assert_eq!(state.active,32);
-                if final_calls.is_some() { unreachable!("only one final batch"); }
+                state = observed(&mut observation, |state| {
+                    state.generation == generation && state.pending == 32
+                })
+                .await;
+                assert_eq!(state.active, 32);
+                if final_calls.is_some() {
+                    unreachable!("only one final batch");
+                }
                 // Once a retained old generation really exists, bounce and
                 // admit the decisive replacement32 with the GUI still stalled.
                 if state.reliable > 2 {
                     broker.bounce();
-                    state = observed(&mut observation, |state| state.connected && state.generation>generation && state.pending==0 && state.reliable==0).await;
-                    while let Some(result) = calls.join_next().await { assert!(result.unwrap().is_err(),"lost old call must not be acknowledged"); }
+                    state = observed(&mut observation, |state| {
+                        state.connected
+                            && state.generation > generation
+                            && state.pending == 0
+                            && state.reliable == 0
+                    })
+                    .await;
+                    while let Some(result) = calls.join_next().await {
+                        assert!(
+                            result.unwrap().is_err(),
+                            "lost old call must not be acknowledged"
+                        );
+                    }
                     caller.close().await;
-                    let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
+                    let caller =
+                        Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
                     let mut calls = tokio::task::JoinSet::new();
                     for sequence in 0..32 {
                         let caller = caller.clone();
                         calls.spawn(async move {
                             let body = json!({"batch":"new","sequence":sequence}).to_string();
-                            let response = tokio::time::timeout(Duration::from_secs(20),caller.call_with_headers_raw("actor-viewer","busviewer.ping",&BTreeMap::new(),&body)).await.unwrap().unwrap();
-                            assert_eq!(response.0,0);
-                            assert_eq!(response.1,body);
+                            let response = tokio::time::timeout(
+                                Duration::from_secs(20),
+                                caller.call_with_headers_raw(
+                                    "actor-viewer",
+                                    "busviewer.ping",
+                                    &BTreeMap::new(),
+                                    &body,
+                                ),
+                            )
+                            .await
+                            .unwrap()
+                            .unwrap();
+                            assert_eq!(response.0, 0);
+                            assert_eq!(response.1, body);
                         });
                     }
                     let generation = state.generation;
-                    state = observed(&mut observation, |state| state.generation==generation && state.pending==32 && state.reliable>2).await;
-                    assert_eq!(state.active,32);
+                    state = observed(&mut observation, |state| {
+                        state.generation == generation && state.pending == 32 && state.reliable > 2
+                    })
+                    .await;
+                    assert_eq!(state.active, 32);
                     final_calls = Some(calls);
                     final_caller = Some(caller);
                     break;
                 }
                 broker.bounce();
-                state = observed(&mut observation, |state| state.connected && state.generation>generation && state.pending==0 && state.reliable==0).await;
-                while let Some(result) = calls.join_next().await { assert!(result.unwrap().is_err()); }
+                state = observed(&mut observation, |state| {
+                    state.connected
+                        && state.generation > generation
+                        && state.pending == 0
+                        && state.reliable == 0
+                })
+                .await;
+                while let Some(result) = calls.join_next().await {
+                    assert!(result.unwrap().is_err());
+                }
                 caller.close().await;
             }
-            let mut calls = final_calls.expect("default GUI channel must actually reach backpressure");
+            let mut calls =
+                final_calls.expect("default GUI channel must actually reach backpressure");
             let mut sequences = std::collections::BTreeSet::new();
             tokio::time::timeout(Duration::from_secs(15), async {
-                while sequences.len()<32 {
-                    if let Delivery::Command {id,body,..} = events.next().await.expect("worker closed during GUI drain") {
-                        if !handle.is_current(&id) { continue; }
+                while sequences.len() < 32 {
+                    if let Delivery::Command { id, body, .. } =
+                        events.next().await.expect("worker closed during GUI drain")
+                    {
+                        if !handle.is_current(&id) {
+                            continue;
+                        }
                         let body: Value = serde_json::from_str(&body).unwrap();
-                        assert_eq!(body["batch"],"new");
+                        assert_eq!(body["batch"], "new");
                         assert!(sequences.insert(body["sequence"].as_u64().unwrap()));
-                        handle.reply(id.clone(),0,body);
-                        handle.reply(id,10,json!({"duplicate":true}));
+                        handle.reply(id.clone(), 0, body);
+                        handle.reply(id, 10, json!({"duplicate":true}));
                     }
                 }
-            }).await.unwrap();
-            while let Some(result) = calls.join_next().await { result.unwrap(); }
-            observed(&mut observation, |state| state.pending==0 && state.active==0 && state.replies==0 && state.reply_tasks==0).await;
+            })
+            .await
+            .unwrap();
+            while let Some(result) = calls.join_next().await {
+                result.unwrap();
+            }
+            observed(&mut observation, |state| {
+                state.pending == 0
+                    && state.active == 0
+                    && state.replies == 0
+                    && state.reply_tasks == 0
+            })
+            .await;
             let caller = final_caller.unwrap();
             let calling = caller.clone();
-            let quit = tokio::spawn(async move { calling.call_with_headers_raw("actor-viewer","busviewer.quit",&BTreeMap::new(),"{}").await });
-            tokio::time::timeout(Duration::from_secs(5),async {
+            let quit = tokio::spawn(async move {
+                calling
+                    .call_with_headers_raw("actor-viewer", "busviewer.quit", &BTreeMap::new(), "{}")
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
-                    if let Delivery::Command {id,verb,..} = events.next().await.expect("worker closed before quit command") {
-                        assert_eq!(verb,"busviewer.quit");
+                    if let Delivery::Command { id, verb, .. } = events
+                        .next()
+                        .await
+                        .expect("worker closed before quit command")
+                    {
+                        assert_eq!(verb, "busviewer.quit");
                         assert!(handle.is_current(&id));
-                        handle.reply(id,0,json!({"quitting":true}));
+                        handle.reply(id, 0, json!({"quitting":true}));
                         handle.quit();
                         break;
                     }
                 }
-            }).await.unwrap();
-            assert_eq!(tokio::time::timeout(Duration::from_secs(5),quit).await.unwrap().unwrap().unwrap().0,0);
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), quit)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap()
+                    .0,
+                0
+            );
             handle.wait_done().unwrap();
             caller.close().await;
         });
@@ -1476,10 +1754,12 @@ mod tests {
     #[test]
     fn repeated_failures_bound_diagnostic_count_storage_and_utf8_bytes() {
         let mut faults = Faults::default();
-        for _ in 0..1024 { faults.push("é".repeat(5000)); }
-        assert_eq!(faults.count,1024);
-        assert_eq!(faults.recent.len(),32);
-        assert!(faults.recent.iter().all(|message| message.len()<=4096));
+        for _ in 0..1024 {
+            faults.push("é".repeat(5000));
+        }
+        assert_eq!(faults.count, 1024);
+        assert_eq!(faults.recent.len(), 32);
+        assert!(faults.recent.iter().all(|message| message.len() <= 4096));
     }
     /// One refusal and one handoff completion per lifetime: duplicates keep
     /// the first accepted value and never queue beyond the two slots.

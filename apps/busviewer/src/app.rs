@@ -331,7 +331,12 @@ impl App {
             _ => Err("service and verb must be supplied together".into()),
         }
     }
-    fn start_call(&mut self, target: Selection, body: String, reply: Option<bus::Request>) -> Task<Message> {
+    fn start_call(
+        &mut self,
+        target: Selection,
+        body: String,
+        reply: Option<bus::Request>,
+    ) -> Task<Message> {
         let error = if self.busy() || self.dialog.is_some() || !self.connected || self.quitting {
             Some(label("busy"))
         } else if self.snapshot.verb(&target).is_none() {
@@ -1589,19 +1594,30 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop {
                     match lane.drive().await {
-                        Progress::Wake => { let _ = app.update(Message::Bus(Delivery::Settings)); },
-                        Progress::Updated => {},
+                        Progress::Wake => {
+                            let _ = app.update(Message::Bus(Delivery::Settings));
+                        }
+                        Progress::Updated => {}
                         Progress::UiClosed => panic!("test UI closed"),
                     }
                     if app.settings_ui.preparation_evidence().current
-                        && app.settings_ui.session().host().consumer().applied().is_some_and(|applied| applied.revision == settings::Revision(2)) {
+                        && app
+                            .settings_ui
+                            .session()
+                            .host()
+                            .consumer()
+                            .applied()
+                            .is_some_and(|applied| applied.revision == settings::Revision(2))
+                    {
                         break;
                     }
                 }
-            }).await.expect("actual authority activation rather than first fallback wake");
+            })
+            .await
+            .expect("actual authority activation rather than first fallback wake");
         });
         // The app's own settings drain activates the prepared presentation.
         let _ = app.update(Message::Bus(Delivery::Settings));
