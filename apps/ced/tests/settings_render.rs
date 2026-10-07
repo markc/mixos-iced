@@ -107,7 +107,12 @@ fn ced_chrome_uses_current_palette_tokens_and_scaled_fonts() {
         .metrics
         .spacing
         .md;
-    let identity = host.presentation().unwrap().content().iced_theme().to_string();
+    let identity = host
+        .presentation()
+        .unwrap()
+        .content()
+        .iced_theme()
+        .to_string();
     host.consumer_mut().observe(1, snapshot(2, true));
     activate(&mut host);
     let theme = host.presentation().unwrap().content();

@@ -122,8 +122,11 @@ defaults. The motion flag is available to host-owned animation policy.
 The initial adapter maps standard toolkit defaults. It validates compiled button
 assignments and resources, but does not claim to implement every authored button
 cell's geometry/interaction style. Dynamic font installation, artifact resources,
-all widget-role migrations, Ced/Quoin wiring and presentation evidence remain
-separate implementation work.
+all widget-role migrations and presentation evidence remain separate work. Ced
+now uses the shared application coordinator on its existing Bus worker for live
+palette, token and font-size activation; its chrome also uses toolkit's common
+theme conversion and identity. Quoin wiring, persistent host cache I/O, full
+geometry/role migration and native first-map timing remain pending.
 
 ## Testing
 
