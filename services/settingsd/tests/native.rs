@@ -151,7 +151,7 @@ fn broker_restart_republishes_without_authority_restart_and_shared_consumer_reco
         };
         let mut incoming = client.incoming_bounded().unwrap();
         let mut connection = client.subscribe_state();
-        let mut consumer = Consumer::new(settings::Binding { instance:"fixture".into(), profile:"default".into() },"ced",false).unwrap();
+        let mut consumer = Consumer::for_app(settings::Binding { instance:"fixture".into(), profile:"default".into() },"ced").unwrap();
         let work = consumer.connected(client.connection_generation());
         drive(&mut consumer,&client,work).await;
         let original = consumer.current().unwrap().clone();

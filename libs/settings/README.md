@@ -9,6 +9,9 @@ subscribe/read job, pending-only recovery and fenced staged/application state.
 `domains::ChangePlan` compares one effective context for paint, text, layout,
 resource and motion work; shell hosts opt into shell geometry. Provenance and
 source/revision metadata alone do not cause rendering work.
+Construct apps with `Consumer::for_app(binding, "ced")` and shell hosts with
+`Consumer::for_shell(binding)`. `context()` returns the canonical projection key
+(`app:ced` or `desktop`); adapters use it without repeating key construction.
 
 The optional `native` feature executes actions over an **existing**
 `bus::native_client::SupervisedClient`. It does not connect, spawn a task or take

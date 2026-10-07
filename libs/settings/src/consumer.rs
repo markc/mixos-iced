@@ -87,9 +87,16 @@ pub struct Consumer {
     fault: Option<Diagnostic>,
 }
 impl Consumer {
+    pub fn for_app(binding: Binding, app: &str) -> Result<Self, Diagnostic> {
+        Self::new(binding, &format!("app:{app}"), false)
+    }
+    pub fn for_shell(binding: Binding) -> Result<Self, Diagnostic> {
+        Self::new(binding, "desktop", true)
+    }
     pub fn new(binding: Binding, context: &str, shell: bool) -> Result<Self, Diagnostic> {
         binding.validate()?;
-        if context.is_empty() || context.len() > 64 {
+        let identifier = context.strip_prefix("app:").or_else(|| (context == "desktop").then_some(context));
+        if identifier.is_none_or(|id| id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) {
             return Err(Diagnostic::new(
                 "invalid_context",
                 "context",
@@ -124,6 +131,7 @@ impl Consumer {
     pub fn binding(&self) -> &Binding {
         &self.binding
     }
+    pub fn context(&self) -> &str { &self.context }
     pub fn current(&self) -> Option<&Snapshot> {
         self.reducer.current()
     }

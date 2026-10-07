@@ -28,7 +28,7 @@ fn snapshot(revision: u64, incarnation: &str) -> Snapshot {
     }
 }
 fn consumer() -> Consumer {
-    Consumer::new(binding(), "ced", false).unwrap()
+    Consumer::for_app(binding(), "ced").unwrap()
 }
 fn read_work(state: &mut Consumer, generation: u64) -> Work {
     let subscribe = state.connected(generation).unwrap();
@@ -49,7 +49,7 @@ fn read_event_race_keeps_newest_and_fences_old_renderer_completion() {
     activate(&mut state, snapshot(1, "a"));
     let read = state.refresh().unwrap();
     let mut latest = snapshot(3, "a");
-    latest.effective.get_mut("ced").unwrap().ui.density = 1.5;
+    latest.effective.get_mut("app:ced").unwrap().ui.density = 1.5;
     assert!(state.observe(1, latest).is_none());
     let staged = state.pending().unwrap().clone();
     assert_eq!(state.applied().unwrap().revision, Revision(1));
@@ -57,11 +57,11 @@ fn read_event_race_keeps_newest_and_fences_old_renderer_completion() {
     assert_eq!(state.current().unwrap().revision, Revision(3));
     assert!(state.acknowledge(&staged));
     let mut fourth = snapshot(4, "a");
-    fourth.effective.get_mut("ced").unwrap().ui.density = 2.0;
+    fourth.effective.get_mut("app:ced").unwrap().ui.density = 2.0;
     state.observe(1, fourth);
     let old = state.pending().unwrap().clone();
     let mut fifth = snapshot(5, "a");
-    fifth.effective.get_mut("ced").unwrap().ui.text_scale = 1.2;
+    fifth.effective.get_mut("app:ced").unwrap().ui.text_scale = 1.2;
     state.observe(1, fifth);
     assert!(!state.acknowledge(&old));
     assert_eq!(state.applied().unwrap().revision, Revision(3));
@@ -149,7 +149,7 @@ fn provenance_source_revision_and_other_app_changes_do_not_invalidate_ced() {
     let mut next = snapshot(2, "a");
     next.design_revision = Revision(2);
     next.source_digest = "other-source".into();
-    let ced = next.effective.get_mut("ced").unwrap();
+    let ced = next.effective.get_mut("app:ced").unwrap();
     ced.design.source = "renamed-source".into();
     ced.provenance.insert("mode".into(), "app".into());
     ced.design.pairs.get_mut("base").unwrap().contrast_ratio += 0.1;
@@ -160,8 +160,8 @@ fn provenance_source_revision_and_other_app_changes_do_not_invalidate_ced() {
             ..Default::default()
         },
     );
-    next.effective.get_mut("term").unwrap().mode = "dark".into();
-    assert!(ChangePlan::between(Some(&initial), &next, "ced", false).is_empty());
+    next.effective.get_mut("app:term").unwrap().mode = "dark".into();
+    assert!(ChangePlan::between(Some(&initial), &next, "app:ced", false).is_empty());
     let mut state = consumer();
     activate(&mut state, initial);
     state.observe(1, next);
@@ -178,23 +178,23 @@ fn domain_plan_is_shared_and_shell_geometry_is_only_for_shell_consumers() {
         .get_mut("bottom")
         .unwrap()
         .thickness = 48;
-    assert!(ChangePlan::between(Some(&initial), &next, "ced", false).is_empty());
+    assert!(ChangePlan::between(Some(&initial), &next, "app:ced", false).is_empty());
     let shell = ChangePlan::between(Some(&initial), &next, "desktop", true);
     assert!(shell.shell && shell.layout && !shell.paint && !shell.text);
     next = initial.clone();
-    next.effective.get_mut("ced").unwrap().ui.text_scale = 1.2;
-    let scale = ChangePlan::between(Some(&initial), &next, "ced", false);
+    next.effective.get_mut("app:ced").unwrap().ui.text_scale = 1.2;
+    let scale = ChangePlan::between(Some(&initial), &next, "app:ced", false);
     assert!(scale.text && scale.layout && !scale.resources && !scale.paint);
     next = initial.clone();
     next.effective
-        .get_mut("ced")
+        .get_mut("app:ced")
         .unwrap()
         .design
         .typography
         .get_mut("ui")
         .unwrap()
         .family = "Another face".into();
-    let face = ChangePlan::between(Some(&initial), &next, "ced", false);
+    let face = ChangePlan::between(Some(&initial), &next, "app:ced", false);
     assert!(face.resources && face.text && face.layout);
 }
 #[test]
@@ -202,7 +202,7 @@ fn wrong_target_unsupported_schema_and_missing_context_never_activate() {
     let mut state = consumer();
     let read = read_work(&mut state, 1);
     let mut invalid = snapshot(1, "a");
-    invalid.effective.remove("ced");
+    invalid.effective.remove("app:ced");
     state.complete(&read, Ok(Some(invalid)));
     assert!(state.current().is_none());
     assert!(state.pending().is_none());
