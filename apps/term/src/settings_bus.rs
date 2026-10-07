@@ -861,7 +861,12 @@ mod tests {
     fn operations_permits_bound_in_flight_reply_tasks() {
         let permits = Arc::new(tokio::sync::Semaphore::new(OPERATIONS_CAP));
         let held: Vec<_> = (0..OPERATIONS_CAP)
-            .map(|_| permits.clone().try_acquire_owned().expect("permit under the cap"))
+            .map(|_| {
+                permits
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("permit under the cap")
+            })
             .collect();
         assert!(
             permits.clone().try_acquire_owned().is_err(),
