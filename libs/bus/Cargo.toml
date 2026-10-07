@@ -39,9 +39,10 @@ tokio-tungstenite = { version = "=0.26.2", optional = true }
 futures-util = { version = "=0.3.34", optional = true }
 tracing = { version = "=0.1.44", optional = true }
 
-# The stub broker in tests/ needs a multi-thread runtime and the server side
-# of the WebSocket handshake.
+# The stub broker in tests/ needs a multi-thread runtime, the server side
+# of the WebSocket handshake, and paused time for the native response-deadline
+# regression.
 [dev-dependencies]
-tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.53.1", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
 tokio-tungstenite = { version = "=0.26.2" }
 futures-util = { version = "=0.3.34" }

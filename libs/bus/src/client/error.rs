@@ -95,6 +95,49 @@ impl ClientError {
     }
 }
 
+/// A declared initial topic failed: invalid client configuration, or an
+/// explicit broker refusal of the declared subscription.
+///
+/// A refusal preserves the exact topic, return code and the broker's
+/// diagnostic. A validation failure carries the raw input index when one
+/// topic is at fault; aggregate bound failures carry `None`. Declaration
+/// errors are never manufactured from registration refusals: the typed
+/// registration classification stays on [`RegistrationRejected`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscriptionDeclarationError {
+    /// Client-side validation failed before any socket was opened.
+    Invalid {
+        index: Option<usize>,
+        message: String,
+    },
+    /// The broker answered a declared `topic.subscribe` with a nonzero rc.
+    /// Declarations are startup requirements: an explicit refusal is
+    /// terminal, never retried. A warning rc is a refusal too, not an
+    /// acknowledgement.
+    Rejected {
+        topic: String,
+        rc: u8,
+        message: String,
+    },
+}
+
+impl fmt::Display for SubscriptionDeclarationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SubscriptionDeclarationError::Invalid { index, message } => match index {
+                Some(index) => write!(f, "invalid initial topic {index}: {message}"),
+                None => write!(f, "invalid initial topics: {message}"),
+            },
+            SubscriptionDeclarationError::Rejected { topic, rc, message } => write!(
+                f,
+                "broker refused subscription to '{topic}' with rc {rc}: {message}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SubscriptionDeclarationError {}
+
 /// What can go wrong on a [`SupervisedClient`](super::SupervisedClient).
 ///
 /// A call made while the broker is away is a typed error, never a queued
@@ -109,8 +152,13 @@ pub enum SupervisedError {
     /// is refused.
     ShuttingDown,
     /// The initial connect-and-register budget was exhausted, or the broker
-    /// rejected the registration and that was configured as fatal.
+    /// rejected the registration and that was configured as fatal. The
+    /// whole-attempt deadline contributes a [`ClientError::Timeout`].
     InitialConnectFailed { attempts: u32, source: ClientError },
+    /// An initial topic declaration was invalid, or the broker explicitly
+    /// refused it. Terminal: no retry, recovery is reconfiguration or a new
+    /// client.
+    SubscriptionDeclaration(SubscriptionDeclarationError),
     /// A connection error on a call that did reach a live connection.
     Transport(ClientError),
 }
@@ -129,6 +177,9 @@ impl fmt::Display for SupervisedError {
                 f,
                 "initial broker connect failed after {attempts} attempt(s): {source}"
             ),
+            SupervisedError::SubscriptionDeclaration(e) => {
+                write!(f, "subscription declaration failed: {e}")
+            }
             SupervisedError::Transport(e) => write!(f, "{e}"),
         }
     }
@@ -138,6 +189,7 @@ impl std::error::Error for SupervisedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             SupervisedError::InitialConnectFailed { source, .. } => Some(source),
+            SupervisedError::SubscriptionDeclaration(e) => Some(e),
             SupervisedError::Transport(e) => Some(e),
             _ => None,
         }
@@ -224,5 +276,53 @@ mod tests {
         let plain = ClientError::from_native(anyhow::anyhow!("socket exploded"));
         assert!(plain.registration_rejection_typed().is_none());
         assert!(matches!(plain, ClientError::Native(_)));
+    }
+
+    #[test]
+    fn declaration_error_is_std_error_and_keeps_its_structured_fields() {
+        let refused = SubscriptionDeclarationError::Rejected {
+            topic: "scenes.changed".to_string(),
+            rc: 10,
+            message: "reserved".to_string(),
+        };
+        let dyn_err: &dyn std::error::Error = &refused;
+        assert!(dyn_err.to_string().contains("scenes.changed"));
+        assert!(dyn_err.to_string().contains("rc 10"));
+        let invalid = SubscriptionDeclarationError::Invalid {
+            index: Some(2),
+            message: "empty".to_string(),
+        };
+        assert!(invalid.to_string().contains("topic 2"));
+        assert_eq!(
+            SubscriptionDeclarationError::Invalid {
+                index: None,
+                message: "too many".to_string(),
+            }
+            .to_string(),
+            "invalid initial topics: too many"
+        );
+    }
+
+    #[test]
+    fn declaration_errors_never_manufacture_a_registration_rejection() {
+        let refused =
+            SupervisedError::SubscriptionDeclaration(SubscriptionDeclarationError::Rejected {
+                topic: "x.changed".to_string(),
+                rc: 10,
+                message: "refused".to_string(),
+            });
+        assert!(refused.registration_rejection().is_none());
+        assert!(refused.registration_rejection_typed().is_none());
+        assert!(matches!(
+            refused,
+            SupervisedError::SubscriptionDeclaration(_)
+        ));
+        let invalid =
+            SupervisedError::SubscriptionDeclaration(SubscriptionDeclarationError::Invalid {
+                index: None,
+                message: "bogus".to_string(),
+            });
+        assert!(invalid.registration_rejection().is_none());
+        assert!(invalid.registration_rejection_typed().is_none());
     }
 }

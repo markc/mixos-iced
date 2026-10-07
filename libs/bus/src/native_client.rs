@@ -11,7 +11,8 @@ mod unix;
 
 pub use crate::PortReply;
 pub use crate::client::{
-    ConnState, MAX_INITIAL_ATTEMPTS, SubscriptionRegistry, SupervisedClient, SupervisedError,
+    ConnState, MAX_INITIAL_ATTEMPTS, SubscriptionDeclarationError, SubscriptionRegistry,
+    SupervisedClient, SupervisedError,
 };
 pub use bounded::{BoundedIncomingEvent, BoundedIncomingReceiver};
 pub use native::{
