@@ -1121,7 +1121,7 @@ mod tests {
 
     #[test]
     fn svg_gradient_paints_real_pixels_and_expansion_is_refused_before_conversion() {
-        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><linearGradient id="g"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="16" height="16" fill="url(#g)"/></svg>"##;
+        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect width="16" height="16" fill="url(#g)"/></svg>"##;
         let decoded = decode_owned(gradient.as_bytes().into(), ImageFormat::Svg, 16, None).unwrap();
         assert_eq!(decoded.dimensions(), (16, 16));
         let left = &decoded.pixels()[(8 * 16 + 1) * 4..(8 * 16 + 1) * 4 + 4];
@@ -1130,7 +1130,7 @@ mod tests {
         assert!(right[2] > right[0] && right[3] > 0);
         let expensive = format!(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><defs><linearGradient id="g">{}</linearGradient></defs>{}</svg>"##,
-            r##"<stop offset="0" stop-color="#ff0000"/>"##.repeat(256),
+            r##"<stop offset="0" stop-color="red"/>"##.repeat(256),
             r##"<rect width="16" height="16" fill="url(#g)"/>"##.repeat(257),
         );
         assert!(matches!(

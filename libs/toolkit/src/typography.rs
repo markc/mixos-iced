@@ -16,13 +16,20 @@ pub struct TextStyle<F = Font> {
 impl<F> TextStyle<F> {
     /// Height of a line box laid out with this style, in logical pixels:
     /// the absolute line height when set, else iced's default 1.3 factor.
-    pub fn line_box(self) -> f32 {
+    pub fn line_box(&self) -> f32 {
         self.line_height.unwrap_or(self.size * 1.3)
+    }
+
+    /// The smallest allocation one control row needs before padding: the
+    /// text size, grown to the requested line box. This floor drives control
+    /// allocation; the renderer still receives the requested line height.
+    pub fn minimum_height(&self) -> f32 {
+        self.size.max(self.line_box())
     }
 
     /// The iced [`LineHeight`] this style lays out with: absolute when a
     /// line height is set, else the default relative factor.
-    pub fn line_height_or_default(self) -> LineHeight {
+    pub fn line_height_or_default(&self) -> LineHeight {
         match self.line_height {
             Some(height) => LineHeight::Absolute(Pixels(height)),
             None => LineHeight::default(),
@@ -70,6 +77,15 @@ impl<F> TextStyle<F> {
             .size(self.size)
             .line_height(line_height)
     }
+}
+
+/// One explicit glyph: a character and the text style it draws with. This
+/// carries a selected font, not a resource lookup request; hosts supply
+/// resolved icon selections (for example a tree expander).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glyph<F = Font> {
+    pub character: char,
+    pub text: TextStyle<F>,
 }
 
 /// Every record is immutable after preparation. Hosts swap the whole collection
@@ -150,5 +166,53 @@ mod tests {
             .line_height_or_default(),
             LineHeight::default()
         );
+    }
+
+    #[test]
+    fn minimum_height_never_drops_below_the_text_size() {
+        // An absolute line height below the size still requires the full
+        // text size of allocation; a larger line box wins instead.
+        assert_eq!(
+            TextStyle {
+                font: Font::DEFAULT,
+                size: 20.0,
+                line_height: Some(12.0),
+            }
+            .minimum_height(),
+            20.0
+        );
+        assert_eq!(
+            TextStyle {
+                font: Font::DEFAULT,
+                size: 20.0,
+                line_height: Some(30.0),
+            }
+            .minimum_height(),
+            30.0
+        );
+        // Without a line height the 1.3 default factor applies.
+        assert_eq!(
+            TextStyle {
+                font: Font::DEFAULT,
+                size: 10.0,
+                line_height: None,
+            }
+            .minimum_height(),
+            13.0
+        );
+    }
+
+    #[test]
+    fn glyphs_carry_the_resolved_font_not_a_lookup() {
+        let glyph = Glyph {
+            character: '▶',
+            text: TextStyle {
+                font: Face(7),
+                size: 12.0,
+                line_height: None,
+            },
+        };
+        assert_eq!(glyph.character, '▶');
+        assert_eq!(glyph.text.font, Face(7));
     }
 }

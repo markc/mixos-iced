@@ -480,6 +480,20 @@ impl Prepared {
             .get(&self.button(key).typography[part.name()])
             .expect("validated button typography was prepared")
     }
+    /// The prepared `ui` role. Projection validation requires the role, so
+    /// this cannot fail.
+    pub fn ui_text(&self) -> TextStyle {
+        self.typography
+            .get("ui")
+            .expect("validated ui typography was prepared")
+    }
+    /// The prepared `small` role. Projection validation requires the role,
+    /// so this cannot fail.
+    pub fn small_text(&self) -> TextStyle {
+        self.typography
+            .get("small")
+            .expect("validated small typography was prepared")
+    }
     pub fn density(&self) -> f32 {
         self.projection.density
     }

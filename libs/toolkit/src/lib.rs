@@ -18,6 +18,7 @@ pub mod centered;
 pub mod collapsible;
 pub mod color_picker;
 pub mod command_palette;
+pub mod controls;
 pub mod date_picker;
 pub mod dialog;
 pub mod dnd;

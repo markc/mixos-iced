@@ -11,7 +11,7 @@ pub use tab_label::TabLabel;
 use iced_core::layout::{Limits, Node};
 use iced_core::mouse::{self, Cursor};
 use iced_core::renderer;
-use iced_core::text::{self, LineHeight, Shaping, Wrapping};
+use iced_core::text::{self, Shaping, Wrapping};
 use iced_core::widget::text::Text;
 use iced_core::widget::tree::{State, Tag};
 use iced_core::widget::{Operation, Tree, Widget};
@@ -22,6 +22,8 @@ use iced_core::{
 use iced_widget::{Column, Row};
 use std::marker::PhantomData;
 type TextColour<'a, Id> = dyn Fn(&Id) -> Option<Color> + 'a;
+
+use crate::typography::TextStyle;
 
 /// The default icon size.
 const DEFAULT_ICON_SIZE: f32 = 16.0;
@@ -151,6 +153,12 @@ where
     spacing: Pixels,
     font: Option<Font>,
     text_font: Option<Font>,
+    /// A prepared icon style; overrides the icon font/size builders.
+    icon_style: Option<TextStyle>,
+    /// A prepared label style; overrides the text font/size builders.
+    text_style: Option<TextStyle>,
+    /// A prepared close style; overrides the close size and font.
+    close_text_style: Option<TextStyle>,
     class: <Theme as Catalog>::Class<'a>,
     position: Position,
     #[allow(clippy::missing_docs_in_private_items)]
@@ -218,6 +226,9 @@ where
             spacing: DEFAULT_SPACING,
             font: None,
             text_font: None,
+            icon_style: None,
+            text_style: None,
+            close_text_style: None,
             class: <Theme as Catalog>::default(),
             position: Position::default(),
             _renderer: PhantomData,
@@ -325,6 +336,31 @@ where
         self
     }
 
+    /// A prepared icon style: font, size and line height together. It
+    /// overrides `icon_font`/`icon_size` regardless of builder order.
+    #[must_use]
+    pub fn icon_style(mut self, text: TextStyle) -> Self {
+        self.icon_style = Some(text);
+        self
+    }
+
+    /// A prepared label style: font, size and line height together. It
+    /// overrides `text_font`/`text_size` regardless of builder order.
+    #[must_use]
+    pub fn text_style(mut self, text: TextStyle) -> Self {
+        self.text_style = Some(text);
+        self
+    }
+
+    /// A prepared close style for the × glyph and its slot. It overrides
+    /// `close_size` and the renderer's default font regardless of builder
+    /// order.
+    #[must_use]
+    pub fn close_text_style(mut self, text: TextStyle) -> Self {
+        self.close_text_style = Some(text);
+        self
+    }
+
     /// Sets the width of a tab.
     #[must_use]
     pub fn tab_width(mut self, width: Length) -> Self {
@@ -373,6 +409,190 @@ where
         self.width = width.into();
         self
     }
+}
+
+/// The resolved styles a tab draws and measures with: a prepared style when
+/// supplied, else the legacy font/size builders and renderer defaults. The
+/// `*_prepared` flags select each role's geometry: a prepared role measures
+/// its exact resolved style, an unprepared role keeps the legacy allowances
+/// (the `+1.0` measurement slack and the `close_size * 1.3 + 1.0` close
+/// slot), so a partially prepared bar never silently tightens an unset
+/// role.
+#[derive(Clone, Copy, Debug)]
+struct Resolved {
+    icon: TextStyle,
+    text: TextStyle,
+    close: TextStyle,
+    icon_prepared: bool,
+    text_prepared: bool,
+    close_prepared: bool,
+}
+
+impl<'a, Message, TabId, Theme, Renderer> TabBar<'a, Message, TabId, Theme, Renderer>
+where
+    Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
+    Theme: Catalog,
+    TabId: Eq + Clone,
+{
+    /// Whether any prepared style was supplied. The prepared path resolves
+    /// every role through one shared row hierarchy; roles without a
+    /// prepared style keep their legacy geometry.
+    fn prepared(&self) -> bool {
+        self.icon_style.is_some() || self.text_style.is_some() || self.close_text_style.is_some()
+    }
+
+    /// The styles every tab resolves to, with the per-role prepared flags.
+    fn resolved(&self, renderer: &Renderer) -> Resolved {
+        Resolved {
+            icon: self.icon_style.unwrap_or(TextStyle {
+                font: self.font.unwrap_or_default(),
+                size: self.icon_size,
+                line_height: None,
+            }),
+            text: self.text_style.unwrap_or(TextStyle {
+                font: self.text_font.unwrap_or_default(),
+                size: self.text_size,
+                line_height: None,
+            }),
+            close: self.close_text_style.unwrap_or(TextStyle {
+                font: renderer.default_font(),
+                size: self.close_size,
+                line_height: None,
+            }),
+            icon_prepared: self.icon_style.is_some(),
+            text_prepared: self.text_style.is_some(),
+            close_prepared: self.close_text_style.is_some(),
+        }
+    }
+}
+
+impl<'a, Message, TabId, Theme, Renderer> TabBar<'a, Message, TabId, Theme, Renderer>
+where
+    Renderer: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
+    Theme: Catalog + iced_core::widget::text::Catalog,
+    TabId: Eq + Clone,
+{
+    /// One prepared row per tab: the label content (with the IconText
+    /// position variants) then the close slot. A prepared role measures its
+    /// exact resolved style; an unprepared role keeps its legacy allowances.
+    /// Layout, drawing, hit testing and operations all consume this one
+    /// hierarchy.
+    fn resolved_row<'b, M: 'b>(
+        &self,
+        tab: &'b TabLabel,
+        resolved: &Resolved,
+    ) -> Row<'b, M, Theme, Renderer>
+    where
+        Theme: 'b,
+        Renderer: 'b,
+    {
+        // Unprepared roles keep the legacy `+1.0` measurement allowance;
+        // prepared roles measure their exact resolved styles.
+        let measured_icon = TextStyle {
+            size: resolved.icon.size + if resolved.icon_prepared { 0.0 } else { 1.0 },
+            ..resolved.icon
+        };
+        let measured_text = TextStyle {
+            size: resolved.text.size + if resolved.text_prepared { 0.0 } else { 1.0 },
+            ..resolved.text
+        };
+        let content = match tab {
+            TabLabel::Icon(icon) => Column::new()
+                .align_x(Alignment::Center)
+                .push(styled_icon(*icon, measured_icon))
+                .width(self.tab_width)
+                .height(self.height),
+            TabLabel::Text(label) => Column::new()
+                .align_x(Alignment::Center)
+                // The legacy text tab's 5-pixel column padding: a prepared
+                // text tab keeps it, so adopting a prepared style never
+                // restructures the tab.
+                .padding(5.0)
+                .push(styled_label(label, measured_text))
+                .width(self.tab_width)
+                .height(self.height),
+            TabLabel::IconText(icon, label) => {
+                let icon = styled_icon(*icon, measured_icon);
+                let label = styled_label(label, measured_text);
+                let column = match self.position {
+                    Position::Top => Column::new()
+                        .align_x(Alignment::Center)
+                        .push(icon)
+                        .push(label),
+                    Position::Bottom => Column::new()
+                        .align_x(Alignment::Center)
+                        .push(label)
+                        .push(icon),
+                    Position::Left => Column::new()
+                        .align_x(Alignment::Center)
+                        .push(Row::new().align_y(Alignment::Center).push(icon).push(label)),
+                    Position::Right => Column::new()
+                        .align_x(Alignment::Center)
+                        .push(Row::new().align_y(Alignment::Center).push(label).push(icon)),
+                };
+                column.width(self.tab_width).height(self.height)
+            }
+        };
+        let mut label_row = Row::new().push(content);
+        if self.on_close.is_some() {
+            // A prepared close slot is the exact resolved line box; an
+            // unprepared one keeps the legacy slot that reserves the hover
+            // growth. Drawing and hit testing use this same rectangle, and
+            // the × never grows past it.
+            let slot = if resolved.close_prepared {
+                resolved.close.minimum_height()
+            } else {
+                resolved.close.size * 1.3 + 1.0
+            };
+            label_row = label_row.push(
+                Row::new()
+                    .width(Length::Fixed(slot))
+                    .height(Length::Fixed(slot))
+                    .align_y(Alignment::Center),
+            );
+        }
+        label_row
+            .align_y(Alignment::Center)
+            .padding(self.padding)
+            .width(self.tab_width)
+    }
+}
+
+/// The prepared icon text of a tab label.
+fn styled_icon<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(
+    icon: char,
+    text: TextStyle,
+) -> Text<'a, Theme, Renderer>
+where
+    Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
+{
+    Text::<Theme, Renderer>::new(icon.to_string())
+        .size(text.size)
+        .height(text.minimum_height())
+        .font(text.font)
+        .line_height(text.line_height_or_default())
+        .align_x(alignment::Horizontal::Center)
+        .align_y(alignment::Vertical::Center)
+        .shaping(Shaping::Advanced)
+        .width(Length::Shrink)
+}
+
+/// The prepared label text of a tab.
+fn styled_label<'a, Theme: iced_core::widget::text::Catalog + 'a, Renderer>(
+    label: &'a str,
+    text: TextStyle,
+) -> Text<'a, Theme, Renderer>
+where
+    Renderer: iced_core::text::Renderer<Font = iced_core::Font>,
+{
+    Text::<Theme, Renderer>::new(label)
+        .size(text.size)
+        .height(text.minimum_height())
+        .font(text.font)
+        .line_height(text.line_height_or_default())
+        .align_x(alignment::Horizontal::Center)
+        .shaping(Shaping::Advanced)
+        .width(Length::Shrink)
 }
 
 fn layout_icon<Theme, Renderer>(
@@ -434,10 +654,15 @@ where
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &Limits) -> Node {
+        let resolved = self.resolved(renderer);
+        let prepared = self.prepared();
         let row =
             self.tab_labels
                 .iter()
                 .fold(Row::<Message, Theme, Renderer>::new(), |row, tab_label| {
+                    if prepared {
+                        return row.push(self.resolved_row::<Message>(tab_label, &resolved));
+                    }
                     let mut label_row = Row::new()
                         .push(
                             match tab_label {
@@ -736,9 +961,7 @@ where
                 self.position,
                 theme,
                 &self.class,
-                (self.font.unwrap_or_default(), self.icon_size),
-                (self.text_font.unwrap_or_default(), self.text_size),
-                self.close_size,
+                self.resolved(renderer),
                 self.text_colour
                     .as_ref()
                     .and_then(|colour| colour(&self.tab_indices[i])),
@@ -757,8 +980,17 @@ where
         operation.container(None, layout.bounds());
 
         // Rebuild the internal row so operations (focus, measurement,
-        // accessibility) can see each label.
-        let row =
+        // accessibility) can see each label. The prepared path rebuilds the
+        // same resolved hierarchy layout used; the legacy path keeps its
+        // historical reconstruction.
+        let resolved = self.resolved(renderer);
+        let row = if self.prepared() {
+            self.tab_labels
+                .iter()
+                .fold(Row::<(), Theme, Renderer>::new(), |row, tab_label| {
+                    row.push(self.resolved_row::<()>(tab_label, &resolved))
+                })
+        } else {
             self.tab_labels
                 .iter()
                 .fold(Row::<(), Theme, Renderer>::new(), |row, tab_label| {
@@ -812,7 +1044,8 @@ where
                     }
 
                     row.push(label_row)
-                });
+                })
+        };
 
         let mut element: Element<(), Theme, Renderer> = Element::new(row);
         let tab_tree = if let Some(child_tree) = tree.children.get_mut(0) {
@@ -841,9 +1074,7 @@ fn draw_tab<Theme, Renderer>(
     position: Position,
     theme: &Theme,
     class: &<Theme as Catalog>::Class<'_>,
-    icon_data: (Font, f32),
-    text_data: (Font, f32),
-    close_size: f32,
+    resolved: Resolved,
     text_colour: Option<Color>,
     viewport: &Rectangle,
 ) where
@@ -937,11 +1168,11 @@ fn draw_tab<Theme, Renderer>(
                 iced_core::text::Text {
                     content: icon.to_string(),
                     bounds: Size::new(icon_bounds.width, icon_bounds.height),
-                    size: Pixels(icon_data.1),
-                    font: icon_data.0,
+                    size: Pixels(resolved.icon.size),
+                    font: resolved.icon.font,
                     align_x: text::Alignment::Center,
                     align_y: Vertical::Center,
-                    line_height: LineHeight::Relative(1.3),
+                    line_height: resolved.icon.line_height_or_default(),
                     shaping: Shaping::Advanced,
                     wrapping: Wrapping::default(),
                     ellipsis: text::Ellipsis::None,
@@ -962,11 +1193,11 @@ fn draw_tab<Theme, Renderer>(
             iced_core::text::Text {
                 content: label.clone(),
                 bounds: Size::new(text_bounds.width, text_bounds.height),
-                size: Pixels(text_data.1),
-                font: text_data.0,
+                size: Pixels(resolved.text.size),
+                font: resolved.text.font,
                 align_x: text::Alignment::Center,
                 align_y: Vertical::Center,
-                line_height: LineHeight::Relative(1.3),
+                line_height: resolved.text.line_height_or_default(),
                 shaping: Shaping::Advanced,
                 wrapping: Wrapping::default(),
                 ellipsis: text::Ellipsis::None,
@@ -986,11 +1217,23 @@ fn draw_tab<Theme, Renderer>(
             iced_core::text::Text {
                 content: "×".to_owned(),
                 bounds: Size::new(cross_bounds.width, cross_bounds.height),
-                size: Pixels(close_size + if is_mouse_over_cross { 1.0 } else { 0.0 }),
-                font: renderer.default_font(),
+                // A prepared close keeps the glyph at its resolved size:
+                // hover is colour-only and the glyph never grows past its
+                // allocated hit region. An unprepared close keeps the
+                // legacy hover growth, which its legacy-sized slot
+                // reserves before hit testing.
+                size: Pixels(
+                    resolved.close.size
+                        + if !resolved.close_prepared && is_mouse_over_cross {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                ),
+                font: resolved.close.font,
                 align_x: text::Alignment::Center,
                 align_y: Vertical::Center,
-                line_height: LineHeight::Relative(1.3),
+                line_height: resolved.close.line_height_or_default(),
                 shaping: Shaping::Advanced,
                 wrapping: Wrapping::default(),
                 ellipsis: text::Ellipsis::None,
@@ -1038,6 +1281,8 @@ where
 mod tests {
     use super::*;
     use crate::test_renderer::LayoutRenderer;
+    use crate::typography::TextStyle;
+    use iced_core::layout;
 
     type TestBar<'a> = TabBar<'a, u8, u8, iced_core::Theme, LayoutRenderer>;
 
@@ -1070,5 +1315,435 @@ mod tests {
         let laid: Vec<_> = Layout::new(&node).children().collect();
         assert_eq!(laid.len(), 3, "one child per tab");
         assert_eq!(laid[0].bounds().y, laid[1].bounds().y, "one row");
+    }
+
+    /// Records every drawn text with its resolved font, size and line
+    /// height; the prepared draw path fills text directly.
+    #[derive(Default)]
+    struct TextRecorder {
+        texts: Vec<(String, Font, Pixels, text::LineHeight)>,
+    }
+
+    impl renderer::Renderer for TextRecorder {
+        fn start_layer(&mut self, _: Rectangle) {}
+        fn end_layer(&mut self) {}
+        fn start_transformation(&mut self, _: iced_core::Transformation) {}
+        fn end_transformation(&mut self) {}
+        fn hint(&mut self, _: renderer::Scale) {}
+        fn scale(&self) -> Option<renderer::Scale> {
+            None
+        }
+        fn reset(&mut self, _: Rectangle) {}
+        fn settings(&self) -> renderer::Settings {
+            renderer::Settings::default()
+        }
+        fn fill_quad(&mut self, _: renderer::Quad, _: impl Into<iced_core::Background>) {}
+        fn allocate_image(
+            &mut self,
+            handle: &iced_core::image::Handle,
+            callback: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
+            + Send
+            + 'static,
+        ) {
+            let _ = handle;
+            callback(Err(iced_core::image::Error::Unsupported));
+        }
+    }
+
+    impl text::Renderer for TextRecorder {
+        type Font = Font;
+        type Paragraph = iced_graphics::text::Paragraph;
+        type Editor = iced_graphics::text::Editor;
+
+        const ICON_FONT: Font = Font::new("Iced-Icons");
+        const CHECKMARK_ICON: char = '\u{f00c}';
+        const ARROW_DOWN_ICON: char = '\u{e800}';
+        const SCROLL_UP_ICON: char = '\u{e802}';
+        const SCROLL_DOWN_ICON: char = '\u{e803}';
+        const SCROLL_LEFT_ICON: char = '\u{e804}';
+        const SCROLL_RIGHT_ICON: char = '\u{e805}';
+        const ICED_LOGO: char = '\u{e801}';
+
+        fn default_font(&self) -> Font {
+            Font::DEFAULT
+        }
+        fn default_size(&self) -> Pixels {
+            Pixels(16.0)
+        }
+        fn fill_paragraph(&mut self, _: &Self::Paragraph, _: Point, _: Color, _: Rectangle) {}
+        fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
+        fn fill_text(&mut self, text: text::Text, _: Point, _: Color, _: Rectangle) {
+            self.texts
+                .push((text.content, text.font, text.size, text.line_height));
+        }
+    }
+
+    fn icon_style() -> TextStyle {
+        TextStyle {
+            font: Font::new("icons"),
+            size: 20.0,
+            line_height: Some(8.0),
+        }
+    }
+    fn text_style() -> TextStyle {
+        TextStyle {
+            font: Font::MONOSPACE,
+            size: 14.0,
+            line_height: Some(30.0),
+        }
+    }
+    fn close_style() -> TextStyle {
+        TextStyle {
+            font: Font::DEFAULT,
+            size: 12.0,
+            line_height: None,
+        }
+    }
+
+    fn prepared_bar<R>(styles_first: bool) -> TabBar<'static, u8, u8, iced_core::Theme, R>
+    where
+        R: renderer::Renderer + iced_core::text::Renderer<Font = iced_core::Font>,
+    {
+        let mut bar = TabBar::new(|id| id)
+            .push(0, TabLabel::IconText('♣', "tab".into()))
+            .set_active_tab(&0)
+            .on_close(|id| id + 200)
+            .close_size(30.0);
+        if styles_first {
+            bar = bar
+                .icon_style(icon_style())
+                .text_style(text_style())
+                .close_text_style(close_style());
+        } else {
+            bar = bar
+                .icon_font(Font::DEFAULT)
+                .icon_size(9.0)
+                .text_font(Font::DEFAULT)
+                .text_size(9.0)
+                .close_text_style(close_style())
+                .text_style(text_style())
+                .icon_style(icon_style());
+        }
+        bar
+    }
+
+    fn layout_bar(bar: &mut TestBar<'static>) -> (Tree, layout::Node) {
+        let renderer = LayoutRenderer::new();
+        let mut tree = Tree::new(bar as &dyn Widget<u8, iced_core::Theme, LayoutRenderer>);
+        bar.diff(&mut tree);
+        let node = Widget::layout(
+            bar,
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, Size::new(400.0, 100.0)),
+        );
+        (tree, node)
+    }
+
+    #[test]
+    fn prepared_styles_resolve_regardless_of_builder_order() {
+        let mut prepared = prepared_bar::<LayoutRenderer>(true);
+        let (tree, node) = layout_bar(&mut prepared);
+        let texts_of = |first: bool| {
+            let bar = prepared_bar::<TextRecorder>(first);
+            let mut recorder = TextRecorder::default();
+            Widget::draw(
+                &bar,
+                &tree,
+                &mut recorder,
+                &iced_core::Theme::Dark,
+                &renderer::Style::default(),
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &Rectangle::with_size(Size::new(400.0, 100.0)),
+            );
+            recorder.texts
+        };
+        let a = texts_of(true);
+        let b = texts_of(false);
+        assert_eq!(a, b, "builder order must not change the prepared geometry");
+        // The icon draws at its own resolved style: line height below the
+        // size stays absolute.
+        assert!(
+            a.iter().any(|(content, font, size, line)| {
+                content == "♣"
+                    && *font == icon_style().font
+                    && size.0 == 20.0
+                    && *line == text::LineHeight::Absolute(Pixels(8.0))
+            }),
+            "icon style missing: {:#?}",
+            a
+        );
+        // The label draws at its own resolved style: line height above the
+        // size stays absolute.
+        assert!(
+            a.iter().any(|(content, font, size, line)| {
+                content == "tab"
+                    && *font == text_style().font
+                    && size.0 == 14.0
+                    && *line == text::LineHeight::Absolute(Pixels(30.0))
+            }),
+            "label style missing: {:#?}",
+            a
+        );
+        // The close glyph uses the close style and never grows past its
+        // allocated slot: the size is the resolved one, not 30 + hover.
+        assert!(
+            a.iter().any(|(content, font, size, line)| {
+                content == "×"
+                    && *font == close_style().font
+                    && size.0 == 12.0
+                    && *line == text::LineHeight::default()
+            }),
+            "close style missing: {:#?}",
+            a
+        );
+    }
+
+    #[test]
+    fn prepared_rows_keep_deterministic_label_then_close_children() {
+        for position in [
+            Position::Top,
+            Position::Right,
+            Position::Bottom,
+            Position::Left,
+        ] {
+            let mut bar = prepared_bar::<LayoutRenderer>(true).set_position(position);
+            let (_, node) = layout_bar(&mut bar);
+            let mut tabs = Layout::new(&node).children();
+            let tab = tabs.next().expect("one tab");
+            let mut children = tab.children();
+            let content = children.next().expect("label content");
+            let close = children.next().expect("close slot");
+            assert!(
+                children.next().is_none(),
+                "one deterministic row child per tab"
+            );
+            let slot = close_style().minimum_height();
+            assert_eq!(
+                close.bounds().height,
+                slot,
+                "the close slot fits its line box"
+            );
+            assert_eq!(close.bounds().width, slot);
+            // The label content children follow the position variant.
+            let content_children: Vec<_> = content.children().collect();
+            match position {
+                Position::Top => {
+                    assert_eq!(content_children.len(), 2);
+                    assert_eq!(content_children[0].bounds().height, 20.0);
+                    assert_eq!(content_children[1].bounds().height, 30.0);
+                }
+                Position::Bottom => {
+                    assert_eq!(content_children.len(), 2);
+                    assert_eq!(content_children[0].bounds().height, 30.0);
+                    assert_eq!(content_children[1].bounds().height, 20.0);
+                }
+                Position::Left | Position::Right => {
+                    assert_eq!(content_children.len(), 1, "one inner row");
+                    let row: Vec<_> = content_children[0].children().collect();
+                    assert_eq!(row.len(), 2);
+                    let (first, second) = if matches!(position, Position::Left) {
+                        (20.0, 30.0)
+                    } else {
+                        (30.0, 20.0)
+                    };
+                    assert_eq!(row[0].bounds().height, first);
+                    assert_eq!(row[1].bounds().height, second);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_close_hits_only_the_allocated_slot() {
+        let mut bar = prepared_bar::<LayoutRenderer>(true);
+        let (mut tree, node) = layout_bar(&mut bar);
+        let tab = Layout::new(&node).children().next().expect("one tab");
+        let mut children = tab.children();
+        let content = children.next().expect("label content");
+        let close = children.next().expect("close slot");
+        let mut click = |at: Point| {
+            let mut bus = iced_core::shell::Bus::new();
+            let mut shell = Shell::new(
+                &iced_core::window::Headless,
+                iced_core::shell::Waker::noop(),
+                &mut bus,
+            );
+            Widget::update(
+                &mut bar,
+                &mut tree,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Layout::new(&node),
+                mouse::Cursor::Available(at),
+                &LayoutRenderer::new(),
+                &mut shell,
+                &Rectangle::with_size(Size::new(400.0, 100.0)),
+            );
+            bus.drain().collect::<Vec<_>>()
+        };
+        // The close slot centre publishes the close callback for the tab.
+        assert_eq!(click(close.bounds().center()), [200]);
+        // The label publishes the select callback instead.
+        assert_eq!(click(content.bounds().center()), [0]);
+    }
+
+    #[test]
+    fn prepared_text_tabs_keep_the_legacy_five_pixel_padding() {
+        let mut bar: TestBar<'static> = TabBar::new(|id| id)
+            .push(0, TabLabel::Text("One".into()))
+            .tab_width(Length::Shrink)
+            .text_style(TextStyle {
+                font: Font::MONOSPACE,
+                size: 14.0,
+                line_height: Some(30.0),
+            });
+        let (_, node) = layout_bar(&mut bar);
+        let tab = Layout::new(&node).children().next().expect("one tab");
+        let content = tab.children().next().expect("label content");
+        let label = content.children().next().expect("label");
+        assert_eq!(
+            label.bounds().x - content.bounds().x,
+            5.0,
+            "five pixels left"
+        );
+        assert_eq!(
+            content.bounds().width - label.bounds().width,
+            10.0,
+            "five pixels on each side"
+        );
+    }
+
+    #[test]
+    fn partially_prepared_bars_keep_legacy_geometry_for_unset_roles() {
+        // Only the text role is prepared. The unset icon keeps its legacy
+        // `+1.0` measurement allowance and the unset close keeps the
+        // legacy `close_size * 1.3 + 1.0` slot, so adopting one prepared
+        // style never silently tightens the others.
+        let geometry = |text_style: Option<TextStyle>| {
+            let mut bar: TestBar<'static> = TabBar::new(|id| id)
+                .push(0, TabLabel::IconText('♣', "tab".into()))
+                .set_active_tab(&0)
+                .on_close(|id| id + 200);
+            if let Some(text) = text_style {
+                bar = bar.text_style(text);
+            }
+            let (_, node) = layout_bar(&mut bar);
+            let tab = Layout::new(&node).children().next().expect("one tab");
+            let mut children = tab.children();
+            let content = children.next().expect("label content");
+            let close = children.next().expect("close slot");
+            let inner = content.children().next().expect("position row");
+            let mut inner = inner.children();
+            let icon = inner.next().expect("icon");
+            let label = inner.next().expect("label");
+            (
+                close.bounds().height,
+                icon.bounds().height,
+                label.bounds().height,
+            )
+        };
+        let legacy = geometry(None);
+        let partial = geometry(Some(TextStyle {
+            font: Font::MONOSPACE,
+            size: 14.0,
+            line_height: Some(30.0),
+        }));
+        assert_eq!(partial.0, legacy.0, "the unset close slot is not tightened");
+        assert_eq!(
+            partial.1, legacy.1,
+            "the unset icon allowance is not tightened"
+        );
+        // The prepared text role measures its exact resolved line box.
+        assert_eq!(partial.2, 30.0);
+        assert_ne!(partial.2, legacy.2);
+    }
+
+    #[test]
+    fn retained_cache_swaps_prepared_styles_keeping_order_and_close_target() {
+        let small = TextStyle {
+            font: Font::DEFAULT,
+            size: 12.0,
+            line_height: None,
+        };
+        let big = TextStyle {
+            font: Font::MONOSPACE,
+            size: 16.0,
+            line_height: Some(40.0),
+        };
+        let close = TextStyle {
+            font: Font::DEFAULT,
+            size: 12.0,
+            line_height: None,
+        };
+        let bar = |text: TextStyle| -> Element<'static, u8, iced_core::Theme, LayoutRenderer> {
+            TabBar::new(|id| id)
+                .push(0, TabLabel::Text("one".into()))
+                .push(1, TabLabel::Text("two".into()))
+                .set_active_tab(&1)
+                .on_close(|id| id + 200)
+                .text_style(text)
+                .close_text_style(close)
+                .into()
+        };
+        let mut renderer = LayoutRenderer::new();
+        let ui = iced_runtime::UserInterface::build(
+            bar(small),
+            Size::new(400.0, 100.0),
+            iced_runtime::user_interface::Cache::new(),
+            &mut renderer,
+        );
+        let cache = ui.into_cache();
+        let mut ui = iced_runtime::UserInterface::build(
+            bar(big),
+            Size::new(400.0, 100.0),
+            cache,
+            &mut renderer,
+        );
+        // The same prepared bar laid out standalone gives the close slot of
+        // the second tab under the new geometry.
+        let mut standalone: TestBar<'static> = TabBar::new(|id| id)
+            .push(0, TabLabel::Text("one".into()))
+            .push(1, TabLabel::Text("two".into()))
+            .set_active_tab(&1)
+            .on_close(|id| id + 200)
+            .text_style(big)
+            .close_text_style(close);
+        let (_, node) = layout_bar(&mut standalone);
+        let second = Layout::new(&node).children().nth(1).expect("second tab");
+        let close_bounds = second.children().nth(1).expect("close slot").bounds();
+        let mut messages = vec![];
+        let mut bus = iced_core::shell::Bus::new();
+        ui.update(
+            &iced_core::window::Headless,
+            &iced_core::shell::Waker::noop(),
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
+            mouse::Cursor::Available(close_bounds.center()),
+            &mut renderer,
+            &mut bus,
+        );
+        messages.extend(bus);
+        assert_eq!(
+            messages,
+            [201],
+            "the retained cache relays the new close target"
+        );
+        // The tab order is unchanged: the first tab's label selects id 0.
+        let first = Layout::new(&node).children().next().expect("first tab");
+        let label_bounds = first.children().next().expect("label").bounds();
+        let mut bus = iced_core::shell::Bus::new();
+        ui.update(
+            &iced_core::window::Headless,
+            &iced_core::shell::Waker::noop(),
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
+            mouse::Cursor::Available(label_bounds.center()),
+            &mut renderer,
+            &mut bus,
+        );
+        assert_eq!(bus.drain().collect::<Vec<_>>(), [0]);
     }
 }
