@@ -14,7 +14,7 @@
 //!   the executor for the policy effects they return.
 //! - [`input`]: `comp.input.*`, Bus-injected input on the human and agent
 //!   seats.
-//! - [`region`]: `comp.region.select`.
+//! - [`region`] implements `comp.region.select`.
 //! - [`panel`]: Quoin's panel holders (`comp.panel.*`, `panel.command`, the
 //!   conceal enforcement).
 //! - [`xwayland`]: the persisted `xwayland.enabled` startup switch.

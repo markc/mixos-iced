@@ -110,6 +110,7 @@ pub fn set_maximized(
         area
     } else {
         let Some(restore) = comp.maximize_restore(id) else {
+            set_maximized_flag(window, false);
             shell::send(window);
             return GeometryChange::default();
         };
@@ -206,6 +207,13 @@ fn apply(
     maximized: bool,
 ) {
     shell::stage(window, area.size, false);
+    set_maximized_flag(window, maximized);
+    shell::send(window);
+    slot::set_expected_size(window, area.size);
+    space.map_element(window.clone(), area.loc, false);
+}
+
+fn set_maximized_flag(window: &Window, maximized: bool) {
     if let Some(toplevel) = window.toplevel() {
         toplevel.with_pending_state(|state| {
             if maximized {
@@ -218,7 +226,4 @@ fn apply(
     if let Some(x11) = window.x11_surface() {
         let _ = x11.set_maximized(maximized);
     }
-    shell::send(window);
-    slot::set_expected_size(window, area.size);
-    space.map_element(window.clone(), area.loc, false);
 }

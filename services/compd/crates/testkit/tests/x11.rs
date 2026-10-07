@@ -64,6 +64,53 @@ fn the_hidden_hint_mirror_follows_each_change() {
     assert!(!window.is_hidden());
 }
 
+/// A failed X property write still updates smithay's maximised mirror, so
+/// automatic work-area reconciliation does not retry unchanged geometry.
+#[test]
+fn maximised_geometry_uses_the_offline_mirror_without_repeated_reflow() {
+    use dispatcher::wire::trait_::surface_event::{SurfaceEvent, SurfaceHandle};
+    use policy_host::geometry::{self, GeometryChange};
+    use smithay::desktop::Window;
+    use surfaces::SurfaceRole;
+    use world::camera::transform::translate::slot;
+    use world::comp::usable::Reserved;
+
+    let mut h = testkit::Harness::new();
+    let surface = window(0x500001);
+    assert!(surface.set_maximized(true).is_err());
+    assert!(surface.is_maximized(), "failed write preserves the desired mirror");
+    assert!(surface.set_maximized(false).is_err());
+    let window = Window::new_x11_window(surface.clone());
+    let host = &mut h.wire.inner;
+    let handle = SurfaceHandle::x11(&surface);
+    host.comp.apply(SurfaceEvent::RoleTaken {
+        handle: handle.clone(),
+        role: SurfaceRole::X11 { override_redirect: false },
+        parent: None,
+    });
+    let id = host.comp.registry.id_for_handle(&handle).unwrap();
+    host.comp.registry.set_mapped(id, true).unwrap();
+    host.space.state.map_element(window.clone(), (16, 24), false);
+    slot::set_expected_size(&window, (800, 600).into());
+    assert!(geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, true).windows);
+    assert!(surface.is_maximized());
+    host.comp.reserved.insert(host.output.name(), Reserved { bottom: 80, ..Reserved::default() });
+    let candidates = [(id, window.clone())];
+    assert!(geometry::refresh_usable(&mut host.comp, &mut host.space.state, &candidates).windows);
+    assert_eq!(slot::decided_size(&window), Some((1920, 1000).into()));
+    assert_eq!(geometry::refresh_usable(&mut host.comp, &mut host.space.state, &candidates), GeometryChange::default());
+    geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, false);
+    assert!(!surface.is_maximized());
+    assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
+    assert_eq!(host.space.state.element_location(&window), Some((16, 24).into()));
+    // An unmatched unmaximise must clear the mirror without inventing a restore.
+    assert!(surface.set_maximized(true).is_err());
+    assert_eq!(geometry::set_maximized(&mut host.comp, &mut host.space.state, id, &window, false), GeometryChange::default());
+    assert!(!surface.is_maximized());
+    assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
+    assert!(host.comp.maximize_restore(id).is_none());
+}
+
 /// The four X11 requests reach the comp policy's queue. An X11 window's
 /// `_NET_WM_DESKTOP` / `_NET_ACTIVE_WINDOW` / `WM_CHANGE_STATE` arrive as
 /// `SurfaceEvent::Request`s against its X11 handle (the `XwmHandler` methods
