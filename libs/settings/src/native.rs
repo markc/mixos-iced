@@ -18,6 +18,16 @@ pub async fn execute(
     client: &SupervisedClient,
     work: &Work,
 ) -> Result<Option<Snapshot>, Diagnostic> {
+    execute_until(client, work, tokio::time::Instant::now() + BOOTSTRAP_BUDGET).await
+}
+
+/// Pass the same initial deadline for subscribe AND read, so their combined
+/// bootstrap cannot spend a second budget. Recovery uses execute() instead.
+pub async fn execute_until(
+    client: &SupervisedClient,
+    work: &Work,
+    deadline: tokio::time::Instant,
+) -> Result<Option<Snapshot>, Diagnostic> {
     fn fault(code: &str, message: impl Into<String>) -> Diagnostic {
         Diagnostic::new(code, "native", message)
     }
@@ -27,7 +37,11 @@ pub async fn execute(
             "Work belongs to another connection",
         ));
     }
-    let result = tokio::time::timeout(BOOTSTRAP_BUDGET, async {
+    let deadline = deadline.min(tokio::time::Instant::now() + BOOTSTRAP_BUDGET);
+    if deadline <= tokio::time::Instant::now() {
+        return Err(fault("read_timeout", "Native work deadline already elapsed"));
+    }
+    let result = tokio::time::timeout_at(deadline, async {
         match work.kind() {
             WorkKind::Subscribe => {
                 client
@@ -49,10 +63,8 @@ pub async fn execute(
                     bus::PortReply::Ok { value, .. } => value,
                     bus::PortReply::AppError { message, .. } => {
                         let structured = serde_json::from_str::<serde_json::Value>(&message).ok();
-                        let code = if structured
-                            .as_ref()
-                            .is_some_and(|v| v.get("status").is_some())
-                        {
+                        let status = structured.as_ref().and_then(|v| v.get("status")).and_then(|s| s.as_str());
+                        let code = if matches!(status, Some("wrong_target" | "validation_failed" | "unsupported_schema" | "snapshot_too_large" | "not_served")) {
                             "authority_refused"
                         } else {
                             "read_failed"
@@ -86,7 +98,7 @@ pub async fn execute(
         }
     })
     .await
-    .map_err(|_| fault("read_timeout", "Native work exceeded one-second budget"))?;
+    .map_err(|_| fault("read_timeout", "Native work exceeded its bootstrap/recovery deadline"))?;
     if !client.is_connected() || client.connection_generation() != work.generation() {
         return Err(fault(
             "stale_connection",
@@ -108,11 +120,11 @@ impl Consumer {
             return None;
         }
         if command.body.len() > MAX_SNAPSHOT_BYTES {
-            return self.lost();
+            return self.rejected_delivery(Diagnostic::new("invalid_delivery", "snapshot", "Canonical delivery exceeds inline budget"));
         }
         match serde_json::from_str::<Snapshot>(&command.body) {
             Ok(snapshot) => self.observe(command.generation, snapshot),
-            Err(_) => self.lost(),
+            Err(error) => self.rejected_delivery(Diagnostic::new("invalid_delivery", "snapshot", error.to_string())),
         }
     }
 }

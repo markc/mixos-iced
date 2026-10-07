@@ -41,6 +41,11 @@ instance binding is the machine hostname, while the unit number identifies the
 session's VT. The target wants/upholds settingsd without making applications or
 the compositor wait for it: degraded startup is allowed. Native GUI settings
 adapters remain in development; adding the unit does not enable live theming.
+The native image has one session target per machine instance. Several desktops
+beside the host use separately named machines and separate config/runtime roots;
+the host desktop's preferences are not the authority store. Sharing a profile
+across consumers means using its existing single writer and broker, rather than
+starting another settingsd unit against the same root.
 
 The environment file defines absolute `MIXOS_ETC`, `MIXOS_VAR`, `MIXOS_RUN`,
 `MIXOS_SHARE`, `MIXOS_NODE_CONFIG`, `MIXOS_COMPD_CONFIG`, `HOME`,

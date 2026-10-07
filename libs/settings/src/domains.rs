@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One render-domain comparison for all native consumers. Authority identity,
 //! source names, revisions and provenance are evidence, not render inputs.
-use crate::{Effective, Snapshot};
-use design::{ReadButton, ReadPair};
+use crate::{CommonUi, Effective, Snapshot};
+use design::{DesignReadProjection, ReadButton, ReadPair, ReadType};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChangePlan {
@@ -43,33 +43,38 @@ impl ChangePlan {
     }
 }
 fn pair_key(pair: &ReadPair) -> impl PartialEq + '_ {
-    (
-        pair.surface,
-        pair.foreground,
-        pair.rendered_surface,
-        pair.rendered_foreground,
-        pair.backdrop,
-    )
+    let ReadPair { surface, foreground, rendered_surface, rendered_foreground, backdrop, contrast_ratio:_ } = pair;
+    (surface, foreground, rendered_surface, rendered_foreground, backdrop)
 }
 fn button_key(button: &ReadButton) -> (&str, &str, &str, bool) {
-    (
-        &button.variant,
-        &button.size,
-        &button.interaction,
-        button.focus_visible,
-    )
+    // The remaining fields are mapped by paint/text/layout below. Exhaustive
+    // destructuring forces every added DTO field to be classified deliberately.
+    let ReadButton { variant, size, interaction, focus_visible, pair:_, border:_, ring:_, height:_, min_width:_, padding_x:_, border_width:_, radius:_, typography:_ } = button;
+    (variant, size, interaction, *focus_visible)
+}
+fn font_key(record: &ReadType) -> impl PartialEq + '_ {
+    let ReadType { family, fallbacks, generic, weight, font_size:_, line_height:_ } = record;
+    (family, fallbacks, generic, weight)
+}
+fn view(effective: &Effective) -> &DesignReadProjection {
+    let Effective { scheme:_, mode:_, contrast:_, ui, design, provenance:_ } = effective;
+    let CommonUi { density:_, text_scale:_, reduced_motion:_ } = ui;
+    let DesignReadProjection { schema:_, source:_, primitives:_, pairs:_, non_text:_, metrics:_, scales:_, typography:_, buttons:_ } = design;
+    // Source/provenance/schema identify and validate evidence; all remaining
+    // fields feed the domains below. No wildcard permits an unnoticed addition.
+    design
 }
 fn compare(old: &Effective, new: &Effective) -> ChangePlan {
-    let a = &old.design;
-    let b = &new.design;
+    let a = view(old);
+    let b = view(new);
     let resources = !a
         .typography
         .iter()
-        .map(|(k, r)| (k, &r.family, &r.fallbacks, &r.generic, r.weight))
+        .map(|(k, r)| (k, font_key(r)))
         .eq(b
             .typography
             .iter()
-            .map(|(k, r)| (k, &r.family, &r.fallbacks, &r.generic, r.weight)));
+            .map(|(k, r)| (k, font_key(r))));
     let text = resources
         || old.ui.text_scale != new.ui.text_scale
         || !a

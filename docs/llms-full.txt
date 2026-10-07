@@ -1171,6 +1171,12 @@ success/disconnect cancels it. Protocol/target/schema refusal is visible and
 quiescent until a new event or explicit refresh. Every native call is bounded
 to one second; the host must also cap the combined initial bootstrap to one
 second and show a labelled fallback while recovery continues.
+Use the same initial deadline with `native::execute_until` for subscribe and
+read. Recovery exposes an absolute deadline, preserved during malformed-event
+storms; arrivals cannot restart or bypass it. Canonical app/shell constructors
+choose `app:<id>` or `desktop` contexts. Captured read tickets and baselines
+distinguish real same-incarnation rollback from a valid read racing a newer
+publication. Cancel old executor futures when their current work ticket changes.
 
 One context-specific change plan separates paint, text, layout, resources, motion
 and optional shell geometry. Source/provenance/revision-only changes advance
@@ -1180,6 +1186,8 @@ the stage ticket immediately before synchronous activation and acknowledgement,
 without an intervening await. Old connection, consumer and stage completions
 cannot claim application. Hosts must fence the actual swap as well as its report.
 Identical render inputs need no swap; application never proves presentation.
+DTO field additions require explicit classification in the shared comparison;
+source/provenance exclusions are deliberate rather than wildcard omissions.
 Local persistent fallback cache and artifact/resource preparation remain pending.
 
 ## Topics and storage
@@ -1246,6 +1254,8 @@ mutation, forged publish/clear refusal, authority restart and cold broker restar
 against isolated noded instances. Broker loss keeps the authority alive and its
 writer exclusive; the shared consumer reconnects through the same client and
 the authority repopulates the empty retained broker without a semantic edit.
+Another native fixture keeps an authority registered but deliberately withholds
+read replies, exercising the combined bootstrap deadline and expired work.
 OS process lifecycle here belongs to the test fixture; application calls
 and observations remain native ABP.
 

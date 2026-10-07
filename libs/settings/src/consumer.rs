@@ -13,7 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
@@ -28,6 +28,8 @@ pub enum WorkKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Work {
     owner: u64,
+    ticket: u64,
+    baseline: Option<(String, Revision)>,
     serial: u64,
     generation: u64,
     binding: Binding,
@@ -80,7 +82,7 @@ pub struct Consumer {
     buffered: Option<Snapshot>,
     confirming: Option<String>,
     rejected: VecDeque<String>,
-    retry_delay: Option<Duration>,
+    retry_deadline: Option<Instant>,
     failures: u8,
     pending: Option<Update>,
     applied: Option<Arc<Snapshot>>,
@@ -121,7 +123,7 @@ impl Consumer {
             buffered: None,
             confirming: None,
             rejected: VecDeque::new(),
-            retry_delay: None,
+            retry_deadline: None,
             failures: 0,
             pending: None,
             applied: None,
@@ -141,15 +143,20 @@ impl Consumer {
     pub fn pending(&self) -> Option<&Update> {
         self.pending.as_ref()
     }
+    /// Hosts cancel their old action future whenever this ticket disappears or
+    /// changes; there must be only one current executor job in the host.
+    pub fn current_work(&self) -> Option<&Work> { self.work.as_ref() }
     pub fn fault(&self) -> Option<&Diagnostic> {
         self.fault.as_ref()
     }
     pub fn retry_delay(&self) -> Option<Duration> {
-        self.retry_delay
+        self.retry_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
+    pub fn retry_deadline(&self) -> Option<Instant> { self.retry_deadline }
     pub fn generation(&self) -> Option<u64> {
         self.generation
     }
+    pub fn is_confirmed(&self) -> bool { self.confirmed }
     fn serial(&mut self) -> u64 {
         self.serial = self
             .serial
@@ -162,9 +169,11 @@ impl Consumer {
             return None;
         }
         let generation = self.generation?;
-        self.retry_delay = None;
+        self.retry_deadline = None;
         let work = Work {
             owner: self.owner,
+            ticket: self.reducer.ticket(),
+            baseline: self.reducer.current().map(|s| (s.incarnation.clone(), s.revision)),
             serial: self.serial(),
             generation,
             binding: self.binding.clone(),
@@ -195,15 +204,17 @@ impl Consumer {
         self.buffered = None;
         self.confirming = None;
         self.rejected.clear();
-        self.retry_delay = None;
+        self.retry_deadline = None;
         self.failures = 0;
+        self.fault = None;
         // Last usable applied/current data remains available, labelled offline
         // by the absent connection generation; it is not current read evidence.
     }
     /// Called only at the deadline of this specific failed recovery job.
     /// Success/disconnect removes the deadline; no idle timer exists.
     pub fn retry(&mut self) -> Option<Work> {
-        self.retry_delay?;
+        self.retry_deadline?;
+        self.retry_deadline = None;
         self.start(if self.subscribed {
             WorkKind::Read
         } else {
@@ -218,6 +229,7 @@ impl Consumer {
             self.read_again = true;
             return None;
         }
+        if self.retry_deadline.is_some() { return None; }
         self.start(if self.subscribed {
             WorkKind::Read
         } else {
@@ -232,6 +244,20 @@ impl Consumer {
         self.reducer.invalidate_work();
         self.refresh()
     }
+    /// Malformed canonical data is distinct from a dropped delivery. Bound its
+    /// recovery and do not reset an existing deadline for every bad frame.
+    pub fn rejected_delivery(&mut self, fault: Diagnostic) -> Option<Work> {
+        self.pending = None;
+        self.confirmed = false;
+        self.buffered = None;
+        self.reducer.invalidate_work();
+        self.fail(fault);
+        if self.retry_deadline.is_none() {
+            self.work = None;
+            self.read_again = false;
+        } else if self.work.is_some() { self.read_again = true; }
+        None
+    }
     fn fail(&mut self, fault: Diagnostic) {
         let terminal = matches!(
             fault.code.as_str(),
@@ -241,16 +267,18 @@ impl Consumer {
                 | "snapshot_too_large"
                 | "invalid_completion"
                 | "authority_refused"
+                | "authority_rollback"
                 | "invalid_read"
         );
         self.fault = Some(fault);
         if terminal {
-            self.retry_delay = None;
+            self.retry_deadline = None;
             return;
         }
+        if self.retry_deadline.is_some() { return; }
         self.failures = self.failures.saturating_add(1);
         let delay = (250 * (1u64 << (self.failures - 1).min(7))).min(30_000);
-        self.retry_delay = Some(Duration::from_millis(delay));
+        self.retry_deadline = Some(Instant::now() + Duration::from_millis(delay));
     }
     /// Subscribe acknowledgement precedes read. Read completions are confirmed
     /// only for this exact connection/job; an event may already be newer.
@@ -265,27 +293,35 @@ impl Consumer {
         self.work = None;
         match (work.kind, result) {
             (_, Err(fault)) => {
+                self.confirmed = false;
+                self.pending = None;
                 self.fail(fault);
                 None
             }
             (WorkKind::Subscribe, Ok(None)) => {
                 self.subscribed = true;
                 self.read_again = false;
-                self.start(WorkKind::Read)
+                if self.retry_deadline.is_some() { None } else { self.start(WorkKind::Read) }
             }
             (WorkKind::Read, Ok(Some(snapshot))) => {
                 // A loss/confirmation request after this read began requires
                 // one later bound read. Do not activate a pre-gap result.
                 if self.read_again {
                     self.read_again = false;
-                    return self.start(WorkKind::Read);
+                    return if self.retry_deadline.is_some() { None } else { self.start(WorkKind::Read) };
                 }
                 if let Err(fault) = self.check(&snapshot) {
                     self.fail(fault);
                     return None;
                 }
+                if work.baseline.as_ref().is_some_and(|(incarnation, revision)| incarnation == &snapshot.incarnation && snapshot.revision < *revision) {
+                    self.confirmed = false;
+                    self.pending = None;
+                    self.fail(Diagnostic::new("authority_rollback", "revision", "Fresh read is below its captured same-incarnation baseline"));
+                    return None;
+                }
                 let digest = crate::digest(&snapshot).ok();
-                let decision = self.reducer.install(snapshot, true, self.reducer.ticket());
+                let decision = self.reducer.install(snapshot, true, work.ticket);
                 if let Some(candidate) = self.confirming.take()
                     && (digest.as_ref() != Some(&candidate) || decision == Decision::Contradiction)
                 {
@@ -299,7 +335,7 @@ impl Consumer {
                         self.confirmed = true;
                         self.fault = None;
                         self.failures = 0;
-                        self.retry_delay = None;
+                        self.retry_deadline = None;
                         self.stage();
                     }
                     _ => {
@@ -376,11 +412,10 @@ impl Consumer {
             return None;
         }
         if let Err(fault) = self.check(&snapshot) {
-            self.fault = Some(fault);
-            return self.lost();
+            return self.rejected_delivery(fault);
         }
         let candidate = crate::digest(&snapshot).ok();
-        if candidate
+        if self.reducer.examine(&snapshot, false) == Decision::ConfirmAuthority && candidate
             .as_ref()
             .is_some_and(|d| self.rejected.contains(d))
         {
@@ -437,6 +472,7 @@ impl Consumer {
             // evidence may advance, but this never claims a presented frame.
             self.applied = Some(snapshot);
             self.pending = None;
+            self.fault = None;
         } else if let Some(generation) = self.generation {
             let serial = self.serial();
             self.pending = Some(Update {

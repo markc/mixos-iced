@@ -22,9 +22,17 @@ even when a state watch coalesces a disconnect/reconnect. Feed queue loss throug
 from 250 ms capped at 30 seconds; remove it after success/disconnect and never
 arm an idle timer. Unsupported/wrong-target/protocol refusals await a new event
 or explicit refresh rather than automatically retrying unchanged bad data.
+`retry_deadline()` is absolute and remains fixed during malformed-event storms;
+`retry_delay()` returns its remaining duration, not a new per-event delay.
+Inspect `is_confirmed()` to distinguish fresh authority evidence from preserved
+usable data during loss/recovery. Captured read baselines expose same-incarnation
+rollback while allowing an older read that legitimately raced a newer event.
+Cancel an old executor future when `current_work()` changes or disappears;
+superseded work must not become a second active host job.
 
-Each native call has a one-second bound. The host bounds the combined initial
-subscribe/read bootstrap to one second before presenting a labelled fallback;
+Each native call has a one-second bound. Pass the same initial deadline to
+`native::execute_until` for subscribe and read to bound their combined bootstrap
+to one second before presenting a labelled fallback;
 complete cancelled work as a timeout so the engine can recover. Persisted local
 cache and resource/artifact preparation remain future integration work.
 
