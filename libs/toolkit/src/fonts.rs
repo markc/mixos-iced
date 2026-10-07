@@ -527,42 +527,79 @@ pub fn try_font_for(
         .map_err(|_| "font system lock poisoned")?;
     let raw = system.raw();
     if let Some(font) = preferred.and_then(|name| registered_font(raw, name, requested_weight)) {
-        return Ok(FontSelection { font, choice: FontChoice::InstalledRole });
+        return Ok(FontSelection {
+            font,
+            choice: FontChoice::InstalledRole,
+        });
     }
-    for (index, name) in std::iter::once(family).chain(fallbacks.iter().map(String::as_str)).enumerate() {
+    for (index, name) in std::iter::once(family)
+        .chain(fallbacks.iter().map(String::as_str))
+        .enumerate()
+    {
         if let Some(font) = registered_font(raw, name, requested_weight) {
-            return Ok(FontSelection { font, choice: if index == 0 { FontChoice::Declared } else { FontChoice::DeclaredFallback } });
+            return Ok(FontSelection {
+                font,
+                choice: if index == 0 {
+                    FontChoice::Declared
+                } else {
+                    FontChoice::DeclaredFallback
+                },
+            });
         }
     }
     if allow_generic {
-        let generic_family = if monospace { fontdb::Family::Monospace } else { fontdb::Family::SansSerif };
+        let generic_family = if monospace {
+            fontdb::Family::Monospace
+        } else {
+            fontdb::Family::SansSerif
+        };
         let name = raw.db().family_name(&generic_family).to_owned();
-        if let Some(font) = registered_font(raw, &name, requested_weight) { return Ok(FontSelection { font, choice: FontChoice::Generic }); }
+        if let Some(font) = registered_font(raw, &name, requested_weight) {
+            return Ok(FontSelection {
+                font,
+                choice: FontChoice::Generic,
+            });
+        }
     }
     Err("no declared or permitted generic font face could be loaded")
 }
 
-fn registered_font(raw: &mut cosmic_text::FontSystem, name: &str, requested_weight: u16) -> Option<Font> {
+fn registered_font(
+    raw: &mut cosmic_text::FontSystem,
+    name: &str,
+    requested_weight: u16,
+) -> Option<Font> {
     // Canonicalise to a name actually in the database before interning: varying
     // case in repeated settings must not allocate unbounded duplicate names.
-    let name = raw.db().faces().flat_map(|face| &face.families)
-        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name)).map(|(candidate, _)| candidate.clone())?;
+    let name = raw
+        .db()
+        .faces()
+        .flat_map(|face| &face.families)
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(candidate, _)| candidate.clone())?;
     let has_light = family_has_light(raw, &name);
     let selected_weight = weight(effective_weight(requested_weight, has_light));
     let database_weight = fontdb::Weight(match selected_weight {
-        font::Weight::Thin => 100, font::Weight::ExtraLight => 200, font::Weight::Light => 300,
-        font::Weight::Normal => 400, font::Weight::Medium => 500, font::Weight::Semibold => 600,
-        font::Weight::Bold => 700, font::Weight::ExtraBold => 800, font::Weight::Black => 900,
+        font::Weight::Thin => 100,
+        font::Weight::ExtraLight => 200,
+        font::Weight::Light => 300,
+        font::Weight::Normal => 400,
+        font::Weight::Medium => 500,
+        font::Weight::Semibold => 600,
+        font::Weight::Bold => 700,
+        font::Weight::ExtraBold => 800,
+        font::Weight::Black => 900,
     });
     let id = raw.db().query(&fontdb::Query {
-        families: &[fontdb::Family::Name(&name)], weight: database_weight,
+        families: &[fontdb::Family::Name(&name)],
+        weight: database_weight,
         ..fontdb::Query::default()
     })?;
     raw.get_font(id, database_weight)?;
     Some(Font {
-            family: font::Family::Name(intern(&name)),
-            weight: selected_weight,
-            ..Font::DEFAULT
+        family: font::Family::Name(intern(&name)),
+        weight: selected_weight,
+        ..Font::DEFAULT
     })
 }
 

@@ -71,7 +71,8 @@ pub(crate) fn semantic_colours(colours: &ResolvedColours) -> toolkit::tokens::Se
         let authored = Color::from_linear_rgba(
             value.red as f32 * alpha + r * (1.0 - alpha),
             value.green as f32 * alpha + g * (1.0 - alpha),
-            value.blue as f32 * alpha + b * (1.0 - alpha), 1.0,
+            value.blue as f32 * alpha + b * (1.0 - alpha),
+            1.0,
         );
         let luminance = |colour: Color| colour.relative_luminance();
         let readable = |colour| {
@@ -87,9 +88,14 @@ pub(crate) fn semantic_colours(colours: &ResolvedColours) -> toolkit::tokens::Se
         }
         let [r, g, b, _] = authored.into_linear();
         let [tr, tg, tb, _] = palette.text.into_linear();
-        let blend = |weight: f32| Color::from_linear_rgba(
-            r + (tr - r) * weight, g + (tg - g) * weight, b + (tb - b) * weight, 1.0,
-        );
+        let blend = |weight: f32| {
+            Color::from_linear_rgba(
+                r + (tr - r) * weight,
+                g + (tg - g) * weight,
+                b + (tb - b) * weight,
+                1.0,
+            )
+        };
         let (mut lo, mut hi) = (0.0, 1.0);
         for _ in 0..24 {
             let mid = (lo + hi) / 2.0;
@@ -376,7 +382,13 @@ mod tests {
         let base = colours.pairs.get_mut("base").unwrap();
         base.rendered_surface = LinearRgba::BLACK;
         base.rendered_foreground = LinearRgba::WHITE;
-        colours.primitives.insert("status.success".into(), LinearRgba { alpha: 0.5, ..LinearRgba::WHITE });
+        colours.primitives.insert(
+            "status.success".into(),
+            LinearRgba {
+                alpha: 0.5,
+                ..LinearRgba::WHITE
+            },
+        );
         let status = semantic_colours(&colours).success;
         let expected = Color::from_linear_rgba(0.5, 0.5, 0.5, 1.0);
         assert!((status.r - expected.r).abs() < 1e-6);

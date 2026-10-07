@@ -95,7 +95,10 @@ fn partial_wrong_unit_nonfinite_and_future_projection_fail_visibly() {
         Box::new(|e| e.ui.density = 0.0),
         Box::new(|e| e.ui.text_scale = f64::INFINITY),
         Box::new(|e| e.design.metrics.get_mut("type.compact").unwrap().value = 0.0),
-        Box::new(|e| { e.ui.text_scale = 3.0; e.design.metrics.get_mut("type.compact").unwrap().value = 4096.0; }),
+        Box::new(|e| {
+            e.ui.text_scale = 3.0;
+            e.design.metrics.get_mut("type.compact").unwrap().value = 4096.0;
+        }),
         Box::new(|e| {
             e.design.buttons[0]
                 .typography

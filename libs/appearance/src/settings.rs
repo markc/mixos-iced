@@ -144,7 +144,12 @@ impl Projection {
                 return Err(fault(name, "Required logical-pixel metric is missing"));
             }
         }
-        bounded(dictionary.metrics["type.compact"].value * f64::from(text_scale), 0.01, 4096.0, "type.compact")?;
+        bounded(
+            dictionary.metrics["type.compact"].value * f64::from(text_scale),
+            0.01,
+            4096.0,
+            "type.compact",
+        )?;
         for (name, scale) in &d.scales {
             if scale.is_empty() || scale.len() > 4096 {
                 return Err(fault(name, "Invalid scale length"));
@@ -166,7 +171,9 @@ impl Projection {
             if t.family.trim().is_empty()
                 || t.family.len() > 256
                 || t.fallbacks.len() > 16
-                || t.fallbacks.iter().any(|s| s.trim().is_empty() || s.len() > 256)
+                || t.fallbacks
+                    .iter()
+                    .any(|s| s.trim().is_empty() || s.len() > 256)
                 || !(1..=1000).contains(&t.weight)
             {
                 return Err(fault(name, "Invalid font family chain or weight"));
@@ -289,7 +296,14 @@ impl Projection {
         metrics.text.lg *= text_scale;
         metrics.text.xl *= text_scale;
         metrics.text.xxl *= text_scale;
-        for value in [metrics.text.xs, metrics.text.sm, metrics.text.md, metrics.text.lg, metrics.text.xl, metrics.text.xxl] {
+        for value in [
+            metrics.text.xs,
+            metrics.text.sm,
+            metrics.text.md,
+            metrics.text.lg,
+            metrics.text.xl,
+            metrics.text.xxl,
+        ] {
             bounded(f64::from(value), 0.01, 4096.0, "text scale")?;
         }
         let tokens = Tokens::new(crate::tokens::palette(&dictionary.colours), metrics);
