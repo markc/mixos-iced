@@ -414,6 +414,46 @@ mod tests {
     }
 
     #[test]
+    fn foreign_release_after_ping_acknowledgement_is_not_lost() {
+        use sctk::reexports::calloop;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let process = Arc::new(ProcessBudget::default());
+        let window = Arc::new(WindowPresentation::default());
+        let first = Charge::acquire(process.clone(), window.clone()).unwrap();
+        let second = Charge::acquire(process.clone(), window.clone()).unwrap();
+        window.closed.store(true, Ordering::Release);
+        let mut event_loop = calloop::EventLoop::try_new().unwrap();
+        let (ping, source) = calloop::ping::make_ping().unwrap();
+        let wake = process.subscribe(ping);
+        let weak = Arc::downgrade(&wake);
+        let (acknowledged, receive_ack) = mpsc::sync_channel(1);
+        let (released, receive_release) = mpsc::sync_channel(1);
+        let foreign = std::thread::spawn(move || {
+            receive_ack.recv_timeout(Duration::from_secs(2)).unwrap();
+            drop(second);
+            released.send(()).unwrap();
+        });
+        event_loop.handle().insert_source(source, move |_, _, delivered: &mut usize| {
+            weak.upgrade().unwrap().acknowledge();
+            if *delivered == 0 {
+                acknowledged.send(()).unwrap();
+                receive_release.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+            *delivered += 1;
+        }).unwrap();
+        drop(first);
+        let mut count = 0;
+        event_loop.dispatch(Duration::ZERO, &mut count).unwrap();
+        assert_eq!(count, 1);
+        foreign.join().unwrap();
+        event_loop.dispatch(Duration::ZERO, &mut count).unwrap();
+        assert_eq!(count, 2, "foreign release after acknowledgement must write a fresh actual ping");
+        assert_eq!(process.capacity(&WindowPresentation::default()).release_epoch, 2);
+        assert_eq!(process.count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn window_denial_releases_process_credit_but_does_not_claim_window_availability() {
         let process = Arc::new(ProcessBudget::default());
         let (mut event_loop, _wake) = listener(&process);
