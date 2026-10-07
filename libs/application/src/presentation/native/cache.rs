@@ -54,7 +54,7 @@ impl Lane {
         Some((self.directory.clone(), self.target.clone()?))
     }
 
-    pub fn start<T>(&mut self) -> Option<Running<T>> {
+    pub fn start<T, C>(&mut self) -> Option<Running<T, C>> {
         let save = self.queued.take()?;
         let target = self.target.clone().expect("captured target");
         let writer = self.writer.take();

@@ -3,11 +3,13 @@
 # strict-data manifest with a SHA-256 and a BLAKE3 per file. The core takes
 # its search directories from the caller; the default `mixos` feature adds
 # the MixOS lookup (`mixos/assets` under the XDG data directories, then
-# `assets` under the share directory `config` resolves).
+# `assets` under the share directory `config` resolves), and the `verified`
+# feature adds immutable byte reads (`read_verified`) through
+# `config::atomic` descriptor-relative opens.
 [package]
 name = "assets"
 description = "Resolver for pinned, verified font, icon and emoji asset sets"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -27,13 +29,22 @@ mod_module_files = "deny"
 default = ["mixos"]
 # The MixOS search path. Without it the crate is the generic core only and
 # depends on no other MixOS crate but `strict`.
-mixos = ["dep:config"]
+mixos = ["verified"]
+# Immutable verified byte reads (`AssetSet::read_verified`): every locked
+# file captured once through descriptor-relative opens in `config::atomic`,
+# plus explicit ID/digest resolution (`VerifiedSet::read_at`/`read_explicit`)
+# under held approved root descriptors. Off, the core depends on no other
+# MixOS crate but `strict`.
+verified = ["dep:config"]
 
 [dependencies]
 # The two locked hashes every file carries; both are checked on `verify`.
 blake3 = { version = "=1.8.6" }
 sha2 = { version = "=0.10.9" }
 hex = { version = "=0.4.3" }
+# The `mixos` search path's directories and the `verified` feature's
+# descriptor-relative opens (`config::atomic`); optional so the core keeps
+# its strict-only dependency set.
 config = { path = "../config", optional = true }
 serde = { version = "=1.0.229", features = ["derive"] }
 strict = { path = "../strict" }

@@ -3,7 +3,7 @@ name = "toolkit"
 description = "iced widgets: text field, menus, audio controls, waveform, piano roll, a token-driven iced theme, font sets, icon fonts and freedesktop icon lookup"
 # A public contract with its own version (CHANGELOG.md); the edition and
 # toolchain are stated here so the crate carries them when taken elsewhere.
-version = "0.2.5"
+version = "0.2.8"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -27,7 +27,7 @@ default = []
 # Eager raster decoding (`images`). iced's workspace turns the `image`
 # crate on with no codecs, so the png codec is enabled here too: a
 # standalone `cargo test -p toolkit` must decode its fixtures.
-image = ["iced_graphics/image", "iced_widget/image", "dep:image", "image/png", "dep:resvg"]
+image = ["iced_graphics/image", "iced_widget/image", "dep:image", "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/ico", "dep:resvg", "dep:roxmltree"]
 # Styles iced's `svg` widget too (`iced_widget/svg`).
 svg = ["iced_widget/svg"]
 wgpu = ["iced_renderer/wgpu-bare", "iced_renderer/geometry", "dep:iced_wgpu"]
@@ -53,9 +53,14 @@ iced_renderer = { workspace = true }
 iced_runtime = { workspace = true }
 iced_wgpu = { workspace = true, optional = true, features = ["geometry"] }
 iced = { workspace = true, optional = true, features = ["advanced", "canvas", "wayland", "x11", "thread-pool", "fira-sans"] }
+# `fonts::registry` recomputes source identities from the owned bytes.
+blake3 = { workspace = true }
 fluent-bundle = { version = "0.15", optional = true }
 image = { workspace = true, optional = true }
 resvg = { version = "=0.45.1", default-features = false, optional = true }
+# The SVG pre-scan refuses text elements that a text-feature-less usvg would
+# silently drop; pinned to the version usvg itself uses.
+roxmltree = { version = "=0.20.0", optional = true }
 # `slide_bar` steps generic numeric values; the version is already in the lock.
 num-traits = { workspace = true }
 # `elide` walks grapheme boundaries; the version is already in the lock.
@@ -63,15 +68,20 @@ unicode-segmentation = "1.13"
 
 [dev-dependencies]
 edit = { path = "../edit" }
-iced_tiny_skia = { workspace = true, features = ["wayland"] }
+iced_tiny_skia = { workspace = true, features = ["wayland", "geometry"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 unicode-width = "=0.2.2"
 # Tests shape real text; iced's embedded Fira Sans means no host font is read.
 iced_graphics = { workspace = true, features = ["fira-sans"] }
+# The registry integration tests recompute the digests of shaped face data.
+blake3 = { workspace = true }
 # `tests/snapshots.rs` renders the gallery offscreen with iced's headless
 # simulator and reads the PNGs it writes back.
 iced_test = { workspace = true }
 png = { version = "=0.18.1" }
+# `Icon::with_glyph` tests check the packaged Inter face's cmap; the version
+# is already in the lock.
+ttf-parser = { version = "=0.25.1" }
 # The `generic` gate reads `cargo metadata`.
 serde_json = { workspace = true }
 # The requester round-trips a temp directory.

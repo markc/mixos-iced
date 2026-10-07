@@ -4,7 +4,25 @@
 version = 1
 
 [[annotations]]
+path = ["libs/appearance/assets/test-fonts/NotoSans.ttf", "libs/appearance/assets/test-fonts/NotoSans-OFL.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = ["libs/appearance/assets/test-fonts/JetBrainsMono.ttf", "libs/appearance/assets/test-fonts/JetBrainsMono-OFL.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
 path = "share/icons/material/**"
+precedence = "override"
+SPDX-FileCopyrightText = "Google LLC (Material Symbols)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "libs/toolkit/tests/fixtures/terminal.svg"
 precedence = "override"
 SPDX-FileCopyrightText = "Google LLC (Material Symbols)"
 SPDX-License-Identifier = "Apache-2.0"

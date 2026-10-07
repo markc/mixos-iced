@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fixed-capacity settings delivery behind one host wake notification.
-use super::Event;
+use super::{Event, ResourceOutcome};
 use std::sync::{Arc, Mutex};
 
 pub struct Mailbox<T>(Arc<Mutex<Pending<T>>>);
@@ -41,6 +41,10 @@ fn slot<T>(event: &Event<T>) -> u8 {
         Event::Rpc(..) => 2,
         Event::Prepared(_) => 3,
         Event::Fallback(..) => 4,
+        Event::Resource(completion) => match &completion.outcome {
+            ResourceOutcome::Fallback(..) => 4,
+            ResourceOutcome::Prepared(_) | ResourceOutcome::Reprepared(..) => 3,
+        },
         #[cfg(feature = "settings-cache")]
         Event::Saved(..) => 5,
         #[cfg(feature = "settings-cache")]

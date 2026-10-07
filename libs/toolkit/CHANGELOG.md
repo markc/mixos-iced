@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.2.8
+
+- Add `fonts::registry`: one `FontRegistry` per process registers caller-supplied
+  font collections and immutable role/icon selections against iced's shared font
+  system in single atomic batches. Sources are re-digested, faces parsed in
+  scratch databases, every selection resolved — all eligible declared fallback
+  groups reach the renderer in declaration order, weights are sealed exact or
+  explicitly substituted, styles and stretches are validated against the faces,
+  and icon catalogue family claims must match the parsed intrinsic family —
+  with all process-wide capacities checked in checked arithmetic before one
+  renderer transaction commits. Every error is produced before that call, so
+  registry and renderer are left exactly as they were. Selections render
+  through private digest aliases; two roles making the same selection share
+  one alias; identical or collection-only batches leave the numeric
+  font-system version in the evidence unchanged; and `Selection::owned()`
+  hands back the selected policy's source bytes, face indices, intrinsic
+  evidence and exact effective weight without re-registering anything.
+  Legacy `fonts::install` never replaces faces pinned by the registry;
+  `font_for` and `try_font_for` behaviour is unchanged.
+
+## 0.2.6
+
+- `typography::TextStyle` is generic over the font (`TextStyle<F = Font>`), so
+  a prepared role applies to any renderer's font. The `text` and `input`
+  builders plus new `line_box` and `line_height_or_default` helpers use one
+  source for font, size and line height.
+- `Menu` and its popup accept an optional prepared `.text_style`, overriding
+  `MenuStyle::text_size` and the renderer's default font regardless of
+  builder order. Prepared rows are never shorter than the content height
+  (the text size and the requested line height, whichever is larger — the
+  1.3 default factor without one), consistently across layout, hit testing,
+  anchors and sizing, while the renderer still receives the requested line
+  height. `panel_size_text`, `row_at_text` and `row_bounds_text` give
+  external hosts the same typed geometry, while `panel_size`, `row_at` and
+  `row_bounds` keep their default-based behaviour. `Panel<'a, Message>` is
+  unchanged and stays renderer-neutral; `Panel::text_style(text)` returns
+  the new `StyledPanel<'a, Message, F>`.
+- `SelectionList` gains `.text_style` and `.line_height`; one prepared row
+  height drives layout, hit testing, visible rows and virtual operations.
+  The original `List` literal and its legacy `text_size + padding` rows are
+  unchanged; the consuming `List::line_height` and `List::text_style`
+  builders return the new `StyledList` wrapper, sharing the same `ListState`
+  tree and row engine.
+
 ## 0.2.5
 
 - Share the gallery's real Fluent formatter as optional `catalogue::Catalogue`
@@ -50,6 +94,16 @@
 
 ## Unreleased
 
+- Owned icon decoding supports PNG, JPEG, GIF, WebP, BMP and ICO with strict
+  dimensions and checked source allocation before pixels are materialised.
+  Ready images retain their intrinsic aspect ratio. The bounded SVG subset
+  accepts filled shapes and bounded gradients, refuses DTDs, CSS, strokes,
+  indirect painting and image/text dependencies before constructing the tree,
+  and caps XML/depth, path/points bytes and gradient expansion. Converted
+  groups cannot require isolation. Final pixel accounting is distinct from
+  structural conversion budgets and advisory codec scratch limits.
+  Zero-alpha tints fail visibly.
+
 - The opt-in `font-registration-guards` integration target owns the font
   registration seam guards: the cosmic guard sources compile from their
   single vendored owner and the iced wrapper assertions run through the
@@ -76,6 +130,12 @@
   Preview/Commit/Cancel lifecycle; scrollable tabs and middle-click close.
 - Icons: PNG/SVG fallback assets with symbolic tint, scale-aware bounded
   metadata cache and external SVG resources disabled (`image` feature).
+- Icons: one owned-byte decoder (`icons::decode_owned`, `ImageFormat`,
+  `DecodedIcon`, `IconDecodeError`) shared by prepared resources and the
+  legacy `Assets` path, with bounded encoded/side/decoded caps, refused
+  external/data image hrefs and text dependencies, EXIF orientation,
+  symbolic tint and blank rejection. `Icon::with_glyph` owns a resolved
+  glyph/font pair that never consults the installed icon font table.
 - Native DnD: portable `dnd::native::Session` and MIME codecs with explicit
   target acknowledgement and source completion; failed/cancelled transfers
   cannot remove a Move source. Native window adapters remain host-owned.

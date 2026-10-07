@@ -5,7 +5,7 @@ use std::time::Duration;
 fn pair() -> (Ui<u64>, Lane<u64>) {
     super::super::bridge(
         session(),
-        Worker::offline(|_, snapshot| Ok(snapshot.revision.0)),
+        Worker::offline_with_host(|_, snapshot| Ok(snapshot.revision.0), hermetic_host()),
     )
 }
 
@@ -13,11 +13,14 @@ fn pair() -> (Ui<u64>, Lane<u64>) {
 fn bridge_fences_completion_and_activates_current_content_once() {
     let mut original = session();
     let (_, jobs) = original.handle(Event::Wake, Some(1));
-    let stale = ready(jobs.prepare.unwrap());
+    let stale = ready(jobs.prepare_request().unwrap());
     original.host.consumer_mut().observe(1, snapshot(2, true));
     let (_, jobs) = original.handle(Event::Wake, Some(1));
-    let fresh = ready(jobs.prepare.unwrap());
-    let (mut ui, lane) = super::super::bridge(original, Worker::offline(|_, s| Ok(s.revision.0)));
+    let fresh = ready(jobs.prepare_request().unwrap());
+    let (mut ui, lane) = super::super::bridge(
+        original,
+        Worker::offline_with_host(|_, s| Ok(s.revision.0), hermetic_host()),
+    );
     let mut installed = Vec::new();
     assert!(
         ui.handle_with(Event::Prepared(stale), Some(1), |p| installed
@@ -48,11 +51,14 @@ async fn cancelled_bridge_drive_keeps_one_resource_job_and_completion() {
     let (entered, mut started) = tokio::sync::mpsc::unbounded_channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let blocked = std::sync::Mutex::new(blocked);
-    let worker = Worker::offline(move |_, snapshot| {
-        entered.send(snapshot.revision.0).unwrap();
-        blocked.lock().unwrap().recv().unwrap();
-        Ok(snapshot.revision.0)
-    });
+    let worker = Worker::offline_with_host(
+        move |_, snapshot| {
+            entered.send(snapshot.revision.0).unwrap();
+            blocked.lock().unwrap().recv().unwrap();
+            Ok(snapshot.revision.0)
+        },
+        hermetic_host(),
+    );
     let (mut ui, mut lane) = super::super::bridge(session(), worker);
     ui.reconcile(Some(1));
     assert_eq!(lane.drive().await, Progress::Updated);
@@ -85,8 +91,11 @@ async fn cancelled_bridge_drive_keeps_one_resource_job_and_completion() {
 fn bridge_coalesces_wakes_and_samples_generation_for_each_event() {
     let mut original = session();
     let (_, jobs) = original.handle(Event::Wake, Some(1));
-    let completion = ready(jobs.prepare.unwrap());
-    let (mut ui, lane) = super::super::bridge(original, Worker::offline(|_, s| Ok(s.revision.0)));
+    let completion = ready(jobs.prepare_request().unwrap());
+    let (mut ui, lane) = super::super::bridge(
+        original,
+        Worker::offline_with_host(|_, s| Ok(s.revision.0), hermetic_host()),
+    );
     assert!(lane.publish(Event::Wake));
     for _ in 0..100 {
         assert!(!lane.publish(Event::Wake));

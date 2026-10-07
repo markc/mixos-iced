@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.12
+
+- Capture typed, immutable local preparation context on the existing worker
+  lane. Zoom and output-scale changes use a separate checked revision, retain
+  the active verified binding and do not refresh settingsd or rewrite its cache.
+  Failed local preparation preserves the presentation and waits for explicit
+  retry or a new context. Contextual constructors complement the existing unit
+  constructors; contexts need not implement Clone or serialisation.
+- Add opaque `Event::Resource` completions fenced before activation, faults and
+  acknowledgement. External exhaustive event matches must handle the new
+  variant. Legacy manually constructed unit completions remain accepted only
+  before the first local revision change. Superseded physical jobs retire before
+  another job starts, and their errors and panics cannot poison a requeued job.
+
+## 0.1.11
+
+- The central verified resource host takes over live worker preparation: one
+  serial blocking job reads the authored or recorded resource identity once,
+  verifies the bytes, decodes required image variants and registers exactly
+  one atomic toolkit batch. The exact binding of what was verified is
+  acknowledged with the synchronous activation fence, so the captured cache
+  save records precisely what was prepared. `Worker::with_resource_requirements`
+  adds an application's pure icon requirements; `Worker::offline_with_host`
+  and `Worker::offline_with_cache_and_host` accept an explicit host policy for
+  tests and embeddings. Fallback preparation carries its verified binding
+  through the ladder. The legacy `prepare_registered_checked` compat path
+  remains available; the worker no longer uses it.
+
 ## 0.1.10
 
 Paired cache evidence explicitly reports an unconfigured persistent root,
@@ -86,3 +114,13 @@ separately from write faults, saved identities and usable fallback state.
   configuration and renderer feature selection across Ced, DOpus and Term.
 - Share native CPU grid drawing and persistent GPU textures over caller-owned
   frame sources. Retain sparse damage and explicit frame lifetime identities.
+
+## Unreleased
+
+- Add `application::native_queue`: a bounded retained outbox (reliable FIFO
+  plus fixed replaceable slots that keep their original queue position) and
+  a shared admission pool whose permits are explicitly finished or counted
+  abandoned. Both primitives are std-only and renderer- and
+  transport-neutral, with no Bus client, runtime or actor dependency. Full
+  and closed receivers hand each item back at its original position; closure
+  stops flushing for the actor to retire remaining work explicitly.

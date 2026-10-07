@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Paired endpoints on the host's existing UI and worker, with no own runtime.
-#[cfg(feature = "settings-cache")]
-use super::Diagnostic;
-use super::{ChangePlan, Event, Jobs, Mailbox, Presentation, Session, Worker};
+use super::{
+    ChangePlan, Diagnostic, Event, Jobs, Mailbox, PreparationEvidence, PreparationRevision,
+    Presentation, Session, Worker,
+};
 use bus::native_client::IncomingCommand;
 use std::sync::Arc;
 #[cfg(feature = "settings-cache")]
@@ -10,7 +11,7 @@ use std::time::Instant;
 use tokio::sync::watch;
 
 /// Pair existing authorities. Construction starts no connection, task or I/O.
-pub fn bridge<T>(session: Session<T>, worker: Worker<T>) -> (Ui<T>, Lane<T>) {
+pub fn bridge<T, C>(session: Session<T, C>, worker: Worker<T, C>) -> (Ui<T, C>, Lane<T, C>) {
     #[cfg(feature = "settings-cache")]
     let session = {
         let mut session = session;
@@ -24,7 +25,7 @@ pub fn bridge<T>(session: Session<T>, worker: Worker<T>) -> (Ui<T>, Lane<T>) {
         session
     };
     let binding = session.host().consumer().binding().clone();
-    let (jobs, receiver) = watch::channel(None);
+    let (jobs, receiver) = watch::channel::<Option<Jobs<C>>>(None);
     let mailbox = Mailbox::default();
     (
         Ui {
@@ -43,13 +44,13 @@ pub fn bridge<T>(session: Session<T>, worker: Worker<T>) -> (Ui<T>, Lane<T>) {
 }
 
 /// Owned by the UI. Mutation always publishes the resulting desired jobs.
-pub struct Ui<T> {
-    session: Session<T>,
-    jobs: watch::Sender<Option<Jobs>>,
+pub struct Ui<T, C = ()> {
+    session: Session<T, C>,
+    jobs: watch::Sender<Option<Jobs<C>>>,
     mailbox: Mailbox<T>,
 }
-impl<T> Ui<T> {
-    pub fn session(&self) -> &Session<T> {
+impl<T, C> Ui<T, C> {
+    pub fn session(&self) -> &Session<T, C> {
         &self.session
     }
 
@@ -84,6 +85,32 @@ impl<T> Ui<T> {
     pub fn reconcile(&mut self, live: Option<u64>) {
         self.handle_with(Event::Wake, live, |_| {});
     }
+
+    pub fn set_context(
+        &mut self,
+        next: C,
+        live: Option<u64>,
+    ) -> Result<PreparationRevision, Diagnostic>
+    where
+        C: PartialEq,
+    {
+        let (revision, jobs) = self.session.set_context(next, live)?;
+        self.jobs.send_replace(Some(jobs));
+        Ok(revision)
+    }
+
+    pub fn retry_preparation(
+        &mut self,
+        live: Option<u64>,
+    ) -> Result<PreparationRevision, Diagnostic> {
+        let (revision, jobs) = self.session.retry_preparation(live)?;
+        self.jobs.send_replace(Some(jobs));
+        Ok(revision)
+    }
+
+    pub fn preparation_evidence(&self) -> PreparationEvidence<'_> {
+        self.session.preparation_evidence()
+    }
 }
 
 /// A host must deliver an eventual UI wake on `Wake` or a true publish result.
@@ -95,14 +122,14 @@ pub enum Progress {
 }
 
 /// Owned by the host's existing worker; no connection or receiver escapes.
-pub struct Lane<T> {
-    worker: Worker<T>,
-    jobs: watch::Receiver<Option<Jobs>>,
+pub struct Lane<T, C = ()> {
+    worker: Worker<T, C>,
+    jobs: watch::Receiver<Option<Jobs<C>>>,
     mailbox: Mailbox<T>,
     binding: settings::Binding,
     jobs_open: bool,
 }
-impl<T: Send + 'static> Lane<T> {
+impl<T: Send + 'static, C: Send + Sync + 'static> Lane<T, C> {
     fn replace_latest(&mut self) {
         let jobs = { self.jobs.borrow_and_update().clone() };
         if let Some(jobs) = jobs {

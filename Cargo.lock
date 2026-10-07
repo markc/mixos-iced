@@ -185,6 +185,7 @@ dependencies = [
  "design",
  "hex",
  "iced_core",
+ "iced_tiny_skia",
  "iced_widget",
  "serde_json",
  "settings",
@@ -202,12 +203,15 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.10"
+version = "0.1.12"
 dependencies = [
  "appearance",
+ "assets",
+ "blake3",
  "bus",
  "config",
  "design",
+ "hex",
  "iced",
  "iced_program",
  "iced_runtime",
@@ -217,6 +221,8 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "sha2 0.10.9",
+ "strict",
  "tempfile",
  "tokio",
  "toolkit",
@@ -313,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "assets"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "config",
@@ -6435,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "scene-editor"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "appearance",
  "application",
@@ -6658,7 +6664,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "blake3",
  "bus",
@@ -6675,7 +6681,7 @@ dependencies = [
 
 [[package]]
 name = "settingsd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "buildinfo",
@@ -7764,8 +7770,9 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toolkit"
-version = "0.2.5"
+version = "0.2.8"
 dependencies = [
+ "blake3",
  "cosmic-text",
  "edit",
  "fluent-bundle",
@@ -7783,9 +7790,11 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "resvg 0.45.1",
+ "roxmltree 0.20.0",
  "serde_json",
  "tempfile",
  "tiny-skia 0.11.4",
+ "ttf-parser",
  "unicode-segmentation",
  "unicode-width",
 ]

@@ -1012,17 +1012,18 @@ mod tests {
         fn allocate_image(
             &mut self,
             _: &iced_core::image::Handle,
-            _: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
+            callback: impl FnOnce(Result<iced_core::image::Allocation, iced_core::image::Error>)
             + Send
             + 'static,
         ) {
+            callback(Err(iced_core::image::Error::Unsupported));
         }
     }
 
     impl atext::Renderer for Rec {
         type Font = Font;
-        type Paragraph = ();
-        type Editor = ();
+        type Paragraph = iced_graphics::text::Paragraph;
+        type Editor = iced_graphics::text::Editor;
         const ICON_FONT: Font = Font::DEFAULT;
         const CHECKMARK_ICON: char = '0';
         const ARROW_DOWN_ICON: char = '0';
@@ -1037,8 +1038,8 @@ mod tests {
         fn default_size(&self) -> Pixels {
             Pixels(16.0)
         }
-        fn fill_paragraph(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
-        fn fill_editor(&mut self, _: &(), _: Point, _: Color, _: Rectangle) {}
+        fn fill_paragraph(&mut self, _: &Self::Paragraph, _: Point, _: Color, _: Rectangle) {}
+        fn fill_editor(&mut self, _: &Self::Editor, _: Point, _: Color, _: Rectangle) {}
         fn fill_text(&mut self, text: atext::Text, position: Point, _: Color, clip: Rectangle) {
             let layer = *self.layers.last().expect("the window layer");
             self.texts.push(Drawn {
