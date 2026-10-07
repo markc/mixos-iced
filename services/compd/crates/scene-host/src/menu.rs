@@ -636,19 +636,45 @@ mod tests {
 
     #[test]
     fn appearance_preserves_open_menu_selection_and_identity() {
-        let menu = Menu::new(42, "output", Corner::TopLeft, PanelMode::Pinned, Vec::new(), (800.0, 600.0), 4.0);
-        let mut ui = MenuUi::new(menu, decor::ChromeTheme::from_source(decor::ChromeStyle::Mac, None).palette);
+        let menu = Menu::new(
+            42,
+            "output",
+            Corner::TopLeft,
+            PanelMode::Pinned,
+            Vec::new(),
+            (800.0, 600.0),
+            4.0,
+        );
+        let mut ui = MenuUi::new(
+            menu,
+            decor::ChromeTheme::from_source(decor::ChromeStyle::Mac, None).palette,
+        );
         ui.update(Message::Input(42, Input::Move(1)));
         let old = ui.menu.clone();
-        ui.update(Message::Appearance(crate::appearance::fixture("light", 1.0)));
+        ui.update(Message::Appearance(crate::appearance::fixture(
+            "light", 1.0,
+        )));
         let page = ui.palette.base;
         let identity = ui.theme.to_string();
         ui.update(Message::Appearance(crate::appearance::fixture("dark", 1.5)));
         assert_eq!(ui.menu, old);
         assert_ne!(ui.palette.base, page);
         assert_ne!(ui.theme.to_string(), identity);
-        assert_eq!(ui.prepared.as_ref().unwrap().typography().get("ui").unwrap().size,
-            crate::appearance::fixture("light", 1.0).typography().get("ui").unwrap().size * 1.5);
+        assert_eq!(
+            ui.prepared
+                .as_ref()
+                .unwrap()
+                .typography()
+                .get("ui")
+                .unwrap()
+                .size,
+            crate::appearance::fixture("light", 1.0)
+                .typography()
+                .get("ui")
+                .unwrap()
+                .size
+                * 1.5
+        );
     }
 
     #[test]

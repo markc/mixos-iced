@@ -366,15 +366,27 @@ mod tests {
         let design = embedded();
         for style in ChromeStyle::ALL {
             let legacy = ChromeTheme::from_source(style, None);
-            let read = ChromeTheme::from_read(style, design.dictionary(), DecoFontFamily::Monospace, DecoFontWeight(700), 25.0);
+            let read = ChromeTheme::from_read(
+                style,
+                design.dictionary(),
+                DecoFontFamily::Monospace,
+                DecoFontWeight(700),
+                25.0,
+            );
             assert_eq!(read.tokens, TokenSource::Prepared);
             assert_eq!(read.palette, legacy.palette);
             assert_eq!(read.deco.colors, legacy.deco.colors);
             assert_eq!(read.deco.buttons, legacy.deco.buttons);
-            assert_eq!(read.deco.metrics.title_font_family, DecoFontFamily::Monospace);
+            assert_eq!(
+                read.deco.metrics.title_font_family,
+                DecoFontFamily::Monospace
+            );
             assert_eq!(read.deco.metrics.title_size_px, 25.0);
             assert_eq!(read.deco.metrics.title_font_weight, DecoFontWeight(700));
-            assert_eq!(read.deco.metrics.titlebar_height, legacy.deco.metrics.titlebar_height);
+            assert_eq!(
+                read.deco.metrics.titlebar_height,
+                legacy.deco.metrics.titlebar_height
+            );
         }
     }
 
