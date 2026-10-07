@@ -14,6 +14,13 @@ pub struct Completed<T> {
     pub value: T,
 }
 
+/// Immediately available outcomes after cancellation, plus work whose
+/// destruction has not been observed. Abort does not prove completion.
+pub struct AbortReport<T> {
+    pub ready: Vec<Result<Completed<T>, JoinError>>,
+    pub unconfirmed: usize,
+}
+
 /// A finite set includes running and completed but unreaped tasks.
 pub struct TaskSet<T> {
     capacity: usize,
@@ -67,6 +74,17 @@ impl<T: Send + 'static> TaskSet<T> {
     pub fn abort_all(&mut self) {
         self.tasks.abort_all();
     }
+    /// Freeze admission and request cancellation without awaiting beyond the
+    /// host's deadline. Dropping the set requests abort for unreaped work;
+    /// the owning runtime still controls when those futures are destroyed.
+    pub fn abort_and_report(mut self) -> AbortReport<T> {
+        self.tasks.abort_all();
+        let mut ready = Vec::with_capacity(self.tasks.len());
+        while let Some(result) = self.tasks.try_join_next() {
+            ready.push(result);
+        }
+        AbortReport { ready, unconfirmed: self.tasks.len() }
+    }
 }
 
 /// One accepted command always retains its receiving supervisor and credit.
@@ -97,6 +115,15 @@ impl Accepted {
     pub fn admitted_at(&self) -> Instant {
         self.admitted_at
     }
+    /// Build an owner-specific operation without exposing or replacing its
+    /// origin. The task set retains the returned credit through reaping.
+    pub fn into_task<F>(
+        self,
+        make: impl FnOnce(Arc<SupervisedClient>, IncomingCommand, Instant) -> F,
+    ) -> (Permit, F) {
+        let Self { client, command, permit, admitted_at } = self;
+        (permit, make(client, command, admitted_at))
+    }
     /// Generation alone cannot identify distinct supervisor incarnations.
     pub fn is_current(&self, current: &Arc<SupervisedClient>) -> bool {
         if !Arc::ptr_eq(&self.client, current) {
@@ -108,7 +135,7 @@ impl Accepted {
     }
     pub fn reply(self, rc: u8, body: String, deadline: Instant) -> Reply {
         Reply {
-            accepted: self,
+            accepted: Box::new(self),
             rc,
             body,
             deadline,
@@ -122,7 +149,7 @@ impl Accepted {
 
 /// A reply keeps its origin and absolute deadline during retained queue delay.
 pub struct Reply {
-    accepted: Accepted,
+    accepted: Box<Accepted>,
     rc: u8,
     body: String,
     deadline: Instant,
@@ -150,7 +177,7 @@ impl Reply {
             command,
             permit,
             ..
-        } = accepted;
+        } = *accepted;
         (permit, async move {
             let deadline = tokio::time::Instant::from_std(deadline);
             if tokio::time::Instant::now() >= deadline {
@@ -181,6 +208,29 @@ mod tests {
     use super::*;
     use crate::native_queue::Admission;
     use std::{cell::Cell, time::Duration};
+
+    #[tokio::test]
+    async fn synchronous_abort_reports_unconfirmed_work_before_destruction() {
+        let admission = Admission::new(1);
+        let mut tasks = TaskSet::<()>::new(1);
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+        assert!(tasks.try_spawn_with(admission.try_acquire().unwrap(), |permit| (permit, async move {
+            started.send(()).unwrap();
+            let _ = waiting.await;
+        })).is_ok());
+        entered.await.unwrap();
+        let report = tasks.abort_and_report();
+        assert!(report.ready.is_empty());
+        assert_eq!(report.unconfirmed, 1);
+        assert_eq!(admission.counts().active, 1);
+        assert_eq!(admission.counts().abandoned, 0);
+        tokio::task::yield_now().await;
+        assert_eq!(admission.counts().active, 0);
+        assert_eq!(admission.counts().abandoned, 1);
+        assert_eq!(admission.counts().finished, 0);
+        drop(release);
+    }
 
     #[tokio::test]
     async fn finished_tasks_retain_admission_and_capacity_until_reaped() {

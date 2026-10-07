@@ -203,7 +203,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "appearance",
  "assets",
@@ -7335,7 +7335,7 @@ dependencies = [
 
 [[package]]
 name = "term"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "appearance",
  "application",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16
+
+Add consuming native operation factories and finite abort reports. Report
+unconfirmed cancellation separately from completed work. Share exact acceptance
+control/wait classification. Expired shutdown cannot start a queued cache write.
+
 ## 0.1.15
 
 - Share bounded native task sets that retain admission credit through completed

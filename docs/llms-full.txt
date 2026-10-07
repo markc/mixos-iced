@@ -971,6 +971,16 @@ owning Bus error explicitly proves otherwise, and must not be replayed.
 
 ## Shutdown
 
+`TaskSet::abort_and_report` freezes admission, requests cancellation and returns
+only immediately available outcomes. Its `unconfirmed` count means future
+destruction has not been observed. Dropping the set requests abort; it cannot
+stop non-yielding code or a running blocking operation. Finish credits only for
+recorded outcomes; remaining credits remain active until actually abandoned.
+Check the common deadline before submitting another reply or starting a queued
+cache save. A Bus stop signal may still be attempted at expiry, with incomplete
+close reported. Term has one two-second lane drain and a separate runtime
+teardown allowance capped at 100 ms.
+
 Native Bus actors can use `application::native_actor` with the existing
 `settings-native` or `acceptance` feature. `TaskSet<T>` bounds running and
 completed but unreaped tasks, returning each successful task's `Permit` in

@@ -13,6 +13,14 @@ renderer. Retain unchanged row-band snapshots without allocating or copying
 their cells, including cursor and font/viewport invalidation checks. Exercise
 the complete themed TerminalPane with retained-buffer pixel comparisons.
 
+## 0.3.10
+
+Use shared native task admission and origin-owned replies on the existing Bus
+worker. Retained send queue delay consumes the absolute reply budget. Replace
+unbounded post-abort reaping with finite reports of unconfirmed cancellation;
+the single two-second lane drain retains its separate bounded runtime teardown.
+Real broker regressions cover expired replies and reused supervisor generations.
+
 ## 0.3.9
 
 Add non-default owned fixture acceptance on the existing Bus worker. Explicit

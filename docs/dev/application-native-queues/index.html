@@ -401,6 +401,15 @@ expires before transport invocation, return NotSent and do not send later;
 once the transport may have sent, a timeout is outcome-unknown unless the
 owning Bus error explicitly proves otherwise, and must not be replayed.</p>
 <h2 id="shutdown">Shutdown</h2>
+<p><code>TaskSet::abort_and_report</code> freezes admission, requests cancellation and returns
+only immediately available outcomes. Its <code>unconfirmed</code> count means future
+destruction has not been observed. Dropping the set requests abort; it cannot
+stop non-yielding code or a running blocking operation. Finish credits only for
+recorded outcomes; remaining credits remain active until actually abandoned.
+Check the common deadline before submitting another reply or starting a queued
+cache save. A Bus stop signal may still be attempted at expiry, with incomplete
+close reported. Term has one two-second lane drain and a separate runtime
+teardown allowance capped at 100 ms.</p>
 <p>Native Bus actors can use <code>application::native_actor</code> with the existing
 <code>settings-native</code> or <code>acceptance</code> feature. <code>TaskSet&lt;T&gt;</code> bounds running and
 completed but unreaped tasks, returning each successful task's <code>Permit</code> in

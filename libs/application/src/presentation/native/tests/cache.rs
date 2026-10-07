@@ -241,6 +241,23 @@ async fn producer_replacement_retires_writer_after_inflight_save() {
 }
 
 #[tokio::test]
+async fn expired_shutdown_does_not_start_a_queued_cache_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("uncreated/settings");
+    let mut session = activated();
+    let mut worker = cache_worker(&root);
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(worker.running.is_none());
+    let error = worker.flush_cache(Instant::now()).await.unwrap_err();
+    assert_eq!(error.code, "cache_drain_timeout");
+    assert!(worker.running.is_none(), "no physical cache task started");
+    assert!(!root.exists(), "expired shutdown cannot create the cache root");
+    worker.flush_cache(Instant::now() + Duration::from_secs(5)).await.unwrap();
+    assert_eq!(cache::load(&root, session.host.consumer()).unwrap().snapshot().revision, Revision(1));
+}
+
+#[tokio::test]
 async fn bounded_shutdown_drains_the_latest_activated_capture() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = activated();

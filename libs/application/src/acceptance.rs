@@ -45,8 +45,27 @@ pub const VERBS: &[&str] = &[
     "app.acceptance.frame.wait",
 ];
 
+/// Wait executions use separate actor slots so they cannot occupy control
+/// tasks. Registration and admission remain with the owning application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    Control,
+    Wait,
+}
+
+pub fn classify(verb: &str) -> Option<Class> {
+    if !VERBS.contains(&verb) {
+        return None;
+    }
+    Some(if matches!(verb, "app.acceptance.frame.wait" | "app.acceptance.barrier.wait") {
+        Class::Wait
+    } else {
+        Class::Control
+    })
+}
+
 pub fn recognises(verb: &str) -> bool {
-    VERBS.contains(&verb)
+    classify(verb).is_some()
 }
 
 /// Final sends have their own bound; the actor retains admission through reap.
@@ -620,6 +639,10 @@ mod tests {
         assert!(recognises("app.acceptance.frame.wait"));
         assert!(!recognises("app.acceptance.future"));
         assert!(!recognises("app.describe"));
+        assert_eq!(classify("app.acceptance.frame.wait"), Some(Class::Wait));
+        assert_eq!(classify("app.acceptance.barrier.wait"), Some(Class::Wait));
+        assert_eq!(classify("app.acceptance.barrier.release"), Some(Class::Control));
+        assert_eq!(classify("app.acceptance.future"), None);
         let describe = Describe::new(1, "owned", 11).unwrap();
         for verb in VERBS {
             let mut request = incoming(verb, json!({"run":"owned","instance":11,"generation":7}));
