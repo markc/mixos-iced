@@ -5,8 +5,8 @@
 use std::marker::PhantomData;
 
 use toolkit::core::{
-    Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation, layout::Limits,
-    renderer, text, widget::Tree,
+    Background, Color, Font, Pixels, Point, Rectangle, Size, Transformation, Widget,
+    layout::Limits, renderer, text, widget::Tree,
 };
 use toolkit::menu::{Item, MenuStyle, Panel, panel_size_text};
 use toolkit::selection_list::{self, List, SelectionList};
@@ -162,7 +162,7 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
     let options = vec!["a".to_owned(), "b".to_owned()];
     let renderer = Recorder::default();
     let legacy: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
-        SelectionList::new(&options, |_, value: String| value);
+        SelectionList::new(options.as_slice(), |_, value: String| value);
     let mut tree =
         Tree::new(&legacy as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut legacy = legacy;
@@ -177,7 +177,7 @@ fn the_selection_list_wraps_the_original_list_with_the_prepared_style() {
     .height;
     // The prepared rows are taller than the legacy text-size rows.
     let styled: SelectionList<'_, String, &[String], String, toolkit::core::Theme, Recorder> =
-        SelectionList::new(&options, |_, value: String| value).line_height(30.0_f32);
+        SelectionList::new(options.as_slice(), |_, value: String| value).line_height(30.0_f32);
     let mut tree =
         Tree::new(&styled as &dyn toolkit::core::Widget<String, toolkit::core::Theme, Recorder>);
     let mut styled = styled;
