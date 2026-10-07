@@ -305,10 +305,13 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
     // DOCTYPEs are deliberately refused (roxmltree's default): usvg accepts
     // them and expands entities, and entity expansion is kept out of the
     // decode path entirely. Do not enable `allow_dtd` merely to match usvg.
-    let document = roxmltree::Document::parse(
+    let document = roxmltree::Document::parse_with_options(
         std::str::from_utf8(bytes).map_err(|_| IconDecodeError::SvgParse)?,
+        roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: MAX_SVG_NODES as u32, ..Default::default() },
     )
-    .map_err(|_| IconDecodeError::SvgParse)?;
+    .map_err(|error| if matches!(error, roxmltree::Error::NodesLimitReached) {
+        IconDecodeError::SvgComplexity { nodes: MAX_SVG_NODES + 1, path_bytes: 0 }
+    } else { IconDecodeError::SvgParse })?;
     scan_svg(&document)?;
     // Image and feImage nodes are refused by the scan, so usvg never sees an
     // image href. The refusing resolvers stay as a backstop: should any
@@ -331,10 +334,11 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
         ..Default::default()
     };
     let tree =
-        resvg::usvg::Tree::from_data(bytes, &options).map_err(|_| IconDecodeError::SvgParse)?;
+        resvg::usvg::Tree::from_xmltree(&document, &options).map_err(|_| IconDecodeError::SvgParse)?;
     if referenced.load(Ordering::Relaxed) {
         return Err(IconDecodeError::SvgImageDependency);
     }
+    check_render_subset(tree.root())?;
     let size = tree.size();
     let factor = (side as f32 / size.width()).min(side as f32 / size.height());
     let transform = resvg::tiny_skia::Transform::from_row(
@@ -365,6 +369,8 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
 fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
     let mut nodes = 0usize;
     let mut path_bytes = 0usize;
+    let mut stops = 0usize;
+    let mut painted = 0usize;
     for node in document.descendants() {
         nodes += 1;
         if nodes > MAX_SVG_NODES {
@@ -373,6 +379,11 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
         if !node.is_element() {
             continue;
         }
+        if node.ancestors().count() > 64 || (node.tag_name().name() == "svg" && node != document.root_element()) {
+            return Err(IconDecodeError::SvgUnsupported);
+        }
+        if node.tag_name().name() == "stop" { stops += 1; }
+        if matches!(node.tag_name().name(), "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon") { painted += 1; }
         match node.tag_name().name() {
             "image" | "feImage" => return Err(IconDecodeError::SvgImageDependency),
             "text" | "tspan" | "textPath" => return Err(IconDecodeError::SvgTextDependency),
@@ -398,12 +409,35 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
                 | "stroke-dasharray" | "stroke-dashoffset") {
                 return Err(IconDecodeError::SvgUnsupported);
             }
-            if attribute.name() == "d" {
+            if (attribute.name() == "stroke" && attribute.value().trim() != "none")
+                || attribute.name() == "href" {
+                return Err(IconDecodeError::SvgUnsupported);
+            }
+            if matches!(attribute.name(), "d" | "points") {
                 path_bytes += attribute.value().len();
                 if path_bytes > MAX_SVG_PATH_BYTES {
                     return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
                 }
             }
+        }
+    }
+    if stops > 256 || stops.saturating_mul(painted) > 65_536 {
+        return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
+    }
+    Ok(())
+}
+
+fn check_render_subset(group: &resvg::usvg::Group) -> Result<(), IconDecodeError> {
+    if group.should_isolate() { return Err(IconDecodeError::SvgUnsupported); }
+    for node in group.children() {
+        match node {
+            resvg::usvg::Node::Group(group) => check_render_subset(group)?,
+            resvg::usvg::Node::Path(path) => {
+                if path.stroke().is_some() || path.fill().is_some_and(|fill| matches!(fill.paint(), resvg::usvg::Paint::Pattern(_))) {
+                    return Err(IconDecodeError::SvgUnsupported);
+                }
+            }
+            _ => return Err(IconDecodeError::SvgUnsupported),
         }
     }
     Ok(())
