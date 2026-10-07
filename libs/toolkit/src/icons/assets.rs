@@ -265,6 +265,27 @@ pub fn decode_owned(
     physical_side: u32,
     tint: Option<[u8; 4]>,
 ) -> Result<DecodedIcon, IconDecodeError> {
+    decode(bytes, format, physical_side, tint, false)
+}
+
+/// Decode reviewed, compile-time bundled SVG artwork. Solid strokes are accepted for
+/// these small owned sources; runtime/verified input keeps the stricter
+/// filled-only policy. All other dependency, allocation and geometry guards
+/// apply. The compiled artwork is trusted: this is not a general adversarial
+/// stroke decoder. Callers must charge pixels in their resource owner.
+pub fn decode_trusted_embedded_svg(
+    bytes: &'static [u8],
+    physical_side: u32,
+    tint: Option<[u8; 4]>,
+) -> Result<DecodedIcon, IconDecodeError> {
+    if bytes.len() > 16 * 1024 { return Err(IconDecodeError::SvgUnsupported); }
+    decode(Arc::from(bytes), ImageFormat::Svg, physical_side, tint, true)
+}
+
+fn decode(
+    bytes: Arc<[u8]>, format: ImageFormat, physical_side: u32,
+    tint: Option<[u8; 4]>, embedded: bool,
+) -> Result<DecodedIcon, IconDecodeError> {
     if bytes.is_empty() {
         return Err(IconDecodeError::Empty);
     }
@@ -282,7 +303,7 @@ pub fn decode_owned(
         return Err(IconDecodeError::TintAlphaZero);
     }
     let (width, height, mut pixels) = match format {
-        ImageFormat::Svg => decode_svg(&bytes, physical_side)?,
+        ImageFormat::Svg => decode_svg(&bytes, physical_side, embedded)?,
         ImageFormat::Raster => decode_raster(&bytes)?,
     };
     let charge = u64::from(width) * u64::from(height) * 4;
@@ -305,7 +326,7 @@ pub fn decode_owned(
     })
 }
 
-fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
+fn decode_svg(bytes: &[u8], side: u32, embedded: bool) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
     // Scan with the same XML parser family usvg uses, before any usvg tree
     // exists. A usvg build without its `text` feature silently drops text
     // elements before the tree exists, so the tree cannot witness them:
@@ -333,7 +354,7 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
             IconDecodeError::SvgParse
         }
     })?;
-    scan_svg(&document)?;
+    scan_svg(&document, embedded)?;
     // Image and feImage nodes are refused by the scan, so usvg never sees an
     // image href. The refusing resolvers stay as a backstop: should any
     // reference slip past the scan, it is detected and refused instead of
@@ -359,7 +380,7 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
     if referenced.load(Ordering::Relaxed) {
         return Err(IconDecodeError::SvgImageDependency);
     }
-    check_render_subset(tree.root())?;
+    check_render_subset(tree.root(), embedded)?;
     let size = tree.size();
     let factor = (side as f32 / size.width()).min(side as f32 / size.height());
     let transform = resvg::tiny_skia::Transform::from_row(
@@ -387,18 +408,22 @@ fn decode_svg(bytes: &[u8], side: u32) -> Result<(u32, u32, Vec<u8>), IconDecode
     Ok((side, side, pixels))
 }
 
-fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
+fn scan_svg(document: &roxmltree::Document<'_>, embedded: bool) -> Result<(), IconDecodeError> {
     let mut nodes = 0usize;
     let mut path_bytes = 0usize;
     let mut stops = 0usize;
     let mut painted = 0usize;
     for node in document.descendants() {
         nodes += 1;
+        if embedded && nodes > 64 { return Err(IconDecodeError::SvgUnsupported); }
         if nodes > MAX_SVG_NODES {
             return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
         }
         if !node.is_element() {
             continue;
+        }
+        if embedded && matches!(node.tag_name().name(), "g" | "defs" | "linearGradient" | "radialGradient" | "stop") {
+            return Err(IconDecodeError::SvgUnsupported);
         }
         if node.ancestors().count() > 64
             || (node.tag_name().name() == "svg" && node != document.root_element())
@@ -427,6 +452,17 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
             _ => return Err(IconDecodeError::SvgUnsupported),
         }
         for attribute in node.attributes() {
+            if embedded && attribute.name() == "transform" { return Err(IconDecodeError::SvgUnsupported); }
+            if embedded && attribute.name() == "viewBox" {
+                let values = attribute.value().split(|c: char| c.is_whitespace() || c == ',').filter(|part| !part.is_empty()).map(str::parse::<f32>).collect::<Result<Vec<_>,_>>().map_err(|_| IconDecodeError::SvgUnsupported)?;
+                if values.len() != 4 || values.iter().any(|value| !value.is_finite() || value.abs() > 256.0) || values[2] <= 0.0 || values[3] <= 0.0 { return Err(IconDecodeError::SvgUnsupported); }
+            }
+            if embedded && matches!(attribute.name(), "width" | "height" | "x" | "y" | "x1" | "x2" | "y1" | "y2" | "cx" | "cy" | "r" | "rx" | "ry" | "stroke-width") {
+                let value = attribute.value().parse::<f32>().map_err(|_| IconDecodeError::SvgUnsupported)?;
+                let limit = if attribute.name() == "stroke-width" { 8.0 } else { 256.0 };
+                if !value.is_finite() || value.abs() > limit { return Err(IconDecodeError::SvgUnsupported); }
+                if node == document.root_element() && matches!(attribute.name(), "width" | "height") && value <= 0.0 { return Err(IconDecodeError::SvgUnsupported); }
+            }
             if attribute.name() == "style" {
                 // Do not interpret CSS escapes or cascades here. Explicit
                 // SVG presentation attributes remain supported.
@@ -450,13 +486,14 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
             ) {
                 return Err(IconDecodeError::SvgUnsupported);
             }
-            if (attribute.name() == "stroke" && attribute.value().trim() != "none")
+            if (!embedded && attribute.name() == "stroke" && attribute.value().trim() != "none")
                 || attribute.name() == "href"
             {
                 return Err(IconDecodeError::SvgUnsupported);
             }
             if matches!(attribute.name(), "d" | "points") {
                 path_bytes += attribute.value().len();
+                if embedded && path_bytes > 4096 { return Err(IconDecodeError::SvgUnsupported); }
                 if path_bytes > MAX_SVG_PATH_BYTES {
                     return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
                 }
@@ -469,15 +506,16 @@ fn scan_svg(document: &roxmltree::Document<'_>) -> Result<(), IconDecodeError> {
     Ok(())
 }
 
-fn check_render_subset(group: &resvg::usvg::Group) -> Result<(), IconDecodeError> {
+fn check_render_subset(group: &resvg::usvg::Group, embedded: bool) -> Result<(), IconDecodeError> {
     if group.should_isolate() {
         return Err(IconDecodeError::SvgUnsupported);
     }
     for node in group.children() {
         match node {
-            resvg::usvg::Node::Group(group) => check_render_subset(group)?,
+            resvg::usvg::Node::Group(group) => check_render_subset(group, embedded)?,
             resvg::usvg::Node::Path(path) => {
-                if path.stroke().is_some()
+                if (!embedded && path.stroke().is_some())
+                    || path.stroke().is_some_and(|stroke| matches!(stroke.paint(), resvg::usvg::Paint::Pattern(_)))
                     || path
                         .fill()
                         .is_some_and(|fill| matches!(fill.paint(), resvg::usvg::Paint::Pattern(_)))
@@ -641,6 +679,17 @@ impl Assets {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn embedded_solid_stroke_rescue_preserves_alpha_without_relaxing_owned_input() {
+        const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4 L20 20"/></svg>"#;
+        let decoded = super::decode_trusted_embedded_svg(SVG, 48, Some([255, 0, 0, 96])).unwrap();
+        assert_eq!(decoded.dimensions(), (48, 48));
+        assert!(decoded.pixels().chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(decoded.pixels().chunks_exact(4).filter(|pixel| pixel[3] > 0).all(|pixel| pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] <= 96));
+        assert!(super::decode_owned(std::sync::Arc::from(SVG), super::ImageFormat::Svg, 48, None).is_err());
+        const DASHED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0 0 L24 24" stroke="red" stroke-dasharray="0.01 0.01"/></svg>"#;
+        assert!(super::decode_trusted_embedded_svg(DASHED, 24, None).is_err());
+    }
     use super::*;
     fn fixture_svg() -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();

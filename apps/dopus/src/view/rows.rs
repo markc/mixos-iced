@@ -232,6 +232,8 @@ type ColumnMetrics = (
     u32,
     application::iced::Font,
     u32,
+    Option<u32>,
+    Option<u32>,
     crate::theme::Chrome,
 );
 
@@ -252,6 +254,8 @@ impl ColumnCache {
             look.px.to_bits(),
             look.mono_font,
             look.small_px.to_bits(),
+            look.ui_line_height.map(f32::to_bits),
+            look.small_line_height.map(f32::to_bits),
             look.chrome,
         );
         if self.metrics.as_ref() != Some(&metrics) {

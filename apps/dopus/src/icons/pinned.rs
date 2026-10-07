@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pure requirements and adoption of the settings worker's immutable receipt.
-use super::{ALL, Icon, Icons, hex};
+use super::{ALL, Icon, Icons, tint_key};
 use crate::app::PreparationContext;
 use appearance::resources::{IconRequirement, ResourceRequirements};
 use settings::Diagnostic;
@@ -25,7 +25,7 @@ pub fn requirements(
         .map_err(|name| {
             Diagnostic::new(
                 "unsupported_content",
-                name,
+                &name,
                 "Chrome colour or metric missing",
             )
         })?
@@ -35,7 +35,7 @@ pub fn requirements(
     for tint in [palette.text, palette.muted_text, palette.selection_text] {
         for icon in ALL {
             let requirement = IconRequirement {
-                key: key(icon, &hex(tint)),
+                key: key(icon, &tint_key(tint)),
                 name: icon.material_name().into(),
                 logical_size: chrome.icon,
                 scale: context.scale(),
@@ -50,29 +50,29 @@ pub fn requirements(
             }
         }
     }
-    ResourceRequirements::new(icons)
+    let sources = ALL.into_iter().map(|icon| appearance::resources::EmbeddedSvg::trusted_static(icon.material_name(), icon.bytes())).collect::<Result<Vec<_>,_>>()?;
+    ResourceRequirements::new(icons)?.with_embedded_svg_fallbacks(sources)
 }
 
 impl Icons {
     pub fn from_prepared(
         look: &appearance::settings::Prepared,
-        tints: &[String],
-        logical_size: f32,
-        scale: f32,
+        colours: &[application::iced::Color],
     ) -> Result<Self, Diagnostic> {
+        let tints: Vec<_> = colours.iter().copied().map(tint_key).collect();
+        let colour_map = std::sync::Arc::new(tints.iter().cloned().zip(colours.iter().copied()).collect());
         if let Some(resources) = look
             .resources()
-            .filter(|resources| resources.binding().is_some())
         {
             let mut glyphs = std::collections::HashMap::new();
-            for tint in tints {
+            for tint in &tints {
                 for icon in ALL {
                     if let Some(ready) = resources.icon(&key(icon, tint)) {
                         if let toolkit::icons::Ready::Text(text) = ready {
                             let glyph = text.glyph().ok_or_else(|| {
                                 Diagnostic::new(
                                     "unsupported_content",
-                                    format!("icons.{}", icon.material_name()),
+                                    &format!("icons.{}", icon.material_name()),
                                     "prepared glyph is missing",
                                 )
                             })?;
@@ -81,13 +81,14 @@ impl Icons {
                     } else {
                         return Err(Diagnostic::new(
                             "unsupported_content",
-                            format!("icons.{}", icon.material_name()),
+                            &format!("icons.{}", icon.material_name()),
                             "prepared icon is missing",
                         ));
                     }
                 }
             }
             let mut icons = Self::lucide();
+            icons.colours = colour_map;
             icons.asset_set = resources.binding().map(|binding| binding.set_id.clone());
             if !glyphs.is_empty() {
                 icons.material = Some(std::sync::Arc::new(glyphs));
@@ -95,36 +96,10 @@ impl Icons {
             icons.pinned = Some(resources.clone());
             return Ok(icons);
         }
-        // No verified set: bundled SVG rescue is explicit and cannot consult
-        // an installed catalogue or change the authority's resource binding.
-        let physical = (logical_size * scale).ceil() as u32;
-        if physical == 0 || physical > toolkit::icons::assets::MAX_PHYSICAL_SIDE {
-            return Err(Diagnostic::new(
-                "unsupported_content",
-                "icons.size",
-                "invalid rescue icon size",
-            ));
-        }
+        // Standalone/bootstrap callers have no host receipt and draw no
+        // icons. Live preparations always adopt the host's complete receipt.
         let mut icons = Self::lucide();
-        icons.prepared_side = Some(physical);
-        let mut cache = std::collections::HashMap::new();
-        for tint in tints {
-            for icon in ALL {
-                let handle = super::raster(icon.bytes(), tint, physical).map_err(|error| {
-                    Diagnostic::new(
-                        "unsupported_content",
-                        format!("icons.{}", icon.material_name()),
-                        error,
-                    )
-                })?;
-                cache.insert((icon, tint.clone(), physical), handle);
-            }
-        }
-        icons
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cache = cache;
+        icons.colours = colour_map;
         Ok(icons)
     }
 

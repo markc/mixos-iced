@@ -142,6 +142,7 @@ pub const MAX_RETAINED_DECODED_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct VariantKey {
     source: String,
+    embedded: bool,
     svg: bool,
     side: u32,
     tint: Option<[u8; 4]>,
@@ -212,22 +213,29 @@ impl ImageStore {
         compact: &CompactSet,
         variants: &[Arc<VariantCharge>],
     ) -> Result<ImageAdmission, ImageError> {
+        self.preflight_sources(compact.assets.iter().map(|asset| (&asset.blake3, &asset.bytes)), variants)
+    }
+
+    fn preflight_sources<'a>(
+        &self, encoded: impl Iterator<Item = (&'a String, &'a Arc<[u8]>)>,
+        variants: &[Arc<VariantCharge>],
+    ) -> Result<ImageAdmission, ImageError> {
         let ledger = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut sources: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
-        for source in &compact.assets {
+        for (digest, bytes) in encoded {
             if let Some(previous) = ledger
                 .sources
-                .get(&source.blake3)
-                .or_else(|| sources.get(&source.blake3))
+                .get(digest)
+                .or_else(|| sources.get(digest))
             {
-                if previous.as_ref() != source.bytes.as_ref() {
+                if previous.as_ref() != bytes.as_ref() {
                     return Err(ImageError::Collision);
                 }
             } else {
-                sources.insert(source.blake3.clone(), Arc::clone(&source.bytes));
+                sources.insert(digest.clone(), Arc::clone(bytes));
             }
         }
         let count = ledger.sources.len() + sources.len();
@@ -374,11 +382,31 @@ pub struct IconRequirement {
     pub tint: iced_core::Color,
 }
 
+/// An owned compile-time rescue source. It is used only without a verified
+/// set; it never substitutes for a missing or invalid declared resource.
+#[derive(Clone, Copy, Debug)]
+pub struct EmbeddedSvg {
+    name: &'static str,
+    bytes: &'static [u8],
+}
+
+impl EmbeddedSvg {
+    /// Reviewed compiled artwork only, never downloaded or leaked dynamic
+    /// SVG. The worker retains all decoding and process accounting.
+    pub fn trusted_static(name: &'static str, bytes: &'static [u8]) -> Result<Self, Diagnostic> {
+        if name.is_empty() || name.len() > MAX_KEY_BYTES || bytes.is_empty() || bytes.len() > 16 * 1024 {
+            return Err(fault("resources.embedded", "invalid trusted rescue source"));
+        }
+        Ok(Self { name, bytes })
+    }
+}
+
 /// Validated finite icon requirements of one preparation. Construction is
 /// pure: it never reads files, fonts or the registry.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceRequirements {
     icons: Vec<IconRequirement>,
+    embedded: Vec<EmbeddedSvg>,
 }
 
 impl ResourceRequirements {
@@ -436,12 +464,27 @@ impl ResourceRequirements {
                 }
             }
         }
-        Ok(Self { icons })
+        Ok(Self { icons, embedded: Vec::new() })
+    }
+
+    /// Add finite embedded rescue sources without reading or decoding them.
+    pub fn with_embedded_svg_fallbacks(mut self, sources: Vec<EmbeddedSvg>) -> Result<Self, Diagnostic> {
+        if sources.len() > MAX_REQUIREMENTS { return Err(fault("resources.embedded", "too many rescue sources")); }
+        let mut names = std::collections::BTreeSet::new();
+        for source in &sources {
+            if source.name.is_empty() || source.name.len() > MAX_KEY_BYTES
+                || !names.insert(source.name)
+                || source.bytes.is_empty() || source.bytes.len() > 16 * 1024
+                || !self.icons.iter().any(|icon| icon.name == source.name)
+            { return Err(fault("resources.embedded", "invalid or duplicate rescue source")); }
+        }
+        self.embedded = sources;
+        Ok(self)
     }
 
     /// No icon variants.
     pub fn empty() -> Self {
-        Self { icons: Vec::new() }
+        Self { icons: Vec::new(), embedded: Vec::new() }
     }
 
     /// The validated requirements, in request order.
@@ -771,6 +814,7 @@ struct PlannedImage {
     logical_size: f32,
     blake3: String,
     bytes: Arc<[u8]>,
+    embedded: Option<&'static [u8]>,
 }
 
 struct IconPlan {
@@ -1235,6 +1279,7 @@ fn icon_plan(
         {
             let side = (requirement.logical_size * requirement.scale).ceil() as u32;
             plan.images.push(PlannedImage {
+                embedded: None,
                 key: requirement.key.clone(),
                 name: requirement.name.clone(),
                 style: asset.style.clone(),
@@ -1281,6 +1326,7 @@ fn decode_images(
         check()?;
         let key = VariantKey {
             source: image.blake3.clone(),
+            embedded: image.embedded.is_some(),
             svg: image.format == ImageFormat::Svg,
             side: if image.format == ImageFormat::Svg {
                 image.side
@@ -1304,15 +1350,22 @@ fn decode_images(
                         "decoded variant capacity exhausted",
                     ));
                 }
-                let decoded = decode_owned(
+                if image.format == ImageFormat::Svg
+                    && usage.decoded_bytes + staged_bytes + u64::from(image.side).pow(2) * 4 > MAX_RETAINED_DECODED_BYTES {
+                    return Err(Diagnostic::new("image_capacity", "resources", "decoded pixel capacity exhausted"));
+                }
+                let decoded = if let Some(bytes) = image.embedded {
+                    toolkit::icons::assets::decode_trusted_embedded_svg(bytes, image.side, image.tint)
+                } else { decode_owned(
                     Arc::clone(&image.bytes),
                     image.format,
                     image.side,
                     image.tint,
-                )
+                ) }
                 .map_err(|error| {
                     fault(&format!("resources.icons.{}", image.key), error.to_string())
                 })?;
+                check()?;
                 staged_bytes += decoded.byte_charge();
                 if usage.decoded_bytes + staged_bytes > MAX_RETAINED_DECODED_BYTES {
                     return Err(Diagnostic::new(
@@ -1338,14 +1391,14 @@ fn decode_images(
             style: Some(image.style.clone()),
             glyph: None,
             weight: None,
-            asset: Some(AssetEvidence {
+            asset: image.embedded.is_none().then(|| AssetEvidence {
                 name: image.name.clone(),
                 style: image.style.clone(),
                 symbolic: image.symbolic,
                 source_blake3: image.blake3.clone(),
             }),
             source_blake3: Some(image.blake3.clone()),
-            reason: "declared image asset of the selected style".into(),
+            reason: if image.embedded.is_some() { "embedded rescue: no verified asset set" } else { "declared image asset of the selected style" }.into(),
         };
         images.push((
             image.key.clone(),
@@ -1771,13 +1824,47 @@ fn register(
 }
 
 /// The honest no-set rescue: generic registered families per record, no
-/// binding, no ready icons and per-requirement unavailable evidence. This is
+/// binding, explicitly requested embedded artwork or unavailable evidence. This is
 /// never a fake Current; it is exactly what the host can prove.
 fn generic_prepared(
     projection: Projection,
     requirements: &ResourceRequirements,
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<Prepared, Diagnostic> {
+    let mut plan = IconPlan { glyphs: Vec::new(), images: Vec::new() };
+    let mut sources: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+    for requirement in requirements.icons() {
+        check()?;
+        if let Some(source) = requirements.embedded.iter().find(|source| source.name == requirement.name) {
+            let digest = blake3::hash(source.bytes).to_hex().to_string();
+            let bytes = match image_store().source(&digest).or_else(|| sources.get(&digest).cloned()) {
+                Some(previous) => {
+                    if previous.as_ref() != source.bytes { return Err(Diagnostic::new("image_capacity", "resources", ImageError::Collision.message())); }
+                    previous
+                }
+                None => Arc::from(source.bytes),
+            };
+            sources.insert(digest.clone(), bytes.clone());
+            plan.images.push(PlannedImage {
+                key: requirement.key.clone(), name: requirement.name.clone(), style: "embedded".into(),
+                format: ImageFormat::Svg, side: (requirement.logical_size * requirement.scale).ceil() as u32,
+                tint: Some(requirement.tint.into_rgba8()), symbolic: true,
+                logical_size: requirement.logical_size, blake3: digest, bytes, embedded: Some(source.bytes),
+            });
+        }
+    }
+    image_store().preflight_sources(plan.images.iter().map(|image| (&image.blake3, &image.bytes)), &[])
+        .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
+    let DecodedImages { images, charges } = decode_images(&plan, check)?;
+    let admission = image_store().preflight_sources(plan.images.iter().map(|image| (&image.blake3, &image.bytes)), &charges)
+        .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
+    let mut icons = BTreeMap::new();
+    let mut embedded_evidence = BTreeMap::new();
+    for (key, ready, mut evidence) in images {
+        evidence.style = None;
+        embedded_evidence.insert(key.clone(), evidence);
+        icons.insert(key, ready);
+    }
     let mut texts = BTreeMap::new();
     let mut text_evidence = Vec::new();
     let mut prepared = projection.prepare(|record, resolved| {
@@ -1806,7 +1893,7 @@ fn generic_prepared(
     let icon_evidence = requirements
         .icons()
         .iter()
-        .map(|requirement| IconEvidence {
+        .map(|requirement| embedded_evidence.remove(&requirement.key).unwrap_or_else(|| IconEvidence {
             key: requirement.key.clone(),
             name: requirement.name.clone(),
             family: None,
@@ -1816,24 +1903,29 @@ fn generic_prepared(
             asset: None,
             source_blake3: None,
             reason: "no verified asset set".into(),
-        })
+        }))
         .collect();
+    let mut registry = RegistryEvidence::default().with_image_usage();
+    registry.image = admission.usage_after;
     let evidence = ResourceEvidence {
         set_id: None,
         manifest_blake3: None,
         text: text_evidence,
         icons: icon_evidence,
-        registry: RegistryEvidence::default().with_image_usage(),
+        registry,
     };
     let receipt = PreparedResources::assemble(
         None,
         texts,
         BTreeMap::new(),
-        BTreeMap::new(),
+        icons,
         evidence,
-        Vec::new(),
+        charges,
     );
     prepared.attach_resources(receipt);
+    check()?;
+    image_store().publish(admission);
+    check()?;
     Ok(prepared)
 }
 
@@ -1889,6 +1981,38 @@ mod tests {
     use settings::{Desktop, resolve};
     use sha2::Digest as _;
     static TESTS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn embedded_rescue_is_unbound_canonical_charged_and_cancellation_is_atomic() {
+        let _test = TESTS.lock().unwrap_or_else(|error| error.into_inner());
+        const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4 L20 21"/></svg>"#;
+        let root = tempfile::tempdir().unwrap();
+        let requirements = |scale| ResourceRequirements::new(vec![
+            IconRequirement { key: "one".into(), name: "rescue".into(), logical_size: 16.0, scale, tint: Color::from_rgba(1.0, 0.0, 0.0, 0.5) },
+            IconRequirement { key: "alias".into(), name: "rescue".into(), logical_size: 16.0, scale, tint: Color::from_rgba(1.0, 0.0, 0.0, 0.5) },
+        ]).unwrap().with_embedded_svg_fallbacks(vec![EmbeddedSvg::trusted_static("rescue", SVG).unwrap()]).unwrap();
+        let before = image_usage();
+        let first = host(root.path()).prepare(projection(), None, None, requirements(1.0), &mut check_ok()).unwrap();
+        let receipt = first.resources().unwrap();
+        assert!(receipt.binding().is_none());
+        assert!(receipt.evidence().set_id.is_none());
+        assert!(receipt.evidence().icons.iter().all(|icon| icon.asset.is_none() && icon.source_blake3.is_some() && icon.reason.contains("embedded rescue")));
+        assert_eq!(image_handle(receipt.icon("one")), image_handle(receipt.icon("alias")));
+        let after = image_usage();
+        assert_eq!(after.sources, before.sources + 1);
+        assert_eq!(after.variants, before.variants + 1);
+        let again = host(root.path()).prepare(projection(), None, None, requirements(1.0), &mut check_ok()).unwrap();
+        assert_eq!(image_handle(again.resources().unwrap().icon("one")), image_handle(receipt.icon("one")));
+        assert_eq!(image_usage(), after);
+        let mut calls = 0;
+        let mut cancel = || { calls += 1; if calls == 6 { Err(fault("test", "cancelled after staged decode")) } else { Ok(()) } };
+        assert!(host(root.path()).prepare(projection(), None, None, requirements(1.5), &mut cancel).is_err());
+        assert_eq!(image_usage(), after, "cancelled private variants must not publish");
+        assert!(toolkit::icons::assets::decode_owned(Arc::from(SVG), ImageFormat::Svg, 16, None).is_err(), "trusted cache must not relax untrusted decoding");
+        let explicit = ResourceReference { schema: RESOURCE_SCHEMA, set_id: "missing".into(), manifest_blake3: "00".repeat(32), icons: None };
+        assert!(host(root.path()).prepare(projection(), Some(&explicit), None, requirements(1.0), &mut check_ok()).is_err());
+        assert_eq!(image_usage(), after);
+    }
 
     /// The real variable Inter and Noto Sans the fixtures register:
     /// genuine bytes, so the registry parses intrinsic families and weights.

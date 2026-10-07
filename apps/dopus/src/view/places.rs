@@ -126,13 +126,19 @@ fn place_look(
 /// A Material text glyph, or the cached Lucide fallback, at the same icon size.
 pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Element<'static, Msg> {
     if let Some(ready) = icons.ready(icon, tint) {
-        return match ready {
+        let element: Element<'static, Msg> = match ready {
             toolkit::icons::Ready::Text(icon) => icon
                 .size(look.chrome.icon)
-                .color(icons::tint_color(tint))
+                .color(icons.colour(tint))
                 .into(),
             image @ toolkit::icons::Ready::Image { .. } => image.view(),
         };
+        return container(element)
+            .width(Length::Fixed(look.chrome.icon))
+            .height(Length::Fixed(look.chrome.icon))
+            .center_x(Length::Fixed(look.chrome.icon))
+            .center_y(Length::Fixed(look.chrome.icon))
+            .into();
     }
     if let Some((glyph, font)) = icons.glyph(icon) {
         return application::iced::widget::text(glyph.to_string())
@@ -142,7 +148,7 @@ pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Elemen
                 application::iced::Pixels(look.chrome.icon),
             ))
             .shaping(application::iced::advanced::text::Shaping::Advanced)
-            .color(icons::tint_color(tint))
+            .color(icons.colour(tint))
             .align_x(application::iced::alignment::Horizontal::Center)
             .align_y(application::iced::alignment::Vertical::Center)
             .width(Length::Fixed(look.chrome.icon))

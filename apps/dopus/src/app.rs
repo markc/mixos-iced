@@ -183,15 +183,15 @@ impl Content {
     pub fn build_contextual(
         look: &appearance::settings::Prepared,
         snapshot: &settings::Snapshot,
-        context: &PreparationContext,
+        _context: &PreparationContext,
     ) -> Result<Self, Diagnostic> {
         let theme = theme::from_settings(look, snapshot)?;
         let tints = [
-            icons::hex(theme.tokens.palette.text),
-            icons::hex(theme.tokens.palette.muted_text),
-            icons::hex(theme.tokens.palette.selection_text),
+            theme.tokens.palette.text,
+            theme.tokens.palette.muted_text,
+            theme.tokens.palette.selection_text,
         ];
-        let icons = Icons::from_prepared(look, &tints, theme.chrome.icon, context.scale())?;
+        let icons = Icons::from_prepared(look, &tints)?;
         Ok(Self { theme, icons })
     }
 
@@ -219,7 +219,7 @@ fn view_activation<'a>(
     move |presentation| {
         let content = presentation.content();
         let after = Look::from_theme(&content.theme);
-        *tint = icons::hex(after.tokens.palette.text);
+        *tint = icons::tint_key(after.tokens.palette.text);
         *measurements.borrow_mut() = Default::default();
         if after != before {
             view::drag::lock(drag).cancel();
@@ -319,7 +319,7 @@ pub fn run(
     let content = Content::bootstrap(&bootstrap_prepared)
         .map_err(|e| anyhow::anyhow!("settings bootstrap: {}: {}", e.code, e.message))?;
     let ui_font = content.theme.ui_font;
-    let tint = icons::hex(content.theme.tokens.palette.text);
+    let tint = icons::tint_key(content.theme.tokens.palette.text);
 
     let (core, core_events) = DopusCore::new(config, config_file);
     // Startup `dopus.open` PATHs land in the panes only once the window owns
@@ -1728,7 +1728,7 @@ mod tests {
             .with_contextual_resource_requirements(icons::requirements),
         );
         let bootstrap = Content::bootstrap(&appearance::settings::bootstrap().unwrap()).unwrap();
-        let tint = icons::hex(bootstrap.theme.tokens.palette.text);
+        let tint = icons::tint_key(bootstrap.theme.tokens.palette.text);
         let app = Dopus {
             core,
             maintenance: std::sync::mpsc::channel().0,
@@ -2434,9 +2434,9 @@ mod tests {
         // Every required icon handle exists BEFORE the view draws the new
         // theme — no partial fills, nothing to wait for.
         for tint in [
-            icons::hex(app.content().theme.tokens.palette.text),
-            icons::hex(app.content().theme.tokens.palette.muted_text),
-            icons::hex(app.content().theme.tokens.palette.selection_text),
+            icons::tint_key(app.content().theme.tokens.palette.text),
+            icons::tint_key(app.content().theme.tokens.palette.muted_text),
+            icons::tint_key(app.content().theme.tokens.palette.selection_text),
         ] {
             for icon in icons::ALL {
                 assert!(

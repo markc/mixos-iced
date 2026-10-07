@@ -2,6 +2,9 @@
 
 ## 0.2.10
 
+- Add `decode_trusted_embedded_svg` for reviewed compiled rescue artwork with
+  a small solid-stroke profile. Runtime SVG retains the filled-only decoder;
+  all images retain dependency, structural and pixel checks.
 - FilePane accepts prepared absolute line heights without changing Presentation
   construction. Shape rows and measure hit geometry with those heights; include
   padding and icon extent in cache invalidation. Typography or density changes

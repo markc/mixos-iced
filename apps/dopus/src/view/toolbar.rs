@@ -19,7 +19,7 @@ pub fn navigation<'a>(
     panels_open: [bool; 2],
     actions: &[crate::verbs::ActionRow],
 ) -> Element<'a, Msg> {
-    let disabled_tint = crate::icons::hex(look.tokens.palette.muted_text);
+    let disabled_tint = crate::icons::tint_key(look.tokens.palette.muted_text);
     let control = |icon, action, label| {
         let enabled = enabled(active, busy, action);
         let tint = if enabled { tint } else { &disabled_tint };
@@ -66,7 +66,7 @@ pub fn navigation<'a>(
     .spacing(look.chrome.small)
     .align_y(application::iced::Alignment::Center);
     let panel = |icon, action, name: &str, open| {
-        let tint = crate::icons::hex(if open {
+        let tint = crate::icons::tint_key(if open {
             look.tokens.palette.selection_text
         } else {
             look.tokens.palette.muted_text
