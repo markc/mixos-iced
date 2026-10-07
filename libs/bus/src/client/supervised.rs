@@ -9,8 +9,9 @@
 //! [`SupervisedClient`] owns the connect, register, replay subscriptions,
 //! pump loop:
 //!
-//! - the initial connect has a bounded budget ([`MAX_INITIAL_ATTEMPTS`]) so a
-//!   misconfigured service fails fast;
+//! - `connect` has a bounded initial budget ([`MAX_INITIAL_ATTEMPTS`]) so a
+//!   misconfigured service fails fast; `start` returns immediately and lets
+//!   the supervisor retry initial transport failures indefinitely;
 //! - reconnect is unbounded, with exponential backoff and full jitter (base
 //!   250 ms, doubling, capped at 30 s), so a resident service waits out a
 //!   long broker outage without being restarted by its supervisor;
@@ -31,7 +32,7 @@ use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 
 use super::IncomingCommand;
 use super::connection::{Connection, ConnectionOptions};
-use super::error::{ClientError, SupervisedError};
+use super::error::{ClientError, RegistrationRejected, SupervisedError};
 use crate::native_client::NativeIncomingReceiver;
 use crate::native_client::bounded::{
     BoundedIncomingEvent, BoundedIncomingReceiver, BoundedIncomingSender, bounded_incoming_channel,
@@ -195,6 +196,17 @@ impl SupervisedConnectOptions {
     pub async fn connect(self) -> Result<SupervisedClient, SupervisedError> {
         SupervisedClient::connect_with_options(self).await
     }
+
+    /// Start without waiting for a broker. Transport failures are retried
+    /// indefinitely by the same supervisor used for reconnects. The client
+    /// initially reports `Connecting`, generation zero, and rejects outbound
+    /// work until registration and subscription replay have completed.
+    ///
+    /// Must be called inside the Tokio runtime that will own this client.
+    /// Registration rejection follows the configured fatal policy.
+    pub fn start(self) -> SupervisedClient {
+        SupervisedClient::launch(self, None)
+    }
 }
 
 /// A [`Connection`] under a reconnect supervisor.
@@ -208,13 +220,14 @@ pub struct SupervisedClient {
     /// The live connection. Swapped by the supervisor on reconnect under a
     /// brief write lock; outbound calls clone the `Arc` under a read lock so
     /// no network await holds it.
-    inner: Arc<RwLock<Arc<Connection>>>,
+    inner: Arc<RwLock<Option<Arc<Connection>>>>,
     state_tx: watch::Sender<ConnState>,
     /// Serialises terminal-state checks with watch publication.
     state_publish: Arc<std::sync::Mutex<()>>,
-    /// Count of fully established connections: one for the initial
-    /// connection, plus one after every complete reconnect and replay, so a
-    /// consumer cannot sample away a fast bounce.
+    registration_rejection: Arc<std::sync::Mutex<Option<RegistrationRejected>>>,
+    /// Count of fully established connections: zero before the first socket,
+    /// one for initial success, plus one after every complete reconnect and
+    /// replay, so a consumer cannot sample away a fast bounce.
     connection_generation: Arc<AtomicU64>,
     registry: SubscriptionRegistry,
     subscription_transaction: Arc<TokioMutex<()>>,
@@ -271,19 +284,10 @@ impl SupervisedClient {
     async fn connect_with_options(
         options: SupervisedConnectOptions,
     ) -> Result<SupervisedClient, SupervisedError> {
-        let SupervisedConnectOptions {
-            service_name,
-            noded_url,
-            fatal_on_registration_rejection,
-            connection: connection_options,
-        } = options;
-        let (state_tx, _) = watch::channel(ConnState::Connecting);
-        let state_publish = Arc::new(std::sync::Mutex::new(()));
-
         let mut last_err: Option<ClientError> = None;
         let mut connection: Option<Connection> = None;
         for attempt in 0..MAX_INITIAL_ATTEMPTS {
-            match Connection::connect_with_options(&service_name, &noded_url, &connection_options)
+            match Connection::connect_with_options(&options.service_name, &options.noded_url, &options.connection)
                 .await
             {
                 Ok(c) => {
@@ -293,13 +297,12 @@ impl SupervisedClient {
                 Err(e) => {
                     tracing::debug!(
                         event = "supervised_initial_attempt_failed",
-                        service = %service_name,
+                        service = %options.service_name,
                         attempt,
                         error = %e,
                         "initial broker connect attempt failed"
                     );
-                    if fatal_on_registration_rejection && e.registration_rejection().is_some() {
-                        publish_state(&state_tx, &state_publish, ConnState::Fatal);
+                    if options.fatal_on_registration_rejection && e.registration_rejection().is_some() {
                         return Err(SupervisedError::InitialConnectFailed {
                             attempts: attempt + 1,
                             source: e,
@@ -317,7 +320,6 @@ impl SupervisedClient {
         let connection = match connection {
             Some(c) => c,
             None => {
-                publish_state(&state_tx, &state_publish, ConnState::Fatal);
                 return Err(SupervisedError::InitialConnectFailed {
                     attempts: MAX_INITIAL_ATTEMPTS,
                     source: last_err.unwrap_or(ClientError::Closed),
@@ -325,15 +327,33 @@ impl SupervisedClient {
             }
         };
 
+        Ok(Self::launch(options, Some(connection)))
+    }
+
+    fn launch(options: SupervisedConnectOptions, connection: Option<Connection>) -> Self {
+        let SupervisedConnectOptions {
+            service_name,
+            noded_url,
+            fatal_on_registration_rejection,
+            connection: connection_options,
+        } = options;
+        let established = connection.is_some();
+        let (state_tx, _) = watch::channel(if established {
+            ConnState::Connected
+        } else {
+            ConnState::Connecting
+        });
+        let state_publish = Arc::new(std::sync::Mutex::new(()));
+        let registration_rejection = Arc::new(std::sync::Mutex::new(None));
         // The supervisor forwards from the first connection's receiver, and
         // every later one, into the single outward channel.
-        let first_rx = connection
-            .take_native_incoming()
-            .expect("a fresh connection has its incoming receiver");
+        let first_rx = connection.as_ref().map(|connection| {
+            connection.take_native_incoming()
+                .expect("a fresh connection has its incoming receiver")
+        });
 
-        let inner = Arc::new(RwLock::new(Arc::new(connection)));
-        publish_state(&state_tx, &state_publish, ConnState::Connected);
-        let connection_generation = Arc::new(AtomicU64::new(1));
+        let inner = Arc::new(RwLock::new(connection.map(Arc::new)));
+        let connection_generation = Arc::new(AtomicU64::new(u64::from(established)));
         let (out_tx, out_rx, bounded_out_rx) = match connection_options.capacity {
             Some(capacity) => {
                 let (sender, receiver) = bounded_incoming_channel(capacity);
@@ -352,6 +372,7 @@ impl SupervisedClient {
             inner: inner.clone(),
             state_tx: state_tx.clone(),
             state_publish: state_publish.clone(),
+            registration_rejection: registration_rejection.clone(),
             connection_generation: connection_generation.clone(),
             registry: registry.clone(),
             subscription_transaction: subscription_transaction.clone(),
@@ -364,10 +385,11 @@ impl SupervisedClient {
             first_rx,
         }));
 
-        Ok(SupervisedClient {
+        SupervisedClient {
             inner,
             state_tx,
             state_publish,
+            registration_rejection,
             connection_generation,
             registry,
             subscription_transaction,
@@ -376,7 +398,7 @@ impl SupervisedClient {
             shutdown_tx,
             supervisor: TokioMutex::new(Some(supervisor)),
             service_name,
-        })
+        }
     }
 
     /// The shared [`SubscriptionRegistry`] the supervisor replays.
@@ -403,6 +425,14 @@ impl SupervisedClient {
     /// The current connection state.
     pub fn state(&self) -> ConnState {
         *self.state_tx.borrow()
+    }
+
+    /// The terminal broker registration refusal, if one was configured as
+    /// fatal. This non-consuming sample is published before the `Fatal` edge;
+    /// ordinary dial failures never manufacture a registration refusal.
+    pub fn registration_rejection(&self) -> Option<RegistrationRejected> {
+        self.registration_rejection.lock()
+            .unwrap_or_else(|error| error.into_inner()).clone()
     }
 
     /// Subscribe to connection-state transitions. The receiver starts at
@@ -439,8 +469,8 @@ impl SupervisedClient {
     }
 
     /// The live connection, cloned out so no network await holds the lock.
-    async fn connection(&self) -> Arc<Connection> {
-        self.inner.read().await.clone()
+    async fn connection(&self) -> Result<Arc<Connection>, SupervisedError> {
+        self.inner.read().await.clone().ok_or(SupervisedError::Disconnected)
     }
 
     pub async fn call_typed(
@@ -451,7 +481,7 @@ impl SupervisedClient {
     ) -> Result<crate::PortReply, SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .call_typed(to, command, args)
             .await
             .map_err(SupervisedError::Transport)
@@ -465,7 +495,7 @@ impl SupervisedClient {
     ) -> Result<(), SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .send(to, command, args)
             .await
             .map_err(SupervisedError::Transport)
@@ -481,7 +511,7 @@ impl SupervisedClient {
     ) -> Result<(), SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .send_with_headers(to, command, headers, body)
             .await
             .map_err(SupervisedError::Transport)
@@ -490,7 +520,7 @@ impl SupervisedClient {
     pub async fn list_services(&self) -> Result<Vec<String>, SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .list_services()
             .await
             .map_err(SupervisedError::Transport)
@@ -540,7 +570,7 @@ impl SupervisedClient {
     ) -> Result<serde_json::Value, SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .call(to, command, args)
             .await
             .map_err(SupervisedError::Transport)
@@ -556,7 +586,7 @@ impl SupervisedClient {
     ) -> Result<serde_json::Value, SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .call_with_headers(to, command, headers, body)
             .await
             .map_err(SupervisedError::Transport)
@@ -572,7 +602,7 @@ impl SupervisedClient {
     ) -> Result<(u8, String, Option<String>), SupervisedError> {
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .call_with_headers_raw(to, command, headers, body)
             .await
             .map_err(SupervisedError::Transport)
@@ -605,7 +635,7 @@ impl SupervisedClient {
         if generation == 0 || generation != self.connection_generation() {
             return Err(SupervisedError::Disconnected);
         }
-        Ok(Arc::clone(&connection))
+        connection.clone().ok_or(SupervisedError::Disconnected)
     }
 
     /// Subscribe to a topic and record it for replay on reconnect.
@@ -621,7 +651,7 @@ impl SupervisedClient {
         let _transaction = self.subscription_transaction.lock().await;
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .call_with_headers("noded", "topic.subscribe", &topic_headers(topic), "")
             .await
             .map_err(SupervisedError::Transport)?;
@@ -639,7 +669,7 @@ impl SupervisedClient {
         let _transaction = self.subscription_transaction.lock().await;
         self.gate()?;
         self.connection()
-            .await
+            .await?
             .call_with_headers("noded", "topic.unsubscribe", &topic_headers(topic), "")
             .await
             .map_err(SupervisedError::Transport)?;
@@ -657,7 +687,9 @@ impl SupervisedClient {
         // detached reader must not keep the registered name alive in that
         // case. A reconnect that completes after the stop edge closes its
         // fresh connection before it can swap it in.
-        self.connection().await.close().await;
+        if let Ok(connection) = self.connection().await {
+            connection.close().await;
+        }
         if let Some(handle) = self.supervisor.lock().await.take() {
             let _ = handle.await;
         }
@@ -692,7 +724,7 @@ impl SupervisedClient {
         // Cancellation must still wake terminal cleanup; signalling before
         // the RPC would let that cleanup close its transport prematurely.
         let mut stop = StopOnDrop(Some(&self.shutdown_tx));
-        let connection = self.connection().await;
+        let connection = self.connection().await?;
         let result = if connection.is_connected() {
             connection
                 .deregister()
@@ -770,9 +802,10 @@ impl SupervisorOutgoing {
 
 /// Everything the detached supervisor task owns.
 struct SupervisorCtx {
-    inner: Arc<RwLock<Arc<Connection>>>,
+    inner: Arc<RwLock<Option<Arc<Connection>>>>,
     state_tx: watch::Sender<ConnState>,
     state_publish: Arc<std::sync::Mutex<()>>,
+    registration_rejection: Arc<std::sync::Mutex<Option<RegistrationRejected>>>,
     connection_generation: Arc<AtomicU64>,
     registry: SubscriptionRegistry,
     subscription_transaction: Arc<TokioMutex<()>>,
@@ -782,7 +815,7 @@ struct SupervisorCtx {
     noded_url: String,
     fatal_on_registration_rejection: bool,
     connection_options: ConnectionOptions,
-    first_rx: NativeIncomingReceiver,
+    first_rx: Option<NativeIncomingReceiver>,
 }
 
 /// `true` once a stop has been requested (an explicit shutdown, or the
@@ -811,20 +844,38 @@ fn publish_state(
     }
 }
 
-async fn supervisor_loop(mut ctx: SupervisorCtx) {
-    let (_, empty) = mpsc::unbounded_channel();
-    let current_rx = std::mem::replace(&mut ctx.first_rx, NativeIncomingReceiver::Unbounded(empty));
-    supervisor_run(&mut ctx, current_rx).await;
-    publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::ShuttingDown);
-    let connection = Arc::clone(&*ctx.inner.read().await);
-    connection.close().await;
+fn publish_registration_rejection(ctx: &SupervisorCtx, error: &ClientError) {
+    let Some((rc, message)) = error.registration_rejection() else {
+        return;
+    };
+    // One protocol-bounded diagnostic, never a history of failed attempts.
+    // Use the same publication fence as terminal lifecycle transitions so
+    // observing Fatal guarantees the diagnostic is already sampleable.
+    let _publish = ctx.state_publish.lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if matches!(*ctx.state_tx.borrow(), ConnState::ShuttingDown | ConnState::Fatal) {
+        return;
+    }
+    *ctx.registration_rejection.lock().unwrap_or_else(|error| error.into_inner()) =
+        Some(RegistrationRejected { rc, message: message.to_owned() });
+    ctx.state_tx.send_replace(ConnState::Fatal);
 }
 
-async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingReceiver) {
+async fn supervisor_loop(mut ctx: SupervisorCtx) {
+    let current_rx = ctx.first_rx.take();
+    supervisor_run(&mut ctx, current_rx).await;
+    publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::ShuttingDown);
+    let connection = ctx.inner.read().await.clone();
+    if let Some(connection) = connection {
+        connection.close().await;
+    }
+}
+
+async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: Option<NativeIncomingReceiver>) {
     loop {
         // Forward phase: pump the live connection's frames outward until it
         // drops or a stop is requested.
-        loop {
+        while let Some(receiver) = current_rx.as_mut() {
             tokio::select! {
                 _ = ctx.out_tx.closed() => return,
                 changed = ctx.shutdown_rx.changed() => {
@@ -838,7 +889,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                         return;
                     }
                 }
-                maybe = current_rx.recv() => {
+                maybe = receiver.recv() => {
                     match maybe {
                         Some(mut command) => {
                             if let BoundedIncomingEvent::Command(incoming) = &mut command {
@@ -866,7 +917,10 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
         }
 
         // Reconnect phase: unbounded backoff.
-        publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::Disconnected);
+        let initial = ctx.connection_generation.load(Ordering::SeqCst) == 0;
+        if !initial {
+            publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::Disconnected);
+        }
         let down_since = Instant::now();
         tracing::warn!(
             event = "supervised_disconnect",
@@ -876,7 +930,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
 
         let mut attempt: u32 = 0;
         let new_rx = loop {
-            let delay = backoff_delay(attempt);
+            let delay = if initial && attempt == 0 { Duration::ZERO } else { backoff_delay(attempt) };
             tokio::select! {
                 _ = ctx.out_tx.closed() => return,
                 changed = ctx.shutdown_rx.changed() => {
@@ -989,7 +1043,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                         {
                             false
                         } else {
-                            *live = connection.clone();
+                            *live = Some(connection.clone());
                             ctx.connection_generation.fetch_add(1, Ordering::SeqCst);
                             ctx.state_tx.send_replace(ConnState::Connected);
                             true
@@ -1012,7 +1066,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
                 }
                 Err(e) => {
                     if ctx.fatal_on_registration_rejection && e.registration_rejection().is_some() {
-                        publish_state(&ctx.state_tx, &ctx.state_publish, ConnState::Fatal);
+                        publish_registration_rejection(ctx, &e);
                         tracing::debug!(
                             event = "supervised_registration_rejected",
                             service = %ctx.service_name,
@@ -1034,7 +1088,7 @@ async fn supervisor_run(ctx: &mut SupervisorCtx, mut current_rx: NativeIncomingR
             }
         };
 
-        current_rx = new_rx;
+        current_rx = Some(new_rx);
     }
 }
 
