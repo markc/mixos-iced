@@ -1009,8 +1009,11 @@ mod tests {
             iced::Size::new(760.0, 500.0),
             app.view(),
         );
-        sim.click("Help").unwrap();
-        sim.click("About BusViewer").unwrap();
+        use iced::keyboard::key::Named;
+        sim.tap_key(Named::F10);
+        sim.tap_key(Named::ArrowLeft);
+        sim.tap_key(Named::ArrowDown);
+        sim.tap_key(Named::Enter);
         let messages: Vec<_> = sim.into_messages().collect();
         assert!(
             messages
@@ -1134,12 +1137,9 @@ mod tests {
         );
         ui.tap_key(Named::F10);
         ui.tap_key(Named::ArrowLeft);
-        ui.tap_key(Named::ArrowDown);
         ui.tap_key(Named::Enter);
-        assert!(
-            ui.into_messages()
-                .any(|m| matches!(m, Message::Action(Action::Shortcuts)))
-        );
+        let messages:Vec<_>=ui.into_messages().collect();
+        assert!(messages.iter().any(|m|matches!(m,Message::Action(Action::Shortcuts))),"{messages:?}");
     }
     #[test]
     fn editing_limits_reply_readonly_and_call_freeze_are_enforced() {
