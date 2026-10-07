@@ -143,7 +143,7 @@ fn app_and_shell_use_the_same_mapper_for_matching_inputs() {
         .unwrap()
         .prepare(checked_font)
         .unwrap();
-    let shell = Projection::new(&resolved["shell"])
+    let shell = Projection::new(&resolved["desktop"])
         .unwrap()
         .prepare(checked_font)
         .unwrap();
