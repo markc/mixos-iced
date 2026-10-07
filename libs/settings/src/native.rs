@@ -12,6 +12,14 @@ use std::time::Duration;
 
 pub const BOOTSTRAP_BUDGET: Duration = Duration::from_secs(1);
 
+/// Sample a coherent lifecycle/generation pair on the UI loop. Holding the
+/// watch read guard prevents a state transition between the two observations.
+pub fn live_generation(client: &Client) -> Option<u64> {
+    let lifecycle = client.subscribe_state();
+    let state = lifecycle.borrow();
+    (*state == bus::native_client::ConnState::Connected).then(|| client.connection_generation())
+}
+
 /// Execute one fenced RECOVERY action, bounded to one second. Hosts multiplex
 /// this future with incoming events and existing work. Initial bootstrap must
 /// use execute_until with the SAME deadline for both subscribe and read.

@@ -86,9 +86,7 @@ impl BusHandle {
         self.binding.clone()
     }
     pub fn settings_generation(&self) -> Option<u64> {
-        self.client
-            .is_connected()
-            .then(|| self.client.connection_generation())
+        settings::native::live_generation(&self.client)
     }
     pub fn settings_jobs(&self, jobs: Jobs) {
         self.settings.send_replace(Some(jobs));
