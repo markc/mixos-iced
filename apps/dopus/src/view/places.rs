@@ -127,10 +127,9 @@ fn place_look(
 pub fn image_widget(look: Look, icons: &Icons, tint: &str, icon: Icon) -> Element<'static, Msg> {
     if let Some(ready) = icons.ready(icon, tint) {
         let element: Element<'static, Msg> = match ready {
-            toolkit::icons::Ready::Text(icon) => icon
-                .size(look.chrome.icon)
-                .color(icons.colour(tint))
-                .into(),
+            toolkit::icons::Ready::Text(icon) => {
+                icon.size(look.chrome.icon).color(icons.colour(tint)).into()
+            }
             image @ toolkit::icons::Ready::Image { .. } => image.view(),
         };
         return container(element)

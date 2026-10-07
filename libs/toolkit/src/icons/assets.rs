@@ -278,13 +278,24 @@ pub fn decode_trusted_embedded_svg(
     physical_side: u32,
     tint: Option<[u8; 4]>,
 ) -> Result<DecodedIcon, IconDecodeError> {
-    if bytes.len() > 16 * 1024 { return Err(IconDecodeError::SvgUnsupported); }
-    decode(Arc::from(bytes), ImageFormat::Svg, physical_side, tint, true)
+    if bytes.len() > 16 * 1024 {
+        return Err(IconDecodeError::SvgUnsupported);
+    }
+    decode(
+        Arc::from(bytes),
+        ImageFormat::Svg,
+        physical_side,
+        tint,
+        true,
+    )
 }
 
 fn decode(
-    bytes: Arc<[u8]>, format: ImageFormat, physical_side: u32,
-    tint: Option<[u8; 4]>, embedded: bool,
+    bytes: Arc<[u8]>,
+    format: ImageFormat,
+    physical_side: u32,
+    tint: Option<[u8; 4]>,
+    embedded: bool,
 ) -> Result<DecodedIcon, IconDecodeError> {
     if bytes.is_empty() {
         return Err(IconDecodeError::Empty);
@@ -326,7 +337,11 @@ fn decode(
     })
 }
 
-fn decode_svg(bytes: &[u8], side: u32, embedded: bool) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
+fn decode_svg(
+    bytes: &[u8],
+    side: u32,
+    embedded: bool,
+) -> Result<(u32, u32, Vec<u8>), IconDecodeError> {
     // Scan with the same XML parser family usvg uses, before any usvg tree
     // exists. A usvg build without its `text` feature silently drops text
     // elements before the tree exists, so the tree cannot witness them:
@@ -415,14 +430,21 @@ fn scan_svg(document: &roxmltree::Document<'_>, embedded: bool) -> Result<(), Ic
     let mut painted = 0usize;
     for node in document.descendants() {
         nodes += 1;
-        if embedded && nodes > 64 { return Err(IconDecodeError::SvgUnsupported); }
+        if embedded && nodes > 64 {
+            return Err(IconDecodeError::SvgUnsupported);
+        }
         if nodes > MAX_SVG_NODES {
             return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
         }
         if !node.is_element() {
             continue;
         }
-        if embedded && matches!(node.tag_name().name(), "g" | "defs" | "linearGradient" | "radialGradient" | "stop") {
+        if embedded
+            && matches!(
+                node.tag_name().name(),
+                "g" | "defs" | "linearGradient" | "radialGradient" | "stop"
+            )
+        {
             return Err(IconDecodeError::SvgUnsupported);
         }
         if node.ancestors().count() > 64
@@ -452,16 +474,64 @@ fn scan_svg(document: &roxmltree::Document<'_>, embedded: bool) -> Result<(), Ic
             _ => return Err(IconDecodeError::SvgUnsupported),
         }
         for attribute in node.attributes() {
-            if embedded && attribute.name() == "transform" { return Err(IconDecodeError::SvgUnsupported); }
-            if embedded && attribute.name() == "viewBox" {
-                let values = attribute.value().split(|c: char| c.is_whitespace() || c == ',').filter(|part| !part.is_empty()).map(str::parse::<f32>).collect::<Result<Vec<_>,_>>().map_err(|_| IconDecodeError::SvgUnsupported)?;
-                if values.len() != 4 || values.iter().any(|value| !value.is_finite() || value.abs() > 256.0) || values[2] <= 0.0 || values[3] <= 0.0 { return Err(IconDecodeError::SvgUnsupported); }
+            if embedded && attribute.name() == "transform" {
+                return Err(IconDecodeError::SvgUnsupported);
             }
-            if embedded && matches!(attribute.name(), "width" | "height" | "x" | "y" | "x1" | "x2" | "y1" | "y2" | "cx" | "cy" | "r" | "rx" | "ry" | "stroke-width") {
-                let value = attribute.value().parse::<f32>().map_err(|_| IconDecodeError::SvgUnsupported)?;
-                let limit = if attribute.name() == "stroke-width" { 8.0 } else { 256.0 };
-                if !value.is_finite() || value.abs() > limit { return Err(IconDecodeError::SvgUnsupported); }
-                if node == document.root_element() && matches!(attribute.name(), "width" | "height") && value <= 0.0 { return Err(IconDecodeError::SvgUnsupported); }
+            if embedded && attribute.name() == "viewBox" {
+                let values = attribute
+                    .value()
+                    .split(|c: char| c.is_whitespace() || c == ',')
+                    .filter(|part| !part.is_empty())
+                    .map(str::parse::<f32>)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| IconDecodeError::SvgUnsupported)?;
+                if values.len() != 4
+                    || values
+                        .iter()
+                        .any(|value| !value.is_finite() || value.abs() > 256.0)
+                    || values[2] <= 0.0
+                    || values[3] <= 0.0
+                {
+                    return Err(IconDecodeError::SvgUnsupported);
+                }
+            }
+            if embedded
+                && matches!(
+                    attribute.name(),
+                    "width"
+                        | "height"
+                        | "x"
+                        | "y"
+                        | "x1"
+                        | "x2"
+                        | "y1"
+                        | "y2"
+                        | "cx"
+                        | "cy"
+                        | "r"
+                        | "rx"
+                        | "ry"
+                        | "stroke-width"
+                )
+            {
+                let value = attribute
+                    .value()
+                    .parse::<f32>()
+                    .map_err(|_| IconDecodeError::SvgUnsupported)?;
+                let limit = if attribute.name() == "stroke-width" {
+                    8.0
+                } else {
+                    256.0
+                };
+                if !value.is_finite() || value.abs() > limit {
+                    return Err(IconDecodeError::SvgUnsupported);
+                }
+                if node == document.root_element()
+                    && matches!(attribute.name(), "width" | "height")
+                    && value <= 0.0
+                {
+                    return Err(IconDecodeError::SvgUnsupported);
+                }
             }
             if attribute.name() == "style" {
                 // Do not interpret CSS escapes or cascades here. Explicit
@@ -493,7 +563,9 @@ fn scan_svg(document: &roxmltree::Document<'_>, embedded: bool) -> Result<(), Ic
             }
             if matches!(attribute.name(), "d" | "points") {
                 path_bytes += attribute.value().len();
-                if embedded && path_bytes > 4096 { return Err(IconDecodeError::SvgUnsupported); }
+                if embedded && path_bytes > 4096 {
+                    return Err(IconDecodeError::SvgUnsupported);
+                }
                 if path_bytes > MAX_SVG_PATH_BYTES {
                     return Err(IconDecodeError::SvgComplexity { nodes, path_bytes });
                 }
@@ -515,7 +587,9 @@ fn check_render_subset(group: &resvg::usvg::Group, embedded: bool) -> Result<(),
             resvg::usvg::Node::Group(group) => check_render_subset(group, embedded)?,
             resvg::usvg::Node::Path(path) => {
                 if (!embedded && path.stroke().is_some())
-                    || path.stroke().is_some_and(|stroke| matches!(stroke.paint(), resvg::usvg::Paint::Pattern(_)))
+                    || path.stroke().is_some_and(|stroke| {
+                        matches!(stroke.paint(), resvg::usvg::Paint::Pattern(_))
+                    })
                     || path
                         .fill()
                         .is_some_and(|fill| matches!(fill.paint(), resvg::usvg::Paint::Pattern(_)))
@@ -685,8 +759,17 @@ mod tests {
         let decoded = super::decode_trusted_embedded_svg(SVG, 48, Some([255, 0, 0, 96])).unwrap();
         assert_eq!(decoded.dimensions(), (48, 48));
         assert!(decoded.pixels().chunks_exact(4).any(|pixel| pixel[3] > 0));
-        assert!(decoded.pixels().chunks_exact(4).filter(|pixel| pixel[3] > 0).all(|pixel| pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] <= 96));
-        assert!(super::decode_owned(std::sync::Arc::from(SVG), super::ImageFormat::Svg, 48, None).is_err());
+        assert!(
+            decoded
+                .pixels()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] > 0)
+                .all(|pixel| pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] <= 96)
+        );
+        assert!(
+            super::decode_owned(std::sync::Arc::from(SVG), super::ImageFormat::Svg, 48, None)
+                .is_err()
+        );
         const DASHED: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0 0 L24 24" stroke="red" stroke-dasharray="0.01 0.01"/></svg>"#;
         assert!(super::decode_trusted_embedded_svg(DASHED, 24, None).is_err());
     }

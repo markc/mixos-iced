@@ -50,7 +50,12 @@ pub fn requirements(
             }
         }
     }
-    let sources = ALL.into_iter().map(|icon| appearance::resources::EmbeddedSvg::trusted_static(icon.material_name(), icon.bytes())).collect::<Result<Vec<_>,_>>()?;
+    let sources = ALL
+        .into_iter()
+        .map(|icon| {
+            appearance::resources::EmbeddedSvg::trusted_static(icon.material_name(), icon.bytes())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     ResourceRequirements::new(icons)?.with_embedded_svg_fallbacks(sources)
 }
 
@@ -60,10 +65,9 @@ impl Icons {
         colours: &[application::iced::Color],
     ) -> Result<Self, Diagnostic> {
         let tints: Vec<_> = colours.iter().copied().map(tint_key).collect();
-        let colour_map = std::sync::Arc::new(tints.iter().cloned().zip(colours.iter().copied()).collect());
-        if let Some(resources) = look
-            .resources()
-        {
+        let colour_map =
+            std::sync::Arc::new(tints.iter().cloned().zip(colours.iter().copied()).collect());
+        if let Some(resources) = look.resources() {
             let mut glyphs = std::collections::HashMap::new();
             for tint in &tints {
                 for icon in ALL {

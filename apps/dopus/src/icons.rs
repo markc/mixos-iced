@@ -225,12 +225,22 @@ pub fn hex(color: application::iced::Color) -> String {
         channel(color.g),
         channel(color.b)
     );
-    if color.a == 1.0 { rgb } else { format!("{rgb}{}", channel(color.a)) }
+    if color.a == 1.0 {
+        rgb
+    } else {
+        format!("{rgb}{}", channel(color.a))
+    }
 }
 
 /// Exact variant identity; byte encoding is only for SVG rasterisation.
 pub fn tint_key(color: application::iced::Color) -> String {
-    format!("rgba:{:08x}{:08x}{:08x}{:08x}", color.r.to_bits(), color.g.to_bits(), color.b.to_bits(), color.a.to_bits())
+    format!(
+        "rgba:{:08x}{:08x}{:08x}{:08x}",
+        color.r.to_bits(),
+        color.g.to_bits(),
+        color.b.to_bits(),
+        color.a.to_bits()
+    )
 }
 
 /// Cache key: icon, tint, logical pixels.
@@ -368,7 +378,11 @@ impl Icons {
 
     pub fn mode(&self) -> &'static str {
         if let Some(resources) = &self.pinned {
-            if resources.binding().is_some() { "prepared" } else { "lucide" }
+            if resources.binding().is_some() {
+                "prepared"
+            } else {
+                "lucide"
+            }
         } else if self.material.is_some() {
             "material-symbols-rounded"
         } else {
@@ -394,12 +408,17 @@ impl Icons {
     }
 
     pub fn glyph(&self, icon: Icon) -> Option<(char, application::iced::Font)> {
-        if self.pinned.is_some() { return None; }
+        if self.pinned.is_some() {
+            return None;
+        }
         self.material.as_ref()?.get(&icon).copied()
     }
 
     pub fn colour(&self, tint: &str) -> application::iced::Color {
-        self.colours.get(tint).copied().unwrap_or_else(|| tint_color(tint))
+        self.colours
+            .get(tint)
+            .copied()
+            .unwrap_or_else(|| tint_color(tint))
     }
 
     /// One icon draw path for custom file rows and drag previews. Native text
@@ -419,7 +438,9 @@ impl Icons {
                 Some(toolkit::icons::Ready::Text(text)) => text.glyph(),
                 _ => None,
             }
-        } else { self.glyph(icon) };
+        } else {
+            self.glyph(icon)
+        };
         if let Some((glyph, font)) = glyph {
             renderer.fill_text(
                 application::iced::advanced::text::Text {
@@ -575,12 +596,17 @@ mod tests {
     fn prepared_tint_identity_and_text_colour_keep_exact_rgba() {
         let a = application::iced::Color::from_rgba(0.5, 0.3, 0.1, 0.25);
         let b = application::iced::Color { a: 0.75, ..a };
-        let c = application::iced::Color { r: f32::from_bits(a.r.to_bits() + 1), ..a };
+        let c = application::iced::Color {
+            r: f32::from_bits(a.r.to_bits() + 1),
+            ..a
+        };
         assert_ne!(tint_key(a), tint_key(b));
         assert_ne!(tint_key(a), tint_key(c));
         let prepared = appearance::settings::bootstrap().unwrap();
         let icons = Icons::from_prepared(&prepared, &[a, b, c]).unwrap();
-        for colour in [a, b, c] { assert_eq!(icons.colour(&tint_key(colour)), colour); }
+        for colour in [a, b, c] {
+            assert_eq!(icons.colour(&tint_key(colour)), colour);
+        }
     }
 
     #[test]
@@ -588,7 +614,12 @@ mod tests {
         for scale in [1.0_f32, 1.5, 2.0] {
             let side = (16.0 * scale).ceil() as u32;
             for icon in ALL {
-                let image = toolkit::icons::assets::decode_trusted_embedded_svg(icon.bytes(), side, Some([64, 192, 128, 96])).unwrap_or_else(|error| panic!("{icon:?} at {scale}: {error}"));
+                let image = toolkit::icons::assets::decode_trusted_embedded_svg(
+                    icon.bytes(),
+                    side,
+                    Some([64, 192, 128, 96]),
+                )
+                .unwrap_or_else(|error| panic!("{icon:?} at {scale}: {error}"));
                 assert_eq!(image.dimensions(), (side, side));
                 assert!(image.pixels().chunks_exact(4).any(|pixel| pixel[3] > 0));
                 assert!(image.pixels().chunks_exact(4).all(|pixel| pixel[3] <= 96));

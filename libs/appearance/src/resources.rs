@@ -213,11 +213,18 @@ impl ImageStore {
         compact: &CompactSet,
         variants: &[Arc<VariantCharge>],
     ) -> Result<ImageAdmission, ImageError> {
-        self.preflight_sources(compact.assets.iter().map(|asset| (&asset.blake3, &asset.bytes)), variants)
+        self.preflight_sources(
+            compact
+                .assets
+                .iter()
+                .map(|asset| (&asset.blake3, &asset.bytes)),
+            variants,
+        )
     }
 
     fn preflight_sources<'a>(
-        &self, encoded: impl Iterator<Item = (&'a String, &'a Arc<[u8]>)>,
+        &self,
+        encoded: impl Iterator<Item = (&'a String, &'a Arc<[u8]>)>,
         variants: &[Arc<VariantCharge>],
     ) -> Result<ImageAdmission, ImageError> {
         let ledger = self
@@ -226,11 +233,7 @@ impl ImageStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut sources: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
         for (digest, bytes) in encoded {
-            if let Some(previous) = ledger
-                .sources
-                .get(digest)
-                .or_else(|| sources.get(digest))
-            {
+            if let Some(previous) = ledger.sources.get(digest).or_else(|| sources.get(digest)) {
                 if previous.as_ref() != bytes.as_ref() {
                     return Err(ImageError::Collision);
                 }
@@ -394,7 +397,11 @@ impl EmbeddedSvg {
     /// Reviewed compiled artwork only, never downloaded or leaked dynamic
     /// SVG. The worker retains all decoding and process accounting.
     pub fn trusted_static(name: &'static str, bytes: &'static [u8]) -> Result<Self, Diagnostic> {
-        if name.is_empty() || name.len() > MAX_KEY_BYTES || bytes.is_empty() || bytes.len() > 16 * 1024 {
+        if name.is_empty()
+            || name.len() > MAX_KEY_BYTES
+            || bytes.is_empty()
+            || bytes.len() > 16 * 1024
+        {
             return Err(fault("resources.embedded", "invalid trusted rescue source"));
         }
         Ok(Self { name, bytes })
@@ -464,19 +471,34 @@ impl ResourceRequirements {
                 }
             }
         }
-        Ok(Self { icons, embedded: Vec::new() })
+        Ok(Self {
+            icons,
+            embedded: Vec::new(),
+        })
     }
 
     /// Add finite embedded rescue sources without reading or decoding them.
-    pub fn with_embedded_svg_fallbacks(mut self, sources: Vec<EmbeddedSvg>) -> Result<Self, Diagnostic> {
-        if sources.len() > MAX_REQUIREMENTS { return Err(fault("resources.embedded", "too many rescue sources")); }
+    pub fn with_embedded_svg_fallbacks(
+        mut self,
+        sources: Vec<EmbeddedSvg>,
+    ) -> Result<Self, Diagnostic> {
+        if sources.len() > MAX_REQUIREMENTS {
+            return Err(fault("resources.embedded", "too many rescue sources"));
+        }
         let mut names = std::collections::BTreeSet::new();
         for source in &sources {
-            if source.name.is_empty() || source.name.len() > MAX_KEY_BYTES
+            if source.name.is_empty()
+                || source.name.len() > MAX_KEY_BYTES
                 || !names.insert(source.name)
-                || source.bytes.is_empty() || source.bytes.len() > 16 * 1024
+                || source.bytes.is_empty()
+                || source.bytes.len() > 16 * 1024
                 || !self.icons.iter().any(|icon| icon.name == source.name)
-            { return Err(fault("resources.embedded", "invalid or duplicate rescue source")); }
+            {
+                return Err(fault(
+                    "resources.embedded",
+                    "invalid or duplicate rescue source",
+                ));
+            }
         }
         self.embedded = sources;
         Ok(self)
@@ -484,7 +506,10 @@ impl ResourceRequirements {
 
     /// No icon variants.
     pub fn empty() -> Self {
-        Self { icons: Vec::new(), embedded: Vec::new() }
+        Self {
+            icons: Vec::new(),
+            embedded: Vec::new(),
+        }
     }
 
     /// The validated requirements, in request order.
@@ -1351,17 +1376,27 @@ fn decode_images(
                     ));
                 }
                 if image.format == ImageFormat::Svg
-                    && usage.decoded_bytes + staged_bytes + u64::from(image.side).pow(2) * 4 > MAX_RETAINED_DECODED_BYTES {
-                    return Err(Diagnostic::new("image_capacity", "resources", "decoded pixel capacity exhausted"));
+                    && usage.decoded_bytes + staged_bytes + u64::from(image.side).pow(2) * 4
+                        > MAX_RETAINED_DECODED_BYTES
+                {
+                    return Err(Diagnostic::new(
+                        "image_capacity",
+                        "resources",
+                        "decoded pixel capacity exhausted",
+                    ));
                 }
                 let decoded = if let Some(bytes) = image.embedded {
-                    toolkit::icons::assets::decode_trusted_embedded_svg(bytes, image.side, image.tint)
-                } else { decode_owned(
-                    Arc::clone(&image.bytes),
-                    image.format,
-                    image.side,
-                    image.tint,
-                ) }
+                    toolkit::icons::assets::decode_trusted_embedded_svg(
+                        bytes, image.side, image.tint,
+                    )
+                } else {
+                    decode_owned(
+                        Arc::clone(&image.bytes),
+                        image.format,
+                        image.side,
+                        image.tint,
+                    )
+                }
                 .map_err(|error| {
                     fault(&format!("resources.icons.{}", image.key), error.to_string())
                 })?;
@@ -1398,7 +1433,12 @@ fn decode_images(
                 source_blake3: image.blake3.clone(),
             }),
             source_blake3: Some(image.blake3.clone()),
-            reason: if image.embedded.is_some() { "embedded rescue: no verified asset set" } else { "declared image asset of the selected style" }.into(),
+            reason: if image.embedded.is_some() {
+                "embedded rescue: no verified asset set"
+            } else {
+                "declared image asset of the selected style"
+            }
+            .into(),
         };
         images.push((
             image.key.clone(),
@@ -1831,32 +1871,67 @@ fn generic_prepared(
     requirements: &ResourceRequirements,
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<Prepared, Diagnostic> {
-    let mut plan = IconPlan { glyphs: Vec::new(), images: Vec::new() };
+    let mut plan = IconPlan {
+        glyphs: Vec::new(),
+        images: Vec::new(),
+    };
     let mut sources: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
     for requirement in requirements.icons() {
         check()?;
-        if let Some(source) = requirements.embedded.iter().find(|source| source.name == requirement.name) {
+        if let Some(source) = requirements
+            .embedded
+            .iter()
+            .find(|source| source.name == requirement.name)
+        {
             let digest = blake3::hash(source.bytes).to_hex().to_string();
-            let bytes = match image_store().source(&digest).or_else(|| sources.get(&digest).cloned()) {
+            let bytes = match image_store()
+                .source(&digest)
+                .or_else(|| sources.get(&digest).cloned())
+            {
                 Some(previous) => {
-                    if previous.as_ref() != source.bytes { return Err(Diagnostic::new("image_capacity", "resources", ImageError::Collision.message())); }
+                    if previous.as_ref() != source.bytes {
+                        return Err(Diagnostic::new(
+                            "image_capacity",
+                            "resources",
+                            ImageError::Collision.message(),
+                        ));
+                    }
                     previous
                 }
                 None => Arc::from(source.bytes),
             };
             sources.insert(digest.clone(), bytes.clone());
             plan.images.push(PlannedImage {
-                key: requirement.key.clone(), name: requirement.name.clone(), style: "embedded".into(),
-                format: ImageFormat::Svg, side: (requirement.logical_size * requirement.scale).ceil() as u32,
-                tint: Some(requirement.tint.into_rgba8()), symbolic: true,
-                logical_size: requirement.logical_size, blake3: digest, bytes, embedded: Some(source.bytes),
+                key: requirement.key.clone(),
+                name: requirement.name.clone(),
+                style: "embedded".into(),
+                format: ImageFormat::Svg,
+                side: (requirement.logical_size * requirement.scale).ceil() as u32,
+                tint: Some(requirement.tint.into_rgba8()),
+                symbolic: true,
+                logical_size: requirement.logical_size,
+                blake3: digest,
+                bytes,
+                embedded: Some(source.bytes),
             });
         }
     }
-    image_store().preflight_sources(plan.images.iter().map(|image| (&image.blake3, &image.bytes)), &[])
+    image_store()
+        .preflight_sources(
+            plan.images
+                .iter()
+                .map(|image| (&image.blake3, &image.bytes)),
+            &[],
+        )
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let DecodedImages { images, charges } = decode_images(&plan, check)?;
-    let admission = image_store().preflight_sources(plan.images.iter().map(|image| (&image.blake3, &image.bytes)), &charges)
+    let admission = image_store()
+        .preflight_sources(
+            plan.images
+                .iter()
+                .map(|image| (&image.blake3, &image.bytes)),
+            &charges,
+        )
         .map_err(|error| Diagnostic::new("image_capacity", "resources", error.message()))?;
     let mut icons = BTreeMap::new();
     let mut embedded_evidence = BTreeMap::new();
@@ -1893,17 +1968,21 @@ fn generic_prepared(
     let icon_evidence = requirements
         .icons()
         .iter()
-        .map(|requirement| embedded_evidence.remove(&requirement.key).unwrap_or_else(|| IconEvidence {
-            key: requirement.key.clone(),
-            name: requirement.name.clone(),
-            family: None,
-            style: None,
-            glyph: None,
-            weight: None,
-            asset: None,
-            source_blake3: None,
-            reason: "no verified asset set".into(),
-        }))
+        .map(|requirement| {
+            embedded_evidence
+                .remove(&requirement.key)
+                .unwrap_or_else(|| IconEvidence {
+                    key: requirement.key.clone(),
+                    name: requirement.name.clone(),
+                    family: None,
+                    style: None,
+                    glyph: None,
+                    weight: None,
+                    asset: None,
+                    source_blake3: None,
+                    reason: "no verified asset set".into(),
+                })
+        })
         .collect();
     let mut registry = RegistryEvidence::default().with_image_usage();
     registry.image = admission.usage_after;
@@ -1914,14 +1993,8 @@ fn generic_prepared(
         icons: icon_evidence,
         registry,
     };
-    let receipt = PreparedResources::assemble(
-        None,
-        texts,
-        BTreeMap::new(),
-        icons,
-        evidence,
-        charges,
-    );
+    let receipt =
+        PreparedResources::assemble(None, texts, BTreeMap::new(), icons, evidence, charges);
     prepared.attach_resources(receipt);
     check()?;
     image_store().publish(admission);
@@ -1987,30 +2060,99 @@ mod tests {
         let _test = TESTS.lock().unwrap_or_else(|error| error.into_inner());
         const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4 L20 21"/></svg>"#;
         let root = tempfile::tempdir().unwrap();
-        let requirements = |scale| ResourceRequirements::new(vec![
-            IconRequirement { key: "one".into(), name: "rescue".into(), logical_size: 16.0, scale, tint: Color::from_rgba(1.0, 0.0, 0.0, 0.5) },
-            IconRequirement { key: "alias".into(), name: "rescue".into(), logical_size: 16.0, scale, tint: Color::from_rgba(1.0, 0.0, 0.0, 0.5) },
-        ]).unwrap().with_embedded_svg_fallbacks(vec![EmbeddedSvg::trusted_static("rescue", SVG).unwrap()]).unwrap();
+        let requirements = |scale| {
+            ResourceRequirements::new(vec![
+                IconRequirement {
+                    key: "one".into(),
+                    name: "rescue".into(),
+                    logical_size: 16.0,
+                    scale,
+                    tint: Color::from_rgba(1.0, 0.0, 0.0, 0.5),
+                },
+                IconRequirement {
+                    key: "alias".into(),
+                    name: "rescue".into(),
+                    logical_size: 16.0,
+                    scale,
+                    tint: Color::from_rgba(1.0, 0.0, 0.0, 0.5),
+                },
+            ])
+            .unwrap()
+            .with_embedded_svg_fallbacks(vec![EmbeddedSvg::trusted_static("rescue", SVG).unwrap()])
+            .unwrap()
+        };
         let before = image_usage();
-        let first = host(root.path()).prepare(projection(), None, None, requirements(1.0), &mut check_ok()).unwrap();
+        let first = host(root.path())
+            .prepare(projection(), None, None, requirements(1.0), &mut check_ok())
+            .unwrap();
         let receipt = first.resources().unwrap();
         assert!(receipt.binding().is_none());
         assert!(receipt.evidence().set_id.is_none());
-        assert!(receipt.evidence().icons.iter().all(|icon| icon.asset.is_none() && icon.source_blake3.is_some() && icon.reason.contains("embedded rescue")));
-        assert_eq!(image_handle(receipt.icon("one")), image_handle(receipt.icon("alias")));
+        assert!(
+            receipt
+                .evidence()
+                .icons
+                .iter()
+                .all(|icon| icon.asset.is_none()
+                    && icon.source_blake3.is_some()
+                    && icon.reason.contains("embedded rescue"))
+        );
+        assert_eq!(
+            image_handle(receipt.icon("one")),
+            image_handle(receipt.icon("alias"))
+        );
         let after = image_usage();
         assert_eq!(after.sources, before.sources + 1);
         assert_eq!(after.variants, before.variants + 1);
-        let again = host(root.path()).prepare(projection(), None, None, requirements(1.0), &mut check_ok()).unwrap();
-        assert_eq!(image_handle(again.resources().unwrap().icon("one")), image_handle(receipt.icon("one")));
+        let again = host(root.path())
+            .prepare(projection(), None, None, requirements(1.0), &mut check_ok())
+            .unwrap();
+        assert_eq!(
+            image_handle(again.resources().unwrap().icon("one")),
+            image_handle(receipt.icon("one"))
+        );
         assert_eq!(image_usage(), after);
         let mut calls = 0;
-        let mut cancel = || { calls += 1; if calls == 6 { Err(fault("test", "cancelled after staged decode")) } else { Ok(()) } };
-        assert!(host(root.path()).prepare(projection(), None, None, requirements(1.5), &mut cancel).is_err());
-        assert_eq!(image_usage(), after, "cancelled private variants must not publish");
-        assert!(toolkit::icons::assets::decode_owned(Arc::from(SVG), ImageFormat::Svg, 16, None).is_err(), "trusted cache must not relax untrusted decoding");
-        let explicit = ResourceReference { schema: RESOURCE_SCHEMA, set_id: "missing".into(), manifest_blake3: "00".repeat(32), icons: None };
-        assert!(host(root.path()).prepare(projection(), Some(&explicit), None, requirements(1.0), &mut check_ok()).is_err());
+        let mut cancel = || {
+            calls += 1;
+            if calls == 6 {
+                Err(fault("test", "cancelled after staged decode"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(
+            host(root.path())
+                .prepare(projection(), None, None, requirements(1.5), &mut cancel)
+                .is_err()
+        );
+        assert_eq!(
+            image_usage(),
+            after,
+            "cancelled private variants must not publish"
+        );
+        assert!(
+            toolkit::icons::assets::decode_owned(Arc::from(SVG), ImageFormat::Svg, 16, None)
+                .is_err(),
+            "trusted cache must not relax untrusted decoding"
+        );
+        let explicit = ResourceReference {
+            schema: RESOURCE_SCHEMA,
+            set_id: "missing".into(),
+            manifest_blake3: "00".repeat(32),
+            icons: None,
+        };
+        assert!(
+            host(root.path())
+                .prepare(
+                    projection(),
+                    Some(&explicit),
+                    None,
+                    requirements(1.0),
+                    &mut check_ok()
+                )
+                .is_err()
+        );
         assert_eq!(image_usage(), after);
     }
 
