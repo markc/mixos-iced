@@ -204,7 +204,6 @@ impl<P: Program + 'static> Emulator<P> {
 
                     self.cache = Some(user_interface.into_cache());
                 }
-                #[cfg(feature = "selector")]
                 runtime::Action::Query {
                     target,
                     layer,
