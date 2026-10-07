@@ -40,6 +40,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+application = { workspace = true, features = ["test-support"] }
 term-test-broker = { path = "../term/crates/term-test-broker" }
 tempfile.workspace = true
 iced_test.workspace = true
