@@ -470,6 +470,12 @@ impl Raster {
         )
     }
 
+    /// Capture the actual already resolved startup or managed source. Workers
+    /// may prepare local geometry from this immutable seed without rediscovery.
+    pub fn prepared_snapshot(&self) -> PreparedRaster {
+        PreparedRaster::from_raster(self)
+    }
+
     fn from_font(
         data: Arc<[u8]>,
         index: u32,

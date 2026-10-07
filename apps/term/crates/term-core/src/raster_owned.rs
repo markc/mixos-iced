@@ -236,6 +236,20 @@ pub struct PreparedRaster {
 }
 
 impl PreparedRaster {
+    pub(super) fn from_raster(raster: &super::Raster) -> Self {
+        Self {
+            fonts: Arc::clone(&raster.unicode.fonts),
+            weight: raster.weight,
+            scale: raster.scale,
+            px: raster.px,
+            logical_px: raster.px / raster.scale,
+            cursor: raster.cursor,
+            width: raster.width,
+            height: raster.height,
+            baseline: raster.baseline,
+        }
+    }
+
     /// Validate the policy, select the primary and compute the cell metrics.
     /// Every failure mode of the managed route is reported here.
     pub fn prepare(
@@ -305,6 +319,14 @@ impl PreparedRaster {
             height,
             baseline,
         })
+    }
+
+    /// Retain the exact selected bytes and coordinates while preparing a
+    /// different local cursor. No font discovery or parsing takes place.
+    pub fn resized_with_cursor(&self, scale: f32, logical_px: f32, cursor: Cursor) -> Result<Self, String> {
+        let mut prepared = self.resized(scale, logical_px)?;
+        prepared.cursor = cursor;
+        Ok(prepared)
     }
 
     /// The exact effective weight the candidate was prepared for.
