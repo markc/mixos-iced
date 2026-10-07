@@ -106,7 +106,7 @@ pub use keys::{Bindings, Chord, KeyRouter};
 pub use knob::Knob;
 pub use labeled_frame::LabeledFrame;
 pub use measure::Measure;
-pub use menu::{Item, Menu, MenuState, MenuStyle, NavOutcome, Navigator, Panel};
+pub use menu::{Item, Menu, MenuState, MenuStyle, NavOutcome, Navigator, Panel, StyledPanel};
 pub use meter::LevelMeter;
 pub use number_input::NumberInput;
 pub use piano_roll::{Note, PianoRoll, RollNotes, RollView};

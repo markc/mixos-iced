@@ -4,29 +4,45 @@
 use iced_core::{Font, Pixels, text::LineHeight};
 use std::collections::BTreeMap;
 
+/// One prepared role: font, logical text size and optional absolute line
+/// height. Generic over the host renderer's font, so a shared role applies
+/// to any renderer; plain `TextStyle` is the `iced_core::Font` form.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextStyle {
-    pub font: Font,
+pub struct TextStyle<F = Font> {
+    pub font: F,
     pub size: f32,
     pub line_height: Option<f32>,
 }
-impl TextStyle {
+impl<F> TextStyle<F> {
+    /// Height of a line box laid out with this style, in logical pixels:
+    /// the absolute line height when set, else iced's default 1.3 factor.
+    pub fn line_box(self) -> f32 {
+        self.line_height.unwrap_or(self.size * 1.3)
+    }
+
+    /// The iced [`LineHeight`] this style lays out with: absolute when a
+    /// line height is set, else the default relative factor.
+    pub fn line_height_or_default(self) -> LineHeight {
+        match self.line_height {
+            Some(height) => LineHeight::Absolute(Pixels(height)),
+            None => LineHeight::default(),
+        }
+    }
+
     pub fn text<'a, Theme, Renderer>(
         self,
         content: impl iced_core::text::IntoFragment<'a>,
     ) -> iced_widget::Text<'a, Theme, Renderer>
     where
         Theme: iced_widget::text::Catalog,
-        Renderer: iced_core::text::Renderer<Font = Font>,
+        Renderer: iced_core::text::Renderer<Font = F>,
     {
-        let text = iced_widget::Text::new(content)
+        iced_widget::Text::new(content)
             .font(self.font)
-            .size(self.size);
-        match self.line_height {
-            Some(height) => text.line_height(LineHeight::Absolute(Pixels(height))),
-            None => text,
-        }
+            .size(self.size)
+            .line_height(self.line_height_or_default())
     }
+
     pub fn input<'a, Message, Theme, Renderer>(
         self,
         placeholder: impl iced_core::text::IntoFragment<'a>,
@@ -35,15 +51,12 @@ impl TextStyle {
     where
         Message: Clone,
         Theme: iced_widget::text_input::Catalog,
-        Renderer: iced_core::text::Renderer<Font = Font>,
+        Renderer: iced_core::text::Renderer<Font = F>,
     {
-        let input = iced_widget::TextInput::new(placeholder, value)
+        iced_widget::TextInput::new(placeholder, value)
             .font(self.font)
-            .size(self.size);
-        match self.line_height {
-            Some(height) => input.line_height(LineHeight::Absolute(Pixels(height))),
-            None => input,
-        }
+            .size(self.size)
+            .line_height(self.line_height_or_default())
     }
 }
 
@@ -72,5 +85,58 @@ impl Typography {
     }
     pub fn records(&self) -> &BTreeMap<String, TextStyle> {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Face(u8);
+
+    #[test]
+    fn line_box_uses_the_absolute_line_height_else_the_default_factor() {
+        assert_eq!(
+            TextStyle {
+                font: Font::DEFAULT,
+                size: 10.0,
+                line_height: Some(30.0)
+            }
+            .line_box(),
+            30.0
+        );
+        assert_eq!(
+            TextStyle {
+                font: Font::DEFAULT,
+                size: 10.0,
+                line_height: None
+            }
+            .line_box(),
+            13.0
+        );
+    }
+
+    #[test]
+    fn text_styles_carry_non_default_fonts() {
+        let style = TextStyle {
+            font: Face(1),
+            size: 12.0,
+            line_height: Some(20.0),
+        };
+        assert_eq!(style.font, Face(1));
+        assert_eq!(
+            style.line_height_or_default(),
+            LineHeight::Absolute(Pixels(20.0))
+        );
+        assert_eq!(
+            TextStyle {
+                font: Face(0),
+                size: 12.0,
+                line_height: None
+            }
+            .line_height_or_default(),
+            LineHeight::default()
+        );
     }
 }
