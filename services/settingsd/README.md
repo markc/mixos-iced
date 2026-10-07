@@ -2,8 +2,10 @@
 
 Headless native ABP desktop settings authority, contract 0.1.0. An established
 profile has one writer and durable whole-document settings/operation receipts.
-Native publication is retained and owner-stamped by noded. GUI integration is
-not yet implemented.
+Native publication is retained and owner-stamped by noded. Ced and compd's
+scene-host now consume shared appearance jobs on their existing Bus lifetimes.
+Full desktop integration, panel geometry and native frame acceptance remain in
+development.
 
 ```text
 settingsd init --instance example
@@ -37,3 +39,6 @@ not silently become new default profiles.
 See [the settings contract](../../docs/spec/settings/README.md). Worker tests:
 `cargo test -p settingsd`; real native gate:
 `mix tests/settings/authority_test.mix` with an exact-revision noded binary.
+The scene-host Port and resource fixtures use
+`mix services/compd/tests/settings_test.mix`; this is Bus/resource evidence,
+without a native window or first-map timing claim.

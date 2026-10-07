@@ -261,6 +261,20 @@ builds against pristine upstream iced.</p>
 <p>Applications keep their Bus connections, document buffers, filesystem jobs,
 PTYs and shutdown order. The host adds no D-Bus dependency. Native sessions
 use their own compositor and ABP broker.</p>
+<p>Desktop appearance uses <code>application::presentation::native::{Session, Worker, Mailbox}</code> with the host's existing supervised Bus client, runtime and incoming
+receiver. <code>Session</code> owns UI-loop ordering and activation; <code>Worker</code> multiplexes
+RPCs, deadlines and one coalesced resource job; <code>Mailbox</code> bounds pending settings
+events behind one wake. <code>Worker::offline</code> prepares fallback resources while the
+host's connection attempt continues. The live lifecycle/generation sample fences
+every activation, including queued completions after connection loss.</p>
+<p>Ced and compd's scene-host use this path. <code>appearance::settings::Prepared</code>
+supplies checked fonts, typography builders, toolkit tokens and validated button
+read cells. Scene-host prepares decoration themes from the same dictionary and
+selected title font. Appearance messages update existing scenes and corner menus
+while retaining content, local edits, widget identity and keyboard state. New
+surfaces borrow the current presentation. Compd retains its internal GPU renderer;
+Ced retains tiny-skia. Panel geometry, complete control sizing/motion, persistent
+host cache I/O and native first-map/frame acceptance remain in development.</p>
 <p>On a build worker, run <code>tools/application_gate.mix</code> to check that all three
 components use the shared host and have no direct iced-family dependency,
 including renamed, development and build dependencies. Unit and renderer

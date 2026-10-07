@@ -42,7 +42,9 @@ Consumer application and frame presentation are separate evidence. Compositor
 geometry/input updates remain coherent while Wayland configure/ack/buffer changes
 complete asynchronously. No global same-vblank guarantee is made.
 
-The initial implementation is an isolated headless authority/store slice.
-Renderer wiring, named-profile management, previews, replication and compatibility
-remain later work. This decision establishes ownership; it does not claim those
-runtime capabilities are already shipped. See the [initial contract](../spec/settings/README.md).
+The authority/store and shared consumer/renderer primitives are implemented.
+Ced and compd's scene-host now use the borrowed native presentation worker and
+UI-loop session. Full widget geometry/resources, panel reconfiguration, native
+frame/first-map acceptance, named profiles, previews, replication and compatibility
+remain in development. This decision establishes ownership; individual fixtures
+do not close full desktop acceptance. See the [initial contract](../spec/settings/README.md).

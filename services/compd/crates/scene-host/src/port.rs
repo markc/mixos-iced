@@ -789,7 +789,7 @@ mod tests {
                 ),
                 None,
             )
-            .unwrap()
+            .unwrap();
         });
     }
 
@@ -941,6 +941,15 @@ mod tests {
                 before.chrome(style).deco.metrics.title_size_px * 1.5
             );
         }
+        let current = session.host().consumer().current().unwrap();
+        let app_only = controller.call("settingsd", "settings.apply", json!({
+            "binding":current.binding, "expected_incarnation":current.incarnation,
+            "expected_revision":"2", "operation_id":"quoin-unrelated-app",
+            "changes":{"apps.ced":{"mode":"light"}}
+        })).await.unwrap();
+        assert_eq!(app_only["status"], "changed");
+        assert_eq!(settings_drive(&port, &wake, &mut session, Some(3)), 0,
+            "an unrelated app override acknowledges without staging shell resources");
         let client = port.client.get().unwrap();
         client.close().await;
         assert_eq!(port.settings_generation(), None);
@@ -953,7 +962,7 @@ mod tests {
         );
         assert_eq!(
             session.host().consumer().applied().unwrap().revision,
-            settings::Revision(2)
+            settings::Revision(3)
         );
         controller.close().await;
         port.finish();
