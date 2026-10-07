@@ -22,6 +22,7 @@ pub mod frames;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use bus::native_client::{ConnState, IncomingCommand, SupervisedClient};
 use serde_json::{Value, json};
@@ -54,6 +55,37 @@ pub enum TrackError {
 
 /// The bounded reply deadline the Bus worker applies to a layout query.
 pub const QUERY_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Explicit owned fixture launch identity. Ordinary launches have neither
+/// variable set. Partial, invalid or non-Unicode identities fail startup.
+#[derive(Debug, Clone)]
+pub struct Launch {
+    pub run: String,
+    pub instance: u64,
+}
+
+impl Launch {
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let read = |name| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be Unicode")),
+        };
+        Self::parse(read("MIXOS_ACCEPTANCE_RUN")?.as_deref(), read("MIXOS_ACCEPTANCE_INSTANCE")?.as_deref())
+    }
+
+    fn parse(run: Option<&str>, instance: Option<&str>) -> Result<Option<Self>, String> {
+        match (run, instance) {
+            (None,None) => Ok(None),
+            (Some(run),Some(instance)) if !run.is_empty() && run.len() <= barrier::MAX_STRING => {
+                let instance = instance.parse::<u64>().ok().filter(|value| *value != 0)
+                    .ok_or_else(|| "fixture instance must be a nonzero u64".to_owned())?;
+                Ok(Some(Self {run:run.to_owned(),instance}))
+            }
+            _ => Err("fixture launch requires bounded run and nonzero instance together".into()),
+        }
+    }
+}
 
 /// The per-process acceptance identity, from the fixture launch
 /// configuration. It is shared by the describe verb and the fence
@@ -143,6 +175,7 @@ pub fn track_result(
     let frames = frames.cloned();
     // Capture on native admission, before a queued task is first polled.
     let frame_fence = frames.as_ref().map(|endpoint| endpoint.handle().fence());
+    let admitted_at = Instant::now();
 
     Some(async move {
         // Queued work may first be polled after the receiving socket retired.
@@ -155,14 +188,14 @@ pub fn track_result(
             Err(error) => Err(error),
             Ok(()) => match verb.as_str() {
             "describe" => Ok(describe_json(&describe, frames.is_some())),
-            "layout" => layout_verb(&describe, &inspector, &incoming).await,
+            "layout" => layout_verb(&describe, &inspector, &incoming, admitted_at).await,
             "barrier.arm" => barrier_arm_verb(&controller, &incoming),
             "barrier.wait" => barrier_wait_verb(&controller, &incoming).await,
             "barrier.release" => barrier_release_verb(&controller, &incoming),
             "barrier.state" => barrier_state_verb(&controller, &incoming),
             "frame.state" => frames.as_ref().ok_or_else(|| "frame evidence unsupported".to_owned()).and_then(|endpoint| endpoint.state(&incoming)),
             "frame.wait" => match (&frames, frame_fence) {
-                (Some(endpoint), Some(fence)) => endpoint.wait(&incoming, fence).await,
+                (Some(endpoint), Some(fence)) => endpoint.wait(&incoming, fence, admitted_at).await,
                 _ => Err("frame evidence unsupported".to_owned()),
             },
             _ => unreachable!("exact registered verb"),
@@ -236,7 +269,10 @@ async fn layout_verb(
     describe: &Describe,
     inspector: &inspect::Handle,
     incoming: &IncomingCommand,
+    admitted_at: Instant,
 ) -> Result<String, String> {
+    let deadline = admitted_at + QUERY_DEADLINE;
+    if Instant::now() >= deadline { return Err("layout query timed out before dispatch".into()); }
     let body = parse_body(&incoming.body)?;
     check_barrier_fields(&body, &["run","instance","generation","window","layer","aliases"])?;
     if body.get("layer").is_some_and(|layer| !layer.is_string()) {
@@ -276,7 +312,8 @@ async fn layout_verb(
         request = request.aliases(aliases);
     }
 
-    let snapshot = tokio::time::timeout(QUERY_DEADLINE, inspector.query(request))
+    if Instant::now() >= deadline { return Err("layout query timed out before dispatch".into()); }
+    let snapshot = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), inspector.query(request))
         .await
         .map_err(|_| "layout query timed out".to_owned())?
         .map_err(|error| format!("layout query: {error:?}"))?;
@@ -540,5 +577,17 @@ mod tests {
             assert!(validate_fixture(&describe,&request).is_err());
         }
         assert!(validate_fixture(&describe,&incoming("app.acceptance.describe",json!({"run":"owned","instance":11,"typo":true}))).is_err());
+    }
+
+    #[test]
+    fn normal_launch_is_absent_and_partial_fixture_identity_is_refused() {
+        assert!(Launch::parse(None,None).unwrap().is_none());
+        assert!(Launch::parse(Some("owned"),None).is_err());
+        assert!(Launch::parse(None,Some("1")).is_err());
+        assert!(Launch::parse(Some(""),Some("1")).is_err());
+        assert!(Launch::parse(Some("owned"),Some("0")).is_err());
+        assert!(Launch::parse(Some("owned"),Some("-1")).is_err());
+        let launch = Launch::parse(Some("owned"),Some("31")).unwrap().unwrap();
+        assert_eq!(launch.instance,31);
     }
 }

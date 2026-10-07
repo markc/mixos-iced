@@ -55,7 +55,7 @@ impl Endpoint {
             "evidence":snapshot_json(&self.handle.snapshot())}).to_string())
     }
 
-    pub(super) async fn wait(&self, incoming: &IncomingCommand, fence: Fence) -> Result<String, String> {
+    pub(super) async fn wait(&self, incoming: &IncomingCommand, fence: Fence, admitted_at: Instant) -> Result<String, String> {
         let body = super::parse_body(&incoming.body)?;
         super::check_barrier_fields(&body, &["run","instance","generation","window","activation_epoch","local_revision","timeout_ms"])?;
         self.check_generation(incoming)?;
@@ -63,7 +63,7 @@ impl Endpoint {
         let target = self.target().ok_or_else(|| "frame target not ready".to_owned())?;
         if target.window.raw() != window { return Err("wrong frame window".into()); }
         if target.stamp.is_none() { return Err("installed frame stamp not ready".into()); }
-        let receipt = self.handle.wait(Expected {window:target.window, stamp, fence}, Instant::now() + timeout)
+        let receipt = self.handle.wait(Expected {window:target.window, stamp, fence}, admitted_at + timeout)
             .await.map_err(|error| format!("frame wait: {error:?}"))?;
         Ok(json!({"ok":true,"receipt":observation_json(receipt)}).to_string())
     }
@@ -169,18 +169,19 @@ mod tests {
         let command = |window:Id| IncomingCommand {generation:7,from:"fixture".into(),command:"app.acceptance.frame.wait".into(),id:None,args:Value::Null,
             body:json!({"run":"owned","instance":1,"window":window.raw(),"activation_epoch":5,"local_revision":0}).to_string(),headers:Default::default()};
         let before = handle.snapshot();
-        let result = endpoint.wait(&command(window),handle.fence()).await.unwrap();
+        let result = endpoint.wait(&command(window),handle.fence(),Instant::now()).await.unwrap();
         assert_eq!(serde_json::from_str::<Value>(&result).unwrap()["receipt"]["request_id"],2);
         assert_eq!(before,handle.snapshot(),"query must not manufacture a redraw or receipt");
-        assert!(endpoint.wait(&command(Id::unique()),handle.fence()).await.unwrap_err().contains("wrong frame window"));
+        assert!(endpoint.wait(&command(Id::unique()),handle.fence(),Instant::now()).await.unwrap_err().contains("wrong frame window"));
         let stale = handle.fence();
         handle.set_live_generation(None);
         handle.set_live_generation(Some(7));
-        assert!(endpoint.wait(&command(window),stale).await.unwrap_err().contains("LifecycleChanged"));
+        assert!(endpoint.wait(&command(window),stale,Instant::now()).await.unwrap_err().contains("LifecycleChanged"));
         let mut extra = command(window);
         let mut body:Value = serde_json::from_str(&extra.body).unwrap();
         body["lifecycle_revision"] = json!(0);
         extra.body = body.to_string();
-        assert!(endpoint.wait(&extra,handle.fence()).await.unwrap_err().contains("unknown request field"));
+        assert!(endpoint.wait(&extra,handle.fence(),Instant::now()).await.unwrap_err().contains("unknown request field"));
+        assert!(endpoint.wait(&command(window),handle.fence(),Instant::now()-Duration::from_secs(3)).await.unwrap_err().contains("TimedOut"));
     }
 }
