@@ -21,14 +21,14 @@
 //! # Ok::<(), config::Error>(())
 //! ```
 
-pub mod atomic;
 mod app_dirs;
+pub mod atomic;
 mod dir;
 pub mod node;
 pub mod store;
 
-pub use dir::{Dir, Dirs, Environment, path};
 pub use app_dirs::AppDirs;
+pub use dir::{Dir, Dirs, Environment, path};
 pub use strict::{Error, ErrorKind, Map, Value, parse, parse_file};
 pub use strict::{
     from_file as load_conf_mix_path, from_str as from_conf_mix_str,

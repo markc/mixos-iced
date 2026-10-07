@@ -9,7 +9,9 @@ pub struct AppDirs(config::AppDirs);
 
 impl std::ops::Deref for AppDirs {
     type Target = config::AppDirs;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl AppDirs {

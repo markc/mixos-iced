@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! App-owned filenames over config's shared per-application directories.
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 
 pub const COMPONENT: &str = "ced";
 
@@ -11,7 +11,9 @@ pub struct AppDirs(config::AppDirs);
 
 impl std::ops::Deref for AppDirs {
     type Target = config::AppDirs;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl AppDirs {
