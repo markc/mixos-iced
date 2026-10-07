@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shared headless settings contract and consumer. No renderer or owned transport.
-pub mod consumer;
 #[cfg(feature = "cache")]
 pub mod cache;
+pub mod consumer;
 pub mod domains;
 pub mod fallback;
 pub mod model;

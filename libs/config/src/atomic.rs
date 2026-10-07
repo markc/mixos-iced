@@ -12,20 +12,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Open an absolute directory without following a symlink in ANY component.
 /// The caller owns the returned inode; relative/parent traversal is refused.
 pub fn open_directory(path: &Path) -> io::Result<File> {
-    use std::path::Component;
     use std::os::unix::ffi::OsStrExt;
-    if !path.is_absolute() { return Err(io::Error::other("expected an absolute directory")); }
+    use std::path::Component;
+    if !path.is_absolute() {
+        return Err(io::Error::other("expected an absolute directory"));
+    }
     let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    let mut directory = OpenOptions::new().read(true).custom_flags(flags).open("/")?;
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open("/")?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {},
+            Component::RootDir | Component::CurDir => {}
             Component::Normal(name) => {
                 let name = std::ffi::CString::new(name.as_bytes())?;
                 let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-                if fd < 0 { return Err(io::Error::last_os_error()); }
+                if fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
                 directory = unsafe { File::from_raw_fd(fd) };
-            },
+            }
             _ => return Err(io::Error::other("parent/prefix traversal refused")),
         }
     }
@@ -37,18 +44,36 @@ pub fn open_directory(path: &Path) -> io::Result<File> {
 pub fn read_in(dir: &File, name: &std::ffi::OsStr, limit: usize) -> io::Result<Vec<u8>> {
     use std::io::Read;
     use std::os::unix::ffi::OsStrExt;
-    if name.as_bytes().is_empty() || name.as_bytes().contains(&b'/') || name == "." || name == ".." {
+    if name.as_bytes().is_empty() || name.as_bytes().contains(&b'/') || name == "." || name == ".."
+    {
         return Err(io::Error::other("expected a single file name"));
     }
     let name = std::ffi::CString::new(name.as_bytes())?;
-    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) };
-    if fd < 0 { return Err(io::Error::last_os_error()); }
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
     let file = unsafe { File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > limit as u64 { return Err(io::Error::other("expected a bounded regular file")); }
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(io::Error::other("expected a bounded regular file"));
+    }
     let mut bytes = Vec::new();
-    file.take((limit as u64).checked_add(1).ok_or_else(|| io::Error::other("invalid byte limit"))?).read_to_end(&mut bytes)?;
-    if bytes.len() > limit { return Err(io::Error::other("file grew beyond byte limit")); }
+    file.take(
+        (limit as u64)
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("invalid byte limit"))?,
+    )
+    .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::other("file grew beyond byte limit"));
+    }
     Ok(bytes)
 }
 

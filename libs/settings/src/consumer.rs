@@ -4,7 +4,7 @@
 //! event loop. This engine owns neither a connection nor a renderer runtime.
 use crate::{
     domains::ChangePlan,
-    fallback::{PresentationKind, Prepared, Request},
+    fallback::{Prepared, PresentationKind, Request},
     reducer::{Decision, Reducer},
     *,
 };
@@ -60,7 +60,9 @@ pub struct Update {
     changes: ChangePlan,
 }
 impl Update {
-    pub fn kind(&self) -> PresentationKind { self.kind }
+    pub fn kind(&self) -> PresentationKind {
+        self.kind
+    }
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
@@ -155,7 +157,9 @@ impl Consumer {
     pub fn context(&self) -> &str {
         &self.context
     }
-    pub fn shell_consumer(&self) -> bool { self.shell }
+    pub fn shell_consumer(&self) -> bool {
+        self.shell
+    }
     pub fn current(&self) -> Option<&Snapshot> {
         self.reducer.current()
     }
@@ -167,9 +171,12 @@ impl Consumer {
     pub fn presentation_kind(&self) -> Option<PresentationKind> {
         self.applied.as_ref().map(|applied| {
             if self.applied_kind == PresentationKind::Current
-                && (!self.confirmed || self.current() != Some(applied.as_ref())) {
+                && (!self.confirmed || self.current() != Some(applied.as_ref()))
+            {
                 PresentationKind::LastGood
-            } else { self.applied_kind }
+            } else {
+                self.applied_kind
+            }
         })
     }
     /// Called after the shared bootstrap deadline. Preparation stays on the
@@ -180,33 +187,70 @@ impl Consumer {
         }
         self.fallback_serial = self.serial();
         Some(Request {
-            owner: self.owner, serial: self.fallback_serial, generation: self.generation,
-            binding: self.binding.clone(), context: self.context.clone(), shell: self.shell,
+            owner: self.owner,
+            serial: self.fallback_serial,
+            generation: self.generation,
+            binding: self.binding.clone(),
+            context: self.context.clone(),
+            shell: self.shell,
             retained: self.buffered.clone(),
         })
     }
-    pub fn complete_fallback(&mut self, request: &Request, result: Result<Prepared, Vec<Diagnostic>>) -> bool {
-        if request.owner != self.owner || request.serial != self.fallback_serial || request.generation != self.generation
-            || self.applied.is_some() || self.pending.is_some() {
+    pub fn complete_fallback(
+        &mut self,
+        request: &Request,
+        result: Result<Prepared, Vec<Diagnostic>>,
+    ) -> bool {
+        if request.owner != self.owner
+            || request.serial != self.fallback_serial
+            || request.generation != self.generation
+            || self.applied.is_some()
+            || self.pending.is_some()
+        {
             return false;
         }
         self.fallback_serial = 0;
         let prepared = match result {
-            Ok(prepared) if prepared.request.owner == request.owner && prepared.request.serial == request.serial => prepared,
+            Ok(prepared)
+                if prepared.request.owner == request.owner
+                    && prepared.request.serial == request.serial =>
+            {
+                prepared
+            }
             Ok(_) => return false,
-            Err(errors) => { self.fault = errors.into_iter().next(); return false; }
+            Err(errors) => {
+                self.fault = errors.into_iter().next();
+                return false;
+            }
         };
         let changes = ChangePlan::between(None, &prepared.snapshot, &self.context, self.shell);
         let serial = self.serial();
-        self.pending = Some(Update { owner: self.owner, serial, generation: self.generation,
-            snapshot: prepared.snapshot, changes, kind: prepared.kind });
+        self.pending = Some(Update {
+            owner: self.owner,
+            serial,
+            generation: self.generation,
+            snapshot: prepared.snapshot,
+            changes,
+            kind: prepared.kind,
+        });
         true
     }
     #[cfg(feature = "cache")]
     pub fn cache_save(&self) -> Option<crate::cache::Save> {
         let snapshot = self.applied.as_ref()?;
-        if !matches!(self.applied_kind, PresentationKind::Current | PresentationKind::Retained) { return None; }
-        Some(crate::cache::Save::capture(self.owner, self.applied_serial, snapshot.clone(), self.context.clone(), self.shell))
+        if !matches!(
+            self.applied_kind,
+            PresentationKind::Current | PresentationKind::Retained
+        ) {
+            return None;
+        }
+        Some(crate::cache::Save::capture(
+            self.owner,
+            self.applied_serial,
+            snapshot.clone(),
+            self.context.clone(),
+            self.shell,
+        ))
     }
     pub fn pending(&self) -> Option<&Update> {
         self.pending.as_ref()
@@ -562,11 +606,9 @@ impl Consumer {
             return;
         };
         self.fallback_serial = 0;
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.kind == PresentationKind::Current && p.snapshot.as_ref() == &snapshot)
-        {
+        if self.pending.as_ref().is_some_and(|p| {
+            p.kind == PresentationKind::Current && p.snapshot.as_ref() == &snapshot
+        }) {
             return;
         }
         let changes = ChangePlan::between(
@@ -582,7 +624,9 @@ impl Consumer {
             self.applied = Some(snapshot);
             self.applied_kind = PresentationKind::Current;
             #[cfg(feature = "cache")]
-            { self.applied_serial = self.serial(); }
+            {
+                self.applied_serial = self.serial();
+            }
             self.pending = None;
             self.fault = None;
         } else if let Some(generation) = self.generation {
@@ -616,9 +660,13 @@ impl Consumer {
         self.applied = Some(update.snapshot.clone());
         self.applied_kind = update.kind;
         #[cfg(feature = "cache")]
-        { self.applied_serial = self.serial(); }
+        {
+            self.applied_serial = self.serial();
+        }
         self.pending = None;
-        self.fault = None;
+        if update.kind == PresentationKind::Current {
+            self.fault = None;
+        }
         true
     }
     pub fn failed(&mut self, update: &Update, fault: Diagnostic) -> bool {

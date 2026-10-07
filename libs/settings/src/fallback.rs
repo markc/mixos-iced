@@ -23,7 +23,9 @@ pub struct Candidate {
     pub(crate) shell: bool,
 }
 impl Candidate {
-    pub fn snapshot(&self) -> &Snapshot { &self.snapshot }
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
 }
 
 /// Capture on the UI event loop after the bootstrap budget, prepare off-thread.
@@ -47,8 +49,12 @@ pub struct Prepared {
     diagnostics: Vec<Diagnostic>,
 }
 impl Prepared {
-    pub fn kind(&self) -> PresentationKind { self.kind }
-    pub fn diagnostics(&self) -> &[Diagnostic] { &self.diagnostics }
+    pub fn kind(&self) -> PresentationKind {
+        self.kind
+    }
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
 }
 impl Request {
     /// Resource validation covers every reference used by this context/host.
@@ -62,20 +68,39 @@ impl Request {
         let mut diagnostics = Vec::new();
         if let Some(snapshot) = &self.retained {
             match validate_inline(snapshot, &self.binding, &self.context)
-                .and_then(|_| resources(snapshot, &self.context, self.shell)) {
-                Ok(()) => return Ok(self.prepared(Arc::new(snapshot.clone()), PresentationKind::Retained, diagnostics)),
+                .and_then(|_| resources(snapshot, &self.context, self.shell))
+            {
+                Ok(()) => {
+                    return Ok(self.prepared(
+                        Arc::new(snapshot.clone()),
+                        PresentationKind::Retained,
+                        diagnostics,
+                    ));
+                }
                 Err(error) => diagnostics.push(error),
             }
         }
         if let Some(candidate) = cached {
             let check = if candidate.snapshot.binding == self.binding
-                && candidate.context == self.context && candidate.shell == self.shell {
+                && candidate.context == self.context
+                && candidate.shell == self.shell
+            {
                 resources(&candidate.snapshot, &self.context, self.shell)
             } else {
-                Err(Diagnostic::new("wrong_cache_target", "cache", "Cache belongs to another consumer binding/context/capability"))
+                Err(Diagnostic::new(
+                    "wrong_cache_target",
+                    "cache",
+                    "Cache belongs to another consumer binding/context/capability",
+                ))
             };
             match check {
-                Ok(()) => return Ok(self.prepared(candidate.snapshot, PresentationKind::Cached, diagnostics)),
+                Ok(()) => {
+                    return Ok(self.prepared(
+                        candidate.snapshot,
+                        PresentationKind::Cached,
+                        diagnostics,
+                    ));
+                }
                 Err(error) => diagnostics.push(error),
             }
         }
@@ -84,43 +109,109 @@ impl Request {
             if let Some(app) = self.context.strip_prefix("app:") {
                 desktop.apps.insert(app.into(), AppOverride::default());
             }
-            let effective = resolve(&desktop).map_err(|errors| errors.into_iter().next().unwrap())?;
+            let effective =
+                resolve(&desktop).map_err(|errors| errors.into_iter().next().unwrap())?;
             let snapshot = Snapshot {
-                schema: SCHEMA, binding: self.binding.clone(), incarnation: "embedded-presentation".into(),
-                revision: Revision(0), design_revision: Revision(0), source_digest: source_digest(EMBEDDED_DEFAULT_SOURCE), desktop, effective,
+                schema: SCHEMA,
+                binding: self.binding.clone(),
+                incarnation: "embedded-presentation".into(),
+                revision: Revision(0),
+                design_revision: Revision(0),
+                source_digest: source_digest(EMBEDDED_DEFAULT_SOURCE),
+                desktop,
+                effective,
             };
             resources(&snapshot, &self.context, self.shell)?;
             Ok::<_, Diagnostic>(Arc::new(snapshot))
         })();
         match embedded {
             Ok(snapshot) => Ok(self.prepared(snapshot, PresentationKind::Embedded, diagnostics)),
-            Err(error) => { diagnostics.push(error); Err(diagnostics) }
+            Err(error) => {
+                diagnostics.push(error);
+                Err(diagnostics)
+            }
         }
     }
-    fn prepared(&self, snapshot: Arc<Snapshot>, kind: PresentationKind, diagnostics: Vec<Diagnostic>) -> Prepared {
-        Prepared { request: self.clone(), snapshot, kind, diagnostics }
+    fn prepared(
+        &self,
+        snapshot: Arc<Snapshot>,
+        kind: PresentationKind,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Prepared {
+        Prepared {
+            request: self.clone(),
+            snapshot,
+            kind,
+            diagnostics,
+        }
     }
 }
 
 /// Recompile the whole inline document before trusting persisted/retained data.
 /// An old pinned package source absent from this binary is deliberately refused.
-pub(crate) fn validate_inline(snapshot: &Snapshot, binding: &Binding, context: &str) -> Result<(), Diagnostic> {
+pub(crate) fn validate_inline(
+    snapshot: &Snapshot,
+    binding: &Binding,
+    context: &str,
+) -> Result<(), Diagnostic> {
     binding.validate()?;
-    if snapshot.binding != *binding { return Err(Diagnostic::new("wrong_cache_target", "binding", "Snapshot binding differs")); }
-    if snapshot.schema != SCHEMA { return Err(Diagnostic::new("unsupported_schema", "schema", "Unsupported cache snapshot schema")); }
-    if snapshot.incarnation.is_empty() || snapshot.incarnation.len() > 128 || snapshot.revision.0 == 0 || snapshot.design_revision.0 == 0 {
-        return Err(Diagnostic::new("invalid_cache_snapshot", "snapshot", "Missing authority identity/revision"));
+    if snapshot.binding != *binding {
+        return Err(Diagnostic::new(
+            "wrong_cache_target",
+            "binding",
+            "Snapshot binding differs",
+        ));
     }
-    if snapshot.encoded_len().map_err(|e| Diagnostic::new("invalid_cache_snapshot", "snapshot", e.to_string()))? > MAX_SNAPSHOT_BYTES {
-        return Err(Diagnostic::new("snapshot_too_large", "snapshot", "Inline byte budget exceeded"));
+    if snapshot.schema != SCHEMA {
+        return Err(Diagnostic::new(
+            "unsupported_schema",
+            "schema",
+            "Unsupported cache snapshot schema",
+        ));
     }
-    let source = snapshot.desktop.appearance.source.as_deref().unwrap_or(EMBEDDED_DEFAULT_SOURCE);
+    if snapshot.incarnation.is_empty()
+        || snapshot.incarnation.len() > 128
+        || snapshot.revision.0 == 0
+        || snapshot.design_revision.0 == 0
+    {
+        return Err(Diagnostic::new(
+            "invalid_cache_snapshot",
+            "snapshot",
+            "Missing authority identity/revision",
+        ));
+    }
+    if snapshot
+        .encoded_len()
+        .map_err(|e| Diagnostic::new("invalid_cache_snapshot", "snapshot", e.to_string()))?
+        > MAX_SNAPSHOT_BYTES
+    {
+        return Err(Diagnostic::new(
+            "snapshot_too_large",
+            "snapshot",
+            "Inline byte budget exceeded",
+        ));
+    }
+    let source = snapshot
+        .desktop
+        .appearance
+        .source
+        .as_deref()
+        .unwrap_or(EMBEDDED_DEFAULT_SOURCE);
     if snapshot.source_digest != source_digest(source) {
-        return Err(Diagnostic::new("unsupported_interpretation", "source_digest", "Pinned source is unavailable or differs"));
+        return Err(Diagnostic::new(
+            "unsupported_interpretation",
+            "source_digest",
+            "Pinned source is unavailable or differs",
+        ));
     }
-    let effective = resolve(&snapshot.desktop).map_err(|errors| errors.into_iter().next().unwrap())?;
+    let effective =
+        resolve(&snapshot.desktop).map_err(|errors| errors.into_iter().next().unwrap())?;
     if effective != snapshot.effective || !effective.contains_key(context) {
-        return Err(Diagnostic::new("unsupported_interpretation", "effective", "Authored inputs and cached projections disagree"));
+        return Err(Diagnostic::new(
+            "unsupported_interpretation",
+            "effective",
+            "Authored inputs and cached projections disagree",
+        ));
     }
     Ok(())
 }
