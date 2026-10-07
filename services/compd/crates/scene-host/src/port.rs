@@ -728,6 +728,107 @@ async fn send(
 mod tests {
     use super::*;
 
+    fn install_settings_fonts() {
+        static FONTS: std::sync::Once = std::sync::Once::new();
+        FONTS.call_once(|| toolkit::fonts::install(toolkit::fonts::FontSet::new().sans(
+            include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf").as_slice()
+        ), None).unwrap());
+    }
+
+    fn settings_drive(
+        port: &Port,
+        wake: &Receiver<()>,
+        session: &mut application::presentation::native::Session<Look>,
+        revision: Option<u64>,
+    ) -> usize {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut changes = 0;
+        loop {
+            for event in port.take_settings() {
+                let (change, jobs) = session.handle(event, port.settings_generation());
+                changes += usize::from(change.is_some());
+                port.settings_jobs(jobs);
+            }
+            let ready = match revision {
+                Some(revision) => session.host().kind() == Some(settings::fallback::PresentationKind::Current)
+                    && session.host().consumer().applied().is_some_and(|snapshot| snapshot.revision == settings::Revision(revision)),
+                None => session.host().kind() == Some(settings::fallback::PresentationKind::Embedded),
+            };
+            if ready { return changes; }
+            wake.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("Quoin settings did not converge before deadline");
+        }
+    }
+
+    fn settings_port(url: String) -> (Port, Receiver<()>, application::presentation::native::Session<Look>) {
+        install_settings_fonts();
+        let (notify, wake) = mpsc::channel();
+        let port = Port::start(HostConfig { service_override: None, noded_url: url }, Arc::new(move || { let _ = notify.send(()); })).unwrap();
+        let mut session = application::presentation::native::Session::new(
+            settings::consumer::Consumer::for_shell(port.settings_binding()).unwrap());
+        let (_, jobs) = session.handle(SettingsEvent::Wake, port.settings_generation());
+        port.settings_jobs(jobs);
+        (port, wake, session)
+    }
+
+    #[test]
+    #[ignore = "requires settings_test.mix isolated environment"]
+    fn settings_offline_port_prepares_fallback_while_connecting() {
+        // Own a refused endpoint for the fixture, without selecting a port
+        // somebody else can claim between binding and the connection attempt.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (port, wake, mut session) = settings_port(format!("ws://{}/ws", listener.local_addr().unwrap()));
+        assert_eq!(settings_drive(&port, &wake, &mut session, None), 1);
+        assert_eq!(port.settings_generation(), None);
+        assert_eq!(session.host().presentation().unwrap().content().chrome(decor::ChromeStyle::Mac).tokens, decor::TokenSource::Prepared);
+        port.finish();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires exact-revision binaries and isolated settings_test.mix broker"]
+    async fn settings_native_port_activates_and_retains_last_good_after_real_loss() {
+        use std::process::{Child, Command, Stdio};
+        struct Authority(Child);
+        impl Drop for Authority {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let binary = std::env::var("MIXOS_TEST_SETTINGSD").unwrap();
+        assert!(Command::new(&binary).args(["seed", "--allow-create", "--instance", "fixture", "--root"])
+            .arg(root.path()).status().unwrap().success());
+        let log = std::fs::File::create(root.path().join("settingsd.log")).unwrap();
+        let _authority = Authority(Command::new(&binary).args(["serve", "--instance", "fixture", "--root"])
+            .arg(root.path()).stdout(Stdio::from(log.try_clone().unwrap())).stderr(Stdio::from(log)).spawn().unwrap());
+        let url = std::env::var("MIXOS_NODED_URL").unwrap();
+        let (port, wake, mut session) = settings_port(url.clone());
+        assert_eq!(settings_drive(&port, &wake, &mut session, Some(1)), 1);
+        let before = session.host().presentation().unwrap().content().clone();
+        let controller = SupervisedClient::connect_options("quoin-settings-controller", &url).connect().await.unwrap();
+        let current = session.host().consumer().current().unwrap();
+        let applied = controller.call("settingsd", "settings.apply", json!({
+            "binding": current.binding, "expected_incarnation": current.incarnation,
+            "expected_revision":"1", "operation_id":"quoin-live-fixture",
+            "changes":{"appearance.mode":"dark","ui.text_scale":1.5}
+        })).await.unwrap();
+        assert_eq!(applied["status"], "changed");
+        assert_eq!(settings_drive(&port, &wake, &mut session, Some(2)), 1);
+        let after = session.host().presentation().unwrap().content();
+        assert_ne!(after.prepared.tokens().palette, before.prepared.tokens().palette);
+        for style in decor::ChromeStyle::ALL {
+            assert_eq!(after.chrome(style).deco.metrics.title_size_px, before.chrome(style).deco.metrics.title_size_px * 1.5);
+        }
+        let client = port.client.get().unwrap();
+        client.close().await;
+        assert_eq!(port.settings_generation(), None);
+        let (change, jobs) = session.handle(SettingsEvent::Wake, port.settings_generation());
+        port.settings_jobs(jobs);
+        assert!(change.is_none());
+        assert_eq!(session.host().kind(), Some(settings::fallback::PresentationKind::LastGood));
+        assert_eq!(session.host().consumer().applied().unwrap().revision, settings::Revision(2));
+        controller.close().await;
+        port.finish();
+    }
+
     #[test]
     fn page_request_from_worker_wakes_idle_loop_and_schedules_frame() {
         use dispatcher::state::state::{Dispatch, RedrawReason};

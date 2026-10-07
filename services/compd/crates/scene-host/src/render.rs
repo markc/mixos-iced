@@ -621,10 +621,11 @@ pub(crate) fn reconcile(
             }
             None => {
                 restack |= !dialog;
-                let mut ui = SceneUi::new(content(entry, frame.clone(), dialog, marks), palette);
-                if let Some(prepared) = &prepared {
-                    ui.apply_appearance(Arc::clone(prepared));
-                }
+                let content = content(entry, frame.clone(), dialog, marks);
+                let ui = prepared.as_ref().map_or_else(
+                    || SceneUi::new(Arc::clone(&content), palette),
+                    |prepared| SceneUi::from_prepared(Arc::clone(&content), Arc::clone(prepared)),
+                );
                 let handle = load(
                     state,
                     renderer,

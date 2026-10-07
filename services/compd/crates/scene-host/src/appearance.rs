@@ -100,3 +100,15 @@ pub(crate) fn page(prepared: &Prepared, dialog: bool) -> (Palette, Theme) {
     }
     (palette, theme.to_iced())
 }
+
+#[cfg(test)]
+pub(crate) fn fixture(mode: &str, scale: f64) -> Arc<Prepared> {
+    let mut desktop = settings::Desktop::default();
+    desktop.appearance.mode = mode.into();
+    desktop.ui.text_scale = scale;
+    let effective = settings::resolve(&desktop).unwrap().remove("shell").unwrap();
+    Arc::new(::appearance::settings::Projection::new(&effective).unwrap().prepare(|_, record| Ok(toolkit::fonts::FontSelection {
+        font: iced_core::Font { weight: if record.weight >= 600 { Weight::Bold } else { Weight::Normal }, ..iced_core::Font::DEFAULT },
+        choice: toolkit::fonts::FontChoice::Declared,
+    })).unwrap())
+}

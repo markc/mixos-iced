@@ -124,7 +124,7 @@ pub struct SceneUi {
     content: Arc<Content>,
     palette: Palette,
     theme: Theme,
-    buttons: Arc<ResolvedButtonTable>,
+    buttons: Option<Arc<ResolvedButtonTable>>,
     prepared: Option<Arc<::appearance::settings::Prepared>>,
     /// Local text of the fields being edited, by instance key, until the
     /// scene's own `value` port changes.
@@ -376,7 +376,7 @@ impl<'a> Nodes<'a> {
     }
 }
 
-fn intrinsic_height(nodes: Nodes<'_>, id: &str, depth: usize) -> Option<f32> {
+fn intrinsic_height(nodes: Nodes<'_>, id: &str, depth: usize, styles: [toolkit::typography::TextStyle; 2]) -> Option<f32> {
     if depth > 64 {
         return None;
     }
@@ -388,14 +388,17 @@ fn intrinsic_height(nodes: Nodes<'_>, id: &str, depth: usize) -> Option<f32> {
         return Some(height);
     }
     let height = match node.family.as_str() {
-        "text" => number(node, "size").unwrap_or(TEXT_SIZE) * 1.2,
+        "text" => {
+            let style = styles[usize::from(flag(node, "mono"))];
+            style.line_height.unwrap_or(number(node, "size").unwrap_or(style.size) * 1.2)
+        }
         "image" => number(node, "h").unwrap_or(16.0),
         "row" => children(node)
-            .filter_map(|id| intrinsic_height(nodes, id, depth + 1))
+            .filter_map(|id| intrinsic_height(nodes, id, depth + 1, styles))
             .fold(0.0_f32, f32::max),
         "column" => {
             let heights: Vec<_> = children(node)
-                .filter_map(|id| intrinsic_height(nodes, id, depth + 1))
+                .filter_map(|id| intrinsic_height(nodes, id, depth + 1, styles))
                 .collect();
             heights.iter().sum::<f32>()
                 + heights.len().saturating_sub(1) as f32 * number(node, "gap").unwrap_or(0.0)
@@ -534,7 +537,7 @@ impl SceneUi {
             content,
             palette,
             theme: Theme::custom("design", seed),
-            buttons: design.buttons,
+            buttons: Some(design.buttons),
             prepared: None,
             edits: BTreeMap::new(),
             toggles: BTreeMap::new(),
@@ -551,6 +554,15 @@ impl SceneUi {
     pub(crate) fn apply_appearance(&mut self, prepared: Arc<::appearance::settings::Prepared>) {
         (self.palette, self.theme) = crate::appearance::page(&prepared, self.content.dialog);
         self.prepared = Some(prepared);
+    }
+
+    pub(crate) fn from_prepared(content: Arc<Content>, prepared: Arc<::appearance::settings::Prepared>) -> Self {
+        let (palette, theme) = crate::appearance::page(&prepared, content.dialog);
+        Self {
+            images: crate::images::prepare(&content.tree, &content.lists),
+            content, palette, theme, buttons: None, prepared: Some(prepared),
+            edits: BTreeMap::new(), toggles: BTreeMap::new(),
+        }
     }
 
     fn text_style(&self, mono: bool) -> toolkit::typography::TextStyle {
@@ -749,7 +761,7 @@ impl SceneUi {
                     .width(width)
                     .style(move |_theme: &Theme, status| {
                         self.prepared.as_ref().map_or_else(
-                            || scene_button_style(&self.buttons, node, status),
+                            || scene_button_style(self.buttons.as_ref().expect("legacy scene design"), node, status),
                             |prepared| {
                                 read_button_style(prepared.button(scene_button_key(node, status)))
                             },
@@ -929,7 +941,7 @@ impl SceneUi {
         // their intrinsic text/image height; preserve that before padding.
         let padding = if let Some(height) = number(node, "height") {
             let content_height = children(node)
-                .filter_map(|id| intrinsic_height(nodes, id, 0))
+                .filter_map(|id| intrinsic_height(nodes, id, 0, [self.text_style(false), self.text_style(true)]))
                 .fold(0.0_f32, f32::max);
             let available = (height - content_height).max(0.0);
             let vertical = padding.top + padding.bottom;
@@ -1155,8 +1167,8 @@ impl SceneUi {
 
     fn frame<'a, R: SceneRenderer>(&'a self, frame: &'a Frame, body: El<'a, R>) -> El<'a, R> {
         let bar = self.palette.secondary;
-        let title = text(frame.title.clone())
-            .size(TEXT_SIZE)
+        let title = self.prepared.as_ref().and_then(|prepared| prepared.typography().get("ui_display"))
+            .unwrap_or(self.text_style(false)).text(frame.title.clone())
             .color(color(bar.foreground));
         let close = button(
             text("×")
@@ -1346,6 +1358,33 @@ pub fn event_of(message: &SceneMessage) -> Option<(&str, &str, Value)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn appearance_keeps_content_local_edits_and_toggles_and_updates_shared_defaults() {
+        let mut ui = test_ui("---\nscene: 1\nname: settings\ncitizen: test\n---\n```mix\nroot: {widget: \"column\", children: [\"entry\", \"enabled\", \"save\"]}\nentry: {widget: \"field\", value: \"authored\"}\nenabled: {widget: \"toggle\", value: false}\nsave: {widget: \"button\", label: \"Save\", tone: \"primary\"}\n```\n");
+        let content = Arc::clone(&ui.content);
+        let route = Arc::new(Route::new(&content.tree, "entry", &content.tree.nodes["entry"]));
+        ui.update(SceneMessage::Input(Arc::clone(&route), "/root/entry".into(), "unsaved edit".into()));
+        ui.update(SceneMessage::Toggle(route, "/root/enabled".into(), true));
+        ui.apply_appearance(crate::appearance::fixture("light", 1.0));
+        let old_page = ui.page();
+        let old_type = ui.text_style(false);
+        let prepared = crate::appearance::fixture("dark", 1.5);
+        ui.update(SceneMessage::Appearance(Arc::clone(&prepared)));
+        assert!(Arc::ptr_eq(&content, &ui.content));
+        assert_eq!(ui.edits["/root/entry"], "unsaved edit");
+        assert!(ui.toggles["/root/enabled"]);
+        assert_ne!(ui.page(), old_page);
+        assert_eq!(ui.text_style(false).size, old_type.size * 1.5);
+        let key = scene_button_key(&content.tree.nodes["save"], button::Status::Hovered);
+        assert_eq!(read_button_style(prepared.button(key)).text_color,
+            Color::from_linear_rgba(prepared.button(key).pair.foreground[0] as f32,
+                prepared.button(key).pair.foreground[1] as f32, prepared.button(key).pair.foreground[2] as f32,
+                prepared.button(key).pair.foreground[3] as f32));
+        let newly_created = SceneUi::from_prepared(Arc::clone(&content), prepared);
+        assert_eq!(newly_created.page(), ui.page());
+        assert_eq!(newly_created.text_style(false), ui.text_style(false));
+    }
+
     use crate::test_renderer::LayoutRenderer;
 
     fn test_ui(source: &str) -> SceneUi {
@@ -1511,7 +1550,7 @@ mod tests {
     #[test]
     fn autofocus_after_final_layout_targets_the_field_and_typing_emits_filter() {
         let renderer = LayoutRenderer::new();
-        let ui = test_ui(
+        let mut ui = test_ui(
             "---\nscene: 1\nname: launcher\ncitizen: test\nwindow: {\"kind\":\"edge\",\"edge\":\"left\",\"autofocus\":\"search\"}\n---\n```mix\nroot: {widget: \"column\", children: [\"search\"]}\nsearch: {widget: \"field\", value: \"\", on_change: \"filter\"}\n```\n",
         );
         // The cache after the final resize, rather than the cache discarded
@@ -1535,6 +1574,14 @@ mod tests {
             &mut focus,
         );
         assert!(focus.found, "search must map to field:search, not n:search");
+        drop(element);
+        // Restyle the same field with a larger prepared font, then reconcile
+        // against its existing iced tree. Typing below must still reach it.
+        ui.update(SceneMessage::Appearance(crate::appearance::fixture("dark", 1.5)));
+        let mut element = ui.build_view::<LayoutRenderer>();
+        state.diff(element.as_widget_mut());
+        let layout = element.as_widget_mut().layout(&mut state, &renderer,
+            &iced_core::layout::Limits::new(iced_core::Size::ZERO, iced_core::Size::new(440.0, 812.0)));
         let mut bus = iced_core::shell::Bus::new();
         let mut shell = iced_core::Shell::new(
             &iced_core::window::Headless,

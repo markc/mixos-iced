@@ -215,11 +215,11 @@ impl Projection {
         let mut buttons = BTreeMap::new();
         for cell in &d.buttons {
             let key = design::ButtonCellKey {
-                variant: design::ButtonVariant::from_name(&cell.variant)
+                variant: design::ButtonVariant::ALL.into_iter().find(|variant| variant.name() == cell.variant)
                     .ok_or_else(|| fault("button.variant", "Unsupported button variant"))?,
-                size: design::ButtonSize::from_name(&cell.size)
+                size: design::ButtonSize::ALL.into_iter().find(|size| size.name() == cell.size)
                     .ok_or_else(|| fault("button.size", "Unsupported button size"))?,
-                interaction: design::InteractionState::from_name(&cell.interaction)
+                interaction: design::InteractionState::ALL.into_iter().find(|interaction| interaction.name() == cell.interaction)
                     .ok_or_else(|| fault("button.interaction", "Unsupported button interaction"))?,
                 focus_visible: cell.focus_visible,
             };

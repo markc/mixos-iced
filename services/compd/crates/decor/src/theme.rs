@@ -361,6 +361,23 @@ fn apply_dictionary(theme: &mut DecoTheme, dictionary: &ResolvedDictionary) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn read_dictionary_uses_selected_title_face_and_preserves_each_style_shape() {
+        let design = embedded();
+        for style in ChromeStyle::ALL {
+            let legacy = ChromeTheme::from_source(style, None);
+            let read = ChromeTheme::from_read(style, design.dictionary(), DecoFontFamily::Monospace, DecoFontWeight(700), 25.0);
+            assert_eq!(read.tokens, TokenSource::Prepared);
+            assert_eq!(read.palette, legacy.palette);
+            assert_eq!(read.deco.colors, legacy.deco.colors);
+            assert_eq!(read.deco.buttons, legacy.deco.buttons);
+            assert_eq!(read.deco.metrics.title_font_family, DecoFontFamily::Monospace);
+            assert_eq!(read.deco.metrics.title_size_px, 25.0);
+            assert_eq!(read.deco.metrics.title_font_weight, DecoFontWeight(700));
+            assert_eq!(read.deco.metrics.titlebar_height, legacy.deco.metrics.titlebar_height);
+        }
+    }
+
     fn embedded() -> UnstampedResolvedDesign {
         compile(design::EMBEDDED_DEFAULT_SOURCE).expect("embedded default compiles")
     }

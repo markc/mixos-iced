@@ -55,5 +55,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+tempfile = "=3.27.0"
 # The same CPU SVG parser/rasteriser and embedded-image support as iced_wgpu.
 resvg = { version = "0.45", default-features = false, features = ["raster-images"] }

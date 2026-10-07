@@ -1,0 +1,19 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real Quoin Port plus shared presentation jobs; no native window is claimed.
+$root = dirname(dirname(dirname(realpath($0))))
+$host = require($root .. "/tests/desktop/nested_host_lib.mix")
+$noded = env("MIXOS_TEST_NODED", $root .. "/target/release-fast/noded")
+if not is_file($noded) then raise("BINARY","Build exact-revision noded first") end
+$broker = $host.private_bus({dir:"/var/tmp/quoin-settings-" .. uuid(),name:"quoin-settings-gate",noded:$noded})
+export MIXOS_SETTINGS_INSTANCE="fixture"
+export MIXOS_SETTINGS_PROFILE="default"
+export MIXOS_TEST_SETTINGSD=$root .. "/target/release-fast/settingsd"
+try
+  $result = run_argv(["cargo","test","--locked","--profile","release-fast","-p","scene-host","port::tests::settings_","--","--ignored","--test-threads=1","--nocapture"],{cwd:$root,timeout:300,max_output:2000000,stderr:"stdout"})
+  print($result.stdout)
+  if not $result.ok or $result.stdout_truncated then raise("QUOIN_NATIVE","Quoin native settings fixture failed") end
+finally
+  $host.stop_bus($broker)
+end
+print("Quoin Port offline/native presentation fixtures passed")
