@@ -318,36 +318,74 @@ fn real_abp_publication_open_operator_receipts_and_authority_restart() {
 fn shared_bootstrap_deadline_bounds_subscribe_and_a_hung_authority_read() {
     use bus::native_client::SupervisedClient;
     use settings::{consumer::Consumer, native};
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         let broker = BrokerFixture::new();
         let readiness = tokio::time::Instant::now() + Duration::from_secs(20);
         let silent = loop {
             match NodedClient::connect("settingsd", &broker.url).await {
                 Ok(client) => break client,
-                Err(_) => { assert!(tokio::time::Instant::now() < readiness); tokio::time::sleep(Duration::from_millis(25)).await; }
+                Err(_) => {
+                    assert!(tokio::time::Instant::now() < readiness);
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
             }
         };
         // A registered authority that receives requests but deliberately never
         // replies proves the native deadline rather than a fast missing-route error.
         let mut requests = silent.incoming_async().await.unwrap();
-        let client = SupervisedClient::connect_options("bootstrap-deadline-gate", &broker.url).bounded_incoming(8).connect().await.unwrap();
-        let mut state = Consumer::for_app(settings::Binding { instance:"fixture".into(), profile:"default".into() }, "ced").unwrap();
+        let client = SupervisedClient::connect_options("bootstrap-deadline-gate", &broker.url)
+            .bounded_incoming(8)
+            .connect()
+            .await
+            .unwrap();
+        let mut state = Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "ced",
+        )
+        .unwrap();
         let subscribe = state.connected(client.connection_generation()).unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
         let result = native::execute_until(&client, &subscribe, deadline).await;
         let read = state.complete(&subscribe, result).unwrap();
         let result = native::execute_until(&client, &read, deadline).await;
-        assert_eq!(result.unwrap_err().code,"read_timeout");
-        assert!(tokio::time::Instant::now() < deadline + Duration::from_secs(2),"native call fell through to the transport's long timeout");
-        let command = tokio::time::timeout(Duration::from_secs(1),requests.recv()).await.unwrap().unwrap();
-        assert_eq!(command.command,"settings.get");
-        state.complete(&read,Err(settings::Diagnostic::new("read_timeout","native","Bootstrap deadline elapsed")));
-        assert!(state.current().is_none()); assert!(state.pending().is_none());
+        assert_eq!(result.unwrap_err().code, "read_timeout");
+        assert!(
+            tokio::time::Instant::now() < deadline + Duration::from_secs(2),
+            "native call fell through to the transport's long timeout"
+        );
+        let command = tokio::time::timeout(Duration::from_secs(1), requests.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(command.command, "settings.get");
+        state.complete(
+            &read,
+            Err(settings::Diagnostic::new(
+                "read_timeout",
+                "native",
+                "Bootstrap deadline elapsed",
+            )),
+        );
+        assert!(state.current().is_none());
+        assert!(state.pending().is_none());
         assert!(state.retry_deadline().is_some());
         // An expired deadline must not begin another outbound action.
         let retry = state.retry().unwrap();
-        assert_eq!(native::execute_until(&client,&retry,deadline).await.unwrap_err().code,"read_timeout");
-        client.close().await; silent.close().await;
+        assert_eq!(
+            native::execute_until(&client, &retry, deadline)
+                .await
+                .unwrap_err()
+                .code,
+            "read_timeout"
+        );
+        client.close().await;
+        silent.close().await;
     });
 }

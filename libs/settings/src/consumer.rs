@@ -97,8 +97,16 @@ impl Consumer {
     }
     pub fn new(binding: Binding, context: &str, shell: bool) -> Result<Self, Diagnostic> {
         binding.validate()?;
-        let identifier = context.strip_prefix("app:").or_else(|| (context == "desktop").then_some(context));
-        if identifier.is_none_or(|id| id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')) {
+        let identifier = context
+            .strip_prefix("app:")
+            .or_else(|| (context == "desktop").then_some(context));
+        if identifier.is_none_or(|id| {
+            id.is_empty()
+                || id.len() > 64
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        }) {
             return Err(Diagnostic::new(
                 "invalid_context",
                 "context",
@@ -133,7 +141,9 @@ impl Consumer {
     pub fn binding(&self) -> &Binding {
         &self.binding
     }
-    pub fn context(&self) -> &str { &self.context }
+    pub fn context(&self) -> &str {
+        &self.context
+    }
     pub fn current(&self) -> Option<&Snapshot> {
         self.reducer.current()
     }
@@ -145,18 +155,25 @@ impl Consumer {
     }
     /// Hosts cancel their old action future whenever this ticket disappears or
     /// changes; there must be only one current executor job in the host.
-    pub fn current_work(&self) -> Option<&Work> { self.work.as_ref() }
+    pub fn current_work(&self) -> Option<&Work> {
+        self.work.as_ref()
+    }
     pub fn fault(&self) -> Option<&Diagnostic> {
         self.fault.as_ref()
     }
     pub fn retry_delay(&self) -> Option<Duration> {
-        self.retry_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        self.retry_deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
-    pub fn retry_deadline(&self) -> Option<Instant> { self.retry_deadline }
+    pub fn retry_deadline(&self) -> Option<Instant> {
+        self.retry_deadline
+    }
     pub fn generation(&self) -> Option<u64> {
         self.generation
     }
-    pub fn is_confirmed(&self) -> bool { self.confirmed }
+    pub fn is_confirmed(&self) -> bool {
+        self.confirmed
+    }
     fn serial(&mut self) -> u64 {
         self.serial = self
             .serial
@@ -173,7 +190,10 @@ impl Consumer {
         let work = Work {
             owner: self.owner,
             ticket: self.reducer.ticket(),
-            baseline: self.reducer.current().map(|s| (s.incarnation.clone(), s.revision)),
+            baseline: self
+                .reducer
+                .current()
+                .map(|s| (s.incarnation.clone(), s.revision)),
             serial: self.serial(),
             generation,
             binding: self.binding.clone(),
@@ -229,7 +249,9 @@ impl Consumer {
             self.read_again = true;
             return None;
         }
-        if self.retry_deadline.is_some() { return None; }
+        if self.retry_deadline.is_some() {
+            return None;
+        }
         self.start(if self.subscribed {
             WorkKind::Read
         } else {
@@ -255,7 +277,9 @@ impl Consumer {
         if self.retry_deadline.is_none() {
             self.work = None;
             self.read_again = false;
-        } else if self.work.is_some() { self.read_again = true; }
+        } else if self.work.is_some() {
+            self.read_again = true;
+        }
         None
     }
     fn fail(&mut self, fault: Diagnostic) {
@@ -275,7 +299,9 @@ impl Consumer {
             self.retry_deadline = None;
             return;
         }
-        if self.retry_deadline.is_some() { return; }
+        if self.retry_deadline.is_some() {
+            return;
+        }
         self.failures = self.failures.saturating_add(1);
         let delay = (250 * (1u64 << (self.failures - 1).min(7))).min(30_000);
         self.retry_deadline = Some(Instant::now() + Duration::from_millis(delay));
@@ -301,23 +327,41 @@ impl Consumer {
             (WorkKind::Subscribe, Ok(None)) => {
                 self.subscribed = true;
                 self.read_again = false;
-                if self.retry_deadline.is_some() { None } else { self.start(WorkKind::Read) }
+                if self.retry_deadline.is_some() {
+                    None
+                } else {
+                    self.start(WorkKind::Read)
+                }
             }
             (WorkKind::Read, Ok(Some(snapshot))) => {
                 // A loss/confirmation request after this read began requires
                 // one later bound read. Do not activate a pre-gap result.
                 if self.read_again {
                     self.read_again = false;
-                    return if self.retry_deadline.is_some() { None } else { self.start(WorkKind::Read) };
+                    return if self.retry_deadline.is_some() {
+                        None
+                    } else {
+                        self.start(WorkKind::Read)
+                    };
                 }
                 if let Err(fault) = self.check(&snapshot) {
                     self.fail(fault);
                     return None;
                 }
-                if work.baseline.as_ref().is_some_and(|(incarnation, revision)| incarnation == &snapshot.incarnation && snapshot.revision < *revision) {
+                if work
+                    .baseline
+                    .as_ref()
+                    .is_some_and(|(incarnation, revision)| {
+                        incarnation == &snapshot.incarnation && snapshot.revision < *revision
+                    })
+                {
                     self.confirmed = false;
                     self.pending = None;
-                    self.fail(Diagnostic::new("authority_rollback", "revision", "Fresh read is below its captured same-incarnation baseline"));
+                    self.fail(Diagnostic::new(
+                        "authority_rollback",
+                        "revision",
+                        "Fresh read is below its captured same-incarnation baseline",
+                    ));
                     return None;
                 }
                 let digest = crate::digest(&snapshot).ok();
@@ -415,9 +459,10 @@ impl Consumer {
             return self.rejected_delivery(fault);
         }
         let candidate = crate::digest(&snapshot).ok();
-        if self.reducer.examine(&snapshot, false) == Decision::ConfirmAuthority && candidate
-            .as_ref()
-            .is_some_and(|d| self.rejected.contains(d))
+        if self.reducer.examine(&snapshot, false) == Decision::ConfirmAuthority
+            && candidate
+                .as_ref()
+                .is_some_and(|d| self.rejected.contains(d))
         {
             return None;
         }

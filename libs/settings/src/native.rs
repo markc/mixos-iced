@@ -39,7 +39,10 @@ pub async fn execute_until(
     }
     let deadline = deadline.min(tokio::time::Instant::now() + BOOTSTRAP_BUDGET);
     if deadline <= tokio::time::Instant::now() {
-        return Err(fault("read_timeout", "Native work deadline already elapsed"));
+        return Err(fault(
+            "read_timeout",
+            "Native work deadline already elapsed",
+        ));
     }
     let result = tokio::time::timeout_at(deadline, async {
         match work.kind() {
@@ -63,8 +66,20 @@ pub async fn execute_until(
                     bus::PortReply::Ok { value, .. } => value,
                     bus::PortReply::AppError { message, .. } => {
                         let structured = serde_json::from_str::<serde_json::Value>(&message).ok();
-                        let status = structured.as_ref().and_then(|v| v.get("status")).and_then(|s| s.as_str());
-                        let code = if matches!(status, Some("wrong_target" | "validation_failed" | "unsupported_schema" | "snapshot_too_large" | "not_served")) {
+                        let status = structured
+                            .as_ref()
+                            .and_then(|v| v.get("status"))
+                            .and_then(|s| s.as_str());
+                        let code = if matches!(
+                            status,
+                            Some(
+                                "wrong_target"
+                                    | "validation_failed"
+                                    | "unsupported_schema"
+                                    | "snapshot_too_large"
+                                    | "not_served"
+                            )
+                        ) {
                             "authority_refused"
                         } else {
                             "read_failed"
@@ -98,7 +113,12 @@ pub async fn execute_until(
         }
     })
     .await
-    .map_err(|_| fault("read_timeout", "Native work exceeded its bootstrap/recovery deadline"))?;
+    .map_err(|_| {
+        fault(
+            "read_timeout",
+            "Native work exceeded its bootstrap/recovery deadline",
+        )
+    })?;
     if !client.is_connected() || client.connection_generation() != work.generation() {
         return Err(fault(
             "stale_connection",
@@ -120,11 +140,19 @@ impl Consumer {
             return None;
         }
         if command.body.len() > MAX_SNAPSHOT_BYTES {
-            return self.rejected_delivery(Diagnostic::new("invalid_delivery", "snapshot", "Canonical delivery exceeds inline budget"));
+            return self.rejected_delivery(Diagnostic::new(
+                "invalid_delivery",
+                "snapshot",
+                "Canonical delivery exceeds inline budget",
+            ));
         }
         match serde_json::from_str::<Snapshot>(&command.body) {
             Ok(snapshot) => self.observe(command.generation, snapshot),
-            Err(error) => self.rejected_delivery(Diagnostic::new("invalid_delivery", "snapshot", error.to_string())),
+            Err(error) => self.rejected_delivery(Diagnostic::new(
+                "invalid_delivery",
+                "snapshot",
+                error.to_string(),
+            )),
         }
     }
 }

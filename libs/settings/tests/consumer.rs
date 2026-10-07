@@ -248,73 +248,119 @@ fn bootstrap_delivery_flood_is_one_buffer_and_retired_candidate_does_not_amplify
 
 #[test]
 fn rejected_confirmation_never_filters_now_confirmed_higher_revision() {
-    let mut state = consumer(); activate(&mut state, snapshot(3,"a"));
-    let read = state.observe(1,snapshot(90,"b")).unwrap();
-    state.complete(&read,Ok(Some(snapshot(3,"a"))));
+    let mut state = consumer();
+    activate(&mut state, snapshot(3, "a"));
+    let read = state.observe(1, snapshot(90, "b")).unwrap();
+    state.complete(&read, Ok(Some(snapshot(3, "a"))));
     let read = state.refresh().unwrap();
-    state.complete(&read,Ok(Some(snapshot(80,"b"))));
-    state.observe(1,snapshot(90,"b"));
-    assert_eq!(state.current().unwrap().revision,Revision(90));
+    state.complete(&read, Ok(Some(snapshot(80, "b"))));
+    state.observe(1, snapshot(90, "b"));
+    assert_eq!(state.current().unwrap().revision, Revision(90));
     assert!(state.fault().is_none());
 }
 #[test]
 fn malformed_delivery_storm_preserves_one_retry_and_cannot_bypass_backoff() {
-    let mut state = consumer(); activate(&mut state,snapshot(1,"a"));
-    state.rejected_delivery(Diagnostic::new("invalid_delivery","snapshot","Malformed"));
+    let mut state = consumer();
+    activate(&mut state, snapshot(1, "a"));
+    state.rejected_delivery(Diagnostic::new("invalid_delivery", "snapshot", "Malformed"));
     let deadline = state.retry_deadline().unwrap();
     for _ in 0..100 {
-        assert!(state.rejected_delivery(Diagnostic::new("invalid_delivery","snapshot","Malformed")).is_none());
-        assert_eq!(state.retry_deadline(),Some(deadline));
-        assert!(state.observe(1,snapshot(2,"a")).is_none());
+        assert!(
+            state
+                .rejected_delivery(Diagnostic::new("invalid_delivery", "snapshot", "Malformed"))
+                .is_none()
+        );
+        assert_eq!(state.retry_deadline(), Some(deadline));
+        assert!(state.observe(1, snapshot(2, "a")).is_none());
     }
     let read = state.retry().unwrap();
-    state.complete(&read,Ok(Some(snapshot(2,"a"))));
-    assert!(state.retry_delay().is_none()); assert!(state.is_confirmed());
-    assert_eq!(state.applied().unwrap().revision,Revision(2));
-    state.disconnected(); assert!(state.fault().is_none());
+    state.complete(&read, Ok(Some(snapshot(2, "a"))));
+    assert!(state.retry_delay().is_none());
+    assert!(state.is_confirmed());
+    assert_eq!(state.applied().unwrap().revision, Revision(2));
+    state.disconnected();
+    assert!(state.fault().is_none());
 }
 #[cfg(feature = "native")]
 #[test]
 fn native_deliveries_require_owner_topic_and_generation_and_bound_bad_data() {
     use bus::native_client::IncomingCommand;
-    let mut state = consumer(); activate(&mut state,snapshot(1,"a"));
-    let mut command = IncomingCommand { generation:1, from:"unrelated".into(), command:"".into(), id:None, args:serde_json::Value::Null, body:serde_json::to_string(&snapshot(2,"a")).unwrap(), headers:BTreeMap::from([("topic".into(),topic("default")),("broker_service".into(),"other".into())]) };
-    assert!(state.native_delivery(&command).is_none()); assert_eq!(state.current().unwrap().revision,Revision(1));
-    command.headers.insert("broker_service".into(),"settingsd".into());
-    command.generation = 0; assert!(state.native_delivery(&command).is_none());
-    command.generation = 1; command.headers.insert("topic".into(),topic("other"));
-    assert!(state.native_delivery(&command).is_none()); assert_eq!(state.current().unwrap().revision,Revision(1));
-    command.headers.insert("topic".into(),topic("default"));
-    state.native_delivery(&command); assert_eq!(state.current().unwrap().revision,Revision(2));
-    command.body = "malformed".into(); state.native_delivery(&command);
+    let mut state = consumer();
+    activate(&mut state, snapshot(1, "a"));
+    let mut command = IncomingCommand {
+        generation: 1,
+        from: "unrelated".into(),
+        command: "".into(),
+        id: None,
+        args: serde_json::Value::Null,
+        body: serde_json::to_string(&snapshot(2, "a")).unwrap(),
+        headers: BTreeMap::from([
+            ("topic".into(), topic("default")),
+            ("broker_service".into(), "other".into()),
+        ]),
+    };
+    assert!(state.native_delivery(&command).is_none());
+    assert_eq!(state.current().unwrap().revision, Revision(1));
+    command
+        .headers
+        .insert("broker_service".into(), "settingsd".into());
+    command.generation = 0;
+    assert!(state.native_delivery(&command).is_none());
+    command.generation = 1;
+    command.headers.insert("topic".into(), topic("other"));
+    assert!(state.native_delivery(&command).is_none());
+    assert_eq!(state.current().unwrap().revision, Revision(1));
+    command.headers.insert("topic".into(), topic("default"));
+    state.native_delivery(&command);
+    assert_eq!(state.current().unwrap().revision, Revision(2));
+    command.body = "malformed".into();
+    state.native_delivery(&command);
     let deadline = state.retry_deadline().unwrap();
-    for _ in 0..100 { assert!(state.native_delivery(&command).is_none()); assert_eq!(state.retry_deadline(),Some(deadline)); }
-    assert_eq!(state.fault().unwrap().code,"invalid_delivery");
+    for _ in 0..100 {
+        assert!(state.native_delivery(&command).is_none());
+        assert_eq!(state.retry_deadline(), Some(deadline));
+    }
+    assert_eq!(state.fault().unwrap().code, "invalid_delivery");
 }
 #[test]
 fn confirmed_read_rollback_is_distinct_from_valid_read_racing_newer_event() {
-    let mut state = consumer(); activate(&mut state,snapshot(5,"a"));
+    let mut state = consumer();
+    activate(&mut state, snapshot(5, "a"));
     let read = state.refresh().unwrap();
-    state.complete(&read,Ok(Some(snapshot(4,"a"))));
-    assert_eq!(state.fault().unwrap().code,"authority_rollback");
-    assert_eq!(state.current().unwrap().revision,Revision(5));
-    assert!(!state.is_confirmed()); assert!(state.retry_delay().is_none());
-    let read = state.refresh().unwrap(); state.complete(&read,Ok(Some(snapshot(5,"a"))));
-    let read = state.refresh().unwrap(); state.observe(1,snapshot(7,"a"));
-    state.complete(&read,Ok(Some(snapshot(6,"a"))));
-    assert_eq!(state.current().unwrap().revision,Revision(7)); assert!(state.fault().is_none());
+    state.complete(&read, Ok(Some(snapshot(4, "a"))));
+    assert_eq!(state.fault().unwrap().code, "authority_rollback");
+    assert_eq!(state.current().unwrap().revision, Revision(5));
+    assert!(!state.is_confirmed());
+    assert!(state.retry_delay().is_none());
+    let read = state.refresh().unwrap();
+    state.complete(&read, Ok(Some(snapshot(5, "a"))));
+    let read = state.refresh().unwrap();
+    state.observe(1, snapshot(7, "a"));
+    state.complete(&read, Ok(Some(snapshot(6, "a"))));
+    assert_eq!(state.current().unwrap().revision, Revision(7));
+    assert!(state.fault().is_none());
 }
 #[test]
 fn revert_cancels_unapplied_stage_and_unchanged_valid_update_clears_failure() {
-    let mut state = consumer(); activate(&mut state,snapshot(1,"a"));
-    let mut changed = snapshot(2,"a"); changed.effective.get_mut("app:ced").unwrap().ui.density = 1.5;
-    state.observe(1,changed.clone()); let old = state.pending().unwrap().clone();
-    state.observe(1,snapshot(3,"a"));
-    assert!(!state.is_current(&old)); assert!(!state.acknowledge(&old));
-    assert!(state.pending().is_none()); assert_eq!(state.applied().unwrap().revision,Revision(3));
-    changed.revision = Revision(4); state.observe(1,changed);
+    let mut state = consumer();
+    activate(&mut state, snapshot(1, "a"));
+    let mut changed = snapshot(2, "a");
+    changed.effective.get_mut("app:ced").unwrap().ui.density = 1.5;
+    state.observe(1, changed.clone());
+    let old = state.pending().unwrap().clone();
+    state.observe(1, snapshot(3, "a"));
+    assert!(!state.is_current(&old));
+    assert!(!state.acknowledge(&old));
+    assert!(state.pending().is_none());
+    assert_eq!(state.applied().unwrap().revision, Revision(3));
+    changed.revision = Revision(4);
+    state.observe(1, changed);
     let update = state.pending().unwrap().clone();
-    assert!(state.failed(&update,Diagnostic::new("resource_failed","font","Missing")));
-    state.observe(1,snapshot(5,"a"));
-    assert!(state.fault().is_none()); assert_eq!(state.applied().unwrap().revision,Revision(5));
+    assert!(state.failed(
+        &update,
+        Diagnostic::new("resource_failed", "font", "Missing")
+    ));
+    state.observe(1, snapshot(5, "a"));
+    assert!(state.fault().is_none());
+    assert_eq!(state.applied().unwrap().revision, Revision(5));
 }
