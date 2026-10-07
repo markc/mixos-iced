@@ -75,6 +75,7 @@ enum Drag {
 
 /// Measurement key: font, size and line-height bits.
 type MetricsKey = (Font, u32, u32);
+type PositionKey = (u64, u64, usize, usize, super::MeasureCfg);
 
 #[derive(Default)]
 pub(super) struct State {
@@ -101,6 +102,8 @@ pub(super) struct State {
     last_report: Option<LayoutReport>,
     pub(super) ck: RefCell<Checkpoints>,
     pub(super) rows: RefCell<ViewportCache>,
+    /// Exact caret measurement survives redraw, scroll and geometry changes.
+    position: RefCell<Option<(PositionKey, (usize, usize))>>,
     /// First time each marker rev was drawn (tints last [`TINT`] from then).
     pub(super) tint_seen: RefCell<HashMap<u64, Instant>>,
     /// Widest visible line (cells) at the last draw — the horizontal extent.
@@ -184,6 +187,7 @@ impl<'a> Editor<'a> {
             st.last_report = None;
             *st.ck.borrow_mut() = Checkpoints::default();
             *st.rows.borrow_mut() = ViewportCache::default();
+            *st.position.borrow_mut() = None;
             st.tint_seen.borrow_mut().clear();
             st.max_cells.set(0);
         }
@@ -211,12 +215,7 @@ impl<'a> Editor<'a> {
             // Follow a motion always; follow an edit only when the caret was
             // on screen (an agent editing elsewhere must not yank the view).
             if (moved && !edited) || st.caret_visible || st.seen_head.is_none() {
-                let (line, cells) = lines::cells_of(
-                    self.text.as_ref(),
-                    &self.view.measure,
-                    &mut st.ck.borrow_mut(),
-                    head,
-                );
+                let (line, cells) = self.position_of(st, head);
                 let next = geo::follow(
                     st.scroll,
                     line,
@@ -274,18 +273,38 @@ impl<'a> Editor<'a> {
     }
 
     /// The caret's rectangle (at the composition start while composing).
+    fn position_of(&self, st: &State, at: usize) -> (usize, usize) {
+        let text = self.text.as_ref();
+        let key = (
+            text.identity(),
+            text.revision(),
+            text.len(),
+            at,
+            self.view.measure,
+        );
+        if let Some((old, position)) = *st.position.borrow()
+            && old == key
+        {
+            return position;
+        }
+        let position = lines::cells_of(
+            text,
+            &self.view.measure,
+            &mut st.ck.borrow_mut(),
+            clamp_offset(text, at),
+        );
+        *st.position.borrow_mut() = Some((key, position));
+        position
+    }
+
+    /// The caret's rectangle follows current geometry without remeasuring.
     pub(super) fn caret_rect(&self, st: &State, g: &Geometry) -> Rectangle {
         let at = self
             .model
             .composition
             .as_ref()
             .map_or(self.model.sel.head, |c| c.start);
-        let (line, cells) = lines::cells_of(
-            self.text.as_ref(),
-            &self.view.measure,
-            &mut st.ck.borrow_mut(),
-            clamp_offset(self.text.as_ref(), at),
-        );
+        let (line, cells) = self.position_of(st, at);
         g.caret_rect(line, cells, st.scroll)
     }
 

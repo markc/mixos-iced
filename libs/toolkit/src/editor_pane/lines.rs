@@ -18,7 +18,75 @@ pub const LONG_LINE: usize = 4096;
 #[derive(Default)]
 pub struct Checkpoints {
     key: Option<(u64, u64, usize, MeasureCfg)>,
-    lines: HashMap<usize, Vec<(usize, usize)>>,
+    lines: HashMap<usize, LineIndex>,
+}
+
+#[derive(Clone, Copy)]
+enum Seek {
+    Offset(usize),
+    Cells(usize),
+}
+
+impl Seek {
+    fn beyond(self, &(offset, cells): &(usize, usize)) -> bool {
+        match self {
+            Self::Offset(target) => target > offset,
+            Self::Cells(target) => target > cells,
+        }
+    }
+
+    fn contains(self, &(offset, cells): &(usize, usize)) -> bool {
+        match self {
+            Self::Offset(target) => offset <= target,
+            Self::Cells(target) => cells <= target,
+        }
+    }
+}
+
+struct LineIndex {
+    points: Vec<(usize, usize)>,
+    scanned: (usize, usize),
+    complete: bool,
+}
+
+impl LineIndex {
+    fn new(start: usize) -> Self {
+        Self {
+            points: vec![(start, 0)],
+            scanned: (start, 0),
+            complete: false,
+        }
+    }
+
+    fn seek(
+        &mut self,
+        text: &dyn Source,
+        cfg: &MeasureCfg,
+        end: usize,
+        target: Seek,
+    ) -> (usize, usize) {
+        // Expand only to the requested prefix. Viewing the start of a huge
+        // line must never synchronously index its unseen tail.
+        if !self.complete && target.beyond(&self.scanned) {
+            let mut cursor = self.scanned;
+            for cluster in text.clusters(cfg, cursor.0..end, cursor.1) {
+                cursor = (cluster.range.end, cursor.1 + usize::from(cluster.cells));
+                if cursor.0.saturating_sub(self.points.last().unwrap().0) >= LONG_LINE {
+                    self.points.push(cursor);
+                }
+                if !target.beyond(&cursor) {
+                    break;
+                }
+            }
+            self.scanned = cursor;
+            self.complete = cursor.0 >= end;
+        }
+        if target.contains(&self.scanned) {
+            return self.scanned;
+        }
+        let index = self.points.partition_point(|point| target.contains(point));
+        self.points[index.saturating_sub(1)]
+    }
 }
 
 impl Checkpoints {
@@ -39,7 +107,7 @@ impl Checkpoints {
         text: &dyn Source,
         cfg: &MeasureCfg,
         line: usize,
-        before: impl Fn(&(usize, usize)) -> bool,
+        target: Seek,
     ) -> (usize, usize) {
         let Some(r) = text.line_range(line) else {
             return (text.len(), 0);
@@ -51,15 +119,11 @@ impl Checkpoints {
         if self.lines.len() > 64 {
             self.lines.clear();
         }
-        let ck = self
+        let index = self
             .lines
             .entry(r.start)
-            .or_insert_with(|| text.line_checkpoints(cfg, line));
-        ck.partition_point(before)
-            .checked_sub(1)
-            .and_then(|index| ck.get(index))
-            .copied()
-            .unwrap_or((r.start, 0))
+            .or_insert_with(|| LineIndex::new(r.start));
+        index.seek(text, cfg, content_end(text, line), target)
     }
 }
 
@@ -173,7 +237,7 @@ pub fn walk(
         return LineCells::default();
     };
     let end = content_end(text, line);
-    let (from, from_cells) = ck.start(text, cfg, line, |&(_, c)| c <= x0);
+    let (from, from_cells) = ck.start(text, cfg, line, Seek::Cells(x0));
     let mut out = LineCells {
         content: r.start..end,
         placed: Vec::new(),
@@ -227,7 +291,7 @@ pub fn cells_of(
     let line = line_of(text, offset);
     let end = content_end(text, line);
     let offset = offset.min(end);
-    let (from, from_cells) = ck.start(text, cfg, line, |&(o, _)| o <= offset);
+    let (from, from_cells) = ck.start(text, cfg, line, Seek::Offset(offset));
     let mut cell = from_cells;
     for c in text.clusters(cfg, from..end, from_cells) {
         if c.range.end > offset {
@@ -250,7 +314,7 @@ pub fn offset_at(
     let line = line.clamp(1, text.line_count().max(1));
     let end = content_end(text, line);
     let t = target.max(0.0) as usize;
-    let (from, from_cells) = ck.start(text, cfg, line, |&(_, c)| c <= t);
+    let (from, from_cells) = ck.start(text, cfg, line, Seek::Cells(t));
     let mut cell = from_cells as f32;
     for c in text.clusters(cfg, from..end, from_cells) {
         if c.range.start >= end {
@@ -277,6 +341,8 @@ mod tests {
         revision: u64,
         walks: Cell<usize>,
         reads: Cell<usize>,
+        yielded: Cell<usize>,
+        checkpoints: Cell<usize>,
     }
 
     impl Counted {
@@ -287,6 +353,8 @@ mod tests {
                 revision: 0,
                 walks: Cell::new(0),
                 reads: Cell::new(0),
+                yielded: Cell::new(0),
+                checkpoints: Cell::new(0),
             }
         }
     }
@@ -330,9 +398,12 @@ mod tests {
             cells: usize,
         ) -> Box<dyn Iterator<Item = Cluster> + '_> {
             self.walks.set(self.walks.get() + 1);
-            self.text.clusters(cfg, range, cells)
+            Box::new(self.text.clusters(cfg, range, cells).inspect(|_| {
+                self.yielded.set(self.yielded.get() + 1);
+            }))
         }
         fn line_checkpoints(&self, cfg: &MeasureCfg, line: usize) -> Vec<(usize, usize)> {
+            self.checkpoints.set(self.checkpoints.get() + 1);
             self.text.line_checkpoints(cfg, line)
         }
     }
@@ -413,6 +484,62 @@ mod tests {
             offset_at(&text, &cfg(), &mut ck, 1, (far + 1) as f32),
             far + 1
         );
+    }
+
+    #[test]
+    fn cold_long_line_view_and_revisions_measure_only_the_needed_prefix() {
+        let mut text = Counted::new(&"x".repeat(1024 * 1024));
+        let mut ck = Checkpoints::default();
+        for revision in 0..4 {
+            text.revision = revision;
+            let before = text.yielded.get();
+            assert_eq!(cells_of(&text, &cfg(), &mut ck, 0), (1, 0));
+            let row = walk(&text, &cfg(), &mut ck, 1, 0, 120);
+            assert_eq!(row.placed.len(), 120);
+            assert!(text.yielded.get() - before <= 121);
+            assert_eq!(text.checkpoints.get(), 0, "never build a full-line index");
+        }
+        let before = text.yielded.get();
+        assert_eq!(cells_of(&text, &cfg(), &mut ck, 600), (1, 600));
+        assert!(text.yielded.get() - before <= 601);
+        let before = text.yielded.get();
+        assert_eq!(cells_of(&text, &cfg(), &mut ck, 601), (1, 601));
+        assert!(
+            text.yielded.get() - before <= 2,
+            "extend just the new prefix"
+        );
+    }
+
+    #[test]
+    fn lazy_line_index_preserves_unicode_tabs_and_reverse_seeks() {
+        let body = format!("{}\r\n", "a\t中e\u{301}👍🏽".repeat(600));
+        let text = Text::from_text(&body).unwrap();
+        let mut ck = Checkpoints::default();
+        for offset in [0, 5, 1000, 7999, 4011, 9, 100, body.len() - 2] {
+            let offset = text.clamp_offset(offset);
+            let actual = cells_of(&text, &cfg(), &mut ck, offset);
+            let expected: usize = text
+                .clusters(&cfg(), 0..text.content_end(1), 0)
+                .take_while(|cluster| cluster.range.end <= offset)
+                .map(|cluster| usize::from(cluster.cells))
+                .sum();
+            assert_eq!(actual, (1, expected));
+            let mut cell = 0.0;
+            let target = actual.1 as f32;
+            let mut nearest = text.content_end(1);
+            for cluster in text.clusters(&cfg(), 0..text.content_end(1), 0) {
+                let width = f32::from(cluster.cells);
+                if target < cell + width / 2.0 {
+                    nearest = cluster.range.start;
+                    break;
+                }
+                cell += width;
+            }
+            assert_eq!(
+                offset_at(&text, &cfg(), &mut ck, 1, actual.1 as f32),
+                nearest
+            );
+        }
     }
 
     #[test]
