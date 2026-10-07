@@ -22,6 +22,9 @@ pub use mailbox::Mailbox;
 #[cfg(test)]
 mod tests;
 
+/// Prepared fallback evidence and the whole host presentation, or diagnostics.
+pub type FallbackResult<T> = Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>;
+
 pub enum Event<T> {
     Wake,
     Refresh,
@@ -31,7 +34,7 @@ pub enum Event<T> {
     Prepared(Completion<T>),
     Fallback(
         settings::fallback::Request,
-        Box<Result<(settings::fallback::Prepared, Presentation<T>), Vec<Diagnostic>>>,
+        Box<FallbackResult<T>>,
     ),
 }
 
