@@ -12,9 +12,7 @@ pub struct Authority {
 impl Authority {
     pub fn new(store: Store, accepted: Accepted) -> anyhow::Result<Self> {
         accepted.check(&accepted.binding)?;
-        let effective =
-            settings::resolve_with_embedded(&accepted.desktop, &accepted.embedded_source)
-                .map_err(|e| anyhow::anyhow!("invalid accepted settings: {e:?}"))?;
+        let effective = accepted.effective()?;
         let snapshot = snapshot(&accepted, effective)?;
         Ok(Self {
             store,
@@ -59,7 +57,7 @@ impl Authority {
         let mut candidate = self.accepted.clone();
         candidate.desktop = next;
         let candidate_snapshot = snapshot(&candidate, effective)
-            .map_err(|e| json!({"status":"validation_failed","message":e.to_string()}))?;
+            .map_err(snapshot_error)?;
         Ok(
             json!({"status":"valid","incarnation":self.accepted.incarnation,"revision":self.accepted.revision,"source_digest":candidate_snapshot.source_digest,"effective":candidate_snapshot.effective}),
         )
@@ -147,6 +145,8 @@ impl Authority {
                 .map_err(diagnostics)?
         };
         let next_snapshot = snapshot(&next, effective)
+            .map_err(snapshot_error)?;
+        next.effective_digest = settings::digest(&next_snapshot.effective)
             .map_err(|e| json!({"status":"validation_failed","message":e.to_string()}))?;
         let receipt = Receipt {
             operation_id: request.operation_id,
@@ -183,7 +183,20 @@ fn diagnostic(error: Diagnostic) -> Value {
 fn diagnostics(errors: Vec<Diagnostic>) -> Value {
     json!({"status":"validation_failed","diagnostics":errors})
 }
-fn snapshot(
+#[derive(Debug)]
+struct SnapshotTooLarge { bytes: usize }
+impl std::fmt::Display for SnapshotTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "snapshot {} bytes exceeds inline budget {}; native artifacts required", self.bytes, MAX_SNAPSHOT_BYTES)
+    }
+}
+impl std::error::Error for SnapshotTooLarge {}
+fn snapshot_error(error: anyhow::Error) -> Value {
+    if let Some(limit) = error.downcast_ref::<SnapshotTooLarge>() {
+        json!({"status":"snapshot_too_large","bytes":limit.bytes,"maximum":MAX_SNAPSHOT_BYTES,"message":error.to_string()})
+    } else { json!({"status":"validation_failed","message":error.to_string()}) }
+}
+pub(crate) fn snapshot(
     accepted: &Accepted,
     effective: std::collections::BTreeMap<String, Effective>,
 ) -> anyhow::Result<Snapshot> {
@@ -203,9 +216,7 @@ fn snapshot(
         desktop: accepted.desktop.clone(),
         effective,
     };
-    anyhow::ensure!(
-        result.encoded_len()? <= MAX_SNAPSHOT_BYTES,
-        "snapshot exceeds inline budget; native artifacts required for larger settings"
-    );
+    let bytes = result.encoded_len()?;
+    if bytes > MAX_SNAPSHOT_BYTES { return Err(SnapshotTooLarge { bytes }.into()); }
     Ok(result)
 }

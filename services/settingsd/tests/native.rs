@@ -70,13 +70,13 @@ fn real_abp_publication_open_operator_receipts_and_authority_restart() {
         let request = json!({"binding":{"instance":"fixture","profile":"default"},"expected_incarnation":incarnation,"expected_revision":"1","operation_id":"native-change","changes":{"appearance.mode":"dark","shell.panels.bottom.thickness":48}});
         let changed = operator.call("settingsd","settings.apply",request.clone()).await.unwrap();
         assert_eq!(changed["status"],"changed"); assert_eq!(changed["receipt"]["revision"],"2");
-        tokio::time::timeout(Duration::from_secs(5),async {
+        let mut sequence = tokio::time::timeout(Duration::from_secs(5),async {
             loop {
                 let event = events.recv().await.unwrap();
                 if event.topic() == Some(topic.as_str()) {
                     assert_eq!(event.header("broker_service"),Some("settingsd"));
                     let snapshot:Value = serde_json::from_str(&event.body).unwrap();
-                    if snapshot["revision"] == "2" { assert_eq!(snapshot["desktop"]["appearance"]["mode"],"dark"); break; }
+                    if snapshot["revision"] == "2" { assert_eq!(snapshot["desktop"]["appearance"]["mode"],"dark"); break event.header("topic_seq").unwrap().parse::<u64>().unwrap(); }
                 }
             }
         }).await.unwrap();
@@ -92,9 +92,27 @@ fn real_abp_publication_open_operator_receipts_and_authority_restart() {
         tokio::time::timeout(Duration::from_secs(5),async {
             while operator.list_services().await.unwrap().iter().any(|name| name == "settingsd") { tokio::time::sleep(Duration::from_millis(20)).await; }
         }).await.unwrap();
+        while let Ok(event) = events.try_recv() {
+            if event.topic() == Some(topic.as_str()) {
+                sequence = sequence.max(event.header("topic_seq").unwrap().parse::<u64>().unwrap());
+            }
+        }
         daemon = spawn(root.path());
         let restored = read(&operator).await;
         assert_eq!(restored["snapshot"]["revision"],"2"); assert_eq!(restored["snapshot"]["incarnation"],incarnation);
+        // This proves a fresh publication reached the existing subscription,
+        // rather than merely replaying the broker's pre-restart retained cache.
+        tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.topic() == Some(topic.as_str()) && event.header("topic_seq").unwrap().parse::<u64>().unwrap() > sequence {
+                    let snapshot:Value = serde_json::from_str(&event.body).unwrap();
+                    assert_eq!(snapshot["incarnation"],incarnation);
+                    assert_eq!(snapshot["revision"],"2");
+                    break;
+                }
+            }
+        }).await.unwrap();
         assert_eq!(operator.call("settingsd","settings.apply",request).await.unwrap()["replayed"],true);
         assert_eq!(operator.call("settingsd","settings.apply",noop).await.unwrap()["replayed"],true);
         // Startup publishes without a semantic edit to wake already-connected

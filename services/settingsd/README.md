@@ -16,8 +16,10 @@ explicit binding/test directory. Use an isolated broker when testing.
 
 Profiles pin their initial package design source. Reload checks a content digest;
 a binary upgrade cannot change effective settings within the same revision.
+An effective interpretation digest fences compiler drift for explicit migration.
 Present corrupt primary data can restore a validated backup under a new
 incarnation. A missing primary fails visibly, including when a backup exists.
+I/O faults and intact unsupported documents fail without automatic rollback.
 
 See [the settings contract](../../docs/spec/settings/README.md). Worker tests:
 `cargo test -p settingsd`; real native gate:

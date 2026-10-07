@@ -24,7 +24,7 @@ pub fn manifest() -> Vec<bus::VerbDescriptor> {
     ))
     .chain(VERBS.iter().map(|verb| {
         bus::VerbDescriptor::new(
-            *verb,
+            verb,
             &["body"],
             "Desktop settings contract 0.1.0",
             !matches!(*verb, "settings.apply" | "settings.reset"),
@@ -99,14 +99,8 @@ impl PublicationRetry {
             return;
         }
         self.failures = self.failures.saturating_add(1);
-        self.deadline = if self.failures <= 3 {
-            Some(
-                tokio::time::Instant::now()
-                    + Duration::from_millis(250 * (1u64 << (self.failures - 1))),
-            )
-        } else {
-            None
-        };
+        let delay_ms = (250 * (1u64 << (self.failures - 1).min(7))).min(30_000);
+        self.deadline = Some(tokio::time::Instant::now() + Duration::from_millis(delay_ms));
     }
     async fn wait(&self) {
         match self.deadline {
@@ -200,10 +194,10 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
                         if client.is_connected() && authority.published != Some(authority.accepted.revision) && !authority.store.recovering {
                             publish_pending(&mut authority,&client,&mut retry).await;
                         }
-                        if let Ok(ref mut value) = reply {
-                            if let Some(object) = value.as_object_mut() {
-                                if object.contains_key("publication_pending") { object.insert("publication_pending".into(),json!(authority.published != Some(authority.accepted.revision))); }
-                            }
+                        if let Ok(ref mut value) = reply
+                            && let Some(object) = value.as_object_mut()
+                            && object.contains_key("publication_pending") {
+                            object.insert("publication_pending".into(),json!(authority.published != Some(authority.accepted.revision)));
                         }
                         let (rc,value) = match reply { Ok(value) => (0,value), Err(error) => (10,error) };
                         let body = serde_json::to_string(&value)?;
@@ -223,15 +217,14 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn publication_retry_stops_without_idle_polling_and_success_clears_job() {
+    fn pending_publication_has_bounded_backoff_and_success_removes_all_idle_work() {
         let mut retry = PublicationRetry::default();
         assert!(retry.deadline.is_none());
-        for _ in 0..3 {
+        for _ in 0..20 {
             retry.complete(false);
             assert!(retry.deadline.is_some());
         }
-        retry.complete(false);
-        assert!(retry.deadline.is_none());
+        assert!(retry.deadline.unwrap() <= tokio::time::Instant::now() + Duration::from_secs(30));
         retry.complete(true);
         assert_eq!(retry.failures, 0);
         assert!(retry.deadline.is_none());

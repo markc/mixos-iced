@@ -308,7 +308,10 @@ these initial concrete profile values is later work.
 The package source is pinned in accepted storage at profile creation. Null
 appearance.source selects that pinned source, including after binary upgrades;
 it does not silently adopt the upgraded binary's embedded defaults. Adopting a
-new package source requires an explicit mutation with a new revision.</p>
+new package source requires an explicit mutation with a new revision.
+The accepted effective digest also fences compiler interpretation drift. A
+changed interpretation requires explicit migration rather than changing the
+same accepted identity on reload.</p>
 <p>Validate the whole candidate and all advertised app contexts before acceptance.
 Compilation checks the source's claimed contexts. App overlays affect their
 context alone; profile high contrast takes precedence. A custom source is at
@@ -337,15 +340,17 @@ Noded strips inner routing headers and stamps broker_service independently of
 caller input. The publisher repopulates retained state at startup and reconnect,
 even without a settings mutation. Generic props-prefix ownership is deliberately
 not used: embedding a profile in that prefix changes its matched service owner.
-Failed publication starts at most three one-shot retries, with 250/500/1000 ms
-delays. There is no idle timer. Reconnection or a new accepted revision starts a
-new retry job; exhaustion leaves publication_pending visible.</p>
+Failed publication starts a single pending retry job, with exponential backoff
+from 250 ms capped at 30 seconds. Success removes the job and every timer.
+Reconnection or a new revision restarts the backoff. There is no idle heartbeat;
+publication_pending remains visible throughout a failed pending job.</p>
 <p>Default root: resolved MixOS Etc directory / <code>settings/&lt;profile&gt;/</code>. Explicit
 test roots are supported. One retained writer.lock inode provides a process
 flock; it is never removed on normal exit. The root must be an owned directory
 not writable by other users. <code>desktop.conf.mix</code> holds schema, binding,
 incarnation, revisions, authored desktop, pinned package source, receipts and
-a verified BLAKE3 content digest. This digest detects corruption; it is not an
+a verified BLAKE3 content digest and effective interpretation digest. These
+digests detect corruption and interpretation drift; they are not an
 authentication signature. A synced
 <code>desktop.previous.conf.mix</code> is written before replacing the accepted generation.
 Files are private, never evaluated as Mix source.
@@ -362,7 +367,9 @@ schemas or mismatched target bindings are not overwritten by a fallback.
 Corruption evidence is hard-linked and synced before the atomic replacement;
 recovery never removes the primary before its replacement is ready.
 A missing established primary fails visibly even with a backup; automatic
-recovery applies only to a present corrupt primary.</p>
+recovery applies only to a present corrupt primary.
+I/O errors, strict shape changes and intact documents requiring a changed
+compiler interpretation fail without an automatic backup rollback.</p>
 <p><code>settingsd init --instance example</code> explicitly creates a profile and refuses
 existing accepted/backup data. <code>settingsd serve --instance example</code> never
 materialises defaults for a missing established store. Installer seeding and

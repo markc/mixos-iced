@@ -10,3 +10,6 @@ automatic session adoption remains pending profile seeding.
 Before initial release: pin package source and verify stored content digest;
 bind storage to the held directory/lock; fence validation; add bounded pending
 publication retries and preserve missing-store failure visibility.
+Fence effective compiler interpretation; distinguish intact unsupported/I/O
+failures from corruption; keep pending publication backoff capped at 30 seconds
+until success. Inline capacity refusal has a distinct snapshot_too_large status.

@@ -20,6 +20,7 @@ pub struct Accepted {
     pub design_revision: Revision,
     pub desktop: Desktop,
     pub embedded_source: String,
+    pub effective_digest: String,
     pub receipts: Vec<Receipt>,
     pub content_digest: String,
 }
@@ -33,12 +34,19 @@ impl Accepted {
             &self.design_revision,
             &self.desktop,
             &self.embedded_source,
+            &self.effective_digest,
             &self.receipts,
         ))?)
     }
     pub fn seal(&mut self) -> anyhow::Result<()> {
         self.content_digest = self.digest()?;
         Ok(())
+    }
+    pub fn effective(&self) -> anyhow::Result<std::collections::BTreeMap<String, Effective>> {
+        let effective = settings::resolve_with_embedded(&self.desktop, &self.embedded_source)
+            .map_err(|e| anyhow::anyhow!("accepted interpretation unsupported: {e:?}"))?;
+        anyhow::ensure!(self.effective_digest == settings::digest(&effective)?, "accepted interpretation changed; explicit migration required");
+        Ok(effective)
     }
     pub fn check(&self, binding: &Binding) -> anyhow::Result<()> {
         anyhow::ensure!(self.schema == SCHEMA, "unsupported accepted schema");
@@ -171,7 +179,7 @@ impl Store {
             !store.path().exists() && !store.backup().exists(),
             "profile already initialised; initialise never overwrites accepted/backup data"
         );
-        settings::resolve(&desktop)
+        let effective = settings::resolve(&desktop)
             .map_err(|e| anyhow::anyhow!("invalid initial desktop: {e:?}"))?;
         let mut accepted = Accepted {
             schema: SCHEMA,
@@ -181,11 +189,13 @@ impl Store {
             design_revision: Revision(1),
             desktop,
             embedded_source: settings::EMBEDDED_DEFAULT_SOURCE.into(),
+            effective_digest: settings::digest(&effective)?,
             receipts: Vec::new(),
             content_digest: String::new(),
         };
         accepted.seal()?;
         accepted.check(&accepted.binding)?;
+        crate::authority::snapshot(&accepted, effective)?;
         store.check_root()?;
         config::atomic::replace_in(
             &store.directory,
@@ -201,27 +211,33 @@ impl Store {
         // Loss/unmount of an established primary must be visible even when an
         // old backup exists. Corrupt present documents have the recovery path.
         let primary = open_in(&store.directory, "desktop.conf.mix", libc::O_RDONLY)?;
-        match read_typed::<Accepted>(primary).and_then(|data| {
+        let bytes = read_bytes(primary)?;
+        let text = std::str::from_utf8(&bytes);
+        #[derive(Deserialize)]
+        struct Header { schema: u32, binding: Binding }
+        if let Ok(text) = text && let Ok(header) = strict::from_str::<Header>(text)
+            && (header.schema != SCHEMA || &header.binding != binding) {
+            anyhow::bail!("unsupported schema or wrong stored binding");
+        }
+        // Header and full record use the exact same bounded bytes. A second
+        // read cannot miss a version fence after transient I/O.
+        match text.map_err(anyhow::Error::from).and_then(|text| Ok(strict::from_str::<Accepted>(text)?)).and_then(|data| {
             data.check(binding)?;
-            settings::resolve_with_embedded(&data.desktop, &data.embedded_source)
-                .map_err(|e| anyhow::anyhow!("invalid accepted desktop: {e:?}"))?;
             Ok(data)
         }) {
-            Ok(data) => Ok((store, data)),
+            Ok(data) => {
+                // An intact accepted document may require a newer compiler or
+                // migration. Semantic refusal must preserve it, not roll back.
+                data.effective()?;
+                Ok((store, data))
+            }
             Err(primary_error) => {
-                // Unsupported schema/wrong binding must fail, never silently
-                // restore an older document in a different contract/history.
-                #[derive(Deserialize)]
-                struct Header {
-                    schema: u32,
-                    binding: Binding,
-                }
-                if let Ok(parsed) = open_in(&store.directory, "desktop.conf.mix", libc::O_RDONLY)
-                    .and_then(read_typed::<Header>)
+                if primary_error.downcast_ref::<std::io::Error>().is_some()
+                    || primary_error.downcast_ref::<strict::Error>().is_some_and(|e| e.kind() == strict::ErrorKind::Deserialize || e.kind() == strict::ErrorKind::Io)
                 {
-                    if parsed.schema != SCHEMA || &parsed.binding != binding {
-                        return Err(primary_error);
-                    }
+                    // Shape/version changes and I/O faults require diagnosis;
+                    // only malformed syntax/integrity enters automatic restore.
+                    return Err(primary_error);
                 }
                 let mut previous: Accepted = open_in(
                     &store.directory,
@@ -235,8 +251,7 @@ impl Store {
                     )
                 })?;
                 previous.check(binding)?;
-                settings::resolve_with_embedded(&previous.desktop, &previous.embedded_source)
-                    .map_err(|e| anyhow::anyhow!("backup invalid: {e:?}"))?;
+                previous.effective()?;
                 // Preserve user/corrupt evidence before replacing anything.
                 store.check_root()?;
                 let corrupt =
@@ -357,6 +372,10 @@ fn open_in(directory: &File, name: &str, flags: libc::c_int) -> anyhow::Result<F
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 fn read_typed<T: serde::de::DeserializeOwned>(file: File) -> anyhow::Result<T> {
+    let bytes = read_bytes(file)?;
+    Ok(strict::from_str(std::str::from_utf8(&bytes)?)?)
+}
+fn read_bytes(file: File) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
         file.metadata()?.is_file(),
         "accepted document is not a regular file"
@@ -367,7 +386,7 @@ fn read_typed<T: serde::de::DeserializeOwned>(file: File) -> anyhow::Result<T> {
         bytes.len() <= MAX_STORE_BYTES as usize,
         "accepted document limit exceeded"
     );
-    Ok(strict::from_str(std::str::from_utf8(&bytes)?)?)
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -387,6 +406,7 @@ mod tests {
         let mut next = current.clone();
         next.revision = Revision(2);
         next.desktop.ui.density = 1.5;
+        next.effective_digest = settings::digest(&settings::resolve_with_embedded(&next.desktop, &next.embedded_source).unwrap()).unwrap();
         next.receipts.push(Receipt {
             operation_id: "ambiguous".into(),
             request_digest: "a".repeat(64),
