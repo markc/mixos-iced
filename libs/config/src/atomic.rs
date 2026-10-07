@@ -44,6 +44,27 @@ pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), ReplaceError> {
 fn replace_with(
     path: &Path,
     bytes: &[u8],
+    before: impl FnMut(Stage) -> io::Result<()>,
+) -> Result<(), ReplaceError> {
+    let prepare = |source| ReplaceError { stage: Stage::Prepare, may_have_replaced: false, source };
+    let parent = path.parent().ok_or_else(|| prepare(io::Error::other("missing parent")))?;
+    let name = path.file_name().ok_or_else(|| prepare(io::Error::other("missing file name")))?;
+    let dir = OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent).map_err(prepare)?;
+    replace_in_with(&dir, name, bytes, before)
+}
+
+/// Replace a single file in a caller-held directory. The lock owner can bind
+/// reads, replacements and directory syncs to this same inode throughout life.
+pub fn replace_in(dir: &File, name: &std::ffi::OsStr, bytes: &[u8]) -> Result<(), ReplaceError> {
+    replace_in_with(dir, name, bytes, |_| Ok(()))
+}
+
+fn replace_in_with(
+    dir: &File,
+    name: &std::ffi::OsStr,
+    bytes: &[u8],
     mut before: impl FnMut(Stage) -> io::Result<()>,
 ) -> Result<(), ReplaceError> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -51,18 +72,11 @@ fn replace_with(
     let mut renamed = false;
     let result = (|| -> io::Result<()> {
         before(stage)?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("missing parent"))?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::other("missing file name"))?;
         use std::os::unix::ffi::OsStrExt;
+        if name.as_bytes().is_empty() || name.as_bytes().contains(&b'/') || name == "." || name == ".." {
+            return Err(io::Error::other("expected a single file name"));
+        }
         let name = std::ffi::CString::new(name.as_bytes())?;
-        let dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(parent)?;
         let temp = std::ffi::CString::new(format!(
             ".replace-{}-{}",
             std::process::id(),

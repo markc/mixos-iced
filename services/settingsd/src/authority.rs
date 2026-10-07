@@ -11,7 +11,8 @@ pub struct Authority {
 }
 impl Authority {
     pub fn new(store: Store, accepted: Accepted) -> anyhow::Result<Self> {
-        let effective = settings::resolve(&accepted.desktop)
+        accepted.check(&accepted.binding)?;
+        let effective = settings::resolve_with_embedded(&accepted.desktop, &accepted.embedded_source)
             .map_err(|e| anyhow::anyhow!("invalid accepted settings: {e:?}"))?;
         let snapshot = snapshot(&accepted, effective)?;
         Ok(Self {
@@ -48,17 +49,23 @@ impl Authority {
     }
     pub fn validate(&self, request: &ApplyRequest) -> Result<Value, Value> {
         self.target(&request.binding)?;
+        self.fence(request)?;
         let next =
             settings::resolve::patch(&self.accepted.desktop, &request.changes, &request.reset)
                 .map_err(diagnostic)?;
-        let effective = settings::resolve(&next).map_err(diagnostics)?;
+        let effective = settings::resolve_with_embedded(&next, &self.accepted.embedded_source).map_err(diagnostics)?;
         let mut candidate = self.accepted.clone();
         candidate.desktop = next;
         let candidate_snapshot = snapshot(&candidate, effective)
             .map_err(|e| json!({"status":"validation_failed","message":e.to_string()}))?;
         Ok(
-            json!({"status":"valid","source_digest":candidate_snapshot.source_digest,"effective":candidate_snapshot.effective}),
+            json!({"status":"valid","incarnation":self.accepted.incarnation,"revision":self.accepted.revision,"source_digest":candidate_snapshot.source_digest,"effective":candidate_snapshot.effective}),
         )
+    }
+    fn fence(&self, request: &ApplyRequest) -> Result<(), Value> {
+        if request.expected_incarnation != self.accepted.incarnation || request.expected_revision != self.accepted.revision {
+            Err(json!({"status":"conflict","incarnation":self.accepted.incarnation,"revision":self.accepted.revision}))
+        } else { Ok(()) }
     }
     /// Serialized by the owning worker. Deduplication before revision fencing
     /// makes a lost reply retry retrieve its original receipt after later edits.
@@ -102,11 +109,7 @@ impl Authority {
                 json!({"status":receipt.outcome,"receipt":receipt,"publication_pending":self.published != Some(self.accepted.revision),"replayed":true}),
             );
         }
-        if request.expected_revision != self.accepted.revision {
-            return Err(
-                json!({"status":"conflict","revision":self.accepted.revision,"incarnation":self.accepted.incarnation}),
-            );
-        }
+        self.fence(&request)?;
         let desktop =
             settings::resolve::patch(&self.accepted.desktop, &request.changes, &request.reset)
                 .map_err(diagnostic)?;
@@ -132,7 +135,7 @@ impl Authority {
         let effective = if unchanged {
             self.snapshot.effective.clone()
         } else {
-            settings::resolve(&next.desktop).map_err(diagnostics)?
+            settings::resolve_with_embedded(&next.desktop, &next.embedded_source).map_err(diagnostics)?
         };
         let next_snapshot = snapshot(&next, effective)
             .map_err(|e| json!({"status":"validation_failed","message":e.to_string()}))?;
@@ -151,6 +154,7 @@ impl Authority {
         if next.receipts.len() > MAX_RECEIPTS {
             next.receipts.remove(0);
         }
+        next.seal().map_err(|e| json!({"status":"storage_failed","message":e.to_string()}))?;
         if let Err(error) = self.store.commit(&self.accepted, &next) {
             return Err(
                 json!({"status":if self.store.recovering {"outcome_unknown"} else {"storage_failed"},"message":error.to_string()}),
@@ -178,7 +182,7 @@ fn snapshot(
         .appearance
         .source
         .as_deref()
-        .unwrap_or(settings::EMBEDDED_DEFAULT_SOURCE);
+        .unwrap_or(&accepted.embedded_source);
     let result = Snapshot {
         schema: SCHEMA,
         binding: accepted.binding.clone(),

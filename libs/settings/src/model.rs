@@ -59,7 +59,7 @@ pub struct Appearance {
     pub scheme: String,
     pub mode: String,
     pub contrast: String,
-    /// None selects the embedded build source; Some is complete strict data.
+    /// None selects the profile-pinned package source; Some is complete strict data.
     pub source: Option<String>,
 }
 impl Default for Appearance {

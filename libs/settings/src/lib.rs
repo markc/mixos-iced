@@ -5,7 +5,7 @@ pub mod reducer;
 pub mod resolve;
 pub use design::EMBEDDED_DEFAULT_SOURCE;
 pub use model::*;
-pub use resolve::{describe, resolve};
+pub use resolve::{describe, resolve, resolve_with_embedded};
 
 pub const CONTRACT_VERSION: &str = "0.1.0";
 pub const SCHEMA: u32 = 1;

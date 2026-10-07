@@ -52,6 +52,12 @@ fn key(value: &str, path: &str) -> Result<(), Diagnostic> {
 /// Build every advertised app context before acceptance. Compiler itself checks
 /// all claimed source axes. Returned projections cannot become apply lineage.
 pub fn resolve(desktop: &Desktop) -> Result<BTreeMap<String, Effective>, Vec<Diagnostic>> {
+    resolve_with_embedded(desktop, design::EMBEDDED_DEFAULT_SOURCE)
+}
+
+/// Authorities pin the package source at profile creation. A binary upgrade
+/// cannot silently alter effective values within an accepted revision.
+pub fn resolve_with_embedded(desktop: &Desktop, embedded_source: &str) -> Result<BTreeMap<String, Effective>, Vec<Diagnostic>> {
     let validate = || -> Result<(), Diagnostic> {
         bounded(desktop.ui.density, 0.5, 2.0, "ui.density")?;
         bounded(desktop.ui.text_scale, 0.5, 3.0, "ui.text_scale")?;
@@ -82,6 +88,15 @@ pub fn resolve(desktop: &Desktop) -> Result<BTreeMap<String, Effective>, Vec<Dia
         }
         for (app, value) in &desktop.apps {
             key(app, "apps")?;
+            if value.scheme.as_deref().is_some_and(|name| design::Scheme::from_name(name).is_none()) {
+                return Err(error(&format!("apps.{app}.scheme"), "Unknown scheme"));
+            }
+            if value.mode.as_deref().is_some_and(|name| design::Mode::from_name(name).is_none()) {
+                return Err(error(&format!("apps.{app}.mode"), "Unknown mode"));
+            }
+            if value.contrast.as_deref().is_some_and(|name| design::Contrast::from_name(name).is_none()) {
+                return Err(error(&format!("apps.{app}.contrast"), "Unknown contrast"));
+            }
             if let Some(scale) = value.text_scale {
                 bounded(scale, 0.5, 3.0, &format!("apps.{app}.text_scale"))?;
             }
@@ -101,7 +116,7 @@ pub fn resolve(desktop: &Desktop) -> Result<BTreeMap<String, Effective>, Vec<Dia
         .appearance
         .source
         .as_deref()
-        .unwrap_or(design::EMBEDDED_DEFAULT_SOURCE);
+        .unwrap_or(embedded_source);
     let source_id = crate::source_digest(source);
     let doc = design::parse_design_source(design::SourceIdentity::new(&source_id), source)
         .map_err(|e| vec![error("appearance.source", e.to_string())])?;
@@ -162,7 +177,7 @@ pub fn resolve(desktop: &Desktop) -> Result<BTreeMap<String, Effective>, Vec<Dia
                 return Err(failure
                     .diagnostics
                     .into_iter()
-                    .map(|d| error("appearance.source", format!("{d:?}")))
+                    .map(|d| Diagnostic::new(d.code, &format!("appearance.source.{}", d.path), d.message))
                     .collect());
             }
         };
@@ -277,6 +292,27 @@ fn set(desktop: &mut Desktop, path: &str, value: Option<Value>) -> Result<(), Di
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn high_contrast_cannot_hide_invalid_authored_app_values() {
+        let mut desktop = Desktop::default();
+        desktop.appearance.contrast = "high".into();
+        desktop.apps.insert("term".into(), AppOverride { contrast: Some("typo".into()), ..Default::default() });
+        assert_eq!(resolve(&desktop).unwrap_err()[0].path, "apps.term.contrast");
+        desktop.apps.get_mut("term").unwrap().contrast = Some("normal".into());
+        assert_eq!(resolve(&desktop).unwrap()["app:term"].contrast, "high");
+    }
+    #[test]
+    fn bounds_and_strict_source_fail_before_acceptance() {
+        let mut desktop = Desktop::default();
+        desktop.ui.density = f64::NAN;
+        assert!(resolve(&desktop).is_err());
+        desktop.ui.density = 1.0;
+        desktop.appearance.source = Some("run_argv([\"do-not-execute\"])".into());
+        assert!(resolve(&desktop).is_err());
+        desktop.appearance.source = None;
+        desktop.shell.page_order = vec!["same".into(), "same".into()];
+        assert!(resolve(&desktop).is_err());
+    }
     #[test]
     fn bad_batch_cannot_partially_mutate_and_unknown_fields_are_rejected() {
         let current = Desktop::default();

@@ -26,6 +26,79 @@ fn request(authority: &Authority, id: &str, mode: &str) -> ApplyRequest {
     }
 }
 #[test]
+fn validate_reports_its_base_and_rejects_stale_editors_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = authority(dir.path());
+    let candidate = request(&state, "candidate", "dark");
+    assert_eq!(state.validate(&candidate).unwrap()["revision"], "1");
+    assert!(state.accepted.receipts.is_empty());
+    state.apply(request(&state, "winner", "dark")).unwrap();
+    assert_eq!(state.validate(&candidate).unwrap_err()["status"], "conflict");
+    assert_eq!(state.accepted.receipts.len(), 1);
+}
+#[test]
+fn pinned_source_and_snapshot_survive_restart_and_valid_tampering_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = authority(dir.path());
+    assert_eq!(state.snapshot.source_digest, source_digest(&state.accepted.embedded_source));
+    let before = state.snapshot.clone();
+    drop(state);
+    let (store, data) = Store::open(dir.path(), &binding()).unwrap();
+    let state = Authority::new(store, data).unwrap();
+    assert_eq!(state.snapshot, before);
+    drop(state);
+    let path = dir.path().join("desktop.conf.mix");
+    let mut value: serde_json::Value = strict::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    value["desktop"]["appearance"]["mode"] = json!("dark");
+    let tampered = strict::to_string_pretty(&value).unwrap();
+    std::fs::write(&path, &tampered).unwrap();
+    assert!(Store::open(dir.path(), &binding()).is_err());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), tampered);
+}
+#[test]
+fn missing_primary_with_backup_requires_visible_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = authority(dir.path());
+    state.apply(request(&state, "change", "dark")).unwrap();
+    drop(state);
+    let path = dir.path().join("desktop.conf.mix");
+    std::fs::remove_file(&path).unwrap();
+    assert!(Store::open(dir.path(), &binding()).is_err());
+    assert!(!path.exists());
+    assert!(dir.path().join("desktop.previous.conf.mix").exists());
+}
+#[test]
+fn directory_or_lock_replacement_fences_the_existing_writer() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("profile");
+    let mut state = authority(&root);
+    let req = request(&state, "detached", "dark");
+    std::fs::rename(&root, parent.path().join("detached")).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    assert_eq!(state.apply(req).unwrap_err()["status"], "outcome_unknown");
+    assert!(!root.join("desktop.conf.mix").exists());
+    assert_eq!(state.accepted.revision, Revision(1));
+    let other = parent.path().join("other");
+    let mut state = authority(&other);
+    std::fs::remove_file(other.join("writer.lock")).unwrap();
+    std::fs::write(other.join("writer.lock"), "").unwrap();
+    let req = request(&state, "replaced-lock", "dark");
+    assert_eq!(state.apply(req).unwrap_err()["status"], "outcome_unknown");
+    assert_eq!(state.accepted.revision, Revision(1));
+}
+#[test]
+fn canonical_request_digest_ignores_object_key_order_but_binds_fences() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = authority(dir.path());
+    let mut first = request(&state, "canonical", "dark");
+    first.changes.insert("apps.term".into(), serde_json::from_str(r#"{"mode":"dark","contrast":"normal"}"#).unwrap());
+    let mut second = first.clone();
+    second.changes.insert("apps.term".into(), serde_json::from_str(r#"{"contrast":"normal","mode":"dark"}"#).unwrap());
+    assert_eq!(first.digest().unwrap(), second.digest().unwrap());
+    second.expected_revision = Revision(2);
+    assert_ne!(first.digest().unwrap(), second.digest().unwrap());
+}
+#[test]
 fn lost_reply_and_later_edit_return_original_receipt_before_revision_conflict() {
     let dir = tempfile::tempdir().unwrap();
     let mut authority = authority(dir.path());

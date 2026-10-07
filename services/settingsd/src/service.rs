@@ -18,14 +18,14 @@ pub const VERBS: &[&str] = &[
 pub fn manifest() -> Vec<bus::VerbDescriptor> {
     std::iter::once(bus::VerbDescriptor::new(
         "HELP",
-        "",
+        &[],
         "List served verbs",
         true,
     ))
     .chain(VERBS.iter().map(|verb| {
         bus::VerbDescriptor::new(
             *verb,
-            "JSON body",
+            &["body"],
             "Desktop settings contract 0.1.0",
             !matches!(*verb, "settings.apply" | "settings.reset"),
         )
@@ -85,6 +85,34 @@ async fn publish(authority: &mut Authority, client: &SupervisedClient) -> anyhow
     Ok(())
 }
 
+/// One bounded retry job exists only while publication is pending. No idle
+/// interval or heartbeat. A new revision/connection starts a fresh attempt set.
+#[derive(Default)]
+struct PublicationRetry {
+    failures: u8,
+    deadline: Option<tokio::time::Instant>,
+}
+impl PublicationRetry {
+    fn complete(&mut self, success: bool) {
+        if success { *self = Self::default(); return; }
+        self.failures = self.failures.saturating_add(1);
+        self.deadline = if self.failures <= 3 {
+            Some(tokio::time::Instant::now() + Duration::from_millis(250 * (1u64 << (self.failures - 1))))
+        } else { None };
+    }
+    async fn wait(&self) {
+        match self.deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+}
+async fn publish_pending(authority: &mut Authority, client: &SupervisedClient, retry: &mut PublicationRetry) {
+    let result = publish(authority, client).await;
+    retry.complete(result.is_ok());
+    if let Err(error) = result { tracing::warn!(%error, failures=retry.failures,"settings publication pending"); }
+}
+
 pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
     let mut authority = tokio::task::spawn_blocking(move || {
         let (store, accepted) = Store::open(&root, &binding)?;
@@ -113,9 +141,8 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
         .incoming_bounded()
         .ok_or_else(|| anyhow::anyhow!("native incoming already taken"))?;
     let mut state = client.subscribe_state();
-    if let Err(error) = publish(&mut authority, &client).await {
-        tracing::warn!(%error,"initial settings publication pending");
-    }
+    let mut retry = PublicationRetry::default();
+    publish_pending(&mut authority, &client, &mut retry).await;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {
@@ -128,8 +155,15 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
                     // Re-registration always repopulates retained state, including
                     // ordinary restart when broker remains alive. No heartbeat.
                     authority.published = None;
-                    if let Err(error) = publish(&mut authority,&client).await { tracing::warn!(%error,"settings publication pending"); }
-                } else { authority.published = None; }
+                    retry = PublicationRetry::default();
+                    publish_pending(&mut authority,&client,&mut retry).await;
+                } else { authority.published = None; retry = PublicationRetry::default(); }
+            }
+            _ = retry.wait() => {
+                retry.deadline = None;
+                if client.is_connected() && !authority.store.recovering {
+                    publish_pending(&mut authority,&client,&mut retry).await;
+                }
             }
             event = incoming.recv() => {
                 match event {
@@ -139,6 +173,7 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
                         if command.is_topic_delivery() { continue; }
                         let verb = command.command.clone();
                         let body = command.body.clone();
+                        let previous_revision = authority.accepted.revision;
                         // At most one blocking job. Durable work completes even
                         // when its reply cannot be sent; no mutation replay.
                         let result = tokio::task::spawn_blocking(move || {
@@ -147,8 +182,9 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
                         }).await?;
                         authority = result.0;
                         let mut reply = result.1;
+                        if authority.accepted.revision != previous_revision { retry = PublicationRetry::default(); }
                         if client.is_connected() && authority.published != Some(authority.accepted.revision) && !authority.store.recovering {
-                            if let Err(error) = publish(&mut authority,&client).await { tracing::warn!(%error,"settings committed with publication pending"); }
+                            publish_pending(&mut authority,&client,&mut retry).await;
                         }
                         if let Ok(ref mut value) = reply {
                             if let Some(object) = value.as_object_mut() {
@@ -167,4 +203,20 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
     }
     let _ = tokio::time::timeout(Duration::from_secs(3), client.deregister()).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn publication_retry_stops_without_idle_polling_and_success_clears_job() {
+        let mut retry = PublicationRetry::default();
+        assert!(retry.deadline.is_none());
+        for _ in 0..3 { retry.complete(false); assert!(retry.deadline.is_some()); }
+        retry.complete(false);
+        assert!(retry.deadline.is_none());
+        retry.complete(true);
+        assert_eq!(retry.failures, 0);
+        assert!(retry.deadline.is_none());
+    }
 }

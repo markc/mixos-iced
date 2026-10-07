@@ -12,6 +12,9 @@ pub enum Decision {
     ConfirmAuthority,
     WrongTarget,
     Unsupported,
+    /// A fresh authority read contradicted an already installed identity.
+    /// Preserve current values and report corruption; do not loop fresh reads.
+    Contradiction,
 }
 pub struct Reducer {
     binding: Binding,
@@ -63,6 +66,8 @@ impl Reducer {
             {
                 if current == incoming {
                     Decision::Duplicate
+                } else if confirmed {
+                    Decision::Contradiction
                 } else {
                     Decision::ConfirmAuthority
                 }
@@ -103,6 +108,22 @@ mod tests {
             desktop: Desktop::default(),
             effective: Default::default(),
         }
+    }
+    #[test]
+    fn confirmed_contradiction_is_reported_without_installing_or_read_loop() {
+        let mut state = Reducer::new(snapshot(1, "a").binding);
+        state.install(snapshot(1, "a"), true, 0);
+        let mut changed = snapshot(1, "a");
+        changed.source_digest = "changed".into();
+        assert_eq!(state.install(changed.clone(), false, 0), Decision::ConfirmAuthority);
+        assert_eq!(state.install(changed, true, 0), Decision::Contradiction);
+        assert_eq!(state.current().unwrap().source_digest, "source");
+        let mut wrong = snapshot(2, "a");
+        wrong.binding.instance = "other".into();
+        assert_eq!(state.install(wrong, true, 0), Decision::WrongTarget);
+        let mut future = snapshot(2, "a");
+        future.schema = SCHEMA + 1;
+        assert_eq!(state.install(future, true, 0), Decision::Unsupported);
     }
     #[test]
     fn queued_incarnations_and_superseded_completion_cannot_replace_current() {

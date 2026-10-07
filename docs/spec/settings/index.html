@@ -257,7 +257,7 @@ refusal, invalid input or unknown verbs. Domain status is structured in the body
 <table><thead><tr><th>Verb</th><th>Input and result</th></tr></thead><tbody>
 <tr><td><code>settings.describe</code></td><td>No mutation; version, fields, ranges, defaults, limits and implemented/deferred capabilities</td></tr>
 <tr><td><code>settings.get</code></td><td><code>{binding:{instance,profile}}</code>; complete accepted snapshot, publication/recovery status</td></tr>
-<tr><td><code>settings.validate</code></td><td>Apply-shaped body; resolve/compile candidate without a write or receipt; valid or field diagnostics</td></tr>
+<tr><td><code>settings.validate</code></td><td>Fenced apply-shaped body; resolve/compile candidate without a write or receipt; valid with current base identity or diagnostics/conflict</td></tr>
 <tr><td><code>settings.apply</code></td><td>Fenced batch described below; durable changed/unchanged receipt</td></tr>
 <tr><td><code>settings.reset</code></td><td>Apply-shaped body with empty changes and explicit reset paths; same transaction semantics</td></tr>
 <tr><td><code>settings.status</code></td><td>Binding plus optional operation_id; accepted/published revision and retained receipt or unknown_operation</td></tr>
@@ -285,7 +285,10 @@ maps are sorted; reset-list order remains part of the request. Use the shared
 request digest API rather than hashing arbitrary JSON text. Reusing an operation
 ID with different input is refused. Receipt lookup/deduplication precedes expected
 revision conflict, after target/incarnation checks. An old retained operation can
-retrieve its original receipt after subsequent edits.</p>
+retrieve its original receipt after subsequent edits.
+Retry the identical request to recover its receipt. Updating a fence changes the
+digest and requires a new operation ID. Validation checks the present fence;
+another writer may still win before a later apply.</p>
 <p>Retain at most 128 receipts, inside the accepted document. A no-op writes its
 receipt durably without increasing desktop revision or publishing a new snapshot.
 Missing/evicted IDs return unknown_operation: opaque IDs have no expiry order,
@@ -301,7 +304,11 @@ with edge/mode/thickness; ordered shell pages; and whole app override records
 with scheme/mode/contrast/text scale. Describe supplies exact ranges. Unknown
 fields/scopes are refused. Field reset restores a package default; removing an
 app override restores profile inheritance. Per-field authored provenance beyond
-these initial concrete profile values is later work.</p>
+these initial concrete profile values is later work.
+The package source is pinned in accepted storage at profile creation. Null
+appearance.source selects that pinned source, including after binary upgrades;
+it does not silently adopt the upgraded binary's embedded defaults. Adopting a
+new package source requires an explicit mutation with a new revision.</p>
 <p>Validate the whole candidate and all advertised app contexts before acceptance.
 Compilation checks the source's claimed contexts. App overlays affect their
 context alone; profile high contrast takes precedence. A custom source is at
@@ -315,7 +322,10 @@ generation, source digest, complete desktop and effective per-app/desktop design
 projections. The resolved-design generation is owned by the authority and
 survives restart; it is not a broker sequence or a reconstituted compiler apply
 handle. Clients must confirm an incarnation change through fresh bound readback
-before installing it. Work tickets fence superseded asynchronous completion.</p>
+before installing it. Work tickets fence superseded asynchronous completion.
+Conflicting payloads at the same incarnation/revision trigger a fresh read;
+if the bound authority confirms the contradiction, report it and preserve the
+installed values rather than enter an endless readback loop.</p>
 <h2 id="topics-and-storage">Topics and storage</h2>
 <p>Publish retained <code>settingsd.desktop.changed.&lt;profile&gt;</code>, owned by the registered
 <code>settingsd</code> service. The unscoped base name is reserved too. All clients may
@@ -323,20 +333,31 @@ subscribe; ordinary publishers/clearers cannot replace its canonical state.
 Noded strips inner routing headers and stamps broker_service independently of
 caller input. The publisher repopulates retained state at startup and reconnect,
 even without a settings mutation. Generic props-prefix ownership is deliberately
-not used: embedding a profile in that prefix changes its matched service owner.</p>
+not used: embedding a profile in that prefix changes its matched service owner.
+Failed publication starts at most three one-shot retries, with 250/500/1000 ms
+delays. There is no idle timer. Reconnection or a new accepted revision starts a
+new retry job; exhaustion leaves publication_pending visible.</p>
 <p>Default root: resolved MixOS Etc directory / <code>settings/&lt;profile&gt;/</code>. Explicit
 test roots are supported. One retained writer.lock inode provides a process
 flock; it is never removed on normal exit. The root must be an owned directory
 not writable by other users. <code>desktop.conf.mix</code> holds schema, binding,
-incarnation, revisions, authored desktop and receipts. A synced
+incarnation, revisions, authored desktop, pinned package source, receipts and
+a verified BLAKE3 content digest. This digest detects corruption; it is not an
+authentication signature. A synced
 <code>desktop.previous.conf.mix</code> is written before replacing the accepted generation.
-Files are private, never evaluated as Mix source.</p>
+Files are private, never evaluated as Mix source.
+Reads, lock acquisition, replacements and syncs are relative to the same held
+directory descriptor. Replacing/detaching the profile directory or writer-lock
+inode fences the existing writer. Newly created directory entries are synced in
+their parents before initial acceptance.</p>
 <p>Replacement uses exclusive temporary create, write, file sync, directory-relative
 rename and directory sync. Pre-rename errors leave accepted state unchanged.
 Post-rename sync errors report outcome_unknown and fence further mutations until
 recovery; they cannot be reported as a known uncommitted failure. Corrupt input
 is preserved before a valid backup is restored with a new incarnation. Newer
-schemas or mismatched target bindings are not overwritten by a fallback.</p>
+schemas or mismatched target bindings are not overwritten by a fallback.
+A missing established primary fails visibly even with a backup; automatic
+recovery applies only to a present corrupt primary.</p>
 <p><code>settingsd init --instance example</code> explicitly creates a profile and refuses
 existing accepted/backup data. <code>settingsd serve --instance example</code> never
 materialises defaults for a missing established store. Installer seeding and
