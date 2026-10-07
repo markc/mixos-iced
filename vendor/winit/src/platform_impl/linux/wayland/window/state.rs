@@ -138,7 +138,7 @@ pub struct WindowState {
     initial_size: Option<Size>,
 
     /// The state of the frame callback.
-    frame_callback_state: FrameCallbackState,
+    frame_pacing: FramePacing,
 
     viewport: Option<WpViewport>,
     fractional_scale: Option<WpFractionalScaleV1>,
@@ -194,7 +194,7 @@ impl WindowState {
             decorate: true,
             fractional_scale,
             frame: None,
-            frame_callback_state: FrameCallbackState::None,
+            frame_pacing: FramePacing::default(),
             seat_focus: Default::default(),
             has_pending_move: None,
             ime_allowed: false,
@@ -232,30 +232,24 @@ impl WindowState {
         })
     }
 
-    /// Get the current state of the frame callback.
-    pub fn frame_callback_state(&self) -> FrameCallbackState {
-        self.frame_callback_state
-    }
-
     /// The frame callback was received, but not yet sent to the user.
     pub fn frame_callback_received(&mut self) {
-        self.frame_callback_state = FrameCallbackState::Received;
+        self.frame_pacing.callback = FrameCallbackState::Received;
     }
 
-    /// Reset the frame callbacks state.
-    pub fn frame_callback_reset(&mut self) {
-        self.frame_callback_state = FrameCallbackState::None;
+    pub fn grant_present_retry(&mut self) -> bool {
+        self.frame_pacing.grant_retry()
+    }
+
+    pub fn prepare_redraw(&mut self) -> bool {
+        self.frame_pacing.prepare_redraw()
     }
 
     /// Request a frame callback if we don't have one for this window in flight.
     pub fn request_frame_callback(&mut self) {
-        let surface = self.window.wl_surface();
-        match self.frame_callback_state {
-            FrameCallbackState::None | FrameCallbackState::Received => {
-                self.frame_callback_state = FrameCallbackState::Requested;
-                surface.frame(&self.queue_handle, surface.clone());
-            },
-            FrameCallbackState::Requested => (),
+        if self.frame_pacing.request() {
+            let surface = self.window.wl_surface();
+            surface.frame(&self.queue_handle, surface.clone());
         }
     }
 
@@ -1119,6 +1113,71 @@ pub enum FrameCallbackState {
     Requested,
     /// The callback was marked as done, and user could receive redraw requested
     Received,
+}
+
+#[derive(Default)]
+struct FramePacing {
+    callback: FrameCallbackState,
+    retry: bool,
+}
+
+impl FramePacing {
+    fn request(&mut self) -> bool {
+        if self.callback == FrameCallbackState::Requested {
+            return false;
+        }
+        self.callback = FrameCallbackState::Requested;
+        true
+    }
+
+    fn grant_retry(&mut self) -> bool {
+        !std::mem::replace(&mut self.retry, true)
+    }
+
+    fn prepare_redraw(&mut self) -> bool {
+        if self.callback == FrameCallbackState::Requested {
+            // Keep the original callback; resetting would allocate another
+            // request without retiring the old native owner.
+            return std::mem::take(&mut self.retry);
+        }
+        self.retry = false;
+        self.callback = FrameCallbackState::None;
+        true
+    }
+}
+
+#[cfg(test)]
+mod frame_pacing_guards {
+    use super::*;
+
+    #[test]
+    fn failed_retry_reuses_one_callback_and_permission_is_consumed_once() {
+        let mut pacing = FramePacing::default();
+        assert!(pacing.request());
+        assert!(!pacing.prepare_redraw());
+        assert!(pacing.grant_retry());
+        assert!(!pacing.grant_retry());
+        assert!(pacing.prepare_redraw());
+        assert_eq!(pacing.callback, FrameCallbackState::Requested);
+        assert!(!pacing.request(), "retry must reuse the original native callback");
+        assert!(!pacing.prepare_redraw(), "success leaves no standing bypass");
+        assert!(pacing.grant_retry(), "another actual failure grants another retry");
+        assert!(pacing.prepare_redraw());
+        assert!(!pacing.request());
+    }
+
+    #[test]
+    fn received_callback_restores_normal_pacing_without_a_lingering_bypass() {
+        let mut pacing = FramePacing::default();
+        assert!(pacing.request());
+        assert!(pacing.grant_retry());
+        pacing.callback = FrameCallbackState::Received;
+        assert!(pacing.prepare_redraw());
+        assert_eq!(pacing.callback, FrameCallbackState::None);
+        assert!(!pacing.retry);
+        assert!(pacing.request());
+        assert!(!pacing.prepare_redraw());
+    }
 }
 
 impl From<ResizeDirection> for XdgResizeEdge {

@@ -33,7 +33,6 @@ pub use proxy::EventLoopProxy;
 use sink::EventSink;
 
 use super::state::{WindowCompositorUpdate, WinitState};
-use super::window::state::FrameCallbackState;
 use super::{DeviceId, WaylandError, WindowId, logical_to_physical_rounded};
 
 type WaylandDispatcher = calloop::Dispatcher<'static, WaylandSource<WinitState>, WinitState>;
@@ -46,6 +45,10 @@ pub struct EventLoop<T: 'static> {
     buffer_sink: EventSink,
     compositor_updates: Vec<WindowCompositorUpdate>,
     window_ids: Vec<WindowId>,
+
+    // Event-loop lifetime owns the strong capacity subscriber. Native feedback
+    // and process bookkeeping cannot retain this loop through their leases.
+    _presentation_capacity_wake: Option<Arc<super::types::wp_presentation::CapacityWake>>,
 
     /// Sender of user events.
     user_events_sender: calloop::channel::Sender<T>,
@@ -135,9 +138,17 @@ impl<T: 'static> EventLoop<T> {
             WaylandError::Calloop
         )?;
 
+        let presentation_capacity_wake = winit_state
+            .presentation
+            .as_ref()
+            .map(|presentation| presentation.subscribe_capacity(event_loop_awakener.clone()));
+        let capacity_wake = presentation_capacity_wake.as_ref().map(Arc::downgrade);
         let result = event_loop
             .handle()
             .insert_source(event_loop_awakener_source, move |_, _, winit_state: &mut WinitState| {
+                if let Some(wake) = capacity_wake.as_ref().and_then(std::sync::Weak::upgrade) {
+                    wake.acknowledge();
+                }
                 // Mark that we have something to dispatch.
                 winit_state.dispatched_events = true;
             })
@@ -159,6 +170,7 @@ impl<T: 'static> EventLoop<T> {
             compositor_updates: Vec::new(),
             buffer_sink: EventSink::default(),
             window_ids: Vec::new(),
+            _presentation_capacity_wake: presentation_capacity_wake,
             connection,
             wayland_dispatcher,
             user_events_sender,
@@ -463,12 +475,10 @@ impl<T: 'static> EventLoop<T> {
                 let mut window =
                     state.windows.get_mut().get_mut(window_id).unwrap().lock().unwrap();
 
-                if window.frame_callback_state() == FrameCallbackState::Requested {
+                if !window.prepare_redraw() {
                     return None;
                 }
 
-                // Reset the frame callbacks state.
-                window.frame_callback_reset();
                 let mut redraw_requested =
                     window_requests.get(window_id).unwrap().take_redraw_requested();
 
