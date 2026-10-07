@@ -19,13 +19,12 @@ try
   $R.broker = $n.private_bus({dir:$root,name:"busviewer-test",noded:$bin .. "/noded"})
   $R.record = $root .. "/restart-owner.json"
   $R.broker = merge($R.broker,{restart_record:"restart-owner.json"})
-  write_file($R.record,json_encode($R.broker))
+  write_atomic($R.record,json_encode($R.broker))
   $restart = $root .. "/restart.mix"
   write_file($restart,'$n = require(' .. json_encode($repo .. "/tests/desktop/nested_host_lib.mix") .. ")\n" ..
     '$record = ' .. json_encode($R.record) .. "\n" ..
     '$broker = json_parse(read_file($record))' .. "\n" ..
-    '$replacement = $n.restart_private_bus($broker)' .. "\n" ..
-    'write_file($record,json_encode($replacement))' .. "\n")
+    '$replacement = $n.restart_private_bus($broker)' .. "\n")
   for each $directory in ["app-home","config","state","cache"]
     mkdir($root .. "/" .. $directory,{parents:true})
   end

@@ -133,9 +133,9 @@ pub struct Handle {
 }
 impl Handle {
     pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, CallError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let permit = self.outgoing.try_acquire()
             .ok_or_else(|| CallError::not_sent("Bus call admission exhausted; no call sent"))?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let generation = self.settings_generation();
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -1368,11 +1368,7 @@ mod tests {
     /// capacity and read-only watch snapshots are test configuration.
     fn native_reconnect_with_stalled_gui(gui_capacity: usize) {
         use application::iced::futures::StreamExt;
-        // Keep the actual TCP endpoint stable across production broker bounces.
-        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = reservation.local_addr().unwrap().port();
-        drop(reservation);
-        let mut broker = term_test_broker::Broker::with_tcp_port(port);
+        let mut broker = term_test_broker::Broker::start_stable();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
@@ -1435,7 +1431,7 @@ mod tests {
             let mut sequences = std::collections::BTreeSet::new();
             tokio::time::timeout(Duration::from_secs(15), async {
                 while sequences.len()<32 {
-                    if let Some(Delivery::Command {id,body,..}) = events.next().await {
+                    if let Delivery::Command {id,body,..} = events.next().await.expect("worker closed during GUI drain") {
                         if !handle.is_current(&id) { continue; }
                         let body: Value = serde_json::from_str(&body).unwrap();
                         assert_eq!(body["batch"],"new");
@@ -1452,7 +1448,7 @@ mod tests {
             let quit = tokio::spawn(async move { calling.call_with_headers_raw("actor-viewer","busviewer.quit",&BTreeMap::new(),"{}").await });
             tokio::time::timeout(Duration::from_secs(5),async {
                 loop {
-                    if let Some(Delivery::Command {id,verb,..}) = events.next().await {
+                    if let Delivery::Command {id,verb,..} = events.next().await.expect("worker closed before quit command") {
                         assert_eq!(verb,"busviewer.quit");
                         assert!(handle.is_current(&id));
                         handle.reply(id,0,json!({"quitting":true}));

@@ -424,7 +424,7 @@ fn restart_private_bus($broker)
       raise("BROKER_RESTART", "invalid owned restart record filename")
     end
     try
-      write_file($broker.dir .. "/" .. $record,json_encode($replacement))
+      write_atomic($broker.dir .. "/" .. $record,json_encode($replacement))
     catch $message
       _retire_owned($p)
       raise("BROKER_RESTART", "could not publish owned restart record: " .. $message)
