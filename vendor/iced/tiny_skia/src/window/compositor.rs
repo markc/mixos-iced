@@ -130,17 +130,24 @@ pub fn present(
     on_pre_present: impl FnOnce(),
 ) -> Result<(), compositor::SurfaceError> {
     let physical_size = viewport.physical_size();
+    let mut profile = super::cpu_profile::Frame::start();
 
     let mut buffer = surface
         .window
         .buffer_mut()
         .map_err(|_| compositor::SurfaceError::Lost)?;
+    if let Some(profile) = &mut profile {
+        profile.acquired(buffer.age(), physical_size.width, physical_size.height);
+    }
 
     let damage =
         surface
             .history
             .damage(buffer.age(), renderer.layers(), viewport, background_color);
     let physical_damage = physical_damage(&damage, viewport);
+    if let Some(profile) = &mut profile {
+        profile.raster_started(&physical_damage);
+    }
     {
         let mut pixels = tiny_skia::PixmapMut::from_bytes(
             bytemuck::cast_slice_mut(&mut buffer),
@@ -157,14 +164,22 @@ pub fn present(
             background_color,
         );
     }
+    if let Some(profile) = &mut profile {
+        profile.raster_finished();
+    }
 
-    surface
-        .history
-        .submit(renderer.layers(), background_color, on_pre_present, || {
-            buffer
-                .present_with_damage(&physical_damage)
-                .map_err(|_| compositor::SurfaceError::Lost)
-        })
+    let result =
+        surface
+            .history
+            .submit(renderer.layers(), background_color, on_pre_present, || {
+                buffer
+                    .present_with_damage(&physical_damage)
+                    .map_err(|_| compositor::SurfaceError::Lost)
+            });
+    if let Some(profile) = profile {
+        profile.presented(result.is_ok());
+    }
+    result
 }
 
 #[derive(Default)]

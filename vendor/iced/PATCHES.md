@@ -136,6 +136,15 @@ translucent, rotated and fractional cases retain the upstream raster path.
 The iced 0.15 text, settings, local clip and shadow handling stay intact.
 No second iced version or raster engine is added.
 
+`tiny_skia/src/window/cpu_profile.rs`: `ICED_CPU_PROFILE=1` enables one
+aggregate per active second at log target `iced_tiny_skia::cpu_profile`.
+It reports buffer ages, physical surface size, submitted damage rectangle
+counts/area, full/empty frames and acquisition, damage, raster and present
+timings. Rectangle areas are summed, including repeated overlapping work.
+Disabled frames perform no clock reads or logging. No document or input
+content is collected. Use `RUST_LOG=iced_tiny_skia::cpu_profile=info` when
+the application's default filter hides dependency logs.
+
 Guards are the retained grid and raster unit tests, including colour, clip,
 fractional scale, damage lineage, overlay order and forced-fallback equivalence.
 Term adds end-to-end sparse-damage and offscreen pixel comparisons.
