@@ -52,6 +52,100 @@ fn frame_stamp_tracks_installed_content_through_pending_and_failed_preparation()
     assert_eq!(next.local_revision, local.local_revision);
 }
 
+#[cfg(feature = "settings-cache")]
+async fn next_unit(worker: &mut Worker<u64>) -> Event<u64> {
+    tokio::time::timeout(Duration::from_secs(10), worker.next()).await.unwrap().take().unwrap()
+}
+
+#[cfg(feature = "settings-cache")]
+#[tokio::test]
+async fn generic_unit_retry_keeps_none_but_changed_authority_discovers_an_installed_set() {
+    install_fonts();
+    let assets = tempfile::tempdir().unwrap();
+    let host = || ResourceHost::new(vec![assets.path().to_owned()].into_iter().collect());
+    let mut session = session();
+    let mut worker = Worker::offline_with_host(|_, snapshot| Ok(snapshot.revision.0), host());
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    assert!(session.host.presentation().unwrap().appearance().resources().and_then(|resources| resources.binding()).is_none());
+    let save = session.host.consumer().cache_save().unwrap();
+    publish_set(assets.path(), "installed-b");
+    let sample = snapshot(0, false);
+    let fresh = host().prepare(Projection::new(&sample.effective["app:ced"]).unwrap(), None, None, ResourceRequirements::empty(), &mut || Ok(())).unwrap();
+    assert_eq!(fresh.resources().unwrap().binding().unwrap().set_id, "installed-b");
+    let (_, jobs) = session.retry_preparation(Some(1)).unwrap();
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    assert!(session.host.presentation().unwrap().appearance().resources().and_then(|resources| resources.binding()).is_none(), "unit local rebuild must not rediscover installed B");
+    assert!(save.same_capture(&session.host.consumer().cache_save().unwrap()));
+    session.host.consumer_mut().observe(1, snapshot(2, true));
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    let resources = session.host.presentation().unwrap().appearance().resources().unwrap();
+    assert_eq!(resources.binding().unwrap().set_id, "installed-b");
+    assert_eq!(session.host.consumer().applied().unwrap().revision, Revision(2));
+    assert_eq!(session.host.consumer().cache_save().unwrap().binding(), resources.binding());
+}
+
+#[cfg(feature = "settings-cache")]
+#[tokio::test]
+async fn omitted_verified_source_keeps_a_and_explicit_b_overrides_the_lifetime_pin() {
+    install_fonts();
+    let assets = tempfile::tempdir().unwrap();
+    let host = || ResourceHost::new(vec![assets.path().to_owned()].into_iter().collect());
+    publish_set(assets.path(), "pinned-a");
+    let mut session = session();
+    let mut worker = Worker::offline_with_host(|_, snapshot| Ok(snapshot.revision.0), host());
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    let binding_a = session.host.consumer().cache_save().unwrap().binding().unwrap().clone();
+    std::fs::remove_file(assets.path().join(assets::CURRENT_LINK)).unwrap();
+    publish_set(assets.path(), "authored-b");
+    let sample = snapshot(0, false);
+    let fresh = host().prepare(Projection::new(&sample.effective["app:ced"]).unwrap(), None, None, ResourceRequirements::empty(), &mut || Ok(())).unwrap();
+    let binding_b = fresh.resources().unwrap().binding().unwrap().clone();
+    assert_eq!(binding_b.set_id, "authored-b", "fresh discovery really changed to B");
+    session.host.consumer_mut().observe(1, snapshot(2, true));
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    assert_eq!(session.host.consumer().cache_save().unwrap().binding(), Some(&binding_a));
+    let (_, jobs) = session.retry_preparation(Some(1)).unwrap();
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    assert_eq!(session.host.consumer().cache_save().unwrap().binding(), Some(&binding_a));
+
+    // Authored references do not remap packaged roles. Build a real authored
+    // source whose records all name a family actually carried by B, then
+    // recompute its effective settings with the production resolver.
+    let mut source = strict::to_json(&strict::parse(settings::EMBEDDED_DEFAULT_SOURCE).unwrap());
+    source["typography"]["family"] = serde_json::json!("Inter");
+    for record in source["design"]["v1"]["typography"]["records"].as_object_mut().unwrap().values_mut() {
+        record["family"] = serde_json::json!("Inter");
+        record["fallbacks"] = serde_json::json!([]);
+    }
+    let source = strict::encode_pretty(&strict::from_json(&source)).unwrap();
+    let mut authored = snapshot(3, true);
+    authored.source_digest = settings::source_digest(&source);
+    authored.desktop.appearance.source = Some(source);
+    authored.desktop.appearance.resources = Some(settings::ResourceReference {
+        schema:settings::RESOURCE_SCHEMA, set_id:binding_b.set_id.clone(), manifest_blake3:binding_b.manifest_blake3.clone(), icons:None,
+    });
+    authored.effective = settings::resolve(&authored.desktop).unwrap();
+    session.host.consumer_mut().observe(1, authored);
+    let (_, jobs) = session.handle(Event::Wake, Some(1));
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    assert_eq!(session.host.consumer().cache_save().unwrap().binding(), Some(&binding_b));
+    let (_, jobs) = session.retry_preparation(Some(1)).unwrap();
+    worker.replace(jobs);
+    assert!(session.handle(next_unit(&mut worker).await, Some(1)).0.is_some());
+    assert_eq!(session.host.consumer().cache_save().unwrap().binding(), Some(&binding_b));
+}
+
 async fn next_context(worker: &mut Worker<u64, Context>) -> Event<u64> {
     tokio::time::timeout(Duration::from_secs(5), worker.next())
         .await
