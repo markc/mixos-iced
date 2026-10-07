@@ -18,9 +18,35 @@
 //!   activated set, following `current` exactly once, and verifies its
 //!   hashes; [`Lookup::select`] does the same without hashing the
 //!   payload, for a reader that trusts the installer's verification.
-//! - [`mixos`] (the default `mixos` feature) is the MixOS search path:
-//!   `mixos/assets` under the XDG data directories, then `assets` under the
-//!   share directory `config` resolves.
+#![cfg_attr(
+    feature = "mixos",
+    doc = "- [`mixos`] (the default `mixos` feature) is the MixOS search path:"
+)]
+#![cfg_attr(
+    feature = "mixos",
+    doc = "  `mixos/assets` under the XDG data directories, then `assets` under the"
+)]
+#![cfg_attr(feature = "mixos", doc = "  share directory `config` resolves.")]
+#![cfg_attr(
+    feature = "verified",
+    doc = "- [`AssetSet::read_verified`] (the `verified` feature) re-reads the"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  manifest through a held directory descriptor and captures every"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  locked file's bytes, checked once and owned: the returned"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  `VerifiedSet` never touches the paths again, and its identity pins"
+)]
+#![cfg_attr(
+    feature = "verified",
+    doc = "  the set ID together with the BLAKE3 of the exact manifest bytes."
+)]
 //!
 //! Native readers call `discover` once at startup and keep that selection
 //! while `current` changes underneath them. An installer opens its own
@@ -41,6 +67,8 @@ mod error;
 mod lookup;
 mod manifest;
 mod set;
+#[cfg(feature = "verified")]
+mod verified;
 
 #[cfg(feature = "mixos")]
 pub mod mixos;
@@ -52,3 +80,5 @@ pub use manifest::{
     STYLESHEET_FILE, valid_relative_path, valid_set_id,
 };
 pub use set::{AssetSet, CURRENT_LINK};
+#[cfg(feature = "verified")]
+pub use verified::{ReadLimits, SetIdentity, VerifiedFile, VerifiedSet};

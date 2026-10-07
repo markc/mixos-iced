@@ -11,15 +11,15 @@ use sha2::Digest;
 
 use crate::error::{Error, Result, invalid, io};
 use crate::manifest::{
-    MANIFEST_FILE, Manifest, STYLESHEET_FILE, parse_codepoints, valid_relative_path,
-    valid_set_id, validate,
+    MANIFEST_FILE, Manifest, STYLESHEET_FILE, parse_codepoints, valid_relative_path, valid_set_id,
+    validate,
 };
 
 /// The activation link inside a root: `current -> sets/<id>`.
 pub const CURRENT_LINK: &str = "current";
 
-const MANIFEST_LIMIT: u64 = 256 * 1024;
-const CATALOGUE_LIMIT: u64 = 1024 * 1024;
+pub(crate) const MANIFEST_LIMIT: u64 = 256 * 1024;
+pub(crate) const CATALOGUE_LIMIT: u64 = 1024 * 1024;
 
 /// A complete selection, pinned to a concrete published directory.
 ///
@@ -100,7 +100,9 @@ impl AssetSet {
                     .to_str()
                     .ok_or_else(|| invalid("invalid icon catalogue path"))?;
                 if !manifest.files.iter().any(|file| file.path == catalogue) {
-                    return Err(invalid(format!("icon catalogue {catalogue:?} is not locked")));
+                    return Err(invalid(format!(
+                        "icon catalogue {catalogue:?} is not locked"
+                    )));
                 }
                 parse_codepoints(&read_bounded(
                     &checked_file(&root, catalogue)?,
@@ -182,7 +184,11 @@ impl AssetSet {
         if !valid_relative_path(relative) {
             return Err(invalid(format!("invalid asset path {relative:?}")));
         }
-        let entry = self.manifest.files.iter().find(|file| file.path == relative);
+        let entry = self
+            .manifest
+            .files
+            .iter()
+            .find(|file| file.path == relative);
         if entry.is_none() && relative != MANIFEST_FILE && relative != STYLESHEET_FILE {
             return Ok(None);
         }
@@ -231,7 +237,10 @@ impl AssetSet {
                 b3.update(&buffer[..length]);
             }
             if bytes != entry.bytes {
-                return Err(Error::Mismatch(format!("asset size mismatch: {}", entry.path)));
+                return Err(Error::Mismatch(format!(
+                    "asset size mismatch: {}",
+                    entry.path
+                )));
             }
             if hex::encode(sha.finalize()) != entry.sha256 {
                 return Err(Error::Mismatch(format!(
@@ -247,6 +256,26 @@ impl AssetSet {
             }
         }
         Ok(())
+    }
+
+    /// Read, check and capture every byte of this set (the `verified`
+    /// feature): the set directory is opened through a held descriptor,
+    /// the manifest is re-read and re-validated rather than trusted from
+    /// this handle, and every locked file is descriptor-opened and read
+    /// exactly once, its exact length and both digests checked against the
+    /// same owned bytes that are retained.
+    ///
+    /// The returned [`VerifiedSet`](crate::VerifiedSet) owns its bytes, so
+    /// fonts come from `font("sans").bytes()` and nothing is reopened
+    /// later: replacing or removing `sets/<id>` afterwards changes what
+    /// the next reader sees, never what this one holds. `limits` bounds
+    /// how much is staged in memory at once, under hard caps.
+    #[cfg(feature = "verified")]
+    pub fn read_verified(
+        &self,
+        limits: crate::verified::ReadLimits,
+    ) -> Result<crate::verified::VerifiedSet> {
+        crate::verified::read(self.assets_root(), self.set_id(), limits)
     }
 }
 
@@ -264,7 +293,9 @@ fn check_size(path: &Path, relative: &str, expected: u64) -> Result<()> {
 /// symlink.
 fn checked_directory(root: &Path, relative: &str) -> Result<PathBuf> {
     if !valid_relative_path(relative) {
-        return Err(invalid(format!("invalid asset directory path {relative:?}")));
+        return Err(invalid(format!(
+            "invalid asset directory path {relative:?}"
+        )));
     }
     let mut path = root.to_path_buf();
     for part in relative.split('/') {
