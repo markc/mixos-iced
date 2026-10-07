@@ -414,6 +414,22 @@ fn restart_private_bus($broker)
     MIXOS_RUN:$broker.dir .. "/run", MIXOS_NODE_CONFIG:$broker.conf},
     stdout: {file: $log}, stderr: "stdout", detach: true})
   $replacement = merge($broker, {pid: $p, log: $log})
+  -- Optional owned ledger: publish the spawned PID before readiness, so an
+  -- interrupted restart still leaves the outer gate enough information to
+  -- retire its child. The filename stays directly under this broker's root.
+  if $broker.restart_record != nil then
+    $record = $broker.restart_record
+    if type($record) != "string" or $record == "" or contains($record,"/") or starts_with($record,"..") then
+      _retire_owned($p)
+      raise("BROKER_RESTART", "invalid owned restart record filename")
+    end
+    try
+      write_file($broker.dir .. "/" .. $record,json_encode($replacement))
+    catch $message
+      _retire_owned($p)
+      raise("BROKER_RESTART", "could not publish owned restart record: " .. $message)
+    end
+  end
   if not _broker_ready($broker.node, $p, $replacement) then
     _retire_owned($p)
     raise("BROKER_RESTART", "Restarted broker never confirmed ownership at " .. $broker.url)

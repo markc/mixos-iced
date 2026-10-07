@@ -782,7 +782,7 @@ impl SupervisedClient {
         rc: u8,
         body: &str,
     ) -> Result<(), SupervisedError> {
-        self.reply_connection(generation)
+        self.connection_at_generation(generation)
             .await?
             .respond_parts(to, command, id, rc, body)
             .await
@@ -836,6 +836,37 @@ impl SupervisedClient {
             .map_err(SupervisedError::Transport)
     }
 
+    /// Call only on the connection identified by `generation` on this
+    /// supervisor. Capture [`Self::connection_generation`] when accepting
+    /// work that must not move to a replacement connection while queued.
+    ///
+    /// Zero or a generation replaced before acquisition returns
+    /// [`SupervisedError::Disconnected`] without sending. The generation is
+    /// checked under the same lock that publishes a replacement connection;
+    /// once acquired, that connection is retained through the call, with no
+    /// retry on a later generation. Generations are local to this supervisor,
+    /// so callers must also retain the originating client.
+    ///
+    /// Headers, body and response have the same wire representation as
+    /// [`Self::call_with_headers_raw`]. The caller owns any queue deadline.
+    pub async fn call_with_headers_raw_at_generation(
+        &self,
+        generation: u64,
+        to: &str,
+        command: &str,
+        headers: &BTreeMap<String, String>,
+        body: &str,
+    ) -> Result<(u8, String, Option<String>), SupervisedError> {
+        self.gate()?;
+        let connection = self.connection_at_generation(generation).await?;
+        // A lifecycle transition may have happened while acquisition waited.
+        self.gate()?;
+        connection
+            .call_with_headers_raw(to, command, headers, body)
+            .await
+            .map_err(SupervisedError::Transport)
+    }
+
     /// See [`Connection::respond_parts`]. Gated like every other outbound
     /// call: a reply attempted while disconnected fails fast.
     pub async fn respond_parts(
@@ -848,17 +879,20 @@ impl SupervisedClient {
         body: &str,
     ) -> Result<(), SupervisedError> {
         self.gate()?;
-        self.reply_connection(generation)
+        self.connection_at_generation(generation)
             .await?
             .respond_parts(to, command, id, rc, body)
             .await
             .map_err(SupervisedError::Transport)
     }
 
-    async fn reply_connection(&self, generation: u64) -> Result<Arc<Connection>, SupervisedError> {
+    async fn connection_at_generation(
+        &self,
+        generation: u64,
+    ) -> Result<Arc<Connection>, SupervisedError> {
         // Reconnect publishes its connection and generation while holding
         // this write lock. Retain the selected connection for the whole send:
-        // a later reconnect cannot redirect a reply onto its replacement.
+        // a later reconnect cannot redirect work onto its replacement.
         let connection = self.inner.read().await;
         if generation == 0 || generation != self.connection_generation() {
             return Err(SupervisedError::Disconnected);
@@ -1651,6 +1685,164 @@ async fn supervisor_run(ctx: &mut SupervisorCtx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real ABP WebSocket framing and correlation, with a barrier after
+    /// receipt of the first application call. Registration is always ACKed.
+    async fn raw_call_stub(
+        mut release: Option<oneshot::Receiver<()>>,
+    ) -> (
+        String,
+        mpsc::UnboundedReceiver<BusMessage>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        let (seen, requests) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(frame) = websocket.next().await {
+                let text = match frame {
+                    Ok(Message::Text(text)) => text,
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(_) => continue,
+                };
+                let request = crate::parse(&text).unwrap();
+                let command = request.get("command").unwrap();
+                if command != "noded.register" {
+                    seen.send(request.clone()).unwrap();
+                    if let Some(release) = release.take() {
+                        release.await.unwrap();
+                    }
+                }
+                let mut reply = BusMessage::new()
+                    .with_header("type", "response")
+                    .with_header("command", command)
+                    .with_header("from", request.get("to").unwrap_or("noded"))
+                    .with_header("rc", "0")
+                    .with_body(&request.body);
+                if let Some(id) = request.get("id") {
+                    reply = reply.with_header("id", id);
+                }
+                if websocket.send(Message::Text(reply.to_wire().into())).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (url, requests, task)
+    }
+
+    #[tokio::test]
+    async fn raw_call_generation_is_checked_after_waiting_for_connection_acquisition() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (url, mut original_requests, original_stub) = raw_call_stub(None).await;
+            let client = SupervisedClient::connect("generation-owner", &url).await.unwrap();
+            assert_eq!(client.connection_generation(), 1);
+            let (replacement_url, mut replacement_requests, replacement_stub) =
+                raw_call_stub(None).await;
+            let replacement = Arc::new(
+                Connection::connect("generation-owner", &replacement_url).await.unwrap(),
+            );
+            let headers = BTreeMap::from([("fixture".to_owned(), "preserved".to_owned())]);
+
+            // Force the real acquisition await, then publish the replacement
+            // under the exact lock used by establish_attempt. A pre-lock
+            // generation check would incorrectly send through this socket.
+            let mut live = client.inner.write().await;
+            let call = client.call_with_headers_raw_at_generation(
+                1, "example", "old-intent", &headers, "old",
+            );
+            tokio::pin!(call);
+            assert!(futures_util::poll!(call.as_mut()).is_pending());
+            let original = live.replace(replacement).unwrap();
+            client.connection_generation.store(2, Ordering::SeqCst);
+            drop(live);
+            assert!(matches!(call.await, Err(SupervisedError::Disconnected)));
+            assert!(matches!(
+                client.call_with_headers_raw_at_generation(
+                    0, "example", "zero-intent", &headers, "zero",
+                ).await,
+                Err(SupervisedError::Disconnected)
+            ));
+
+            assert_eq!(
+                client.call_with_headers_raw_at_generation(
+                    2, "example", "current-intent", &headers, "current",
+                ).await.unwrap(),
+                (0, "current".to_owned(), None)
+            );
+            let received = replacement_requests.recv().await.unwrap();
+            assert_eq!(received.get("command"), Some("current-intent"));
+            assert_eq!(received.get("fixture"), Some("preserved"));
+            assert_eq!(received.body, "current");
+
+            // Ordinary callers retain their current-connection behaviour.
+            assert_eq!(
+                client.call_with_headers_raw("example", "ordinary", &headers, "body")
+                    .await.unwrap(),
+                (0, "body".to_owned(), None)
+            );
+            assert_eq!(
+                replacement_requests.recv().await.unwrap().get("command"),
+                Some("ordinary")
+            );
+            assert!(matches!(original_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+            assert!(matches!(replacement_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+            client.close().await;
+            original.close().await;
+            original_stub.await.unwrap();
+            replacement_stub.await.unwrap();
+        }).await.expect("generation fence and native socket cleanup are bounded");
+    }
+
+    #[tokio::test]
+    async fn raw_call_retains_the_acquired_connection_across_replacement() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (release, held) = oneshot::channel();
+            let (url, mut original_requests, original_stub) = raw_call_stub(Some(held)).await;
+            let client = Arc::new(SupervisedClient::connect("generation-owner", &url).await.unwrap());
+            let (replacement_url, mut replacement_requests, replacement_stub) =
+                raw_call_stub(None).await;
+            let replacement = Arc::new(
+                Connection::connect("generation-owner", &replacement_url).await.unwrap(),
+            );
+            let calling = client.clone();
+            let call = tokio::spawn(async move {
+                calling.call_with_headers_raw_at_generation(
+                    1, "example", "already-sent", &BTreeMap::new(), "original-response",
+                ).await
+            });
+            assert_eq!(
+                original_requests.recv().await.unwrap().get("command"),
+                Some("already-sent")
+            );
+            let mut live = client.inner.write().await;
+            let original = live.replace(replacement).unwrap();
+            client.connection_generation.store(2, Ordering::SeqCst);
+            drop(live);
+            release.send(()).unwrap();
+            assert_eq!(call.await.unwrap().unwrap(), (0, "original-response".to_owned(), None));
+            assert_eq!(
+                client.call_with_headers_raw_at_generation(
+                    2, "example", "replacement-call", &BTreeMap::new(), "replacement-response",
+                ).await.unwrap(),
+                (0, "replacement-response".to_owned(), None)
+            );
+            assert_eq!(
+                replacement_requests.recv().await.unwrap().get("command"),
+                Some("replacement-call")
+            );
+            assert!(matches!(original_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+            assert!(matches!(replacement_requests.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+            client.close().await;
+            original.close().await;
+            original_stub.await.unwrap();
+            replacement_stub.await.unwrap();
+        }).await.expect("a started call remains on its original socket");
+    }
 
     #[test]
     fn backoff_ceiling_is_monotonic_and_capped() {

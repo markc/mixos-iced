@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.17
+
+Retire selected native outbox entries without moving surviving slots or reliable
+deliveries. Reconnect cleanup can release stale command retention before admitting
+replacement work, while preserving the position of pending settings wakes.
+
 ## 0.1.16
 
 Add consuming native operation factories and finite abort reports. Report

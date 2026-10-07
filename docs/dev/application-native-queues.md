@@ -60,6 +60,11 @@ Ordering rules:
   indefinitely backwards.
 - Reliable entries keep relative FIFO order; total retention is at most
   `reliable_capacity + SLOTS`.
+- `retain` retires selected payloads and releases their queue capacity without
+  moving surviving slot markers or reliable entries. Record command retirement
+  first, then purge stale retained deliveries before reusing admission credits
+  after reconnect. Commands already handed to the bounded GUI channel need a
+  separate origin check before model mutation.
 - `push` returns the input unchanged when the reliable FIFO is full;
   `replace` returns the superseded value explicitly, and invalid indices
   return the input. A returned value is not load-shedding.

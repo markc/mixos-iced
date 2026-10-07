@@ -1,0 +1,71 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Own the native actor fixture. Application traffic is real ABP; Mix only
+-- owns broker supervision, candidate artefacts and complete teardown.
+if len(args()) != 3 then raise("ARGS","busviewer_native_gate.mix REPO BIN_DIR TEST_EXECUTABLE") end
+$repo = realpath(args()[0])
+$bin = realpath(args()[1])
+$executable = realpath(args()[2])
+for each $path in [$bin .. "/mix",$bin .. "/noded",$executable]
+  if not is_file($path) then raise("ARTEFACT","Missing candidate: " .. $path) end
+end
+export MIXOS_TEST_MIX=$bin .. "/mix"
+$n = require("nested_host_lib.mix")
+$h = require("settings_host_lib.mix")
+$R = {run:nil,broker:nil,record:nil,ok:false}
+try
+  $R.run = $n.new_run("/var/tmp/busviewer-native")
+  $root = $R.run.path
+  $R.broker = $n.private_bus({dir:$root,name:"busviewer-test",noded:$bin .. "/noded"})
+  $R.record = $root .. "/restart-owner.json"
+  $R.broker = merge($R.broker,{restart_record:"restart-owner.json"})
+  write_file($R.record,json_encode($R.broker))
+  $restart = $root .. "/restart.mix"
+  write_file($restart,'$n = require(' .. json_encode($repo .. "/tests/desktop/nested_host_lib.mix") .. ")\n" ..
+    '$record = ' .. json_encode($R.record) .. "\n" ..
+    '$broker = json_parse(read_file($record))' .. "\n" ..
+    '$replacement = $n.restart_private_bus($broker)' .. "\n" ..
+    'write_file($record,json_encode($replacement))' .. "\n")
+  for each $directory in ["app-home","config","state","cache"]
+    mkdir($root .. "/" .. $directory,{parents:true})
+  end
+  $environment = merge($h.bus_env($R.broker,$root),{
+    BUSVIEWER_TEST_URL:$R.broker.url,BUSVIEWER_TEST_MIX:$bin .. "/mix",BUSVIEWER_TEST_RESTART:$restart,
+    MIXOS_APP_HOME:$root .. "/app-home",XDG_CONFIG_HOME:$root .. "/config",
+    XDG_STATE_HOME:$root .. "/state",XDG_CACHE_HOME:$root .. "/cache"})
+  print("candidate: " .. trim(run_argv_must(["git","rev-parse","HEAD"],{cwd:$repo})))
+  print("native test sha256: " .. hash_file($executable,"sha256"))
+  $result = run_argv([$executable,"--ignored","--exact","native_discovery_calls_topics_and_singleton_registration","--nocapture","--test-threads=1"],
+    {cwd:$repo,env:$environment,timeout:120,max_output:4000000,stderr:"stdout"})
+  write_file($root .. "/native-test.log",$result.stdout)
+  print($result.stdout)
+  if not $result.ok or $result.stdout_truncated or not contains($result.stdout,"test result: ok. 1 passed; 0 failed; 0 ignored;") then
+    raise("NATIVE_TEST","Expected one executed native BusViewer integration test")
+  end
+  $R.ok = true
+catch $message
+  print("FAIL " .. $message)
+finally
+  $owned = []
+  if $R.broker != nil then push($owned,$R.broker.pid) end
+  if $R.record != nil and is_file($R.record) then
+    try
+      $replacement = json_parse(read_file($R.record))
+      if not contains($owned,$replacement.pid) then push($owned,$replacement.pid) end
+    catch $message
+      $R.ok = false
+      print("teardown record: " .. $message)
+    end
+  end
+  for each $child in $owned
+    try
+      $h.stop($child)
+    catch $message
+      $R.ok = false
+      print("teardown: " .. $message)
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS BusViewer native actor: discovery, calls, declared registration topics, singleton refusal, generation recovery, lost mutation without replay and accepted quit acknowledgement")

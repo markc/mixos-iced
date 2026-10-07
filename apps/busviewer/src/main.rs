@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use busviewer::{app::Settings, bus};
+use busviewer::app::Settings;
 fn parse(args: impl Iterator<Item = String>) -> Result<Settings, String> {
     let mut settings = Settings::default();
     let mut args = args;
@@ -34,21 +34,11 @@ fn main() {
         );
         return;
     }
-    let result = parse(std::env::args().skip(1)).and_then(|settings| {
-        if bus::probe(&settings.url, &settings.service) {
-            match bus::forward(&settings.url, &settings.service) {
-                Ok(()) => return Ok(()),
-                Err(error) if bus::probe(&settings.url, &settings.service) => return Err(error),
-                Err(_) => {} // The previous instance exited between probe and activation.
-            }
-        }
-        match busviewer::app::run(settings.clone()) {
-            Err(_) if bus::probe(&settings.url, &settings.service) => {
-                bus::forward(&settings.url, &settings.service)
-            }
-            result => result,
-        }
-    });
+    // Nonblocking startup: no pre-registration probe or handoff here. The
+    // Bus worker surfaces collisions as lifecycle deliveries and the app
+    // hands off an untouched initial collision through that same worker;
+    // activating a running instance is the launcher's job.
+    let result = parse(std::env::args().skip(1)).and_then(busviewer::app::run);
     if let Err(error) = result {
         eprintln!("busviewer: {error}");
         std::process::exit(1);
