@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "busviewer"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "appearance",
  "application",

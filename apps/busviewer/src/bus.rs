@@ -152,7 +152,9 @@ pub struct Handle {
 }
 impl Handle {
     pub fn service_name<'a>(&'a self, fallback: &'a str) -> &'a str {
-        self.client.as_ref().map_or(fallback, |client| client.service_name())
+        self.client
+            .as_ref()
+            .map_or(fallback, |client| client.service_name())
     }
     pub async fn raw(&self, service: &str, verb: &str, body: String) -> Result<Reply, CallError> {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -1534,7 +1536,18 @@ mod tests {
             let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
             let oversized = " ".repeat(application::describe::MAX_REQUEST_BYTES + 1);
             for body in ["{", "[]", "null", r#"{"x":1}"#, oversized.as_str()] {
-                let (rc, reply) = tokio::time::timeout(Duration::from_secs(5), caller.call_with_headers_raw("actor-viewer", "app.describe", &BTreeMap::new(), body)).await.unwrap().unwrap();
+                let (rc, reply) = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    caller.call_with_headers_raw(
+                        "actor-viewer",
+                        "app.describe",
+                        &BTreeMap::new(),
+                        body,
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
                 assert_eq!(rc, 10);
                 let refusal: Value = serde_json::from_str(&reply).unwrap();
                 assert_eq!(refusal["error_code"], "ARGUMENT");
