@@ -49,14 +49,14 @@ fn write_manifest(dir: &std::path::Path, json: &serde_json::Value) {
 }
 
 /// A real verified set under `root`, activated through `current`, using the
-/// real variable Inter and static Noto Sans fonts so the toolkit registry
+/// real variable Inter, Noto Sans and JetBrains Mono fonts so the toolkit registry
 /// parses actual bytes and every embedded design record resolves (Inter
 /// doubles as the sans/display/mono packaged roles; Noto Sans covers the
 /// button records).
 fn publish_set(root: &std::path::Path, id: &str) {
     let dir = root.join("sets").join(id);
     let inter = include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
-    let noto = include_bytes!("../../../../../vendor/cosmic-text/fonts/NotoSans-Regular.ttf");
+    let noto = include_bytes!("../../../../appearance/assets/test-fonts/NotoSans.ttf");
     let entries = vec![
         write_file(&dir, "fonts/Sans.ttf", inter),
         write_file(&dir, "fonts/Noto.ttf", noto),
@@ -90,7 +90,7 @@ fn publish_set(root: &std::path::Path, id: &str) {
 fn publish_icon_set(root: &std::path::Path, id: &str) {
     let dir = root.join("sets").join(id);
     let inter = include_bytes!("../../../../../vendor/font/Inter-VariableFont_opsz,wght.ttf");
-    let noto = include_bytes!("../../../../../vendor/cosmic-text/fonts/NotoSans-Regular.ttf");
+    let noto = include_bytes!("../../../../appearance/assets/test-fonts/NotoSans.ttf");
     let entries = vec![
         write_file(&dir, "fonts/Sans.ttf", inter),
         write_file(&dir, "fonts/Noto.ttf", noto),
