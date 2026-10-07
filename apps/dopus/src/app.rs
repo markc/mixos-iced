@@ -1035,7 +1035,9 @@ impl Dopus {
             return Task::none();
         };
         let handle = bus.clone();
-        if !handle.is_current(&command.id) { return Task::none(); }
+        if !handle.is_current(&command.id) {
+            return Task::none();
+        }
         // Reconcile the consumer with the ACTUAL live connection generation
         // before any command-native info is built: dopus.state/app.describe
         // report what the connection really carries, never a stale sample.
@@ -1215,7 +1217,11 @@ impl Dopus {
                 mode: self.content().theme.mode.name().to_owned(),
             };
             if let Some(id) = &id {
-                bus.respond(id.clone(), 0, serde_json::to_string(&reply).unwrap_or_default());
+                bus.respond(
+                    id.clone(),
+                    0,
+                    serde_json::to_string(&reply).unwrap_or_default(),
+                );
             }
             return Task::none();
         }
@@ -1239,7 +1245,9 @@ impl Dopus {
             scheme: scheme_name,
             mode: mode_name,
         };
-        if let Err(error) = bus.theme_apply(request) { self.status = Some(error); }
+        if let Err(error) = bus.theme_apply(request) {
+            self.status = Some(error);
+        }
         Task::none()
     }
 
@@ -2405,7 +2413,10 @@ mod tests {
         let Ok(bus::Effect::ThemeApply { request, .. }) = responses.try_recv() else {
             panic!("theme.request must forward a fenced apply")
         };
-        assert_eq!(request.reply_id.as_ref().map(|request|request.id), Some(42));
+        assert_eq!(
+            request.reply_id.as_ref().map(|request| request.id),
+            Some(42)
+        );
         assert_eq!(
             request.changes["appearance.scheme"],
             serde_json::json!("crimson")

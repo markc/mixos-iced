@@ -308,7 +308,11 @@ pub enum Served {
         action: String,
     },
     /// Reply `(rc, body)` to command `id`.
-    Reply { id: crate::bus::Request, rc: u8, body: String },
+    Reply {
+        id: crate::bus::Request,
+        rc: u8,
+        body: String,
+    },
     /// Apply the theme selection, then reply to `id` with the resolved
     /// `(scheme, mode)` names.
     ThemeSet {
@@ -319,9 +323,15 @@ pub enum Served {
     /// Perform the theme selection of a `dopus.action theme.*` call: the
     /// windowed twin of [`Served::ThemeSet`] (mode-toggle resolves against
     /// the live selection; headless refuses UNAVAILABLE).
-    ThemeAction { id: crate::bus::Request, action: ThemeAction },
+    ThemeAction {
+        id: crate::bus::Request,
+        action: ThemeAction,
+    },
     /// Focus the requested location bar, then acknowledge the action.
-    LocationFocus { id: crate::bus::Request, pane: PaneId },
+    LocationFocus {
+        id: crate::bus::Request,
+        pane: PaneId,
+    },
     /// Reply to `id`, then quit.
     Quit { id: crate::bus::Request },
 }

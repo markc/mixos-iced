@@ -1,21 +1,55 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One supervised Bus actor with bounded owned work and offline GUI startup.
-use std::{collections::{BTreeMap, HashMap}, sync::Arc, time::{Duration, Instant}};
-use ::bus::native_client::{BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind, SupervisedClient};
+use ::bus::native_client::{
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
+    SupervisedClient,
+};
 use application::iced::futures::channel::mpsc::{Receiver, Sender, channel};
 use application::message::Once;
-use application::native_actor::{Accepted, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies};
+use application::native_actor::{
+    Accepted, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies,
+};
 use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
-use application::presentation::native::{Event as SettingsEvent, Progress, Session, Ui as SettingsUi, Worker as SettingsWorker, bridge};
+use application::presentation::native::{
+    Event as SettingsEvent, Progress, Session, Ui as SettingsUi, Worker as SettingsWorker, bridge,
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 mod actor;
-#[cfg(test)] mod actor_tests;
+#[cfg(test)]
+mod actor_tests;
 
 /// Clones retain one response/mutation token and the receiving generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Request { pub id: u64, generation: u64, ticket: Once<u64> }
-impl Request { fn new(id: u64, generation: u64) -> Self { Self { id, generation, ticket: Once::new(id) } } }
-#[cfg(test)] impl From<u64> for Request { fn from(id: u64) -> Self { Self::new(id, 0) } }
-#[cfg(test)] impl From<i32> for Request { fn from(id: i32) -> Self { Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0) } }
+pub struct Request {
+    pub id: u64,
+    generation: u64,
+    ticket: Once<u64>,
+}
+impl Request {
+    fn new(id: u64, generation: u64) -> Self {
+        Self {
+            id,
+            generation,
+            ticket: Once::new(id),
+        }
+    }
+}
+#[cfg(test)]
+impl From<u64> for Request {
+    fn from(id: u64) -> Self {
+        Self::new(id, 0)
+    }
+}
+#[cfg(test)]
+impl From<i32> for Request {
+    fn from(id: i32) -> Self {
+        Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0)
+    }
+}
 
 /// Everything the bus thread delivers to the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,24 +108,44 @@ pub struct ThemeRequest {
     pub mode: String,
 }
 
-
-
 pub enum Effect {
-    Respond { id: u64, rc: u8, body: String },
-    ForwardOpen { paths: Vec<String>, permit: Permit },
-    ThemeApply { request: ThemeRequest, generation: Option<u64>, deadline: Instant, permit: Permit },
+    Respond {
+        id: u64,
+        rc: u8,
+        body: String,
+    },
+    ForwardOpen {
+        paths: Vec<String>,
+        permit: Permit,
+    },
+    ThemeApply {
+        request: ThemeRequest,
+        generation: Option<u64>,
+        deadline: Instant,
+        permit: Permit,
+    },
     Quit,
 }
 impl std::fmt::Debug for Effect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Respond { id, rc, .. } => f.debug_struct("Respond").field("id",id).field("rc",rc).finish(),
-            Self::ForwardOpen { .. } => f.write_str("ForwardOpen(..)"), Self::ThemeApply { .. } => f.write_str("ThemeApply(..)"), Self::Quit => f.write_str("Quit"),
+            Self::Respond { id, rc, .. } => f
+                .debug_struct("Respond")
+                .field("id", id)
+                .field("rc", rc)
+                .finish(),
+            Self::ForwardOpen { .. } => f.write_str("ForwardOpen(..)"),
+            Self::ThemeApply { .. } => f.write_str("ThemeApply(..)"),
+            Self::Quit => f.write_str("Quit"),
         }
     }
 }
 #[derive(Default)]
-struct Done { finished: bool, faults: Vec<String>, fault_count: u64 }
+struct Done {
+    finished: bool,
+    faults: Vec<String>,
+    fault_count: u64,
+}
 #[derive(Clone)]
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
@@ -107,48 +161,139 @@ impl BusHandle {
     #[cfg(test)]
     pub fn response_sink() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Effect>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (Self { tx, done: Arc::new((std::sync::Mutex::new(Done { finished:true, ..Default::default() }),std::sync::Condvar::new())), client:None, settings:None, bootstrap:None,
-            themes:Admission::new(THEME_QUEUE_BOUND), quitting:Arc::new(std::sync::atomic::AtomicBool::new(false)), forwarded:Arc::new(std::sync::atomic::AtomicBool::new(false)) },rx)
+        (
+            Self {
+                tx,
+                done: Arc::new((
+                    std::sync::Mutex::new(Done {
+                        finished: true,
+                        ..Default::default()
+                    }),
+                    std::sync::Condvar::new(),
+                )),
+                client: None,
+                settings: None,
+                bootstrap: None,
+                themes: Admission::new(THEME_QUEUE_BOUND),
+                quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+            rx,
+        )
     }
-    pub fn take_settings_ui(&mut self) -> Option<SettingsUi<crate::app::Content>> { self.settings.take() }
-    pub fn take_bootstrap(&mut self) -> Option<appearance::settings::Prepared> { self.bootstrap.take() }
-    pub fn settings_generation(&self) -> Option<u64> { self.client.as_ref().and_then(|client| settings::native::live_generation(client)) }
-    pub fn registration_generation(&self) -> u64 { self.client.as_ref().map_or(0, |client| client.connection_generation()) }
-    pub fn connected(&self) -> bool { self.client.as_ref().is_none_or(|client| settings::native::live_generation(client).is_some()) }
-    pub fn is_current(&self, request: &Request) -> bool { self.client.as_ref().is_none_or(|client| settings::native::live_generation(client) == Some(request.generation)) }
+    pub fn take_settings_ui(&mut self) -> Option<SettingsUi<crate::app::Content>> {
+        self.settings.take()
+    }
+    pub fn take_bootstrap(&mut self) -> Option<appearance::settings::Prepared> {
+        self.bootstrap.take()
+    }
+    pub fn settings_generation(&self) -> Option<u64> {
+        self.client
+            .as_ref()
+            .and_then(|client| settings::native::live_generation(client))
+    }
+    pub fn registration_generation(&self) -> u64 {
+        self.client
+            .as_ref()
+            .map_or(0, |client| client.connection_generation())
+    }
+    pub fn connected(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_none_or(|client| settings::native::live_generation(client).is_some())
+    }
+    pub fn is_current(&self, request: &Request) -> bool {
+        self.client.as_ref().is_none_or(|client| {
+            settings::native::live_generation(client) == Some(request.generation)
+        })
+    }
     pub fn respond(&self, request: impl Into<Request>, rc: u8, body: String) {
         let request = request.into();
-        let Some(id) = request.ticket.take() else { return; };
-        if self.is_current(&request) { let _ = self.tx.send(Effect::Respond { id, rc, body }); }
+        let Some(id) = request.ticket.take() else {
+            return;
+        };
+        if self.is_current(&request) {
+            let _ = self.tx.send(Effect::Respond { id, rc, body });
+        }
     }
     pub fn forward_open(&self, paths: Vec<String>) {
-        if self.quitting.load(std::sync::atomic::Ordering::Acquire) || self.forwarded.swap(true,std::sync::atomic::Ordering::AcqRel) { return; }
-        let permit = Admission::new(1).try_acquire().expect("single lifetime forward");
-        if let Err(error) = self.tx.send(Effect::ForwardOpen { paths, permit }) { actor::retire_unsent(error.0); }
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .forwarded
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let permit = Admission::new(1)
+            .try_acquire()
+            .expect("single lifetime forward");
+        if let Err(error) = self.tx.send(Effect::ForwardOpen { paths, permit }) {
+            actor::retire_unsent(error.0);
+        }
     }
     pub fn theme_apply(&self, request: ThemeRequest) -> Result<(), String> {
-        if self.quitting.load(std::sync::atomic::Ordering::Acquire) { return Err("Bus worker stopped".into()); }
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Bus worker stopped".into());
+        }
         let Some(permit) = self.themes.try_acquire() else {
-            if let Some(id) = request.reply_id { self.respond(id, 10, "{\"error_code\":\"BUSY\",\"message\":\"appearance queue exhausted\"}".into()); }
+            if let Some(id) = request.reply_id {
+                self.respond(
+                    id,
+                    10,
+                    "{\"error_code\":\"BUSY\",\"message\":\"appearance queue exhausted\"}".into(),
+                );
+            }
             return Err("appearance queue exhausted".into());
         };
         if let Some(id) = &request.reply_id {
-            if !self.is_current(id) || id.ticket.take().is_none() { permit.finish(); return Err("Bus theme request retired".into()); }
+            if !self.is_current(id) || id.ticket.take().is_none() {
+                permit.finish();
+                return Err("Bus theme request retired".into());
+            }
         }
-        let effect = Effect::ThemeApply { request, generation:self.settings_generation(), deadline:Instant::now()+SHUTDOWN_BUDGET, permit };
-        if let Err(error) = self.tx.send(effect) { actor::retire_unsent(error.0); return Err("Bus worker stopped".into()); }
+        let effect = Effect::ThemeApply {
+            request,
+            generation: self.settings_generation(),
+            deadline: Instant::now() + SHUTDOWN_BUDGET,
+            permit,
+        };
+        if let Err(error) = self.tx.send(effect) {
+            actor::retire_unsent(error.0);
+            return Err("Bus worker stopped".into());
+        }
         Ok(())
     }
-    pub fn quit(&self) { if !self.quitting.swap(true,std::sync::atomic::Ordering::AcqRel) { let _ = self.tx.send(Effect::Quit); } }
+    pub fn quit(&self) {
+        if !self
+            .quitting
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            let _ = self.tx.send(Effect::Quit);
+        }
+    }
     /// Actual worker completion, with bounded retained fault text. A completed
     /// thread does not establish delivery of unconfirmed native replies.
-    pub fn wait_done(&self, timeout:Duration) -> Result<Vec<String>,String> {
-        let (lock,notified)=&*self.done;
-        let state=lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (mut state,_)=notified.wait_timeout_while(state,timeout,|state|!state.finished).unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.finished { Ok(std::mem::take(&mut state.faults)) } else { Err("Bus shutdown did not complete in time".into()) }
+    pub fn wait_done(&self, timeout: Duration) -> Result<Vec<String>, String> {
+        let (lock, notified) = &*self.done;
+        let state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut state, _) = notified
+            .wait_timeout_while(state, timeout, |state| !state.finished)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.finished {
+            Ok(std::mem::take(&mut state.faults))
+        } else {
+            Err("Bus shutdown did not complete in time".into())
+        }
     }
-    pub fn shutdown_fault_count(&self) -> u64 { self.done.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fault_count }
+    pub fn shutdown_fault_count(&self) -> u64 {
+        self.done
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fault_count
+    }
 }
 
 /// Why the Bus could not be started.
@@ -216,17 +361,46 @@ fn registration_error(client: &SupervisedClient) -> StartError {
     }
 }
 
-
-
 const PENDING_BOUND: usize = 32;
 const JOB_BOUND: usize = 16;
 const THEME_QUEUE_BOUND: usize = 4;
-pub fn spawn(service:&str,url:&str)->Result<(BusHandle,Receiver<Delivery>),StartError> { actor::start(service,url,false,DELIVERY_BOUND,#[cfg(test)] None) }
-pub fn spawn_settings(service:&str,url:&str)->Result<(BusHandle,Receiver<Delivery>),StartError> { actor::start(service,url,true,DELIVERY_BOUND,#[cfg(test)] None) }
+pub fn spawn(service: &str, url: &str) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    actor::start(
+        service,
+        url,
+        false,
+        DELIVERY_BOUND,
+        #[cfg(test)]
+        None,
+    )
+}
+pub fn spawn_settings(
+    service: &str,
+    url: &str,
+) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    actor::start(
+        service,
+        url,
+        true,
+        DELIVERY_BOUND,
+        #[cfg(test)]
+        None,
+    )
+}
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
-struct ActorProbe { generation:u64, connected:bool, pending:usize, active:usize, reliable:usize, reply_tasks:usize, replies:usize, themes:usize, invariant_faults:usize }
+struct ActorProbe {
+    generation: u64,
+    connected: bool,
+    pending: usize,
+    active: usize,
+    reliable: usize,
+    reply_tasks: usize,
+    replies: usize,
+    themes: usize,
+    invariant_faults: usize,
+}
 
 async fn call_settings(
     client: &SupervisedClient,
@@ -235,10 +409,20 @@ async fn call_settings(
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let (rc, body, _) = client
-        .call_with_headers_raw_at_generation(generation, "settingsd", verb, &BTreeMap::new(), &body.to_string())
+        .call_with_headers_raw_at_generation(
+            generation,
+            "settingsd",
+            verb,
+            &BTreeMap::new(),
+            &body.to_string(),
+        )
         .await
         .map_err(|error| error.to_string())?;
-    if rc == 0 { serde_json::from_str(&body).map_err(|error|error.to_string()) } else { Err(body) }
+    if rc == 0 {
+        serde_json::from_str(&body).map_err(|error| error.to_string())
+    } else {
+        Err(body)
+    }
 }
 
 /// The refusal `settingsd` returned, mapped to dopus's error vocabulary.
@@ -314,10 +498,20 @@ async fn theme_apply(
         "changes": request.changes,
         "reset": [],
     });
-    let Some(generation) = generation.filter(|generation| settings::native::live_generation(client) == Some(*generation)) else {
-        return refused("UNAVAILABLE", "queued appearance mutation retired; no call sent".into());
+    let Some(generation) = generation
+        .filter(|generation| settings::native::live_generation(client) == Some(*generation))
+    else {
+        return refused(
+            "UNAVAILABLE",
+            "queued appearance mutation retired; no call sent".into(),
+        );
     };
-    if Instant::now() >= deadline { return refused("UNAVAILABLE", "queued appearance mutation expired; no call sent".into()); }
+    if Instant::now() >= deadline {
+        return refused(
+            "UNAVAILABLE",
+            "queued appearance mutation expired; no call sent".into(),
+        );
+    }
     let deadline = tokio::time::Instant::from_std(deadline);
     let outcome: Result<(), (String, String)> = match tokio::time::timeout_at(deadline, async {
         let validated = call_settings(client, generation, "settings.validate", body.clone())

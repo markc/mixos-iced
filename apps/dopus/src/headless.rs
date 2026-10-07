@@ -139,7 +139,9 @@ pub fn run(
             let Delivery::Command(command) = delivery else {
                 continue;
             };
-            if !bus.is_current(&command.id) { continue; }
+            if !bus.is_current(&command.id) {
+                continue;
+            }
             if command.verb == "dopus.theme.set" {
                 bus.respond(
                     command.id,
