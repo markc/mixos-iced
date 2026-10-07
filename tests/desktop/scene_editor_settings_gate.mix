@@ -1,8 +1,15 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.2.0
 -- Owned native GUI proof: the app broker may be offline while the independent
 -- compositor remains available. Collision activation uses the compositor's
 -- broker directly, preserving the app's existing native show path.
+-- After the B arms, a second owned compositor with the scene host enabled
+-- runs the real Scene authority: the production scenes loader, a
+-- shipped-but-disabled calendar installation and a static user scene, driven
+-- through the GUI's own native operations. A held native action survives two
+-- colour-only appearance swaps and completes docked through the original
+-- reply; a read-only ui.confirmation diagnostic proves the frozen removal
+-- action, selection and state token.
 if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
 $repo=args()[0]
 $bin=args()[1]
@@ -10,7 +17,10 @@ $mix=env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
 $n=require("nested_host_lib.mix")
 $h=require("settings_host_lib.mix")
 $pixels=require("capture_lib.mix")
-$R={run:nil,a:nil,b:nil,session:nil,children:[],ok:false}
+$R={run:nil,a:nil,b:nil,session:nil,children:[],ok:false,
+  real:{started:false,shell:nil,settingsd:nil,scenes:nil,app:nil,action_client:nil,
+  scenes_paused:false,settings_root:"",scene_root:"",app_home:"",window:nil,
+  token:nil,snapshot:nil,selection:nil,epoch:nil,document:nil,confirmation:nil,issued:0,teardown_error:nil}}
 $binding={instance:"fixture",profile:"default"}
 fn check($condition,$message)
   if not $condition then raise("SCENE_EDITOR_SETTINGS_GATE",$message) end
@@ -36,26 +46,28 @@ fn wait_service($broker,$service,$verb)
   end
   raise("SERVICE","Service did not answer " .. $verb .. ": " .. $service .. " " .. json_encode($last))
 end
-fn authority()
-  $child=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$R.run.path .. "/profile"],
-    {env:$h.bus_env($R.b,$R.run.path .. "/b"),stdout:{file:$R.run.path .. "/settingsd.log"},stderr:"stdout",detach:true})
+fn authority($broker,$directory,$store)
+  $child=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$store],
+    {env:$h.bus_env($broker,$directory),stdout:{file:$R.run.path .. "/settingsd-" .. basename($store) .. ".log"},stderr:"stdout",detach:true})
   $R.children=concat($R.children,[$child])
-  wait_service($R.b,"settingsd","settings.describe")
+  wait_service($broker,"settingsd","settings.describe")
+  return $child
 end
-fn apply($changes,$operation)
-  $snapshot=rpc($R.b,"settingsd","settings.get",{binding:$binding}).snapshot
-  rpc($R.b,"settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+fn apply($broker,$changes,$operation)
+  $snapshot=rpc($broker,"settingsd","settings.get",{binding:$binding}).snapshot
+  rpc($broker,"settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
     expected_revision:$snapshot.revision,operation_id:$operation,changes:$changes,reset:[]})
-  return rpc($R.b,"settingsd","settings.get",{binding:$binding}).snapshot
+  return rpc($broker,"settingsd","settings.get",{binding:$binding}).snapshot
 end
-fn launch($broker,$service,$home,$label,$selection)
+fn launch($broker,$service,$home,$label,$selection,$extra)
   $directory=$R.run.path .. if $broker.node == $R.a.node then "/a" else "/b" end
   $log=$R.run.path .. "/scene-editor-" .. $label .. ".log"
-  $extra=merge($h.bus_env($broker,$directory),{MIXOS_APP_HOME:$home,
+  $env=merge($h.bus_env($broker,$directory),{MIXOS_APP_HOME:$home,
     MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1"})
+  if $extra != nil then $env=merge($env,$extra) end
   $at=time()
   $child=spawn([$bin .. "/scene-editor","--service",$service,"--comp",$R.session.service,$selection],
-    {env:$n.client_env($R.session,$extra),stdout:{file:$log},stderr:"stdout",detach:true})
+    {env:$n.client_env($R.session,$env),stdout:{file:$log},stderr:"stdout",detach:true})
   $R.children=concat($R.children,[$child])
   return {pid:$child,log:$log,at:$at}
 end
@@ -113,7 +125,7 @@ fn fallback($launch,$kind)
   end
   raise("FALLBACK","Missing " .. $kind .. " activation: " .. read_file($launch.log))
 end
-fn capture($label,$window,$snapshot,$width)
+fn capture($label,$window,$snapshot,$width,$broker,$service)
   comp("comp.window.place",merge($window,{x:0,y:0,width:$width,height:600}))
   check(comp("comp.window.wait",{match:$window,until:"size",width:$width,height:600,timeout_ms:5000}).window != nil,"New client size did not commit")
   $path=$R.run.path .. "/" .. $label .. ".ppm"
@@ -128,12 +140,103 @@ fn capture($label,$window,$snapshot,$width)
       for $channel=0 to 2
         if abs($pixel[$channel]-$pixels.srgb($wanted[$channel])) > 8 then $matches=false end
       end
-      check(deep_eq(app("app.describe",{}).settings.applied,$h.identity($snapshot)),"Appearance changed during capture")
+      check(deep_eq(rpc($broker,$service,"app.describe",{}).settings.applied,$h.identity($snapshot)),"Appearance changed during capture")
     end
     if $matches then print("captured Scene Editor " .. $label .. " " .. json_encode($pixel)); return $pixel end
     sleep(0.05)
   end
   raise("FRAME","Client pixels did not match the current authority")
+end
+-- Real Scene authority helpers (broker A): the GUI, the production scenes
+-- loader, the owned scene host and the A settingsd.
+fn real_app($verb,$body)
+  return rpc($R.a,"scene-editor-real-gate",$verb,$body)
+end
+fn real_scenes($verb,$body)
+  return rpc($R.a,"scenes",$verb,$body)
+end
+fn real_shell($verb,$body)
+  return rpc($R.a,$R.real.shell,$verb,$body)
+end
+fn real_scene_row($name)
+  for each $r in real_scenes("scenes.list",{}).scenes
+    if $r.name == $name then return $r end
+  end
+  return nil
+end
+-- The /proc state letter of a process: T while SIGSTOPped, R/S when running.
+fn proc_state($pid)
+  if not process_alive($pid) then return "gone" end
+  $parts=split(read_file("/proc/" .. to_string($pid) .. "/stat"),")")
+  return substr(trim($parts[len($parts)-1]),0,1)
+end
+fn real_current($snapshot,$budget)
+  $deadline=time()+$budget
+  $last=nil
+  while time() < $deadline
+    $reply=$h.call($mix,$R.a,$R.run.path .. "/a","scene-editor-real-gate","app.describe",{})
+    if $reply.rc == 0 then
+      $last=$reply.result
+      if ($last.settings != nil and $last.settings.kind == "current" and
+        deep_eq($last.settings.applied,$h.identity($snapshot)) and
+        deep_eq($last.settings_cache.persisted,$last.settings.applied)) then
+        check(comp("comp.window.wait",{match:$R.real.window,until:"presented",timeout_ms:5000}).window != nil,"Window was replaced")
+        return $last
+      end
+    end
+    sleep(0.1)
+  end
+  raise("CURRENT","Real applied/cache identity did not settle: " .. json_encode($last))
+end
+-- The settled GUI snapshot against a fresh authority snapshot: the GUI and
+-- the loader must agree, token included, once busy settles. Each retry
+-- re-reads the authority, so a late topic can never wedge the comparison.
+fn real_canonical()
+  $deadline=time()+10
+  $last=nil
+  while time() < $deadline
+    $last=real_app("scene-editor.info",{})
+    if ($last.busy == false and $last.snapshot != nil and $last.snapshot.schema == "scene-editor.snapshot.v1" and
+      $last.snapshot.host_problem == nil and type($last.state_token) == "string" and len($last.state_token) == 64) then
+      $canonical=real_scenes("scenes.editor.snapshot",{selection:$last.selection})
+      if deep_eq($last.snapshot,$canonical) and $last.state_token == $canonical.state_token then return $last end
+    end
+    sleep(0.1)
+  end
+  raise("SETTLE","GUI snapshot/token did not match the real authority: " .. json_encode($last))
+end
+-- Graceful A-phase teardown: resume before anything else, collect the action
+-- client, cancel a reachable dialogue and quit the GUI with its receipt, then
+-- stop the loader and settingsd. Idempotent and safe on the failure path.
+-- Returns true only when the GUI's clean shutdown receipt was obtained.
+fn real_shutdown()
+  $receipt=false
+  if $R.real.scenes_paused and $R.real.scenes != nil and process_alive($R.real.scenes) then
+    kill($R.real.scenes,18)
+    $R.real.scenes_paused=false
+  end
+  if $R.real.action_client != nil and process_alive($R.real.action_client) then $h.stop($R.real.action_client) end
+  if $R.real.app != nil and process_alive($R.real.app.pid) then
+    try
+      $info=real_app("scene-editor.info",{})
+      if $info.ui.dialog != nil then
+        comp("comp.input.key",{seat:"human",key:"Escape"})
+        sleep(0.1)
+      end
+      if $info.busy == false and real_app("app.quit",{}).quitting then
+        exit_clean($R.real.app)
+        $receipt=true
+      end
+    catch $ignored
+      $R.real.teardown_error=$ignored
+      $h.stop($R.real.app.pid)
+    end
+  elif $R.real.app != nil and contains(read_file($R.real.app.log),"SCENE_EDITOR_SHUTDOWN {\"faults\":[]}") then
+    $receipt=true
+  end
+  if $R.real.scenes != nil and process_alive($R.real.scenes) then $h.stop($R.real.scenes) end
+  if $R.real.settingsd != nil and process_alive($R.real.settingsd) then $h.stop($R.real.settingsd) end
+  return $receipt
 end
 try
   $R.run=$n.new_run("/var/tmp/scene-editor-settings")
@@ -148,26 +251,26 @@ try
   $R.b=$n.private_bus({dir:$root .. "/b",name:"scene-editor-settings",noded:$bin .. "/noded",first_port:$R.a.port})
   check($R.a.port != $R.b.port,"Forced broker collision was not recovered")
   print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
-  authority()
-  $light=apply({"appearance.mode":"light"},"scene-gui-light")
+  authority($R.b,$root .. "/b",$root .. "/profile")
+  $light=apply($R.b,{"appearance.mode":"light"},"scene-gui-light")
   $home=$root .. "/app-home"
-  $online=launch($R.b,"scene-editor-settings-gate",$home,"online","mixos-scene-editor:installed/panel")
+  $online=launch($R.b,"scene-editor-settings-gate",$home,"online","mixos-scene-editor:installed/panel",nil)
   $window=presented($online,1000)
   current($light,$window,10)
   wait_service($R.b,"scene-editor-settings-gate","scene-editor.info")
-  $light_pixel=capture("online-light",$window,$light,1000)
+  $light_pixel=capture("online-light",$window,$light,1000,$R.b,"scene-editor-settings-gate")
   comp("comp.window.focus",$window)
   comp("comp.input.key",{seat:"human",key:"F1"})
   $before=app("scene-editor.info",{})
   check($before.selection.scene == "panel" and $before.ui.dialog == "shortcuts","Selection/dialogue stimulus did not land")
-  $dark=apply({"appearance.mode":"dark","ui.text_scale":1.25,"ui.density":1.25},"scene-gui-dark")
+  $dark=apply($R.b,{"appearance.mode":"dark","ui.text_scale":1.25,"ui.density":1.25},"scene-gui-dark")
   current($dark,$window,10)
-  capture("dark-dialogue",$window,nil,1002)
+  capture("dark-dialogue",$window,nil,1002,$R.b,"scene-editor-settings-gate")
   $after=app("scene-editor.info",{})
-  check(deep_eq($before.selection,$after.selection) and $before.epoch == $after.epoch and
-    deep_eq($before.snapshot,$after.snapshot) and $after.ui.dialog == "shortcuts","Theme activation changed scene state/dialogue")
+  check((deep_eq($before.selection,$after.selection) and $before.epoch == $after.epoch and
+    deep_eq($before.snapshot,$after.snapshot) and $after.ui.dialog == "shortcuts"),"Theme activation changed scene state/dialogue")
   comp("comp.input.key",{seat:"human",key:"Escape"})
-  $dark_pixel=capture("online-dark",$window,$dark,1004)
+  $dark_pixel=capture("online-dark",$window,$dark,1004,$R.b,"scene-editor-settings-gate")
   check(not deep_eq($light_pixel,$dark_pixel),"Light/dark did not repaint")
   check(app("app.quit",{}).quitting,"Quit reply was lost")
   exit_clean($online)
@@ -175,10 +278,10 @@ try
     if process_alive($child) then $h.stop($child) end
   end
   $h.stop($R.b.pid)
-  $offline=launch($R.b,"scene-editor-settings-gate",$home,"cached","mixos-scene-editor:installed/panel")
+  $offline=launch($R.b,"scene-editor-settings-gate",$home,"cached","mixos-scene-editor:installed/panel",nil)
   $cached_window=presented($offline,1000)
   fallback($offline,"cached")
-  check(deep_eq(capture("offline-cached",$cached_window,nil,1002),$dark_pixel),"Cached palette did not survive restart")
+  check(deep_eq(capture("offline-cached",$cached_window,nil,1002,$R.b,"scene-editor-settings-gate"),$dark_pixel),"Cached palette did not survive restart")
   comp("comp.window.focus",$cached_window)
   comp("comp.input.key",{seat:"human",key:"F1"})
   $until=time()+65
@@ -192,21 +295,21 @@ try
   wait_service($R.b,"noded","noded.ping")
   $owned=rpc($R.b,"noded","noded.info",{})
   check($owned.node == $R.b.node and $owned.noded.pid == $broker and process_alive($broker),"Restart reached another broker")
-  authority()
+  authority($R.b,$root .. "/b",$root .. "/profile")
   $restarted=rpc($R.b,"settingsd","settings.get",{binding:$binding}).snapshot
   current($restarted,$cached_window,45)
   $recovered=app("scene-editor.info",{})
   check($recovered.selection.scene == "panel" and $recovered.ui.dialog == "shortcuts","Recovery lost selection/dialogue")
-  capture("recovered-dialogue",$cached_window,nil,1004)
+  capture("recovered-dialogue",$cached_window,nil,1004,$R.b,"scene-editor-settings-gate")
   comp("comp.input.key",{seat:"human",key:"Escape"})
-  capture("recovered-current",$cached_window,$restarted,1006)
+  capture("recovered-current",$cached_window,$restarted,1006,$R.b,"scene-editor-settings-gate")
   check(app("app.quit",{}).quitting,"Recovery quit reply lost")
   exit_clean($offline)
   -- A collision's existing compositor control path lives on broker A.
-  $first=launch($R.a,"scene-editor-collision",$root .. "/first-home","first","mixos-scene-editor:gallery/")
+  $first=launch($R.a,"scene-editor-collision",$root .. "/first-home","first","mixos-scene-editor:gallery/",nil)
   $first_window=presented($first,1000)
   wait_service($R.a,"scene-editor-collision","scene-editor.info")
-  $second=launch($R.a,"scene-editor-collision",$root .. "/second-home","collision","mixos-scene-editor:installed/forwarded")
+  $second=launch($R.a,"scene-editor-collision",$root .. "/second-home","collision","mixos-scene-editor:installed/forwarded",nil)
   exit_clean($second)
   $forwarded=rpc($R.a,"scene-editor-collision","scene-editor.info",{})
   check($forwarded.pid == $first.pid and $forwarded.selection.scene == "forwarded","Initial collision did not activate the original selection")
@@ -223,18 +326,335 @@ try
       check(len($files) == 1,"Expected one bound cache")
       write_file($files[0],"{broken cache")
     end
-    $launch=launch($R.b,"scene-editor-settings-gate",$case_home,$case,"mixos-scene-editor:installed/panel")
+    $launch=launch($R.b,"scene-editor-settings-gate",$case_home,$case,"mixos-scene-editor:installed/panel",nil)
     $window=presented($launch,1000)
     $event=fallback($launch,"embedded")
     if $case == "corrupt" then check(len($event.settings_cache.fallback_diagnostics) > 0,"Corrupt cache lacked diagnostics") end
-    capture("offline-" .. $case,$window,nil,1000)
+    capture("offline-" .. $case,$window,nil,1000,$R.b,"scene-editor-settings-gate")
     comp("comp.window.close",$window)
     exit_clean($launch)
   end
+  -- A phase: the real Scene authority. Stop the B-phase compositor, start a
+  -- second owned one with the scene host enabled, and drive the production
+  -- scenes loader and the GUI's own native operations end to end. No fake
+  -- authority, no duplicate store: separate settings root, scene root and
+  -- app home live beside the B fixtures on the same private A broker.
+  $R.real.settings_root=$root .. "/real-profile"
+  $R.real.scene_root=$root .. "/real-scenes"
+  $R.real.app_home=$root .. "/real-app-home"
+  $R.real.started=true
+  $prior=$R.session
+  $n.stop($prior)
+  -- Reuse the owned runtime for the second compositor only after the first
+  -- host is confirmed dead, and remove exactly its two socket nodes. Nothing
+  -- else in the run directory (evidence, logs, other sockets) is touched.
+  for each $pid in $prior.pids
+    if process_alive($pid) then
+      $deadline=time()+2
+      while time() < $deadline and process_alive($pid)
+        sleep(0.05)
+      end
+      $st=proc_state($pid)
+      check($st == "gone" or $st == "Z","Owned session process did not stop before socket reuse: " .. to_string($pid) .. " state " .. $st)
+    end
+  end
+  for each $stale in ["wl-host","wl-host.lock"]
+    if exists($root .. "/wayland/" .. $stale) then remove($root .. "/wayland/" .. $stale) end
+  end
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$R.real.settings_root],{timeout:30}))
+  $R.real.settingsd=authority($R.a,$root .. "/a",$R.real.settings_root)
+  $light=apply($R.a,{"appearance.mode":"light"},"real-gui-light")
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"scene-settings-fallback",decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"scene-editor-settings-real",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,
+    env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
+  check($n.wait_ready($R.session,30),"Real owned compositor failed")
+  $found=nil
+  for $attempt=1 to 60
+    $found=re_find(read_file($R.session.log),"scene host: registered as `([^`]+)`")
+    if $found != nil and len($found) > 0 then break end
+    sleep(0.1)
+  end
+  check($found != nil and len($found) > 0,"Real scene host never registered")
+  $R.real.shell=$found[0].groups[0]
+  check($R.real.shell == "shell","Real scene host registered as `" .. $R.real.shell .. "`, not `shell`")
+  $host_info=real_shell("shell.info",{})
+  check($host_info.service == "shell" and $host_info.contract == "shell.v1","shell.info is not the real shell.v1 host: " .. json_encode($host_info))
+  for each $verb in ["scene.get","scene.layout","props.get","panel.mode"]
+    check(contains($host_info.verbs,$verb),"shell.info omits " .. $verb)
+  end
+  -- A static user scene, seeded before the loader starts: real directory,
+  -- regular scene.mix and template.conf.mix, no behaviour.mix.
+  mkdir($R.real.scene_root .. "/retained",{parents:true})
+  write_file($R.real.scene_root .. "/retained/scene.mix",
+    "---\nscene: 1\nname: retained\ncitizen: scene-retained\nwindow: {\"kind\":\"edge\",\"edge\":\"right\",\"w\":360}\nmodel: {\"text\":\"Retained scene content\"}\n---\n```mix\nroot: {widget: \"text\", text: \"= $model.text\", size: 14}\n```\n")
+  write_file($R.real.scene_root .. "/retained/template.conf.mix","{title: \"Retained\"}\n")
+  $R.real.scenes=spawn([$mix,"--serve",$repo .. "/services/compd/scripts/scenes.mix","--name","scenes"],
+    {env:merge($h.bus_env($R.a,$root .. "/a"),{SCENES_DIR:$R.real.scene_root,
+      SCENES_TEMPLATES:$repo .. "/share/scenes",SCENES_LIB:$repo .. "/share/scenes/lib",
+      SCENE_HOST:"shell",SCENES_FIRST_RUN:"0",SCENES_EDITOR_APP:"1",
+      SCENE_EDITOR_SERVICE:"scene-editor-real-gate"}),
+      stdout:{file:$root .. "/real-scenes.log"},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$R.real.scenes])
+  wait_service($R.a,"scenes","scenes.list")
+  $installed=real_scenes("scenes.install",{template:"calendar",enable:false})
+  check($installed.name == "calendar" and $installed.installed == true and $installed.enabled == false,
+    "Calendar install was not a disabled installation: " .. json_encode($installed))
+  check(real_scenes("scenes.enable",{name:"retained"}).name == "retained","Retained enable was refused")
+  $deadline=time()+15
+  $inventory=nil
+  while time() < $deadline
+    $retained=real_scene_row("retained")
+    $calendar=real_scene_row("calendar")
+    if ($retained != nil and $retained.enabled == true and $retained.mounted == true and $retained.diagnostic == nil and
+      $calendar != nil and $calendar.installed == true and $calendar.enabled == false and $calendar.mounted == false) then
+      $inventory=real_scenes("scenes.list",{})
+      break
+    end
+    sleep(0.1)
+  end
+  check($inventory != nil,"Real scene inventory did not settle: calendar disabled/unmounted, retained enabled/mounted")
+  check(($inventory.state_ok == true and $inventory.editor.frontend == "application" and
+    $inventory.editor.service == "scene-editor-real-gate"),"scenes.list editor contract missing")
+  $R.real.document=real_shell("shell.scene.get",{scene:"retained"})
+  check(($R.real.document.name == "retained" and $R.real.document.citizen == "scene-retained" and
+    $R.real.document.model.text == "Retained scene content"),"shell.scene.get returned the wrong retained document")
+  $layout=real_shell("shell.scene.layout",{scene:"retained"})
+  check($layout.surface != nil and $layout.surface.kind == "edge" and $layout.surface.edge == "right",
+    "Retained scene is not addressed on the right edge: " .. json_encode($layout))
+  $panel=real_shell("shell.panel.state",{edge:"right"})
+  check($panel.page == "scene-retained","Right edge default page is not scene-retained: " .. json_encode($panel))
+  $R.real.app=launch($R.a,"scene-editor-real-gate",$R.real.app_home,"real","mixos-scene-editor:installed/calendar",
+    {SCENES_SERVICE:"scenes",SCENE_HOST:"shell"})
+  $R.real.window=presented($R.real.app,1000)
+  wait_service($R.a,"scene-editor-real-gate","scene-editor.info")
+  real_current($light,10)
+  real_app("scene-editor.show",{view:"installed",scene:"calendar"})
+  $deadline=time()+15
+  $settled=nil
+  while time() < $deadline
+    $settled=real_app("scene-editor.info",{})
+    if ($settled.busy == false and $settled.snapshot != nil and $settled.snapshot.schema == "scene-editor.snapshot.v1" and
+      $settled.selection.scene == "calendar" and $settled.selection.view == "installed" and
+      type($settled.state_token) == "string" and len($settled.state_token) == 64 and
+      $settled.snapshot.host_problem == nil) then break end
+    $settled=nil
+    sleep(0.1)
+  end
+  check($settled != nil,"Real GUI never settled on the installed calendar")
+  $has_calendar=false
+  for each $row in $settled.snapshot.inventory.scenes
+    if $row.name == "calendar" and $row.installed == true then $has_calendar=true end
+  end
+  check($has_calendar,"Real GUI snapshot lacks the installed calendar row")
+  $settled=real_canonical()
+  $mode=real_app("scene-editor.action",{action:"mode",edge:"right",mode:"pinned",
+    selection:$settled.selection,state_token:$settled.state_token})
+  check($mode.failure == nil,"Pinned mode action failed: " .. json_encode($mode))
+  $deadline=time()+15
+  $pinned=nil
+  while time() < $deadline
+    $state=real_shell("shell.panel.state",{edge:"right"})
+    $props=real_shell("shell.props.get",{})
+    $pinned=real_app("scene-editor.info",{})
+    if ($state.mode == "pinned" and $state.visible == true and $state.page == "scene-retained" and
+      $props.panels.right.mode == "pinned" and $props.panels.right.page == "scene-retained" and
+      $pinned.busy == false and $pinned.snapshot != nil and $pinned.snapshot.panels.right.mode == "pinned") then break end
+    $pinned=nil
+    sleep(0.1)
+  end
+  check($pinned != nil,"Pinned right panel did not settle: " .. json_encode({state:$state,props:$props,info:$pinned}))
+  $pinned=real_canonical()
+  $deadline=time()+3
+  $visible=nil
+  while time() < $deadline
+    $visible=real_shell("shell.scene.layout",{scene:"retained"})
+    if ($visible.visible == true and $visible.surface != nil and $visible.surface.edge == "right" and
+      $visible.surface.w == 360) then break end
+    $visible=nil
+    sleep(0.1)
+  end
+  check($visible != nil,"Pinned retained scene never became visible on the right edge")
+  $window=comp("comp.window.wait",{match:$R.real.window,until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.id == $R.real.window.id and $window.generation == $R.real.window.generation,
+    "Real window identity changed before the baseline")
+  $R.real.token=$pinned.state_token
+  $R.real.snapshot=$pinned.snapshot
+  $R.real.selection=$pinned.selection
+  $R.real.epoch=$pinned.epoch
+  $R.real.page=$state.page
+  $R.real.mode=$state.mode
+  capture("real-pinned",$R.real.window,$light,900,$R.a,"scene-editor-real-gate")
+  -- The production menu order is File, Edit, Scene; the last Scene entry is
+  -- Remove. With the installed calendar selected it opens the confirmation
+  -- dialogue instead of removing anything.
+  comp("comp.window.focus",$R.real.window)
+  for each $key in ["F10","Right","Right","End","Enter"]
+    comp("comp.input.key",{seat:"human",key:$key})
+  end
+  $deadline=time()+5
+  $confirm=nil
+  while time() < $deadline
+    $confirm=real_app("scene-editor.info",{})
+    if $confirm.ui.dialog == "confirm" and $confirm.ui.confirmation != nil then break end
+    $confirm=nil
+    sleep(0.1)
+  end
+  check($confirm != nil,"Scene Remove did not open the confirmation dialogue")
+  $R.real.confirmation=$confirm.ui.confirmation
+  check(($R.real.confirmation.action.action == "remove" and $R.real.confirmation.selection.scene == "calendar" and
+    $R.real.confirmation.state_token == $R.real.token),
+    "Confirmation did not freeze the remove action/selection/token: " .. json_encode($R.real.confirmation))
+  $dark=apply($R.a,{"appearance.mode":"dark"},"real-confirm-dark")
+  $deadline=time()+10
+  $after=nil
+  while time() < $deadline
+    $describe=real_app("app.describe",{})
+    $after=real_app("scene-editor.info",{})
+    if ($describe.settings != nil and $describe.settings.kind == "current" and
+      deep_eq($describe.settings.applied,$h.identity($dark)) and
+      deep_eq($describe.settings_cache.persisted,$describe.settings.applied) and
+      $after.busy == false and $after.ui.dialog == "confirm" and
+      deep_eq($after.ui.confirmation,$R.real.confirmation) and $after.state_token == $R.real.token and
+      deep_eq($after.snapshot,$R.real.snapshot) and deep_eq($after.selection,$R.real.selection) and
+      $after.epoch == $R.real.epoch) then break end
+    $after=nil
+    sleep(0.1)
+  end
+  check($after != nil,"Colour-only batch did not settle over the confirmation")
+  $window=comp("comp.window.wait",{match:$R.real.window,until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.id == $R.real.window.id and $window.generation == $R.real.window.generation,
+    "Window was replaced during colour activation")
+  $state=real_shell("shell.panel.state",{edge:"right"})
+  check($state.mode == $R.real.mode and $state.page == $R.real.page,"Panel changed during colour activation")
+  $doc=real_shell("shell.scene.get",{scene:"retained"})
+  check(deep_eq($doc.model,$R.real.document.model),"Retained document/model changed during colour activation")
+  capture("real-confirm-dark",$R.real.window,$dark,900,$R.a,"scene-editor-real-gate")
+  comp("comp.input.key",{seat:"human",key:"Escape"})
+  $deadline=time()+5
+  $cancelled=false
+  while time() < $deadline and not $cancelled
+    $info=real_app("scene-editor.info",{})
+    if $info.ui.dialog == nil and $info.busy == false then $cancelled=true end
+    sleep(0.1)
+  end
+  check($cancelled,"Confirmation did not cancel cleanly")
+  $row=real_scene_row("calendar")
+  check($row != nil and $row.installed == true,"Cancelled confirmation removed the calendar")
+  check(real_scene_row("retained").mounted == true,"Cancelled confirmation unmounted retained")
+  -- Deterministic pending native operation: suspend only the owned scenes
+  -- process, hold the GUI's mode action on it, swap the appearance while it
+  -- stays busy, then resume and collect the original reply.
+  $baseline=real_canonical()
+  $R.real.token=$baseline.state_token
+  $R.real.snapshot=$baseline.snapshot
+  $R.real.selection=$baseline.selection
+  $R.real.epoch=$baseline.epoch
+  check(process_alive($R.real.scenes),"Owned scenes process vanished before the hold")
+  kill($R.real.scenes,19)
+  $R.real.scenes_paused=true
+  $deadline=time()+5
+  $stopped=false
+  while time() < $deadline and not $stopped
+    $stopped=proc_state($R.real.scenes) == "T"
+    if not $stopped then sleep(0.05) end
+  end
+  check($stopped,"Owned scenes process did not stop on SIGSTOP")
+  $R.real.action_client=$h.call_async($mix,$R.a,$root .. "/a","scene-editor-real-gate","scene-editor.action",
+    {action:"mode",edge:"right",mode:"docked",selection:$R.real.selection,state_token:$R.real.token},
+    $root .. "/real-action.out",45)
+  $R.children=concat($R.children,[$R.real.action_client])
+  $deadline=time()+5
+  $busy=nil
+  while time() < $deadline
+    $busy=real_app("scene-editor.info",{})
+    if $busy.busy == true then break end
+    $busy=nil
+    sleep(0.05)
+  end
+  check($busy != nil,"GUI did not become busy while the action reply is held")
+  $R.real.issued=time()
+  $state=real_shell("shell.panel.state",{edge:"right"})
+  check($state.mode == $R.real.mode and $state.page == $R.real.page,"Shell mode changed while the action is held")
+  $refused=$h.call($mix,$R.a,$root .. "/a","scene-editor-real-gate","scene-editor.action",
+    {action:"mode",edge:"right",mode:"hidden"})
+  check($refused.rc == 10 and $refused.result.error_code == "BUSY","A second action was not refused BUSY: " .. json_encode($refused))
+  $held_colour=apply($R.a,{"appearance.mode":"light"},"real-hold-light")
+  $deadline=time()+10
+  $held=nil
+  while time() < $deadline
+    $describe=real_app("app.describe",{})
+    $held=real_app("scene-editor.info",{})
+    if ($describe.settings != nil and $describe.settings.kind == "current" and
+      deep_eq($describe.settings.applied,$h.identity($held_colour)) and
+      $held.busy == true and deep_eq($held.selection,$R.real.selection) and $held.epoch == $R.real.epoch and
+      deep_eq($held.snapshot,$R.real.snapshot) and $held.state_token == $R.real.token) then break end
+    $held=nil
+    sleep(0.1)
+  end
+  check($held != nil,"Appearance activation did not settle over the held action")
+  $state=real_shell("shell.panel.state",{edge:"right"})
+  check($state.mode == $R.real.mode and $state.page == $R.real.page,"Shell mode changed while the action was held")
+  capture("real-held",$R.real.window,$held_colour,900,$R.a,"scene-editor-real-gate")
+  check(time()-$R.real.issued < 18,"Held interval exceeded the bounded budget")
+  kill($R.real.scenes,18)
+  $deadline=time()+5
+  $resumed=false
+  while time() < $deadline and not $resumed
+    $resumed=proc_state($R.real.scenes) != "T" and process_alive($R.real.scenes)
+    if not $resumed then sleep(0.05) end
+  end
+  check($resumed,"Owned scenes process did not resume on SIGCONT")
+  $R.real.scenes_paused=false
+  $deadline=time()+15
+  $reply=nil
+  while time() < $deadline and $reply == nil
+    $reply=$h.collect($root .. "/real-action.out",$R.real.action_client)
+    if $reply == nil then sleep(0.05) end
+  end
+  check($reply != nil,"The held native action never completed")
+  check($reply.rc == 0 and $reply.result.failure == nil and $reply.result.schema == "scene-editor.snapshot.v1",
+    "Held action reply is not a successful completion: " .. json_encode($reply))
+  check(time()-$R.real.issued < 28,"The original operation exceeded the app timeout budget")
+  $deadline=time()+10
+  $docked=nil
+  while time() < $deadline
+    $state=real_shell("shell.panel.state",{edge:"right"})
+    $docked=real_app("scene-editor.info",{})
+    if ($state.mode == "docked" and $state.page == $R.real.page and $docked.busy == false and
+      $docked.snapshot != nil and $docked.snapshot.panels.right.mode == "docked") then break end
+    $docked=nil
+    sleep(0.1)
+  end
+  check($docked != nil,"Docked completion did not settle: " .. json_encode({state:$state,info:$docked}))
+  $doc=real_shell("shell.scene.get",{scene:"retained"})
+  check($doc.name == "retained" and deep_eq($doc.model,$R.real.document.model),
+    "Retained content changed across the held action")
+  $layout=real_shell("shell.scene.layout",{scene:"retained"})
+  check($layout.visible == true and $layout.surface != nil and $layout.surface.edge == "right" and $layout.surface.w == 360,
+    "Retained scene is not visible on the right edge after the held action")
+  $deadline=time()+10
+  $match=false
+  while time() < $deadline and not $match
+    $docked=real_app("scene-editor.info",{})
+    if ($docked.busy == false and $docked.snapshot != nil and $docked.snapshot.panels.right.mode == "docked") then
+      $canonical=real_scenes("scenes.editor.snapshot",{selection:$docked.selection})
+      if deep_eq($docked.snapshot,$canonical) and $docked.state_token == $canonical.state_token then $match=true end
+    end
+    if not $match then sleep(0.1) end
+  end
+  check($match,"Docked GUI snapshot/token do not match a fresh authority snapshot: " .. json_encode($docked))
+  $window=comp("comp.window.wait",{match:$R.real.window,until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.id == $R.real.window.id and $window.generation == $R.real.window.generation,
+    "Window identity changed across the held action")
+  capture("real-docked",$R.real.window,$held_colour,900,$R.a,"scene-editor-real-gate")
+  check(real_shutdown(),"Real phase teardown did not obtain the GUI shutdown receipt: " .. to_string($R.real.teardown_error))
   write_file($root .. "/acceptance.json",json_encode({current:true,cached:true,embedded:true,
     selection_retained:true,dialogue_retained:true,outage_seconds:65,same_window:true,
-    initial_collision_forwarded:true,shutdown_receipts:true}))
-  print("PASS Scene Editor settings: native frames/cache/fallback, selection/dialogue retained, >60s outage recovery, native collision activation and bounded shutdown")
+    initial_collision_forwarded:true,shutdown_receipts:true,
+    real_authority_snapshot:true,mounted_scene_retained:true,confirmation_retained:true,
+    pending_action_retained:true,panel_mode_transition:true,real_shutdown_receipt:true}))
+  print("PASS Scene Editor settings: native frames/cache/fallback, selection/dialogue retained, >60s outage recovery, native collision activation, bounded shutdown, real scene authority snapshot/panel/confirmation/held-action retention and clean shutdown receipt")
   $R.ok=true
 catch $message
   print("FAIL " .. $message)
@@ -244,6 +664,16 @@ catch $message
     end
   end
 finally
+  -- Never leave a SIGSTOPped owned process for ordinary SIGTERM cleanup to
+  -- handle accidentally: resume first, then attempt the graceful A-phase
+  -- shutdown, then the existing child/compositor/broker teardown.
+  if $R.real.started then
+    try
+      real_shutdown()
+    catch $ignored
+      if $R.real.scenes_paused and $R.real.scenes != nil and process_alive($R.real.scenes) then kill($R.real.scenes,18) end
+    end
+  end
   for each $child in $R.children
     if process_alive($child) then $h.stop($child) end
   end
