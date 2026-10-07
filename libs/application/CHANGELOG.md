@@ -5,6 +5,8 @@
 Retire selected native outbox entries without moving surviving slots or reliable
 deliveries. Reconnect cleanup can release stale command retention before admitting
 replacement work, while preserving the position of pending settings wakes.
+Test support forwards selector support to the window handler as well as the
+test runtime, so default application tests compile without acceptance enabled.
 
 ## 0.1.16
 
