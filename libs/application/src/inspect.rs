@@ -17,7 +17,6 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use iced::{Rectangle, Size, Task, widget};
 use iced_runtime::core::window;
@@ -316,33 +315,34 @@ pub struct Handle {
 struct Inner {
     targets: Vec<Target>,
     limits: Limits,
-    request_tx: Mutex<Option<mpsc::Sender<(Request, oneshot::Sender<Result<Snapshot, Error>>)>>>,
-    pending: AtomicBool,
-    pending_reply: Mutex<Option<oneshot::Sender<Result<Snapshot, Error>>>>,
+    request_tx: Mutex<Option<mpsc::Sender<(Request, Reply)>>>,
+    pending_reply: Mutex<Option<Reply>>,
 }
+
+type Reply = crate::message::Once<oneshot::Sender<Result<Snapshot, Error>>>;
 
 impl Handle {
     /// Runs one query and waits for its [`Snapshot`]. One query is in flight
     /// per handle; a concurrent request returns [`Error::Busy`], and a
     /// closed inspector returns [`Error::Closed`].
     pub async fn query(&self, request: Request) -> Result<Snapshot, Error> {
-        if self.inner.pending.swap(true, Ordering::AcqRel) {
-            return Err(Error::Busy);
-        }
-
         // A dropped query future releases the single pending slot, so a
         // cancelled query cannot wedge later ones.
-        struct PendingGuard(Arc<Inner>);
+        struct PendingGuard(Arc<Inner>, Reply);
         impl Drop for PendingGuard {
             fn drop(&mut self) {
-                self.0.pending.store(false, Ordering::Release);
-                *self.0.pending_reply.lock().unwrap() = None;
+                let mut pending = self.0.pending_reply.lock().unwrap();
+                if pending.as_ref() == Some(&self.1) { *pending = None; }
             }
         }
-        let guard = PendingGuard(Arc::clone(&self.inner));
-
         let (reply_tx, reply_rx) = oneshot::channel();
-        *self.inner.pending_reply.lock().unwrap() = Some(reply_tx.clone());
+        let reply_tx = Reply::new(reply_tx);
+        {
+            let mut pending = self.inner.pending_reply.lock().unwrap();
+            if pending.is_some() { return Err(Error::Busy); }
+            *pending = Some(reply_tx.clone());
+        }
+        let guard = PendingGuard(Arc::clone(&self.inner), reply_tx.clone());
 
         let sent = match self
             .inner
@@ -355,9 +355,9 @@ impl Handle {
             Some(Ok(())) => Ok(()),
             // Full: a cancelled earlier request is still being processed by
             // the task, so the slot is genuinely busy.
-            Some(Err(mpsc::TrySendError::Full(_))) => Err(Error::Busy),
+            Some(Err(error)) if error.is_full() => Err(Error::Busy),
             // Disconnected: the inspector was closed.
-            Some(Err(mpsc::TrySendError::Disconnected(_))) | None => Err(Error::Closed),
+            Some(Err(_)) | None => Err(Error::Closed),
         };
 
         if let Err(error) = sent {
@@ -374,7 +374,7 @@ impl Handle {
     /// resolves as [`Error::Closed`]. Safe to call more than once.
     pub fn close(&self) {
         *self.inner.request_tx.lock().unwrap() = None;
-        if let Some(reply) = self.inner.pending_reply.lock().unwrap().take() {
+        if let Some(reply) = self.inner.pending_reply.lock().unwrap().take().and_then(|reply| reply.take()) {
             let _ = reply.send(Err(Error::Closed));
         }
     }
@@ -394,7 +394,6 @@ pub fn channel<Message: Send + 'static>(
         targets,
         limits,
         request_tx: Mutex::new(None),
-        pending: AtomicBool::new(false),
         pending_reply: Mutex::new(None),
     });
 
@@ -471,12 +470,12 @@ fn select_aliases(inner: &Inner, request: &Request) -> Result<Vec<usize>, Error>
 fn run_request<Message: Send + 'static>(
     inner: Arc<Inner>,
     request: Request,
-    reply: oneshot::Sender<Result<Snapshot, Error>>,
+    reply: Reply,
 ) -> Task<Message> {
     let selected = match select_aliases(&inner, &request) {
         Ok(selected) => selected,
         Err(error) => {
-            let _ = reply.send(Err(error));
+            if let Some(reply) = reply.take() { let _ = reply.send(Err(error)); }
             return Task::none();
         }
     };
@@ -512,6 +511,7 @@ fn run_request<Message: Send + 'static>(
     let query = select::query(make_selector(), target, request.layer, limits);
 
     query.then(move |result| {
+        let Some(reply) = reply.take() else { return Task::none(); };
         let report = match result {
             Ok(report) => report,
             Err(error) => {
@@ -588,7 +588,6 @@ mod tests {
             targets,
             limits: Limits::new(),
             request_tx: Mutex::new(None),
-            pending: AtomicBool::new(false),
             pending_reply: Mutex::new(None),
         }
     }
@@ -614,20 +613,15 @@ mod tests {
     fn targets_are_validated_at_registration() {
         let limits = Limits::new();
 
-        assert_eq!(
-            channel::<()>(vec![target("a"), target("a")], limits),
-            Err(Error::DuplicateAlias("a".to_owned()))
-        );
-        assert_eq!(
+        assert!(matches!(channel::<()>(vec![target("a"), target("a")], limits),
+            Err(Error::DuplicateAlias(alias)) if alias == "a"));
+        assert!(matches!(
             channel::<()>(
                 vec![target("a"), Target::new("b", widget::Id::new("probe"))],
                 limits
             ),
-            Err(Error::AmbiguousTarget {
-                alias: "b".to_owned(),
-                other: "a".to_owned(),
-            })
-        );
+            Err(Error::AmbiguousTarget {alias, other}) if alias == "b" && other == "a"
+        ));
         // Disjoint kind filters under one id are unambiguous.
         assert!(
             channel::<()>(

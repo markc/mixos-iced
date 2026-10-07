@@ -19,6 +19,7 @@ selector = ["iced_runtime/selector"]
 
 [dependencies]
 iced_runtime.workspace = true
+iced_runtime.features = ["selector"]
 iced_program.workspace = true
 iced_selector.workspace = true
 

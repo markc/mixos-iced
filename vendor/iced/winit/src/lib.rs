@@ -1837,7 +1837,7 @@ fn run_action<'a, P, C>(
         Action::Query {
             target,
             layer,
-            operation,
+            mut operation,
             traversal,
             reply,
         } => {
@@ -1860,7 +1860,7 @@ fn run_action<'a, P, C>(
                 return;
             };
 
-            let Some(win) = window_manager.get(&window) else {
+            let Some(win) = window_manager.get(window) else {
                 let _ = reply.send(Err(QueryError::WindowNotFound));
                 return;
             };

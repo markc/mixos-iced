@@ -100,7 +100,7 @@ pub fn track(
     inspector: &inspect::Handle,
     controller: &barrier::Controller,
 ) -> Option<impl Future<Output = ()> + Send + 'static> {
-    let verb = incoming.command.strip_prefix(VERB_PREFIX)?;
+    let verb = incoming.command.strip_prefix(VERB_PREFIX)?.to_owned();
     let describe = describe.clone();
     let inspector = inspector.clone();
     let controller = controller.clone();
@@ -112,7 +112,7 @@ pub fn track(
         if !live_generation(&client, incoming.generation) {
             return;
         }
-        let body = match verb {
+        let body = match verb.as_str() {
             "describe" => Ok(describe_json(&describe)),
             "layout" => layout_verb(&describe, &inspector, &incoming).await,
             "barrier.arm" => barrier_arm_verb(&controller, &incoming),

@@ -53,6 +53,10 @@ impl Program for App {
         Settings::default()
     }
 
+    fn window(&self) -> Option<window::Settings> {
+        Some(window::Settings::default())
+    }
+
     fn boot(&self) -> (Self::State, Task<Self::Message>) {
         let task = self.task.lock().unwrap().take().expect("boots once");
         ((), task)
@@ -76,15 +80,13 @@ impl Program for App {
     }
 }
 
-type QueryFuture = Pin<Box<dyn Future<Output = Result<Snapshot, Error>>>>;
-
 /// Polls `query` once so it sends its request, then drives the emulator
 /// until the query resolves.
-fn drive(
+fn drive<F: Future<Output = Result<Snapshot, Error>>>(
     emulator: &mut Emulator<App>,
     app: &App,
     receiver: &mut mpsc::Receiver<emulator::Event<App>>,
-    query: &mut QueryFuture,
+    query: &mut Pin<Box<F>>,
     context: &mut Context<'_>,
 ) -> Result<Snapshot, Error> {
     for _ in 0..64 {
