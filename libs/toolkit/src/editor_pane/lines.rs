@@ -4,7 +4,7 @@
 //! through `view::line_checkpoints` (cached per text version) so a caret deep
 //! in a 5 MiB line costs O(4 KiB), not O(line).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 use super::Source;
@@ -55,9 +55,7 @@ impl Checkpoints {
             .lines
             .entry(r.start)
             .or_insert_with(|| text.line_checkpoints(cfg, line));
-        ck.iter()
-            .rev()
-            .find(|c| before(c))
+        ck.get(ck.partition_point(before).saturating_sub(1))
             .copied()
             .unwrap_or((r.start, 0))
     }
@@ -94,9 +92,69 @@ impl LineCells {
         // The first placed cluster ending after `offset` contains it or, when
         // `offset` lies left of the window, starts the window.
         self.placed
-            .iter()
-            .find(|p| p.range.end > offset)
+            .get(self.placed.partition_point(|p| p.range.end <= offset))
             .map_or(self.end_cells.unwrap_or(x1), |p| p.cell)
+    }
+}
+
+/// One measured visible line. Syntax and decorations deliberately stay out of
+/// this cache: they may change without a document content revision.
+pub(super) struct CachedLine {
+    pub cells: LineCells,
+    pub text: Option<String>,
+}
+
+/// Reuse unchanged rows between redraws and keep the overlap on vertical
+/// scrolls. Storage is confined to the viewport; long graphemes are measured
+/// but their unbounded bytes are not retained between frames.
+#[derive(Default)]
+pub(super) struct ViewportCache {
+    key: Option<(u64, u64, usize, MeasureCfg, usize, usize)>,
+    rows: BTreeMap<usize, CachedLine>,
+}
+
+const MAX_ROW_TEXT: usize = 64 * 1024;
+
+impl ViewportCache {
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare(
+        &mut self,
+        text: &dyn Source,
+        cfg: &MeasureCfg,
+        ck: &mut Checkpoints,
+        first: usize,
+        last: usize,
+        x0: usize,
+        x1: usize,
+    ) {
+        let key = Some((text.identity(), text.revision(), text.len(), *cfg, x0, x1));
+        if self.key != key {
+            self.key = key;
+            self.rows.clear();
+        }
+        self.rows.retain(|line, _| *line >= first && *line <= last);
+        for line in first..=last {
+            self.rows.entry(line).or_insert_with(|| {
+                let cells = walk(text, cfg, ck, line, x0, x1);
+                let text_bytes = match (cells.placed.first(), cells.placed.last()) {
+                    (Some(a), Some(b)) if b.range.end - a.range.start <= MAX_ROW_TEXT => {
+                        let mut bytes = String::with_capacity(b.range.end - a.range.start);
+                        text.read(a.range.start..b.range.end, &mut bytes);
+                        Some(bytes)
+                    }
+                    (None, None) => Some(String::new()),
+                    _ => None,
+                };
+                CachedLine {
+                    cells,
+                    text: text_bytes,
+                }
+            });
+        }
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = (usize, &CachedLine)> {
+        self.rows.iter().map(|(&line, row)| (line, row))
     }
 }
 
@@ -209,6 +267,73 @@ pub fn offset_at(
 mod tests {
     use super::super::fixture::Text;
     use super::*;
+    use std::cell::Cell;
+
+    struct Counted {
+        text: Text,
+        identity: u64,
+        revision: u64,
+        walks: Cell<usize>,
+        reads: Cell<usize>,
+    }
+
+    impl Counted {
+        fn new(body: &str) -> Self {
+            Self {
+                text: Text::from_text(body).unwrap(),
+                identity: 1,
+                revision: 0,
+                walks: Cell::new(0),
+                reads: Cell::new(0),
+            }
+        }
+    }
+
+    impl Source for Counted {
+        fn identity(&self) -> u64 {
+            self.identity
+        }
+        fn revision(&self) -> u64 {
+            self.revision
+        }
+        fn len(&self) -> usize {
+            self.text.len()
+        }
+        fn line_count(&self) -> usize {
+            self.text.line_count()
+        }
+        fn line_start(&self, line: usize) -> Option<usize> {
+            self.text.line_start(line)
+        }
+        fn line_range(&self, line: usize) -> Option<Range<usize>> {
+            self.text.line_range(line)
+        }
+        fn content_end(&self, line: usize) -> usize {
+            self.text.content_end(line)
+        }
+        fn line_of(&self, offset: usize) -> usize {
+            self.text.line_of(offset)
+        }
+        fn clamp_offset(&self, offset: usize) -> usize {
+            self.text.clamp_offset(offset)
+        }
+        fn read(&self, range: Range<usize>, output: &mut String) {
+            self.reads.set(self.reads.get() + 1);
+            self.text.read(range, output);
+        }
+        fn clusters(
+            &self,
+            cfg: &MeasureCfg,
+            range: Range<usize>,
+            cells: usize,
+        ) -> Box<dyn Iterator<Item = Cluster> + '_> {
+            self.walks.set(self.walks.get() + 1);
+            self.text.clusters(cfg, range, cells)
+        }
+        fn line_checkpoints(&self, cfg: &MeasureCfg, line: usize) -> Vec<(usize, usize)> {
+            self.text.line_checkpoints(cfg, line)
+        }
+    }
 
     fn cfg() -> MeasureCfg {
         MeasureCfg {
@@ -286,5 +411,75 @@ mod tests {
             offset_at(&text, &cfg(), &mut ck, 1, (far + 1) as f32),
             far + 1
         );
+    }
+
+    #[test]
+    fn viewport_reuses_redraws_and_measures_only_incoming_scroll_rows() {
+        let text = Counted::new(&"hello 中\tworld\n".repeat(200));
+        let mut cache = ViewportCache::default();
+        let mut ck = Checkpoints::default();
+        cache.prepare(&text, &cfg(), &mut ck, 1, 40, 0, 80);
+        assert_eq!((text.walks.get(), text.reads.get()), (40, 40));
+        // Selection, mouse movement and live syntax changes do not remeasure.
+        for _ in 0..10 {
+            cache.prepare(&text, &cfg(), &mut ck, 1, 40, 0, 80);
+        }
+        assert_eq!((text.walks.get(), text.reads.get()), (40, 40));
+        for first in 2..=101 {
+            cache.prepare(&text, &cfg(), &mut ck, first, first + 39, 0, 80);
+            assert_eq!(
+                cache.rows.len(),
+                40,
+                "only the current viewport is retained"
+            );
+            for (line, row) in cache.rows() {
+                let expected = walk(&text.text, &cfg(), &mut ck, line, 0, 80);
+                assert_eq!(row.cells.placed, expected.placed);
+                assert_eq!(row.text.as_deref(), Some("hello 中\tworld"));
+            }
+        }
+        assert_eq!((text.walks.get(), text.reads.get()), (140, 140));
+        // A reverse notch adds exactly the previously evicted top row.
+        cache.prepare(&text, &cfg(), &mut ck, 100, 139, 0, 80);
+        assert_eq!((text.walks.get(), text.reads.get()), (141, 141));
+        cache.prepare(&text, &cfg(), &mut ck, 1, 0, 0, 80);
+        assert_eq!(cache.rows.len(), 0);
+    }
+
+    #[test]
+    fn viewport_invalidates_document_measurement_and_horizontal_window_changes() {
+        let mut text = Counted::new("a\t中\nb\t中\nc\t中");
+        let mut cache = ViewportCache::default();
+        let mut ck = Checkpoints::default();
+        let mut measure = cfg();
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 0, 80);
+        text.text = Text::from_text("z\t文\ny\t文\nx\t文").unwrap();
+        text.revision += 1; // equal-length replacement must still invalidate
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 0, 80);
+        assert_eq!(text.walks.get(), 6);
+        assert_eq!(cache.rows[&1].text.as_deref(), Some("z\t文"));
+        text.identity += 1;
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 0, 80);
+        assert_eq!(text.walks.get(), 9);
+        measure.tab_size = 8;
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 0, 80);
+        assert_eq!(text.walks.get(), 12);
+        assert_eq!(cache.rows[&1].cells.end_cells, Some(10));
+        measure.ambiguous_wide = true;
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 0, 80);
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 3, 83);
+        cache.prepare(&text, &measure, &mut ck, 1, 3, 3, 90);
+        assert_eq!(text.walks.get(), 21);
+    }
+
+    #[test]
+    fn viewport_does_not_retain_unbounded_grapheme_bytes() {
+        let text = Counted::new(&format!("a{}", "\u{301}".repeat(MAX_ROW_TEXT)));
+        let mut cache = ViewportCache::default();
+        let mut ck = Checkpoints::default();
+        cache.prepare(&text, &cfg(), &mut ck, 1, 1, 0, 80);
+        assert_eq!(cache.rows[&1].cells.placed.len(), 1);
+        assert!(cache.rows[&1].text.is_none());
+        assert_eq!(text.reads.get(), 0);
     }
 }

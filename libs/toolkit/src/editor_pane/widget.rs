@@ -23,7 +23,7 @@ use iced_core::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, ke
 use iced_core::{InputMethod, Shell, Widget, input_method, mouse, renderer};
 
 use super::layout::{self as geo, Geometry, Metrics};
-use super::lines::{self, Checkpoints};
+use super::lines::{self, Checkpoints, ViewportCache};
 use super::{LayoutReport, Message as EditorMsg, Palette, View as EditorView, draw, ime, input};
 
 /// Change tints last this long (plan §4.5).
@@ -100,6 +100,7 @@ pub(super) struct State {
     primary_pending: bool,
     last_report: Option<LayoutReport>,
     pub(super) ck: RefCell<Checkpoints>,
+    pub(super) rows: RefCell<ViewportCache>,
     /// First time each marker rev was drawn (tints last [`TINT`] from then).
     pub(super) tint_seen: RefCell<HashMap<u64, Instant>>,
     /// Widest visible line (cells) at the last draw — the horizontal extent.
@@ -182,6 +183,7 @@ impl<'a> Editor<'a> {
             st.primary_pending = false;
             st.last_report = None;
             *st.ck.borrow_mut() = Checkpoints::default();
+            *st.rows.borrow_mut() = ViewportCache::default();
             st.tint_seen.borrow_mut().clear();
             st.max_cells.set(0);
         }
