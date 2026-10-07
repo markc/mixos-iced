@@ -241,9 +241,8 @@ mod tests {
             assert!(serde_json::from_str::<Revision>(input).is_err());
         }
         assert_eq!(
-            strict::from_str::<Revision>("\"9007199254740993\"")
-                .unwrap()
-                .0,
+            strict::from_str::<BTreeMap<String, Revision>>("{revision: \"9007199254740993\"}")
+                .unwrap()["revision"].0,
             9007199254740993
         );
     }
