@@ -46,6 +46,10 @@ pub struct EventLoop<T: 'static> {
     compositor_updates: Vec<WindowCompositorUpdate>,
     window_ids: Vec<WindowId>,
 
+    // Event-loop lifetime owns the strong capacity subscriber. Native feedback
+    // and process bookkeeping cannot retain this loop through their leases.
+    _presentation_capacity_wake: Option<Arc<super::types::wp_presentation::CapacityWake>>,
+
     /// Sender of user events.
     user_events_sender: calloop::channel::Sender<T>,
 
@@ -134,9 +138,15 @@ impl<T: 'static> EventLoop<T> {
             WaylandError::Calloop
         )?;
 
+        let presentation_capacity_wake = winit_state.presentation.as_ref()
+            .map(|presentation| presentation.subscribe_capacity(event_loop_awakener.clone()));
+        let capacity_wake = presentation_capacity_wake.as_ref().map(Arc::downgrade);
         let result = event_loop
             .handle()
             .insert_source(event_loop_awakener_source, move |_, _, winit_state: &mut WinitState| {
+                if let Some(wake) = capacity_wake.as_ref().and_then(std::sync::Weak::upgrade) {
+                    wake.acknowledge();
+                }
                 // Mark that we have something to dispatch.
                 winit_state.dispatched_events = true;
             })
@@ -158,6 +168,7 @@ impl<T: 'static> EventLoop<T> {
             compositor_updates: Vec::new(),
             buffer_sink: EventSink::default(),
             window_ids: Vec::new(),
+            _presentation_capacity_wake: presentation_capacity_wake,
             connection,
             wayland_dispatcher,
             user_events_sender,

@@ -2,6 +2,17 @@
 
 ## Failed presentation pacing recovery
 
+Actual reservation retirement also advances a saturating process release epoch
+and wakes every live Wayland event loop through its existing calloop Ping. Each
+loop alone owns its subscriber; the immutable process registry holds weak
+references, and native Charge drop allocates nothing or calls UI code. Multiple
+releases coalesce until dispatch acknowledges the wake. Closed-window, retained
+receipt and undrained-queue retirement therefore wake foreign blocked windows.
+The read-only `presentation_capacity` snapshot reads epoch before availability;
+request admission remains authoritative. At epoch exhaustion consumers reconcile
+on every native wake. Actual calloop guards exercise two foreign listeners,
+coalescing, weak loop lifetime, window-denial rollback and closed availability.
+
 The Wayland extension `request_redraw_after_present_failure` grants one retry
 redraw after a recoverable post-pre-present failure. It retains the existing
 `wl_surface.frame` callback and reuses it on the next pre-present hook. A fresh

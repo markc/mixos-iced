@@ -77,6 +77,11 @@ pub trait WindowExtWayland {
     /// following `pre_present_notify`. Retains and reuses the outstanding
     /// pacing callback; creates no callback, commit or presentation receipt.
     fn request_redraw_after_present_failure(&self);
+    /// Read native capacity after an existing event-loop wake. Reservation
+    /// release wakes all live Wayland loops; this does not reserve a slot.
+    fn presentation_capacity(
+        &self,
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError>;
     /// Request feedback for the immediately following commit on this window's
     /// real surface. Call synchronously after painting and before buffer commit.
     /// Outstanding native objects and retained receipt copies share a bounded
@@ -116,6 +121,15 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn presentation_capacity(
+        &self,
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError> {
+        match &self.window {
+            crate::platform_impl::Window::Wayland(window) => window.presentation_capacity(),
+            #[cfg(x11_platform)]
+            _ => Err(crate::presentation::PresentationError::Unsupported),
+        }
+    }
     fn request_redraw_after_present_failure(&self) {
         match &self.window {
             crate::platform_impl::Window::Wayland(window) => {

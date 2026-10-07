@@ -733,6 +733,14 @@ impl Window {
         self.presentation_liveness.take_native_request()
     }
 
+    pub fn presentation_capacity(
+        &self,
+    ) -> Result<crate::presentation::PresentationCapacity, crate::presentation::PresentationError> {
+        self.presentation.as_ref()
+            .ok_or(crate::presentation::PresentationError::Unsupported)?
+            .capacity(self.surface(), &self.presentation_liveness)
+    }
+
     pub fn request_presentation_feedback(
         &self,
     ) -> Result<crate::presentation::PresentationId, crate::presentation::PresentationError> {

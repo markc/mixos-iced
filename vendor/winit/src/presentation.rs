@@ -29,6 +29,18 @@ pub enum PresentationError {
     Closed,
 }
 
+/// Read-only native feedback capacity. Actual reservation retirement wakes
+/// every live Wayland event loop in this process through its existing awakener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentationCapacity {
+    /// Process release generation, read before the availability counters.
+    /// At exhaustion callers must reconcile on every native wake.
+    pub release_epoch: u64,
+    /// Both the window and process can presently admit a request. This is a
+    /// snapshot, not a reservation; request admission remains authoritative.
+    pub available: bool,
+}
+
 /// The compositor's terminal observation for a particular buffer commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PresentationOutcome {
