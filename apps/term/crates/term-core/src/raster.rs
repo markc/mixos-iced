@@ -451,8 +451,7 @@ impl Raster {
         logical_px: f32,
         cursor: crate::config::Cursor,
     ) -> Result<Self, String> {
-        PreparedRaster::prepare(policy, scale, logical_px, cursor)
-            .map(PreparedRaster::activate)
+        PreparedRaster::prepare(policy, scale, logical_px, cursor).map(PreparedRaster::activate)
     }
 
     /// The same font at another scale or size: no file read and no
@@ -494,7 +493,11 @@ impl Raster {
         let (width, height, baseline, px, scale) = owned::geometry(
             fonts.primary.font(),
             &fonts.primary.variations,
-            if fonts.managed { scale } else { scale.clamp(0.5, 8.0) },
+            if fonts.managed {
+                scale
+            } else {
+                scale.clamp(0.5, 8.0)
+            },
             logical_px,
         )?;
         Ok(Self {

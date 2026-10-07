@@ -56,7 +56,10 @@ pub(super) const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
 /// reported here, at the public boundary.
 fn validate(policy: &OwnedFontPolicy) -> Result<Vec<Face>, String> {
     if !(1..=1000).contains(&policy.weight) {
-        return Err(format!("invalid owned font policy weight {}", policy.weight));
+        return Err(format!(
+            "invalid owned font policy weight {}",
+            policy.weight
+        ));
     }
     if policy.groups.is_empty() {
         return Err("owned font policy has no groups".into());
@@ -94,7 +97,10 @@ fn validate(policy: &OwnedFontPolicy) -> Result<Vec<Face>, String> {
                     face.bytes.len()
                 ));
             }
-            if !sources.iter().any(|source| Arc::ptr_eq(source, &face.bytes)) {
+            if !sources
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &face.bytes))
+            {
                 total = total.saturating_add(face.bytes.len());
                 sources.push(&face.bytes);
             }
@@ -108,20 +114,24 @@ fn validate(policy: &OwnedFontPolicy) -> Result<Vec<Face>, String> {
             let supported = match font.variations().find_by_tag(tag_from_bytes(b"wght")) {
                 Some(axis) => {
                     let (min, max) = (axis.min_value(), axis.max_value());
-                    min.is_finite() && max.is_finite() && min <= max
+                    min.is_finite()
+                        && max.is_finite()
+                        && min <= max
                         && (min..=max).contains(&f32::from(policy.weight))
                 }
                 None => font.attributes().weight().0 == policy.weight,
             };
             if !supported {
-                return Err(format!("{at}: face cannot honour effective weight {}", policy.weight));
+                return Err(format!(
+                    "{at}: face cannot honour effective weight {}",
+                    policy.weight
+                ));
             }
-            let candidate =
-                Face::with_weight(face.bytes.clone(), face.index, policy.weight)
-                    .filter(|candidate| super::primary_font::metrics_readable(candidate.font()))
-                    .ok_or_else(|| {
-                        format!("{at}: unreadable or malformed font at index {}", face.index)
-                    })?;
+            let candidate = Face::with_weight(face.bytes.clone(), face.index, policy.weight)
+                .filter(|candidate| super::primary_font::metrics_readable(candidate.font()))
+                .ok_or_else(|| {
+                    format!("{at}: unreadable or malformed font at index {}", face.index)
+                })?;
             faces.push(candidate);
         }
     }
@@ -134,13 +144,17 @@ fn monospaced(font: FontRef<'_>, coords: &[NormalizedCoord]) -> bool {
     let metrics = font.glyph_metrics(coords);
     let charmap = font.charmap();
     let glyph = charmap.map('M');
-    if glyph == 0 { return false; }
+    if glyph == 0 {
+        return false;
+    }
     let first = metrics.advance_width(glyph);
-    first.is_finite() && first > 0.0 && (' '..='~').all(|c| {
-        let glyph = charmap.map(c);
-        let advance = metrics.advance_width(glyph);
-        glyph != 0 && advance.is_finite() && (advance - first).abs() < 0.5
-    })
+    first.is_finite()
+        && first > 0.0
+        && (' '..='~').all(|c| {
+            let glyph = charmap.map(c);
+            let advance = metrics.advance_width(glyph);
+            glyph != 0 && advance.is_finite() && (advance - first).abs() < 0.5
+        })
 }
 
 /// Validated primary plus ordered declared coverage, sealed against the
@@ -148,7 +162,9 @@ fn monospaced(font: FontRef<'_>, coords: &[NormalizedCoord]) -> bool {
 fn build_fonts(policy: &OwnedFontPolicy) -> Result<Arc<Fonts>, String> {
     let mut faces = validate(policy)?;
     if !monospaced(faces[0].font(), &faces[0].variations) {
-        return Err("unsupported terminal font: selected primary lacks monospaced ASCII metrics".into());
+        return Err(
+            "unsupported terminal font: selected primary lacks monospaced ASCII metrics".into(),
+        );
     }
     let primary = faces.remove(0);
     Ok(Fonts::owned(primary, faces))
@@ -163,24 +179,33 @@ pub(super) fn geometry(
     scale: f32,
     logical_px: f32,
 ) -> Result<(u32, u32, i32, f32, f32), String> {
-    if !scale.is_finite() || !(0.5..=8.0).contains(&scale)
-        || !logical_px.is_finite() || logical_px <= 0.0 {
+    if !scale.is_finite()
+        || !(0.5..=8.0).contains(&scale)
+        || !logical_px.is_finite()
+        || logical_px <= 0.0
+    {
         return Err("invalid font scale or logical size".into());
     }
     // Startup resolves logical size once; scale makes it physical for HiDPI.
     let px = logical_px * scale;
-    if !px.is_finite() { return Err("invalid physical font size".into()); }
+    if !px.is_finite() {
+        return Err("invalid physical font size".into());
+    }
     let metrics = font.metrics(coords).scale(px);
     let glyph = font.charmap().map('M');
-    if glyph == 0 { return Err("primary font lacks the cell measurement glyph".into()); }
-    let advance = font
-        .glyph_metrics(coords)
-        .scale(px)
-        .advance_width(glyph);
+    if glyph == 0 {
+        return Err("primary font lacks the cell measurement glyph".into());
+    }
+    let advance = font.glyph_metrics(coords).scale(px).advance_width(glyph);
     let extent = metrics.ascent + metrics.descent.abs() + metrics.leading;
-    if !advance.is_finite() || advance <= 0.0
-        || !metrics.ascent.is_finite() || !metrics.descent.is_finite()
-        || !metrics.leading.is_finite() || !extent.is_finite() || extent <= 0.0 {
+    if !advance.is_finite()
+        || advance <= 0.0
+        || !metrics.ascent.is_finite()
+        || !metrics.descent.is_finite()
+        || !metrics.leading.is_finite()
+        || !extent.is_finite()
+        || extent <= 0.0
+    {
         return Err("invalid font cell metrics".into());
     }
     let width = advance.ceil();

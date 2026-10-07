@@ -6,10 +6,7 @@ use decor::{
     ChromeTheme, Palette,
     layout::{ChromeStyle, DecoFontFamily, DecoFontWeight},
 };
-use iced_core::{
-    Theme,
-    font::Family,
-};
+use iced_core::{Theme, font::Family};
 use settings::{Diagnostic, Snapshot};
 use std::sync::Arc;
 

@@ -146,7 +146,9 @@ impl Fonts {
 
     #[cfg(test)]
     pub(super) fn declared_coverage(&self) -> &[Face] {
-        self.fallbacks.get().map_or(&[], |fallbacks| &fallbacks.coverage)
+        self.fallbacks
+            .get()
+            .map_or(&[], |fallbacks| &fallbacks.coverage)
     }
 
     fn fallbacks(&self) -> &Fallbacks {
