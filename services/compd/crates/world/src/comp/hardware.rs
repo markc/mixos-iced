@@ -108,18 +108,40 @@ mod tests {
     fn only_actual_pressed_button_notes_satisfy_button_waits() {
         let mut witness = Witness::default();
         witness.note(Kind::Pointer, Some("event7"));
-        assert!(witness.latest(Kind::PointerButton).is_none(), "motion cannot certify a click");
+        assert!(
+            witness.latest(Kind::PointerButton).is_none(),
+            "motion cannot certify a click"
+        );
         witness.note_button("event7", 0x110);
         let pressed = witness.latest(Kind::PointerButton).unwrap();
         assert_eq!(pressed.button, Some(0x110));
-        assert_eq!(pressed.sequence, witness.latest(Kind::Pointer).unwrap().sequence);
+        assert_eq!(
+            pressed.sequence,
+            witness.latest(Kind::Pointer).unwrap().sequence
+        );
         let after = pressed.sequence;
-        for _ in 0..10000 { witness.note(Kind::Pointer, Some("event7")); }
+        for _ in 0..10000 {
+            witness.note(Kind::Pointer, Some("event7"));
+        }
         assert_eq!(witness.latest(Kind::PointerButton).unwrap().sequence, after);
-        assert!(witness.latest_before(Kind::PointerButton, after, Instant::now()).is_none(), "motion cannot replay a previous button");
+        assert!(
+            witness
+                .latest_before(Kind::PointerButton, after, Instant::now())
+                .is_none(),
+            "motion cannot replay a previous button"
+        );
         let deadline = Instant::now();
-        witness.note_at(Kind::PointerButton, Some("event7"), deadline + std::time::Duration::from_millis(1));
-        assert!(witness.latest_before(Kind::PointerButton, after, deadline).is_none(), "late button cannot satisfy an expired wait");
+        witness.note_at(
+            Kind::PointerButton,
+            Some("event7"),
+            deadline + std::time::Duration::from_millis(1),
+        );
+        assert!(
+            witness
+                .latest_before(Kind::PointerButton, after, deadline)
+                .is_none(),
+            "late button cannot satisfy an expired wait"
+        );
     }
     #[test]
     fn native_edges_survive_other_kinds_without_unbounded_history() {

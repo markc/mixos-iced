@@ -264,7 +264,11 @@ pub fn register(
                 scenegraph::state::lifecycle::lifecycle::input(state, &event);
                 if let InputEvent::PointerButton { event } = &event {
                     if event.state() == ButtonState::Pressed {
-                        state.inner.comp.hardware.note_button(event.device().sysname(), event.button_code());
+                        state
+                            .inner
+                            .comp
+                            .hardware
+                            .note_button(event.device().sysname(), event.button_code());
                     }
                 }
                 // Only this real libinput callback records native input. Bus
@@ -282,10 +286,14 @@ pub fn register(
                         world::comp::hardware::Kind::Pointer,
                         event.device().sysname().to_string(),
                     )),
-                    InputEvent::PointerButton { event } if event.state() != ButtonState::Pressed => Some((
-                        world::comp::hardware::Kind::Pointer,
-                        event.device().sysname().to_string(),
-                    )),
+                    InputEvent::PointerButton { event }
+                        if event.state() != ButtonState::Pressed =>
+                    {
+                        Some((
+                            world::comp::hardware::Kind::Pointer,
+                            event.device().sysname().to_string(),
+                        ))
+                    }
                     _ => None,
                 };
                 if let Some((kind, device)) = observed {
