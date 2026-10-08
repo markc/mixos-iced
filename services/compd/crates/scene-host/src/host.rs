@@ -639,6 +639,7 @@ pub struct SceneHost {
     settings: application::presentation::native::Ui<crate::appearance::Look>,
     appearance_generation: u64,
     input_geometry: Option<InputGeometry>,
+    owner_version: String,
 }
 
 /// Last rendered input shape. Appearance/revision-only changes do not reroute.
@@ -654,7 +655,21 @@ impl SceneHost {
     /// Start the port (only when the `scene_host` preference
     /// is on; the caller decides).
     pub fn start(config: HostConfig, waker: Waker) -> Result<Self, String> {
-        let mut port = Port::start(config, Arc::clone(&waker))?;
+        let owner_version = config.owner_version.clone();
+        let port = Port::start(config, Arc::clone(&waker))?;
+        // conf.mix's page order, as Quoin reads it at start.
+        let mut host = Host::default();
+        host.panels.load_state();
+        host.load_declared();
+        Ok(Self::from_port(port, waker, owner_version, host))
+    }
+
+    pub(crate) fn from_port(
+        mut port: Port,
+        waker: Waker,
+        owner_version: String,
+        host: Host,
+    ) -> Self {
         let mut settings = port.take_settings_ui();
         settings.reconcile(port.settings_generation());
         let (sender, actions) = std::sync::mpsc::channel();
@@ -663,11 +678,7 @@ impl SceneHost {
             actions: sender,
             waker,
         };
-        // conf.mix's page order, as Quoin reads it at start.
-        let mut host = Host::default();
-        host.panels.load_state();
-        host.load_declared();
-        Ok(Self {
+        Self {
             host,
             port,
             service: None,
@@ -682,7 +693,8 @@ impl SceneHost {
             settings,
             appearance_generation: 0,
             input_geometry: None,
-        })
+            owner_version,
+        }
     }
 
     /// The name the host registered as, once it has.
@@ -721,6 +733,48 @@ impl SceneHost {
 
     /// Drain everything the worker and the surfaces delivered. Called from
     /// the loop's post-dispatch hook after the waker fired.
+    pub(crate) fn service_descriptions(&mut self) -> usize {
+        let mut answered = 0;
+        for _ in 0..crate::port::DESCRIPTION_CAPACITY {
+            let Some(request) = self.port.try_description() else {
+                break;
+            };
+            if !self.port.description_is_current(&request) {
+                tracing::debug!("scene host: stale description retired without completion");
+                request.retire().finish();
+                continue;
+            }
+            if let Err(error) = verify_origin(&request.command().headers) {
+                self.port.reply_description(
+                    request,
+                    10,
+                    json!({"error_code":"SCENE_PROVENANCE","message":error}).to_string(),
+                );
+                answered += 1;
+                continue;
+            }
+            self.settings.reconcile(self.port.settings_generation());
+            let Some(service) = self.port.registered_service_name() else {
+                request.retire().finish();
+                continue;
+            };
+            let identity = application::describe::Identity {
+                app_id: None,
+                version: &self.owner_version,
+                pid: std::process::id(),
+                service,
+            };
+            let (rc, value) = match crate::description::complete(identity, self.settings.session())
+            {
+                Ok(value) => (0, value),
+                Err(error) => (10, crate::description::refusal(&error)),
+            };
+            self.port.reply_description(request, rc, value.to_string());
+            answered += 1;
+        }
+        answered
+    }
+
     pub fn service_port(&mut self, lp: &mut world::state::Loop) -> Serviced {
         let mut serviced = Serviced::default();
         let panels = &mut self.host.panels;
@@ -738,6 +792,7 @@ impl SceneHost {
             self.appearance_generation = self.appearance_generation.wrapping_add(1);
             serviced.changed = true;
         }
+        serviced.answered += self.service_descriptions();
         let Some(monitor) =
             dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner)
         else {
@@ -1242,8 +1297,11 @@ pub fn attested_owner(request: &Request, receipt: u64) -> String {
 /// headers cannot be adjudicated and is refused. Not an authorization gate:
 /// a well-formedness check on who the broker says sent it.
 pub fn verify_caller_provenance(request: &Request) -> Result<(), &'static str> {
-    let origins: Vec<&str> = request
-        .headers
+    verify_origin(&request.headers)
+}
+
+fn verify_origin(headers: &BTreeMap<String, String>) -> Result<(), &'static str> {
+    let origins: Vec<&str> = headers
         .iter()
         .filter(|(key, _)| key.eq_ignore_ascii_case("broker_origin"))
         .map(|(_, value)| value.as_str())
@@ -1251,7 +1309,7 @@ pub fn verify_caller_provenance(request: &Request) -> Result<(), &'static str> {
     if origins == ["mesh"] {
         return Ok(());
     }
-    let asserted = request.headers.keys().any(|name| {
+    let asserted = headers.keys().any(|name| {
         name.eq_ignore_ascii_case("source_peer")
             || name.eq_ignore_ascii_case("permissions")
             || name.eq_ignore_ascii_case("signed_ident")

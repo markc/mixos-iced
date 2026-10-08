@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "buildinfo",
  "comp-model",
@@ -6491,6 +6491,7 @@ dependencies = [
  "sha2 0.10.9",
  "smithay",
  "tempfile",
+ "term-test-broker",
  "tokio",
  "toolkit",
  "tracing",

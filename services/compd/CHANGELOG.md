@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13
+
+- Serve canonical embedded Quoin descriptions on the existing shell service,
+  including without an active output. Retain original commands on a bounded
+  native lane and report actual compd identity and installed presentation.
+
 ## 0.1.12
 
 - Add owner-scoped native region cancellation. `comp.region.select` takes an
