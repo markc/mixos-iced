@@ -135,7 +135,7 @@ fn refresh_output_generations(lp: &mut Loop) {
     for output in lp.inner.host_space().state.outputs() {
         let generation = lp.inner.comp.output_generation(&output.name());
         let data = output.user_data();
-        data.insert_if_missing(|| comp_model::output_scale::OutputIdentity(uuid::Uuid::now_v7()));
+        output_instance(output);
         data.insert_if_missing(|| {
             comp_model::capture::OutputGeneration(
                 std::sync::atomic::AtomicU64::new(generation),
@@ -330,6 +330,14 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
 }
 
 /// Scale only; the actual output and existing placement/frame owners apply it.
+fn output_instance(output: &smithay::output::Output) -> uuid::Uuid {
+    let data = output.user_data();
+    data.insert_if_missing(|| comp_model::output_scale::OutputIdentity(uuid::Uuid::now_v7()));
+    data.get::<comp_model::output_scale::OutputIdentity>()
+        .expect("inserted output identity")
+        .0
+}
+
 fn output_scale(lp: &mut Loop, spec: &comp_model::output_scale::ScaleSpec) -> ControlReply {
     refresh_output_generations(lp);
     let outputs: Vec<_> = lp
@@ -416,6 +424,34 @@ mod output_scale_tests {
     use super::*;
     use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
     use smithay::utils::Transform;
+    #[test]
+    fn actual_same_name_geometry_replacement_gets_fresh_identity() {
+        let make = || {
+            let output = Output::new("DP-1".into(), PhysicalProperties {
+                size: (0, 0).into(), subpixel: Subpixel::Unknown,
+                make: "fixture".into(), model: "fixture".into(),
+            });
+            output.change_current_state(Some(Mode { size: (1600, 1000).into(), refresh: 75_000 }),
+                Some(Transform::Normal), Some(Scale::Integer(1)), Some((40, 20).into()));
+            output
+        };
+        let original = make();
+        let instance = output_instance(&original);
+        assert_eq!(output_instance(&original.clone()), instance);
+        let replacement = make();
+        let replacement_instance = output_instance(&replacement);
+        assert_ne!(replacement_instance, instance);
+        assert_eq!(original.name(), replacement.name());
+        assert_eq!(original.current_mode(), replacement.current_mode());
+        assert_eq!(original.current_location(), replacement.current_location());
+        let stale = comp_model::output_scale::ScaleSpec {
+            output: original.name(), instance, generation: 3, scale: 1.25,
+        };
+        assert!(apply_output_scale(&replacement, &stale, replacement_instance, 3, true).is_err());
+        assert_eq!(replacement.current_scale().fractional_scale(), 1.0);
+        assert_eq!(output_instance(&original), instance);
+        assert_eq!(output_instance(&replacement), replacement_instance);
+    }
     #[test]
     fn actual_output_mutation_preserves_mode_and_refusals_are_inert() {
         let output = Output::new(
