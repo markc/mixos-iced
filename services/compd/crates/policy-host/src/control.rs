@@ -269,7 +269,15 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
             enabled,
             output,
         } => Some(
-            match window_state(lp, *id, *generation, *state, *enabled, output.as_deref(), true) {
+            match window_state(
+                lp,
+                *id,
+                *generation,
+                *state,
+                *enabled,
+                output.as_deref(),
+                true,
+            ) {
                 Ok((record_id, before, after)) => {
                     let facts = window_facts(lp, record_id);
                     let registry = &lp.inner.comp.registry;
@@ -572,9 +580,11 @@ fn window_state(
         .resolve_window_target(id, Some(generation))
         .map_err(|error| ControlReply::WindowTarget { id, error })?
         .id();
-    if active_world_required && window_of(lp, record_id).is_some_and(|window| {
-        lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())
-    }) {
+    if active_world_required
+        && window_of(lp, record_id).is_some_and(|window| {
+            lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())
+        })
+    {
         return Err(ControlReply::refused(
             "unsupported_state",
             serde_json::json!({"id":id,"reason":"not_active_world"}),
