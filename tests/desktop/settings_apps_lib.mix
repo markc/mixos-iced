@@ -70,7 +70,7 @@ fn prepare_product($app)
     try
       $product=stable_product($app)
       if $app.name == "term" then
-        check(count_of(to_string($f.rpc($app.context,"term.snapshot",{})),"RECOVERY_PTY_SENTINEL") >= 2,
+        check(count_of(to_string($f.rpc($app.context,"term.snapshot",{scrollback_lines:10000})),"RECOVERY_PTY_SENTINEL") >= 2,
           "Actual PTY output not observed")
       elif $app.name == "cap" then
         check($product.document.dirty and len($product.document.objects) == 1 and $product.document.undo > 0,
@@ -93,7 +93,12 @@ fn product_retained($app,$before,$label)
   $after=stable_product($app)
   check(deep_eq($after,$before),$label .. " changed actual " .. $app.name .. " product state")
   if $app.name == "term" then
-    check(count_of(to_string($f.rpc($app.context,"term.snapshot",{})),"RECOVERY_PTY_SENTINEL") >= 2,"Retired actual PTY output")
+    -- Typography changes visible rows; the echoed command can move into
+    -- history while the real output remains visible. Read bounded coherent
+    -- history without changing the terminal's scroll offset or renderer state.
+    $snapshot=$f.rpc($app.context,"term.snapshot",{scrollback_lines:10000})
+    write_file($app.context.root .. "/pty-snapshot-" .. $label .. ".json",json_encode($snapshot))
+    check(count_of(to_string($snapshot),"RECOVERY_PTY_SENTINEL") >= 2,"Retired actual PTY output")
   end
   write_file($app.context.root .. "/product-" .. $label .. ".json",json_encode($after))
 end

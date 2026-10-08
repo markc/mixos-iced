@@ -39,3 +39,32 @@ fn hold($context,$identity,$name,$token)
   $r.check($arm.state == "armed","Real preparation barrier did not arm")
   return merge($identity,{sequence:$arm.sequence,token:$token})
 end
+fn disconnected($context,$pid,$baseline,$budget)
+  $deadline=time()+$budget
+  $last=nil
+  while time() < $deadline
+    $r.check(process_alive($pid),"Actual owner exited during held connection replacement")
+    $reply=$f.call($context,"app.describe",{})
+    if $reply.rc == 0 then
+      $last=$reply.result
+      $r.check($last.pid == $pid,"Replacement generation describes another GUI")
+      if $last.settings != nil and not $last.settings.confirmed and $last.settings.kind == "last_good" then
+        $r.check(deep_eq($last.settings.applied,$baseline.settings.applied) and
+          deep_eq($last.preparation.applied,$baseline.preparation.applied),"Connection replacement installed old held candidate")
+        $r.check(deep_eq($r.resource_receipt($last),$r.resource_receipt($baseline)),"Connection replacement changed prepared resources")
+        return $last
+      end
+    end
+    sleep(0.02)
+  end
+  raise("CONNECTION_SETTLE","Unconfirmed retained installation not observed: " .. json_encode($last))
+end
+fn old_generation_refused($context,$identity,$reference)
+  for each $entry in [{verb:"frame.state",body:$identity},{verb:"barrier.state",body:$reference},
+    {verb:"barrier.wait",body:$reference},{verb:"barrier.release",body:$reference}]
+    $reply=$f.call($context,"app.acceptance." .. $entry.verb,$entry.body)
+    $r.check($reply.rc == 0 and not $reply.result.ok and contains($reply.result.error,"generation"),
+      "Old generation accepted " .. $entry.verb .. ": " .. json_encode($reply))
+    write_file($context.root .. "/old-generation-refused-" .. $entry.verb .. ".json",json_encode($reply))
+  end
+end

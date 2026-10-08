@@ -261,3 +261,42 @@ and root layout, retained products, and per-app/root acceptance JSON. This gate
 tests authority supersession of held work; a held candidate cancelled by a
 replacement connection generation remains a separate schedule. Physical GPU
 scanout and VT isolation also remain separate acceptance.
+
+`settings_app_generation_cancel_gate.mix REPO BUILD_BIN_DIR [APP]` covers a
+real held preparation crossing an owned app-broker connection replacement.
+It uses the same native complete-core installation, four real products and
+independent compositor broker:
+
+```
+mix tests/desktop/settings_app_generation_cancel_gate.mix /path/to/mixos /path/to/candidate/bin
+```
+
+All four GUI owners stay alive while each app gets a separately bounded
+old/fresh hold schedule. The old worker reaches B with the actual revision
+observation and leaves the exact baseline installed. The gate stops authority
+and restarts the app broker at the same endpoint, then requires unconfirmed
+LastGood with the exact old native target, prepared sources and product state.
+The live fixture generation must advance, and old frame/state/wait/release
+references must refuse that generation. A successful fresh arm before eight
+seconds proves the old Reached hold became terminal before its ten-second
+automatic expiry; the actual actor closes it on LostGeneration.
+
+Authority return exposes persisted B. A fresh real-worker hold captures that
+new-generation B before it can install, then C supersedes it and must be
+observed while the original baseline remains installed. Explicit release must
+occur before expiry. C must become confirmed current on the same PID/window
+with verified complete-core sources, retained product, real root layout and
+an exact native frame whose activation epoch is precisely baseline plus one.
+An installation of either old or fresh superseded B would add another epoch
+and fail. The second hold avoids racing a legitimate new-generation B install
+against the online C mutation.
+
+Artefacts retain both actual reached observations, old-generation refusals,
+absent/held/superseded descriptions and exact old-frame receipts, baseline and
+winning frame/layout/product state, owned package manifest/catalogue identities,
+unique authority logs and per-app/root acceptance JSON. This is a short held
+connection schedule; the separate outage gate supplies the >65-second outage.
+No synthetic activation or frame is introduced. Cap exports only after retained
+state checks; Term retirement remains controlled signals. Native installation,
+PTY support and source-identical binaries are required. Physical VT/GPU/input
+acceptance remains separate.
