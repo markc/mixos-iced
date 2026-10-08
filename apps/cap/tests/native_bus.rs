@@ -178,7 +178,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
     for verb in description["verbs"].as_array().unwrap() {
         assert!(!verb.as_str().unwrap().starts_with("app.acceptance."));
     }
-    let (rc, body) = client
+    let (rc, body, fd) = client
         .call_with_headers_raw(
             "cap-test",
             "app.acceptance.describe",
@@ -191,6 +191,7 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
         rc, 0,
         "a headless launch cannot expose GUI fixture ownership: {body}"
     );
+    assert!(fd.is_none(), "unknown GUI fixture returned an owned descriptor");
     let duplicate = Command::new(env!("CARGO_BIN_EXE_cap"))
         .args(["--headless", "--service", "cap-test", "--noded-url", &url])
         .env("MIXOS_APP_HOME", directory.path().join("duplicate"))
