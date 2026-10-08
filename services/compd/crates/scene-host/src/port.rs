@@ -1259,9 +1259,7 @@ fn decode_registrations(value: &Value) -> Option<BTreeMap<String, String>> {
             continue;
         }
         let incarnation = incarnation.as_str()?;
-        if incarnation.len() != 32
-            || !incarnation.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
+        if incarnation.len() != 32 || !incarnation.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
         }
         if result
@@ -1581,7 +1579,10 @@ mod tests {
             {"service":"observer", "incarnation":null},
             {"service":"term", "incarnation":token}
         ]);
-        assert_eq!(decode_registrations(&rows), Some(BTreeMap::from([("term".into(), token.into())])));
+        assert_eq!(
+            decode_registrations(&rows),
+            Some(BTreeMap::from([("term".into(), token.into())]))
+        );
         for invalid in [
             serde_json::json!([{"service":"term", "incarnation":null}, {"service":"term", "incarnation":token}]),
             serde_json::json!([{"service":"term"}]),
@@ -1589,7 +1590,10 @@ mod tests {
         ] {
             assert!(decode_registrations(&invalid).is_none());
         }
-        assert_eq!(decode_registrations(&serde_json::json!([{"service":"observer", "incarnation":null}])), Some(BTreeMap::new()));
+        assert_eq!(
+            decode_registrations(&serde_json::json!([{"service":"observer", "incarnation":null}])),
+            Some(BTreeMap::new())
+        );
     }
 
     use super::*;
