@@ -7,6 +7,33 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 
 #[tokio::test]
+async fn responder_retirement_is_exact_channel_and_single_settlement() {
+    let table = PendingResponseTable::new();
+    let (caller, _caller_rx) = mpsc::channel(8);
+    let (old, _old_rx) = mpsc::channel(8);
+    let (replacement, _replacement_rx) = mpsc::channel(8);
+    let mut first = request("probe.echo", "same-service", "old-call");
+    let old_id = table.register_classified(&mut first, &caller, Some("caller"), &old, TrafficClass::NativeSession, true).await.unwrap();
+    let mut second = request("probe.echo", "same-service", "new-call");
+    let new_id = table.register(&mut second, &caller, Some("caller"), &replacement).await.unwrap();
+    assert!(table.drain_for_channel(&old).await.is_empty(), "caller cleanup cannot steal responder-owned IDs");
+    let retired = table.drain_for_responder(&old).await;
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, old_id);
+    assert_eq!(retired[0].1.caller_id, "old-call");
+    assert!(table.drain_for_responder(&old).await.is_empty());
+    assert!(table.take_response(&old_id, &old).await.is_none());
+    assert_eq!(table.response_class(&old_id, false).await, TrafficClass::NativeSession, "late response remains protected");
+    assert!(table.take_response(&new_id, &old).await.is_none());
+    assert_eq!(table.take_response(&new_id, &replacement).await.unwrap().caller_id, "new-call");
+    assert!(table.take_response(&new_id, &replacement).await.is_none());
+    let mut race = request("probe.echo", "same-service", "racing-call");
+    let race_id = table.register(&mut race, &caller, Some("caller"), &replacement).await.unwrap();
+    let (reply, retired) = tokio::join!(table.take_response(&race_id, &replacement), table.drain_for_responder(&replacement));
+    assert_eq!(usize::from(reply.is_some()) + retired.len(), 1, "reply or retirement claims once");
+}
+
+#[tokio::test]
 async fn supervised_unix_preserves_principals_verbs_and_bounded_retirement() {
     use bus::native_client::{
         BoundedIncomingEvent, NodedClient, SupervisedClient, UnixConnectOutcome,

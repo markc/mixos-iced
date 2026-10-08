@@ -224,6 +224,14 @@ async fn two_production_brokers_route_verified_native_clients() {
         assert_eq!(bus::native_session::read_principal(&envelope).unwrap().unwrap().assurance, bus::native_session::Assurance::LocalUnix);
         assert_eq!(command.generation, first.connection_generation());
         caller.client().close().await;
+        let retiring = connect(&roots[1], "retiring", &urls[1], &mut fixture.children[1]).await;
+        let retire_target = async {
+            let command = retiring.recv_shared().await.unwrap();
+            assert_eq!(command.command().command, "echo.tag");
+            retiring.client().close().await;
+        };
+        let (retired_reply, ()) = tokio::join!(first.call_typed("retiring.beta.bus", "echo.tag", json!({"tag":"retired"})), retire_target);
+        assert!(matches!(retired_reply.unwrap(), bus::PortReply::AppError { .. }), "exact remote responder retirement settles nested broker IDs");
         let drain = async {
             let delivery = service.recv_shared().await.unwrap();
             let command = delivery.command();
