@@ -694,6 +694,22 @@ try
   write_file($R.run.path .. "/quoin-late-load.json",json_encode($late_scene_load))
   $late_scene_page=shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-late-control"})
   write_file($R.run.path .. "/quoin-late-page.json",json_encode($late_scene_page))
+  -- Page selection applies the model and schedules a frame. Observe that
+  -- exact native scene's genuine presentation before querying its layout.
+  $late_control_owner=owner("quoin")
+  $late_control_key=$late_control_owner.context.service .. "/all-apps-late-control"
+  $late_control_description=shell("app.describe",{})
+  write_file($R.run.path .. "/quoin-late-before-wait.json",json_encode($late_control_description))
+  $late_control_commit=$late_control_description.settings_observation.authority
+  check($late_control_commit.changed and deep_eq($late_control_commit.identity,$h.identity($changed)) and type($late_control_commit.operation_id) == "string" and len($late_control_commit.operation_id) > 0,"Late Quoin scene lacks the actual changed authority operation")
+  $late_control_rows=filter($late_control_description.participants.participants,fn($candidate)=$candidate.key == $late_control_key and $candidate.service == $late_control_owner.context.service and $candidate.pid == $late_control_owner.pid)
+  check(len($late_control_rows) == 1 and deep_eq($late_control_rows[0].current,$h.identity($changed)) and $late_control_rows[0].native_window == nil,"Late Quoin scene lacks its exact current native owner")
+  $late_control_wait=shell("app.participants.wait",{operation_id:$late_control_commit.operation_id,services:[$late_control_owner.context.service],keys:[$late_control_key],until:"presented",timeout_ms:3000})
+  write_file($R.run.path .. "/quoin-late-presented.json",json_encode($late_control_wait))
+  $late_control_frame=$participants.exact_presented($late_control_wait,$late_control_commit.operation_id,$late_control_owner.context.service,$late_control_key,$late_control_owner.pid,$h.identity($changed))
+  for each $late_control_fence in ["pid","connection_generation","registration_incarnation","surface_incarnation","native_window","frame_owner"]
+    check(deep_eq($late_control_frame[$late_control_fence],$late_control_rows[0][$late_control_fence]),"Late Quoin scene replaced its selected native owner: " .. $late_control_fence)
+  end
   $late_control=quoin_capture($changed,"late","all-apps-late-control")
   $offset=bytes_len(string_to_bytes(read_file($root .. "/controls-events.jsonl")))
   $go=$late_control.layout.nodes.go
