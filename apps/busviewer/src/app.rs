@@ -1089,6 +1089,10 @@ impl App {
                 height,
             )));
         }
+        #[cfg(feature = "acceptance")]
+        if self.bus.fixture_frames.is_some() {
+            body = body.id(crate::acceptance::BODY_ID);
+        }
         let mut reply = text_editor(&self.reply)
             .on_action(Message::Reply)
             .height(iced::Fill)

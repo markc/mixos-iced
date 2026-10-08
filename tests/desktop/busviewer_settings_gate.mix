@@ -102,6 +102,7 @@ try
   $R.session=$n.start({bin:$bin .. "/compd",tag:"viewer-settings",run:$R.run,
     config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:180})
   check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
   print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
   $authority_log=$root .. "/settingsd.log"
   $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
@@ -121,11 +122,15 @@ try
     check($reply.rc == 10 and $reply.result.error_code == "UNKNOWN_VERB","Ordinary launch exposes fixture: " .. json_encode($reply))
   end
   app("busviewer.quit",{})
-  $h.stop($ordinary.pid)
+  $deadline=time()+4
+  while process_alive($ordinary.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($ordinary.pid),"Ordinary native quit did not retire its owner")
   $identity={run:"viewer-native-" .. to_string(pid()),instance:1}
   $viewer=launch("fixture",$identity)
   $info=fixture("describe",$identity)
-  check($info.pid == $viewer.pid and deep_eq($info.aliases,["root"]) and
+  check($info.pid == $viewer.pid and deep_eq($info.aliases,["root","body"]) and
     deep_eq($info.points,["busviewer.prepare"]) and $info.frames.enabled,"Wrong explicit fixture")
   $before=current($snapshot)
   $initial=$f.target(context(),$identity,$before.preparation.applied)
@@ -139,8 +144,24 @@ try
   check(not app("busviewer.info",{}).busy,"Native inventory did not settle")
   app("busviewer.select",{service:"noded",verb:"noded.list"})
   app("busviewer.call",{service:"noded",verb:"noded.list",body:"{}"})
+  $editor=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["body"]}))
+  check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual body editor layout unavailable")
+  $bounds=$editor.records[0].visible_bounds
+  check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 20,"Body editor not visibly editable")
+  comp("comp.window.focus",$viewer.window)
+  comp("comp.input.pointer.move",{seat:"human",window:$viewer.window,x:$bounds[0]+10,y:$bounds[1]+10,corners:false})
+  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"press"})
+  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"release"})
+  comp("comp.input.key",{seat:"human",key:"a",modifiers:["ctrl"]})
+  comp("comp.input.key",{seat:"human",text:'{"unfinished":true}'})
+  $deadline=time()+3
+  while app("busviewer.info",{}).body != '{"unfinished":true}' and time() < $deadline
+    sleep(0.02)
+  end
   $product=app("busviewer.info",{})
-  check($product.selection != nil and $product.reply != nil,"No real selected/called product state")
+  check($product.selection != nil and $product.body == '{"unfinished":true}' and $product.reply.rc == 0 and
+    $product.reply.service == "noded" and $product.reply.verb == "noded.list" and $product.reply.transport_error == nil,
+    "Native edits or the actual successful call were not retained")
   $reference=hold($identity,"theme-held")
   $waiting=async_wait("barrier.wait",$reference,"theme-reached")
   $changed=apply($snapshot,"viewer-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
@@ -160,6 +181,9 @@ try
   check($second.target.window == $initial.target.window and $second.target.stamp.activation_epoch > $initial.target.stamp.activation_epoch,"No new activation on the actual window")
   $f.presented(context(),$identity,$second.target,"settings")
   $f.layout(context(),$identity,$second.target.window,"settings")
+  $activated_product=app("busviewer.info",{})
+  check(deep_eq($activated_product.selection,$product.selection) and $activated_product.body == $product.body and
+    deep_eq($activated_product.reply,$product.reply),"Activation disturbed real edits/reply/selection")
   $closing=hold($identity,"closing")
   $closing_wait=async_wait("barrier.wait",$closing,"closing-reached")
   $last=apply($changed,"viewer-native-close",{"ui.density":1.5})
