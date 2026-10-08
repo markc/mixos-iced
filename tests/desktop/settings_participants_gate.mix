@@ -168,11 +168,12 @@ end
 fn compact_windows($area,$size)
   $compact_rows=[]
   $compact_windows=comp("comp.windows.list",{}).windows
+  write_file($R.run.path .. "/compact-windows-latest.json",json_encode({requested:$size,windows:$compact_windows}))
   for each $compact_owner in filter($R.owners,fn($candidate)=$candidate.name != "quoin")
     $compact_matches=filter($compact_windows,fn($candidate)=$candidate.id == $compact_owner.window.id and $candidate.generation == $compact_owner.window.generation and $candidate.pid == $compact_owner.pid)
     check(len($compact_matches) == 1,"Compact native owner was replaced")
     $compact_window=$compact_matches[0]
-    check($compact_window.width == $size.width and $compact_window.height == $size.height,"Actual compact client geometry differs from requested size")
+    check($compact_window.width == $size.width and $compact_window.height == $size.height,"Actual compact client geometry differs from requested size: " .. json_encode({owner:$compact_owner.name,requested:$size,actual:$compact_window}))
     check($compact_window.visible and not $compact_window.minimized and not $compact_window.maximized,"Compact native owner must remain normally visible")
     check($compact_window.width > 0 and $compact_window.height > 0 and $compact_window.x >= $area.x and $compact_window.y >= $area.y and $compact_window.x+$compact_window.width <= $area.x+$area.width and $compact_window.y+$compact_window.height <= $area.y+$area.height,"Compact native window is clipped outside usable output")
     for each $compact_prior in $compact_rows
@@ -204,6 +205,7 @@ fn compact_desktop()
       $compact_row_index=floor($compact_index/3)
       comp("comp.window.focus",$compact_app.window)
       $compact_placed=comp("comp.window.place",merge($compact_app.window,{x:$compact_area.x+40+$compact_column*($compact_size.width+40),y:$compact_area.y+40+$compact_row_index*($compact_size.height+40),width:$compact_size.width,height:$compact_size.height}))
+      write_file($R.run.path .. "/compact-place-" .. to_string($compact_size.width) .. "-" .. $compact_app.name .. ".json",json_encode($compact_placed))
       check(deep_eq($compact_placed.requested,$compact_size),"Production native size hints clamped compact request")
       check(comp("comp.window.wait",{match:$compact_app.window,until:"size",width:$compact_size.width,height:$compact_size.height,timeout_ms:3000}).window != nil,"Actual compact client did not commit requested size")
       $compact_index=$compact_index+1
