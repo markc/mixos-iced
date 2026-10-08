@@ -557,14 +557,13 @@ async fn worker(
                             let _ = delivery.ticket.take();
                         }
                         name = fallback;
-                        let options =
-                            match ::settings::native::supervised_options(&name, &url) {
-                                Ok(options) => options,
-                                Err(error) => {
-                                    eprintln!("term: verified Bus configuration: {}", error.message);
-                                    break;
-                                }
-                            };
+                        let options = match ::settings::native::supervised_options(&name, &url) {
+                            Ok(options) => options,
+                            Err(error) => {
+                                eprintln!("term: verified Bus configuration: {}", error.message);
+                                break;
+                            }
+                        };
                         client = Arc::new(
                             options
                                 .fatal_on_registration_rejection(true)

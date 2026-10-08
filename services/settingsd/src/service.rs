@@ -144,7 +144,8 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
         settings::native::supervised_options(
             "settingsd",
             &bus::client_helpers::resolve_noded_url(),
-        ).map_err(|error| anyhow::anyhow!(error.message))?
+        )
+        .map_err(|error| anyhow::anyhow!(error.message))?
         .bounded_incoming(64)
         .fatal_on_registration_rejection(true)
         .with_verbs(manifest())
