@@ -417,13 +417,13 @@ try
   -- Explicit resource bindings require declared families; packaged-default
   -- remapping deliberately applies only when the resource reference is absent.
   $design=load_data($repo .. "/libs/design/src/defaults/revision-1.theme.conf.mix")
-  $records=$design.design.v1.typography.records
+  $fixture_type_records=$design.design.v1.typography.records
   $roles={ui:"sans",ui_display:"display",small:"sans",mono:"mono",terminal:"mono"}
-  for each $record in keys($records)
-    $role=if $roles[$record] != nil then $roles[$record] else "ui" end
-    $records[$record]=merge($records[$record],{family:$manifest.font_families[$role],fallbacks:[]})
+  for each $fixture_type_record in keys($fixture_type_records)
+    $role=if $roles[$fixture_type_record] != nil then $roles[$fixture_type_record] else "ui" end
+    $fixture_type_records[$fixture_type_record]=merge($fixture_type_records[$fixture_type_record],{family:$manifest.font_families[$role],fallbacks:[]})
   end
-  $typography=merge($design.design.v1.typography,{records:$records})
+  $typography=merge($design.design.v1.typography,{records:$fixture_type_records})
   $v1=merge($design.design.v1,{typography:$typography})
   $design=merge($design,{typography:merge($design.typography,{family:$manifest.font_families.ui}),design:merge($design.design,{v1:$v1})})
   $light=apply({"appearance.source":data_encode($design),"appearance.resources":{schema:1,set_id:$manifest.set_id,manifest_blake3:$manifest_digest},"appearance.mode":"light","ui.text_scale":1.0,"ui.density":1.0,"shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:72}},"initial-light")
