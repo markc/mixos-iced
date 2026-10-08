@@ -197,6 +197,8 @@ separately from write faults, saved identities and usable fallback state.
 
 ## Unreleased
 
+- Local preparation of unbound resources regenerates embedded icon variants
+  without resource discovery or reselection of the installed fonts.
 - Add `application::native_queue`: a bounded retained outbox (reliable FIFO
   plus fixed replaceable slots that keep their original queue position) and
   a shared admission pool whose permits are explicitly finished or counted

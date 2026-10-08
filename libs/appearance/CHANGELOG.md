@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reprepare unbound embedded icons from the original receipt's captured
+  sources at new scale, size or tint. Keep exact text selections, reject
+  replacement artwork and use the same bounded image staging and reuse.
 - Resource requirements can carry reviewed embedded SVG rescue sources. Only
   the no-set path uses them, through the existing preparation worker, process
   image budget and canonical reuse. Receipts remain unbound and report real

@@ -1213,11 +1213,12 @@ fn build_generic<T, C>(
         .effective
         .get(inputs.context)
         .ok_or_else(|| Diagnostic::new("missing_context", "effective", "Context missing"))?;
-    (inputs.requirements)(&Projection::new(effective)?, snapshot, inputs.local)?;
-    let content = (inputs.build)(appearance, snapshot, inputs.local)?;
+    let requirements = (inputs.requirements)(&Projection::new(effective)?, snapshot, inputs.local)?;
+    let appearance = appearance::resources::reprepare_unbound(appearance, requirements, &mut || inputs.check())?;
+    let content = (inputs.build)(&appearance, snapshot, inputs.local)?;
     check()?;
     Ok(Presentation {
-        appearance: appearance.clone(),
+        appearance,
         content,
     })
 }
