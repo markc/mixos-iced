@@ -617,8 +617,15 @@ async fn worker(
     };
     // Nonblocking startup: registration and subscription replay run in the
     // supervisor. Failures surface as lifecycle deliveries, never here.
+    let options = match ::bus::client_helpers::local_supervised_options(&service, &url) {
+        Ok(options) => options,
+        Err(error) => {
+            let _ = ready.send(Err(error.to_string()));
+            return;
+        }
+    };
     let client = Arc::new(
-        SupervisedClient::connect_options(&service, &url)
+        options
             .fatal_on_registration_rejection(true)
             .bounded_incoming(64)
             .with_initial_topics(vec!["noded.props.changed".into()])

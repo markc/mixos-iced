@@ -145,7 +145,7 @@ fn participant_presentations($batch,$label)
     $records=concat($records,[$record])
     write_file($R.run.path .. "/participant-" .. $label .. "-" .. $app.name .. ".json",json_encode($receipt))
   end
-  return {records:$records,population:"seven distinct live participants for one changed operation",
+  return {records:$records,population:to_string(len($records)) .. " distinct live participants for one changed operation",
     environment:"owned nested compositor; all owners concurrent; sequential native reveal after authority change",
     applied:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_applied_ns != nil),fn($row)=$row.accepted_to_applied_ns)),
     presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
@@ -217,10 +217,12 @@ fn native_idle()
   return {actual_output_scale:$output.scale,calibration:$calibration,calibration_trace:$calibrated,
     baseline:{seconds:1.5,trace:$baseline},observation:{seconds:1.5,trace:$observed,receipt:$same},
     guard:"no submitted frames with only Bus/Publish reasons; actual product/native timer frames reported separately",
-    output_change:{status:"source owner gap",reason:"nested factory accepts scale only before wire; no native Bus live scale/mode route in this base"}}
+    output_change:{status:"separate native acceptance",contract:"comp.output.scale",
+      gate:"settings_all_apps_gate.mix --output-scale",
+      reason:"live output mutations are checked separately from this pure observation idle interval"}}
 end
 fn native_samples()
-  $runs=[]; $series={}
+  $runs=[]; $series={}; $batch_applied=[]; $batch_presented=[]
   for $index=1 to 20
     $mode=if floor($index/2)*2 == $index then "light" else "dark" end
     $batch=apply({"appearance.mode":$mode},"participant-sample-" .. to_string($index))
@@ -230,6 +232,8 @@ fn native_samples()
       $prior=$series[$record.service] ?? {applied:[],presented:[]}
       $series[$record.service]={applied:concat($prior.applied,[$record.accepted_to_applied_ns]),presented:concat($prior.presented,[$record.accepted_to_presented_ns])}
     end
+    $batch_applied=concat($batch_applied,[max(map($sample.records,fn($row)=$row.accepted_to_applied_ns))])
+    $batch_presented=concat($batch_presented,[max(map($sample.records,fn($row)=$row.accepted_to_presented_ns))])
     $runs=concat($runs,[$sample])
   end
   $quantiles={}
@@ -237,7 +241,10 @@ fn native_samples()
     $quantiles[$service]={accepted_to_applied:$participants.quantiles($series[$service].applied),accepted_to_presented:$participants.quantiles($series[$service].presented)}
   end
   retained("measured-samples")
-  return {runs:$runs,per_service:$quantiles,resident_resources:true,exclusions:[],
+  return {runs:$runs,per_service:$quantiles,resident_resources:true,
+    complete_batch:{accepted_to_applied:$participants.quantiles($batch_applied),accepted_to_presented:$participants.quantiles($batch_presented),
+      estimator:"maximum actual comparable owner interval per changed operation; twenty complete seven-owner batches"},
+    exclusions:[{claim:"simultaneous responsive visible broadcast p95",reason:"each native application is focused sequentially after authority acceptance; reveal latency remains included in samples"}],
     environment:"recorded owned nested software renderer, actual fractional output, all seven owners concurrent, sequential native reveal",
     reference_hardware:false,broadcast_only_p95_claimed:false,target_p95_ns:100000000,
     target_disposition:"measured values only; reference hardware and simultaneous visible broadcast release target remain separate acceptance"}
@@ -268,7 +275,10 @@ fn capture_palette($app,$snapshot,$label,$width,$sample_x)
   while time() < $deadline
     run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:10,env:$n.client_env($R.session,{})})
     $image=$pixels.ppm($path)
-    $inside=$pixels.pixel($image,round(($width-2)*$output.scale),round(400*$output.scale))
+    -- The actual Ced scrollbar occupies the rightmost pixels. Sample the
+    -- document base clear of it; the 32-pixel width step still puts this
+    -- point beyond the previous buffer, so stale pixels cannot pass.
+    $inside=$pixels.pixel($image,round(($width-16)*$output.scale),round(400*$output.scale))
     $outside=$pixels.pixel($image,round(($width+2)*$output.scale),round(400*$output.scale))
     $sample=$pixels.pixel($image,round($sample_x*$output.scale),round(400*$output.scale))
     $matches=abs($outside[0]-255) <= 3 and $outside[1] <= 3 and abs($outside[2]-255) <= 3
@@ -432,7 +442,7 @@ try
     simultaneously_alive()
     retained($round.label)
     $frames=observe_frames($round.label)
-    $width=1000+len($R.rounds)*2
+    $width=1000+len($R.rounds)*32
     $ced_palette=capture_palette($ced,$batch.snapshot,$round.label,$width,200)
     $editor_palette=capture_palette($editor,$batch.snapshot,$round.label,$width+1,5)
     $quoin_palette=quoin_capture($batch.snapshot,$round.label,"all-apps-control")
@@ -474,12 +484,52 @@ try
   $late_control=merge($late_control,{click:$click})
   simultaneously_alive()
   retained("late")
+  $quoin=owner("quoin")
+  $quoin_key=$quoin.context.service .. "/all-apps-control"
+  $quoin_batch=apply({"ui.text_scale":1.41},"participant-quoin-hidden")
+  $quoin_hidden=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$quoin.context.service],keys:[$quoin_key],timeout_ms:3000})
+  $hidden_rows=filter($quoin_hidden.observations.participants,fn($row)=$row.key == $quoin_key)
+  check(not $quoin_hidden.deadline_elapsed and len($hidden_rows) == 1 and $hidden_rows[0].state == "hidden" and $hidden_rows[0].presentation == nil,"Hidden native Quoin scene supplied false presentation")
+  shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-control"})
+  $quoin_revealed=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$quoin.context.service],keys:[$quoin_key],until:"presented",timeout_ms:3000})
+  $participants.exact_presented($quoin_revealed,$quoin_batch.operation_id,$quoin.context.service,$quoin_key,$quoin.pid,$h.identity($quoin_batch.snapshot))
+  shell("shell.scene.unload",{scene:"all-apps-late-control"})
+  $quoin_closed=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$quoin.context.service],keys:[$quoin.context.service .. "/all-apps-late-control"],until:"closed",timeout_ms:3000})
+  check(not $quoin_closed.deadline_elapsed,"Unloaded native Quoin scene failed retirement")
   $late_rows=filter(shell("app.describe",{}).participants.participants,fn($row)=$row.service == $late.context.service and $row.pid == $late.pid)
   check(len($late_rows) == 1,"Late native owner did not join participant registry")
   comp("comp.window.close",merge($late.window,{force:false}))
   $closed=shell("app.participants.wait",{operation_id:"all-apps-participant-deadline",services:[$late.context.service],keys:[$late_rows[0].key],until:"closed",timeout_ms:3000})
   $closed_rows=filter($closed.observations.participants,fn($row)=$row.key == $late_rows[0].key)
   check(not $closed.deadline_elapsed and len($closed_rows) == 1 and $closed_rows[0].state == "closed" and $closed_rows[0].presentation == nil,"Closed native owner retained a live presentation")
+  $retired_deadline=time()+5
+  while process_alive($late.pid) and time() < $retired_deadline sleep(0.05) end
+  check(not process_alive($late.pid),"Native closed owner did not finish process and broker retirement before recreation")
+  $R.owners=filter($R.owners,fn($app)=$app.pid != $late.pid)
+  $replacement=launch("busviewer","late",true)
+  $replacement_description=$all.current($replacement.context,$replacement.pid,$quoin_batch.snapshot,$binding,$replacement.settings_context,15)
+  $all.canonical($replacement_description,$replacement,$quoin_batch.snapshot,$binding,$manifest,$manifest_digest)
+  comp("comp.window.focus",$replacement.window)
+  $replacement_receipt=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$replacement.context.service],keys:[$replacement.context.service],until:"presented",timeout_ms:3000})
+  $replacement_rows=filter($replacement_receipt.observations.participants,fn($row)=$row.service == $replacement.context.service and $row.pid == $replacement.pid and $row.state != "closed")
+  check(len($replacement_rows) == 1 and $replacement_rows[0].registration_incarnation != $late_rows[0].registration_incarnation and $replacement_rows[0].frame_owner != $late_rows[0].frame_owner,"Recreated same-service native owner reused retired identity")
+  $participants.exact_presented($replacement_receipt,$quoin_batch.operation_id,$replacement.context.service,$replacement_rows[0].key,$replacement.pid,$h.identity($quoin_batch.snapshot))
+  $broker_before=shell("app.describe",{}).participants
+  $R.bus=$n.restart_private_bus(merge($R.bus,{restart_record:"restart.json"}))
+  $reconnected=[]
+  for each $app in $R.owners
+    $reconnected=concat($reconnected,[merge($app,{context:merge($app.context,{bus:$R.bus})})])
+  end
+  $R.owners=$reconnected
+  ready("shell","app.describe",$quoin.pid)
+  ready("settingsd","settings.describe",$authority)
+  $broker_batch=apply({"appearance.mode":"dark"},"participant-broker-replacement")
+  $broker_after=participant_presentations($broker_batch,"broker-replacement")
+  for each $row in $broker_after.records
+    $prior=filter($broker_before.participants,fn($old)=$old.key == $row.key and $old.pid == $row.pid)
+    check(len($prior) == 1 and $row.registration_incarnation != $prior[0].registration_incarnation and $row.connection_generation > $prior[0].connection_generation,"Broker replacement reused retired participant registration or generation")
+    check($row.frame_owner == $prior[0].frame_owner and deep_eq($row.native_window,$prior[0].native_window),"Broker replacement recreated actual native participant")
+  end
   $inventory=rpc("noded","noded.inventory",{})
   $binary_hashes=[]
   for each $name in ["mix","noded","settingsd","compd","editd","term","ced","busviewer","cap","dopus","scene-editor","testkit-screenshot","testkit-input-probe"]
@@ -489,13 +539,22 @@ try
     source_tree:trim(run_argv_must(["git","-C",$repo,"rev-parse","HEAD^{tree}"])),binary_hashes:$binary_hashes,broker:{pid:$R.bus.pid,url:$R.bus.url},
     compositor:{pid:$R.session.comp_pid,service:$R.session.service,backend:"nested"},native_inventory:$inventory,
     all_six_simultaneous:true,quoin:true,core_set:$manifest.set_id,core_manifest_blake3:$manifest_digest,rounds:$R.rounds,participant_states:$participant_states,participant_idle:$participant_idle,participant_samples:$participant_samples,
-    new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed},new_control:$late_control,
+    new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed,recreated:$replacement_receipt},new_control:$late_control,
+    quoin_lifecycle:{hidden:$quoin_hidden,revealed:$quoin_revealed,retired:$quoin_closed},
+    broker_replacement:{before:$broker_before,after:$broker_after},
     hardware:false,actual_output_scale:$output.scale,quantile_population:"actual monotonic durations across current operation participants; small measured sample count explicit",exact_frame_participants:["term","busviewer","cap","dopus"],
     palette_boundary_participants:["ced","scene-editor"],quoin_palette_layout:true}))
   $R.ok=true
 catch $message
   print("FAIL simultaneous settings: " .. $message)
 finally
+  if $R.bus != nil and is_file($R.bus.dir .. "/restart.json") then
+    try
+      $replacement=json_parse(read_file($R.bus.dir .. "/restart.json"))
+      check($replacement.dir == $R.bus.dir and $replacement.node == $R.bus.node and $replacement.port == $R.bus.port,"Broker restart ledger belongs to another owner")
+      $h.stop($replacement.pid)
+    catch $error $R.ok=false; print("FAIL replacement broker teardown: " .. $error) end
+  end
   for each $child in $R.children
     try check($pty.stop_child($child),"Owned child survived teardown") catch $error
       $R.ok=false; print("FAIL owned teardown: " .. $error)

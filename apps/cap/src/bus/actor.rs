@@ -311,8 +311,15 @@ pub(super) async fn worker(
             return;
         }
     };
+    let options = match ::bus::client_helpers::local_supervised_options(&service, &url) {
+        Ok(options) => options,
+        Err(error) => {
+            let _ = ready.send(Err(error.to_string()));
+            return;
+        }
+    };
     let client = Arc::new(
-        SupervisedClient::connect_options(&service, &url)
+        options
             .fatal_on_registration_rejection(true)
             .bounded_incoming(64)
             .start(),

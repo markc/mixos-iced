@@ -142,6 +142,15 @@ impl BoundedIncomingSender {
         }
     }
 
+    /// Verified supervised ingress must settle correlated overload at its
+    /// receive owner, rather than losing the correlation in the queue.
+    pub(crate) fn try_send_retaining(
+        &self,
+        command: IncomingCommand,
+    ) -> Result<(), Box<mpsc::error::TrySendError<IncomingCommand>>> {
+        self.sender.try_send(command).map_err(Box::new)
+    }
+
     pub(crate) fn record_overflow(&self, dropped: u64) {
         self.overflow.record(dropped);
     }

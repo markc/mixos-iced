@@ -58,6 +58,14 @@ The environment file defines absolute `MIXOS_ETC`, `MIXOS_VAR`, `MIXOS_RUN`,
 pins its unique name and Unix socket inside this runtime directory. Compd's
 `preferences.json` beside its settings file enables `scene_host`; the loader's `SCENES_DIR` holds the profile's
 private scene state, and `SCENES_TEMPLATES` points to the shipped catalogue.
+The broker account names the configured noded service account. Settingsd,
+the six desktop app actors and the embedded Quoin scene host resolve this
+account through the system account database and require verified Unix ABP
+ingress at the configured endpoint. They reverify it after each broker restart;
+a missing or invalid configured account never enables TCP fallback. The
+profile is inherited by app descendants and remains inside this session's
+runtime, beside the user's other desktop. Callers without this explicit
+profile retain their existing TCP connection behaviour.
 Install `session/scripts/session_bus_env.mix` under `/opt/mixos/share/session`
 alongside the collected units. The bus startup helper verifies a live bus ID
 through its own socket and writes an owned mode-0600 environment file.

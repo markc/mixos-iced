@@ -636,8 +636,12 @@ async fn connect(config: HostConfig, mut shutdown: watch::Receiver<bool>) -> Con
     let names = candidate_names(config.service_override.as_deref());
     let mut refusals = Vec::new();
     for name in &names {
+        let options = match bus::client_helpers::local_supervised_options(name, &config.noded_url) {
+            Ok(options) => options,
+            Err(error) => return Connected::Refused(error.to_string()),
+        };
         let client = Arc::new(
-            SupervisedClient::connect_options(name, &config.noded_url)
+            options
                 .fatal_on_registration_rejection(true)
                 .bounded_incoming(INBOUND_CAPACITY)
                 .start(),

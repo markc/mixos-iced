@@ -33,6 +33,11 @@ struct Association {
     last_request: Option<u64>,
 }
 
+struct Target {
+    window: Option<(u64, u64)>,
+    visibility: Visibility,
+}
+
 pub(crate) struct Participants {
     registry: participants::Registry,
     clock: Option<Clock>,
@@ -114,9 +119,9 @@ impl Participants {
         registration: String,
         value: Value,
         snapshot: frames::Snapshot,
-        window: Option<(u64, u64)>,
-        visibility: Visibility,
+        target: Target,
     ) {
+        let Target { window, visibility } = target;
         let Some(pid) = value["pid"].as_u64() else {
             return;
         };
@@ -332,36 +337,40 @@ impl Participants {
                 notice.registration,
                 notice.value,
                 snapshot,
-                Some((window.id, window.incarnation)),
-                visibility,
+                Target {
+                    window: Some((window.id, window.incarnation)),
+                    visibility,
+                },
             );
         }
         let local_keys: BTreeSet<_> = local_frames
             .iter()
             .map(|(scene, _, _, _)| format!("{}/{scene}", local_service.unwrap_or("")))
             .collect();
-        if let Some(service) = local_service {
-            if let Some(registration) = self.registrations.get(service).cloned() {
-                for (scene, frame_owner, snapshot, shown) in local_frames {
-                    let visibility = if inactive {
-                        Visibility::InactiveSession
-                    } else if shown {
-                        Visibility::Visible
-                    } else {
-                        Visibility::Hidden
-                    };
-                    let mut value = local_value.clone();
-                    value["frame_owner_window"] = json!(frame_owner);
-                    self.install(
-                        format!("{service}/{scene}"),
-                        service.into(),
-                        registration.clone(),
-                        value,
-                        snapshot,
-                        None,
+        if let Some(service) = local_service
+            && let Some(registration) = self.registrations.get(service).cloned()
+        {
+            for (scene, frame_owner, snapshot, shown) in local_frames {
+                let visibility = if inactive {
+                    Visibility::InactiveSession
+                } else if shown {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+                let mut value = local_value.clone();
+                value["frame_owner_window"] = json!(frame_owner);
+                self.install(
+                    format!("{service}/{scene}"),
+                    service.into(),
+                    registration.clone(),
+                    value,
+                    snapshot,
+                    Target {
+                        window: None,
                         visibility,
-                    );
-                }
+                    },
+                );
             }
         }
         let mut rows = Vec::new();
@@ -431,7 +440,9 @@ mod tests {
     use application::iced::window::Id;
 
     fn notice(handle: &frames::Handle, sequence: u64) -> PresentationNotice {
-        let identity = json!({"incarnation":"authority","revision":1,"design_revision":1,"source_digest":"source"});
+        let identity = json!({"incarnation":"authority","revision":"1","design_revision":"1","source_digest":"source"});
+        serde_json::from_value::<settings::consumer::SnapshotIdentity>(identity.clone())
+            .expect("owner fixture uses the production snapshot identity wire contract");
         PresentationNotice {
             service: "term".into(),
             registration: "registered".into(),

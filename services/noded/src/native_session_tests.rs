@@ -6,6 +6,245 @@ use bus::native_session::{PRINCIPAL_HEADER, read_principal};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 
+#[tokio::test]
+async fn responder_retirement_is_exact_channel_and_single_settlement() {
+    let table = PendingResponseTable::new();
+    let (caller, _caller_rx) = mpsc::channel(8);
+    let (old, _old_rx) = mpsc::channel(8);
+    let (replacement, _replacement_rx) = mpsc::channel(8);
+    let mut first = request("probe.echo", "same-service", "old-call");
+    let old_id = table
+        .register_classified(
+            &mut first,
+            &caller,
+            Some("caller"),
+            &old,
+            TrafficClass::NativeSession,
+            true,
+        )
+        .await
+        .unwrap();
+    let mut second = request("probe.echo", "same-service", "new-call");
+    let new_id = table
+        .register(&mut second, &caller, Some("caller"), &replacement)
+        .await
+        .unwrap();
+    assert!(
+        table.drain_for_channel(&old).await.is_empty(),
+        "caller cleanup cannot steal responder-owned IDs"
+    );
+    let retired = table.drain_for_responder(&old).await;
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].0, old_id);
+    assert_eq!(retired[0].1.caller_id, "old-call");
+    assert!(table.drain_for_responder(&old).await.is_empty());
+    assert!(table.take_response(&old_id, &old).await.is_none());
+    assert_eq!(
+        table.response_class(&old_id, false).await,
+        TrafficClass::NativeSession,
+        "late response remains protected"
+    );
+    assert!(table.take_response(&new_id, &old).await.is_none());
+    assert_eq!(
+        table
+            .take_response(&new_id, &replacement)
+            .await
+            .unwrap()
+            .caller_id,
+        "new-call"
+    );
+    assert!(table.take_response(&new_id, &replacement).await.is_none());
+    let mut race = request("probe.echo", "same-service", "racing-call");
+    let race_id = table
+        .register(&mut race, &caller, Some("caller"), &replacement)
+        .await
+        .unwrap();
+    let (reply, retired) = tokio::join!(
+        table.take_response(&race_id, &replacement),
+        table.drain_for_responder(&replacement)
+    );
+    assert_eq!(
+        usize::from(reply.is_some()) + retired.len(),
+        1,
+        "reply or retirement claims once"
+    );
+}
+
+#[tokio::test]
+async fn supervised_unix_preserves_principals_verbs_and_bounded_retirement() {
+    use bus::native_client::{
+        BoundedIncomingEvent, NodedClient, SupervisedClient, UnixConnectOutcome,
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let broker = Broker::start().await;
+        let mut options = client_options(&broker);
+        options.incoming_capacity = Some(1);
+        let owner = SupervisedClient::connect_options("supervised-unix", &broker.url)
+            .with_unix(options.clone())
+            .with_verbs(vec![bus::VerbDescriptor::new(
+                "probe.echo",
+                &[],
+                "Echo",
+                true,
+            )])
+            .with_initial_topics(vec!["probe.changed".into()])
+            .connect()
+            .await
+            .unwrap();
+        let mut incoming = owner.incoming_bounded().unwrap();
+        assert!(owner.incoming().is_none());
+        let UnixConnectOutcome::VerifiedUnix(caller) =
+            NodedClient::connect_unix("unix-caller", &broker.url, &options, None)
+                .await
+                .unwrap()
+        else {
+            panic!("verified caller")
+        };
+        let help = caller
+            .client()
+            .call("supervised-unix", "HELP", serde_json::Value::Null)
+            .await
+            .unwrap();
+        assert!(help.to_string().contains("probe.echo"), "{help}");
+        caller
+            .client()
+            .send(
+                "supervised-unix",
+                "probe.event",
+                serde_json::json!({"kind":"unix"}),
+            )
+            .await
+            .unwrap();
+        let BoundedIncomingEvent::Command(command) = incoming.recv().await.unwrap() else {
+            panic!("ordinary verified command")
+        };
+        let envelope = BusMessage {
+            headers: command.headers.clone(),
+            body: command.body.clone(),
+        };
+        let principal = read_principal(&envelope).unwrap().unwrap();
+        assert_eq!(
+            principal.assurance,
+            bus::native_session::Assurance::LocalUnix
+        );
+        assert_eq!(command.generation, owner.connection_generation());
+        let tcp = NodedClient::connect("tcp-caller", &broker.url)
+            .await
+            .unwrap();
+        tcp.send_raw(
+            &request("probe.event", "supervised-unix", "forged")
+                .with_header("type", "event")
+                .with_header("broker_principal", "forged"),
+        )
+        .await
+        .unwrap();
+        let BoundedIncomingEvent::Command(untrusted) = incoming.recv().await.unwrap() else {
+            panic!("TCP command")
+        };
+        assert!(untrusted.header(PRINCIPAL_HEADER).is_none());
+        caller
+            .client()
+            .send(
+                "supervised-unix",
+                "probe.event",
+                serde_json::Value::String("x".repeat(65537)),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                incoming.recv().await,
+                Some(BoundedIncomingEvent::Overflow { .. })
+            ),
+            "oversized idle notice wakes lifecycle invalidation"
+        );
+        // Hold the outward lane full. Its owner must settle correlated requests,
+        // while the socket reader continues servicing unrelated RPC replies.
+        caller
+            .client()
+            .send("supervised-unix", "probe.event", serde_json::Value::Null)
+            .await
+            .unwrap();
+        let blocked =
+            caller
+                .client()
+                .call("supervised-unix", "probe.echo", serde_json::Value::Null);
+        let ping = owner.call("noded", "noded.ping", serde_json::Value::Null);
+        let (reply, pong) = tokio::join!(blocked, ping);
+        assert!(reply.unwrap_err().to_string().contains("overloaded"));
+        assert_eq!(pong.unwrap()["pong"], true);
+        caller
+            .client()
+            .send("supervised-unix", "probe.event", serde_json::Value::Null)
+            .await
+            .unwrap();
+        // A command on this same connection is a barrier behind the lost notice.
+        caller
+            .client()
+            .call("noded", "noded.ping", serde_json::Value::Null)
+            .await
+            .unwrap();
+        assert!(matches!(
+            incoming.recv().await,
+            Some(BoundedIncomingEvent::Overflow { .. })
+        ));
+        owner.shutdown().await;
+        assert!(matches!(owner.state(), bus::ConnState::ShuttingDown));
+        tcp.close().await;
+        caller.client().close().await;
+    })
+    .await
+    .expect("supervised Unix acceptance deadline");
+}
+
+#[tokio::test]
+async fn verified_native_refusal_exhaustion_closes_and_settles_every_correlation() {
+    use bus::native_client::{NodedClient, UnixConnectOutcome};
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let broker = Broker::start().await;
+        let mut options = client_options(&broker);
+        options.incoming_capacity = Some(1);
+        let UnixConnectOutcome::VerifiedUnix(owner) =
+            NodedClient::connect_unix("stalled-verified", &broker.url, &options, None)
+                .await
+                .unwrap()
+        else {
+            panic!("verified owner")
+        };
+        let caller = NodedClient::connect("saturation-caller", &broker.url)
+            .await
+            .unwrap();
+        // No receive owner drains commands/refusals. The bounded native reader
+        // must close at refusal exhaustion, so noded retires every forwarded ID.
+        let calls = (0..20).map(|index| {
+            caller.call_typed(
+                "stalled-verified",
+                "probe.echo",
+                serde_json::json!({"index":index}),
+            )
+        });
+        let results = futures_util::future::join_all(calls).await;
+        assert!(!owner.client().is_connected());
+        for result in results {
+            assert!(
+                matches!(result.unwrap(), bus::PortReply::AppError { .. }),
+                "broker settles refused/retired target"
+            );
+        }
+        assert_eq!(
+            caller
+                .call("noded", "noded.ping", serde_json::Value::Null)
+                .await
+                .unwrap()["pong"],
+            true
+        );
+        owner.client().close().await;
+        caller.close().await;
+    })
+    .await
+    .expect("bounded native retirement deadline");
+}
+
 struct Broker {
     sessions: Arc<tokio::sync::Mutex<session::Sessions>>,
     task: tokio::task::JoinHandle<Result<()>>,

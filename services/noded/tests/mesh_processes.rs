@@ -2,6 +2,7 @@
 //! Two production brokers, separate roots and verified Unix clients. The hop
 //! between brokers is native ABP; the fixture never relays application data.
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use bus::native_client::SupervisedClient;
 use bus::native_client::{BrokerAccount, NodedClient, UnixConnectOptions, UnixConnectOutcome};
 use ed25519_dalek::{Signer as _, SigningKey};
 use mesh_trust::inventory::{
@@ -75,6 +76,28 @@ async fn connect(
     }
 }
 
+fn spawn_broker(root: &Path) -> Child {
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("noded.log"))
+        .unwrap();
+    Command::new(env!("CARGO_BIN_EXE_noded"))
+        .args(["serve", "--no-monitor", "--no-log"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root.join("home"))
+        .env("MIXOS_ETC", root.join("etc"))
+        .env("MIXOS_VAR", root.join("var"))
+        .env("MIXOS_RUN", root.join("run"))
+        .env("MIXOS_NODE_CONFIG", root.join("etc/node.conf.mix"))
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_production_brokers_route_verified_native_clients() {
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -134,24 +157,23 @@ async fn two_production_brokers_route_verified_native_clients() {
                 "noded":{"port":ports[i],"unix_socket":root.join("run/bus.sock"),"mesh_open":true}
             }));
             write(&root.join("etc/mesh.conf.mix"), &json!({"node_name":names[i],"peers":[]}));
-            let log = fs::File::create(root.join("noded.log")).unwrap();
-            fixture.children.push(Command::new(env!("CARGO_BIN_EXE_noded"))
-                .args(["serve", "--no-monitor", "--no-log"])
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin")
-                .env("HOME", root.join("home"))
-                .env("MIXOS_ETC", root.join("etc"))
-                .env("MIXOS_VAR", root.join("var"))
-                .env("MIXOS_RUN", root.join("run"))
-                .env("MIXOS_NODE_CONFIG", root.join("etc/node.conf.mix"))
-                .env("RUST_LOG", "info")
-                .stdout(Stdio::from(log.try_clone().unwrap()))
-                .stderr(Stdio::from(log)).spawn().unwrap());
+            fixture.children.push(spawn_broker(root));
         }
-        let first = connect(&roots[0], "caller-one", &urls[0], &mut fixture.children[0]).await;
+        // This fixture launched the broker under its known process account;
+        // production resolves a configured named broker account instead.
+        let mut options = UnixConnectOptions::new(BrokerAccount {
+            uid: unsafe { libc::geteuid() }, gid: unsafe { libc::getegid() },
+        });
+        options.endpoint = Some(roots[0].join("run/bus.sock"));
+        options.require_native_session = true;
+        let first = SupervisedClient::connect_options("caller-one", &urls[0])
+            .with_unix(options).with_initial_topics(vec!["probe.changed".into()])
+            .with_verbs(vec![bus::VerbDescriptor::new("probe.echo", &[], "Echo", true)])
+            .connect().await.unwrap();
         let second = connect(&roots[0], "caller-two", &urls[0], &mut fixture.children[0]).await;
         let service = connect(&roots[1], "echo", &urls[1], &mut fixture.children[1]).await;
-        for client in [first.client(), second.client(), service.client()] {
+        assert_eq!(first.call("noded", "noded.inventory", json!({})).await.unwrap()["posture"], "verified");
+        for client in [second.client(), service.client()] {
             let inventory = client.call("noded", "noded.inventory", json!({})).await.unwrap();
             assert_eq!(inventory["posture"], "verified", "{inventory}");
             let peers = client.call("noded", "noded.peers", json!({})).await.unwrap();
@@ -170,12 +192,46 @@ async fn two_production_brokers_route_verified_native_clients() {
         // Both fresh connections use the same call counter. The mesh must
         // restore each caller's correlation ID without exchanging their replies.
         let (one, two, ()) = tokio::join!(
-            first.client().call("echo.beta.bus", "echo.tag", json!({"tag":"one"})),
+            first.call("echo.beta.bus", "echo.tag", json!({"tag":"one"})),
             second.client().call("echo.beta.bus", "echo.tag", json!({"tag":"two"})),
             responder
         );
         assert_eq!(one.unwrap(), json!({"tag":"one"}));
         assert_eq!(two.unwrap(), json!({"tag":"two"}));
+        let old_generation = first.connection_generation();
+        fixture.children[0].kill().unwrap();
+        fixture.children[0].wait().unwrap();
+        fixture.children[0] = spawn_broker(&roots[0]);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut state = first.subscribe_state();
+        while first.connection_generation() == old_generation || first.state() != bus::ConnState::Connected {
+            tokio::time::timeout_at(deadline, state.changed()).await.unwrap().unwrap();
+        }
+        let response = async {
+            let delivery = service.recv_shared().await.unwrap();
+            service.client().respond(delivery.command(), 0, &delivery.command().body).await.unwrap();
+        };
+        let (reply, ()) = tokio::join!(first.call("echo.beta.bus", "echo.tag", json!({"tag":"reconnected"})), response);
+        assert_eq!(reply.unwrap(), json!({"tag":"reconnected"}));
+        // The reconnect re-registers HELP and replays the declared topic before
+        // publishing Connected, then receives a new local authenticated stamp.
+        let caller = connect(&roots[0], "post-restart", &urls[0], &mut fixture.children[0]).await;
+        assert!(caller.client().call("caller-one", "HELP", Value::Null).await.unwrap().to_string().contains("probe.echo"));
+        let mut incoming = first.incoming_bounded().unwrap();
+        caller.client().send("caller-one", "probe.event", json!({})).await.unwrap();
+        let bus::native_client::BoundedIncomingEvent::Command(command) = incoming.recv().await.unwrap() else { panic!("fresh verified delivery") };
+        let envelope = bus::BusMessage { headers: command.headers.clone(), body: command.body.clone() };
+        assert_eq!(bus::native_session::read_principal(&envelope).unwrap().unwrap().assurance, bus::native_session::Assurance::LocalUnix);
+        assert_eq!(command.generation, first.connection_generation());
+        caller.client().close().await;
+        let retiring = connect(&roots[1], "retiring", &urls[1], &mut fixture.children[1]).await;
+        let retire_target = async {
+            let command = retiring.recv_shared().await.unwrap();
+            assert_eq!(command.command().command, "echo.tag");
+            retiring.client().close().await;
+        };
+        let (retired_reply, ()) = tokio::join!(first.call_typed("retiring.beta.bus", "echo.tag", json!({"tag":"retired"})), retire_target);
+        assert!(matches!(retired_reply.unwrap(), bus::PortReply::AppError { .. }), "exact remote responder retirement settles nested broker IDs");
         let drain = async {
             let delivery = service.recv_shared().await.unwrap();
             let command = delivery.command();
@@ -184,7 +240,7 @@ async fn two_production_brokers_route_verified_native_clients() {
                 r#"{"error_code":"HANDLER_CANCELLED"}"#).await.unwrap();
         };
         let (cancelled, ()) = tokio::join!(
-            first.client().call_typed("echo.beta.bus", "echo.tag", json!({"tag":"shutdown"})),
+            first.call_typed("echo.beta.bus", "echo.tag", json!({"tag":"shutdown"})),
             drain,
         );
         match cancelled.unwrap() {
@@ -194,10 +250,10 @@ async fn two_production_brokers_route_verified_native_clients() {
             }
             reply => panic!("expected shutdown refusal, got {reply:?}"),
         }
-        assert!(first.client().call("echo.unknown.bus", "echo.tag", json!({})).await.is_err());
-        assert_eq!(first.client().call("noded", "noded.ping", json!({})).await.unwrap()["pong"], true);
-        first.client().deregister().await.unwrap();
-        second.client().deregister().await.unwrap();
+        assert!(first.call("echo.unknown.bus", "echo.tag", json!({})).await.is_err());
+        assert_eq!(first.call("noded", "noded.ping", json!({})).await.unwrap()["pong"], true);
+        first.shutdown().await;
+        second.client().close().await;
         service.client().close().await;
     }).await.expect("native two-process mesh acceptance deadline");
 }

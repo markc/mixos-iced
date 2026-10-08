@@ -349,6 +349,31 @@ impl PendingResponseTable {
             })
             .collect()
     }
+
+    /// Retire requests routed to this exact recipient connection. A later
+    /// registration with the same name cannot settle or inherit these IDs.
+    async fn drain_for_responder(
+        &self,
+        responder_tx: &mpsc::Sender<String>,
+    ) -> Vec<(String, PendingResponse)> {
+        let mut map = self.map.write().await;
+        let ids: Vec<String> = map
+            .iter()
+            .filter(|(_, p)| p.responder_tx.same_channel(responder_tx))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                map.remove(&id).map(|pending| {
+                    self.protection
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .retain(&id, pending.traffic_class);
+                    (id, pending)
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -3123,6 +3148,24 @@ async fn handle_socket(socket: WebSocket, mut state: AppState, transport: Transp
     // was never answered (a no-op if already taken). Bounds the table.
     if let Some(id) = &challenge_id {
         state.challenge_table.reap(id).await;
+    }
+
+    // Remove recipient registration first: route_local rechecks its exact
+    // channel after pending insertion. No new admitted request can enter this
+    // retired recipient after this drain, including same-name replacement.
+    for (_, pending) in state.pending_responses.drain_for_responder(&tx).await {
+        let error = bus::native_session::SessionError {
+            error_code: bus::native_session::ErrorCode::Unavailable,
+            message: "recipient connection retired before response".into(),
+            details: Default::default(),
+        };
+        let reply = session_delivery_error(
+            &error,
+            pending.caller_verified,
+            Some(&pending.caller_id),
+            None,
+        );
+        let _ = pending.caller_tx.try_send(reply.to_wire());
     }
 
     send_task.abort();

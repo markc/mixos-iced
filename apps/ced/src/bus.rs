@@ -233,9 +233,15 @@ async fn run(
             return;
         }
     };
-    let options = SupervisedClient::connect_options(&service, &url)
-        .fatal_on_registration_rejection(true)
-        .bounded_incoming(64);
+    let options = match ::bus::client_helpers::local_supervised_options(&service, &url) {
+        Ok(options) => options,
+        Err(error) => {
+            let _ = ready.send(Err(StartError::Unreachable(error.to_string())));
+            return;
+        }
+    }
+    .fatal_on_registration_rejection(true)
+    .bounded_incoming(64);
     let client = if desktop_settings {
         Arc::new(options.start())
     } else {

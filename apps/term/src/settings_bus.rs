@@ -335,8 +335,15 @@ async fn worker(
     // and native startup working. The started client persists through Fatal —
     // only the one gen-0 name-taken fallback below replaces it.
     let mut name = service.to_string();
+    let options = match ::bus::client_helpers::local_supervised_options(&name, &url) {
+        Ok(options) => options,
+        Err(error) => {
+            let _ = ready.send(Err(error.to_string()));
+            return;
+        }
+    };
     let mut client = Arc::new(
-        SupervisedClient::connect_options(&name, &url)
+        options
             .fatal_on_registration_rejection(true)
             .bounded_incoming(16)
             .start(),
@@ -550,8 +557,16 @@ async fn worker(
                             let _ = delivery.ticket.take();
                         }
                         name = fallback;
+                        let options =
+                            match ::bus::client_helpers::local_supervised_options(&name, &url) {
+                                Ok(options) => options,
+                                Err(error) => {
+                                    tracing::error!("Term verified Bus configuration: {error}");
+                                    break;
+                                }
+                            };
                         client = Arc::new(
-                            SupervisedClient::connect_options(&name, &url)
+                            options
                                 .fatal_on_registration_rejection(true)
                                 .bounded_incoming(16)
                                 .start(),

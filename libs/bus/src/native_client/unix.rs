@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Explicit, node-local BUS-013 transport. Ordinary `NodedClient::connect`
-//! remains TCP. Unix traffic cannot leave this node in v1; remote delegation
-//! and protected mesh transit are S5 work.
+//! Explicit authenticated BUS-013 local ingress. Ordinary `NodedClient::connect`
+//! remains TCP. Cross-node traffic uses existing ABP routing under the broker's
+//! `mesh_open` posture; locked posture refuses principal-carrying egress. Remote
+//! deliveries never gain a trusted local Unix principal.
 
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
@@ -133,25 +134,68 @@ impl VerifiedConnection {
 
     /// Single receive owner may share this connection with bounded RPC tasks.
     pub async fn recv_shared(&self) -> Option<VerifiedCommand> {
-        match &mut *self.incoming.lock().await {
+        self.incoming.lock().await.recv().await
+    }
+}
+
+pub(crate) struct VerifiedGap {
+    pending: std::sync::atomic::AtomicBool,
+    pub(crate) wake: tokio::sync::Notify,
+}
+impl VerifiedGap {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: std::sync::atomic::AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
+        }
+    }
+    pub(crate) fn record(&self) {
+        self.pending
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.wake.notify_one();
+    }
+    pub(crate) fn take(&self) -> bool {
+        self.pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+impl VerifiedIncoming {
+    pub(crate) async fn recv(&mut self) -> Option<VerifiedCommand> {
+        match self {
             VerifiedIncoming::Unbounded(receiver) => receiver.recv().await,
             VerifiedIncoming::Bounded {
                 commands,
                 refusals,
                 gap,
+                deferred,
             } => {
-                if gap.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                    return Some(VerifiedCommand::gap());
-                }
-                // Refusals first: a request the lane dropped is already waiting
-                // on its caller's deadline, and answering it frees that caller.
-                tokio::select! {
-                    biased;
-                    refused = refusals.recv() => match refused {
-                        Some(refused) => Some(refused),
-                        None => commands.recv().await,
-                    },
-                    command = commands.recv() => command,
+                let gap = gap.clone();
+                loop {
+                    let notified = gap.wake.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if gap.take() {
+                        return Some(VerifiedCommand::gap());
+                    }
+                    if let Some(command) = deferred.take() {
+                        return Some(*command);
+                    }
+                    // Refusals first; no reader waits for the owner's sink.
+                    let command = tokio::select! {
+                        biased;
+                        _ = &mut notified => continue,
+                        refused = refusals.recv() => match refused {
+                            Some(refused) => Some(refused),
+                            None => commands.recv().await,
+                        },
+                        command = commands.recv() => command,
+                    };
+                    if gap.take() {
+                        *deferred = command.map(Box::new);
+                        return Some(VerifiedCommand::gap());
+                    }
+                    return command;
                 }
             }
         }
@@ -163,7 +207,8 @@ pub(crate) enum VerifiedIncoming {
     Bounded {
         commands: mpsc::Receiver<VerifiedCommand>,
         refusals: mpsc::Receiver<VerifiedCommand>,
-        gap: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        gap: std::sync::Arc<VerifiedGap>,
+        deferred: Option<Box<VerifiedCommand>>,
     },
 }
 
@@ -202,6 +247,12 @@ pub struct VerifiedCommand {
     delivery: Delivery,
 }
 impl VerifiedCommand {
+    // Only the Bus supervisor may adapt an admitted verified delivery to its
+    // compatibility lane. Public raw clients cannot obtain trusted incoming.
+    pub(crate) fn into_supervised_command(self) -> IncomingCommand {
+        assert_eq!(self.delivery, Delivery::Command);
+        self.command
+    }
     pub(crate) fn new(command: IncomingCommand, principal: Option<BrokerPrincipal>) -> Self {
         Self {
             command,
@@ -211,7 +262,11 @@ impl VerifiedCommand {
     }
     /// Keeps the correlation the reply needs and nothing that could be mistaken
     /// for an admitted request: the delivery itself says it must be refused.
-    pub(crate) fn refusal(self) -> Self {
+    pub(crate) fn refusal(mut self) -> Self {
+        self.command.args = serde_json::Value::Null;
+        self.command.body = String::new();
+        self.command.headers.clear();
+        self.principal = None;
         Self {
             delivery: Delivery::Refuse,
             ..self
@@ -252,26 +307,42 @@ impl NodedClient {
     /// Explicit Unix opt-in; ordinary `connect` remains unchanged. Native
     /// session clients MUST set `require_native_session`. Resolution is explicit
     /// endpoint, config, ping-discovered locator, then system default. Every
-    /// candidate is verified; discovery never establishes authority. Unix is node-local
-    /// in v1: mesh-destined traffic is refused, with no transparent TCP retry.
+    /// candidate is verified; discovery never establishes authority. Mesh
+    /// routing follows noded's posture, without a transparent TCP retry.
     pub async fn connect_unix(
         service_name: &str,
         tcp_url: &str,
         options: &UnixConnectOptions,
         provenance: Option<crate::RegisterProvenance>,
     ) -> Result<UnixConnectOutcome, ConnectError> {
+        Self::connect_unix_with_verbs(service_name, tcp_url, options, provenance, None).await
+    }
+
+    pub(crate) async fn connect_unix_with_verbs(
+        service_name: &str,
+        tcp_url: &str,
+        options: &UnixConnectOptions,
+        provenance: Option<crate::RegisterProvenance>,
+        verbs: Option<Vec<crate::VerbDescriptor>>,
+    ) -> Result<UnixConnectOutcome, ConnectError> {
         let mut resolved = options.clone();
         if resolved.endpoint.is_none() && resolved.configured_endpoint.is_none() {
             resolved.configured_endpoint = discover_endpoint(tcp_url).await;
         }
-        match connect_verified(service_name, &resolved, provenance.clone()).await {
+        match connect_verified(service_name, &resolved, provenance.clone(), verbs.clone()).await {
             Ok(connection) => Ok(UnixConnectOutcome::VerifiedUnix(connection)),
             Err(unix_error)
                 if !options.require_native_session && options.allow_unverified_tcp_fallback =>
             {
-                let client = Self::connect_with_provenance(service_name, tcp_url, provenance)
-                    .await
-                    .map_err(ConnectError::Protocol)?;
+                let client = Self::connect_with_provenance_and_capacity(
+                    service_name,
+                    tcp_url,
+                    provenance,
+                    options.incoming_capacity,
+                    verbs,
+                )
+                .await
+                .map_err(ConnectError::Protocol)?;
                 Ok(UnixConnectOutcome::UnverifiedTcp { client, unix_error })
             }
             Err(error) => Err(error),
@@ -307,6 +378,7 @@ async fn connect_verified(
     service_name: &str,
     options: &UnixConnectOptions,
     provenance: Option<crate::RegisterProvenance>,
+    verbs: Option<Vec<crate::VerbDescriptor>>,
 ) -> Result<VerifiedConnection, ConnectError> {
     let path = options.resolved_endpoint();
     let before = verify_path(path, options.broker_account)?;
@@ -324,13 +396,18 @@ async fn connect_verified(
     let (ws, _) = tokio_tungstenite::client_async("ws://localhost/ws", socket)
         .await
         .map_err(|error| ConnectError::Protocol(error.into()))?;
-    let (client, incoming) =
-        NodedClient::from_verified_unix(ws, service_name, provenance, options.incoming_capacity)
-            .await
-            .map_err(|error| match error.downcast::<ConnectError>() {
-                Ok(error) => error,
-                Err(error) => ConnectError::Protocol(error),
-            })?;
+    let (client, incoming) = NodedClient::from_verified_unix(
+        ws,
+        service_name,
+        provenance,
+        options.incoming_capacity,
+        verbs,
+    )
+    .await
+    .map_err(|error| match error.downcast::<ConnectError>() {
+        Ok(error) => error,
+        Err(error) => ConnectError::Protocol(error),
+    })?;
     Ok(VerifiedConnection {
         client,
         incoming: tokio::sync::Mutex::new(incoming),
@@ -411,6 +488,67 @@ pub(crate) fn principal_header_is_unique(wire: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_refusal_retains_only_bounded_correlation() {
+        let refused = VerifiedCommand::new(
+            IncomingCommand {
+                generation: 0,
+                from: "caller".into(),
+                command: "probe".into(),
+                id: Some("request".into()),
+                args: serde_json::json!({"large":"x".repeat(100000)}),
+                body: "x".repeat(100000),
+                headers: std::collections::BTreeMap::from([("payload".into(), "x".repeat(100000))]),
+            },
+            None,
+        )
+        .refusal();
+        assert_eq!(refused.delivery(), Delivery::Refuse);
+        assert_eq!(refused.command().id.as_deref(), Some("request"));
+        assert!(refused.command().args.is_null());
+        assert_eq!(refused.command().body.capacity(), 0);
+        assert!(refused.command().headers.is_empty());
+        assert!(refused.trusted_context().is_none());
+    }
+    #[tokio::test]
+    async fn gap_wakes_idle_receiver_and_precedes_a_retained_command() {
+        let (tx, commands) = mpsc::channel(1);
+        let (_refusals_tx, refusals) = mpsc::channel(1);
+        let gap = std::sync::Arc::new(VerifiedGap::new());
+        let mut receiver = VerifiedIncoming::Bounded {
+            commands,
+            refusals,
+            gap: gap.clone(),
+            deferred: None,
+        };
+        let mut idle = Box::pin(receiver.recv());
+        assert!(futures_util::poll!(idle.as_mut()).is_pending());
+        gap.record();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), idle)
+                .await
+                .unwrap()
+                .unwrap()
+                .delivery(),
+            Delivery::Gap
+        );
+        let retained = VerifiedCommand::new(
+            IncomingCommand {
+                generation: 0,
+                from: "caller".into(),
+                command: "notice".into(),
+                id: None,
+                args: serde_json::Value::Null,
+                body: String::new(),
+                headers: Default::default(),
+            },
+            None,
+        );
+        tx.send(retained).await.unwrap();
+        gap.record();
+        assert_eq!(receiver.recv().await.unwrap().delivery(), Delivery::Gap);
+        assert_eq!(receiver.recv().await.unwrap().command().command, "notice");
+    }
     #[test]
     fn endpoint_resolution_is_explicit_config_system_never_user_runtime() {
         let mut options = UnixConnectOptions::new(BrokerAccount { uid: 123, gid: 123 });
