@@ -8,6 +8,7 @@ use uuid::Uuid;
 /// Defined one layer down (`system.world/world.identity`) so crates below the world
 /// manager — the persist loader — can name them without depending back on it.
 pub use slots::world::identity::base::{KERNEL, LOCK_WORLD, MAIN_WORLD, PICKER_WORLD};
+pub const MAX_DESKTOP_WORLDS: usize = 8;
 
 /// Owns every world, identified by UUID. Exactly one world is ACTIVE (receives
 /// input, dispatch, update, draw). Worlds never close — switching disables the
@@ -26,7 +27,39 @@ pub struct WorldManager {
     spawn_target: Uuid,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_world_storage_survives_bounded_dormant_activation_without_reassignment() {
+        let kernel = Storage::new();
+        let main = crate::kind::build::base::desktop(MAIN_WORLD, "main", &kernel);
+        let host = crate::kind::build::base::overlay(KERNEL, "kernel", vec![], &kernel);
+        let mut worlds = WorldManager::new(main, host, &kernel);
+        let second = Uuid::from_u128(2);
+        worlds.add(crate::kind::build::base::desktop(second, "desktop", &kernel));
+        assert_eq!(worlds.active_id(), MAIN_WORLD);
+        assert_eq!(worlds.spawn_target(), MAIN_WORLD);
+        assert!(worlds.get(second).storage().try_get(&crate::host::space::base::SPACE).is_some());
+        worlds.switch(second, &kernel);
+        worlds.set_spawn_target(second);
+        assert_eq!(worlds.active_id(), second);
+        assert_eq!(worlds.spawn_target(), second);
+        worlds.switch(MAIN_WORLD, &kernel);
+        worlds.set_spawn_target(MAIN_WORLD);
+        assert!(worlds.contains(second));
+        while worlds.can_add_desktop() {
+            worlds.add(crate::kind::build::base::desktop(Uuid::now_v7(), "desktop", &kernel));
+        }
+        assert_eq!(worlds.ids().len(), MAX_DESKTOP_WORLDS);
+        assert!(!worlds.can_add_desktop());
+        assert!(!worlds.contains(KERNEL));
+    }
+}
+
 impl WorldManager {
+    pub fn can_add_desktop(&self) -> bool { self.worlds.len() < MAX_DESKTOP_WORLDS }
     /// Start with the initial (main, SPATIAL) world, already active and the
     /// spawn-target. Activation fires `on_enable`.
     pub fn new(mut main: World, mut host: World, kernel: &Storage) -> Self {

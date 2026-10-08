@@ -4,6 +4,17 @@ use slots::trait_::system::base::System;
 use slots::world::host::base::World;
 use crate::host::space::base::{SpaceHost, SPACE};
 
+/// Identical native session systems for the initial and runtime spatial worlds.
+pub fn desktop(id: uuid::Uuid, name: &'static str, kernel: &Storage) -> World {
+    spatial(id, name, vec![
+        Box::new(crate::camera::system::base::CameraSystem::default()),
+        Box::new(crate::window::system::base::WindowSystem),
+        Box::new(crate::surface::system::base::SurfaceSystem),
+        Box::new(crate::canvas::system::base::CanvasSystem),
+        Box::new(crate::seat::system::pointer::base::PointerSystem),
+    ], kernel)
+}
+
 /// Build a SPATIAL world: it hosts a window `Space` (seeded empty; the output is
 /// mapped in post-init) and implements `WindowHost` via the SPACE slice. One per
 /// monitor. The feature systems are injected by the caller (the loader knows the

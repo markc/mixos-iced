@@ -1,5 +1,10 @@
 # compd
 
+Native desktop world control is documented in
+[`native-worlds.md`](../../docs/spec/compd/native-worlds.md). Bounded runtime
+worlds share the initial world's native systems and renderer. New clients map
+into the selected spawn world; existing clients retain their native home.
+
 The MixOS Wayland compositor.
 
 compd owns KMS scanout, the GLES renderer and one shared wgpu device,

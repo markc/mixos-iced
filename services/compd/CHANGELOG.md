@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.17
+
+- Add strict native `comp.world.list`, `comp.world.create` and
+  `comp.world.activate`, with eight retained spatial worlds per compositor.
+  Initial and runtime worlds share the same systems, output and renderer owners.
+- Keep dormant client geometry, tile facts and pending observations in their
+  owning Space. Dormant untile preserves world membership and normal restore;
+  active-world geometry verbs refuse dormant clients rather than migrating them.
+
 ## 0.1.16
 
 - Add strict generation-fenced `comp.window.tile` and `comp.window.untile` for

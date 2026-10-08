@@ -27,6 +27,7 @@
 //! the delayed replacement buffer. Both delays require a resize of an already
 //! mapped buffer and are bounded to 1..=60000 ms; the flags are mutually exclusive.
 //! `--seats` lists and labels every seat's keyboard/pointer events.
+//! `--popup` maps a persistent non-grabbing 20x20 xdg popup for tree visibility tests.
 //! `--idle-timeout-ms N` also enables this mode and subscribes to one
 //! ext-idle-notify notification per seat. Seat names are whatever the
 //! compositor advertises (compd: `seat0` for the human seat, `agent` for the
@@ -65,7 +66,7 @@ use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_prese
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base};
 
 /// The program name: the window title, the memfd name and the `--version`
 /// line.
@@ -196,6 +197,7 @@ fn say(line: &str) {
 
 struct Options {
     seats: bool,
+    popup: bool,
     idle_timeout_ms: Option<u32>,
     title: String,
     app_id: String,
@@ -218,6 +220,7 @@ fn options() -> Result<Options, String> {
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         seats: false,
+        popup: false,
         idle_timeout_ms: None,
         title: NAME.into(),
         app_id: "dev.mixos.InputProbe".into(),
@@ -240,6 +243,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         };
         match argument.as_str() {
             "--seats" => options.seats = true,
+            "--popup" => options.popup = true,
             "--idle-timeout-ms" => {
                 options.idle_timeout_ms = Some(
                     value()?
@@ -516,6 +520,8 @@ fn run() -> Result<(), String> {
     let mut remap_at: Option<Instant> = None;
     let mut remap_left = options.remap_once;
     let mut delayed_commit: Option<(i32, i32, Instant)> = None;
+    // Keep the real non-grabbing popup and its shm backing alive with the root.
+    let mut popup = None;
     while Instant::now() < deadline && (!probe.closed || options.hide_on_close) {
         if let Some(error) = probe.seat_error.take() {
             return Err(error);
@@ -616,6 +622,27 @@ fn run() -> Result<(), String> {
                 presentation.feedback(&surface, &qh, ());
             }
             surface.commit();
+            if options.popup && popup.is_none() {
+                // Process the parent's initial buffer before the popup commit.
+                queue.roundtrip(&mut probe).map_err(|error| error.to_string())?;
+                let popup_surface = compositor.create_surface(&qh, ());
+                let popup_xdg = wm_base.get_xdg_surface(&popup_surface, &qh, true);
+                let positioner = wm_base.create_positioner(&qh, ());
+                positioner.set_size(20, 20);
+                positioner.set_anchor_rect(40, 40, 1, 1);
+                let role = popup_xdg.get_popup(Some(&xdg), &positioner, &qh, ());
+                positioner.destroy();
+                popup_surface.commit();
+                queue.roundtrip(&mut probe).map_err(|error| error.to_string())?;
+                let backing = self::canvas(&shm, &qh, 20, 20, false)?;
+                backing.backing.write_all_at(&options.pixel(frame).repeat(400), 0)
+                    .map_err(|error| error.to_string())?;
+                popup_surface.attach(Some(&backing.buffer), 0, 0);
+                popup_surface.damage_buffer(0, 0, 20, 20);
+                popup_surface.commit();
+                popup = Some((role, popup_xdg, popup_surface, backing));
+                say("popup_mapped");
+            }
             if options.delay_state_commit.is_some() && dirty {
                 say(&format!("buffer_commit {} {}", canvas.width, canvas.height));
             }
@@ -634,6 +661,11 @@ fn run() -> Result<(), String> {
     }
     say(&format!("presented {}", probe.presented));
     say("exit");
+    if let Some((role, xdg, surface, _backing)) = popup {
+        role.destroy();
+        xdg.destroy();
+        surface.destroy();
+    }
     toplevel.destroy();
     let _ = queue.roundtrip(&mut probe);
     Ok(())
@@ -690,7 +722,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
                 state.compositor = Some(registry.bind(name, version.min(6), qh, ()));
             }
             "wl_shm" => state.shm = Some(registry.bind(name, 1, qh, ())),
-            "xdg_wm_base" => state.wm_base = Some(registry.bind(name, 1, qh, ())),
+            "xdg_wm_base" => state.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
             "zxdg_decoration_manager_v1" => {
                 state.decoration_manager = Some(registry.bind(name, 1, qh, ()));
             }
@@ -982,6 +1014,25 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Probe {
         }
     }
 }
+
+// Popup configure acknowledgement never changes the toplevel's resize plan.
+impl Dispatch<xdg_surface::XdgSurface, bool> for Probe {
+    fn event(
+        _: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &bool,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+        }
+    }
+}
+
+wayland_client::delegate_noop!(Probe: ignore xdg_popup::XdgPopup);
+wayland_client::delegate_noop!(Probe: ignore xdg_positioner::XdgPositioner);
 
 impl Dispatch<xdg_surface::XdgSurface, ()> for Probe {
     fn event(

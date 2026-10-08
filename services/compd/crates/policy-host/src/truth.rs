@@ -258,7 +258,7 @@ pub fn truth(lp: &Loop) -> Value {
             let id = record.id();
             let native = crate::control::window_of(lp, id);
             let membership = comp.tiles.member(policy::tiling::Target { id, generation: record.generation() });
-            let pending = crate::geometry::tile_pending(comp, &lp.inner.host_space().state, id);
+            let pending = native.as_ref().and_then(|window| crate::geometry::tile_pending(comp, crate::control::owning_space(lp, window), id));
             (id.0.to_string(), json!({
                 "generation":record.generation(), "requested_tiled":membership.is_some(),
                 "native_requested_tiled":native.as_ref().is_some_and(protocols::window::shell::shell::requested_tiled),

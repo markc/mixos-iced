@@ -1038,6 +1038,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surfaces",
+ "uuid",
 ]
 
 [[package]]
@@ -1055,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "buildinfo",
  "comp-model",
@@ -5448,6 +5449,7 @@ dependencies = [
  "serde_json",
  "smithay",
  "surfaces",
+ "uuid",
  "world",
  "x11-wm",
 ]

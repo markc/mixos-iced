@@ -102,7 +102,7 @@ pub struct CompState {
     pub tiles: policy::tiling::Tiles,
     tile_inputs: HashMap<SurfaceId, protocols::window::shell::shell::TileInputLease>,
     /// Bounded change detector only; public pending facts derive live plans.
-    tile_pending_observation: Vec<(policy::tiling::Group, Option<policy::tiling::LayoutError>)>,
+    tile_pending_observation: Vec<(policy::tiling::Target, Option<policy::tiling::LayoutError>)>,
     /// The workspace model (count, current per output).
     pub workspaces: WorkspaceState,
     /// The default output (the single-output rule), refreshed from the
@@ -664,10 +664,18 @@ impl CompState {
 
     fn observe_tile_pending(
         &mut self,
-        observation: Vec<(policy::tiling::Group, Option<policy::tiling::LayoutError>)>,
+        observation: Vec<(policy::tiling::Target, Option<policy::tiling::LayoutError>)>,
     ) {
-        if self.tile_pending_observation != observation {
-            self.tile_pending_observation = observation;
+        let before = self.tile_pending_observation.clone();
+        self.tile_pending_observation.retain(|(target, _)| self.tiles.member(*target).is_some());
+        for (target, reason) in observation {
+            if let Some(entry) = self.tile_pending_observation.iter_mut().find(|(existing, _)| *existing == target) {
+                entry.1 = reason;
+            } else {
+                self.tile_pending_observation.push((target, reason));
+            }
+        }
+        if self.tile_pending_observation != before {
             self.tiling_changed();
         }
     }

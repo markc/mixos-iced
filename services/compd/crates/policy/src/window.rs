@@ -28,6 +28,7 @@ use crate::workspaces::{self, DefaultOutput, SwitchGates, WorkspaceState};
 /// Source stats and a global stats reset still answer.
 pub fn locked_refusal(op: &WindowOp, session_lock: bool) -> Option<ControlReply> {
     let names_window = match op {
+        WindowOp::WorldList => false,
         WindowOp::Stats { target, .. } => matches!(target, StatsTarget::Window { .. }),
         WindowOp::StatsReset { target } => {
             matches!(target, Some(StatsTarget::Window { .. }))

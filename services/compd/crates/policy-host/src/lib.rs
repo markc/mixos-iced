@@ -33,6 +33,7 @@ pub mod region;
 pub mod truth;
 pub mod x11;
 pub mod xwayland;
+pub mod worlds;
 
 pub use edges::Edges;
 pub use project::{Identity, project};

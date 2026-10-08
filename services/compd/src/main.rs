@@ -261,20 +261,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // spawn-target).
         // The loader injects the concrete system set; the builder stamps the kind.
         //
-        // ONE world: no navigator, no overlay worlds for the lock or the picker,
-        // no persisted-world restore. CameraSystem only owns the viewport slot
-        // (camera pinned to identity).
+        // One initial world; bounded runtime worlds use this identical builder.
+        // No navigator, overlay lock/picker worlds or persisted-world restore.
         world::world::manager::manager::WorldManager::new(
-            world::kind::build::base::spatial(
+            world::kind::build::base::desktop(
                 world::world::manager::manager::MAIN_WORLD,
                 "main",
-                vec![
-                    Box::new(world::camera::system::base::CameraSystem::default()),
-                    Box::new(world::window::system::base::WindowSystem),
-                    Box::new(world::surface::system::base::SurfaceSystem),
-                    Box::new(world::canvas::system::base::CanvasSystem),
-                    Box::new(world::seat::system::pointer::base::PointerSystem),
-                ],
                 &kernel_data,
             ),
             // The KERNEL system host: systems that run every frame whatever world

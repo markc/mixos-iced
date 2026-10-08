@@ -34,3 +34,4 @@ world.workspace = true
 x11-wm.workspace = true
 serde_json.workspace = true
 smithay.workspace = true
+uuid.workspace = true

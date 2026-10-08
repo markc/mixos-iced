@@ -458,7 +458,7 @@ impl Placements {
                         ..Placement::default()
                     },
                 );
-                placements.place_popups(layer.wl_surface(), origin, Some(key.clone()));
+                placements.place_popups(layer.wl_surface(), origin, Some(key.clone()), true);
             }
             // The session lock's surface on this output: the whole
             // output, in the lock band, shown while the lock is in force.
@@ -509,6 +509,7 @@ impl Placements {
         let foreign_id = window
             .toplevel()
             .and_then(|toplevel| lp.state.foreign.identifier_of(toplevel.wl_surface()));
+        let visible = crate::control::drawn(lp, window);
         self.by_handle.insert(
             handle,
             Placement {
@@ -521,7 +522,7 @@ impl Placements {
                     geometry.size.w as f32,
                     geometry.size.h as f32,
                 )),
-                visible: ident::is_drawn(window),
+                visible,
                 decoration,
                 fullscreen: ident::committed_fullscreen(window),
                 maximized: crate::control::committed_maximized(window),
@@ -531,7 +532,7 @@ impl Placements {
             },
         );
         if let Some(root) = root {
-            self.place_popups(&root, origin + geometry.loc, output);
+            self.place_popups(&root, origin + geometry.loc, output, visible);
         }
     }
 
@@ -543,6 +544,7 @@ impl Placements {
         root: &WlSurface,
         geometry_origin: Point<i32, Logical>,
         output: Option<String>,
+        visible: bool,
     ) {
         for (popup, offset) in PopupManager::popups_for_surface(root) {
             let origin = geometry_origin + offset - popup.geometry().loc;
@@ -557,7 +559,7 @@ impl Placements {
                     origin: point(origin),
                     size: self::size(size),
                     output: output.clone(),
-                    visible: true,
+                    visible,
                     ..Placement::default()
                 },
             );
@@ -616,9 +618,9 @@ fn project_surface(
     let (window_x, window_y, window_width, window_height) = placement.window.unwrap_or_default();
     let occlusion = occlusion_of(lp, record);
     let facts = crate::control::window_facts(lp, record.id());
-    let tile_pending_reason =
-        crate::geometry::tile_pending(&lp.inner.comp, &lp.inner.host_space().state, record.id())
-            .map(|error| error.name());
+    let tile_pending_reason = crate::control::window_of(lp, record.id()).and_then(|window|
+        crate::geometry::tile_pending(&lp.inner.comp, crate::control::owning_space(lp, &window), record.id()))
+        .map(|error| error.name());
     SurfaceSnapshot {
         occlusion,
         id: record.id().0,

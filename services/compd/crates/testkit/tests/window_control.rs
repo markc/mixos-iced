@@ -12,6 +12,35 @@ use surfaces::SurfaceId;
 use testkit::Harness;
 use world::comp::MaximizeRestore;
 
+#[test]
+fn keyboard_only_ownership_uses_the_real_human_seat_grab() {
+    use dispatcher::state::state::Dispatch;
+    use smithay::backend::input::KeyState;
+    use smithay::input::keyboard::{GrabStartData, KeyboardGrab, KeyboardInnerHandle, Keycode, ModifiersState};
+    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    use smithay::utils::{Serial, SERIAL_COUNTER};
+
+    struct OwnedKeyboard(GrabStartData<Dispatch>);
+    impl KeyboardGrab<Dispatch> for OwnedKeyboard {
+        fn input(&mut self, data: &mut Dispatch, handle: &mut KeyboardInnerHandle<'_, Dispatch>, keycode: Keycode, state: KeyState, modifiers: Option<ModifiersState>, serial: Serial, time: u32) {
+            handle.input(data, keycode, state, modifiers, serial, time);
+        }
+        fn set_focus(&mut self, _: &mut Dispatch, _: &mut KeyboardInnerHandle<'_, Dispatch>, _: Option<WlSurface>, _: Serial) {}
+        fn start_data(&self) -> &GrabStartData<Dispatch> { &self.0 }
+        fn unset(&mut self, _: &mut Dispatch) {}
+    }
+
+    let mut h = Harness::new();
+    let seat = h.wire.state.seat.seat.clone();
+    let keyboard = seat.get_keyboard().expect("native human keyboard");
+    assert!(!policy_host::input::human_keyboard_owned(&seat));
+    keyboard.set_grab(&mut h.wire.state, OwnedKeyboard(GrabStartData { focus: None }), SERIAL_COUNTER.next_serial());
+    assert!(seat.get_pointer().is_some_and(|pointer| !pointer.is_grabbed()), "keyboard ownership must not require pointer ownership");
+    assert!(policy_host::input::human_keyboard_owned(&seat), "world activation and targeted input share the actual keyboard ownership fact");
+    keyboard.unset_grab(&mut h.wire.state);
+    assert!(!policy_host::input::human_keyboard_owned(&seat));
+}
+
 fn harness() -> Harness {
     let mut h = Harness::new();
     h.wire.inner.comp.default_output = Some(DefaultOutput {

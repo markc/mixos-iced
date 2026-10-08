@@ -1,0 +1,247 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Actual native worlds, dormant public untile, immutable homes, pixels/input.
+-- Usage: mix tests/desktop/world_ownership_gate.mix REPO BUILD_BIN_DIR
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$n=require("nested_host_lib.mix")
+$host=require("settings_host_lib.mix")
+$capture=require("capture_lib.mix")
+$fixture=require("settings_fixture_lib.mix")
+$R={run:nil,bus:nil,session:nil,children:[],ok:false}
+for each $name in ["compd","noded","testkit-input-probe","testkit-screenshot"]
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing " .. $name) end
+end
+fn check($condition,$message)
+  if not $condition then raise("WORLD",$message) end
+end
+fn call($verb,$body)
+  return $n.call($R.session.service,$verb,$body)
+end
+fn rpc($verb,$body)
+  $reply=call($verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn target($client)
+  return {id:$client.id,generation:$client.generation}
+end
+fn row($client)
+  $value=rpc("comp.props.get",{path:"windows.s" .. to_string($client.id)})
+  check($value.id == $client.id and $value.generation == $client.generation and $value.pid == $client.pid and process_alive($client.pid),"Native client identity changed")
+  return $value
+end
+fn popup_visible($client,$visible)
+  $found=false
+  for $attempt=1 to 100
+    $surfaces=rpc("comp.props.get",{path:"surfaces"})
+    for each $key in keys($surfaces)
+      $surface=$surfaces[$key]
+      if $surface.role == "popup" and $surface.parent == $client.id and $surface.mapped then
+        check($surface.visible == $visible,"Actual popup visibility disagrees with its owning world")
+        $found=true
+      end
+    end
+    if $found then break end
+    sleep(0.02)
+  end
+  check($found,"Actual non-grabbing popup is missing")
+end
+fn wait_state($client,$until)
+  return rpc("comp.window.wait",{match:target($client),until:$until,timeout_ms:10000}).window
+end
+fn snapshot($label)
+  $worlds=rpc("comp.world.list",{})
+  write_file($root .. "/" .. $label .. "-worlds.json",json_encode($worlds))
+  write_file($root .. "/" .. $label .. "-truth.json",json_encode(rpc("compd.truth",{})))
+  return $worlds
+end
+fn stored($worlds,$home,$client)
+  $found=nil
+  $count=0
+  for each $world in $worlds.worlds
+    for each $window in $world.windows
+      if $window.id == $client.id then
+        $count=$count+1
+        check($world.id == $home and $window.generation == $client.generation and $window.pid == $client.pid and $window.uuid == $client.uuid,"Client home/native identity changed")
+        $found=$window
+      end
+    end
+  end
+  check($count == 1,"Client is missing or stored in multiple actual worlds")
+  return $found
+end
+fn probe($name,$colour,$x,$y,$home)
+  $log=$root .. "/probe-" .. $name .. ".log"
+  $pid=spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.World" .. $name,"--size","420x260","--seconds","240","--colour",$colour,"--seats","--popup"],
+    {env:$n.client_env($R.session,{}),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$pid])
+  $mapped=rpc("comp.window.wait",{match:{app_id:"dev.mixos.World" .. $name},until:"presented",timeout_ms:15000}).window
+  check($mapped.pid == $pid,"Mapped client does not name owned process")
+  $client={id:$mapped.id,generation:$mapped.generation,pid:$pid,log:$log,colour:$colour,uuid:nil,normal:{x:$x,y:$y,width:420,height:260}}
+  rpc("comp.window.place",merge(target($client),$client.normal))
+  rpc("comp.window.wait",{match:target($client),until:"size",width:420,height:260,timeout_ms:10000})
+  $worlds=rpc("comp.world.list",{})
+  for each $world in $worlds.worlds
+    if $world.id == $home then
+      for each $window in $world.windows
+        if $window.id == $client.id then $client.uuid=$window.uuid end
+      end
+    end
+  end
+  check($client.uuid != nil,"Actual native home/UUID missing")
+  stored($worlds,$home,$client)
+  popup_visible($client,true)
+  return $client
+end
+fn colour($image,$x,$y,$hex)
+  $pixel=$capture.pixel($image,$x,$y)
+  $expected=if $hex == "ff00ff" then [255,0,255] else [0,255,0] end
+  return abs($pixel[0]-$expected[0]) <= 8 and abs($pixel[1]-$expected[1]) <= 8 and abs($pixel[2]-$expected[2]) <= 8
+end
+fn pixels($label,$client,$normal)
+  $settled=false
+  for $attempt=1 to 40
+    $path=$root .. "/" .. $label .. ".ppm"
+    run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})})
+    $image=$capture.ppm($path)
+    check($image.w == $width and $image.h == $height,"Native capture scale changed")
+    $inside=colour($image,$client.normal.x+20,$client.normal.y+20,$client.colour)
+    $far=colour($image,$width-20,$height-20,$client.colour)
+    if $inside and (if $normal then not $far else $far end) then $settled=true; break end
+    sleep(0.05)
+  end
+  check($settled,"Actual native world pixels failed: " .. $label)
+end
+fn point($client)
+  $native=row($client)
+  $point=$fixture.surface_point($native,target($client),20,20)
+  $offset=len(read_file($client.log))
+  $move=rpc("comp.input.pointer.move",{seat:"human",window:target($client),x:$point.x,y:$point.y,corners:false})
+  check($move.target != nil and $move.target.id == $client.id,"Native world input hit wrong owner")
+  rpc("comp.input.pointer.move",{seat:"human",window:target($client),x:$point.x+1,y:$point.y+1,corners:false})
+  $seen=false
+  for $attempt=1 to 100
+    if contains(slice(read_file($client.log),$offset),"motion 21 21") then $seen=true; break end
+    sleep(0.02)
+  end
+  check($seen,"Native client did not receive live input coordinates")
+end
+fn activate($id)
+  $reply=rpc("comp.world.activate",{id:$id})
+  check($reply.active == $id and $reply.spawn_target == $id,"Native active/spawn owners diverged")
+  return $reply
+end
+try
+  $R.run=$n.new_run("/var/tmp/world-ownership")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"world-ownership",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"worlds",run:$R.run,config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,env:{HOME:$root .. "/home"}})
+  check($n.wait_ready($R.session,30),"Owned compositor never registered")
+  $outputs=rpc("comp.props.get",{path:"outputs"})
+  check(len(keys($outputs)) == 1,"Bounded fixture requires one real output")
+  $output_key=keys($outputs)[0]
+  $width=$outputs[$output_key].width
+  $height=$outputs[$output_key].height
+  check($width > 900 and $height > 600,"Unsupported native output")
+  rpc("comp.props.set",{path:"input.host.passthrough",value:false})
+  $initial=snapshot("initial")
+  check(len($initial.worlds) == 1 and $initial.active == $initial.spawn_target,"Initial owner is not one native spatial world")
+  $main=$initial.active
+  $a=probe("A","ff00ff",64,48,$main)
+  rpc("comp.window.tile",merge(target($a),{output:$output_key}))
+  wait_state($a,"tiled")
+  pixels("main-tiled",$a,false); point($a)
+  $created=rpc("comp.world.create",{})
+  $other=$created.id
+  check($other != $main and not $created.active and not $created.spawn_target,"Creation changed active native owner")
+  stored(snapshot("created-dormant"),$main,$a)
+  pixels("creation-retains-main",$a,false)
+  activate($other)
+  check(not row($a).visible,"Dormant actual-world client falsely visible")
+  popup_visible($a,false)
+  $b=probe("B","00ff00",180,120,$other)
+  rpc("comp.window.tile",merge(target($b),{output:$output_key}))
+  wait_state($b,"tiled")
+  pixels("other-tiled",$b,false); point($b)
+  $before=snapshot("before-dormant-untile")
+  $old=stored($before,$main,$a)
+  check(deep_eq($old.local,{x:0,y:0}) and deep_eq($old.decided,[$width,$height]) and deep_eq($old.tile_normal,$a.normal),"Dormant tile owner lost actual original restore/slot")
+  $stale=call("comp.window.untile",{id:$a.id,generation:$a.generation+1})
+  check($stale.rc >= 10 and $stale.result.error == "stale_target","Dormant stale generation bypassed native fence")
+  rpc("comp.window.untile",target($a))
+  wait_state($a,"untiled")
+  $after=snapshot("after-dormant-untile")
+  $normal=stored($after,$main,$a)
+  stored($after,$other,$b)
+  check($after.active == $other and $after.spawn_target == $other and not row($a).visible and
+    deep_eq($normal.local,{x:64,y:48}) and deep_eq($normal.decided,[420,260]) and $normal.tile_normal == nil,
+    "Dormant untile activated/migrated client or used another world's geometry")
+  $placed=call("comp.window.place",merge(target($a),{x:20,y:20,width:300,height:200}))
+  check($placed.rc >= 10 and $placed.result.error == "unsupported_state","Dormant place migrated native window")
+  $input=call("comp.input.pointer.move",{seat:"human",window:target($a),x:20,y:20,corners:false})
+  check($input.rc >= 10,"Dormant native input remained routable")
+  pixels("dormant-untile-keeps-other",$b,false); point($b)
+  activate($main)
+  wait_state($a,"presented")
+  stored(snapshot("main-return"),$main,$a)
+  check(row($a).visible and not row($b).visible and not row($a).tiled,"World return lost native visibility or untiled state")
+  popup_visible($a,true); popup_visible($b,false)
+  pixels("main-normal-return",$a,true); point($a)
+  activate($other)
+  wait_state($b,"presented")
+  popup_visible($a,false); popup_visible($b,true)
+  check(not activate($other).changed,"Repeated native activation was not idempotent")
+  pixels("other-same-owner-return",$b,false); point($b)
+  $unknown=call("comp.world.activate",{id:"00000000-0000-0000-0000-000000000000"})
+  check($unknown.rc >= 10 and $unknown.result.error == "unknown_world","Unknown native world was not refused")
+  $invalid=call("comp.world.create",{name:"invalid"})
+  check($invalid.rc >= 10,"Unknown world argument was accepted")
+  while len(rpc("comp.world.list",{}).worlds) < $initial.limit
+    $new=rpc("comp.world.create",{})
+    check(not $new.active and not $new.spawn_target,"Capacity fill changed active owner")
+  end
+  $capacity=call("comp.world.create",{})
+  check($capacity.rc >= 10 and $capacity.result.error == "world_capacity","Native world capacity was bypassed")
+  $full=snapshot("capacity")
+  check(len($full.worlds) == $initial.limit and $full.active == $other,"World bound/active owner changed on refusal")
+  stored($full,$main,$a); stored($full,$other,$b)
+  -- Native close of a dormant client must retire its own Space, not the host.
+  rpc("comp.window.close",target($a)); wait_state($a,"gone")
+  $closed=snapshot("dormant-retired")
+  for each $world in $closed.worlds
+    for each $window in $world.windows
+      check($window.id != $a.id,"Dormant native role retained its world membership")
+    end
+  end
+  stored($closed,$other,$b)
+  pixels("dormant-close-keeps-other",$b,false)
+  rpc("comp.window.close",target($b)); wait_state($b,"gone")
+  for $attempt=1 to 100
+    if not process_alive($a.pid) and not process_alive($b.pid) then break end
+    sleep(0.02)
+  end
+  check(not process_alive($a.pid) and not process_alive($b.pid),"Native clients failed natural shutdown")
+  check(len(snapshot("retired").worlds) == $initial.limit,"Native world lifecycle unexpectedly discarded retained worlds")
+  print("PASS native world ownership: actual creation/activation, same home/UUID/generation/local slot, dormant public untile, pixels/input, strict stale/unknown/capacity refusal and natural retirement")
+  $R.ok=true
+catch $message
+  print("FAIL " .. $message)
+  if $R.run != nil then
+    for each $name in ["compositor.log","probe-A.log","probe-B.log","weston.log","noded.log"]
+      if is_file($R.run.path .. "/" .. $name) then print(run_argv(["tail","-n","25",$R.run.path .. "/" .. $name],{max_output:16000}).stdout) end
+    end
+  end
+finally
+  for each $child in $R.children
+    $host.stop($child)
+  end
+  if $R.session != nil then $n.stop($R.session) end
+  if $R.bus != nil then $host.stop($R.bus.pid) end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
