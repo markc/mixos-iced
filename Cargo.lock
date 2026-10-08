@@ -227,6 +227,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toolkit",
+ "tracing",
 ]
 
 [[package]]
