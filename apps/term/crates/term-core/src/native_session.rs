@@ -406,8 +406,8 @@ impl Supervisor {
             std::env::var("MIXOS_BROKER_ACCOUNT").unwrap_or_else(|_| "mixos-noded".into());
         let account = ::bus::client_helpers::broker_account_named(&account_name)
             .map_err(|e| e.to_string())?;
-        let mut options = ::bus::client_helpers::unix_connect_options(account)
-        .map_err(|e| e.to_string())?;
+        let mut options =
+            ::bus::client_helpers::unix_connect_options(account).map_err(|e| e.to_string())?;
         options.require_native_session = true;
         // Opt in to the bounded verified lane. An unbounded one would let a
         // flood of stamped requests accumulate faster than they can be served,

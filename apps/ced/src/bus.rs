@@ -240,8 +240,8 @@ async fn run(
             return;
         }
     }
-        .fatal_on_registration_rejection(true)
-        .bounded_incoming(64);
+    .fatal_on_registration_rejection(true)
+    .bounded_incoming(64);
     let client = if desktop_settings {
         Arc::new(options.start())
     } else {

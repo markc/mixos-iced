@@ -557,13 +557,14 @@ async fn worker(
                             let _ = delivery.ticket.take();
                         }
                         name = fallback;
-                        let options = match ::bus::client_helpers::local_supervised_options(&name, &url) {
-                            Ok(options) => options,
-                            Err(error) => {
-                                tracing::error!("Term verified Bus configuration: {error}");
-                                break;
-                            }
-                        };
+                        let options =
+                            match ::bus::client_helpers::local_supervised_options(&name, &url) {
+                                Ok(options) => options,
+                                Err(error) => {
+                                    tracing::error!("Term verified Bus configuration: {error}");
+                                    break;
+                                }
+                            };
                         client = Arc::new(
                             options
                                 .fatal_on_registration_rejection(true)

@@ -20,17 +20,32 @@ pub fn broker_account_named(account_name: &str) -> anyhow::Result<BrokerAccount>
     // SAFETY: libc writes only supplied storage; UID/GID are copied before
     // dropping the scratch buffer, with no static account storage retained.
     let rc = unsafe {
-        libc::getpwnam_r(name.as_ptr(), entry.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut result)
+        libc::getpwnam_r(
+            name.as_ptr(),
+            entry.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
     };
-    anyhow::ensure!(rc == 0 && !result.is_null(), "configured broker account unavailable");
+    anyhow::ensure!(
+        rc == 0 && !result.is_null(),
+        "configured broker account unavailable"
+    );
     // SAFETY: successful getpwnam_r returned a populated entry above.
     let entry = unsafe { entry.assume_init() };
-    Ok(BrokerAccount { uid: entry.pw_uid, gid: entry.pw_gid })
+    Ok(BrokerAccount {
+        uid: entry.pw_uid,
+        gid: entry.pw_gid,
+    })
 }
 
 /// The desktop profile explicitly opts into verified local ABP ingress. Other
 /// callers retain the existing TCP behaviour when no profile is configured.
-pub fn local_supervised_options(service: &str, url: &str) -> anyhow::Result<crate::SupervisedConnectOptions> {
+pub fn local_supervised_options(
+    service: &str,
+    url: &str,
+) -> anyhow::Result<crate::SupervisedConnectOptions> {
     let options = crate::SupervisedClient::connect_options(service, url);
     match std::env::var("MIXOS_BROKER_ACCOUNT") {
         Ok(name) => {

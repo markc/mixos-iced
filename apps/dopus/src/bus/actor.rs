@@ -366,8 +366,8 @@ async fn worker(
             return faults;
         }
     }
-        .fatal_on_registration_rejection(true)
-        .bounded_incoming(INCOMING_BOUND);
+    .fatal_on_registration_rejection(true)
+    .bounded_incoming(INCOMING_BOUND);
     let client = if settings {
         Arc::new(options.start())
     } else {

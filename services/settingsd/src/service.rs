@@ -141,13 +141,16 @@ pub async fn serve(root: PathBuf, binding: Binding) -> anyhow::Result<()> {
         buildinfo::now_rfc3339(),
     );
     let client = Arc::new(
-        bus::client_helpers::local_supervised_options("settingsd", &bus::client_helpers::resolve_noded_url())?
-            .bounded_incoming(64)
-            .fatal_on_registration_rejection(true)
-            .with_verbs(manifest())
-            .with_provenance(provenance)
-            .connect()
-            .await?,
+        bus::client_helpers::local_supervised_options(
+            "settingsd",
+            &bus::client_helpers::resolve_noded_url(),
+        )?
+        .bounded_incoming(64)
+        .fatal_on_registration_rejection(true)
+        .with_verbs(manifest())
+        .with_provenance(provenance)
+        .connect()
+        .await?,
     );
     let mut incoming = client
         .incoming_bounded()
