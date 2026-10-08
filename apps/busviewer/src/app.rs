@@ -1123,6 +1123,7 @@ impl App {
             reply
         ]
         .spacing(gap))
+        .id("busviewer-inspector")
         .height(iced::Fill)
         .width(iced::Fill)
         .into()
@@ -1263,6 +1264,7 @@ mod tests {
                     let bounds = control.bounds();
                     if step == 0 || step == 39 {
                         eprintln!("compact inspector size={size:?} label={text:?} step={step} bounds={bounds:?} visible={:?}", control.visible_bounds());
+                        eprintln!("outer inspector {:?}", sim.find(widget::Id::new("busviewer-inspector")));
                     }
                     if control.visible_bounds() == Some(bounds)
                         && bounds.y >= 0.0 && bounds.y + bounds.height <= size.height
