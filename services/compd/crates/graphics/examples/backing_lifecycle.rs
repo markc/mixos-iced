@@ -22,7 +22,7 @@ use std::{
     error::Error,
     fs::{self, OpenOptions},
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, atomic::{AtomicBool, Ordering}},
     time::Duration,
 };
@@ -144,7 +144,7 @@ fn inspect(surface: &IcedSurface, ctx: &WgpuGlContext, gles: &mut GlesRenderer,
 
 fn run(node: &str, directory: &Path) -> Result<()> {
     fs::create_dir(directory)?;
-    let path = PathBuf::from(node);
+    let path = fs::canonicalize(node)?;
     let device = EGLDevice::enumerate()?.find(|device| {
         !device.is_software() && (device.render_device_path().ok().as_ref() == Some(&path)
             || device.drm_device_path().ok().as_ref() == Some(&path))
