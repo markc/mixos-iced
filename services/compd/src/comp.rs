@@ -536,7 +536,7 @@ impl Bus {
         );
         let facts = |id: surfaces::SurfaceId| WindowFacts {
             presented_since_map: lp.inner.comp.presentation.presented_since_map(id),
-            ..window_facts(&snapshot, id)
+            ..policy_host::control::window_facts(lp, id)
         };
         let now = Instant::now();
         let mut still = Vec::with_capacity(self.waiters.len());
@@ -626,23 +626,6 @@ fn identity(context: &PortContext, binding_profile: &'static str) -> policy_host
         instance: Arc::clone(&context.instance),
         binding_profile,
         port: context.port_snapshot(0),
-    }
-}
-
-/// The engine facts a wait reads, from the projected row.
-fn window_facts(snapshot: &CompSnapshot, id: surfaces::SurfaceId) -> WindowFacts {
-    let Some(row) = snapshot.surfaces.get(&surface_key(id.0)) else {
-        return WindowFacts::default();
-    };
-    WindowFacts {
-        committed_maximized: row.maximized,
-        committed_fullscreen: row.fullscreen,
-        visible: row.visible,
-        geometry_size: (
-            row.window.window_width as i32,
-            row.window.window_height as i32,
-        ),
-        ..WindowFacts::default()
     }
 }
 

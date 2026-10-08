@@ -1368,7 +1368,7 @@ checked separately by the layering gate.
 | [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.3.5 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
 | [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.10 |
-| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.14 |
+| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.15 |
 | [comp-model](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-model/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [comp-service](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-service/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [decor](https://github.com/markc/mixos/blob/main/services/compd/crates/decor/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
@@ -1539,6 +1539,24 @@ Run `containment-probe` inside a delegated test service with containment enabled
 to verify actual descendant cleanup. Graph checks and nested rendering do not
 prove VT handover: GPU acquisition, physical input, scan-out, audio and rollback
 are separate hardware acceptance gates.
+
+## Fullscreen state evidence
+
+Window projections report client-committed fullscreen. A fullscreen or
+unfullscreen request stages compositor intent; `configure_pending` remains true
+while requested maximise or fullscreen differs from committed state. For xdg
+clients, acknowledging a configure alone does not commit it: a subsequent
+surface commit applies the acknowledged state. Native fullscreen state waits
+use this same fence. X11 has no xdg ACK fence and reports its server-side state.
+
+Run `mix tests/desktop/fullscreen_state_gate.mix REPO BUILD_BIN_DIR` against a
+matching compd and testkit build. The gate owns its nested host and native
+broker, checks delayed entry and exit ACKs against state-wait timeouts, then
+verifies committed geometry, exact restore, pixels, input and stale-generation
+refusal. The probe's `--delay-state-commit WxH:MS` leaves ACKed state uncommitted
+until its replacement buffer; `--delay-size-commit` retains its existing policy
+of committing ACKed state immediately with the old buffer. These nested checks
+do not replace physical VT, GPU, input or seat acceptance.
 
 ---
 

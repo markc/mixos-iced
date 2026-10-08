@@ -23,6 +23,9 @@
 //! `--colour RRGGBB` draws a fixed colour, premultiplied when translucent.
 //! `--delay-size-commit WxH:MS` ACKs that size, retaining the old buffer for
 //! the stated interval before committing the new one. Other sizes are immediate.
+//! `--delay-state-commit WxH:MS` instead ACKs without any surface commit until
+//! the delayed replacement buffer. Both delays require a resize of an already
+//! mapped buffer and are bounded to 1..=60000 ms; the flags are mutually exclusive.
 //! `--seats` lists and labels every seat's keyboard/pointer events.
 //! `--idle-timeout-ms N` also enables this mode and subscribes to one
 //! ext-idle-notify notification per seat. Seat names are whatever the
@@ -205,6 +208,7 @@ struct Options {
     colour: Option<[u8; 3]>,
     ssd: bool,
     delay_size_commit: Option<(i32, i32, Duration)>,
+    delay_state_commit: Option<(i32, i32, Duration)>,
 }
 
 fn options() -> Result<Options, String> {
@@ -226,6 +230,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         colour: None,
         ssd: false,
         delay_size_commit: None,
+        delay_state_commit: None,
     };
     while let Some(argument) = arguments.next() {
         let mut value = || {
@@ -263,21 +268,29 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
             "--translucent" => options.translucent = true,
             "--colour" => options.colour = Some(parse_colour(&value()?)?),
             "--ssd" => options.ssd = true,
-            "--delay-size-commit" => {
+            "--delay-size-commit" | "--delay-state-commit" => {
+                if options.delay_size_commit.is_some() || options.delay_state_commit.is_some() {
+                    return Err("only one delayed commit flag is allowed".into());
+                }
                 let input = value()?;
                 let (size, millis) = input
                     .split_once(':')
-                    .ok_or("--delay-size-commit expects WxH:MS")?;
+                    .ok_or("delayed commit expects WxH:MS")?;
                 let (width, height) = size
                     .split_once('x')
-                    .ok_or("--delay-size-commit expects WxH:MS")?;
+                    .ok_or("delayed commit expects WxH:MS")?;
                 let width: i32 = width.parse().map_err(|_| "invalid delayed width")?;
                 let height: i32 = height.parse().map_err(|_| "invalid delayed height")?;
                 let millis: u64 = millis.parse().map_err(|_| "invalid delayed milliseconds")?;
                 if width <= 0 || height <= 0 || millis == 0 || millis > 60_000 {
                     return Err("delayed size must be positive, interval 1..=60000 ms".into());
                 }
-                options.delay_size_commit = Some((width, height, Duration::from_millis(millis)));
+                let delay = Some((width, height, Duration::from_millis(millis)));
+                if argument == "--delay-state-commit" {
+                    options.delay_state_commit = delay;
+                } else {
+                    options.delay_size_commit = delay;
+                }
             }
             "--remap-once-ms" => {
                 options.remap_once = Some(Duration::from_millis(
@@ -304,6 +317,23 @@ fn parse_colour(value: &str) -> Result<[u8; 3], String> {
 }
 
 impl Options {
+    /// A delay never holds the initial mapping or an unchanged-size configure.
+    /// The bool selects the existing ACK-with-old-buffer commit policy.
+    fn commit_delay(
+        &self,
+        current: Option<(i32, i32)>,
+        target: (i32, i32),
+    ) -> Option<(Duration, bool)> {
+        let current = current?;
+        if current == target {
+            return None;
+        }
+        let (delay, commit_old) = self
+            .delay_state_commit
+            .map(|delay| (delay, false))
+            .or_else(|| self.delay_size_commit.map(|delay| (delay, true)))?;
+        ((delay.0, delay.1) == target).then_some((delay.2, commit_old))
+    }
     /// SHM's existing little-endian XRGB/ARGB byte order is BGRA.
     fn pixel(&self, frame: u32) -> [u8; 4] {
         if let Some([red, green, blue]) = self.colour {
@@ -531,16 +561,24 @@ fn run() -> Result<(), String> {
             let resizing = current
                 .as_ref()
                 .is_none_or(|canvas| (canvas.width, canvas.height) != (width, height));
-            let delay = options
-                .delay_size_commit
-                .filter(|(w, h, _)| (*w, *h) == (width, height) && current.is_some() && resizing);
-            if let Some((_, _, interval)) = delay {
+            let delay = options.commit_delay(
+                current.as_ref().map(|canvas| (canvas.width, canvas.height)),
+                (width, height),
+            );
+            if let Some((interval, commit_old)) = delay {
                 if delayed_commit.is_none() {
                     delayed_commit = Some((width, height, Instant::now() + interval));
-                    // Apply the ACK with the existing buffer. ACK alone must
-                    // not fabricate a committed client size or an input enter.
-                    surface.commit();
-                    say(&format!("deferred_commit {width} {height}"));
+                    // The legacy delay commits ACKed state with the existing
+                    // buffer. The state delay emits only the ACK until replacement.
+                    if commit_old {
+                        surface.commit();
+                        say(&format!("deferred_commit {width} {height}"));
+                    } else {
+                        queue
+                            .flush()
+                            .map_err(|error| format!("flush held ACK failed: {error}"))?;
+                        say(&format!("state_ack_held {width} {height} serial={serial}"));
+                    }
                 }
             } else if resizing {
                 delayed_commit = None;
@@ -578,6 +616,9 @@ fn run() -> Result<(), String> {
                 presentation.feedback(&surface, &qh, ());
             }
             surface.commit();
+            if options.delay_state_commit.is_some() && dirty {
+                say(&format!("buffer_commit {} {}", canvas.width, canvas.height));
+            }
             probe.frame_done = false;
         }
         wait_readable(&mut queue, Duration::from_millis(50))?;
@@ -1042,6 +1083,65 @@ ignore_events!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_state_commit_is_strict_and_only_holds_a_mapped_resize() {
+        let parse =
+            |value: &str| parse_options(["--delay-state-commit".into(), value.into()].into_iter());
+        for value in [
+            "0x600:1",
+            "800x-1:1",
+            "800x600:0",
+            "800x600:60001",
+            "800x600",
+            "800:1",
+            "800x600:bad",
+        ] {
+            assert!(parse(value).is_err(), "{value}");
+        }
+        let options = parse("800x600:60000").unwrap();
+        assert_eq!(
+            options.commit_delay(None, (800, 600)),
+            None,
+            "initial mapping must not stall"
+        );
+        assert_eq!(
+            options.commit_delay(Some((800, 600)), (800, 600)),
+            None,
+            "same-size state changes are immediate"
+        );
+        assert_eq!(options.commit_delay(Some((320, 240)), (640, 480)), None);
+        assert_eq!(
+            options.commit_delay(Some((320, 240)), (800, 600)),
+            Some((Duration::from_secs(60), false)),
+            "held state must not commit the old buffer"
+        );
+        let legacy =
+            parse_options(["--delay-size-commit".into(), "800x600:1000".into()].into_iter())
+                .unwrap();
+        assert_eq!(
+            legacy.commit_delay(Some((320, 240)), (800, 600)),
+            Some((Duration::from_secs(1), true))
+        );
+        for flags in [
+            ["--delay-size-commit", "--delay-state-commit"],
+            ["--delay-state-commit", "--delay-size-commit"],
+            ["--delay-state-commit", "--delay-state-commit"],
+        ] {
+            assert!(
+                parse_options(
+                    [
+                        flags[0].into(),
+                        "800x600:1".into(),
+                        flags[1].into(),
+                        "800x600:1".into()
+                    ]
+                    .into_iter()
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn delayed_size_commit_is_bounded_and_does_not_change_default_timing() {
