@@ -1,0 +1,41 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Desired authority is distinct from installed LastGood and its native stamp.
+$f=require("settings_fixture_lib.mix")
+$h=require("settings_host_lib.mix")
+$r=require("settings_recovery_lib.mix")
+fn retained($context,$pid,$desired,$baseline,$diagnostic,$budget)
+  $deadline=time()+$budget
+  $last=nil
+  while time() < $deadline
+    $r.check(process_alive($pid),"Actual GUI exited during resource/preparation rejection")
+    $last=$f.rpc($context,"app.describe",{})
+    $r.check($last.pid == $pid,"Description belongs to another actual GUI")
+    if ($last.settings != nil and deep_eq($last.settings.current,$h.identity($desired)) and
+      deep_eq($last.settings.applied,$baseline.settings.applied)) then
+      if $diagnostic == nil or ($last.settings.fault != nil and
+        $last.settings.fault.code == "unsupported_resources" and $last.settings.fault.path == "resources" and
+        contains($last.settings.fault.message,$diagnostic)) then
+        $r.check($last.settings.kind == "last_good","Rejected desired authority is not LastGood")
+        $r.check(deep_eq($last.preparation.applied,$baseline.preparation.applied),"Installed preparation changed")
+        $r.check(deep_eq($r.resource_receipt($last),$r.resource_receipt($baseline)),"LastGood prepared resources changed")
+        return $last
+      end
+    end
+    sleep(0.02)
+  end
+  raise("FAILURE_SETTLE","Desired rejection not observed: " .. json_encode($last))
+end
+fn installed($context,$identity,$description,$baseline,$label)
+  $state=$f.target($context,$identity,$description.preparation.applied)
+  $r.check(deep_eq($state.target,$baseline.target),"Rejected/held candidate replaced exact installed native stamp")
+  $f.presented($context,merge($identity,{generation:$state.evidence.live_generation}),$state.target,$label)
+  write_file($context.root .. "/description-" .. $label .. ".json",json_encode($description))
+  return $state
+end
+fn hold($context,$identity,$name,$token)
+  $point=if $name == "term" then "terminal.prepare" else $name .. ".prepare" end
+  $arm=$f.fixture($context,"barrier.arm",merge($identity,{point:$point,token:$token}))
+  $r.check($arm.state == "armed","Real preparation barrier did not arm")
+  return merge($identity,{sequence:$arm.sequence,token:$token})
+end

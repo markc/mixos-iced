@@ -187,3 +187,54 @@ generation, release it, and prove the held candidate never installs using an
 observable activation history, then present the winning current stamp. Merely
 observing the final current snapshot cannot prove that intervening candidate
 was never installed. Neither remaining case is claimed by the outage matrix.
+
+`settings_app_resource_stale_gate.mix REPO BUILD_BIN_DIR [APP]` adds real
+missing-set and wrong-manifest-digest rejection, then superseded held authority
+preparation for the same four apps. It needs the candidate binaries and native
+PTY support described for the cold matrix; no network fetch or screenshot tool
+is needed:
+
+```
+mix tests/desktop/settings_app_resource_stale_gate.mix /path/to/mixos /path/to/candidate/bin
+```
+
+The shared asset helper stages an owned v2 test package from checked-in real
+Inter, Noto Sans, JetBrains Mono and all 35 Dopus Lucide SVGs. Each payload is
+locked with its exact byte count, SHA-256 and BLAKE3. A native XDG asset root
+selects this package; the gate must obtain its exact non-null set/manifest
+identity and real text/icon source digests from the actual GUI before testing
+failure. Each text record must select its expected declared family/face and
+locked font digest without substituting its requested weight. Each named icon
+must match the locked style, symbolic descriptor and exact SVG source digest;
+Dopus must report all 35 required names. The package receipt retains the
+complete manifest and file table for this comparison. This helper supplies reader fixtures, not a production installation
+path; the production installer currently accepts only v1 manifests. Successful
+source/hash preparation alone is not evidence of native reader acceptance.
+
+Both rejected resource references are structurally valid authority mutations.
+The absent set must report the actual unavailable-set diagnostic; a wrong
+digest against the existing verified package must report the actual manifest
+digest diagnostic. The desired current authority must name the rejected
+snapshot while applied authority, complete prepared resource receipts, product
+state and exact installed native stamp remain LastGood. Each reset must restore
+confirmed current authority on the same PID/window with exact native frame and
+layout receipts. Preparation-current is not required for a failed desired
+resource snapshot.
+
+For stale preparation, each real app worker is held separately because the
+shared barrier expires after 10 seconds. Its captured observation must name
+the held snapshot. A second authority snapshot supersedes that work while the
+old installed stamp/resources/product remain unchanged. Explicit release must
+occur before expiry. The winning snapshot must then present on the same window
+with an activation epoch exactly one greater than the baseline. Production
+Session increments the checked epoch on every installed replacement, so even
+a transient installation of the superseded snapshot fails this proof. Local
+context preparations do not increment that authority activation epoch.
+
+Run evidence includes the owned package and lock manifest, verified baseline
+descriptions/resource receipts, distinct desired/applied rejection diagnostics,
+exact old-frame receipts while rejected/held/superseded, winning current frame
+and root layout, retained products, and per-app/root acceptance JSON. This gate
+tests authority supersession of held work; a held candidate cancelled by a
+replacement connection generation remains a separate schedule. Physical GPU
+scanout and VT isolation also remain separate acceptance.
