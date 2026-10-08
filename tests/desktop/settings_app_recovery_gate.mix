@@ -102,6 +102,14 @@ fn stop_app($app)
     check($pty.stop_child({pid:$app.pid,privileged_launcher:false}),"Term survived retirement")
     check($pty.stop_child({pid:$app.launcher,privileged_launcher:true}),"Term launcher survived retirement")
   else
+    if $app.name == "cap" then
+      $document=$f.rpc($app.context,"cap.info",{})
+      if $document.document != nil and $document.document.dirty then
+        $saved=$f.rpc($app.context,"cap.export",{path:$app.context.root .. "/retired.png"})
+        check(is_file($app.context.root .. "/retired.png") and not $saved.document.dirty,
+          "Owned Cap document could not be saved before native retirement")
+      end
+    end
     $f.rpc($app.context,$app.name .. ".quit",{})
     $deadline=time()+4
     while process_alive($app.pid) and time() < $deadline
