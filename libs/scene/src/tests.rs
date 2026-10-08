@@ -159,7 +159,7 @@ fn fixture_round_trips() {
 #[test]
 fn exported_fixtures_are_the_files() {
     for (stem, content) in fixtures::ALL {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{stem}.scene.md"));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{stem}.scene.mix"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), content, "{stem}");
     }
 }
