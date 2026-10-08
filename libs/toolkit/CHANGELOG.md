@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.10
+
+- Add `decode_trusted_embedded_svg` for reviewed compiled rescue artwork with
+  a small solid-stroke profile. Runtime SVG retains the filled-only decoder;
+  all images retain dependency, structural and pixel checks.
+- FilePane accepts prepared absolute line heights without changing Presentation
+  construction. Shape rows and measure hit geometry with those heights; include
+  padding and icon extent in cache invalidation. Typography or density changes
+  retire stale presses and double-click bounds while retaining selection and
+  scroll state. Existing callers keep the size-derived line-height default.
+
 ## 0.2.9
 
 - `typography::TextStyle` gains `minimum_height()` (the text size grown to the

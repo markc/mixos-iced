@@ -116,8 +116,9 @@ pub(super) fn summary_footer(
 ) -> Element<'static, Msg> {
     container(super::elide::Label {
         text: footer.text,
-        font: look.ui_font,
+        font: look.small_font,
         px: look.small_px,
+        line_height: look.small_line_height,
         color: look.tokens.palette.muted_text,
     })
     .width(Length::Fill.max(footer.width))

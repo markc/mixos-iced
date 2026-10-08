@@ -7,6 +7,7 @@ use application::{
 };
 
 pub const ROOT_ID: &str = "busviewer.fixture.root";
+pub const BODY_ID: &str = "busviewer.fixture.body";
 pub const POINTS: &[&str] = &["busviewer.prepare"];
 
 pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::Message>), String> {
@@ -16,7 +17,10 @@ pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::M
     let (fixture, task) = acceptance::Fixture::new(
         launch,
         POINTS,
-        vec![inspect::Target::new("root", widget::Id::from(ROOT_ID))],
+        vec![
+            inspect::Target::new("root", widget::Id::from(ROOT_ID)),
+            inspect::Target::new("body", widget::Id::from(BODY_ID)),
+        ],
         inspect::Limits::new(),
     )?;
     Ok((Some(fixture), task))

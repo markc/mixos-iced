@@ -6,6 +6,14 @@
   receipt. Keep renderer registry accounting independent of serialization and
   expose no source payloads or operator paths.
 
+- Reprepare unbound embedded icons from the original receipt's captured
+  sources at new scale, size or tint. Keep exact text selections, reject
+  replacement artwork and use the same bounded image staging and reuse.
+- Resource requirements can carry reviewed embedded SVG rescue sources. Only
+  the no-set path uses them, through the existing preparation worker, process
+  image budget and canonical reuse. Receipts remain unbound and report real
+  source digests; broken explicit or pinned sets still fail. Decoder policy is
+  part of variant identity and cancellation publishes no partial admission.
 - `Prepared` exposes `ui_text()` and `small_text()` typed accessors for the
   validated required `ui` and `small` roles, replacing repeated string
   lookups in hosts. Buttons with an authored cell keep using

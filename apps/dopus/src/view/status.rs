@@ -8,10 +8,12 @@ use application::iced::widget::{button, container, row, text};
 use crate::app::Msg;
 use crate::view::Look;
 
-/// The status bar strip.
+/// The status bar strip. `provenance` is the persistent settings/connection
+/// status (the shared Fluent catalogue labels).
 pub fn bar<'a>(
     look: Look,
     info: &'a str,
+    provenance: &str,
     places_open: bool,
     properties_open: bool,
     actions: &[crate::verbs::ActionRow],
@@ -23,8 +25,9 @@ pub fn bar<'a>(
                 if places_open { "●" } else { "○" },
                 super::tips::action_label(actions, actions::view::TOGGLE_PLACES, "Places"),
             ))
-            .font(look.ui_font)
+            .font(look.small_font)
             .size(look.small_px)
+            .line_height(look.small_height())
         )
         .padding(look.chrome.small)
         .style(super::button_look(&look))
@@ -35,16 +38,25 @@ pub fn bar<'a>(
                 if properties_open { "●" } else { "○" },
                 super::tips::action_label(actions, actions::view::TOGGLE_PROPERTIES, "Properties"),
             ))
-            .font(look.ui_font)
+            .font(look.small_font)
             .size(look.small_px)
+            .line_height(look.small_height())
         )
         .padding(look.chrome.small)
         .style(super::button_look(&look))
         .on_press(Msg::Actions(vec![actions::view::TOGGLE_PROPERTIES])),
         super::elide::Label {
             text: info.into(),
-            font: look.ui_font,
+            font: look.small_font,
             px: look.small_px,
+            line_height: look.small_line_height,
+            color: look.chrome.secondary_text
+        },
+        super::elide::Label {
+            text: provenance.to_owned(),
+            font: look.small_font,
+            px: look.small_px,
+            line_height: look.small_line_height,
             color: look.chrome.secondary_text
         },
     ])

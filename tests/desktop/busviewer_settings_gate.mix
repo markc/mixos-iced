@@ -15,17 +15,17 @@ $service="viewer-settings"
 fn check($condition,$message)
   if not $condition then raise("BUSVIEWER_SETTINGS_GATE",$message) end
 end
-fn context()
+fn fixture_context()
   return {mix:$mix,bus:$R.bus,root:$R.run.path,service:$service}
 end
 fn rpc($service,$verb,$body)
   return $h.rpc($mix,$R.bus,$R.run.path,$service,$verb,$body)
 end
 fn app($verb,$body)
-  return $f.rpc(context(),$verb,$body)
+  return $f.rpc(fixture_context(),$verb,$body)
 end
 fn fixture($verb,$body)
-  return $f.fixture(context(),$verb,$body)
+  return $f.fixture(fixture_context(),$verb,$body)
 end
 fn comp($verb,$body)
   return rpc($R.session.service,$verb,$body)
@@ -85,7 +85,7 @@ fn hold($identity,$token)
   return merge($identity,{sequence:$arm.sequence,token:$token})
 end
 fn async_wait($verb,$body,$label)
-  $pending=$f.asynchronous(context(),$verb,$body,$label,12)
+  $pending=$f.asynchronous(fixture_context(),$verb,$body,$label,12)
   $R.calls=concat($R.calls,[$pending.pid])
   return $pending
 end
@@ -102,6 +102,7 @@ try
   $R.session=$n.start({bin:$bin .. "/compd",tag:"viewer-settings",run:$R.run,
     config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:180})
   check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
   print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
   $authority_log=$root .. "/settingsd.log"
   $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
@@ -117,21 +118,25 @@ try
     check(not starts_with($entry.name,"app.acceptance."),"Ordinary inventory advertises fixture")
   end
   for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
-    $reply=$f.call(context(),"app.acceptance." .. $verb,{})
+    $reply=$f.call(fixture_context(),"app.acceptance." .. $verb,{})
     check($reply.rc == 10 and $reply.result.error_code == "UNKNOWN_VERB","Ordinary launch exposes fixture: " .. json_encode($reply))
   end
   app("busviewer.quit",{})
-  $h.stop($ordinary.pid)
+  $deadline=time()+4
+  while process_alive($ordinary.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($ordinary.pid),"Ordinary native quit did not retire its owner")
   $identity={run:"viewer-native-" .. to_string(pid()),instance:1}
   $viewer=launch("fixture",$identity)
   $info=fixture("describe",$identity)
-  check($info.pid == $viewer.pid and deep_eq($info.aliases,["root"]) and
+  check($info.pid == $viewer.pid and deep_eq($info.aliases,["root","body"]) and
     deep_eq($info.points,["busviewer.prepare"]) and $info.frames.enabled,"Wrong explicit fixture")
   $before=current($snapshot)
-  $initial=$f.target(context(),$identity,$before.preparation.applied)
+  $initial=$f.target(fixture_context(),$identity,$before.preparation.applied)
   $identity=merge($identity,{generation:$initial.evidence.live_generation})
-  $f.presented(context(),$identity,$initial.target,"baseline")
-  $f.layout(context(),$identity,$initial.target.window,"baseline")
+  $f.presented(fixture_context(),$identity,$initial.target,"baseline")
+  $f.layout(fixture_context(),$identity,$initial.target.window,"baseline")
   $deadline=time()+8
   while app("busviewer.info",{}).busy and time() < $deadline
     sleep(0.05)
@@ -139,8 +144,24 @@ try
   check(not app("busviewer.info",{}).busy,"Native inventory did not settle")
   app("busviewer.select",{service:"noded",verb:"noded.list"})
   app("busviewer.call",{service:"noded",verb:"noded.list",body:"{}"})
+  $editor=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["body"]}))
+  check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual body editor layout unavailable")
+  $bounds=$editor.records[0].visible_bounds
+  check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 20,"Body editor not visibly editable")
+  comp("comp.window.focus",$viewer.window)
+  comp("comp.input.pointer.move",{seat:"human",window:$viewer.window,x:$bounds[0]+10,y:$bounds[1]+10,corners:false})
+  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"press"})
+  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"release"})
+  comp("comp.input.key",{seat:"human",key:"a",modifiers:["ctrl"]})
+  comp("comp.input.key",{seat:"human",text:'{"unfinished":true}'})
+  $deadline=time()+3
+  while app("busviewer.info",{}).body != '{"unfinished":true}' and time() < $deadline
+    sleep(0.02)
+  end
   $product=app("busviewer.info",{})
-  check($product.selection != nil and $product.reply != nil,"No real selected/called product state")
+  check($product.selection != nil and $product.body == '{"unfinished":true}' and $product.reply.rc == 0 and
+    $product.reply.service == "noded" and $product.reply.verb == "noded.list" and $product.reply.transport_error == nil,
+    "Native edits or the actual successful call were not retained")
   $reference=hold($identity,"theme-held")
   $waiting=async_wait("barrier.wait",$reference,"theme-reached")
   $changed=apply($snapshot,"viewer-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
@@ -153,13 +174,31 @@ try
   $held_product=app("busviewer.info",{})
   check(deep_eq($held_product.selection,$product.selection) and $held_product.body == $product.body and
     deep_eq($held_product.reply,$product.reply),"Settings preparation disturbed edits/reply/selection")
-  $f.layout(context(),$identity,$initial.target.window,"held")
+  $f.layout(fixture_context(),$identity,$initial.target.window,"held")
   check(fixture("barrier.release",$reference).state == "released","Release failed")
   $after=current($changed)
-  $second=$f.target(context(),$identity,$after.preparation.applied)
+  $second=$f.target(fixture_context(),$identity,$after.preparation.applied)
   check($second.target.window == $initial.target.window and $second.target.stamp.activation_epoch > $initial.target.stamp.activation_epoch,"No new activation on the actual window")
-  $f.presented(context(),$identity,$second.target,"settings")
-  $f.layout(context(),$identity,$second.target.window,"settings")
+  $f.presented(fixture_context(),$identity,$second.target,"settings")
+  $f.layout(fixture_context(),$identity,$second.target.window,"settings")
+  $activated_product=app("busviewer.info",{})
+  check(deep_eq($activated_product.selection,$product.selection) and $activated_product.body == $product.body and
+    deep_eq($activated_product.reply,$product.reply),"Activation disturbed real edits/reply/selection")
+  $old_identity=$identity
+  $R.bus=$n.restart_private_bus($R.bus)
+  wait_service($service,"app.describe",$viewer.pid,$viewer.log)
+  $reconnected=current($changed)
+  $second=$f.target(fixture_context(),{run:$identity.run,instance:$identity.instance},$reconnected.preparation.applied)
+  check($second.evidence.live_generation > $old_identity.generation and $second.target.window == $initial.target.window and
+    process_alive($viewer.pid),"Reconnect replaced the GUI owner or failed to advance its generation")
+  $stale=$f.call(fixture_context(),"app.acceptance.frame.state",$old_identity)
+  check($stale.rc == 0 and not $stale.result.ok and contains($stale.result.error,"generation"),"Old generation remained usable after reconnect")
+  $identity=merge($identity,{generation:$second.evidence.live_generation})
+  $f.presented(fixture_context(),$identity,$second.target,"reconnected")
+  $f.layout(fixture_context(),$identity,$second.target.window,"reconnected")
+  $reconnected_product=app("busviewer.info",{})
+  check(deep_eq($reconnected_product.selection,$product.selection) and $reconnected_product.body == $product.body and
+    deep_eq($reconnected_product.reply,$product.reply),"Reconnect disturbed real edits/reply/selection")
   $closing=hold($identity,"closing")
   $closing_wait=async_wait("barrier.wait",$closing,"closing-reached")
   $last=apply($changed,"viewer-native-close",{"ui.density":1.5})
@@ -171,7 +210,7 @@ try
   $admitted=false
   $deadline=time()+1
   while time() < $deadline
-    $busy=$f.call(context(),"app.acceptance.frame.wait",merge($future,{timeout_ms:100}))
+    $busy=$f.call(fixture_context(),"app.acceptance.frame.wait",merge($future,{timeout_ms:100}))
     if $busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"frame wait: Busy") then $admitted=true; break end
     check($busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"TimedOut"),"Unexpected wait admission")
   end
@@ -186,7 +225,7 @@ try
   end
   check(not process_alive($viewer.pid) and time()-$started < 5,"Held preparation blocked bounded shutdown")
   write_file($root .. "/acceptance.json",json_encode({ordinary_omission:true,layout:true,presented:true,
-    held_last_good:true,settings_applied:$h.identity($changed),same_window:true,shutdown_wait:$reply,dbus:false}))
+    held_last_good:true,reconnect:true,settings_applied:$h.identity($changed),same_window:true,shutdown_wait:$reply,dbus:false}))
   $R.ok=true
 catch $message
   print("FAIL BusViewer native settings: " .. $message)

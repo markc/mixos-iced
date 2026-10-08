@@ -25,7 +25,7 @@
 //! a mix of two.
 
 use application::Element;
-use application::iced::widget::{button, column, container, row, text};
+use application::iced::widget::{button, column, container, row};
 use application::iced::{Alignment, Background, Border, Color, Length, Padding, Shadow, Vector};
 
 use application::cpu::Renderer;
@@ -172,10 +172,7 @@ impl Dialog {
             Dialog::Confirm { message, .. } => frame(
                 look,
                 "Confirm",
-                text(message.as_str())
-                    .font(look.ui_font)
-                    .size(look.px)
-                    .into(),
+                look.ui_text(1.0).text(message.as_str()).into(),
                 vec![
                     dialog_button(
                         look,
@@ -212,15 +209,14 @@ impl Dialog {
                             look.chrome.small,
                             look.chrome.pad
                         ]))
-                        .size(look.px)
+                        .text_style(look.ui_text(1.0))
                         .style(field_look(look, error.is_some())),
                 ]
                 .spacing(look.chrome.small + 2.0 * look.chrome.edge);
                 if let Some(message) = error {
                     body = body.push(
-                        text(message.as_str())
-                            .font(look.ui_font)
-                            .size(look.px * 0.85)
+                        look.small_text()
+                            .text(message.as_str())
                             .color(look.chrome.warning),
                     );
                 }
@@ -291,16 +287,11 @@ fn dialog_button<'a>(
     };
     let quiet = kind == Kind::Quiet;
     let disabled = !enabled;
-    button(
-        text(label)
-            .font(look.ui_font)
-            .size(look.px * 0.9)
-            .color(if disabled {
-                t.palette.muted_text
-            } else {
-                text_color
-            }),
-    )
+    button(look.ui_text(0.9).text(label).color(if disabled {
+        t.palette.muted_text
+    } else {
+        text_color
+    }))
     .padding([look.chrome.small, look.chrome.gap])
     .on_press_maybe(enabled.then_some(msg))
     .style(move |_theme, status| button::Style {
@@ -379,10 +370,7 @@ pub fn frame<'a>(
     }
     let card = container(
         column![
-            text(title)
-                .font(look.ui_font)
-                .size(look.px * 1.15)
-                .color(t.palette.popover_text),
+            look.ui_text(1.15).text(title).color(t.palette.popover_text),
             body,
             actions,
         ]

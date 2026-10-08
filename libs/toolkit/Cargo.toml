@@ -3,7 +3,7 @@ name = "toolkit"
 description = "iced widgets: text field, menus, audio controls, waveform, piano roll, a token-driven iced theme, font sets, icon fonts and freedesktop icon lookup"
 # A public contract with its own version (CHANGELOG.md); the edition and
 # toolchain are stated here so the crate carries them when taken elsewhere.
-version = "0.2.9"
+version = "0.2.10"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"

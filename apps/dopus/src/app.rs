@@ -43,12 +43,16 @@ use application::Element;
 use application::cpu::Renderer;
 use application::iced::futures::channel::mpsc::UnboundedReceiver;
 use application::iced::{Size, Subscription, Task};
+#[cfg(test)]
+use application::presentation::native::Event as SettingsEvent;
+use application::presentation::native::Ui as SettingsUi;
 
 use actions::{ActionId, Keymap};
 use design::{Mode, Scheme};
 use dopus_core::{
     ConfigFile, ConfirmAnswer, CoreEvent, DOpusConfig, DopusCore, PaneId, SortColumn, VisibleRow,
 };
+use settings::Diagnostic;
 
 use crate::bus::{self, BusHandle, Delivery};
 use crate::dirs::AppDirs;
@@ -61,9 +65,31 @@ use crate::view::{self, Look, dialogs, rows};
 /// The Wayland application id.
 pub const APP_ID: &str = "dev.mixos.dopus";
 
-/// How often the icons re-raster target size (logical px × scale).
-const ICON_PX: u32 = 16;
-const ICON_SCALE: u32 = 2;
+/// Validated output scale, captured with each settings preparation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreparationContext {
+    scale: f32,
+}
+impl Default for PreparationContext {
+    fn default() -> Self {
+        Self { scale: 1.0 }
+    }
+}
+impl PreparationContext {
+    pub fn new(scale: f32) -> Result<Self, Diagnostic> {
+        if !scale.is_finite() || !(0.125..=16.0).contains(&scale) {
+            return Err(Diagnostic::new(
+                "unsupported_content",
+                "output.scale",
+                "invalid output scale",
+            ));
+        }
+        Ok(Self { scale })
+    }
+    pub fn scale(self) -> f32 {
+        self.scale
+    }
+}
 
 /// Everything the app reacts to.
 #[derive(Debug, Clone)]
@@ -95,7 +121,10 @@ pub enum Msg {
     /// A raw core event, back from the pumper (law 2's feed).
     Core(CoreEvent),
     /// Window edges (focus reloads the keymap; close quits).
-    Window(application::iced::window::Event),
+    Window(
+        application::iced::window::Id,
+        application::iced::window::Event,
+    ),
     /// A pending maintenance deadline expired.
     Tick(Instant),
     /// The open dialog's buttons (Yes/No, OK/Cancel, field input).
@@ -131,6 +160,76 @@ pub enum PaneOp {
     Sort(SortColumn),
 }
 
+/// Everything the settings worker prepares BEFORE the UI activates a stage:
+/// the compiled theme plus the complete immutable icon set (every required
+/// handle rasterised synchronously — no detached threads, no partial fills,
+/// nothing the view must wait for). The view only borrows this; it performs
+/// no I/O or raster work after construction.
+pub struct Content {
+    pub theme: Theme,
+    pub icons: Icons,
+}
+
+impl Content {
+    /// The settings worker builder: checked prepared appearance plus every
+    /// required icon handle. Any missing input is a fault — the activation
+    /// fails and the consumer retains its last good content.
+    pub fn build(
+        look: &appearance::settings::Prepared,
+        snapshot: &settings::Snapshot,
+    ) -> Result<Self, Diagnostic> {
+        Self::build_contextual(look, snapshot, &PreparationContext::default())
+    }
+    pub fn build_contextual(
+        look: &appearance::settings::Prepared,
+        snapshot: &settings::Snapshot,
+        _context: &PreparationContext,
+    ) -> Result<Self, Diagnostic> {
+        let theme = theme::from_settings(look, snapshot)?;
+        let tints = [
+            theme.tokens.palette.text,
+            theme.tokens.palette.muted_text,
+            theme.tokens.palette.selection_text,
+        ];
+        let icons = Icons::from_prepared(look, &tints)?;
+        Ok(Self { theme, icons })
+    }
+
+    /// The generic interim presentation: no font discovery or raster I/O
+    /// here — the first fenced activation replaces it.
+    pub fn bootstrap(look: &appearance::settings::Prepared) -> Result<Self, Diagnostic> {
+        Ok(Self {
+            theme: theme::from_prepared(look)?,
+            icons: Icons::lucide(),
+        })
+    }
+}
+
+/// Borrow the app-owned view caches for the synchronous pre-ACK activation.
+/// The model, drafts, selection and operations remain with the application.
+fn view_activation<'a>(
+    core: &'a DopusCore,
+    rows: &'a [Vec<VisibleRow>; 2],
+    columns: &'a mut [rows::ColumnCache; 2],
+    measurements: &'a std::cell::RefCell<view::Measurements>,
+    drag: &'a view::drag::Shared,
+    tint: &'a mut String,
+    before: Look,
+) -> impl FnMut(&application::presentation::Presentation<Content>) + 'a {
+    move |presentation| {
+        let content = presentation.content();
+        let after = Look::from_theme(&content.theme);
+        *tint = icons::tint_key(after.tokens.palette.text);
+        *measurements.borrow_mut() = Default::default();
+        if after != before {
+            view::drag::lock(drag).cancel();
+        }
+        for (index, pane) in [PaneId::Left, PaneId::Right].into_iter().enumerate() {
+            columns[index].refresh(after, core.pane(pane), &rows[index]);
+        }
+    }
+}
+
 pub struct Dopus {
     core: DopusCore,
     maintenance: std::sync::mpsc::Sender<Option<Instant>>,
@@ -147,10 +246,15 @@ pub struct Dopus {
     /// (never display-sanitised — the sanitisation law covers display only).
     editing: Option<(PaneId, String)>,
     router: keys::SharedRouter,
-    icons: Icons,
-    theme: Theme,
-    /// The in-session `theme.*` selection (not persisted).
-    theme_override: Option<(Scheme, Mode)>,
+    /// The settings endpoint: the shared consumer + worker lane bridge. The
+    /// app never clones a handle or stores a copy of the prepared content —
+    /// it borrows it through [`Dopus::content`].
+    settings: SettingsUi<Content, PreparationContext>,
+    window: Option<application::iced::window::Id>,
+    /// The generic interim presentation until the first fenced activation.
+    bootstrap: Content,
+    /// The icon tint of the live content, cached for the view.
+    tint: String,
     /// A transient message the next core status replaces.
     status: Option<String>,
     /// The dialog on screen (the OLDEST outstanding reservation), if any.
@@ -162,9 +266,25 @@ pub struct Dopus {
     action_table: Vec<ActionRow>,
     dirs: Option<AppDirs>,
     service: String,
-    tint: String,
     quitting: bool,
     drag: view::drag::Shared,
+    /// The window owns its Bus name (registration succeeded).
+    registered: bool,
+    /// Registration ended fatally (the reason rides the last delivery).
+    registration_refused: bool,
+    /// The initial registration race was lost to a duplicate: quit must
+    /// never persist config over the registered owner.
+    lost_race: bool,
+    /// Launch `dopus.open` PATHs, applied only once the window owns its name
+    /// (or keeps the window after a failed handoff).
+    bootstrap_paths: Vec<String>,
+    /// The human already used the window before the registration outcome.
+    bootstrap_touched: bool,
+    /// A single-instance forward is in flight.
+    handoff_pending: bool,
+    launched: Instant,
+    /// Fresh operation ids for fenced appearance mutations.
+    next_theme_op: u64,
 }
 
 /// Run the windowed app registered on the Bus as `service`. `paths` are the
@@ -178,28 +298,9 @@ pub fn run(
     noded_url: &str,
     paths: &[String],
 ) -> anyhow::Result<()> {
-    let (bus, deliveries) = match bus::spawn(service, noded_url) {
-        Ok(started) => (Some(started.0), Some(started.1)),
-        Err(bus::StartError::NameTaken) => {
-            // Lost the registration race (§ single instance): hand the paths
-            // over if the winner answers, else say why we cannot run.
-            if bus::probe_running(noded_url, service) {
-                return bus::forward_open(noded_url, service, paths)
-                    .map_err(|e| anyhow::anyhow!("forwarding to the running dopus: {e}"));
-            }
-            anyhow::bail!(
-                "the Bus name `{service}` is taken, but nothing answers dopus.ping on it"
-            );
-        }
-        Err(bus::StartError::Rejected(message)) => {
-            anyhow::bail!("noded refused registration as `{service}`: {message}")
-        }
-        // A file manager works standalone: no broker, no Bus.
-        Err(bus::StartError::Unreachable(message)) => {
-            tracing::info!("running without a Bus: {message}");
-            (None, None)
-        }
-    };
+    let launched = Instant::now();
+    let (mut bus, deliveries) = bus::spawn_settings(service, noded_url)
+        .map_err(|e| anyhow::anyhow!("Dopus bootstrap: {e}"))?;
 
     let keymap_path = dirs.as_ref().map(|d| d.keymap_file());
     let router = keys::initial(keymap_path.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -210,24 +311,21 @@ pub fn run(
         action_table(&router.keymap)
     };
 
-    let theme = theme::resolve(app_theme_override(dirs.as_ref()).as_deref());
-    // Read before `theme` moves into the app: iced's default font.
-    let ui_font = theme.ui_font;
-    let tint = icons::hex(theme.tokens.palette.text);
-    let icons = Icons::new();
-    icons.ensure(
-        &[
-            &tint,
-            &icons::hex(theme.tokens.palette.muted_text),
-            &icons::hex(theme.tokens.palette.selection_text),
-        ],
-        ICON_PX,
-        ICON_SCALE,
-    );
+    // The generic bootstrap presentation precedes any installed-font I/O:
+    // the window exists before the first checked activation replaces it.
+    let bootstrap_prepared = bus.take_bootstrap().expect("windowed settings bootstrap");
+    let mut settings = bus.take_settings_ui().expect("windowed settings endpoint");
+    settings.reconcile(bus.settings_generation());
+    let content = Content::bootstrap(&bootstrap_prepared)
+        .map_err(|e| anyhow::anyhow!("settings bootstrap: {}: {}", e.code, e.message))?;
+    let ui_font = content.theme.ui_font;
+    let tint = icons::tint_key(content.theme.tokens.palette.text);
 
-    let (mut core, core_events) = DopusCore::new(config, config_file);
-    // Startup `dopus.open` PATHs land in the panes before the first frame.
-    verbs::apply_open_paths(&mut core, paths);
+    let (core, core_events) = DopusCore::new(config, config_file);
+    // Startup `dopus.open` PATHs land in the panes only once the window owns
+    // its name (or keeps the window after a failed handoff): an initial
+    // refused duplicate must never navigate — and thereby settle config —
+    // over the registered owner.
     let split_ratio = core.config_snapshot().split_ratio;
     let (maintenance, deadlines) = maintenance();
     let mut app = Dopus {
@@ -240,31 +338,35 @@ pub fn run(
         split_ratio,
         editing: None,
         router,
-        icons,
-        theme,
-        theme_override: None,
+        settings,
+        window: None,
+        bootstrap: content,
+        tint,
         status: None,
         dialog: None,
         modal_queue: dialogs::ModalQueue::default(),
-        bus,
+        bus: Some(bus),
         action_table,
         dirs,
         service: service.to_owned(),
-        tint: tint.clone(),
         quitting: false,
         drag: Default::default(),
+        registered: false,
+        registration_refused: false,
+        lost_race: false,
+        bootstrap_paths: paths.to_vec(),
+        bootstrap_touched: false,
+        handoff_pending: false,
+        launched,
+        next_theme_op: 0,
     };
     app.refresh_panes();
-    if let Some(note) = app.theme.notes.clone() {
-        app.status = Some(format!("Theme: {note}"));
-    }
 
     // Built unconditionally: the core channel is pumped whether or not the
-    // Bus exists (a no-broker windowed run still hears the core — law 2).
-    // With no Bus, deliveries drain an always-empty channel.
+    // Bus is connected (a no-broker windowed run still hears the core —
+    // law 2).
     let streams = Streams {
-        deliveries: deliveries
-            .unwrap_or_else(|| application::iced::futures::channel::mpsc::unbounded().1),
+        deliveries,
         core_events: pump(core_events),
         deadlines,
     };
@@ -282,18 +384,13 @@ pub fn run(
     )
     .title(Dopus::title)
     .subscription(Dopus::subscription)
-    .theme(|app: &Dopus| app.theme.iced_theme())
+    .theme(|app: &Dopus| app.content().theme.iced_theme())
     .style(|app: &Dopus, _| application::iced::theme::Style {
-        background_color: app.theme.tokens.palette.surface,
-        text_color: app.theme.tokens.palette.text,
+        background_color: app.content().theme.tokens.palette.surface,
+        text_color: app.content().theme.tokens.palette.text,
     })
     .run()
     .map_err(|e| anyhow::anyhow!("window: {e}"))
-}
-
-/// The per-app theme override path, when the directory exists to hold one.
-fn app_theme_override(dirs: Option<&AppDirs>) -> Option<PathBuf> {
-    dirs.map(AppDirs::theme_override).filter(|p| p.exists())
 }
 
 /// Forward raw core events into the UI thread's channel (law 2's transport;
@@ -312,6 +409,26 @@ fn pump(receiver: std::sync::mpsc::Receiver<CoreEvent>) -> UnboundedReceiver<Cor
         })
         .expect("spawning the core-event pump");
     rx
+}
+
+/// Messages that mean the human is already using the window. An initial
+/// duplicate that was touched is theirs to keep: the handoff may still
+/// forward the paths, but the window must not quit under the user.
+fn is_user_input(msg: &Msg) -> bool {
+    matches!(
+        msg,
+        Msg::Actions(_)
+            | Msg::Pane(..)
+            | Msg::PaneRows(..)
+            | Msg::Go(..)
+            | Msg::LocationEdit(_)
+            | Msg::LocationInput(_)
+            | Msg::LocationSubmit(_)
+            | Msg::Split(_)
+            | Msg::SidebarWidth(..)
+            | Msg::DropTransfer(..)
+            | Msg::Dialog(_)
+    )
 }
 
 /// One cancellable deadline wait. With no pending work the thread blocks
@@ -374,7 +491,7 @@ fn maintenance_wait_cancels_rearms_and_stays_quiet_after_expiry() {
 
 /// The receivers the subscription drains, handed over once.
 struct Streams {
-    deliveries: UnboundedReceiver<Delivery>,
+    deliveries: application::iced::futures::channel::mpsc::Receiver<Delivery>,
     core_events: UnboundedReceiver<CoreEvent>,
     deadlines: UnboundedReceiver<Instant>,
 }
@@ -419,6 +536,9 @@ impl Dopus {
     }
 
     fn update(&mut self, msg: Msg) -> Task<Msg> {
+        if !self.registered && !self.quitting && is_user_input(&msg) {
+            self.bootstrap_touched = true;
+        }
         let layout = self.drag_layout();
         let task = self.dispatch(msg);
         if self.quitting {
@@ -521,7 +641,7 @@ impl Dopus {
                 let derived = self.core.on_event(event);
                 self.on_derived(derived)
             }
-            Msg::Window(event) => self.on_window(event),
+            Msg::Window(id, event) => self.on_window(id, event),
             Msg::Tick(_now) => {
                 let actions = keys::poll_timeout(&self.router);
                 self.on_actions(&actions)
@@ -823,15 +943,30 @@ impl Dopus {
     }
 
     fn on_delivery(&mut self, delivery: Delivery) -> Task<Msg> {
+        // EVERY Bus delivery drains the settings mailbox: a prepared stage
+        // may already be waiting behind a coalesced wake, and the drain
+        // fences it against the live connection generation on the UI loop.
+        let before = self.look();
+        let changed = self.settings.drain_with(
+            || self.bus.as_ref().and_then(|bus| bus.settings_generation()),
+            view_activation(
+                &self.core,
+                &self.rows,
+                &mut self.column_cache,
+                &self.measurements,
+                &self.drag,
+                &mut self.tint,
+                before,
+            ),
+        );
+        if !changed.is_empty() {
+            tracing::info!(
+                elapsed_ms = self.launched.elapsed().as_millis(),
+                "DOpus settings activated"
+            );
+        }
         match delivery {
             Delivery::Command(command) => self.serve(&command),
-            Delivery::ThemeChanged => {
-                // The shared theme selection changed under us: drop the
-                // in-session override and re-resolve from the files.
-                self.theme_override = None;
-                self.reload_theme();
-                Task::none()
-            }
             Delivery::Connected => {
                 tracing::info!("Bus connected as `{}`", self.service);
                 Task::none()
@@ -840,10 +975,95 @@ impl Dopus {
                 tracing::warn!("Bus disconnected; reconnecting in the background");
                 Task::none()
             }
+            // The mailbox was already drained above; the wake itself needs
+            // no further action.
+            Delivery::Settings => Task::none(),
+            Delivery::Registered => {
+                if !self.registered {
+                    self.registered = true;
+                    self.registration_refused = false;
+                    let paths = std::mem::take(&mut self.bootstrap_paths);
+                    verbs::apply_open_paths(&mut self.core, &paths);
+                }
+                Task::none()
+            }
+            Delivery::RegistrationFailed(error) => {
+                self.registration_refused = true;
+                let name_taken = matches!(&error, bus::StartError::NameTaken);
+                if name_taken {
+                    // An initial refused duplicate must never persist its
+                    // config over the registered owner.
+                    self.lost_race = true;
+                }
+                self.status = Some(format!("Bus: {error}"));
+                if !self.registered
+                    && !self.bootstrap_touched
+                    && !self.handoff_pending
+                    && name_taken
+                {
+                    // The single-instance forward: only a TYPED NameTaken
+                    // (the shared client's classification — no text match
+                    // here), only before this instance ever owned the name.
+                    self.handoff_pending = true;
+                    if let Some(bus) = &self.bus {
+                        bus.forward_open(self.bootstrap_paths.clone());
+                    }
+                } else if !self.registered && !self.handoff_pending {
+                    // A non-duplicate refusal (or an untouched window): the
+                    // window is ours for good — apply the launch paths.
+                    let paths = std::mem::take(&mut self.bootstrap_paths);
+                    verbs::apply_open_paths(&mut self.core, &paths);
+                }
+                Task::none()
+            }
+            Delivery::Forwarded(result) => {
+                if !self.handoff_pending {
+                    return Task::none();
+                }
+                self.handoff_pending = false;
+                match result {
+                    Ok(())
+                        if !self.registered
+                            && !self.bootstrap_touched
+                            && self
+                                .bus
+                                .as_ref()
+                                .is_none_or(|bus| bus.registration_generation() == 0) =>
+                    {
+                        self.quit()
+                    }
+                    Ok(()) => Task::none(),
+                    Err(error) => {
+                        // No answer: the window is ours — apply the launch
+                        // paths locally and keep running.
+                        self.status = Some(error);
+                        let paths = std::mem::take(&mut self.bootstrap_paths);
+                        verbs::apply_open_paths(&mut self.core, &paths);
+                        Task::none()
+                    }
+                }
+            }
+            Delivery::ThemeApplied(result) => match result {
+                Ok((scheme, mode)) => {
+                    self.status = Some(format!("Appearance: {scheme} · {mode}"));
+                    Task::none()
+                }
+                Err(message) => {
+                    self.status = Some(message);
+                    Task::none()
+                }
+            },
+            Delivery::Stopped { faults } => {
+                for fault in faults {
+                    tracing::warn!("{fault}");
+                }
+                Task::none()
+            }
         }
     }
 
     fn server_meta(&self) -> ServerMeta {
+        let content = self.content();
         ServerMeta {
             service: self.service.clone(),
             headless: false,
@@ -852,15 +1072,15 @@ impl Dopus {
                 .dirs
                 .as_ref()
                 .map(|d| d.config_dir().join("config.conf.mix").display().to_string()),
-            theme_scheme: self.theme.scheme.name().to_owned(),
-            theme_mode: self.theme.mode.name().to_owned(),
+            theme_scheme: content.theme.scheme.name().to_owned(),
+            theme_mode: content.theme.mode.name().to_owned(),
             appearance: crate::verbs::AppearanceState {
-                icons: self.icons.mode().to_owned(),
-                asset_set: self.icons.asset_set().map(str::to_owned),
-                font_ui: self.theme.ui.0.clone(),
-                font_mono: self.theme.mono.0.clone(),
-                font_ui_weight: self.theme.ui_font.weight.value(),
-                icon_weight: self.icons.weight(),
+                icons: content.icons.mode().to_owned(),
+                asset_set: content.icons.asset_set().map(str::to_owned),
+                font_ui: content.theme.ui.0.clone(),
+                font_mono: content.theme.mono.0.clone(),
+                font_ui_weight: content.theme.ui_font.weight.value(),
+                icon_weight: content.icons.weight(),
             },
             actions: self.action_table.clone(),
         }
@@ -872,6 +1092,13 @@ impl Dopus {
             return Task::none();
         };
         let handle = bus.clone();
+        if !handle.is_current(&command.id) {
+            return Task::none();
+        }
+        // Reconcile the consumer with the ACTUAL live connection generation
+        // before any command-native info is built: dopus.state/app.describe
+        // report what the connection really carries, never a stale sample.
+        self.settings.reconcile(handle.settings_generation());
         let meta = self.server_meta();
         let info = buildinfo::build_info!();
         let mut tasks = Vec::new();
@@ -894,34 +1121,47 @@ impl Dopus {
                         .unwrap_or_default(),
                     );
                 }
-                Served::Reply { id, rc, body } => handle.respond(id, rc, body),
+                Served::Reply { id, rc, body } => {
+                    let body = if matches!(command.verb.as_str(), "dopus.state" | "app.describe") {
+                        // The canonical settings evidence (reconciled at the
+                        // top of serve) joins the actual client state.
+                        match serde_json::from_str::<serde_json::Value>(&body) {
+                            Ok(mut value) if value.is_object() => {
+                                value["settings"] = serde_json::to_value(
+                                    self.settings.session().host().consumer().evidence(),
+                                )
+                                .expect("settings evidence serialises");
+                                value["settings_cache"] =
+                                    serde_json::json!(self.settings.session().cache_evidence());
+                                value.to_string()
+                            }
+                            _ => body,
+                        }
+                    } else {
+                        body
+                    };
+                    handle.respond(id, rc, body);
+                }
                 Served::LocationFocus { id, pane } => {
                     tasks.push(self.serve_location_focus(id, pane))
                 }
                 Served::ThemeSet { id, scheme, mode } => {
-                    let result = self.select_theme(scheme.as_deref(), mode.as_deref());
-                    self.theme_reply(id, result);
+                    tasks.push(self.theme_request(Some(id), scheme.as_deref(), mode.as_deref()));
                 }
-                Served::ThemeAction { id, action } => {
-                    // The same performer the `dopus.theme.set` verb uses;
-                    // mode-toggle resolves against the live selection first
-                    // (the keyboard path's rule).
-                    let result = match action {
-                        verbs::ThemeAction::Scheme(name) => self.select_theme(Some(&name), None),
-                        verbs::ThemeAction::ModeToggle => {
-                            let mode = match self
-                                .theme_override
-                                .map(|(_, m)| m)
-                                .unwrap_or(self.theme.mode)
-                            {
-                                Mode::Dark => Mode::Light,
-                                _ => Mode::Dark,
-                            };
-                            self.select_theme(None, Some(mode.name()))
-                        }
-                    };
-                    self.theme_reply(id, result);
-                }
+                Served::ThemeAction { id, action } => match action {
+                    verbs::ThemeAction::Scheme(name) => {
+                        tasks.push(self.theme_request(Some(id), Some(&name), None));
+                    }
+                    // Mode-toggle resolves against the live applied
+                    // selection first (the keyboard path's rule).
+                    verbs::ThemeAction::ModeToggle => {
+                        let mode = match self.content().theme.mode {
+                            Mode::Dark => Mode::Light,
+                            _ => Mode::Dark,
+                        };
+                        tasks.push(self.theme_request(Some(id), None, Some(mode.name())));
+                    }
+                },
                 Served::Quit { id } => {
                     handle.respond(
                         id,
@@ -943,7 +1183,7 @@ impl Dopus {
     }
 
     /// Window performer for Bus location.focus; keyboard uses the same editor.
-    fn serve_location_focus(&mut self, id: u64, pane: PaneId) -> Task<Msg> {
+    fn serve_location_focus(&mut self, id: bus::Request, pane: PaneId) -> Task<Msg> {
         // Repeated Bus focus must not replace the human's unfinished draft.
         // Switching panes still starts an editor seeded from the new path.
         let task = if self
@@ -970,32 +1210,102 @@ impl Dopus {
         task
     }
 
-    /// The theme performer's reply, shared by the `dopus.theme.set` verb and
-    /// the `dopus.action theme.*` actions: the resolved `(scheme, mode)`
-    /// names, or the INVALID_ARGUMENT refusal `select_theme` produced.
-    fn theme_reply(&mut self, id: u64, result: Result<(), String>) {
-        let Some(bus) = &self.bus else { return };
-        match result {
-            Ok(()) => bus.respond(
-                id,
-                0,
-                serde_json::to_string(&verbs::ThemeSetReply {
-                    scheme: self.theme.scheme.name().to_owned(),
-                    mode: self.theme.mode.name().to_owned(),
-                })
-                .unwrap_or_default(),
-            ),
-            Err(message) => bus.respond(
-                id,
-                10,
-                serde_json::to_string(&verbs::Refusal {
-                    error_code: verbs::code::INVALID_ARGUMENT.to_owned(),
-                    message,
-                    reason: None,
-                })
-                .unwrap_or_default(),
-            ),
+    /// The theme performer, shared by the `dopus.theme.set` verb, the
+    /// `dopus.action theme.*` actions and the keyboard path: a FENCED
+    /// appearance mutation through the shared settings authority. The
+    /// binding, incarnation and revision are captured from the CONFIRMED
+    /// consumer read; the bus worker validates then applies and reports the
+    /// real receipt (the reply carries it; the status line shows the
+    /// outcome). Without a confirmed read (or a Bus) the request is refused
+    /// as unsupported — never faked as success, never an app-local override.
+    fn theme_request(
+        &mut self,
+        id: Option<bus::Request>,
+        scheme: Option<&str>,
+        mode: Option<&str>,
+    ) -> Task<Msg> {
+        let Some(bus) = &self.bus else {
+            return Task::none();
+        };
+        let refuse = |message: String| {
+            if let Some(id) = &id {
+                bus.respond(
+                    id.clone(),
+                    10,
+                    serde_json::to_string(&verbs::Refusal {
+                        error_code: verbs::code::UNAVAILABLE.to_owned(),
+                        message: message.clone(),
+                        reason: Some("unsupported".to_owned()),
+                    })
+                    .unwrap_or_default(),
+                );
+            }
+            message
+        };
+        let snapshot = match self.settings.session().host().consumer().current() {
+            Some(snapshot) => snapshot.clone(),
+            None => {
+                let message = refuse(
+                    "appearance settings are not available (no confirmed settings read)".into(),
+                );
+                self.status = Some(message);
+                return Task::none();
+            }
+        };
+        let mut changes = std::collections::BTreeMap::new();
+        for (path, name) in [("appearance.scheme", scheme), ("appearance.mode", mode)] {
+            let Some(name) = name else { continue };
+            let known = match path {
+                "appearance.scheme" => Scheme::from_name(name).is_some(),
+                _ => Mode::from_name(name).is_some(),
+            };
+            if !known {
+                let message = refuse(format!("unknown selection {name:?} for {path}"));
+                self.status = Some(message);
+                return Task::none();
+            }
+            changes.insert(path.to_owned(), serde_json::json!(name));
         }
+        if changes.is_empty() {
+            // A no-op theme request reports the live applied selection — a
+            // real result, not a faked write.
+            let reply = verbs::ThemeSetReply {
+                scheme: self.content().theme.scheme.name().to_owned(),
+                mode: self.content().theme.mode.name().to_owned(),
+            };
+            if let Some(id) = &id {
+                bus.respond(
+                    id.clone(),
+                    0,
+                    serde_json::to_string(&reply).unwrap_or_default(),
+                );
+            }
+            return Task::none();
+        }
+        // The resulting selection for the reply: the applied names are the
+        // requested ones (an `unchanged` receipt counts as applied).
+        let current = &self.content().theme;
+        let scheme_name = scheme
+            .map(str::to_owned)
+            .unwrap_or_else(|| current.scheme.name().to_owned());
+        let mode_name = mode
+            .map(str::to_owned)
+            .unwrap_or_else(|| current.mode.name().to_owned());
+        self.next_theme_op += 1;
+        let request = bus::ThemeRequest {
+            reply_id: id,
+            binding: snapshot.binding.clone(),
+            expected_incarnation: snapshot.incarnation.clone(),
+            expected_revision: snapshot.revision,
+            operation_id: format!("dopus-theme-{}-{}", std::process::id(), self.next_theme_op),
+            changes,
+            scheme: scheme_name,
+            mode: mode_name,
+        };
+        if let Err(error) = bus.theme_apply(request) {
+            self.status = Some(error);
+        }
+        Task::none()
     }
 
     /// The keyboard/menu path: `theme.*` here, everything else through the
@@ -1008,22 +1318,17 @@ impl Dopus {
                 self.stop_editing();
             }
             if *action == actions::theme::MODE_TOGGLE {
-                let mode = match self
-                    .theme_override
-                    .map(|(_, m)| m)
-                    .unwrap_or(self.theme.mode)
-                {
+                let mode = match self.content().theme.mode {
                     Mode::Dark => Mode::Light,
                     _ => Mode::Dark,
                 };
-                self.set_override(None, Some(mode));
+                tasks.push(self.theme_request(None, None, Some(mode.name())));
                 continue;
             }
             if let Some(name) = verbs::scheme_action(*action) {
-                // The action names are exactly the scheme names, so this
-                // always parses; a stray name falls back to the current
-                // scheme inside set_override.
-                self.set_override(Scheme::from_name(name), None);
+                // The action names are exactly the scheme names; the fenced
+                // request validates them against the authority's vocabulary.
+                tasks.push(self.theme_request(None, Some(name), None));
                 continue;
             }
             match verbs::apply_action(*action, &mut self.core) {
@@ -1034,22 +1339,18 @@ impl Dopus {
                 // consumed every theme id) but the shared layer must stay
                 // exhaustive: perform the selection the same way the Bus
                 // arm does.
-                Ok(verbs::Applied::Theme(action)) => {
-                    let _ = match action {
-                        verbs::ThemeAction::Scheme(name) => self.select_theme(Some(&name), None),
-                        verbs::ThemeAction::ModeToggle => {
-                            let mode = match self
-                                .theme_override
-                                .map(|(_, m)| m)
-                                .unwrap_or(self.theme.mode)
-                            {
-                                Mode::Dark => Mode::Light,
-                                _ => Mode::Dark,
-                            };
-                            self.select_theme(None, Some(mode.name()))
-                        }
-                    };
-                }
+                Ok(verbs::Applied::Theme(action)) => match action {
+                    verbs::ThemeAction::Scheme(name) => {
+                        tasks.push(self.theme_request(None, Some(&name), None));
+                    }
+                    verbs::ThemeAction::ModeToggle => {
+                        let mode = match self.content().theme.mode {
+                            Mode::Dark => Mode::Light,
+                            _ => Mode::Dark,
+                        };
+                        tasks.push(self.theme_request(None, None, Some(mode.name())));
+                    }
+                },
                 Ok(verbs::Applied::Quit) => quit = true,
                 Err(refusal) => self.status = Some(refusal.message),
             }
@@ -1060,52 +1361,24 @@ impl Dopus {
         Task::batch(tasks)
     }
 
-    /// An in-session theme selection, expressed as names (the Bus path).
-    fn select_theme(&mut self, scheme: Option<&str>, mode: Option<&str>) -> Result<(), String> {
-        let scheme = scheme
-            .map(|name| Scheme::from_name(name).ok_or_else(|| format!("unknown scheme {name:?}")))
-            .transpose()?;
-        let mode = mode
-            .map(|name| Mode::from_name(name).ok_or_else(|| format!("unknown mode {name:?}")))
-            .transpose()?;
-        self.set_override(scheme, mode);
-        Ok(())
-    }
-
-    fn set_override(&mut self, scheme: Option<Scheme>, mode: Option<Mode>) {
-        let current = self
-            .theme_override
-            .take()
-            .unwrap_or((self.theme.scheme, self.theme.mode));
-        self.theme_override = Some((scheme.unwrap_or(current.0), mode.unwrap_or(current.1)));
-        self.reload_theme();
-    }
-
-    /// Re-resolve the theme from the files plus the in-session override, and
-    /// re-tint the icons to the new text token.
-    fn reload_theme(&mut self) {
-        *self.measurements.get_mut() = Default::default();
-        self.theme = theme::resolve_selected(
-            self.theme_override,
-            app_theme_override(self.dirs.as_ref()).as_deref(),
-        );
-        if let Some(note) = self.theme.notes.clone() {
-            self.status = Some(format!("Theme: {note}"));
+    fn on_window(
+        &mut self,
+        id: application::iced::window::Id,
+        event: application::iced::window::Event,
+    ) -> Task<Msg> {
+        if self.window.is_some_and(|window| window != id) {
+            return Task::none();
         }
-        self.tint = icons::hex(self.theme.tokens.palette.text);
-        self.icons.ensure(
-            &[
-                &self.tint,
-                &icons::hex(self.theme.tokens.palette.muted_text),
-                &icons::hex(self.theme.tokens.palette.selection_text),
-            ],
-            ICON_PX,
-            ICON_SCALE,
-        );
-    }
-
-    fn on_window(&mut self, event: application::iced::window::Event) -> Task<Msg> {
         match event {
+            application::iced::window::Event::Opened { scale_factor, .. } => {
+                self.window = Some(id);
+                self.output_scale(scale_factor);
+            }
+            application::iced::window::Event::Rescaled(scale) => {
+                if self.window == Some(id) {
+                    self.output_scale(scale);
+                }
+            }
             application::iced::window::Event::Focused => {
                 // filemgr's `reload_keymap_on_focus` rule: pick up keymap
                 // edits, cancel a pending chord either way.
@@ -1130,20 +1403,48 @@ impl Dopus {
         Task::none()
     }
 
+    fn output_scale(&mut self, scale: f32) {
+        let result = PreparationContext::new(scale).and_then(|context| {
+            self.settings
+                .set_context(
+                    context,
+                    self.bus.as_ref().and_then(BusHandle::settings_generation),
+                )
+                .map(|_| ())
+        });
+        if let Err(error) = result {
+            self.status = Some(error.message);
+        }
+    }
+
     fn quit(&mut self) -> Task<Msg> {
         if self.quitting {
             return Task::none();
         }
         self.quitting = true;
-        // Persist the latest settings even before their settle deadline.
-        let derived = self.core.flush_config();
-        let _ = self.on_derived(derived);
+        // Persist the latest settings even before their settle deadline —
+        // but an initial refused duplicate must not overwrite the config the
+        // registered owner is using.
+        if !self.lost_race {
+            let derived = self.core.flush_config();
+            let _ = self.on_derived(derived);
+        }
         if let Some(bus) = &self.bus {
             bus.quit();
-            // Reply-then-exit, the windowed twin of headless's join: the
-            // drain-before-break flushes any queued reply, and this wait
-            // puts it on the wire before iced exits the process.
-            bus.wait_done(std::time::Duration::from_secs(3));
+            // The worker drains accepted replies and the settings cache
+            // within its single two-second budget; its done receipt is
+            // authoritative (a silent timeout is reported, never hidden).
+            match bus.wait_done(std::time::Duration::from_secs(3)) {
+                Ok(faults) => {
+                    eprintln!("DOPUS_SHUTDOWN {}", serde_json::json!({ "faults": faults }));
+                }
+                Err(error) => {
+                    eprintln!(
+                        "DOPUS_SHUTDOWN {}",
+                        serde_json::json!({ "faults": [error] })
+                    );
+                }
+            }
         }
         application::iced::exit()
     }
@@ -1151,29 +1452,63 @@ impl Dopus {
     fn subscription(&self) -> Subscription<Msg> {
         Subscription::batch([
             Subscription::run(streams),
-            application::iced::event::listen_with(|event, _status, _window| match event {
+            application::iced::event::listen_with(|event, _status, window| match event {
                 application::iced::Event::Window(
-                    e @ (application::iced::window::Event::Resized(_)
+                    e @ (application::iced::window::Event::Opened { .. }
+                    | application::iced::window::Event::Rescaled(_)
+                    | application::iced::window::Event::Resized(_)
                     | application::iced::window::Event::Focused
                     | application::iced::window::Event::Unfocused
                     | application::iced::window::Event::CloseRequested),
-                ) => Some(Msg::Window(e)),
+                ) => Some(Msg::Window(window, e)),
                 _ => None,
             }),
         ])
     }
 
+    /// Borrow the live prepared content: the activated presentation, or the
+    /// generic bootstrap until the first fenced activation. The app never
+    /// stores a copy — the session owns the checked [`Prepared`]
+    /// (appearance::settings::Prepared) and this is its only lookup.
+    fn content(&self) -> &Content {
+        self.settings
+            .session()
+            .host()
+            .presentation()
+            .map(|presentation| presentation.content())
+            .unwrap_or(&self.bootstrap)
+    }
+
+    /// The persistent provenance/fault status: which settings generation
+    /// the window presents, and what its Bus registration state is.
+    fn persistent_status(&self) -> String {
+        use settings::fallback::PresentationKind;
+        let kind = match self.settings.session().host().consumer().evidence().kind {
+            Some(PresentationKind::Current) => "settings-current",
+            Some(PresentationKind::Cached) => "settings-cached",
+            Some(PresentationKind::Embedded) => "settings-embedded",
+            Some(PresentationKind::Retained) => "settings-retained",
+            Some(PresentationKind::LastGood) => "settings-last-good",
+            None => "settings-bootstrap",
+        };
+        let connection = if self.bus.as_ref().is_some_and(|bus| bus.connected()) {
+            "bus-connected"
+        } else if self.registration_refused {
+            "bus-refused"
+        } else if self.registered {
+            "bus-disconnected"
+        } else {
+            "bus-connecting"
+        };
+        format!(
+            "{} · {}",
+            crate::strings::label(kind),
+            crate::strings::label(connection)
+        )
+    }
+
     fn look(&self) -> Look {
-        Look {
-            sidebar_px: self.theme.sidebar_px,
-            small_px: self.theme.small_px,
-            tokens: self.theme.tokens,
-            chrome: self.theme.chrome,
-            ui_font: self.theme.ui_font,
-            mono_font: self.theme.mono_font,
-            px: self.theme.ui_px(),
-            mono_px: self.theme.mono.1,
-        }
+        Look::from_theme(&self.content().theme)
     }
 
     fn toggle_sidebar(&mut self, sidebar: dopus_core::config::Sidebar) {
@@ -1220,6 +1555,7 @@ impl Dopus {
 
     fn view(&self) -> Element<'_, Msg, application::iced::Theme, Renderer> {
         let info = self.status.as_deref().unwrap_or(self.core.info());
+        let provenance = self.persistent_status();
         let editing = self
             .editing
             .as_ref()
@@ -1227,7 +1563,7 @@ impl Dopus {
         let content = view::root(
             self.look(),
             &self.measurements,
-            &self.icons,
+            &self.content().icons,
             &self.tint,
             self.core.active(),
             self.split_ratio,
@@ -1237,6 +1573,7 @@ impl Dopus {
             &self.rows[1],
             editing,
             info,
+            &provenance,
             self.dialog.as_ref(),
             self.core.places(),
             self.core.properties(self.core.active()),
@@ -1275,7 +1612,7 @@ impl Dopus {
             content,
             self.drag.clone(),
             self.look(),
-            &self.icons,
+            &self.content().icons,
             &self.tint,
         ))
     }
@@ -1303,16 +1640,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_scale_events_are_ordered_window_owned_and_validated() {
+        let (_dir, mut app, _lane) = fixture();
+        let window = application::iced::window::Id::unique();
+        let foreign = application::iced::window::Id::unique();
+        let _ = app.on_window(
+            window,
+            application::iced::window::Event::Opened {
+                position: None,
+                size: Size::new(980.0, 640.0),
+                scale_factor: 1.5,
+            },
+        );
+        assert_eq!(app.window, Some(window));
+        let first = app.settings.session().preparation_evidence().desired;
+        let _ = app.on_window(foreign, application::iced::window::Event::Rescaled(2.0));
+        assert_eq!(app.settings.session().preparation_evidence().desired, first);
+        let _ = app.on_window(window, application::iced::window::Event::Rescaled(2.0));
+        let second = app.settings.session().preparation_evidence().desired;
+        assert!(second.get() > first.get());
+        let _ = app.on_window(window, application::iced::window::Event::Rescaled(f32::NAN));
+        assert_eq!(
+            app.settings.session().preparation_evidence().desired,
+            second
+        );
+        assert!(app.status.is_some());
+    }
+
+    #[test]
+    fn contextual_scale_preparation_retains_old_handles_and_file_state_until_activation() {
+        let (dir, mut app, mut lane) = fixture();
+        let _ = activate(&mut app, &mut lane, settings::Desktop::default());
+        app.editing = Some((PaneId::Left, "unfinished path".into()));
+        let stamp = app.settings.session().frame_stamp().unwrap();
+        let old = app
+            .content()
+            .icons
+            .get(icons::Icon::Folder, &app.tint, icons::RASTER_PX)
+            .unwrap();
+        app.settings
+            .set_context(PreparationContext::new(1.5).unwrap(), Some(1))
+            .unwrap();
+        assert_eq!(app.settings.session().frame_stamp(), Some(stamp));
+        assert_eq!(
+            app.content()
+                .icons
+                .get(icons::Icon::Folder, &app.tint, icons::RASTER_PX),
+            Some(old.clone())
+        );
+        assert!(!app.settings.session().preparation_evidence().current);
+        drive(&mut lane, 2);
+        let _ = drain(&mut app);
+        let installed = app.settings.session().frame_stamp().unwrap();
+        assert!(installed.local_revision > stamp.local_revision);
+        assert!(app.settings.session().preparation_evidence().current);
+        let new = app
+            .content()
+            .icons
+            .get(icons::Icon::Folder, &app.tint, icons::RASTER_PX)
+            .unwrap();
+        assert_ne!(new, old);
+        let application::iced::widget::image::Handle::Rgba { width, height, .. } = new else {
+            panic!("embedded ready image")
+        };
+        let side = (app.look().chrome.icon * 1.5).ceil() as u32;
+        assert_eq!((width, height), (side, side));
+        assert_eq!(app.core.pane(PaneId::Left).path, dir.path());
+        assert_eq!(app.editing, Some((PaneId::Left, "unfinished path".into())));
+    }
+
+    #[test]
     fn sidebar_bus_actions_reach_the_window_and_refuse_headless_or_busy() {
         use dopus_core::config::Sidebar;
-        let (_dir, mut app) = fixture();
+        let (_dir, mut app, mut _lane) = fixture();
         let info = buildinfo::build_info!();
         for (action, sidebar) in [
             (actions::view::TOGGLE_PLACES, Sidebar::Places),
             (actions::view::TOGGLE_PROPERTIES, Sidebar::Properties),
         ] {
             let command = bus::Command {
-                id: 43,
+                id: 43.into(),
                 verb: "dopus.action".into(),
                 body: format!(r#"{{"id":"{action}","pane":"right"}}"#),
                 caller_key: "mesh:caller@example".into(),
@@ -1357,12 +1764,41 @@ mod tests {
         }
     }
 
-    fn fixture() -> (tempfile::TempDir, Dopus) {
+    fn fixture_with(
+        build: impl Fn(
+            &appearance::settings::Prepared,
+            &settings::Snapshot,
+        ) -> Result<Content, Diagnostic>
+        + Send
+        + Sync
+        + 'static,
+    ) -> (
+        tempfile::TempDir,
+        Dopus,
+        application::presentation::native::Lane<Content, PreparationContext>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let mut config = DOpusConfig::default();
         config.left.path = dir.path().to_owned();
         config.right.path = dir.path().to_owned();
         let (core, _events) = DopusCore::new(config, None);
+        let binding = settings::Binding {
+            instance: "fixture".into(),
+            profile: "default".into(),
+        };
+        let consumer = settings::consumer::Consumer::for_app(binding, "dopus").unwrap();
+        let (settings, lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::with_context(
+                consumer,
+                PreparationContext::default(),
+            ),
+            application::presentation::native::Worker::contextual(
+                move |look, snapshot, _: &PreparationContext| build(look, snapshot),
+            )
+            .with_contextual_resource_requirements(icons::requirements),
+        );
+        let bootstrap = Content::bootstrap(&appearance::settings::bootstrap().unwrap()).unwrap();
+        let tint = icons::tint_key(bootstrap.theme.tokens.palette.text);
         let app = Dopus {
             core,
             maintenance: std::sync::mpsc::channel().0,
@@ -1373,16 +1809,10 @@ mod tests {
             split_ratio: 0.5,
             editing: None,
             router: keys::initial(None).unwrap(),
-            icons: Icons::new(),
-            theme: theme::resolve_selection(
-                &theme::Selection {
-                    scheme: Scheme::default(),
-                    mode: Mode::default(),
-                    design_source: None,
-                },
-                Vec::new(),
-            ),
-            theme_override: None,
+            settings,
+            window: None,
+            bootstrap,
+            tint,
             status: None,
             dialog: None,
             modal_queue: dialogs::ModalQueue::default(),
@@ -1390,11 +1820,175 @@ mod tests {
             action_table: verbs::action_table(&keys::load(None).unwrap()),
             dirs: None,
             service: "dopus-test".into(),
-            tint: String::new(),
             quitting: false,
             drag: Default::default(),
+            registered: true,
+            registration_refused: false,
+            lost_race: false,
+            bootstrap_paths: Vec::new(),
+            bootstrap_touched: false,
+            handoff_pending: false,
+            launched: Instant::now(),
+            next_theme_op: 0,
         };
-        (dir, app)
+        (dir, app, lane)
+    }
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        Dopus,
+        application::presentation::native::Lane<Content, PreparationContext>,
+    ) {
+        fixture_with(Content::build)
+    }
+
+    fn snapshot(
+        binding: &settings::Binding,
+        desktop: settings::Desktop,
+        revision: u64,
+    ) -> settings::Snapshot {
+        settings::Snapshot {
+            schema: settings::SCHEMA,
+            binding: binding.clone(),
+            incarnation: "fixture".into(),
+            revision: settings::Revision(revision),
+            design_revision: settings::Revision(revision),
+            source_digest: settings::source_digest(settings::EMBEDDED_DEFAULT_SOURCE),
+            effective: settings::resolve(&desktop).expect("desktop resolves"),
+            desktop,
+        }
+    }
+
+    /// Drive the settings lane through at most `steps` progress transitions
+    /// (a resource preparation needs two: the jobs replacement, then the
+    /// completed preparation). Runs the lane's own worker on a test runtime.
+    fn drive(
+        lane: &mut application::presentation::native::Lane<Content, PreparationContext>,
+        steps: usize,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for _ in 0..steps {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), lane.drive())
+                    .await
+                    .expect("bounded fixture progress")
+                {
+                    application::presentation::native::Progress::Wake
+                    | application::presentation::native::Progress::Updated => {}
+                    application::presentation::native::Progress::UiClosed => {
+                        panic!("the settings lane closed")
+                    }
+                }
+            }
+        });
+    }
+
+    /// Drain the lane's published events on the UI loop, exactly the
+    /// `Delivery::Settings` arm: the content swap, the tint and the
+    /// measurement-cache reset.
+    fn drain(app: &mut Dopus) -> Vec<settings::domains::ChangePlan> {
+        let before = app.look();
+        app.settings.drain_with(
+            || Some(1),
+            view_activation(
+                &app.core,
+                &app.rows,
+                &mut app.column_cache,
+                &app.measurements,
+                &app.drag,
+                &mut app.tint,
+                before,
+            ),
+        )
+    }
+
+    /// Drive the fixture's consumer to a confirmed snapshot and activate it
+    /// through the REAL production path: connect, offline embedded fallback
+    /// (prepared on the lane's worker), subscribe, authority read, prepare,
+    /// fence and acknowledge — synchronously. Returns the change plan of a
+    /// current successful activation.
+    fn activate(
+        app: &mut Dopus,
+        lane: &mut application::presentation::native::Lane<Content, PreparationContext>,
+        desktop: settings::Desktop,
+    ) -> Option<settings::domains::ChangePlan> {
+        let generation = 1;
+        if app
+            .settings
+            .session()
+            .host()
+            .consumer()
+            .generation()
+            .is_none()
+        {
+            // Bootstrap: connect; while the subscribe runs, the offline
+            // fallback prepares the embedded presentation.
+            let _ = app
+                .settings
+                .handle_with(SettingsEvent::Wake, Some(generation), |_| {});
+            drive(lane, 2);
+            let changed = drain(app);
+            assert!(!changed.is_empty(), "the embedded fallback activates");
+        }
+        // The subscribe completes, then the authority read installs the
+        // requested desktop and the worker prepares its content.
+        let work = app
+            .settings
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .cloned()
+            .expect("subscribe work");
+        let _ =
+            app.settings
+                .handle_with(SettingsEvent::Rpc(work, Ok(None)), Some(generation), |_| {});
+        drive(lane, 1);
+        let work = app
+            .settings
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .cloned()
+            .expect("read work");
+        let binding = app.settings.session().host().consumer().binding().clone();
+        let snapshot = snapshot(&binding, desktop, 1);
+        let changed = app.settings.handle_with(
+            SettingsEvent::Rpc(work, Ok(Some(snapshot))),
+            Some(generation),
+            |_| {},
+        );
+        let mut changes: Vec<_> = changed.into_iter().collect();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let consumer = app.settings.session().host().consumer();
+                    if consumer.applied().is_some_and(|applied| {
+                        applied.revision == settings::Revision(1)
+                            && applied.incarnation == "fixture"
+                    }) || consumer.fault().is_some()
+                    {
+                        break;
+                    }
+                    assert!(!matches!(
+                        lane.drive().await,
+                        application::presentation::native::Progress::UiClosed
+                    ));
+                    changes.extend(drain(app));
+                }
+            })
+            .await
+            .expect("confirmed activation or explicit preparation fault");
+        });
+        changes.into_iter().next()
     }
 
     fn pin_pending_drop(app: &mut Dopus, source: PathBuf) {
@@ -1438,7 +2032,7 @@ mod tests {
 
     #[test]
     fn right_click_preserves_a_group_and_retargets_an_unselected_item() {
-        let (dir, mut app) = fixture();
+        let (dir, mut app, mut _lane) = fixture();
         let paths: Vec<_> = ["a", "b", "c"].map(|name| dir.path().join(name)).into();
         let pane = PaneId::Right;
         app.core.on_event(CoreEvent::ListingArrived {
@@ -1507,7 +2101,7 @@ mod tests {
     #[test]
     fn context_popup_survives_pane_retarget_and_owns_navigation_keys() {
         use application::iced::{Event, keyboard, mouse};
-        let (dir, mut app) = fixture();
+        let (dir, mut app, mut _lane) = fixture();
         for sidebar in [
             dopus_core::config::Sidebar::Places,
             dopus_core::config::Sidebar::Properties,
@@ -1615,7 +2209,7 @@ mod tests {
         use dopus_core::config::Sidebar;
         let command = |action: ActionId| {
             Msg::Bus(Delivery::Command(bus::Command {
-                id: 7,
+                id: 7.into(),
                 verb: "dopus.action".into(),
                 body: serde_json::json!({"id": action.as_str()}).to_string(),
                 caller_key: "mesh:caller@example".into(),
@@ -1628,10 +2222,9 @@ mod tests {
             Msg::Actions(vec![actions::view::TOGGLE_PLACES]),
             command(actions::view::TOGGLE_PLACES),
             command(actions::view::TOGGLE_PROPERTIES),
-            command(actions::theme::MODE_TOGGLE),
         ];
         for mutation in mutations {
-            let (dir, mut app) = fixture();
+            let (dir, mut app, mut _lane) = fixture();
             let mutation = match mutation {
                 Msg::Split(_) => Msg::Split(if app.core.config_snapshot().split_ratio >= 0.5 {
                     0.3
@@ -1685,24 +2278,31 @@ mod tests {
     }
 
     #[test]
-    fn theme_reload_cancels_a_pending_drop_when_typography_changes() {
-        let (dir, mut app) = fixture();
+    fn prepared_typography_activation_cancels_a_pending_drop_and_keeps_content() {
+        let (dir, mut app, mut lane) = fixture();
         let source = dir.path().join("source");
         std::fs::write(&source, b"source").unwrap();
-        // Simulate the previous typography before a Bus theme-change notice.
-        app.theme.ui.1 += 3.0;
-        pin_pending_drop(&mut app, source);
+        pin_pending_drop(&mut app, source.clone());
         let _ = app.update(Msg::Noop);
         assert!(view::drag::lock(&app.drag).pending.is_some());
         let before = app.drag_layout();
-        let _ = app.update(Msg::Bus(Delivery::ThemeChanged));
+        // A text-scale change must reshape the view: stale drag geometry
+        // retires while the file content it pointed at is untouched.
+        let mut desktop = settings::Desktop::default();
+        desktop.ui.text_scale = 2.0;
+        let changed = activate(&mut app, &mut lane, desktop);
+        assert!(changed.is_some(), "typography must be a render change");
+        // The layout comparison that retires stale geometry lives in the
+        // update path, exactly where a real settings delivery lands.
+        let _ = app.update(Msg::Noop);
         assert_ne!(app.drag_layout(), before);
         assert!(view::drag::lock(&app.drag).pending.is_none());
+        assert!(source.exists(), "drag cancel preserves file content");
     }
 
     #[test]
     fn pane_controls_and_split_changes_dismiss_location_editing() {
-        let (_dir, mut app) = fixture();
+        let (_dir, mut app, mut _lane) = fixture();
         for msg in [
             Msg::Pane(PaneId::Right, PaneOp::Sort(SortColumn::Size)),
             Msg::Split(0.7),
@@ -1721,7 +2321,7 @@ mod tests {
 
     #[test]
     fn toolbar_actions_follow_the_active_pane() {
-        let (_dir, mut app) = fixture();
+        let (_dir, mut app, mut _lane) = fixture();
         let left_hidden = app.core.pane(PaneId::Left).show_hidden;
         let right_hidden = app.core.pane(PaneId::Right).show_hidden;
         app.core.set_active_pane(PaneId::Right);
@@ -1736,7 +2336,7 @@ mod tests {
 
     #[test]
     fn switching_panes_dismisses_location_editing_without_submitting_the_draft() {
-        let (_dir, mut app) = fixture();
+        let (_dir, mut app, mut _lane) = fixture();
         let original = app.core.pane(PaneId::Left).path.clone();
         let _ = app.begin_edit(PaneId::Left);
         let _ = app.update(Msg::LocationInput("unsubmitted-draft".into()));
@@ -1749,11 +2349,11 @@ mod tests {
 
     #[test]
     fn bus_location_focus_preserves_a_same_pane_draft() {
-        let (_dir, mut app) = fixture();
+        let (_dir, mut app, mut _lane) = fixture();
         let _ = app.begin_edit(PaneId::Left);
         let draft = "~/unfinished draft".to_owned();
         let _ = app.update(Msg::LocationInput(draft.clone()));
-        let _ = app.serve_location_focus(1, PaneId::Left);
+        let _ = app.serve_location_focus(1.into(), PaneId::Left);
         assert_eq!(app.editing, Some((PaneId::Left, draft)));
         assert_eq!(app.core.active(), PaneId::Left);
         assert!(app.router.lock().unwrap().focus_editable);
@@ -1761,13 +2361,13 @@ mod tests {
 
     #[test]
     fn bus_location_focus_switches_from_another_panes_draft() {
-        let (dir, mut app) = fixture();
+        let (dir, mut app, mut _lane) = fixture();
         let right = dir.path().join("right");
         std::fs::create_dir(&right).unwrap();
         app.core.navigate(PaneId::Right, right);
         let _ = app.begin_edit(PaneId::Left);
         let _ = app.update(Msg::LocationInput("~/unfinished draft".into()));
-        let _ = app.serve_location_focus(1, PaneId::Right);
+        let _ = app.serve_location_focus(1.into(), PaneId::Right);
         assert_eq!(
             app.editing,
             Some((PaneId::Right, pane_path_text(&app.core, PaneId::Right)))
@@ -1778,9 +2378,9 @@ mod tests {
 
     #[test]
     fn bus_location_focus_reaches_the_window_editor_and_reports_availability() {
-        let (_dir, mut app) = fixture();
+        let (_dir, mut app, mut _lane) = fixture();
         let command = bus::Command {
-            id: 42,
+            id: 42.into(),
             verb: "dopus.action".into(),
             body: r#"{"id":"location.focus","pane":1}"#.into(),
             caller_key: "mesh:caller@example".into(),
@@ -1791,9 +2391,9 @@ mod tests {
         let [Served::LocationFocus { id, pane }] = served.as_slice() else {
             panic!("windowed location.focus must reach its window performer");
         };
-        assert_eq!(*id, 42);
+        assert_eq!(id.id, 42);
         assert_eq!(*pane, PaneId::Right);
-        let _ = app.serve_location_focus(*id, *pane);
+        let _ = app.serve_location_focus(id.clone(), *pane);
         assert_eq!(
             app.editing,
             Some((PaneId::Right, pane_path_text(&app.core, PaneId::Right)))
@@ -1842,5 +2442,251 @@ mod tests {
         app.dialog = None;
         app.quitting = true;
         assert!(!app.server_meta().location_focus_available);
+    }
+
+    #[test]
+    fn prepared_settings_activation_retains_model_dialogues_selection_and_operation() {
+        let (dir, mut app, mut lane) = fixture();
+        // Real app-owned state: a listing, a selection, a queued dialog and
+        // a running file operation — exactly what a paint/text/layout change
+        // must not touch.
+        let paths: Vec<_> = ["a", "b"].map(|name| dir.path().join(name)).into();
+        app.core.on_event(CoreEvent::ListingArrived {
+            pane: PaneId::Left,
+            generation: app.core.pane(PaneId::Left).generation,
+            path: dir.path().to_owned(),
+            root: true,
+            result: Ok(paths
+                .iter()
+                .map(|path| dopus_core::FileEntry {
+                    name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                    path: path.clone(),
+                    is_dir: false,
+                    size: Some(1),
+                    child_count: None,
+                    modified: None,
+                })
+                .collect()),
+        });
+        app.core.select_path(PaneId::Left, Some(paths[0].clone()));
+        app.dialog = Some(dialogs::Dialog::Confirm {
+            token: 7,
+            message: "Confirm".into(),
+        });
+        app.core.set_active_pane(PaneId::Left);
+        app.core.copy_selection_to_other_pane();
+        assert!(app.core.availability().operation_running);
+        // A denser crimson/dark generation activates over the bootstrap.
+        let mut desktop = settings::Desktop::default();
+        desktop.appearance.scheme = "crimson".into();
+        desktop.appearance.mode = "dark".into();
+        desktop.ui.density = 1.5;
+        let changed = activate(&mut app, &mut lane, desktop);
+        assert!(
+            changed.is_some(),
+            "a new generation must be a render change"
+        );
+        assert_eq!(app.content().theme.scheme, Scheme::Crimson);
+        assert_eq!(app.content().theme.mode, Mode::Dark);
+        assert!(app.content().theme.density > 1.0);
+        // The app-owned model is untouched.
+        assert_eq!(app.core.pane(PaneId::Left).path, dir.path());
+        assert_eq!(
+            app.core.selected_paths(PaneId::Left),
+            vec![paths[0].clone()]
+        );
+        assert!(matches!(
+            app.dialog,
+            Some(dialogs::Dialog::Confirm { token: 7, .. })
+        ));
+        assert!(app.core.availability().operation_running);
+        assert_eq!(app.editing, None);
+        // Every required icon handle exists BEFORE the view draws the new
+        // theme — no partial fills, nothing to wait for.
+        for tint in [
+            icons::tint_key(app.content().theme.tokens.palette.text),
+            icons::tint_key(app.content().theme.tokens.palette.muted_text),
+            icons::tint_key(app.content().theme.tokens.palette.selection_text),
+        ] {
+            for icon in icons::ALL {
+                assert!(
+                    app.content()
+                        .icons
+                        .get(icon, &tint, icons::RASTER_PX)
+                        .is_some()
+                        || app.content().icons.glyph(icon).is_some(),
+                    "{icon:?} at {tint} must exist before activation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn activation_fault_retains_last_good_content() {
+        // The builder prepares the embedded fallback and one authority
+        // generation, then faults on the third build — exactly the shape of
+        // a resource the worker cannot produce for a newer generation.
+        let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let build = {
+            let builds = std::sync::Arc::clone(&builds);
+            move |look: &appearance::settings::Prepared, snapshot: &settings::Snapshot| {
+                let n = builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n >= 2 {
+                    Err(Diagnostic::new(
+                        "unsupported_content",
+                        "icons.archive",
+                        "raster unavailable",
+                    ))
+                } else {
+                    Content::build(look, snapshot)
+                }
+            }
+        };
+        let (_dir, mut app, mut lane) = fixture_with(build);
+        // A crimson authority generation activates as the baseline.
+        let mut crimson = settings::Desktop::default();
+        crimson.appearance.scheme = "crimson".into();
+        let changed = activate(&mut app, &mut lane, crimson);
+        assert!(changed.is_some());
+        assert_eq!(app.content().theme.scheme, Scheme::Crimson);
+        // A second, newer generation stages, then its preparation FAULTS:
+        // the applied content must stay the baseline (LastGood), never the
+        // faulted stage.
+        let generation = 1;
+        let _ = app
+            .settings
+            .handle_with(SettingsEvent::Refresh, Some(generation), |_| {});
+        drive(&mut lane, 1);
+        let work = app
+            .settings
+            .session()
+            .host()
+            .consumer()
+            .current_work()
+            .cloned()
+            .expect("refresh read work");
+        let binding = app.settings.session().host().consumer().binding().clone();
+        let mut stone = settings::Desktop::default();
+        stone.appearance.scheme = "stone".into();
+        let snapshot = snapshot(&binding, stone, 2);
+        let _ = app.settings.handle_with(
+            SettingsEvent::Rpc(work, Ok(Some(snapshot))),
+            Some(generation),
+            |_| {},
+        );
+        drive(&mut lane, 2);
+        let changed = drain(&mut app);
+        assert!(changed.is_empty(), "a fault never activates");
+        assert_eq!(
+            app.content().theme.scheme,
+            Scheme::Crimson,
+            "LastGood retained"
+        );
+        let evidence = app.settings.session().host().consumer().evidence();
+        assert!(evidence.fault.is_some());
+        assert_eq!(
+            evidence.kind,
+            Some(settings::fallback::PresentationKind::LastGood)
+        );
+    }
+
+    #[test]
+    fn theme_request_forwards_a_fenced_validated_apply_with_the_current_read() {
+        let (_dir, mut app, mut lane) = fixture();
+        let _ = activate(&mut app, &mut lane, settings::Desktop::default());
+        assert_eq!(
+            app.settings
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
+            settings::Revision(1)
+        );
+        let (handle, mut responses) = BusHandle::response_sink();
+        app.bus = Some(handle);
+        let _ = app.theme_request(Some(42.into()), Some("crimson"), Some("dark"));
+        let Ok(bus::Effect::ThemeApply { request, .. }) = responses.try_recv() else {
+            panic!("theme.request must forward a fenced apply")
+        };
+        assert_eq!(
+            request.reply_id.as_ref().map(|request| request.id),
+            Some(42)
+        );
+        assert_eq!(
+            request.changes["appearance.scheme"],
+            serde_json::json!("crimson")
+        );
+        assert_eq!(
+            request.changes["appearance.mode"],
+            serde_json::json!("dark")
+        );
+        assert_eq!(request.expected_incarnation, "fixture");
+        assert_eq!(request.expected_revision, settings::Revision(1));
+        assert_eq!(request.binding.instance, "fixture");
+        assert_eq!(request.binding.profile, "default");
+        assert!(!request.operation_id.is_empty());
+        // The request is a real mutation of the shared authority: nothing
+        // app-local changed until the authority answers.
+        assert_eq!(app.content().theme.scheme, Scheme::Ocean);
+    }
+
+    #[test]
+    fn theme_request_refuses_without_a_confirmed_read() {
+        let (_dir, mut app, mut _lane) = fixture();
+        let (handle, mut responses) = BusHandle::response_sink();
+        app.bus = Some(handle);
+        let _ = app.theme_request(Some(7.into()), Some("crimson"), None);
+        let Ok(bus::Effect::Respond {
+            id: 7,
+            rc: 10,
+            body,
+        }) = responses.try_recv()
+        else {
+            panic!("an unconfirmed settings read must refuse, never fake success")
+        };
+        let refusal: verbs::Refusal = serde_json::from_str(&body).unwrap();
+        assert_eq!(refusal.error_code, verbs::code::UNAVAILABLE);
+        assert_eq!(refusal.reason.as_deref(), Some("unsupported"));
+    }
+
+    #[test]
+    fn state_and_describe_carry_reconciled_settings_evidence() {
+        let (_dir, mut app, mut lane) = fixture();
+        let _ = activate(&mut app, &mut lane, settings::Desktop::default());
+        assert_eq!(
+            app.settings
+                .session()
+                .host()
+                .consumer()
+                .applied()
+                .unwrap()
+                .revision,
+            settings::Revision(1)
+        );
+        let (handle, mut responses) = BusHandle::response_sink();
+        app.bus = Some(handle);
+        for verb in ["dopus.state", "app.describe"] {
+            let command = bus::Command {
+                id: 9.into(),
+                verb: verb.into(),
+                body: "{}".into(),
+                caller_key: "mesh:caller@example".into(),
+            };
+            let _ = app.serve(&command);
+            let Ok(bus::Effect::Respond { id: 9, rc: 0, body }) = responses.try_recv() else {
+                panic!("{verb} must reply")
+            };
+            let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let evidence = &value["settings"];
+            assert_eq!(evidence["context"], "app:dopus");
+            // The sink has no live generation: the reconcile demotes the
+            // installed data to LastGood and keeps it — the canonical
+            // offline evidence, reported instead of a stale confirmed claim.
+            assert_eq!(evidence["kind"], "last_good");
+            assert_eq!(evidence["current"]["incarnation"], "fixture");
+            assert!(value.get("settings_cache").is_some());
+        }
     }
 }

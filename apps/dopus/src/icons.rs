@@ -3,13 +3,18 @@
 //! The pinned shared catalogue supplies glyph codepoints and the font family;
 //! design tokens supply tint and logical size at the actual output scale.
 //! A missing, broken or incomplete catalogue uses the retained Lucide SVGs.
-//! That fallback replaces `currentColor` before parsing with pinned resvg,
-//! rasterises off the UI thread and caches images by tint and physical size.
+//! That fallback replaces `currentColor` before parsing with pinned resvg
+//! and rasterises SYNCHRONOUSLY and completely on the settings worker
+//! ([`Icons::prepared`]): every required handle exists before the UI
+//! activates the content, so the view never touches I/O or raster work and
+//! never races a partial fill.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use resvg::{self, tiny_skia, usvg};
+mod pinned;
+pub use pinned::requirements;
 
 /// The catalogue, in step with `ctk/src/icons.rs`'s `Icon`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -211,14 +216,30 @@ pub fn file_icon(path: &std::path::Path, is_dir: bool, expanded: bool) -> Icon {
 /// scale-1 draw is still crisp. One constant so every `get` site agrees.
 pub const RASTER_PX: u32 = 16 * 2;
 
-/// `Color` → `#rrggbb`, the form an SVG `currentColor` replacement needs.
+/// SVG colour encoding. Identity and glyph drawing retain the exact colour.
 pub fn hex(color: application::iced::Color) -> String {
     let channel = |c: f32| format!("{:02x}", (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-    format!(
+    let rgb = format!(
         "#{}{}{}",
         channel(color.r),
         channel(color.g),
         channel(color.b)
+    );
+    if color.a == 1.0 {
+        rgb
+    } else {
+        format!("{rgb}{}", channel(color.a))
+    }
+}
+
+/// Exact variant identity; byte encoding is only for SVG rasterisation.
+pub fn tint_key(color: application::iced::Color) -> String {
+    format!(
+        "rgba:{:08x}{:08x}{:08x}{:08x}",
+        color.r.to_bits(),
+        color.g.to_bits(),
+        color.b.to_bits(),
+        color.a.to_bits()
     )
 }
 
@@ -228,8 +249,6 @@ type Key = (Icon, String, u32);
 #[derive(Default)]
 struct State {
     cache: HashMap<Key, application::iced::widget::image::Handle>,
-    /// The `(palette, size)` a rasterisation is running (or has run) for.
-    ensured: Option<(Vec<String>, u32)>,
 }
 
 /// The shared icon cache. Clone the `Arc` into widgets; `get` never blocks on
@@ -239,6 +258,9 @@ pub struct Icons {
     state: Arc<Mutex<State>>,
     material: Option<Arc<HashMap<Icon, (char, application::iced::Font)>>>,
     asset_set: Option<String>,
+    pinned: Option<appearance::resources::PreparedResources>,
+    prepared_side: Option<u32>,
+    colours: Arc<HashMap<String, application::iced::Color>>,
 }
 
 impl Default for Icons {
@@ -343,16 +365,25 @@ fn validate_material_glyphs(
 }
 
 impl Icons {
-    fn lucide() -> Self {
+    pub(crate) fn lucide() -> Self {
         Self {
             state: Default::default(),
             material: None,
             asset_set: None,
+            pinned: None,
+            prepared_side: None,
+            colours: Arc::new(HashMap::new()),
         }
     }
 
     pub fn mode(&self) -> &'static str {
-        if self.material.is_some() {
+        if let Some(resources) = &self.pinned {
+            if resources.binding().is_some() {
+                "prepared"
+            } else {
+                "lucide"
+            }
+        } else if self.material.is_some() {
             "material-symbols-rounded"
         } else {
             "lucide"
@@ -364,11 +395,30 @@ impl Icons {
     }
 
     pub fn weight(&self) -> Option<u16> {
+        if let Some(resources) = &self.pinned {
+            let weight = resources.evidence().icons.first()?.weight?;
+            return resources
+                .evidence()
+                .icons
+                .iter()
+                .all(|icon| icon.weight == Some(weight))
+                .then_some(weight);
+        }
         self.material.as_ref().map(|_| 200)
     }
 
     pub fn glyph(&self, icon: Icon) -> Option<(char, application::iced::Font)> {
+        if self.pinned.is_some() {
+            return None;
+        }
         self.material.as_ref()?.get(&icon).copied()
+    }
+
+    pub fn colour(&self, tint: &str) -> application::iced::Color {
+        self.colours
+            .get(tint)
+            .copied()
+            .unwrap_or_else(|| tint_color(tint))
     }
 
     /// One icon draw path for custom file rows and drag previews. Native text
@@ -383,7 +433,15 @@ impl Icons {
         clip: application::iced::Rectangle,
     ) {
         use application::iced::advanced::{image::Renderer as _, text::Renderer as _};
-        if let Some((glyph, font)) = self.glyph(icon) {
+        let glyph = if self.pinned.is_some() {
+            match self.ready(icon, tint) {
+                Some(toolkit::icons::Ready::Text(text)) => text.glyph(),
+                _ => None,
+            }
+        } else {
+            self.glyph(icon)
+        };
+        if let Some((glyph, font)) = glyph {
             renderer.fill_text(
                 application::iced::advanced::text::Text {
                     content: glyph.to_string(),
@@ -401,10 +459,24 @@ impl Icons {
                     hint_factor: None,
                 },
                 bounds.center(),
-                tint_color(tint),
+                self.colour(tint),
                 clip,
             );
         } else if let Some(handle) = self.get(icon, tint, RASTER_PX) {
+            let bounds = match &handle {
+                application::iced::widget::image::Handle::Rgba { width, height, .. } => {
+                    let scale = (bounds.width / *width as f32).min(bounds.height / *height as f32);
+                    let width = *width as f32 * scale;
+                    let height = *height as f32 * scale;
+                    application::iced::Rectangle {
+                        x: bounds.center_x() - width / 2.0,
+                        y: bounds.center_y() - height / 2.0,
+                        width,
+                        height,
+                    }
+                }
+                _ => bounds,
+            };
             renderer.draw_image(
                 application::iced::advanced::image::Image::new(handle),
                 bounds,
@@ -417,67 +489,67 @@ impl Icons {
         Self::default()
     }
 
-    /// Make sure the catalogue is rasterised for `(palette, px)`; if the current
-    /// snapshot differs, spawn a std thread to rasterise all of [`ALL`] and
-    /// fill the cache. Failures are logged and simply leave that icon absent
-    /// (`get` returns `None`; the row draws nothing).
-    pub fn ensure(&self, tints: &[&str], px: u32, scale: u32) {
-        if self.material.is_some() {
-            return;
+    /// Synchronous complete preparation, run on the settings worker BEFORE
+    /// the UI activates the content: every retained Lucide icon is
+    /// rasterised for every required tint at the physical size, so the view
+    /// never touches I/O or raster work and no draw races a partial fill.
+    /// With an installed Material catalogue nothing needs rasterising (native
+    /// glyphs). A handle that cannot be produced is a fault: the activation
+    /// fails and the consumer retains its last good content.
+    pub fn prepared(tints: &[&str], px: u32, scale: u32) -> Result<Self, settings::Diagnostic> {
+        let icons = Self::new();
+        if icons.material.is_some() {
+            return Ok(icons);
         }
         let physical = px.saturating_mul(scale).max(1);
-        let palette: Vec<String> = tints.iter().map(|tint| (*tint).to_owned()).collect();
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.ensured.as_ref() == Some(&(palette.clone(), physical)) {
-            return;
-        }
-        state.ensured = Some((palette.clone(), physical));
-        // Retain both enabled and disabled roles for this theme only.
-        state
-            .cache
-            .retain(|key, _| palette.contains(&key.1) && key.2 == physical);
-        let icons = Arc::clone(&self.state);
-        // Startup and re-tint rasterisation: off the UI thread, once per role.
-        std::thread::Builder::new()
-            .name("dopus-icons".to_owned())
-            .spawn(move || {
-                for tint in &palette {
-                    for icon in ALL {
-                        match raster(icon.bytes(), tint, physical) {
-                            Ok(handle) => {
-                                let mut state = icons
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                // A newer theme may have replaced this worker's palette.
-                                if state.ensured.as_ref() != Some(&(palette.clone(), physical)) {
-                                    return;
-                                }
-                                state.cache.insert((icon, tint.clone(), physical), handle);
-                            }
-                            Err(error) => tracing::warn!(?icon, %error, "icon raster unavailable"),
-                        }
+        let mut cache = HashMap::new();
+        for tint in tints {
+            for icon in ALL {
+                match raster(icon.bytes(), tint, physical) {
+                    Ok(handle) => {
+                        cache.insert((icon, (*tint).to_owned(), physical), handle);
+                    }
+                    Err(error) => {
+                        return Err(settings::Diagnostic::new(
+                            "unsupported_content",
+                            &format!("icons.{}", icon.material_name()),
+                            error,
+                        ));
                     }
                 }
-            })
-            .expect("spawning the icon raster thread");
+            }
+        }
+        icons
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cache = cache;
+        Ok(icons)
     }
 
-    /// The cached handle for `(icon, tint, px)`, or `None` while the
-    /// rasterisation is still in flight (the row draws nothing).
+    /// The cached handle for `(icon, tint, px)`, or `None` when this
+    /// generation never required it (a bootstrap without icons draws
+    /// nothing until the first prepared activation).
     pub fn get(
         &self,
         icon: Icon,
         tint: &str,
         px: u32,
     ) -> Option<application::iced::widget::image::Handle> {
+        if let Some(resources) = &self.pinned {
+            return match resources.icon(&pinned::key(icon, tint))? {
+                toolkit::icons::Ready::Image { handle, .. } => Some(handle.clone()),
+                toolkit::icons::Ready::Text(_) => None,
+            };
+        }
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cache.get(&(icon, tint.to_owned(), px)).cloned()
+        state
+            .cache
+            .get(&(icon, tint.to_owned(), self.prepared_side.unwrap_or(px)))
+            .cloned()
     }
 }
 
@@ -519,6 +591,41 @@ fn render(bytes: &[u8], tint: &str, px: u32) -> Result<tiny_skia::Pixmap, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_tint_identity_and_text_colour_keep_exact_rgba() {
+        let a = application::iced::Color::from_rgba(0.5, 0.3, 0.1, 0.25);
+        let b = application::iced::Color { a: 0.75, ..a };
+        let c = application::iced::Color {
+            r: f32::from_bits(a.r.to_bits() + 1),
+            ..a
+        };
+        assert_ne!(tint_key(a), tint_key(b));
+        assert_ne!(tint_key(a), tint_key(c));
+        let prepared = appearance::settings::bootstrap().unwrap();
+        let icons = Icons::from_prepared(&prepared, &[a, b, c]).unwrap();
+        for colour in [a, b, c] {
+            assert_eq!(icons.colour(&tint_key(colour)), colour);
+        }
+    }
+
+    #[test]
+    fn every_bundled_rescue_icon_decodes_at_fractional_and_integer_scales() {
+        for scale in [1.0_f32, 1.5, 2.0] {
+            let side = (16.0 * scale).ceil() as u32;
+            for icon in ALL {
+                let image = toolkit::icons::assets::decode_trusted_embedded_svg(
+                    icon.bytes(),
+                    side,
+                    Some([64, 192, 128, 96]),
+                )
+                .unwrap_or_else(|error| panic!("{icon:?} at {scale}: {error}"));
+                assert_eq!(image.dimensions(), (side, side));
+                assert!(image.pixels().chunks_exact(4).any(|pixel| pixel[3] > 0));
+                assert!(image.pixels().chunks_exact(4).all(|pixel| pixel[3] <= 96));
+            }
+        }
+    }
 
     #[test]
     fn material_mapping_covers_distinct_semantic_actions() {
@@ -630,10 +737,13 @@ mod tests {
                 );
             }
         }
-        icons.ensure(&["#ff0000"], 16, 2);
         assert!(
-            icons.state.lock().unwrap().ensured.is_none(),
-            "Material bypasses SVG raster workers"
+            Icons::prepared(&["#ff0000"], 16, 2).is_ok(),
+            "preparation succeeds for the material catalogue"
+        );
+        assert!(
+            icons.state.lock().unwrap().cache.is_empty(),
+            "Material bypasses SVG raster caches"
         );
     }
 
@@ -748,34 +858,24 @@ mod tests {
     }
 
     #[test]
-    fn cache_is_empty_until_the_raster_thread_fills_it() {
-        let icons = Icons::lucide();
-        assert!(icons.get(Icon::Folder, "#ffffff", 16).is_none());
-        // ensure() runs the rasterisation on its own thread; poll briefly.
-        icons.ensure(&["#ffffff", "#888888"], 16, 1);
-        let key = (Icon::Folder, "#ffffff".to_owned(), 16);
-        for _ in 0..200 {
-            {
-                let state = icons.state.lock().unwrap();
-                if state.cache.contains_key(&key)
-                    && state
-                        .cache
-                        .contains_key(&(Icon::Folder, "#888888".to_owned(), 16))
-                {
-                    return;
-                }
+    fn prepared_fills_every_required_handle_synchronously() {
+        let icons = Icons::prepared(&["#ffffff", "#888888"], 16, 1).expect("prepared");
+        for tint in ["#ffffff", "#888888"] {
+            for icon in ALL {
+                assert!(
+                    icons.get(icon, tint, 16).is_some(),
+                    "{icon:?} at {tint} must exist before activation"
+                );
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("the raster thread never produced folder.svg");
-    }
-
-    #[test]
-    fn ensure_is_idempotent_for_the_same_tint() {
-        let icons = Icons::lucide();
-        icons.ensure(&["#ffffff"], 16, 1);
-        let ensured = icons.state.lock().unwrap().ensured.clone();
-        icons.ensure(&["#ffffff"], 16, 1);
-        assert_eq!(icons.state.lock().unwrap().ensured, ensured);
+        assert!(
+            icons.get(Icon::Folder, "#123456", 16).is_none(),
+            "only required tints are rasterised"
+        );
+        let bootstrap = Icons::lucide();
+        assert!(
+            bootstrap.get(Icon::Folder, "#ffffff", 16).is_none(),
+            "an unprepared bootstrap never claims a partial fill"
+        );
     }
 }
