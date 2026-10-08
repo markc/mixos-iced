@@ -665,8 +665,10 @@ fn run() -> Result<(), String> {
     let mut frame = 0_u32;
     probe.frame_done = true;
     let mut hidden = false;
-    // After a remap nothing may be attached until the new configure is
-    // acknowledged.
+    // After a remap nothing may be attached until an actual configure is
+    // acknowledged. A configure received while hidden remains outstanding:
+    // a compositor control request may configure the unmapped role before
+    // the re-show empty commit, so that commit need not earn another serial.
     let mut awaiting_configure = false;
     let mut remap_at: Option<Instant> = None;
     let mut remap_left = options.remap_once;
@@ -690,12 +692,12 @@ fn run() -> Result<(), String> {
             remap_at = None;
             hidden = false;
             awaiting_configure = true;
-            // A fresh initial commit; the configure it earns re-attaches.
+            // Start re-show; use the retained actual configure, or await the
+            // initial configure this empty commit earns if none is pending.
             surface.commit();
             say("remapped");
         }
         if hidden {
-            probe.pending_configure = None;
             wait_readable(&mut queue, Duration::from_millis(20))?;
             queue
                 .dispatch_pending(&mut probe)
@@ -708,6 +710,9 @@ fn run() -> Result<(), String> {
         let mut dirty = false;
         if let Some((serial, width, height)) = probe.pending_configure.take() {
             xdg.ack_configure(serial);
+            if awaiting_configure {
+                say(&format!("remap_configure_ack {width} {height} serial={serial}"));
+            }
             let width = if width > 0 { width } else { options.width };
             let height = if height > 0 { height } else { options.height };
             if delayed_commit.is_some_and(|(w, h, _)| (w, h) != (width, height)) {
