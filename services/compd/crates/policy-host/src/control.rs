@@ -202,6 +202,7 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
         return Some(locked);
     }
     match op {
+        WindowOp::HardwareSnapshot => None, // engine supplies its incarnation
         WindowOp::WorldList => Some(crate::worlds::list(lp)),
         WindowOp::WorldCreate => Some(crate::worlds::create(lp)),
         WindowOp::WorldActivate { id } => Some(crate::worlds::activate(lp, *id)),

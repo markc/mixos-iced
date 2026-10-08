@@ -239,6 +239,18 @@ pub fn register(
             ) || ctx_rc.borrow().pipe().drm_output.is_none();
             if !dark || matches!(event, InputEvent::Keyboard { .. }) {
                 scenegraph::state::lifecycle::lifecycle::input(state, &event);
+                // Only this real libinput callback records native input. Bus
+                // injection and nested input never pass through this owner.
+                let observed = match &event {
+                    InputEvent::Keyboard { event } => Some((world::comp::hardware::Kind::Keyboard, event.device().sysname().to_string())),
+                    InputEvent::PointerMotion { event } => Some((world::comp::hardware::Kind::Pointer, event.device().sysname().to_string())),
+                    InputEvent::PointerMotionAbsolute { event } => Some((world::comp::hardware::Kind::Pointer, event.device().sysname().to_string())),
+                    InputEvent::PointerButton { event } => Some((world::comp::hardware::Kind::Pointer, event.device().sysname().to_string())),
+                    _ => None,
+                };
+                if let Some((kind, device)) = observed {
+                    state.inner.comp.hardware.note(kind, Some(&device));
+                }
             }
             // Display request queues (lid apply, settings mode change, activate/
             // deactivate reconcile) and the lock engage are NOT drained here —

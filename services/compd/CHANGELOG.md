@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.18
+
+- Add bounded `comp.hardware.snapshot` and incarnation-fenced
+  `comp.hardware.wait` observations from the actual native libseat/libinput
+  callbacks. Bus injection and nested input cannot satisfy native waits.
+  Retain last-event sequences and device sysnames without storing key values.
+  These observations do not claim physical device provenance, client delivery,
+  resumed scanout or audible audio.
+
 ## 0.1.17
 
 - Add strict native `comp.world.list`, `comp.world.create` and
