@@ -336,7 +336,7 @@ try
     $scale_window={id:$scale_row.id,generation:$scale_row.generation}
     comp("comp.window.place",merge($scale_window,{x:600,y:20,width:200,height:100}))
     $scale_observer={pid:$scale_pid,window:$scale_window,log:$scale_log}
-    $scale_context={mix:$mix,bus:$R.bus,root:$root,service:$R.session.service}
+    $scale_context={mix:$mix,bus:$R.bus,root:$root,service:$R.session.service,binding:$binding,event_wait:$repo .. "/tests/desktop/settings_output_scale_event_wait.mix"}
     $scale_receipts=$output_scale.phase($scale_context,$R.session,$bin,$ced,$R.ced_tab,$background_window,$scale_observer)
     simultaneously_alive()
     retained("output-scale-restored")

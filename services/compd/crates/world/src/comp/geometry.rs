@@ -185,7 +185,7 @@ pub fn refresh_usable(
     }
     let mut change = GeometryChange {
         usable: changed,
-        windows: false,
+        windows: super::fullscreen::refresh_geometry(comp, space, windows),
     };
     for (id, window) in windows {
         let Some(mut restore) = comp.maximize_restore(*id) else {

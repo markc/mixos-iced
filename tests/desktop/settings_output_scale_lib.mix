@@ -26,6 +26,14 @@ end
 fn target($row,$scale)
   return {output:$row.name,instance:$row.instance,generation:$row.generation,scale:$scale}
 end
+fn row($c,$window)
+  $rows=filter(rpc($c,"comp.windows.list",{}).windows,fn($item)=$item.id == $window.id and $item.generation == $window.generation)
+  check(len($rows) == 1,"Existing native window replaced")
+  return $rows[0]
+end
+fn geometry($row)
+  return {x:$row.window_x,y:$row.window_y,width:$row.window_width,height:$row.window_height}
+end
 fn retained($app,$tab,$before)
   check(process_alive($app.pid),"Existing Ced owner exited")
   $after=$f.rpc($app.context,"ced.state",{tab:$tab,text:true})
@@ -40,6 +48,10 @@ fn phase($c,$session,$bin,$ced,$tab,$background,$observer)
   $receipts=[]
   for each $scale in [1.25,1.0]
     $old=output($c)
+    $normal=row($c,$ced.window)
+    rpc($c,"comp.window.fullscreen",merge($ced.window,{output:$old.name}))
+    rpc($c,"comp.window.wait",{match:$ced.window,until:"fullscreen",timeout_ms:10000})
+    rpc($c,"comp.window.wait",{match:$ced.window,until:"size",width:$old.width,height:$old.height,timeout_ms:10000})
     $scale_offset=len(read_file($observer.log))
     $reply=rpc($c,"comp.output.scale",target($old,$scale))
     $now=output($c)
@@ -56,6 +68,23 @@ fn phase($c,$session,$bin,$ced,$tab,$background,$observer)
     $noop=rpc($c,"comp.output.scale",target($now,$scale))
     check(not $noop.changed and $noop.generation == $now.generation,"No-op advanced output generation")
     check(output($c).scale == $scale,"Refusal mutated actual scale")
+    $full=rpc($c,"comp.window.wait",{match:$ced.window,until:"size",width:$now.width,height:$now.height,timeout_ms:10000}).window
+    check($full.fullscreen and $full.pid == $ced.pid and $full.window_x == $now.x and $full.window_y == $now.y,"Scale did not reconcile actual committed fullscreen owner/target")
+    $full_path=$c.root .. "/output-scale-fullscreen-" .. to_string($scale) .. ".ppm"
+    run_argv_must([$bin .. "/testkit-screenshot",$full_path],{timeout:10,env:$n.client_env($session,{})})
+    $full_image=$pixels.ppm($full_path)
+    $far=$pixels.pixel($full_image,$initial.width-30,300)
+    $authority=rpc(merge($c,{service:"settingsd"}),"settings.get",{binding:$c.binding}).snapshot
+    $wanted=$authority.effective["app:ced"].design.pairs.base.rendered_surface
+    write_file($c.root .. "/output-scale-fullscreen-" .. to_string($scale) .. ".json",json_encode({normal:$normal,output:$now,committed:$full,capture:$full_path,far_pixel:$far,wanted:$wanted}))
+    for $channel=0 to 2
+      check(abs($far[$channel]-$pixels.srgb($wanted[$channel])) <= 8,"Committed fullscreen did not render actual Ced palette through current physical output edge")
+    end
+    rpc($c,"comp.window.unfullscreen",$ced.window)
+    rpc($c,"comp.window.wait",{match:$ced.window,until:"unfullscreen",timeout_ms:10000})
+    $restored=rpc($c,"comp.window.wait",{match:$ced.window,until:"size",width:$normal.window_width,height:$normal.window_height,timeout_ms:10000}).window
+    check(deep_eq(geometry($normal),geometry($restored)),"Scale overwrote immutable pre-fullscreen normal restore")
+    $scale_event=json_parse(run_argv_must([$c.mix,$c.event_wait,$observer.log,to_string($scale_offset),json_encode({kind:"scale",value:$scale*120})],{timeout:10}))
     rpc($c,"comp.window.maximize",$background)
     rpc($c,"comp.window.focus",$background)
     rpc($c,"comp.window.focus",$observer.window)
@@ -76,15 +105,13 @@ fn phase($c,$session,$bin,$ced,$tab,$background,$observer)
     $go=$layout.nodes.go
     rpc($c,"comp.input.pointer.move",{seat:"human",x:$layout.surface.x+$go.x+$go.w/2,y:$layout.surface.y+$go.y+$go.h/2})
     rpc($c,"comp.input.pointer.button",{seat:"human",button:"left",action:"click"})
+    $click=json_parse(run_argv_must([$c.mix,$c.event_wait,$events,to_string($click_offset),json_encode({kind:"click",scene:"all-apps-control",node:"go"})],{timeout:10}))
     $path=$c.root .. "/output-scale-" .. to_string($scale) .. ".ppm"
     run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:10,env:$n.client_env($session,{})})
     $image=$pixels.ppm($path)
     $protocol=lines(trim(slice(read_file($observer.log),$scale_offset)))
     check(process_alive($observer.pid) and contains($protocol,"preferred_scale " .. to_string($scale*120)),
       "Existing actual fractional-scale protocol client did not receive fresh preferred scale")
-    $clicks=trim(slice(read_file($events),$click_offset))
-    check($clicks != "","No fresh actual Quoin callback after scale-transition native input")
-    $click=json_parse(lines($clicks)[0])
     check($click.scene == "all-apps-control" and $click.node == "go" and $click.kind == "click",
       "Fractional input reached another control")
     check($image.w == $initial.width and $image.h == $initial.height,"Physical capture extent changed")
@@ -97,7 +124,7 @@ fn phase($c,$session,$bin,$ced,$tab,$background,$observer)
     -- delivery at the compositor seat, not proof of Ced handling the key.
     $input=rpc($c,"comp.input.key",{seat:"human",window:$ced.window,key:"Shift_L",action:"tap"})
     retained($ced,$tab,$before)
-    $receipts=concat($receipts,[{output:$now,reply:$reply,stale:$stale,window:$window,
+    $receipts=concat($receipts,[{output:$now,reply:$reply,stale:$stale,window:$window,fullscreen:{normal:$normal,committed:$full,restored:$restored,capture:$full_path,far_pixel:$far},scale_event:$scale_event,
       ced:$state,input_routing:$input,quoin_click:$click,fractional_protocol:$protocol,capture:$path,inside:$inside,outside:$outside}])
   end
   write_file($c.root .. "/output-scale.json",json_encode({kind:"actual scale and real existing Ced state/buffer boundary",

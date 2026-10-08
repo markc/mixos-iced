@@ -153,19 +153,55 @@ pub fn retarget(lp: &mut Loop, window: &Window) {
     let Some(owner) = lp.inner.world_of_window(window) else {
         return;
     };
-    let Some(geometry) = target_geometry(&lp.inner.comp, &lp.inner.space_of(owner).state, window)
-    else {
-        return;
+    let (comp, space) = lp.inner.comp_world_space_mut(owner);
+    if reconcile_window(comp, space, window) {
+        comp.mark_input_geometry_dirty();
+        lp.state
+            .schedule_redraw(dispatcher::state::state::RedrawReason::WindowState);
+    }
+}
+
+/// Reconcile requested fullscreen against its actual owning Space. A committed
+/// old fullscreen buffer during exit does not own a new fullscreen request:
+/// keep its staged normal/tile return intact until the client commits it.
+pub fn refresh_geometry(
+    comp: &super::CompState,
+    space: &mut Space<Window>,
+    windows: &[(SurfaceId, Window)],
+) -> bool {
+    let mut changed = false;
+    for (_, window) in windows {
+        if window.is_fullscreen()
+            && protocols::window::ident::ident::states(window).fullscreen
+        {
+            changed |= reconcile_window(comp, space, window);
+        }
+    }
+    changed
+}
+
+fn reconcile_window(
+    comp: &super::CompState,
+    space: &mut Space<Window>,
+    window: &Window,
+) -> bool {
+    let Some(location) = space.element_location(window) else {
+        return false;
     };
-    lp.inner
-        .space_of_mut(owner)
-        .state
-        .map_element(window.clone(), geometry.loc, true);
+    let Some(geometry) = target_geometry(comp, space, window) else {
+        return false;
+    };
+    let slot = crate::camera::transform::translate::slot::decided_size(window);
+    if location == geometry.loc && slot == Some(geometry.size) {
+        return false;
+    }
+    // Keep immutable WindowFullscreen restore data, requested state, stack
+    // order and committed client facts; only the current target is restaged.
+    space.map_element(window.clone(), geometry.loc, false);
     crate::camera::transform::translate::slot::set_expected_size(window, geometry.size);
     protocols::window::shell::shell::stage(window, geometry.size, false);
     protocols::window::shell::shell::send(window);
-    lp.state
-        .schedule_redraw(dispatcher::state::state::RedrawReason::WindowState);
+    true
 }
 
 /// The window of record `id`, if one is in a world Space.

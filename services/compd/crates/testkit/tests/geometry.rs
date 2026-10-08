@@ -470,6 +470,64 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
 }
 
 #[test]
+fn fullscreen_scale_reconciles_current_target_without_overwriting_restore_or_exit() {
+    let mut h = Harness::new();
+    let (surface, xdg, top) = h.mapped_toplevel(640, 480);
+    let (id, window) = window(&h, &surface);
+    h.wire.inner.space.state.map_element(window.clone(), (32, 24), false);
+    top.set_fullscreen(None);
+    h.roundtrip();
+    h.client.attach(&surface, 1920, 1080);
+    h.roundtrip();
+    assert!(protocols::window::ident::ident::committed_fullscreen(&window));
+    h.client.state.hold_xdg_configures = true;
+    for (scale, size, old_buffer) in [
+        (1.25, (1536, 864), (1920, 1080)),
+        (1.0, (1920, 1080), (1536, 864)),
+    ] {
+        h.wire.inner.output.change_current_state(None, None, Some(Scale::Fractional(scale)), None);
+        assert!(refresh(&mut h, id, &window).windows);
+        h.roundtrip();
+        configured(&h, &top, size, false);
+        assert_eq!(slot::decided_size(&window), Some(size.into()));
+        assert_eq!(window.geometry().size, Size::from(old_buffer));
+        let restore = window.fullscreen().unwrap();
+        assert_eq!(restore.restore_loc, (32, 24).into());
+        assert_eq!(restore.restore_size, (640, 480).into());
+        xdg.ack_configure(serial(&h, &xdg));
+        h.roundtrip();
+        assert_eq!(window.geometry().size, Size::from(old_buffer), "ACK retains actual old buffer");
+        assert!(protocols::window::ident::ident::committed_fullscreen(&window));
+        let before = count(&h, &top);
+        assert!(!refresh(&mut h, id, &window).windows);
+        h.roundtrip();
+        assert_eq!(count(&h, &top), before, "stable target emits no repeated configure");
+        h.client.attach(&surface, size.0, size.1);
+        h.roundtrip();
+        assert_eq!(window.geometry().size, Size::from(size));
+    }
+    top.unset_fullscreen();
+    h.roundtrip();
+    configured(&h, &top, (640, 480), false);
+    assert!(!window.is_fullscreen());
+    assert!(protocols::window::ident::ident::committed_fullscreen(&window));
+    h.wire.inner.output.change_current_state(None, None, Some(Scale::Fractional(1.25)), None);
+    let before = count(&h, &top);
+    assert!(!refresh(&mut h, id, &window).windows);
+    h.roundtrip();
+    assert_eq!(count(&h, &top), before, "scale during delayed exit cannot restage fullscreen");
+    assert_eq!(slot::decided_size(&window), Some((640, 480).into()));
+    assert_eq!(h.wire.inner.space.state.element_location(&window), Some((32, 24).into()));
+    xdg.ack_configure(serial(&h, &xdg));
+    h.roundtrip();
+    assert!(protocols::window::ident::ident::committed_fullscreen(&window));
+    h.client.attach(&surface, 640, 480);
+    h.roundtrip();
+    assert!(!protocols::window::ident::ident::committed_fullscreen(&window));
+    assert_eq!(window.geometry().size, Size::from((640, 480)));
+}
+
+#[test]
 fn unmaximise_restores_the_decided_size_when_client_geometry_lags() {
     let mut h = Harness::new();
     let (surface, _, top) = h.mapped_toplevel(640, 480);

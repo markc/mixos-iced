@@ -1,0 +1,26 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Bounded by the caller's process deadline; waits for genuine appended events.
+if len(args()) != 3 then raise("ARGS","PATH ORIGINAL_OFFSET MATCH_JSON") end
+$path=args()[0]; $offset=to_number(args()[1]); $wanted=json_parse(args()[2])
+if $offset < 0 or $offset != floor($offset) or not contains(["scale","click"],$wanted.kind) then raise("ARGS","Invalid event fence") end
+$watch=fs_watch($path)
+try
+  while true
+    $fresh=slice(read_file($path),$offset)
+    for each $line in lines($fresh)
+      if $wanted.kind == "scale" and $line == "preferred_scale " .. to_string($wanted.value) then
+        print(json_encode({kind:"scale",line:$line,offset:$offset})); exit(0)
+      elif $wanted.kind == "click" then
+        $row=nil
+        try $row=json_parse($line) catch $partial end
+        if $row != nil and $row.kind == "click" and $row.scene == $wanted.scene and $row.node == $wanted.node then
+          print(json_encode($row)); exit(0)
+        end
+      end
+    end
+    $event=fs_wait($watch)
+    if $event.overflow then raise("OUTPUT_SCALE_EVENT","Filesystem event overflow") end
+  end
+finally
+  fs_unwatch($watch)
+end
