@@ -241,3 +241,58 @@ and root layout, retained products, and per-app/root acceptance JSON. This gate
 tests authority supersession of held work; a held candidate cancelled by a
 replacement connection generation remains a separate schedule. Physical GPU
 scanout and VT isolation also remain separate acceptance.
+# Dopus individual icon raster acceptance
+
+`dopus_icon_raster_gate.mix REPO BUILD_BIN_DIR OUTPUT_SCALE` uses the actual
+Dopus GUI, owned broker/settings authority and private nested Weston/compd.
+Run it once with `OUTPUT_SCALE=1` and again with `OUTPUT_SCALE=2`. The scale-2
+host doubles its physical dimensions, retaining the same logical desktop.
+No host desktop, seat, VT or session bus is changed.
+
+The exact candidate needs Dopus built with `acceptance` and the shared
+`native-glyph-reference` application binary built with `acceptance,tiny-skia`,
+along with the existing Mix/noded/settingsd/compd/testkit-screenshot binaries.
+For example, invoke the candidate Mix with:
+
+```text
+mix REPO/tests/desktop/dopus_icon_raster_gate.mix REPO BUILD_BIN_DIR 1
+mix REPO/tests/desktop/dopus_icon_raster_gate.mix REPO BUILD_BIN_DIR 2
+```
+
+The native installer publishes and verifies the complete locked core package
+into the owned data directory. Installed set/manifest, all seven text roles
+and all 35 named icon descriptor/glyph/source pairs are attested separately.
+The pixel oracle opens that exact locked Material font and refuses another
+source, another face or a missing glyph. It chooses the expected glyph from
+the verified catalogue, bypassing Dopus's icon mapping and cached resources.
+It renders a small offscreen reference through the shared tiny-skia backend;
+translation by whole physical pixels preserves fractional glyph phase. The
+gate compares every native screencopy pixel in the individual icon rectangle
+plus a two-pixel guard, with at most two units of channel rounding error and
+at least eight reference ink pixels. Expected tint and background come from
+the current authority's resolved pairs. Wrong catalogue glyph and wrong tint
+references must fail for every individual comparison.
+
+| Native state | Individual production decorations |
+| --- | --- |
+| Dark, initial listing | Eight file-type icons, closed-folder chevron, 14 toolbar slots, eight Places entries |
+| Navigation back/forward | Actual enabled and disabled history controls after returning to the owned listing |
+| Selected, expanded, hidden shown | Real chevron click, open-folder glyph, selection background, enabled file controls, hidden toggle |
+| Panel toggles | Both actual panel button states; sidebar disappears through the existing action |
+| Light, text scale 1.25 | Reinstalled settings, exact epoch advance, retained owner, realised controls and Places |
+| Light, collapsed, hidden suppressed | Real collapse click and restored chevron/visibility state |
+
+Each successful run requires all 27 reachable semantic glyphs. The eight
+unused selections (`expand_less`, `info`, `view_list`, `logout`, `menu`,
+`push_pin`, `keep_off`, `search`) have no current production draw site and
+remain source-attested only. No artificial gallery or control paints them.
+
+Evidence includes exact native presentation receipts, current generation and
+installed stamp, actual root/individual cached layouts, PID/window geometry,
+native PPMs, reference requests and small PPMs, per-icon pixel/negative results,
+real click receipts, product state and bounded native quit. Layout, settings,
+prepared resources and window geometry must remain stable across the capture.
+This establishes real compositor pixel agreement with catalogue-selected
+glyphs; sharing the text backend does not provide an independent raster
+algorithm oracle. The pure `dopus_icon_raster_test.mix` checks crop-origin,
+tint, shift and blank guards and makes no native acceptance claim.

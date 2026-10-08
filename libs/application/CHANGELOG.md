@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.23
+
+- Add the optional `native-glyph-reference` acceptance tool. Render the exact
+  named font source/face and catalogue scalar into a bounded offscreen pixel
+  reference without an application icon mapping or native control transport.
+
 ## 0.1.22
 
 - Share a bounded native refusal lane for existing actors. Preserve original

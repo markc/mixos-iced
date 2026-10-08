@@ -68,8 +68,11 @@ pub fn sidebar<'a>(
             },
         };
         let style = place_look(&look, selected);
+        let icon = image_widget(look, icons, tint, place_icon(name));
+        #[cfg(feature = "acceptance")]
+        let icon = crate::acceptance::tag(icon, format!("place-{name}"));
         let entry = button(
-            row![image_widget(look, icons, tint, place_icon(name)), label]
+            row![icon, label]
                 .spacing(look.chrome.pad)
                 .align_y(application::iced::Alignment::Center),
         )

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.11
+
+- FilePane accepts optional decoration IDs for read-only inspection of actual
+  visible row icon geometry. Ordinary callers retain the disabled path;
+  inspection follows the same row positioning and drawing clip as painting.
+
 ## 0.2.10
 
 - Add `decode_trusted_embedded_svg` for reviewed compiled rescue artwork with

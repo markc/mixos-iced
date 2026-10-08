@@ -201,6 +201,7 @@ pub struct FilePane<'a, Theme, Renderer> {
     tips: Vec<Element<'a, Message, Theme, Renderer>>,
     tooltip: Option<Box<Tooltip<'a, Message, Theme, Renderer>>>,
     decoration: Box<DecorationPainter<'a, Renderer>>,
+    decoration_id: Option<Box<dyn Fn(usize, Decoration) -> Option<iced_core::widget::Id> + 'a>>,
     open_label: String,
     transfer: Option<Box<dyn Transfer + 'a>>,
     busy: bool,
@@ -221,6 +222,7 @@ where
             tips: Vec::new(),
             tooltip: None,
             decoration: Box::new(|_, _, _, _, _| {}),
+            decoration_id: None,
             open_label: "Open".into(),
             transfer: None,
             busy: false,
@@ -235,6 +237,21 @@ where
     pub fn line_heights(mut self, ui: Option<f32>, secondary: Option<f32>) -> Self {
         self.line_heights = (ui, secondary);
         self
+    }
+
+    fn decoration_bounds(&self, bounds: Rectangle, index: usize, depth: usize, row_h: f32, offset: f32)
+        -> [Rectangle; 2]
+    {
+        let icon = self.look.chrome.icon;
+        let padding = self.look.chrome.small;
+        let chevron = Rectangle {
+            x: bounds.x + self.columns.cells(bounds.width)[0].0
+                + self.columns.indentation(bounds.width, depth, icon),
+            y: bounds.y + index as f32 * row_h - offset + padding
+                + (row_h - 2.0 * padding - icon) / 2.0,
+            width: icon, height: icon,
+        };
+        [chevron, Rectangle { x: chevron.x + icon, ..chevron }]
     }
 
     fn line_height(px: f32, height: Option<f32>) -> f32 {
@@ -262,6 +279,15 @@ where
         draw: impl Fn(&mut Renderer, usize, Decoration, Rectangle, Rectangle) + 'a,
     ) -> Self {
         self.decoration = Box::new(draw);
+        self
+    }
+    /// Optional read-only identities for actual visible row decorations.
+    /// IDs expose geometry through normal widget inspection, never pixels.
+    pub fn decoration_id(
+        mut self,
+        identify: impl Fn(usize, Decoration) -> Option<iced_core::widget::Id> + 'a,
+    ) -> Self {
+        self.decoration_id = Some(Box::new(identify));
         self
     }
     pub fn transfer(mut self, bridge: impl Transfer + 'a) -> Self {
@@ -508,6 +534,41 @@ where
 
     fn state(&self) -> tree::State {
         tree::State::new(RowState::<Renderer::Paragraph>::new(self.look))
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn iced_core::widget::Operation,
+    ) {
+        let Some(identify) = &self.decoration_id else { return };
+        let bounds = layout.bounds();
+        let st = tree.state.downcast_ref::<RowState<Renderer::Paragraph>>();
+        let cell = self.columns.cells(bounds.width)[0];
+        let clip = Rectangle { x: bounds.x + cell.0, width: cell.1, ..bounds };
+        operation.container(None, bounds);
+        operation.traverse(&mut |operation| {
+            operation.clip(clip);
+            let first = (st.offset / st.row_h).floor().max(0.0) as usize;
+            for index in first..self.source.len() {
+                let Some(row) = self.source.row(index) else { break };
+                let y = bounds.y + index as f32 * st.row_h - st.offset;
+                if y >= bounds.y + bounds.height { break }
+                let [chevron, entry] = self.decoration_bounds(bounds, index, row.depth, st.row_h, st.offset);
+                for decoration in [Decoration::ChevronRight, Decoration::Entry] {
+                    if decoration != Decoration::Entry && !row.is_dir { continue }
+                    let decoration = if decoration != Decoration::Entry && self.source.is_expanded(row.path) {
+                        Decoration::ChevronDown
+                    } else { decoration };
+                    let rect = if decoration == Decoration::Entry { entry } else { chevron };
+                    if rect.intersection(&clip).is_some() && let Some(id) = identify(index, decoration) {
+                        operation.container(Some(&id), rect);
+                    }
+                }
+            }
+        });
     }
 
     fn layout(
@@ -924,9 +985,8 @@ where
                     continue;
                 }
                 let baseline = y + row_pad;
-                let x = bounds.x
-                    + cells[0].0
-                    + self.columns.indentation(bounds.width, row.depth, icon_px);
+                let [chevron_bounds, icon_bounds] =
+                    self.decoration_bounds(bounds, index, row.depth, st.row_h, st.offset);
                 let name_clip = Rectangle {
                     x: bounds.x + cells[0].0,
                     y: clip.y,
@@ -937,12 +997,6 @@ where
                     // Directories paint the chevron in their toggle zone; every row
                     // paints its file icon (open when the directory is expanded).
                     if row.is_dir {
-                        let chevron_bounds = Rectangle {
-                            x,
-                            y: baseline + (st.row_h - 2.0 * row_pad - icon_px) / 2.0,
-                            width: icon_px,
-                            height: icon_px,
-                        };
                         let chevron = if self.source.is_expanded(row.path) {
                             Decoration::ChevronDown
                         } else {
@@ -950,12 +1004,6 @@ where
                         };
                         (self.decoration)(renderer, index, chevron, chevron_bounds, clip);
                     }
-                    let icon_bounds = Rectangle {
-                        x: x + icon_px,
-                        y: baseline + (st.row_h - 2.0 * row_pad - icon_px) / 2.0,
-                        width: icon_px,
-                        height: icon_px,
-                    };
                     (self.decoration)(renderer, index, Decoration::Entry, icon_bounds, clip);
 
                     // Name; secondary columns right-aligned, in the mono role.
@@ -1098,6 +1146,65 @@ mod tests {
             gap: 8.0,
             pad: 8.0,
         }
+    }
+    #[test]
+    fn decoration_inspection_reads_only_visible_rows_and_matches_paint_clipping() {
+        use std::{cell::RefCell, rc::Rc};
+        struct Probe {
+            clip: Rectangle,
+            records: Vec<(Rectangle, Option<Rectangle>)>,
+        }
+        impl iced_core::widget::Operation for Probe {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn iced_core::widget::Operation)) {
+                let clip = self.clip;
+                visit(self);
+                self.clip = clip;
+            }
+            fn clip(&mut self, bounds: Rectangle) {
+                self.clip = self.clip.intersection(&bounds).unwrap_or_default();
+            }
+            fn container(&mut self, id: Option<&iced_core::widget::Id>, bounds: Rectangle) {
+                if id.is_some() { self.records.push((bounds, bounds.intersection(&self.clip))); }
+            }
+        }
+        let entries: Vec<_> = (0..100_000).map(|index| {
+            (PathBuf::from(format!("/listing/{index}")), format!("entry-{index}"))
+        }).collect();
+        let reads = Cell::new(0);
+        let painted = Rc::new(RefCell::new(Vec::new()));
+        let capture = Rc::clone(&painted);
+        let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
+            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+        ).decoration_id(|index, _| Some(iced_core::widget::Id::from(format!("entry-{index}"))))
+         .decoration(move |_, _, _, bounds, clip| {
+             if bounds.intersection(&clip).is_some() {
+                 capture.borrow_mut().push((bounds, bounds.intersection(&clip)));
+             }
+         });
+        let mut renderer = LayoutRenderer::new();
+        let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
+        let node = list.layout(&mut tree, &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(600.0, 40.0))).move_to(Point::new(20.0, 30.0));
+        let state = tree.state.downcast_mut::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+        state.offset = 2.0 * state.row_h + 10.0;
+        let viewport = Rectangle { x: 20.0, y: 30.0, width: 100.0, height: 35.0 };
+        let mut probe = Probe { clip: viewport, records: Vec::new() };
+        reads.set(0);
+        list.operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
+        // Operate must not scan or format the 100,000-row listing.
+        assert!(reads.get() < 10);
+        assert!(probe.records.iter().any(|(raw, visible)| *visible != Some(*raw)),
+            "partly visible first row must expose the real clip");
+        let visible: Vec<_> = probe.records.iter().copied().filter(|(_, clip)| clip.is_some()).collect();
+        list.draw(&tree, &mut renderer, &crate::Theme::default(), &renderer::Style::default(),
+            Layout::new(&node), mouse::Cursor::Unavailable, &viewport);
+        assert_eq!(visible, *painted.borrow());
+        let mut unobserved = FilePane::<crate::Theme, LayoutRenderer>::new(
+            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+        );
+        reads.set(0);
+        unobserved.operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
+        assert_eq!(reads.get(), 0, "ordinary path must not traverse decorations");
     }
     fn deliver(
         list: &mut FilePane<'_, crate::Theme, LayoutRenderer>,
