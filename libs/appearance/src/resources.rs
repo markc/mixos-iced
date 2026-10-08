@@ -2048,11 +2048,16 @@ pub fn reprepare_unbound(
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<Prepared, Diagnostic> {
     check()?;
+    let Some(resources) = appearance.resources() else {
+        // Pure/legacy prepared appearances carry no resource receipt. Their
+        // text-only local rebuild remains valid without inventing evidence.
+        if requirements.icons().is_empty() {
+            return Ok(appearance.clone());
+        }
+        return Err(fault("resources", "unbound receipt missing"));
+    };
     let _permit = staging_permit();
     check()?;
-    let resources = appearance
-        .resources()
-        .ok_or_else(|| fault("resources", "unbound receipt missing"))?;
     let previous = &resources.receipt;
     if previous.binding.is_some() {
         return Err(fault(
