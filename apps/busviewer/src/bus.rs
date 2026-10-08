@@ -1534,7 +1534,13 @@ mod tests {
             // The GUI remains paused. Invalid raw descriptions must be
             // answered by the actual actor before ordinary admission.
             let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
-            let oversized = " ".repeat(application::describe::MAX_REQUEST_BYTES + 1);
+            // ABP canonicalises trailing whitespace. Leading whitespace
+            // before the object survives the production wire parser, so this
+            // checks the actual delivered body's bound without changing ABP.
+            let oversized = format!(
+                "{}{{}}",
+                " ".repeat(application::describe::MAX_REQUEST_BYTES)
+            );
             for body in ["{", "[]", "null", r#"{"x":1}"#, oversized.as_str()] {
                 let (rc, reply, _) = tokio::time::timeout(
                     Duration::from_secs(5),
