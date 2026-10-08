@@ -1122,7 +1122,10 @@ impl App {
             self.text(label("reply")),
             reply
         ]
-        .spacing(gap))
+        .spacing(gap)
+        // Leave a normal trailing gutter so integral scroll translations
+        // can reveal the final editor's complete fractional-size border.
+        .padding(iced::Padding { bottom: gap, ..Default::default() }))
         .id("busviewer-inspector")
         .height(iced::Fill)
         .width(iced::Fill)
