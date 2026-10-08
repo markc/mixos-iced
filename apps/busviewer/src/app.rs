@@ -1244,7 +1244,7 @@ mod tests {
                 application::test::assert_visible_bounds(control.bounds(), size);
             }
             drop(sim);
-            app.dialog = Some(Dialog::About);
+            let _ = app.action(Action::About);
             let mut sim = application::test::Simulator::with_size(
                 iced::Settings::default(), size, app.view(),
             );
