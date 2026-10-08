@@ -1266,7 +1266,12 @@ mod tests {
                         eprintln!("compact size={size:?} label={text:?} bounds={bounds:?} visible={:?}", control.visible_bounds());
                         eprintln!("inspector={:?}", sim.find(widget::Id::new("busviewer-inspector")));
                     }
-                    if let Some(visible) = control.visible_bounds().filter(|visible| visible.size() == bounds.size()) {
+                    // Rectangle intersection subtracts translated f32 endpoints.
+                    // Allow arithmetic round-off, never a clipped logical pixel.
+                    if let Some(visible) = control.visible_bounds().filter(|visible|
+                        (visible.width - bounds.width).abs() <= 0.001
+                        && (visible.height - bounds.height).abs() <= 0.001
+                    ) {
                         application::test::assert_visible_bounds(visible, size);
                         reached = true;
                         break;
@@ -1285,7 +1290,10 @@ mod tests {
                 for _ in 0..100 {
                     let control = sim.find(widget::Id::from(id)).expect("actual editor viewport");
                     let bounds = control.bounds();
-                    if let Some(visible) = control.visible_bounds().filter(|visible| visible.size() == bounds.size()) {
+                    if let Some(visible) = control.visible_bounds().filter(|visible|
+                        (visible.width - bounds.width).abs() <= 0.001
+                        && (visible.height - bounds.height).abs() <= 0.001
+                    ) {
                         application::test::assert_visible_bounds(visible, size);
                         reached = true;
                         break;
