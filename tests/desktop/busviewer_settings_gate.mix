@@ -1,0 +1,229 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Owned actual GUI, shared inspector/native receipts and held authority change.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$R={run:nil,bus:nil,session:nil,children:[],calls:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+$service="viewer-settings"
+fn check($condition,$message)
+  if not $condition then raise("BUSVIEWER_SETTINGS_GATE",$message) end
+end
+fn context()
+  return {mix:$mix,bus:$R.bus,root:$R.run.path,service:$service}
+end
+fn rpc($service,$verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path,$service,$verb,$body)
+end
+fn app($verb,$body)
+  return $f.rpc(context(),$verb,$body)
+end
+fn fixture($verb,$body)
+  return $f.fixture(context(),$verb,$body)
+end
+fn comp($verb,$body)
+  return rpc($R.session.service,$verb,$body)
+end
+fn wait_service($service,$verb,$child,$log)
+  $deadline=time()+10
+  while time() < $deadline
+    check(process_alive($child),"Owned child exited: " .. read_file($log))
+    $reply=$h.call($mix,$R.bus,$R.run.path,$service,$verb,{})
+    if $reply.rc == 0 then return $reply.result end
+    sleep(0.05)
+  end
+  raise("SETUP","Service did not register: " .. $service)
+end
+fn launch($label,$identity)
+  $home=$R.run.path .. "/home-" .. $label
+  for each $dir in ["config","state","cache"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  $environment=merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",XDG_CACHE_HOME:$home .. "/cache",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1",
+    MIXOS_ACCEPTANCE_RUN:nil,MIXOS_ACCEPTANCE_INSTANCE:nil})
+  if $identity != nil then
+    $environment.MIXOS_ACCEPTANCE_RUN=$identity.run
+    $environment.MIXOS_ACCEPTANCE_INSTANCE=to_string($identity.instance)
+  end
+  $log=$R.run.path .. "/viewer-" .. $label .. ".log"
+  $child=spawn([$bin .. "/busviewer","--service",$service,"--comp",$R.session.service],
+    {env:$n.client_env($R.session,$environment),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$child])
+  wait_service($service,"app.describe",$child,$log)
+  $window=comp("comp.window.wait",{match:{app_id:"dev.mixos.busviewer"},until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.pid == $child,"Window is not the actual launched owner")
+  return {pid:$child,window:{id:$window.id,generation:$window.generation},log:$log}
+end
+fn current($snapshot)
+  $deadline=time()+10
+  $last=nil
+  while time() < $deadline
+    $last=app("app.describe",{})
+    if (deep_eq($last.settings.applied,$h.identity($snapshot)) and
+      deep_eq($last.settings_cache.persisted,$last.settings.applied) and $last.preparation.current) then return $last end
+    check($last.preparation.fault == nil,"Preparation failed: " .. json_encode($last))
+    sleep(0.05)
+  end
+  raise("ACTIVATION","Did not settle: " .. json_encode($last))
+end
+fn apply($snapshot,$operation,$changes)
+  rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:$operation,changes:$changes,reset:[]})
+  return rpc("settingsd","settings.get",{binding:$binding}).snapshot
+end
+fn hold($identity,$token)
+  $arm=fixture("barrier.arm",merge($identity,{point:"busviewer.prepare",token:$token}))
+  check($arm.state == "armed","Hold failed to arm")
+  return merge($identity,{sequence:$arm.sequence,token:$token})
+end
+fn async_wait($verb,$body,$label)
+  $pending=$f.asynchronous(context(),$verb,$body,$label,12)
+  $R.calls=concat($R.calls,[$pending.pid])
+  return $pending
+end
+try
+  for each $name in ["mix","busviewer","noded","settingsd","compd"]
+    check(is_file($bin .. "/" .. $name),"Missing exact candidate " .. $name)
+  end
+  $R.run=$n.new_run("/var/tmp/busviewer-settings")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"viewer-settings",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"viewer-settings",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:180})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned compositor unavailable")
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  $authority_log=$root .. "/settingsd.log"
+  $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
+    {env:$h.bus_env($R.bus,$root),stdout:{file:$authority_log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$authority])
+  wait_service("settingsd","settings.describe",$authority,$authority_log)
+  $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $ordinary=launch("ordinary",nil)
+  $describe=current($snapshot)
+  check($describe.pid == $ordinary.pid and $describe.service == $service and
+    $describe.app_id == "dev.mixos.busviewer" and $describe.transport == "native","Wrong canonical owner")
+  for each $entry in $describe.verbs
+    check(not starts_with($entry.name,"app.acceptance."),"Ordinary inventory advertises fixture")
+  end
+  for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
+    $reply=$f.call(context(),"app.acceptance." .. $verb,{})
+    check($reply.rc == 10 and $reply.result.error_code == "UNKNOWN_VERB","Ordinary launch exposes fixture: " .. json_encode($reply))
+  end
+  app("busviewer.quit",{})
+  $h.stop($ordinary.pid)
+  $identity={run:"viewer-native-" .. to_string(pid()),instance:1}
+  $viewer=launch("fixture",$identity)
+  $info=fixture("describe",$identity)
+  check($info.pid == $viewer.pid and deep_eq($info.aliases,["root"]) and
+    deep_eq($info.points,["busviewer.prepare"]) and $info.frames.enabled,"Wrong explicit fixture")
+  $before=current($snapshot)
+  $initial=$f.target(context(),$identity,$before.preparation.applied)
+  $identity=merge($identity,{generation:$initial.evidence.live_generation})
+  $f.presented(context(),$identity,$initial.target,"baseline")
+  $f.layout(context(),$identity,$initial.target.window,"baseline")
+  $deadline=time()+8
+  while app("busviewer.info",{}).busy and time() < $deadline
+    sleep(0.05)
+  end
+  check(not app("busviewer.info",{}).busy,"Native inventory did not settle")
+  app("busviewer.select",{service:"noded",verb:"noded.list"})
+  app("busviewer.call",{service:"noded",verb:"noded.list",body:"{}"})
+  $product=app("busviewer.info",{})
+  check($product.selection != nil and $product.reply != nil,"No real selected/called product state")
+  $reference=hold($identity,"theme-held")
+  $waiting=async_wait("barrier.wait",$reference,"theme-reached")
+  $changed=apply($snapshot,"viewer-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
+  $reached=$f.collect($waiting,4)
+  check($reached.rc == 0 and $reached.result.ok and $reached.result.state == "reached","Physical preparation never reached hold")
+  $held=app("app.describe",{})
+  check(deep_eq($held.settings.current,$h.identity($changed)) and deep_eq($held.settings.applied,$before.settings.applied) and
+    deep_eq($held.resources,$before.resources),"Held builder replaced installed settings/resources")
+  check(deep_eq(fixture("frame.state",$identity).target,$initial.target),"Held preparation relabelled old frame")
+  $held_product=app("busviewer.info",{})
+  check(deep_eq($held_product.selection,$product.selection) and $held_product.body == $product.body and
+    deep_eq($held_product.reply,$product.reply),"Settings preparation disturbed edits/reply/selection")
+  $f.layout(context(),$identity,$initial.target.window,"held")
+  check(fixture("barrier.release",$reference).state == "released","Release failed")
+  $after=current($changed)
+  $second=$f.target(context(),$identity,$after.preparation.applied)
+  check($second.target.window == $initial.target.window and $second.target.stamp.activation_epoch > $initial.target.stamp.activation_epoch,"No new activation on the actual window")
+  $f.presented(context(),$identity,$second.target,"settings")
+  $f.layout(context(),$identity,$second.target.window,"settings")
+  $closing=hold($identity,"closing")
+  $closing_wait=async_wait("barrier.wait",$closing,"closing-reached")
+  $last=apply($changed,"viewer-native-close",{"ui.density":1.5})
+  $closed_hold=$f.collect($closing_wait,4)
+  check($closed_hold.rc == 0 and $closed_hold.result.ok and $closed_hold.result.state == "reached","Closing preparation did not hold")
+  $future=merge($identity,{window:$second.target.window,activation_epoch:$second.target.stamp.activation_epoch+1,
+    local_revision:$second.target.stamp.local_revision,timeout_ms:10000})
+  $pending=async_wait("frame.wait",$future,"closing-frame")
+  $admitted=false
+  $deadline=time()+1
+  while time() < $deadline
+    $busy=$f.call(context(),"app.acceptance.frame.wait",merge($future,{timeout_ms:100}))
+    if $busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"frame wait: Busy") then $admitted=true; break end
+    check($busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"TimedOut"),"Unexpected wait admission")
+  end
+  check($admitted,"Closing wait never claimed native owner")
+  $started=time()
+  app("busviewer.quit",{})
+  $reply=$f.collect($pending,3)
+  check($reply.rc == 0 and not $reply.result.ok and contains($reply.result.error,"Closed"),"Admitted frame wait did not close explicitly")
+  $deadline=time()+3
+  while process_alive($viewer.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($viewer.pid) and time()-$started < 5,"Held preparation blocked bounded shutdown")
+  write_file($root .. "/acceptance.json",json_encode({ordinary_omission:true,layout:true,presented:true,
+    held_last_good:true,settings_applied:$h.identity($changed),same_window:true,shutdown_wait:$reply,dbus:false}))
+  $R.ok=true
+catch $message
+  print("FAIL BusViewer native settings: " .. $message)
+finally
+  for each $child in concat($R.calls,$R.children)
+    try
+      $h.stop($child)
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+    catch $error
+      $R.ok=false
+      print("FAIL native host teardown: " .. $error)
+    end
+    for each $child in $R.session.pids
+      try
+        $h.stop($child)
+      catch $error
+        $R.ok=false
+        print("FAIL host child teardown: " .. $error)
+      end
+    end
+  end
+  if $R.bus != nil then
+    try
+      $h.stop($R.bus.pid)
+    catch $error
+      $R.ok=false
+      print("FAIL broker teardown: " .. $error)
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS BusViewer actual GUI: canonical identity, ordinary omission, real root, exact native frames, held resources and bounded shutdown")

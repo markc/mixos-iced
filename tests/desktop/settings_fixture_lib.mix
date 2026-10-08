@@ -1,0 +1,62 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Shared observations over the owner's existing native fixture protocol.
+-- Context is {mix,bus,root,service}. Callers own launch, mutation and teardown.
+$host=require("settings_host_lib.mix")
+fn check($condition,$message)
+  if not $condition then raise("SETTINGS_FIXTURE",$message) end
+end
+fn call($context,$verb,$body)
+  return $host.call($context.mix,$context.bus,$context.root,$context.service,$verb,$body)
+end
+fn rpc($context,$verb,$body)
+  $reply=call($context,$verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn fixture($context,$verb,$body)
+  $reply=rpc($context,"app.acceptance." .. $verb,$body)
+  check(type($reply) == "map" and $reply.ok == true,$verb .. ": " .. json_encode($reply))
+  return $reply
+end
+fn target($context,$identity,$applied)
+  $state=fixture($context,"frame.state",$identity)
+  check(not $state.evidence.closed and $state.target != nil and $state.target.stamp != nil,"No installed frame target")
+  check($state.target.stamp.activation_epoch > 0 and $state.target.stamp.local_revision == $applied,"Wrong installed stamp")
+  return $state
+end
+fn presented($context,$identity,$target,$label)
+  $receipt=fixture($context,"frame.wait",merge($identity,{window:$target.window,
+    activation_epoch:$target.stamp.activation_epoch,local_revision:$target.stamp.local_revision,timeout_ms:4000})).receipt
+  check($receipt.window == $target.window and deep_eq($receipt.stamp,$target.stamp) and
+    $receipt.request_id != nil and $receipt.outcome.kind == "presented","Missing exact native presentation: " .. json_encode($receipt))
+  write_file($context.root .. "/frame-" .. $label .. ".json",json_encode($receipt))
+  return $receipt
+end
+fn layout($context,$identity,$window,$label)
+  $value=fixture($context,"layout",merge($identity,{window:$window,layer:"base",aliases:["root"]}))
+  check($value.window_id == $window and $value.layout_sequence > 0 and not $value.truncated and
+    $value.logical_size[0] > 0 and $value.logical_size[1] > 0,"Invalid real layout traversal")
+  check(len($value.aliases) == 1 and $value.aliases[0].status == "found" and
+    len($value.records) == 1 and $value.records[0].alias == "root","Root alias not uniquely found")
+  $record=$value.records[0]
+  check($record.layout_bounds[2] > 0 and $record.layout_bounds[3] > 0 and $record.visible_bounds != nil and
+    $record.visible_bounds[2] > 0 and $record.visible_bounds[3] > 0,"Root lacks real visible geometry")
+  write_file($context.root .. "/layout-" .. $label .. ".json",json_encode($value))
+  return $value
+end
+fn asynchronous($context,$verb,$body,$label,$timeout)
+  $out=$context.root .. "/" .. $label .. ".reply"
+  $child=$host.call_async($context.mix,$context.bus,$context.root,$context.service,
+    "app.acceptance." .. $verb,$body,$out,$timeout)
+  return {pid:$child,out:$out}
+end
+fn collect($pending,$budget)
+  $deadline=time()+$budget
+  while time() < $deadline
+    $reply=$host.collect($pending.out,$pending.pid)
+    if $reply != nil then return $reply end
+    sleep(0.02)
+  end
+  raise("CALL_TIMEOUT","Native helper did not terminate: " .. $pending.out)
+end

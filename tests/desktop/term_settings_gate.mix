@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.1.1
 -- Actual Term layout, installed native frames, held preparation and shutdown.
 -- Requires the named exact-commit acceptance-enabled candidate binaries.
 if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
@@ -9,6 +9,7 @@ $mix=$bin .. "/mix"
 export MIXOS_TEST_MIX=$mix
 $n=require("nested_host_lib.mix")
 $h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
 $pty=require("pty_host_lib.mix")
 for each $name in ["mix","term","noded","settingsd","compd"]
   if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
@@ -91,45 +92,21 @@ fn await_current($snapshot,$zoom)
   raise("ACTIVATION","Term did not settle: " .. json_encode($last))
 end
 fn target($identity,$applied)
-  $state=fixture("frame.state",$identity)
-  check(not $state.evidence.closed and $state.target != nil and $state.target.stamp != nil,"No installed frame target")
-  check($state.target.stamp.activation_epoch > 0 and $state.target.stamp.local_revision == $applied,"Wrong installed stamp")
-  return $state
+  return $f.target({mix:$mix,bus:$R.bus,root:$R.run.path,service:"term"},$identity,$applied)
 end
 fn presented($identity,$target,$label)
-  $receipt=fixture("frame.wait",merge($identity,{window:$target.window,
-    activation_epoch:$target.stamp.activation_epoch,local_revision:$target.stamp.local_revision,timeout_ms:4000})).receipt
-  check($receipt.window == $target.window and deep_eq($receipt.stamp,$target.stamp) and
-    $receipt.request_id != nil and $receipt.outcome.kind == "presented","Missing exact native presentation: " .. json_encode($receipt))
-  write_file($R.run.path .. "/frame-" .. $label .. ".json",json_encode($receipt))
-  return $receipt
+  return $f.presented({mix:$mix,bus:$R.bus,root:$R.run.path,service:"term"},$identity,$target,$label)
 end
 fn layout($identity,$window,$label)
-  $value=fixture("layout",merge($identity,{window:$window,layer:"base",aliases:["root"]}))
-  check($value.window_id == $window and $value.layout_sequence > 0 and not $value.truncated and
-    $value.logical_size[0] > 0 and $value.logical_size[1] > 0,"Invalid real layout traversal")
-  check(len($value.aliases) == 1 and $value.aliases[0].status == "found" and
-    len($value.records) == 1 and $value.records[0].alias == "root","Root alias not uniquely found")
-  $record=$value.records[0]
-  check($record.layout_bounds[2] > 0 and $record.layout_bounds[3] > 0 and $record.visible_bounds != nil and
-    $record.visible_bounds[2] > 0 and $record.visible_bounds[3] > 0,"Root lacks real visible geometry")
-  write_file($R.run.path .. "/layout-" .. $label .. ".json",json_encode($value))
-  return $value
+  return $f.layout({mix:$mix,bus:$R.bus,root:$R.run.path,service:"term"},$identity,$window,$label)
 end
 fn asynchronous($verb,$body,$label,$timeout)
-  $out=$R.run.path .. "/" .. $label .. ".reply"
-  $child=$h.call_async($mix,$R.bus,$R.run.path,"term","app.acceptance." .. $verb,$body,$out,$timeout)
-  $R.calls=concat($R.calls,[$child])
-  return {pid:$child,out:$out}
+  $pending=$f.asynchronous({mix:$mix,bus:$R.bus,root:$R.run.path,service:"term"},$verb,$body,$label,$timeout)
+  $R.calls=concat($R.calls,[$pending.pid])
+  return $pending
 end
 fn collect_call($pending,$budget)
-  $deadline=time()+$budget
-  while time() < $deadline
-    $reply=$h.collect($pending.out,$pending.pid)
-    if $reply != nil then return $reply end
-    sleep(0.02)
-  end
-  raise("CALL_TIMEOUT","Native helper did not terminate: " .. $pending.out)
+  return $f.collect($pending,$budget)
 end
 fn reached($identity,$token,$zoom)
   $arm=fixture("barrier.arm",merge($identity,{point:"terminal.prepare",token:$token}))
