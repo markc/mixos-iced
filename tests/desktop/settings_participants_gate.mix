@@ -136,6 +136,8 @@ fn participant_presentations($batch,$label)
   write_file($R.run.path .. "/authority-describe-" .. $label .. ".json",json_encode(rpc("settingsd","settings.describe",{})))
   write_file($R.run.path .. "/authority-get-" .. $label .. ".json",json_encode(rpc("settingsd","settings.get",{binding:$binding})))
   write_file($R.run.path .. "/native-inventory-" .. $label .. ".json",json_encode(rpc("noded","noded.inventory",{})))
+  write_file($R.run.path .. "/native-services-" .. $label .. ".json",json_encode(rpc("noded","noded.list",{})))
+  write_file($R.run.path .. "/native-topics-" .. $label .. ".json",json_encode(rpc("noded","topic.list",{})))
   for each $app in $R.owners
     if $app.name != "quoin" then comp("comp.window.focus",$app.window) end
     $live=shell("app.describe",{}).participants
