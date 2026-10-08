@@ -1640,6 +1640,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_scale_events_are_ordered_window_owned_and_validated() {
+        let (_dir, mut app, _lane) = fixture();
+        let window = application::iced::window::Id::unique();
+        let foreign = application::iced::window::Id::unique();
+        let _ = app.on_window(window, application::iced::window::Event::Opened {
+            position: None, size: Size::new(980.0, 640.0), scale_factor: 1.5,
+        });
+        assert_eq!(app.window, Some(window));
+        let first = app.settings.session().preparation_evidence().desired;
+        let _ = app.on_window(foreign, application::iced::window::Event::Rescaled(2.0));
+        assert_eq!(app.settings.session().preparation_evidence().desired, first);
+        let _ = app.on_window(window, application::iced::window::Event::Rescaled(2.0));
+        let second = app.settings.session().preparation_evidence().desired;
+        assert!(second.get() > first.get());
+        let _ = app.on_window(window, application::iced::window::Event::Rescaled(f32::NAN));
+        assert_eq!(app.settings.session().preparation_evidence().desired, second);
+        assert!(app.status.is_some());
+    }
+
+    #[test]
+    fn contextual_scale_preparation_retains_old_handles_and_file_state_until_activation() {
+        let (dir, mut app, mut lane) = fixture();
+        let _ = activate(&mut app, &mut lane, settings::Desktop::default());
+        app.editing = Some((PaneId::Left, "unfinished path".into()));
+        let stamp = app.settings.session().frame_stamp().unwrap();
+        let old = app.content().icons.get(icons::Icon::Folder, &app.tint, icons::RASTER_PX).unwrap();
+        app.settings.set_context(PreparationContext::new(1.5).unwrap(), Some(1)).unwrap();
+        assert_eq!(app.settings.session().frame_stamp(), Some(stamp));
+        assert_eq!(app.content().icons.get(icons::Icon::Folder, &app.tint, icons::RASTER_PX), Some(old.clone()));
+        assert!(!app.settings.session().preparation_evidence().current);
+        drive(&mut lane, 2);
+        let _ = drain(&mut app);
+        let installed = app.settings.session().frame_stamp().unwrap();
+        assert!(installed.local_revision > stamp.local_revision);
+        assert!(app.settings.session().preparation_evidence().current);
+        let new = app.content().icons.get(icons::Icon::Folder, &app.tint, icons::RASTER_PX).unwrap();
+        assert_ne!(new, old);
+        let application::iced::widget::image::Handle::Rgba {width, height, ..} = new else { panic!("embedded ready image") };
+        let side = (app.look().chrome.icon * 1.5).ceil() as u32;
+        assert_eq!((width, height), (side, side));
+        assert_eq!(app.core.pane(PaneId::Left).path, dir.path());
+        assert_eq!(app.editing, Some((PaneId::Left, "unfinished path".into())));
+    }
+
+    #[test]
     fn sidebar_bus_actions_reach_the_window_and_refuse_headless_or_busy() {
         use dopus_core::config::Sidebar;
         let (_dir, mut app, mut _lane) = fixture();
