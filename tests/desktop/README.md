@@ -1,5 +1,25 @@
 # Desktop-tier gates
 
+`settings_all_apps_gate.mix REPO BUILD_BIN_DIR` opens all six applications and
+Quoin together against one owned settings authority. Build Term, BusViewer,
+Cap and Dopus with acceptance enabled, and include candidate Mix, noded,
+settingsd, editd, compd and testkit binaries. The gate installs and verifies
+the complete core resource package through the candidate Mix installer.
+
+It checks shared light/dark, text-scale and density changes, exact locked font
+sources, canonical descriptions, retained product state and an app and Quoin
+control created after the changes. Term, BusViewer, Cap and Dopus provide
+exact installed-stamp native frame and root-layout receipts. Ced and Scene
+Editor provide native palette and distinct committed-width boundary captures;
+Quoin provides real button layout, palette and input dispatch. These evidence
+types are recorded separately. Timing is a sequential observation upper bound,
+without percentile or physical GPU/VT claims. Runs keep owned JSON and native
+capture artefacts, and require their named candidate binaries.
+
+```
+mix tests/desktop/settings_all_apps_gate.mix /path/to/mixos /path/to/candidate/bin
+```
+
 `ced_settings_gate.mix REPO BUILD_BIN_DIR` checks real Ced settings frames,
 matching applied/cache receipts, document/caret preservation, cached and embedded
 cold startup, a 65-second offline broker interval and recovery on the same window.
