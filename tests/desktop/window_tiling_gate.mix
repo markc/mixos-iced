@@ -399,6 +399,11 @@ try
   write_file($root .. "/null-buffer-untile.json",json_encode({surface:$surface,owner:owner($c),truth:rpc("compd.truth",{})}))
   log_after($c,$offset,"PROBE remapped")
   log_after($c,$offset,"PROBE remap_configure_ack")
+  wait_state($c,"mapped")
+  write_file($root .. "/null-buffer-remapped.json",json_encode({row:row($c),surface:rpc("comp.props.get",{path:"surfaces.s" .. to_string($c.id)}),owner:owner($c),truth:rpc("compd.truth",{})}))
+  -- Native remap preserves stacking. The earlier real A resize covers C's
+  -- immutable normal rectangle; reveal it before requiring presentation.
+  rpc("comp.window.raise",identity($c))
   wait_state($c,"presented")
   normal($c)
   pixels_normal("null-buffer-untile-remap",$c)
@@ -436,6 +441,13 @@ try
   $R.ok=true
 catch $message
   print("FAIL " .. $message)
+  if $R.session != nil then
+    try
+      write_file($root .. "/failure-native.json",json_encode({windows:call("comp.props.get",{path:"windows"}),surfaces:call("comp.props.get",{path:"surfaces"}),truth:call("compd.truth",{})}))
+    catch $diagnostic
+      print("Native failure receipt unavailable: " .. $diagnostic)
+    end
+  end
   if $R.run != nil then
     for each $name in ["compositor.log","settingsd.log","probe-A.log","probe-B.log","probe-C.log","weston.log","noded.log"]
       if is_file($R.run.path .. "/" .. $name) then print(run_argv(["tail","-n","25",$R.run.path .. "/" .. $name],{max_output:16000}).stdout) end
