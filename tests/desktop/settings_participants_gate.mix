@@ -145,7 +145,7 @@ fn participant_presentations($batch,$label)
     $records=concat($records,[$record])
     write_file($R.run.path .. "/participant-" .. $label .. "-" .. $app.name .. ".json",json_encode($receipt))
   end
-  return {records:$records,population:"seven distinct live participants for one changed operation",
+  return {records:$records,population:to_string(len($records)) .. " distinct live participants for one changed operation",
     environment:"owned nested compositor; all owners concurrent; sequential native reveal after authority change",
     applied:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_applied_ns != nil),fn($row)=$row.accepted_to_applied_ns)),
     presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
@@ -506,6 +506,21 @@ try
   $replacement_rows=filter($replacement_receipt.observations.participants,fn($row)=$row.service == $replacement.context.service and $row.pid == $replacement.pid and $row.state != "closed")
   check(len($replacement_rows) == 1 and $replacement_rows[0].registration_incarnation != $late_rows[0].registration_incarnation and $replacement_rows[0].frame_owner != $late_rows[0].frame_owner,"Recreated same-service native owner reused retired identity")
   $participants.exact_presented($replacement_receipt,$quoin_batch.operation_id,$replacement.context.service,$replacement_rows[0].key,$replacement.pid,$h.identity($quoin_batch.snapshot))
+  $broker_before=shell("app.describe",{}).participants
+  $R.bus=$n.restart_private_bus(merge($R.bus,{restart_record:"restart.json"}))
+  $reconnected=[]
+  for each $app in $R.owners
+    $reconnected=concat($reconnected,[merge($app,{context:merge($app.context,{bus:$R.bus}),desktop:merge($app.desktop,{bus:$R.bus})})])
+  end
+  $R.owners=$reconnected
+  ready("shell","app.describe",$quoin.pid)
+  $broker_batch=apply({"appearance.mode":"dark"},"participant-broker-replacement")
+  $broker_after=participant_presentations($broker_batch,"broker-replacement")
+  for each $row in $broker_after.records
+    $prior=filter($broker_before.participants,fn($old)=$old.key == $row.key and $old.pid == $row.pid)
+    check(len($prior) == 1 and $row.registration_incarnation != $prior[0].registration_incarnation and $row.connection_generation > $prior[0].connection_generation,"Broker replacement reused retired participant registration or generation")
+    check($row.frame_owner == $prior[0].frame_owner and deep_eq($row.native_window,$prior[0].native_window),"Broker replacement recreated actual native participant")
+  end
   $inventory=rpc("noded","noded.inventory",{})
   $binary_hashes=[]
   for each $name in ["mix","noded","settingsd","compd","editd","term","ced","busviewer","cap","dopus","scene-editor","testkit-screenshot","testkit-input-probe"]
@@ -517,12 +532,20 @@ try
     all_six_simultaneous:true,quoin:true,core_set:$manifest.set_id,core_manifest_blake3:$manifest_digest,rounds:$R.rounds,participant_states:$participant_states,participant_idle:$participant_idle,participant_samples:$participant_samples,
     new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed,recreated:$replacement_receipt},new_control:$late_control,
     quoin_lifecycle:{hidden:$quoin_hidden,revealed:$quoin_revealed,retired:$quoin_closed},
+    broker_replacement:{before:$broker_before,after:$broker_after},
     hardware:false,actual_output_scale:$output.scale,quantile_population:"actual monotonic durations across current operation participants; small measured sample count explicit",exact_frame_participants:["term","busviewer","cap","dopus"],
     palette_boundary_participants:["ced","scene-editor"],quoin_palette_layout:true}))
   $R.ok=true
 catch $message
   print("FAIL simultaneous settings: " .. $message)
 finally
+  if $R.bus != nil and is_file($R.bus.dir .. "/restart.json") then
+    try
+      $replacement=json_parse(read_file($R.bus.dir .. "/restart.json"))
+      check($replacement.dir == $R.bus.dir and $replacement.node == $R.bus.node and $replacement.port == $R.bus.port,"Broker restart ledger belongs to another owner")
+      $h.stop($replacement.pid)
+    catch $error $R.ok=false; print("FAIL replacement broker teardown: " .. $error) end
+  end
   for each $child in $R.children
     try check($pty.stop_child($child),"Owned child survived teardown") catch $error
       $R.ok=false; print("FAIL owned teardown: " .. $error)
