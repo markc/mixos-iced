@@ -497,6 +497,9 @@ try
   $closed=shell("app.participants.wait",{operation_id:"all-apps-participant-deadline",services:[$late.context.service],keys:[$late_rows[0].key],until:"closed",timeout_ms:3000})
   $closed_rows=filter($closed.observations.participants,fn($row)=$row.key == $late_rows[0].key)
   check(not $closed.deadline_elapsed and len($closed_rows) == 1 and $closed_rows[0].state == "closed" and $closed_rows[0].presentation == nil,"Closed native owner retained a live presentation")
+  $retired_deadline=time()+5
+  while process_alive($late.pid) and time() < $retired_deadline sleep(0.05) end
+  check(not process_alive($late.pid),"Native closed owner did not finish process and broker retirement before recreation")
   $R.owners=filter($R.owners,fn($app)=$app.pid != $late.pid)
   $replacement=launch("busviewer","late",true)
   $replacement_description=$all.current($replacement.context,$replacement.pid,$quoin_batch.snapshot,$binding,$replacement.settings_context,15)
