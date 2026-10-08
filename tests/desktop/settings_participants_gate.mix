@@ -206,6 +206,14 @@ fn compact_desktop()
   write_file($R.run.path .. "/compact-output.json",json_encode($compact_output))
   check($compact_output.scale == 2.5 and $compact_output.width == 1536 and $compact_output.height == 864,"Actual compact logical output or scale differs")
   $compact_area=$compact_output.usable
+  $compact_original_windows=comp("comp.windows.list",{}).windows
+  $compact_original=[]
+  for each $compact_original_owner in filter($R.owners,fn($candidate)=$candidate.name != "quoin")
+    $compact_original_matches=filter($compact_original_windows,fn($candidate)=$candidate.id == $compact_original_owner.window.id and $candidate.generation == $compact_original_owner.window.generation and $candidate.pid == $compact_original_owner.pid)
+    check(len($compact_original_matches) == 1,"Original native owner unavailable before compact proof")
+    $compact_original=concat($compact_original,[{owner:$compact_original_owner,window:$compact_original_matches[0]}])
+  end
+  write_file($R.run.path .. "/compact-original-windows.json",json_encode($compact_original))
   $compact_layouts=[]
   for each $compact_size in [{width:420,height:240},{width:458,height:346}]
     $compact_index=0
@@ -267,6 +275,23 @@ fn compact_desktop()
   end
   $compact_receipt={output:$compact_output,layouts:$compact_layouts,environment:"owned native Wayland clients in nested software compositor",physical:false,kms:false,accepted_input:false}
   write_file($R.run.path .. "/compact-desktop.json",json_encode($compact_receipt))
+  -- The following legacy product checks assume their original viewport. Restore
+  -- actual observed outer rectangles only after retaining both compact proofs.
+  $compact_restored=[]
+  for each $compact_restore in $compact_original
+    $compact_restore_rectangle={x:$compact_restore.window.window_x,y:$compact_restore.window.window_y,width:$compact_restore.window.window_width,height:$compact_restore.window.window_height}
+    $compact_restore_reply=comp("comp.window.place",merge($compact_restore.owner.window,$compact_restore_rectangle))
+    write_file($R.run.path .. "/compact-restore-" .. $compact_restore.owner.name .. ".json",json_encode($compact_restore_reply))
+    check(deep_eq($compact_restore_reply.requested,{width:$compact_restore_rectangle.width,height:$compact_restore_rectangle.height}),"Original native viewport restoration was clamped")
+    check(comp("comp.window.wait",{match:$compact_restore.owner.window,until:"size",width:$compact_restore_rectangle.width,height:$compact_restore_rectangle.height,timeout_ms:3000}).window != nil,"Original native viewport restoration was not committed")
+    $compact_restore_rows=comp("comp.windows.list",{}).windows
+    $compact_restore_matches=filter($compact_restore_rows,fn($candidate)=$candidate.id == $compact_restore.owner.window.id and $candidate.generation == $compact_restore.owner.window.generation and $candidate.pid == $compact_restore.owner.pid)
+    check(len($compact_restore_matches) == 1,"Restored native owner was replaced")
+    $compact_restore_actual=$compact_restore_matches[0]
+    check(deep_eq({x:$compact_restore_actual.window_x,y:$compact_restore_actual.window_y,width:$compact_restore_actual.window_width,height:$compact_restore_actual.window_height},$compact_restore_rectangle),"Original native outer rectangle was not restored")
+    $compact_restored=concat($compact_restored,[{owner:$compact_restore.owner.name,requested:$compact_restore_rectangle,reply:$compact_restore_reply,actual:$compact_restore_actual}])
+  end
+  write_file($R.run.path .. "/compact-restored-windows.json",json_encode($compact_restored))
   return $compact_receipt
 end
 fn preparation_failure_recovery()
