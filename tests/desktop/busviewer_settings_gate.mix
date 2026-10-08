@@ -152,12 +152,14 @@ try
   check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 20,"Body editor not visibly editable")
   $focus=comp("comp.window.focus",$viewer.window)
   check($focus.focused == true,"Native window focus refused: " .. json_encode($focus))
-  $move=comp("comp.input.pointer.move",{seat:"human",window:$viewer.window,x:$bounds[0]+10,y:$bounds[1]+10,corners:false})
+  $geometry=comp("comp.props.get",{path:"windows.s" .. to_string($viewer.window.id)})
+  $point=$f.surface_point($geometry,$viewer.window,$bounds[0]+10,$bounds[1]+10)
+  $move=comp("comp.input.pointer.move",{seat:"human",window:$viewer.window,x:$point.x,y:$point.y,corners:false})
   $press=comp("comp.input.pointer.button",{seat:"human",window:$viewer.window,button:"left",action:"press"})
   $release=comp("comp.input.pointer.button",{seat:"human",window:$viewer.window,button:"left",action:"release"})
   $select=comp("comp.input.key",{seat:"human",window:$viewer.window,key:"a",modifiers:["ctrl"]})
   $typed=comp("comp.input.key",{seat:"human",window:$viewer.window,text:'{"unfinished":true}'})
-  $input={focus:$focus,move:$move,press:$press,release:$release,select:$select,typed:$typed}
+  $input={focus:$focus,geometry:$geometry,point:$point,move:$move,press:$press,release:$release,select:$select,typed:$typed}
   write_file($root .. "/input-editor.json",json_encode($input))
   check(deep_eq($typed.target,$viewer.window) and $typed.completed_events > 0,"Native text reached the wrong target: " .. json_encode($input))
   $deadline=time()+3

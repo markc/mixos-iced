@@ -45,6 +45,15 @@ fn layout($context,$identity,$window,$label)
   write_file($context.root .. "/layout-" .. $label .. ".json",json_encode($value))
   return $value
 end
+-- Inspector points are client-surface local. The native window move contract
+-- uses the window-geometry origin, including its live SSD/CSD geometry offset.
+fn surface_point($row,$window,$x,$y)
+  check($row.id == $window.id and $row.generation == $window.generation and $row.visible,
+    "Window geometry does not belong to the inspected live owner")
+  check($row.x != nil and $row.y != nil and $row.window_x != nil and $row.window_y != nil,
+    "Native surface and window origins are unavailable")
+  return {x:$x+$row.x-$row.window_x,y:$y+$row.y-$row.window_y}
+end
 fn asynchronous($context,$verb,$body,$label,$timeout)
   $out=$context.root .. "/" .. $label .. ".reply"
   $child=$host.call_async($context.mix,$context.bus,$context.root,$context.service,
