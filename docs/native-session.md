@@ -56,3 +56,12 @@ while requested maximise or fullscreen differs from committed state. For xdg
 clients, acknowledging a configure alone does not commit it: a subsequent
 surface commit applies the acknowledged state. Native fullscreen state waits
 use this same fence. X11 has no xdg ACK fence and reports its server-side state.
+
+Run `mix tests/desktop/fullscreen_state_gate.mix REPO BUILD_BIN_DIR` against a
+matching compd and testkit build. The gate owns its nested host and native
+broker, checks delayed entry and exit ACKs against state-wait timeouts, then
+verifies committed geometry, exact restore, pixels, input and stale-generation
+refusal. The probe's `--delay-state-commit WxH:MS` leaves ACKed state uncommitted
+until its replacement buffer; `--delay-size-commit` retains its existing policy
+of committing ACKed state immediately with the old buffer. These nested checks
+do not replace physical VT, GPU, input or seat acceptance.

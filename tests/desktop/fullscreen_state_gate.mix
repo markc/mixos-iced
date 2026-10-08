@@ -1,0 +1,190 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real fullscreen Bus commands, native xdg ACK/commit fences and rendered
+-- geometry on an owned nested host. Entry and exit use separate owned clients.
+-- Usage: mix tests/desktop/fullscreen_state_gate.mix REPO BUILD_BIN_DIR
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$n=require("nested_host_lib.mix")
+$host=require("settings_host_lib.mix")
+$capture=require("capture_lib.mix")
+for each $name in ["compd","noded","testkit-input-probe","testkit-screenshot"]
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing " .. $name) end
+end
+$R={run:nil,bus:nil,session:nil,children:[],ok:false}
+fn check($condition,$message)
+  if not $condition then raise("FULLSCREEN",$message) end
+end
+fn call($verb,$body)
+  return $n.call($R.session.service,$verb,$body)
+end
+fn rpc($verb,$body)
+  $reply=call($verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn row($window,$owner)
+  $value=rpc("comp.props.get",{path:"windows.s" .. to_string($window.id)})
+  check($value.id == $window.id and $value.generation == $window.generation and
+    $value.pid == $owner and process_alive($owner),"Native owner/identity changed: " .. json_encode($value))
+  return $value
+end
+fn geometry($value,$x,$y,$w,$h)
+  return ($value.window_x == $x and $value.window_y == $y and
+    $value.window_width == $w and $value.window_height == $h)
+end
+fn slot($window,$w,$h)
+  $truth=rpc("compd.truth",{})
+  $value=$truth.slots[to_string($window.id)]
+  check($value != nil and deep_eq($value.decided,[$w,$h]),"Wrong owner-decided slot: " .. json_encode($value))
+  return $truth
+end
+fn wait_state($window,$until)
+  return rpc("comp.window.wait",{match:$window,until:$until,timeout_ms:10000}).window
+end
+fn wait_size($window,$w,$h)
+  return rpc("comp.window.wait",{match:$window,until:"size",width:$w,height:$h,timeout_ms:10000}).window
+end
+fn held($window,$owner,$until,$committed,$verb,$body,$w,$h,$oldw,$oldh,$label,$log)
+  -- The marker follows a real ACK on the Wayland connection, without a commit.
+  check($n.await_log($log,"PROBE state_ack_held " .. to_string($w) .. " " .. to_string($h),3),"No actual held ACK: " .. $label)
+  $markers=re_find(read_file($log),"PROBE state_ack_held " .. to_string($w) .. " " .. to_string($h))
+  check(len($markers) == 1,"Held ACK is not unique")
+  $offset=$markers[0].start
+  $before=row($window,$owner)
+  check($before.fullscreen == $committed and $before.window_width == $oldw and
+    $before.window_height == $oldh,"Held ACK fabricated committed state/geometry: " .. json_encode($before))
+  $timeout=call("comp.window.wait",{match:$window,until:$until,timeout_ms:250})
+  check($timeout.rc >= 10 and type($timeout.result) == "map" and $timeout.result.error == "timeout",
+    "State wait did not remain pending: " .. json_encode($timeout))
+  $pending=rpc($verb,$body)
+  check($pending.fullscreen == $committed and $pending.configure_pending,
+    "State reply lost committed/pending distinction: " .. json_encode($pending))
+  slot($window,$w,$h)
+  $after=row($window,$owner)
+  check($after.fullscreen == $committed and $after.window_width == $oldw and
+    $after.window_height == $oldh,"Hold ended before pending assertions completed")
+  check(not contains(slice(read_file($log),$offset),"PROBE buffer_commit"),"Buffer committed during claimed hold")
+  write_file($R.run.path .. "/" .. $label .. "-held.json",json_encode({before:$before,after:$after,reply:$pending,wait:$timeout}))
+  return $offset
+end
+fn magenta($image,$x,$y)
+  $pixel=$capture.pixel($image,$x,$y)
+  return $pixel[0] >= 247 and $pixel[1] <= 8 and $pixel[2] >= 247
+end
+fn pixels($label,$fullscreen)
+  $path=$R.run.path .. "/" .. $label .. ".ppm"
+  $settled=false
+  for $attempt=1 to 40
+    run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})})
+    $image=$capture.ppm($path)
+    check($image.w == $output.width and $image.h == $output.height,"Unexpected screenshot geometry")
+    $inside=magenta($image,100,100)
+    $far=magenta($image,$output.width-30,$output.height-30)
+    $left=magenta($image,30,100)
+    if $inside and (if $fullscreen then $far and $left else not $far and not $left end) then
+      $settled=true; break
+    end
+    sleep(0.05)
+  end
+  check($settled,"Native pixels never reflected " .. $label)
+end
+try
+  $R.run=$n.new_run("/var/tmp/fullscreen-state")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"fullscreen-state",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"fullscreen",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,
+    env:{HOME:$root .. "/home"}})
+  check($n.wait_ready($R.session,30),"Owned compositor did not register")
+  $outputs=rpc("comp.props.get",{path:"outputs"})
+  check(len(keys($outputs)) == 1,"First bounded guard requires one native output")
+  $output_key=keys($outputs)[0]
+  $output=$outputs[$output_key]
+  check($output.x == 0 and $output.y == 0 and $output.width > 600 and $output.height > 400,"Unsupported fixture output")
+  rpc("comp.props.set",{path:"input.host.passthrough",value:false})
+  for each $phase in ["entry","exit"]
+    $app="dev.mixos.Fullscreen" .. $phase
+    $log=$root .. "/probe-" .. $phase .. ".log"
+    $delay=if $phase == "entry" then to_string($output.width) .. "x" .. to_string($output.height) else "420x260" end
+    $owner=spawn([$bin .. "/testkit-input-probe","--app-id",$app,"--size","420x260",
+      "--seconds","90","--colour","ff00ff","--delay-state-commit",$delay .. ":6000"],
+      {env:$n.client_env($R.session,{}),stdout:{file:$log},stderr:"stdout",detach:true})
+    $R.children=concat($R.children,[$owner])
+    $mapped=rpc("comp.window.wait",{match:{app_id:$app},until:"presented",timeout_ms:15000}).window
+    check($mapped != nil and $mapped.pid == $owner,"Presented row does not name owned probe")
+    $window={id:$mapped.id,generation:$mapped.generation}
+    rpc("comp.window.place",merge($window,{x:64,y:48,width:420,height:260}))
+    wait_size($window,420,260)
+    $normal=row($window,$owner)
+    check(geometry($normal,64,48,420,260) and not $normal.fullscreen,"Normal placement failed")
+    check(not contains(read_file($log),"PROBE state_ack_held"),"Initial mapping or unchanged size falsely held")
+    $full_body=merge($window,{output:$output_key})
+    $requested=rpc("comp.window.fullscreen",$full_body)
+    check(not $requested.fullscreen and $requested.configure_pending,"Entry success fabricated committed fullscreen")
+    $held_offset=nil
+    if $phase == "entry" then
+      $held_offset=held($window,$owner,"fullscreen",false,"comp.window.fullscreen",$full_body,
+        $output.width,$output.height,420,260,"entry",$log)
+    end
+    $full=wait_state($window,"fullscreen")
+    wait_size($window,$output.width,$output.height)
+    if $phase == "entry" then check(contains(slice(read_file($log),$held_offset),"PROBE buffer_commit " .. to_string($output.width) .. " " .. to_string($output.height)),"Entry converged without native replacement commit log") end
+    check($full.id == $window.id and $full.generation == $window.generation,"Entry replaced window")
+    $full=row($window,$owner)
+    check($full.fullscreen and geometry($full,$output.x,$output.y,$output.width,$output.height),"Fullscreen did not cover selected output whole geometry")
+    slot($window,$output.width,$output.height)
+    $settled=rpc("comp.window.fullscreen",$full_body)
+    check($settled.fullscreen and not $settled.configure_pending,"Committed entry remained pending")
+    pixels($phase .. "-fullscreen",true)
+    $move=rpc("comp.input.pointer.move",{seat:"human",x:$output.width-30,y:$output.height-30})
+    check($move.target != nil and $move.target.id == $window.id,"Fullscreen native input missed the live owner")
+    $stale=call("comp.window.unfullscreen",{id:$window.id,generation:$window.generation+1})
+    check($stale.rc >= 10 and type($stale.result) == "map" and $stale.result.error == "stale_target","Stale generation was not refused")
+    check(row($window,$owner).fullscreen,"Stale command changed fullscreen")
+    $requested=rpc("comp.window.unfullscreen",$window)
+    check($requested.fullscreen and $requested.configure_pending,"Exit success fabricated committed normal state")
+    if $phase == "exit" then
+      $held_offset=held($window,$owner,"unfullscreen",true,"comp.window.unfullscreen",$window,
+        420,260,$output.width,$output.height,"exit",$log)
+    end
+    wait_state($window,"unfullscreen")
+    wait_size($window,420,260)
+    if $phase == "exit" then check(contains(slice(read_file($log),$held_offset),"PROBE buffer_commit 420 260"),"Exit converged without native replacement commit log") end
+    $restored=row($window,$owner)
+    check(not $restored.fullscreen and geometry($restored,64,48,420,260),"Exit did not restore exact normal rectangle")
+    slot($window,420,260)
+    $settled=rpc("comp.window.unfullscreen",$window)
+    check(not $settled.fullscreen and not $settled.configure_pending,"Committed exit remained pending")
+    pixels($phase .. "-restored",false)
+    write_file($root .. "/" .. $phase .. "-settled.json",json_encode({normal:$normal,fullscreen:$full,restored:$restored}))
+    rpc("comp.window.close",$window)
+    wait_state($window,"gone")
+    for $attempt=1 to 40
+      if not process_alive($owner) then break end
+      sleep(0.05)
+    end
+    check(not process_alive($owner),"Probe did not naturally retire after native close")
+  end
+  print("PASS native fullscreen: held entry and exit ACKs, state wait timeouts, exact committed geometry/restore, stable owners, stale refusal, pixels and input")
+  $R.ok=true
+catch $message
+  print("FAIL " .. $message)
+  if $R.run != nil then
+    for each $name in ["compositor.log","probe-entry.log","probe-exit.log","weston.log","noded.log"]
+      if is_file($R.run.path .. "/" .. $name) then print(run_argv(["tail","-n","20",$R.run.path .. "/" .. $name],{max_output:12000}).stdout) end
+    end
+  end
+finally
+  for each $child in $R.children
+    $host.stop($child)
+  end
+  if $R.session != nil then $n.stop($R.session) end
+  if $R.bus != nil then $host.stop($R.bus.pid) end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
