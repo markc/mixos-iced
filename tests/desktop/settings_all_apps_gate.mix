@@ -326,6 +326,7 @@ try
   $late=launch("busviewer","late",true)
   $changed=rpc("settingsd","settings.get",{binding:$binding}).snapshot
   $late_description=$all.current($late.context,$late.pid,$changed,$binding,$late.settings_context,15)
+  write_file($late.context.root .. "/description-late.json",json_encode($late_description))
   $all.canonical($late_description,$late,$changed,$binding,$manifest,$manifest_digest)
   comp("comp.window.focus",$late.window)
   $late_frame=$recovery.observe($late.context,$late.identity,$late_description,"late")
