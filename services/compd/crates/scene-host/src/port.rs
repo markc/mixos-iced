@@ -2649,6 +2649,11 @@ mod tests {
         bus::native_session::stamp_principal(&mut envelope, Some(&principal)).unwrap();
         command.headers.extend(envelope.headers);
         assert!(presentation_notice(&command, &registrations).is_some());
+        let retired = decode_registrations(&json!([
+            {"service":"term", "incarnation":null}
+        ]))
+        .unwrap();
+        assert!(presentation_notice(&command, &retired).is_none());
         command.body=r#"{"contract":"application.presentation.v1","service":"term","pid":8,"meta":{"peer_pid":7}}"#.into();
         assert!(
             presentation_notice(&command, &registrations).is_none(),
