@@ -1536,7 +1536,7 @@ mod tests {
             let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
             let oversized = " ".repeat(application::describe::MAX_REQUEST_BYTES + 1);
             for body in ["{", "[]", "null", r#"{"x":1}"#, oversized.as_str()] {
-                let (rc, reply) = tokio::time::timeout(
+                let (rc, reply, _) = tokio::time::timeout(
                     Duration::from_secs(5),
                     caller.call_with_headers_raw(
                         "actor-viewer",
