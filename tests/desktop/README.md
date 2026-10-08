@@ -108,3 +108,36 @@ held local zoom retaining its raster/stamp, release, authority activation on
 the same window, and bounded shutdown while preparation is held. This is
 nested software-compositor evidence; physical GPU scanout and VT isolation
 remain separate checks.
+
+`settings_app_recovery_gate.mix REPO BUILD_BIN_DIR [APP]` shares one cold-start
+and authority-rejoin matrix across Term, BusViewer, Cap and Dopus. `APP` can
+select `term`, `busviewer`, `cap` or `dopus`; omission runs all four. Use a
+combined exact-commit binary directory with acceptance enabled for each app,
+tiny-skia app rendering, and candidate Mix, noded, settingsd and compd. Term
+also needs the owned PTY launch support documented above.
+
+```
+mix tests/desktop/settings_app_recovery_gate.mix /path/to/mixos /path/to/candidate/bin
+```
+
+The gate primes a real persisted cache, retires the app and settings authority,
+then starts cached, missing-cache and malformed-cache cases. The app broker
+remains live while the authority is absent; the compositor has its own broker.
+Every cold app must present within 1000 ms, install unconfirmed fallback evidence,
+and return an exact installed native frame receipt and real root layout.
+Cached authority/resource identities must match the primed sources; a corrupt
+cache must report fallback diagnostics. Authority restart applies a distinct
+light/text-scale design and must install its live snapshot and the same resource
+sources on the same PID/window, retaining actual PTY output and owners,
+selected successful BusViewer call, Cap annotation/undo,
+or Dopus selection. Per-case JSON artefacts include startup timing, descriptions,
+resource sources, layouts, exact frame receipts and before/after product state.
+Registry usage counters are recorded in descriptions but are not source identity.
+Set `COMPD_KEEP_RUN=1` through Mix's environment options to retain passing
+artefacts; failing runs are retained automatically.
+
+This first matrix does **not** prove a broker outage longer than 65 seconds,
+invalid/missing resource retention or stale held preparation retirement. Those
+remain required extensions, with the existing individual native settings gates
+providing their separate short reconnect and preparation-hold checks. A passing
+matrix cannot stand in for those remaining cases or physical VT/GPU acceptance.

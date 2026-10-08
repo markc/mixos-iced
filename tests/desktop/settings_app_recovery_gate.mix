@@ -1,0 +1,310 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real tiny-skia Term/BusViewer/Cap/Dopus cold fallback and authority rejoin.
+-- Usage: mix tests/desktop/settings_app_recovery_gate.mix REPO BUILD_BIN_DIR [APP]
+-- This first matrix keeps the native app broker alive while authority is absent.
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [term|busviewer|cap|dopus]") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$recovery=require("settings_recovery_lib.mix")
+$pty=require("pty_host_lib.mix")
+$apps=if len(args()) == 3 then [args()[2]] else ["term","busviewer","cap","dopus"] end
+for each $name in $apps
+  if not contains(["term","busviewer","cap","dopus"],$name) then raise("ARGS","Unknown app " .. $name) end
+end
+for each $name in concat(["mix","noded","settingsd","compd"],$apps)
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing exact candidate " .. $name) end
+end
+if contains($apps,"term") then $pty.check_support() end
+$binding={instance:"fixture",profile:"default"}
+$R={run:nil,desktop:nil,bus:nil,session:nil,authority:nil,children:[],ok:false,instance:0}
+fn check($condition,$message)
+  return $recovery.check($condition,$message)
+end
+fn fixture_context($name,$directory)
+  return {mix:$mix,bus:$R.bus,root:$directory,bus_root:$R.run.path .. "/apps",
+    service:if $name == "term" then "term" else $name .. "-recovery" end}
+end
+fn comp($verb,$body)
+  return $h.rpc($mix,$R.desktop,$R.run.path .. "/desktop",$R.session.service,$verb,$body)
+end
+fn authority($verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path .. "/apps","settingsd",$verb,$body)
+end
+fn start_authority()
+  $log=$R.run.path .. "/settingsd-" .. to_string($R.instance) .. ".log"
+  $child=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$R.run.path .. "/profile"],
+    {env:$h.bus_env($R.bus,$R.run.path .. "/apps"),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.authority=$child
+  $R.children=concat($R.children,[{pid:$child,privileged_launcher:false}])
+  $deadline=time()+10
+  while time() < $deadline
+    check(process_alive($child),"Authority exited: " .. read_file($log))
+    $reply=$h.call($mix,$R.bus,$R.run.path .. "/apps","settingsd","settings.get",{binding:$binding})
+    if $reply.rc == 0 then return $reply.result.snapshot end
+    sleep(0.05)
+  end
+  raise("AUTHORITY","Owned settings authority did not register")
+end
+fn stop_authority()
+  $h.stop($R.authority)
+  $deadline=time()+5
+  while time() < $deadline
+    $reply=$h.call($mix,$R.bus,$R.run.path .. "/apps","settingsd","settings.get",{binding:$binding})
+    if $reply.rc != 0 and $reply.rc != -9 then return end
+    sleep(0.05)
+  end
+  raise("AUTHORITY","Absent authority still answered successfully or broker was unavailable")
+end
+fn launch($name,$home,$label,$budget)
+  for each $dir in ["config","state","cache"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  $R.instance=$R.instance+1
+  $identity={run:"recovery-" .. to_string(pid()),instance:$R.instance}
+  $ctx=fixture_context($name,$R.run.path .. "/" .. $name .. "-" .. $label)
+  mkdir($ctx.root,{parents:true})
+  $extra=merge($h.bus_env($R.bus,$R.run.path .. "/apps"),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",XDG_CACHE_HOME:$home .. "/cache",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1",
+    TERM_NOTIFY:"0",WGPU_BACKEND:"gl",MIXOS_ACCEPTANCE_RUN:$identity.run,
+    MIXOS_ACCEPTANCE_INSTANCE:to_string($identity.instance)})
+  $env=$n.client_env($R.session,$extra)
+  $argv=if $name == "term" then $pty.launch_argv($bin,$env)
+    elif $name == "dopus" then [$bin .. "/dopus","--service",$ctx.service,"--noded-url",$R.bus.url,"--",$R.run.path .. "/left",$R.run.path .. "/right"]
+    elif $name == "cap" then [$bin .. "/cap","--service",$ctx.service,"--comp",$R.session.service,$R.run.path .. "/source.png"]
+    else [$bin .. "/busviewer","--service",$ctx.service,"--comp",$R.session.service] end
+  $at=time()
+  $log=$ctx.root .. "/app.log"
+  $launcher=spawn($argv,{env:$env,stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[{pid:$launcher,privileged_launcher:$name == "term"}])
+  -- First presentation is observed through the independent compositor broker, before
+  -- app registration or settings descriptions can hide startup latency.
+  $row=comp("comp.window.wait",{match:{app_id:"dev.mixos." .. $name},until:"presented",timeout_ms:5000}).window
+  $elapsed=(time()-$at)*1000
+  check($row != nil and $row.pid != nil,"No actual presented " .. $name .. " owner")
+  if $name != "term" then check($row.pid == $launcher,"Window belongs to a different launched process") end
+  check($elapsed <= $budget,$name .. " first presentation exceeded " .. to_string($budget) .. "ms: " .. to_string($elapsed))
+  $R.children=concat($R.children,[{pid:$row.pid,privileged_launcher:false}])
+  $window={id:$row.id,generation:$row.generation}
+  comp("comp.window.focus",$window)
+  write_file($ctx.root .. "/startup.json",json_encode({pid:$row.pid,launcher:$launcher,
+    window:$window,elapsed_ms:$elapsed,budget_ms:$budget,authority_absent:$label != "prime"}))
+  return {name:$name,pid:$row.pid,launcher:$launcher,window:$window,context:$ctx,identity:$identity,log:$log}
+end
+fn stop_app($app)
+  if $app.name == "term" then
+    check($pty.stop_child({pid:$app.pid,privileged_launcher:false}),"Term survived retirement")
+    check($pty.stop_child({pid:$app.launcher,privileged_launcher:true}),"Term launcher survived retirement")
+  else
+    $f.rpc($app.context,$app.name .. ".quit",{})
+    $deadline=time()+4
+    while process_alive($app.pid) and time() < $deadline
+      sleep(0.02)
+    end
+    check(not process_alive($app.pid),"Native quit failed to retire " .. $app.name)
+  end
+  comp("comp.window.wait",{match:$app.window,until:"gone",timeout_ms:5000})
+end
+fn stable_product($app)
+  if $app.name == "term" then
+    -- Typography may legitimately resize PTY cells. Retain tab/pane ownership,
+    -- focus, child PID, title and revision; prove contents separately below.
+    $tabs=$f.rpc($app.context,"term.tabs",{})
+    $panes=$f.rpc($app.context,"term.panes",{})
+    return {tabs:re_replace($tabs," (cols|rows|x|y|w|h)=[^ \\n]+",""),
+      panes:re_replace($panes," (cols|rows|x|y|w|h)=[^ \\n]+","")}
+  elif $app.name == "cap" then
+    $value=$f.rpc($app.context,"cap.info",{})
+    check(not $value.busy and $value.document != nil,"Cap document not ready")
+    return {document:$value.document,path:$value.path,capture:$value.capture,ui:$value.ui}
+  elif $app.name == "busviewer" then
+    $value=$f.rpc($app.context,"busviewer.info",{})
+    check(not $value.busy,"BusViewer call/discovery still busy")
+    return {selection:$value.selection,body:$value.body,reply:$value.reply,row_key:$value.ui.row_key}
+  else
+    $value=$f.rpc($app.context,"dopus.state",{})
+    return {panes:$value.panes,location_draft:$value.ui.location_draft,places:$value.places,properties:$value.properties}
+  end
+end
+fn prepare_product($app)
+  if $app.name == "term" then
+    comp("comp.input.key",{seat:"human",window:$app.window,text:'print("RECOVERY_PTY_SENTINEL")'})
+    comp("comp.input.key",{seat:"human",window:$app.window,key:"Return"})
+  elif $app.name == "cap" then
+    $deadline=time()+5
+    while time() < $deadline
+      $info=$f.rpc($app.context,"cap.info",{})
+      if not $info.busy and $info.document != nil then break end
+      sleep(0.05)
+    end
+    check($info.document != nil and not $info.busy,"Cap failed to open owned image")
+    $f.rpc($app.context,"cap.annotate",{kind:"redact",points:[{x:10,y:10},{x:50,y:40}],colour:[0,0,0,255],width:2})
+  elif $app.name == "busviewer" then
+    $deadline=time()+5
+    while $f.rpc($app.context,"busviewer.info",{}).busy and time() < $deadline
+      sleep(0.05)
+    end
+    $f.rpc($app.context,"busviewer.select",{service:$app.context.service,verb:"busviewer.ping"})
+    $f.rpc($app.context,"busviewer.call",{service:$app.context.service,verb:"busviewer.ping",body:"{}"})
+  else
+    $deadline=time()+5
+    while time() < $deadline
+      $state=$f.rpc($app.context,"dopus.state",{})
+      if $state.panes[0].path == $R.run.path .. "/left" and $state.panes[0].rows == 1 then break end
+      sleep(0.05)
+    end
+    $f.rpc($app.context,"dopus.action",{id:"selection.last",pane:0})
+  end
+  $deadline=time()+5
+  while time() < $deadline
+    try
+      $product=stable_product($app)
+      if $app.name == "term" then
+        $screen=$f.rpc($app.context,"term.snapshot",{})
+        check(count_of(to_string($screen),"RECOVERY_PTY_SENTINEL") >= 2,"Actual PTY output not observed")
+      elif $app.name == "cap" then
+        check($product.document.dirty and len($product.document.objects) == 1 and $product.document.undo > 0,"Cap annotation not retained")
+      elif $app.name == "busviewer" then
+        check($product.selection != nil and $product.reply.rc == 0,"Actual selected successful call not retained")
+      else
+        check($product.panes[0].selected == $R.run.path .. "/left/owned-file.txt",
+          "Actual owned Dopus file selection not observed")
+      end
+      write_file($app.context.root .. "/product-before.json",json_encode($product))
+      return $product
+    catch $pending
+      sleep(0.05)
+    end
+  end
+  raise("PRODUCT","Actual product mutation did not settle for " .. $app.name)
+end
+fn product_retained($app,$before)
+  $after=stable_product($app)
+  check(deep_eq($after,$before),"Authority rejoin changed actual " .. $app.name .. " product state")
+  if $app.name == "term" then
+    check(count_of(to_string($f.rpc($app.context,"term.snapshot",{})),"RECOVERY_PTY_SENTINEL") >= 2,"Rejoin lost actual PTY output")
+  end
+  write_file($app.context.root .. "/product-after.json",json_encode($after))
+end
+try
+  $R.run=$n.new_run("/var/tmp/settings-app-recovery")
+  $root=$R.run.path
+  $R.desktop=$n.private_bus({dir:$root .. "/desktop",name:"recovery-desktop",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"recovery",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:900})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned native compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  $R.bus=$n.private_bus({dir:$root .. "/apps",name:"recovery-apps",noded:$bin .. "/noded",first_port:$R.desktop.port})
+  check($R.bus.port != $R.desktop.port,"Broker isolation failed")
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  for each $dir in ["left","right"]
+    mkdir($root .. "/" .. $dir,{parents:true})
+  end
+  write_file($root .. "/left/owned-file.txt","native recovery file\n")
+  run_argv_must(["cp",$repo .. "/share/brand/favicons/white-on-black/icon-512.png",$root .. "/source.png"])
+  for each $name in $apps
+    $snapshot=start_authority()
+    authority("settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+      expected_revision:$snapshot.revision,operation_id:$name .. "-recovery-prime",
+      changes:{"appearance.mode":"dark","ui.text_scale":1.0},reset:[]})
+    $snapshot=authority("settings.get",{binding:$binding}).snapshot
+    $home=$root .. "/home-" .. $name
+    $prime=launch($name,$home,"prime",5000)
+    $primed=$recovery.settled($prime.context,$prime.pid,"current",$snapshot,10)
+    $recovery.observe($prime.context,$prime.identity,$primed,"prime")
+    $cache=$recovery.cache_files($home)[0]
+    $cache_text=read_file($cache)
+    stop_app($prime)
+    stop_authority()
+    for each $case in ["cached","missing","corrupt"]
+      $case_home=if $case == "cached" then $home else $root .. "/home-" .. $name .. "-" .. $case end
+      if $case == "corrupt" then
+        mkdir($case_home .. "/cache/settings",{parents:true})
+        $parts=split($cache,"/")
+        $basename=$parts[len($parts)-1]
+        write_file($case_home .. "/cache/settings/" .. $basename,"{broken cache")
+      elif $case == "cached" then
+        check(read_file($cache) == $cache_text,"Primed cache changed before cold startup")
+      else
+        check(len(glob($case_home .. "/cache/settings/*.json")) == 0,"Missing-cache case already has a cache")
+      end
+      $app=launch($name,$case_home,$case,1000)
+      $kind=if $case == "cached" then "cached" else "embedded" end
+      $fallback=$recovery.settled($app.context,$app.pid,$kind,nil,10)
+      if $case == "cached" then $recovery.cached($fallback,$primed) end
+      if $case == "corrupt" then $recovery.corrupt_diagnostic($fallback) end
+      $before=$recovery.observe($app.context,$app.identity,$fallback,"fallback")
+      $product=prepare_product($app)
+      -- A distinct authority design proves a real install, rather than
+      -- requiring a new preparation merely to confirm an identical cache.
+      $rejoin_start=start_authority()
+      $text_scale=if $case == "cached" then 1.1 elif $case == "missing" then 1.2 else 1.3 end
+      authority("settings.apply",{binding:$binding,expected_incarnation:$rejoin_start.incarnation,
+        expected_revision:$rejoin_start.revision,operation_id:$name .. "-recovery-" .. $case,
+        changes:{"appearance.mode":"light","ui.text_scale":$text_scale},reset:[]})
+      $rejoined=authority("settings.get",{binding:$binding}).snapshot
+      check($rejoined.revision > $rejoin_start.revision,"Rejoin authority mutation did not advance")
+      $current=$recovery.settled($app.context,$app.pid,"current",$rejoined,45)
+      $after=$recovery.observe($app.context,$app.identity,$current,"rejoined")
+      $recovery.same_owner($before,$after,$app.pid,$current)
+      check($after.target.stamp.activation_epoch > $before.target.stamp.activation_epoch,
+        "Changed authority design did not install a new activation")
+      check(deep_eq($after.resources,$recovery.resource_identity($primed)),"Rejoin changed authority resource source identity")
+      product_retained($app,$product)
+      write_file($app.context.root .. "/acceptance.json",json_encode({app:$name,case:$case,
+        cold:true,fallback:$kind,authority_absent:true,corrupt_diagnostic:$case == "corrupt",
+        same_pid:true,same_window:true,product_retained:true,exact_frame:true,
+        installed_authority:$current.settings.applied,installed_resources:$after.resources}))
+      stop_app($app)
+      stop_authority()
+      print("PASS native cold/rejoin " .. $name .. " " .. $case)
+    end
+  end
+  write_file($root .. "/acceptance.json",json_encode({apps:$apps,cases:["cached","missing","corrupt"],
+    authority_rejoin:true,broker_outage:false,invalid_resource:false,stale_preparation:false,dbus:false}))
+  $R.ok=true
+catch $message
+  print("FAIL native app recovery: " .. $message)
+finally
+  for each $child in $R.children
+    try
+      check($pty.stop_child($child),"Owned child survived teardown")
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+      for each $child in $R.session.pids
+        $h.stop($child)
+      end
+    catch $error
+      $R.ok=false
+      print("FAIL native host teardown: " .. $error)
+    end
+  end
+  for each $broker in [$R.bus,$R.desktop]
+    if $broker != nil then
+      try
+        $h.stop($broker.pid)
+      catch $error
+        $R.ok=false
+        print("FAIL broker teardown: " .. $error)
+      end
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS selected-app native cold fallback/rejoin matrix; prolonged broker outage, resource failure and stale held preparation remain separate acceptance")

@@ -2,12 +2,13 @@
 -- version: 0.1.1
 -- Shared observations over the owner's existing native fixture protocol.
 -- Context is {mix,bus,root,service}. Callers own launch, mutation and teardown.
+-- Optional bus_root keeps native ingress configuration separate from artefacts.
 $host=require("settings_host_lib.mix")
 fn check($condition,$message)
   if not $condition then raise("SETTINGS_FIXTURE",$message) end
 end
 fn call($context,$verb,$body)
-  return $host.call($context.mix,$context.bus,$context.root,$context.service,$verb,$body)
+  return $host.call($context.mix,$context.bus,$context.bus_root ?? $context.root,$context.service,$verb,$body)
 end
 fn rpc($context,$verb,$body)
   $reply=call($context,$verb,$body)
@@ -68,7 +69,7 @@ fn surface_point($row,$window,$x,$y)
 end
 fn asynchronous($context,$verb,$body,$label,$timeout)
   $out=$context.root .. "/" .. $label .. ".reply"
-  $child=$host.call_async($context.mix,$context.bus,$context.root,$context.service,
+  $child=$host.call_async($context.mix,$context.bus,$context.bus_root ?? $context.root,$context.service,
     "app.acceptance." .. $verb,$body,$out,$timeout)
   return {pid:$child,out:$out}
 end
