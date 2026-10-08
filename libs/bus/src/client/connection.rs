@@ -97,6 +97,7 @@ pub(crate) struct ConnectionOptions {
     pub provenance: Option<crate::RegisterProvenance>,
     pub verbs: Option<Vec<crate::VerbDescriptor>>,
     pub capacity: Option<usize>,
+    pub max_delivery_bytes: Option<usize>,
     #[cfg(unix)]
     pub unix: Option<crate::native_client::UnixConnectOptions>,
 }
@@ -115,6 +116,7 @@ impl Connection {
         if let Some(unix) = &options.unix {
             let mut unix = unix.clone();
             unix.incoming_capacity = options.capacity.or(unix.incoming_capacity);
+            unix.incoming_max_bytes = options.max_delivery_bytes.unwrap_or(unix.incoming_max_bytes);
             let outcome = NodedClient::connect_unix_with_verbs(
                 name,
                 url,
