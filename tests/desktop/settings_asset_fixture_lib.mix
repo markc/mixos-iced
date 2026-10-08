@@ -1,76 +1,56 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
--- An owned, verified native package made only from checked-in real sources.
+-- version: 0.1.1
+-- Owned complete-core installation through the native installer and reader.
 $recovery=require("settings_recovery_lib.mix")
-fn locked($directory,$source,$relative)
-  mkdir(dirname($directory .. "/" .. $relative),{parents:true})
-  run_argv_must(["cp",$source,$directory .. "/" .. $relative])
-  $path=$directory .. "/" .. $relative
-  return locked_receipt($path,$relative)
-end
-fn locked_receipt($path,$relative)
-  return {path:$relative,url:"https://github.com/markc/mixos",upstream:"https://github.com/markc/mixos",
-    revision:"checked-in-fixture",licence:if ends_with($relative,".svg") then "ISC"
-      elif ends_with($relative,".ttf") then "OFL-1.1" else "CC0-1.0" end,bytes:stat($path).size,
-    sha256:hash_file($path,"sha256"),blake3:hash_file($path,"blake3")}
-end
-fn prepare($repo,$data_home)
+fn prepare($repo,$data_home,$mix)
   $root=$data_home .. "/mixos/assets"
-  $id="native-recovery-verified"
-  $directory=$root .. "/sets/" .. $id
-  mkdir($directory,{parents:true})
-  $files=[]
-  for each $source in [
-    {source:"vendor/font/Inter-VariableFont_opsz,wght.ttf",path:"fonts/Inter.ttf"},
-    {source:"libs/appearance/assets/test-fonts/NotoSans.ttf",path:"fonts/NotoSans.ttf"},
-    {source:"libs/appearance/assets/test-fonts/JetBrainsMono.ttf",path:"fonts/JetBrainsMono.ttf"}]
-    $files=concat($files,[locked($directory,$repo .. "/" .. $source.source,$source.path)])
+  $installer=$repo .. "/share/assets/install.mix"
+  $source=$repo .. "/share/assets/core.conf.mix"
+  print(run_argv_must([$mix,$installer,"--root",$root,"--manifest",$source],{timeout:300}))
+  print(run_argv_must([$mix,$installer,"--root",$root,"--manifest",$source,"--verify"],{timeout:120}))
+  $manifest=data_parse(read_file($source))
+  $directory=$root .. "/sets/" .. $manifest.set_id
+  $locked=read_file($directory .. "/manifest.conf.mix")
+  $recovery.check($locked == read_file($source),"Native installer changed locked core manifest bytes")
+  $catalogue=dirname($manifest.fonts.icons) .. "/" .. path_parts($manifest.fonts.icons).stem .. ".codepoints"
+  $needed=["archive","arrow_back","arrow_forward","arrow_upward","expand_more","chevron_right","expand_less",
+    "content_copy","download","visibility","visibility_off","draft","code","image","audio_file","description",
+    "video_file","folder","folder_open","grid_view","hard_drive","home","info","view_list","logout","menu",
+    "swap_horiz","music_note","left_panel_open","right_panel_open","push_pin","keep_off","refresh","search","delete"]
+  $glyphs={}
+  for each $line in read_lines($directory .. "/" .. $catalogue)
+    if trim($line) != "" then
+      $parts=re_split(trim($line),"\\s+")
+      $recovery.check(len($parts) == 2 and re_match($parts[1],"^[0-9a-fA-F]{1,6}$"),"Invalid installed native catalogue row")
+      if contains($needed,$parts[0]) then
+        $scalar=0
+        $hex=lower($parts[1])
+        for $index=0 to len($hex)-1
+          $scalar=$scalar*16+index_of("0123456789abcdef",substr($hex,$index,1))
+        end
+        $recovery.check(not has_key($glyphs,$parts[0]),"Duplicate required native catalogue name")
+        $glyphs[$parts[0]]=chr($scalar)
+      end
+    end
   end
-  -- These are the actual product SVGs, not generated placeholder pixels.
-  $names={archive:"archive",arrow_back:"arrow-left",arrow_forward:"arrow-right",arrow_upward:"arrow-up",
-    expand_more:"chevron-down",chevron_right:"chevron-right",expand_less:"chevron-up",content_copy:"copy",
-    download:"download",visibility:"eye",visibility_off:"eye-off",draft:"file",code:"file-code",
-    image:"file-image",audio_file:"file-music",description:"file-text",video_file:"file-video-camera",
-    folder:"folder",folder_open:"folder-open",grid_view:"grid-2x2",hard_drive:"hard-drive",home:"house",
-    info:"info",view_list:"list",logout:"log-out",menu:"menu",swap_horiz:"arrow-left-right",music_note:"music",
-    left_panel_open:"panel-left",right_panel_open:"panel-right",push_pin:"pin",keep_off:"pin-off",
-    refresh:"refresh-cw",search:"search",delete:"trash-2"}
-  $icons=[]
-  for each $name in keys($names)
-    $relative="icons/" .. $name .. ".svg"
-    $files=concat($files,[locked($directory,$repo .. "/apps/dopus/assets/icons/" .. $names[$name] .. ".svg",$relative)])
-    $icons=concat($icons,[{name:$name,style:"default",path:$relative,symbolic:true}])
-  end
-  -- A real covered glyph fulfils the v2 catalogue contract. Product requests
-  -- select their genuine named SVG assets, rather than this unrelated marker.
-  write_file($directory .. "/icons/locked.codepoints","acceptance_marker 61\n")
-  $files=concat($files,[locked_receipt($directory .. "/icons/locked.codepoints","icons/locked.codepoints")])
-  $manifest={schema:"mixos.static-assets.v2",set_id:$id,
-    fonts:{sans:"fonts/Inter.ttf",display:"fonts/Inter.ttf",mono:"fonts/JetBrainsMono.ttf",extra:"fonts/NotoSans.ttf"},
-    font_families:{sans:"Inter",display:"Inter",mono:"JetBrains Mono",extra:"Noto Sans"},
-    files:$files,web_css:"/* owned native acceptance assets */\n",
-    icon_default:{family:"Inter",style:"default",weight:400},
-    icon_catalogues:[{family:"Inter",style:"default",font:"fonts/Inter.ttf",face_index:0,codepoints:"icons/locked.codepoints"}],
-    icon_assets:$icons}
-  write_file($directory .. "/manifest.conf.mix",data_encode($manifest,true))
-  write_file($directory .. "/fonts.css",$manifest.web_css)
-  run_argv_must(["ln","-s","sets/" .. $id,$root .. "/current"])
-  return {data_home:$data_home,root:$root,set_id:$id,manifest_blake3:hash_file($directory .. "/manifest.conf.mix","blake3"),
-    manifest:$manifest,files:$files}
+  $recovery.check(len(keys($glyphs)) == len($needed),"Complete core catalogue lacks actual Dopus icon names")
+  return {data_home:$data_home,root:$root,set_id:$manifest.set_id,
+    manifest_blake3:hash_file($directory .. "/manifest.conf.mix","blake3"),manifest:$manifest,files:$manifest.files,
+    icon_catalogue:{path:$catalogue,font:$manifest.fonts.icons,family:$manifest.font_families.icons,
+      style:"default",weight:400,glyphs:$glyphs},native_installer_verified:true}
 end
 fn locked_file($package,$path)
   $found=filter($package.files,fn($file)=$file.path == $path)
-  $recovery.check(len($found) == 1,"Selected fixture source is not uniquely locked: " .. $path)
+  $recovery.check(len($found) == 1,"Selected core source is not uniquely locked: " .. $path)
   return $found[0]
 end
 fn verified($description,$package,$icons_required)
   $resources=$description.resources
   $recovery.check($resources.set_id == $package.set_id and $resources.manifest_blake3 == $package.manifest_blake3,
-    "Actual GUI did not install owned verified package")
-  -- This matrix retains the packaged typography records and changes only
-  -- mode/text scale. Match the actual selected source for every real record.
+    "Actual GUI did not install owned verified complete core")
+  -- The matrix changes mode/text scale, retaining default packaged records.
   $roles={ui:"sans",ui_display:"display",small:"sans",mono:"mono",terminal:"mono",
-    "button.md":"extra","button.sm":"extra"}
+    "button.md":"ui","button.sm":"ui"}
   $recovery.check(len($resources.text) == len(keys($roles)),"Actual GUI lacks complete verified text receipt")
   $seen=[]
   for each $text in $resources.text
@@ -78,29 +58,25 @@ fn verified($description,$package,$icons_required)
     $role=$roles[$text.record]
     $file=locked_file($package,$package.manifest.fonts[$role])
     $recovery.check($text.family == $package.manifest.font_families[$role] and $text.face_index == 0 and
-      $text.source_blake3 == $file.blake3,"Installed text selection differs from locked font: " .. $text.record)
-    $recovery.check($text.requested_weight == $text.effective_weight,"Fixture substituted actual requested font weight")
+      $text.source_blake3 == $file.blake3,"Installed text selection differs from locked core font: " .. $text.record)
+    $recovery.check($text.requested_weight == $text.effective_weight,"Core substituted actual requested font weight")
     $seen=concat($seen,[$text.record])
   end
-  if $icons_required then
-    $recovery.check(len($resources.icons) > 0,"Actual file pane lacks verified icon receipt")
-  end
+  $catalogue=$package.icon_catalogue
+  $icon_font=locked_file($package,$catalogue.font)
   for each $icon in $resources.icons
-    $selected=filter($package.manifest.icon_assets,fn($asset)=$asset.name == $icon.name and $asset.style == $icon.style)
-    $recovery.check(len($selected) == 1,"Installed icon is not a named fixture style selection")
-    $asset=$selected[0]
-    $file=locked_file($package,$asset.path)
-    $expected={name:$asset.name,style:$asset.style,symbolic:$asset.symbolic,source_blake3:$file.blake3}
-    $recovery.check(deep_eq($icon.asset,$expected) and $icon.source_blake3 == $file.blake3 and
-      $icon.family == nil and $icon.glyph == nil and $icon.weight == nil,
-      "Installed icon descriptor/source differs from locked named SVG: " .. $icon.name)
+    $recovery.check(has_key($catalogue.glyphs,$icon.name),"Installed icon is not a required native catalogue name")
+    $recovery.check($icon.family == $catalogue.family and $icon.style == $catalogue.style and
+      $icon.glyph == $catalogue.glyphs[$icon.name] and $icon.weight == $catalogue.weight and
+      $icon.source_blake3 == $icon_font.blake3 and $icon.asset == nil,
+      "Installed named glyph differs from locked native font/catalogue: " .. $icon.name)
     $recovery.check(re_replace($icon.key,":rgba:[0-9a-f]{32}$","") == $icon.name,
-      "Installed icon key does not name its selected source")
+      "Installed icon key does not name its selected catalogue glyph")
   end
   if $icons_required then
-    for each $asset in $package.manifest.icon_assets
-      $selected=filter($resources.icons,fn($icon)=$icon.name == $asset.name and $icon.style == $asset.style)
-      $recovery.check(len($selected) > 0,"Actual file pane omitted required named icon: " .. $asset.name)
+    for each $name in keys($catalogue.glyphs)
+      $selected=filter($resources.icons,fn($icon)=$icon.name == $name)
+      $recovery.check(len($selected) > 0,"Actual file pane omitted required native catalogue glyph: " .. $name)
     end
   end
 end
