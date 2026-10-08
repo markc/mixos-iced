@@ -144,11 +144,7 @@ try
     $describe.app_id == "dev.mixos.term" and $describe.transport == "native","Wrong ordinary native owner")
   $help=app("HELP",{})
   check(type($help) == "string" and not contains($help,"app.acceptance."),"Ordinary HELP advertised fixture commands")
-  for each $verb in $verbs
-    $reply=call("term",$verb,{})
-    check($reply.rc != 0 and $reply.rc != -9 and type($reply.result) == "string" and
-      contains(lower($reply.result),"unknown"),"Ordinary fixture verb did not return explicit unknown: " .. json_encode($reply))
-  end
+  $f.ordinary({mix:$mix,bus:$R.bus,root:$root,service:"term"},$describe)
   check($pty.stop_child({pid:$ordinary.pid,privileged_launcher:false}),"Ordinary Term survived teardown")
   check($pty.stop_child({pid:$ordinary.launcher,privileged_launcher:true}),"Ordinary launcher survived teardown")
   $identity={run:"term-native-" .. to_string(pid()),instance:1}
