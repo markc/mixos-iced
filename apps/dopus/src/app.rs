@@ -299,6 +299,12 @@ pub fn run(
     paths: &[String],
 ) -> anyhow::Result<()> {
     let launched = Instant::now();
+    #[cfg(feature = "acceptance")]
+    let (fixture, fixture_task) = crate::acceptance::setup().map_err(anyhow::Error::msg)?;
+    #[cfg(feature = "acceptance")]
+    let (mut bus, deliveries) = bus::spawn_settings_fixture(service, noded_url, fixture)
+        .map_err(|e| anyhow::anyhow!("Dopus bootstrap: {e}"))?;
+    #[cfg(not(feature = "acceptance"))]
     let (mut bus, deliveries) = bus::spawn_settings(service, noded_url)
         .map_err(|e| anyhow::anyhow!("Dopus bootstrap: {e}"))?;
 
@@ -374,8 +380,10 @@ pub fn run(
         anyhow::bail!("app::run called twice in one process");
     }
 
+    #[cfg(not(feature = "acceptance"))]
+    let fixture_task = Task::none();
     application::start(
-        (app, Task::none()),
+        (app, fixture_task),
         Dopus::update,
         Dopus::view,
         application::Window::new(APP_ID, Size::new(980.0, 640.0), ui_font)
@@ -383,6 +391,7 @@ pub fn run(
             .defer_close(),
     )
     .title(Dopus::title)
+    .frame_presentation(Dopus::frame_binding)
     .subscription(Dopus::subscription)
     .theme(|app: &Dopus| app.content().theme.iced_theme())
     .style(|app: &Dopus, _| application::iced::theme::Style {
@@ -527,6 +536,17 @@ fn action_table(keymap: &Keymap) -> Vec<ActionRow> {
 }
 
 impl Dopus {
+    fn frame_binding(&self) -> Option<application::frames::FrameBinding> {
+        let bus = self.bus.as_ref()?;
+        self.settings.session().frame_stamp().map(|stamp| bus.frames.binding(stamp))
+    }
+    fn publish_frame_target(&self) {
+        #[cfg(feature = "acceptance")]
+        if let Some(bus) = &self.bus && let (Some(endpoint), Some(window)) = (&bus.fixture_frames, self.window)
+            && let Err(error) = endpoint.publish(application::acceptance::frames::Target { window, stamp: self.settings.session().frame_stamp() }) {
+            tracing::warn!(%error, "Dopus fixture frame target failed");
+        }
+    }
     fn title(&self) -> String {
         let pane = self.core.pane(self.core.active());
         format!(
@@ -965,6 +985,7 @@ impl Dopus {
                 "DOpus settings activated"
             );
         }
+        self.publish_frame_target();
         match delivery {
             Delivery::Command(command) => self.serve(&command),
             Delivery::Connected => {
@@ -1150,6 +1171,14 @@ impl Dopus {
                                 .expect("settings evidence serialises");
                                 value["settings_cache"] =
                                     serde_json::json!(self.settings.session().cache_evidence());
+                                value["ui"] = serde_json::json!({
+                                    "location_draft": self.editing.as_ref().map(|(pane, text)| {
+                                        serde_json::json!({
+                                            "pane": match pane { PaneId::Left => "left", PaneId::Right => "right" },
+                                            "text": text,
+                                        })
+                                    }),
+                                });
                                 (rc, value.to_string())
                             }
                             _ => (rc, body),
@@ -1390,10 +1419,12 @@ impl Dopus {
             application::iced::window::Event::Opened { scale_factor, .. } => {
                 self.window = Some(id);
                 self.output_scale(scale_factor);
+                self.publish_frame_target();
             }
             application::iced::window::Event::Rescaled(scale) => {
                 if self.window == Some(id) {
                     self.output_scale(scale);
+                    self.publish_frame_target();
                 }
             }
             application::iced::window::Event::Focused => {
@@ -1410,6 +1441,9 @@ impl Dopus {
                 }
             }
             application::iced::window::Event::CloseRequested => return self.quit(),
+            application::iced::window::Event::Closed => {
+                if self.window == Some(id) && let Some(bus) = &self.bus { bus.frames.close(); }
+            }
             application::iced::window::Event::Unfocused => {
                 keys::cancel(&self.router);
                 view::drag::lock(&self.drag).cancel()
@@ -1476,6 +1510,7 @@ impl Dopus {
                     | application::iced::window::Event::Resized(_)
                     | application::iced::window::Event::Focused
                     | application::iced::window::Event::Unfocused
+                    | application::iced::window::Event::Closed
                     | application::iced::window::Event::CloseRequested),
                 ) => Some(Msg::Window(window, e)),
                 _ => None,
@@ -1604,6 +1639,11 @@ impl Dopus {
             self.drag.clone(),
             self.core.availability().operation_running,
         );
+        #[cfg(feature = "acceptance")]
+        let content = if self.bus.as_ref().is_some_and(|bus| bus.fixture_frames.is_some()) {
+            application::iced::widget::container(content).width(application::iced::Fill).height(application::iced::Fill)
+                .id(crate::acceptance::VIEWPORT_ID).into()
+        } else { content };
         // The router wraps everything: it sees every key before its children
         // and publishes resolved actions (never `event::listen`, which drops
         // keys under load — the ced/term rule). While a dialog is up it
@@ -1625,13 +1665,19 @@ impl Dopus {
         } else {
             routed.into()
         };
-        Element::new(view::drag::Layer::new(
+        let content = Element::new(view::drag::Layer::new(
             content,
             self.drag.clone(),
             self.look(),
             &self.content().icons,
             &self.tint,
-        ))
+        ));
+        #[cfg(feature = "acceptance")]
+        let content = if self.bus.as_ref().is_some_and(|bus| bus.fixture_frames.is_some()) {
+            application::iced::widget::container(content).width(application::iced::Fill).height(application::iced::Fill)
+                .id(crate::acceptance::ROOT_ID).into()
+        } else { content };
+        content
     }
 }
 
@@ -1655,6 +1701,34 @@ fn focus_prompt() -> Task<Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "acceptance")]
+    #[test]
+    fn fixture_target_follows_only_the_owned_typed_window() {
+        let (_dir, mut app, _lane) = fixture();
+        let (mut bus, _responses) = BusHandle::response_sink();
+        bus.fixture_frames = Some(application::acceptance::frames::Endpoint::new(bus.frames.clone()));
+        let endpoint = bus.fixture_frames.as_ref().unwrap().clone();
+        let frames = bus.frames.clone();
+        app.bus = Some(bus);
+        let window = application::iced::window::Id::unique();
+        let foreign = application::iced::window::Id::unique();
+        let opened = || application::iced::window::Event::Opened {
+            position: None, size: Size::new(980.0, 640.0), scale_factor: 1.0,
+        };
+        let _ = app.on_window(window, opened());
+        assert_eq!(endpoint.target().unwrap().window, window);
+        assert!(endpoint.target().unwrap().stamp.is_none(), "bootstrap does not claim activation");
+        assert!(app.frame_binding().is_none());
+        let _ = app.on_window(foreign, opened());
+        let _ = app.on_window(foreign, application::iced::window::Event::Closed);
+        assert_eq!(app.window, Some(window));
+        assert_eq!(endpoint.target().unwrap().window, window);
+        assert!(!frames.snapshot().closed);
+        assert!(frames.snapshot().last_presented.is_none());
+        let _ = app.on_window(window, application::iced::window::Event::Closed);
+        assert!(frames.snapshot().closed);
+    }
 
     #[test]
     fn native_scale_events_are_ordered_window_owned_and_validated() {
@@ -1724,6 +1798,35 @@ mod tests {
         assert_eq!((width, height), (side, side));
         assert_eq!(app.core.pane(PaneId::Left).path, dir.path());
         assert_eq!(app.editing, Some((PaneId::Left, "unfinished path".into())));
+    }
+
+    #[cfg(feature = "acceptance")]
+    #[test]
+    fn fixture_target_keeps_installed_stamp_while_context_preparation_is_pending() {
+        let (_dir, mut app, mut lane) = fixture();
+        let _ = activate(&mut app, &mut lane, settings::Desktop::default());
+        let stamp = app.settings.session().frame_stamp().unwrap();
+        let (mut bus, _responses) = BusHandle::response_sink();
+        let endpoint = application::acceptance::frames::Endpoint::new(bus.frames.clone());
+        bus.fixture_frames = Some(endpoint.clone());
+        let frames = bus.frames.clone();
+        app.bus = Some(bus);
+        let window = application::iced::window::Id::unique();
+        app.window = Some(window);
+        app.publish_frame_target();
+        assert_eq!(endpoint.target().unwrap().stamp, Some(stamp));
+        app.settings.set_context(PreparationContext::new(1.5).unwrap(), Some(1)).unwrap();
+        app.publish_frame_target();
+        assert_eq!(endpoint.target().unwrap().stamp, Some(stamp));
+        drive(&mut lane, 2);
+        let _ = drain(&mut app);
+        app.publish_frame_target();
+        let installed = app.settings.session().frame_stamp().unwrap();
+        assert!(installed.local_revision > stamp.local_revision);
+        assert_eq!(endpoint.target().unwrap().window, window);
+        assert_eq!(endpoint.target().unwrap().stamp, Some(installed));
+        assert!(app.frame_binding().is_some());
+        assert!(frames.snapshot().last_presented.is_none(), "publication is not a presented receipt");
     }
 
     #[test]
@@ -2684,6 +2787,7 @@ mod tests {
         );
         let (handle, mut responses) = BusHandle::response_sink();
         app.bus = Some(handle);
+        app.editing = Some((PaneId::Left, "unfinished native path".into()));
         for verb in ["dopus.state", "app.describe"] {
             let command = bus::Command {
                 id: 9.into(),
@@ -2704,6 +2808,11 @@ mod tests {
             assert_eq!(evidence["kind"], "last_good");
             assert_eq!(evidence["current"]["incarnation"], "fixture");
             assert!(value.get("settings_cache").is_some());
+            if verb == "dopus.state" {
+                assert_eq!(value["ui"]["location_draft"]["pane"], "left");
+                assert_eq!(value["ui"]["location_draft"]["text"], "unfinished native path");
+                assert_eq!(app.editing.as_ref().unwrap().1, "unfinished native path");
+            }
             if verb == "app.describe" {
                 application::describe::validate(&value).unwrap();
                 assert_eq!(value["pid"], std::process::id());

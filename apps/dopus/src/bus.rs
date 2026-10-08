@@ -147,6 +147,9 @@ struct Done {
     fault_count: u64,
 }
 pub struct BusHandle {
+    pub(crate) frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    pub(crate) fixture_frames: Option<application::acceptance::frames::Endpoint>,
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
     done: Arc<(std::sync::Mutex<Done>, std::sync::Condvar)>,
     client: Option<Arc<SupervisedClient>>,
@@ -161,6 +164,9 @@ pub struct BusHandle {
 impl Clone for BusHandle {
     fn clone(&self) -> Self {
         Self {
+            frames: self.frames.clone(),
+            #[cfg(feature = "acceptance")]
+            fixture_frames: self.fixture_frames.clone(),
             tx: self.tx.clone(),
             done: Arc::clone(&self.done),
             client: self.client.clone(),
@@ -183,6 +189,9 @@ impl BusHandle {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (
             Self {
+                frames: application::frames::Handle::new(),
+                #[cfg(feature = "acceptance")]
+                fixture_frames: None,
                 tx,
                 done: Arc::new((
                     std::sync::Mutex::new(Done {
@@ -286,6 +295,7 @@ impl BusHandle {
         Ok(())
     }
     pub fn quit(&self) {
+        self.frames.close();
         if !self
             .quitting
             .swap(true, std::sync::atomic::Ordering::AcqRel)
@@ -410,9 +420,20 @@ pub fn spawn_settings(
     )
 }
 
+#[cfg(feature = "acceptance")]
+pub(crate) fn spawn_settings_fixture(service: &str, url: &str, fixture: Option<application::acceptance::Fixture>) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    actor::start_configured(service, url, true, DELIVERY_BOUND, fixture, #[cfg(test)] None)
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
 struct ActorProbe {
+    #[cfg(feature = "acceptance")]
+    fixture_waits: usize,
+    #[cfg(feature = "acceptance")]
+    fixture_controls: usize,
+    #[cfg(feature = "acceptance")]
+    fixture_active: usize,
     generation: u64,
     connected: bool,
     pending: usize,

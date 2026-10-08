@@ -252,6 +252,9 @@ font retains the bundled Lucide fallback and reports no icon weight.</p>
 both panes; <code>dopus.open</code> navigates a selected pane. <code>dopus.actions.list</code>
 discovers navigation and view actions, and <code>dopus.action</code> invokes them.
 <code>dopus.theme.set</code> changes the selected theme and <code>dopus.quit</code> exits.</p>
+<p>The GUI also reports an unfinished location edit in <code>dopus.state.ui.location_draft</code>
+as <code>{pane: "left"|"right", text: "..."}</code>, or <code>null</code> when no edit is active.
+Headless state omits <code>ui</code>. Reading state preserves the draft without navigating.</p>
 <p>The inherited contract refuses <code>file.*</code> actions on the Bus. File creation,
 copy, move, rename and deletion use the window's keyboard or pointer actions
 and confirmation dialogs. This is a retained application contract, rather

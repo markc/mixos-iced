@@ -31,6 +31,8 @@
 //!   [`view::panes::Divider`].
 
 pub mod app;
+#[cfg(feature = "acceptance")]
+mod acceptance;
 pub mod bus;
 pub mod config;
 pub mod dirs;

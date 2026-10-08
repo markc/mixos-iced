@@ -1,5 +1,14 @@
 # DOpus Bus contract
 
+## 0.4.9
+
+- Report the actual GUI location draft in `dopus.state.ui.location_draft`.
+- Add an optional shared acceptance fixture on the existing GUI window, with
+  exact native frame stamps and real root, viewport and location targets.
+- Hold contextual resource preparation before publication while retaining
+  installed icons and file state; reserve finite wait and control work through
+  native reply reaping, connection loss and shutdown.
+
 ## 0.4.8
 
 - Complete canonical descriptions from the actual GUI or headless owner and

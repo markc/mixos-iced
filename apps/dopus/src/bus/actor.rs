@@ -69,6 +69,23 @@ pub(super) fn start(
     capacity: usize,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
 ) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    start_configured(service, url, settings, capacity, #[cfg(feature = "acceptance")] None, #[cfg(test)] probe)
+}
+
+pub(super) fn start_configured(
+    service: &str,
+    url: &str,
+    settings: bool,
+    capacity: usize,
+    #[cfg(feature = "acceptance")] fixture: Option<application::acceptance::Fixture>,
+    #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
+) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    let frames = application::frames::Handle::new();
+    let worker_frames = frames.clone();
+    #[cfg(feature = "acceptance")]
+    let fixture_frames = fixture.as_ref().map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    #[cfg(feature = "acceptance")]
+    let worker_fixture_frames = fixture_frames.clone();
     let (send, events) = channel(capacity);
     let (tx, effects) = tokio::sync::mpsc::unbounded_channel();
     let (ready, receive) = std::sync::mpsc::channel();
@@ -101,6 +118,11 @@ pub(super) fn start(
                 send,
                 effects,
                 ready,
+                worker_frames,
+                #[cfg(feature = "acceptance")]
+                worker_fixture_frames,
+                #[cfg(feature = "acceptance")]
+                fixture,
                 #[cfg(test)]
                 probe,
             ));
@@ -120,6 +142,9 @@ pub(super) fn start(
         .map_err(|_| StartError::Unreachable("the Bus thread exited".into()))??;
     Ok((
         BusHandle {
+            frames,
+            #[cfg(feature = "acceptance")]
+            fixture_frames,
             tx,
             done,
             client: Some(client),
@@ -308,6 +333,9 @@ async fn worker(
     send: Sender<Delivery>,
     effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: std::sync::mpsc::Sender<Ready>,
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")] fixture_frames: Option<application::acceptance::frames::Endpoint>,
+    #[cfg(feature = "acceptance")] fixture: Option<application::acceptance::Fixture>,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
 ) -> Faults {
     let faults = Faults::default();
@@ -355,6 +383,11 @@ async fn worker(
             send,
             effects,
             None,
+            frames,
+            #[cfg(feature = "acceptance")]
+            fixture_frames,
+            #[cfg(feature = "acceptance")]
+            fixture,
             #[cfg(test)]
             probe,
         )
@@ -368,7 +401,20 @@ async fn worker(
             return faults;
         }
     };
-    let worker = SettingsWorker::contextual(crate::app::Content::build_contextual)
+    #[cfg(feature = "acceptance")]
+    let prepare_hook = fixture.as_ref().map(|fixture| fixture.hook.clone());
+    let worker = SettingsWorker::contextual(move |appearance, snapshot: &settings::Snapshot, context: &crate::app::PreparationContext| {
+        #[cfg(feature = "acceptance")]
+        if let Some(hook) = &prepare_hook {
+            let fault = |message| settings::Diagnostic::new("fixture_prepare_cancelled", "dopus.prepare", message);
+            let observation = application::acceptance::barrier::Observation::try_new(format!("revision={} scale={}", snapshot.revision.0, context.scale()))
+                .map_err(|error| fault(format!("{error:?}")))?;
+            if let Some(permit) = hook.reach("dopus.prepare", observation).map_err(|error| fault(format!("{error:?}")))? {
+                permit.wait_blocking().map_err(|error| fault(format!("{error:?}")))?;
+            }
+        }
+        crate::app::Content::build_contextual(appearance, snapshot, context)
+    })
         .with_contextual_resource_requirements(crate::icons::requirements);
     let worker = match crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT) {
         Some(dirs) => worker.with_cache_directory(dirs.settings_cache_dir()),
@@ -392,6 +438,11 @@ async fn worker(
         send,
         effects,
         Some(lane),
+        frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
+        #[cfg(feature = "acceptance")]
+        fixture,
         #[cfg(test)]
         probe,
     )
@@ -405,6 +456,9 @@ async fn run(
     mut send: Sender<Delivery>,
     mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     mut lane: Option<SettingsLane>,
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")] fixture_frames: Option<application::acceptance::frames::Endpoint>,
+    #[cfg(feature = "acceptance")] mut fixture: Option<application::acceptance::Fixture>,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
 ) -> Faults {
     // incoming_bounded is consuming; the sole worker takes it here.
@@ -426,6 +480,10 @@ async fn run(
     let mut themes = TaskSet::<Outcome>::new(THEME_QUEUE_BOUND);
     let mut forwards = TaskSet::<Outcome>::new(1);
     let mut faults = Faults::default();
+    let mut fixture_controls = TaskSet::<Result<(), String>>::new(4);
+    let mut fixture_waits = TaskSet::<Result<(), String>>::new(2);
+    #[cfg(feature = "acceptance")]
+    let fixture_admission = Admission::new(6);
     let (mut incoming_open, mut connection_open, mut registered) = (true, true, false);
     let mut lifecycle = None;
     let mut next_id = 0u64;
@@ -434,6 +492,11 @@ async fn run(
         let state = *connection.borrow_and_update();
         let generation = client.connection_generation();
         if lifecycle != Some((state, generation)) {
+            frames.set_live_generation(settings::native::live_generation(&client));
+            #[cfg(feature = "acceptance")]
+            if lifecycle.is_some() && let Some(fixture) = &fixture {
+                fixture.close(application::acceptance::barrier::ClosedReason::LostGeneration);
+            }
             lifecycle = Some((state, generation));
             let stale: Vec<_> = pending
                 .iter()
@@ -476,6 +539,12 @@ async fn run(
         #[cfg(test)]
         if let Some(probe) = &probe {
             probe.send_replace(ActorProbe {
+                #[cfg(feature = "acceptance")]
+                fixture_waits: fixture_waits.len(),
+                #[cfg(feature = "acceptance")]
+                fixture_controls: fixture_controls.len(),
+                #[cfg(feature = "acceptance")]
+                fixture_active: fixture_admission.counts().active,
                 generation,
                 connected: settings::native::live_generation(&client).is_some(),
                 pending: pending.len(),
@@ -492,6 +561,13 @@ async fn run(
             });
         }
         tokio::select! {
+            _ = async {
+                #[cfg(feature = "acceptance")]
+                if let Some(fixture) = fixture.as_mut() { fixture.controller.drive().await; return; }
+                std::future::pending::<()>().await;
+            } => {},
+            result = fixture_controls.join_next(), if !fixture_controls.is_empty() => { if let Some(result) = result { reap("fixture control", result, &mut faults, reply_record); } },
+            result = fixture_waits.join_next(), if !fixture_waits.is_empty() => { if let Some(result) = result { reap("fixture wait", result, &mut faults, reply_record); } },
             effect = effects.recv() => match effect {
                 Some(Effect::Respond { id, rc, body }) => queue_reply(&mut pending, &mut retained, &client, id, rc, body, &mut faults),
                 Some(Effect::ThemeApply { request, generation, deadline, permit }) => {
@@ -530,6 +606,21 @@ async fn run(
                     if let Some(lane) = &mut lane && let Some(needed) = lane.delivery(&command) { wake(&mut gui, needed); continue; }
                     if command.topic().is_some() || command.command.is_empty() { continue; }
                     if settings::native::live_generation(&client) != Some(command.generation) { faults.push("stale command retired before frontend admission".into()); continue; }
+                    #[cfg(feature = "acceptance")]
+                    if let Some(fixture) = &fixture && let Some(class) = application::acceptance::classify(&command.command) {
+                        if command.id.is_none() { continue; }
+                        let tasks = if class == application::acceptance::Class::Wait { &mut fixture_waits } else { &mut fixture_controls };
+                        let permit = if tasks.is_full() { None } else { fixture_admission.try_acquire() };
+                        let Some(permit) = permit else {
+                            refusal_body(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed, "{\"error\":\"acceptance capacity exhausted\"}".into()); continue;
+                        };
+                        let accepted = Accepted::new(client.clone(), command, permit, Instant::now());
+                        if let Err(accepted) = tasks.try_spawn_with(accepted, |accepted| accepted.into_task(|client, command, _| {
+                            let future = application::acceptance::track_result(client, command, &fixture.describe, &fixture.inspector, &fixture.controller, fixture_frames.as_ref()).expect("exact fixture verb");
+                            async move { future.await.map_err(|error| format!("acceptance: {error:?}")) }
+                        })) { accepted.retire().finish(); faults.push("fixture task capacity invariant failed".into()); }
+                        continue;
+                    }
                     if command.command == "app.describe" && let Err(error) = application::describe::validate_request(&command.body) {
                         refusal_body(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed, crate::verbs::describe_refusal(&error));
                         continue;
@@ -548,6 +639,19 @@ async fn run(
         }
     }
     let deadline = Instant::now() + SHUTDOWN_BUDGET;
+    frames.close();
+    #[cfg(feature = "acceptance")]
+    if let Some(fixture) = &fixture { fixture.close(application::acceptance::barrier::ClosedReason::Shutdown); }
+    for (label, tasks) in [("fixture control", &mut fixture_controls), ("fixture wait", &mut fixture_waits)] {
+        while !tasks.is_empty() {
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), tasks.join_next()).await {
+                Ok(Some(result)) => reap(label, result, &mut faults, reply_record),
+                Ok(None) | Err(_) => break,
+            }
+        }
+    }
+    cancel("fixture control", fixture_controls, &mut faults, reply_record);
+    cancel("fixture wait", fixture_waits, &mut faults, reply_record);
     effects.close();
     while let Ok(effect) = effects.try_recv() {
         match effect {
@@ -652,9 +756,16 @@ async fn run(
     );
     let _ = flush(&mut gui, &mut send);
     let counts = admission.counts();
+    #[cfg(feature = "acceptance")]
+    let fixture_accounting = {
+        let counts = fixture_admission.counts();
+        serde_json::json!({"active":counts.active,"finished":counts.finished,"abandoned":counts.abandoned})
+    };
+    #[cfg(not(feature = "acceptance"))]
+    let fixture_accounting = serde_json::Value::Null;
     eprintln!(
         "DOPUS_SHUTDOWN {}",
-        serde_json::json!({"faults":faults,"shed_refusals":shed,"admission":{"active":counts.active,"finished":counts.finished,"abandoned":counts.abandoned}})
+        serde_json::json!({"faults":faults,"shed_refusals":shed,"fixture_admission":fixture_accounting,"admission":{"active":counts.active,"finished":counts.finished,"abandoned":counts.abandoned}})
     );
     faults
 }

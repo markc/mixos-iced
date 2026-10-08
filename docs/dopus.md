@@ -15,6 +15,10 @@ both panes; `dopus.open` navigates a selected pane. `dopus.actions.list`
 discovers navigation and view actions, and `dopus.action` invokes them.
 `dopus.theme.set` changes the selected theme and `dopus.quit` exits.
 
+The GUI also reports an unfinished location edit in `dopus.state.ui.location_draft`
+as `{pane: "left"|"right", text: "..."}`, or `null` when no edit is active.
+Headless state omits `ui`. Reading state preserves the draft without navigating.
+
 The inherited contract refuses `file.*` actions on the Bus. File creation,
 copy, move, rename and deletion use the window's keyboard or pointer actions
 and confirmation dialogs. This is a retained application contract, rather

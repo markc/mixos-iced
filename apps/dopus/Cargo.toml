@@ -1,6 +1,6 @@
 [package]
 name = "dopus"
-version = "0.4.8"
+version = "0.4.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,6 +16,9 @@ contract = "public"
 
 [lints.clippy]
 mod_module_files = "deny"
+
+[features]
+acceptance = ["application/acceptance"]
 
 [dependencies]
 application = { workspace = true, features = ["tiny-skia", "image", "settings-cache", "describe"] }
