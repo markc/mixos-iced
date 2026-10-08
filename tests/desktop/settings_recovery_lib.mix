@@ -1,0 +1,88 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Shared native cold-start/rejoin evidence; owners retain launch and teardown.
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+fn check($condition,$message)
+  if not $condition then raise("SETTINGS_RECOVERY",$message) end
+end
+fn resource_receipt($description)
+  $resources=$description.resources
+  check(type($resources) == "map" and len($resources.text) > 0,"No installed resource receipt")
+  return {set_id:$resources.set_id,manifest_blake3:$resources.manifest_blake3,
+    text:$resources.text,icons:$resources.icons}
+end
+fn resource_identity($description)
+  $receipt=resource_receipt($description)
+  $icons=[]
+  for each $icon in $receipt.icons
+    -- Dopus keys include the exact prepared RGBA recipe (icons.rs). A changed
+    -- authority palette must change that recipe without changing its source.
+    -- Keep every selection/source field and only normalise that known suffix.
+    $key=re_replace($icon.key,":rgba:[0-9a-f]{32}$","")
+    $source=merge($icon,{key:$key})
+    -- The live receipt retains both prepared tints after palette replacement.
+    -- Collapse only identical source selections, preserving changed digests
+    -- or descriptors as distinct evidence that will fail source comparison.
+    $seen=false
+    for each $existing in $icons
+      if deep_eq($existing,$source) then $seen=true end
+    end
+    if not $seen then $icons=concat($icons,[$source]) end
+  end
+  return merge($receipt,{icons:$icons})
+end
+fn settled($context,$pid,$kind,$snapshot,$budget)
+  $deadline=time()+$budget
+  $last=nil
+  while time() < $deadline
+    check(process_alive($pid),"Actual GUI owner exited before " .. $kind)
+    $reply=$f.call($context,"app.describe",{})
+    if $reply.rc == 0 then
+      $last=$reply.result
+      check($last.pid == $pid and $last.service == $context.service,"Description belongs to another owner")
+      if ($last.settings != nil and $last.settings.kind == $kind and
+        $last.preparation.applied != nil and $last.preparation.current and
+        $last.preparation.fault == nil and $last.resources != nil) then
+        if $kind == "current" then
+          if ($last.settings.confirmed and deep_eq($last.settings.applied,$h.identity($snapshot)) and
+            deep_eq($last.settings_cache.persisted,$last.settings.applied)) then return $last end
+        else
+          check(not $last.settings.confirmed,"Fallback fabricated authority confirmation")
+          return $last
+        end
+      end
+    end
+    sleep(0.05)
+  end
+  raise("RECOVERY_SETTLE","Expected " .. $kind .. ": " .. json_encode($last))
+end
+fn observe($context,$identity,$description,$label)
+  $state=$f.target($context,$identity,$description.preparation.applied)
+  $fence=merge($identity,{generation:$state.evidence.live_generation})
+  $receipt=$f.presented($context,$fence,$state.target,$label)
+  $layout=$f.layout($context,$fence,$state.target.window,$label)
+  $resources=resource_identity($description)
+  write_file($context.root .. "/description-" .. $label .. ".json",json_encode($description))
+  write_file($context.root .. "/resources-" .. $label .. ".json",json_encode($resources))
+  return {identity:$fence,target:$state.target,receipt:$receipt,layout:$layout,resources:$resources}
+end
+fn cached($description,$primed)
+  check(deep_eq($description.settings.applied,$primed.settings.applied),"Cached authority identity drifted")
+  check(deep_eq(resource_receipt($description),resource_receipt($primed)),"Cached resource receipt drifted")
+end
+fn corrupt_diagnostic($description)
+  check(type($description.settings_cache.fallback_diagnostics) == "list" and
+    len($description.settings_cache.fallback_diagnostics) > 0,"Corrupt cache lacked fallback diagnostic")
+end
+fn same_owner($before,$after,$pid,$description)
+  check(process_alive($pid) and $description.pid == $pid and
+    $after.target.window == $before.target.window,"Authority rejoin replaced actual GUI owner/window")
+  check($after.target.stamp.activation_epoch >= $before.target.stamp.activation_epoch,
+    "Authority rejoin regressed the installed activation")
+end
+fn cache_files($home)
+  $files=glob($home .. "/cache/settings/*.json")
+  check(len($files) == 1,"Expected exactly one bound settings cache in " .. $home)
+  return $files
+end

@@ -1,0 +1,284 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real tiny-skia Term/BusViewer/Cap/Dopus prolonged broker outage and rejoin.
+-- Usage: mix tests/desktop/settings_app_outage_gate.mix REPO BUILD_BIN_DIR [APP]
+-- Shared >65s app broker outage; independent native compositor broker stays alive.
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [term|busviewer|cap|dopus]") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$recovery=require("settings_recovery_lib.mix")
+$pty=require("pty_host_lib.mix")
+$product=require("settings_apps_lib.mix")
+$apps=if len(args()) == 3 then [args()[2]] else ["term","busviewer","cap","dopus"] end
+for each $name in $apps
+  if not contains(["term","busviewer","cap","dopus"],$name) then raise("ARGS","Unknown app " .. $name) end
+end
+for each $name in concat(["mix","noded","settingsd","compd","testkit-screenshot"],$apps)
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing exact candidate " .. $name) end
+end
+if contains($apps,"term") then $pty.check_support() end
+$binding={instance:"fixture",profile:"default"}
+$R={run:nil,desktop:nil,bus:nil,session:nil,authority:nil,children:[],ok:false,instance:0}
+fn check($condition,$message)
+  return $recovery.check($condition,$message)
+end
+fn fixture_context($name,$directory)
+  return {mix:$mix,bus:$R.bus,root:$directory,bus_root:$R.run.path .. "/apps",
+    service:if $name == "term" then "term" else $name .. "-recovery" end}
+end
+fn comp($verb,$body)
+  return $h.rpc($mix,$R.desktop,$R.run.path .. "/desktop",$R.session.service,$verb,$body)
+end
+fn authority($verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path .. "/apps","settingsd",$verb,$body)
+end
+fn start_authority()
+  $log=$R.run.path .. "/settingsd-" .. to_string($R.instance) .. ".log"
+  $child=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$R.run.path .. "/profile"],
+    {env:$h.bus_env($R.bus,$R.run.path .. "/apps"),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.authority=$child
+  $R.children=concat($R.children,[{pid:$child,privileged_launcher:false}])
+  $deadline=time()+10
+  while time() < $deadline
+    check(process_alive($child),"Authority exited: " .. read_file($log))
+    $reply=$h.call($mix,$R.bus,$R.run.path .. "/apps","settingsd","settings.get",{binding:$binding})
+    if $reply.rc == 0 then return $reply.result.snapshot end
+    sleep(0.05)
+  end
+  raise("AUTHORITY","Owned settings authority did not register")
+end
+fn stop_authority()
+  $h.stop($R.authority)
+  $deadline=time()+5
+  while time() < $deadline
+    $reply=$h.call($mix,$R.bus,$R.run.path .. "/apps","settingsd","settings.get",{binding:$binding})
+    if $reply.rc != 0 and $reply.rc != -9 then return end
+    sleep(0.05)
+  end
+  raise("AUTHORITY","Absent authority still answered successfully or broker was unavailable")
+end
+fn launch($name,$home,$label,$budget)
+  for each $dir in ["config","state","cache"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  $R.instance=$R.instance+1
+  $identity={run:"recovery-" .. to_string(pid()),instance:$R.instance}
+  $ctx=fixture_context($name,$R.run.path .. "/" .. $name .. "-" .. $label)
+  mkdir($ctx.root,{parents:true})
+  $extra=merge($h.bus_env($R.bus,$R.run.path .. "/apps"),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",XDG_CACHE_HOME:$home .. "/cache",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1",
+    TERM_NOTIFY:"0",WGPU_BACKEND:"gl",MIXOS_ACCEPTANCE_RUN:$identity.run,
+    MIXOS_ACCEPTANCE_INSTANCE:to_string($identity.instance)})
+  $env=$n.client_env($R.session,$extra)
+  $argv=if $name == "term" then $pty.launch_argv($bin,$env)
+    elif $name == "dopus" then [$bin .. "/dopus","--service",$ctx.service,"--noded-url",$R.bus.url,"--",$R.run.path .. "/left",$R.run.path .. "/right"]
+    elif $name == "cap" then [$bin .. "/cap","--service",$ctx.service,"--comp",$R.session.service,$R.run.path .. "/source.png"]
+    else [$bin .. "/busviewer","--service",$ctx.service,"--comp",$R.session.service] end
+  $at=time()
+  $log=$ctx.root .. "/app.log"
+  $launcher=spawn($argv,{env:$env,stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[{pid:$launcher,privileged_launcher:$name == "term"}])
+  -- First presentation is observed through the independent compositor broker, before
+  -- app registration or settings descriptions can hide startup latency.
+  $row=comp("comp.window.wait",{match:{app_id:"dev.mixos." .. $name},until:"presented",timeout_ms:5000}).window
+  $elapsed=(time()-$at)*1000
+  check($row != nil and $row.pid != nil,"No actual presented " .. $name .. " owner")
+  if $name != "term" then check($row.pid == $launcher,"Window belongs to a different launched process") end
+  check($elapsed <= $budget,$name .. " first presentation exceeded " .. to_string($budget) .. "ms: " .. to_string($elapsed))
+  $R.children=concat($R.children,[{pid:$row.pid,privileged_launcher:false}])
+  $window={id:$row.id,generation:$row.generation}
+  comp("comp.window.focus",$window)
+  write_file($ctx.root .. "/startup.json",json_encode({pid:$row.pid,launcher:$launcher,
+    window:$window,elapsed_ms:$elapsed,budget_ms:$budget,authority_absent:$label != "prime"}))
+  return {name:$name,pid:$row.pid,launcher:$launcher,window:$window,context:$ctx,identity:$identity,log:$log}
+end
+fn owned_app($app)
+  return merge($app,{work_root:$R.run.path,desktop:{mix:$mix,bus:$R.desktop,
+    root:$R.run.path .. "/desktop",service:$R.session.service}})
+end
+fn stop_app($app)
+  return $product.stop_app(owned_app($app))
+end
+fn prepare_product($app)
+  return $product.prepare_product(owned_app($app))
+end
+fn product_retained($app,$before)
+  return $product.product_retained(owned_app($app),$before,"rejoined")
+end
+fn native_owner($app,$label)
+  check(process_alive($app.pid),"Actual owner exited during " .. $label)
+  comp("comp.window.focus",$app.window)
+  $row=comp("comp.window.wait",{match:$app.window,until:"presented",timeout_ms:4000}).window
+  check($row != nil and $row.pid == $app.pid and $row.id == $app.window.id and
+    $row.generation == $app.window.generation,"Native window owner changed during " .. $label)
+  write_file($app.context.root .. "/window-" .. $label .. ".json",json_encode($row))
+  run_argv_must([$bin .. "/testkit-screenshot",$app.context.root .. "/native-" .. $label .. ".ppm"],
+    {timeout:30,env:$n.client_env($R.session,{})})
+end
+fn retained_description($app,$before)
+  $deadline=time()+45
+  $last=nil
+  while time() < $deadline
+    check(process_alive($app.pid),"Owner exited before broker recovery")
+    $reply=$f.call($app.context,"app.describe",{})
+    if $reply.rc == 0 then
+      $last=$reply.result
+      check($last.pid == $app.pid,"Reconnected description belongs to another PID")
+      if ($last.settings != nil and $last.settings.kind == "last_good" and
+        not $last.settings.confirmed and $last.preparation.current and
+        $last.preparation.applied != nil and $last.preparation.fault == nil) then
+        check(deep_eq($last.settings.applied,$before.settings.applied),"Outage replaced installed authority")
+        check(deep_eq($recovery.resource_receipt($last),$recovery.resource_receipt($before)),
+          "Outage replaced last-good resource sources")
+        return $last
+      end
+    end
+    sleep(0.05)
+  end
+  raise("OUTAGE","Reconnected unconfirmed last-good not observed: " .. json_encode($last))
+end
+try
+  $R.run=$n.new_run("/var/tmp/settings-app-outage")
+  $root=$R.run.path
+  $R.desktop=$n.private_bus({dir:$root .. "/desktop",name:"outage-desktop",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"outage",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:900})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned native compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  $R.bus=$n.private_bus({dir:$root .. "/apps",name:"outage-apps",noded:$bin .. "/noded",first_port:$R.desktop.port})
+  check($R.bus.port != $R.desktop.port,"Broker isolation failed")
+  $R.bus.restart_record="restart.json"
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  for each $dir in ["left","right"]
+    mkdir($root .. "/" .. $dir,{parents:true})
+  end
+  write_file($root .. "/left/owned-file.txt","native recovery file\n")
+  run_argv_must(["cp",$repo .. "/share/brand/favicons/white-on-black/icon-512.png",$root .. "/source.png"])
+  $snapshot=start_authority()
+  authority("settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:"outage-prime",
+    changes:{"appearance.mode":"dark","ui.text_scale":1.0},reset:[]})
+  $snapshot=authority("settings.get",{binding:$binding}).snapshot
+  $owners=[]
+  for each $name in $apps
+    $app=owned_app(launch($name,$root .. "/home-" .. $name,"prime",5000))
+    $description=$recovery.settled($app.context,$app.pid,"current",$snapshot,15)
+    $state=$product.prepare_product($app)
+    $frame=$recovery.observe($app.context,$app.identity,$description,"before")
+    native_owner($app,"before")
+    $owners=concat($owners,[{app:$app,description:$description,product:$state,frame:$frame}])
+  end
+  stop_authority()
+  $h.stop($R.bus.pid)
+  check(not process_alive($R.bus.pid),"App broker did not stop")
+  $outage_started=time()
+  -- No app RPC or fixture access is possible here. Independently observe real
+  -- native owners at both ends; keep model/resource claims for reconnection.
+  for each $owner in $owners
+    native_owner($owner.app,"offline-start")
+  end
+  while time()-$outage_started < 67
+    check(process_alive($R.desktop.pid),"Independent compositor broker exited")
+    for each $owner in $owners
+      check(process_alive($owner.app.pid),"Actual app exited during prolonged outage")
+    end
+    sleep(1)
+  end
+  for each $owner in $owners
+    native_owner($owner.app,"offline-end")
+  end
+  $outage_ms=(time()-$outage_started)*1000
+  check($outage_ms > 65000,"Broker outage did not exceed transport deadline")
+  $R.bus=$n.restart_private_bus($R.bus)
+  for each $owner in $owners
+    $app=merge($owner.app,{context:merge($owner.app.context,{bus:$R.bus})})
+    comp("comp.window.focus",$app.window)
+    $description=retained_description($app,$owner.description)
+    $state=$f.target($app.context,$app.identity,$description.preparation.applied)
+    check($state.evidence.live_generation > $owner.frame.identity.generation,"Broker reconnect did not advance fixture generation")
+    $stale=$f.call($app.context,"app.acceptance.frame.state",$owner.frame.identity)
+    check($stale.rc == 0 and not $stale.result.ok and contains($stale.result.error,"generation"),
+      "Old fixture generation still accepted after broker restart")
+    $frame=$recovery.observe($app.context,$app.identity,$description,"reconnected-last-good")
+    $recovery.same_owner($owner.frame,$frame,$app.pid,$description)
+    $product.product_retained($app,$owner.product,"reconnected-last-good")
+  end
+  -- Authority returns only after retained product/resources were observed.
+  $rejoined=start_authority()
+  for each $owner in $owners
+    $app=merge($owner.app,{context:merge($owner.app.context,{bus:$R.bus})})
+    comp("comp.window.focus",$app.window)
+    $description=$recovery.settled($app.context,$app.pid,"current",$rejoined,45)
+    $frame=$recovery.observe($app.context,$app.identity,$description,"rejoined")
+    $recovery.same_owner($owner.frame,$frame,$app.pid,$description)
+    check(deep_eq($frame.resources,$owner.frame.resources),"Authority rejoin changed installed resource identity")
+    $product.product_retained($app,$owner.product,"rejoined")
+    write_file($app.context.root .. "/acceptance.json",json_encode({app:$app.name,outage_ms:$outage_ms,
+      same_pid:true,same_window:true,product_retained:true,last_good_resources:true,
+      stale_generation_rejected:true,current_authority:$description.settings.applied,exact_frame:true}))
+    $product.stop_app($app)
+  end
+  stop_authority()
+  write_file($root .. "/acceptance.json",json_encode({apps:$apps,outage_ms:$outage_ms,
+    independent_compositor_broker:true,authority_rejoin:true,invalid_resource:false,
+    missing_resource:false,stale_preparation:false,native_pixel_artifacts:true,dbus:false}))
+  $R.ok=true
+catch $message
+  print("FAIL native app outage: " .. $message)
+
+finally
+  -- A restart interrupted after spawn still publishes its owned child before
+  -- readiness. Recover that ledger even when the replacement was not returned.
+  if $R.bus != nil and is_file($R.bus.dir .. "/restart.json") then
+    try
+      $replacement=json_parse(read_file($R.bus.dir .. "/restart.json"))
+      check($replacement.dir == $R.bus.dir and $replacement.node == $R.bus.node and
+        $replacement.port == $R.bus.port,"Broker restart ledger belongs to another owner")
+      $h.stop($replacement.pid)
+    catch $error
+      $R.ok=false
+      print("FAIL replacement broker teardown: " .. $error)
+    end
+  end
+  for each $child in $R.children
+    try
+      check($pty.stop_child($child),"Owned child survived teardown")
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+      for each $child in $R.session.pids
+        $h.stop($child)
+      end
+    catch $error
+      $R.ok=false
+      print("FAIL native host teardown: " .. $error)
+    end
+  end
+  for each $broker in [$R.bus,$R.desktop]
+    if $broker != nil then
+      try
+        $h.stop($broker.pid)
+      catch $error
+        $R.ok=false
+        print("FAIL broker teardown: " .. $error)
+      end
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS selected-app prolonged native broker outage/rejoin; resource failure and stale held preparation remain separate acceptance")
