@@ -24,6 +24,16 @@ end
 fn shell($verb,$body)
   return require_ok($n.call($shell,$verb,$body),$verb)
 end
+fn quoin_description()
+  $value=shell("app.describe",{})
+  $version=toml_parse(read_file($repo .. "/services/compd/Cargo.toml")).package.version
+  if ($value.describe_contract != "application.describe.v1" or $value.schema != "quoin.v1" or
+    not $value.embedded or $value.app_id != nil or $value.pid != $R.session.comp_pid or
+    $value.service != $shell or $value.version != $version or $value.transport != "native") then
+    raise("QUOIN_IDENTITY","Embedded description does not name the actual compd owner: " .. json_encode($value))
+  end
+  return $value
+end
 fn apply($changes,$operation)
   $current = require_ok($n.call("settingsd","settings.get",{binding:$binding}),"settings.get").snapshot
   $result = require_ok($n.call("settingsd","settings.apply",{binding:$binding,
@@ -81,7 +91,7 @@ fn client_pixel($ppm,$x,$y)
   return $ppm.bytes[$at] >= 247 and $ppm.bytes[$at+1] <= 8 and $ppm.bytes[$at+2] >= 247
 end
 fn capture($label,$layout,$client_y,$vacated_y,$accepted,$interaction)
-  $before = shell("shell.props.get",{path:"settings"})
+  $before = quoin_description()
   $path = $R.run.path .. "/" .. $label .. ".ppm"
   print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})}))
   $image = ppm($path)
@@ -117,9 +127,13 @@ fn capture($label,$layout,$client_y,$vacated_y,$accepted,$interaction)
   if $vacated_y != nil and not client_pixel($image,$width/2,$vacated_y) then
     raise("DAMAGE","Vacated panel strip retained stale pixels")
   end
-  $after = shell("shell.props.get",{path:"settings"})
-  if not deep_eq($before.applied,$after.applied) then raise("CAPTURE","Settings changed during capture") end
-  print("captured " .. $label .. " at applied revision " .. $after.applied.revision)
+  $after = quoin_description()
+  if not deep_eq($before.settings.applied,$after.settings.applied) then raise("CAPTURE","Settings changed during capture") end
+  if not $after.preparation.current or type($after.resources) != "map" then
+    raise("QUOIN_RESOURCES","Rendered shell lacks installed resource/preparation evidence: " .. json_encode($after))
+  end
+  write_file($R.run.path .. "/quoin-" .. $label .. ".json",json_encode($after))
+  print("captured " .. $label .. " at applied revision " .. $after.settings.applied.revision)
 end
 fn tail_after($path,$offset)
   return slice(read_file($path),$offset)
@@ -148,13 +162,18 @@ fn snapshot_identity($snapshot)
     design_revision:$snapshot.design_revision,source_digest:$snapshot.source_digest}
 end
 fn joint_evidence($accepted)
-  $shell_evidence = shell("shell.props.get",{path:"settings"})
-  $app_evidence = ced("app.describe",{}).settings
+  $shell_owner=quoin_description()
+  $app_owner=ced("app.describe",{})
+  $shell_evidence = $shell_owner.settings
+  $app_evidence = $app_owner.settings
   for each $entry in [{evidence:$shell_evidence,context:"desktop"},{evidence:$app_evidence,context:"app:ced"}]
     if ($entry.evidence == nil or $entry.evidence.kind != "current" or not $entry.evidence.confirmed or
       not deep_eq($entry.evidence.binding,$binding) or $entry.evidence.context != $entry.context or
       not deep_eq($entry.evidence.current,snapshot_identity($accepted)) or
       not deep_eq($entry.evidence.applied,snapshot_identity($accepted))) then return false end
+  end
+  for each $owner in [$shell_owner,$app_owner]
+    if not $owner.preparation.current or type($owner.resources) != "map" then return false end
   end
   return true
 end
