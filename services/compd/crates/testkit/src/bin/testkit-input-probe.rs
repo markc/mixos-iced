@@ -116,10 +116,16 @@ struct HintControls {
 
 impl HintControls {
     fn action(self, key: u32, pressed: bool) -> Option<bool> {
-        if !pressed { return None; }
-        if self.clear_key == Some(key) { Some(false) }
-        else if self.set_key == Some(key) { Some(true) }
-        else { None }
+        if !pressed {
+            return None;
+        }
+        if self.clear_key == Some(key) {
+            Some(false)
+        } else if self.set_key == Some(key) {
+            Some(true)
+        } else {
+            None
+        }
     }
 }
 
@@ -197,18 +203,35 @@ impl Probe {
     }
 
     fn install_hints(&mut self, enabled: bool) {
-        let Some(top) = &self.toplevel else { return; };
-        let min = if enabled { self.hints.min.unwrap_or((0, 0)) } else { (0, 0) };
-        let max = if enabled { self.hints.max.unwrap_or((0, 0)) } else { (0, 0) };
+        let Some(top) = &self.toplevel else {
+            return;
+        };
+        let min = if enabled {
+            self.hints.min.unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
+        let max = if enabled {
+            self.hints.max.unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
         top.set_min_size(min.0, min.1);
         top.set_max_size(max.0, max.1);
         self.hints_dirty = true;
-        say(&format!("hints_requested {} {} {} {}", min.0, min.1, max.0, max.1));
+        say(&format!(
+            "hints_requested {} {} {} {}",
+            min.0, min.1, max.0, max.1
+        ));
     }
 
     fn interactive_button(&self, seat: &wl_seat::WlSeat, serial: u32, button: u32, pressed: bool) {
-        if !pressed { return; }
-        let Some(top) = &self.toplevel else { return; };
+        if !pressed {
+            return;
+        }
+        let Some(top) = &self.toplevel else {
+            return;
+        };
         if self.request_move && button == 272 {
             top._move(seat, serial);
             say(&format!("move_requested serial={serial}"));
@@ -332,16 +355,32 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
             "--ssd" => options.ssd = true,
             "--min-size" | "--max-size" => {
                 let size = parse_hint_size(&value()?)?;
-                let field = if argument == "--min-size" { &mut options.hints.min } else { &mut options.hints.max };
-                if field.replace(size).is_some() { return Err(format!("duplicate {argument}")); }
+                let field = if argument == "--min-size" {
+                    &mut options.hints.min
+                } else {
+                    &mut options.hints.max
+                };
+                if field.replace(size).is_some() {
+                    return Err(format!("duplicate {argument}"));
+                }
             }
             "--hints-on-key" | "--clear-hints-on-key" => {
                 let input = value()?;
-                if input.is_empty() || !input.bytes().all(|byte| byte.is_ascii_digit()) { return Err("hint key must be an evdev code 1..=767".into()); }
+                if input.is_empty() || !input.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err("hint key must be an evdev code 1..=767".into());
+                }
                 let key: u32 = input.parse().map_err(|_| "invalid hint key")?;
-                if !(1..=767).contains(&key) { return Err("hint key must be an evdev code 1..=767".into()); }
-                let field = if argument == "--hints-on-key" { &mut options.hints.set_key } else { &mut options.hints.clear_key };
-                if field.replace(key).is_some() { return Err(format!("duplicate {argument}")); }
+                if !(1..=767).contains(&key) {
+                    return Err("hint key must be an evdev code 1..=767".into());
+                }
+                let field = if argument == "--hints-on-key" {
+                    &mut options.hints.set_key
+                } else {
+                    &mut options.hints.clear_key
+                };
+                if field.replace(key).is_some() {
+                    return Err(format!("duplicate {argument}"));
+                }
             }
             "--request-move-on-button" => options.request_move = true,
             "--request-resize-on-button" => options.request_resize = true,
@@ -385,11 +424,16 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
     if options.hints.set_key.is_some() && options.hints.set_key == options.hints.clear_key {
         return Err("hint set and clear keys must differ".into());
     }
-    if (options.hints.set_key.is_some() || options.hints.clear_key.is_some()) && options.hints.min.is_none() && options.hints.max.is_none() {
+    if (options.hints.set_key.is_some() || options.hints.clear_key.is_some())
+        && options.hints.min.is_none()
+        && options.hints.max.is_none()
+    {
         return Err("hint key controls require a size hint".into());
     }
     if let (Some(min), Some(max)) = (options.hints.min, options.hints.max) {
-        if min.0 > max.0 || min.1 > max.1 { return Err("minimum hint exceeds maximum".into()); }
+        if min.0 > max.0 || min.1 > max.1 {
+            return Err("minimum hint exceeds maximum".into());
+        }
     }
     Ok(options)
 }
@@ -397,9 +441,13 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
 fn parse_hint_size(input: &str) -> Result<(i32, i32), String> {
     let (width, height) = input.split_once('x').ok_or("hint size expects WxH")?;
     let dimension = |value: &str| -> Result<i32, String> {
-        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) { return Err("hint dimensions must be 1..=8192".into()); }
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("hint dimensions must be 1..=8192".into());
+        }
         let value: i32 = value.parse().map_err(|_| "invalid hint dimension")?;
-        if !(1..=8192).contains(&value) { return Err("hint dimensions must be 1..=8192".into()); }
+        if !(1..=8192).contains(&value) {
+            return Err("hint dimensions must be 1..=8192".into());
+        }
         Ok(value)
     };
     Ok((dimension(width)?, dimension(height)?))
@@ -591,7 +639,11 @@ fn run() -> Result<(), String> {
     let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg.get_toplevel(&qh, ());
     probe.toplevel = Some(toplevel.clone());
-    if options.hints.set_key.is_none() && (options.hints.min.is_some() || options.hints.max.is_some()) { probe.install_hints(true); }
+    if options.hints.set_key.is_none()
+        && (options.hints.min.is_some() || options.hints.max.is_some())
+    {
+        probe.install_hints(true);
+    }
     toplevel.set_title(options.title.clone());
     toplevel.set_app_id(options.app_id.clone());
     let _decoration = if options.ssd {
@@ -720,7 +772,9 @@ fn run() -> Result<(), String> {
             }
             surface.commit();
             if std::mem::take(&mut probe.hints_dirty) {
-                queue.roundtrip(&mut probe).map_err(|error| format!("hint commit sync failed: {error}"))?;
+                queue
+                    .roundtrip(&mut probe)
+                    .map_err(|error| format!("hint commit sync failed: {error}"))?;
                 say("hints_committed");
             }
             if options.delay_state_commit.is_some() && dirty {
@@ -915,7 +969,8 @@ impl Dispatch<wl_pointer::WlPointer, u32> for Probe {
             wl_pointer::Event::Button {
                 button,
                 state: pressed,
-                serial, ..
+                serial,
+                ..
             } => {
                 let pressed = matches!(pressed, WEnum::Value(wl_pointer::ButtonState::Pressed));
                 let native_seat = seat.seat.clone();
@@ -943,7 +998,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, u32> for Probe {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if !state.seats.contains_key(id) { return; }
+        if !state.seats.contains_key(id) {
+            return;
+        }
         let line = match event {
             wl_keyboard::Event::Enter { .. } => "keyboard_enter".into(),
             wl_keyboard::Event::Leave { .. } => "keyboard_leave".into(),
@@ -1036,11 +1093,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Probe {
             wl_pointer::Event::Button {
                 button,
                 state: button_state,
-                serial, ..
+                serial,
+                ..
             } => {
                 let pressed =
                     matches!(button_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
-                if let Some(seat) = state.seat.clone() { state.interactive_button(&seat, serial, button, pressed); }
+                if let Some(seat) = state.seat.clone() {
+                    state.interactive_button(&seat, serial, button, pressed);
+                }
                 say(&format!(
                     "button {button} {} {} {}",
                     u8::from(pressed),
@@ -1198,26 +1258,58 @@ mod tests {
     #[test]
     fn real_hint_controls_are_bounded_consistent_and_only_use_pressed_selected_keys() {
         let parse = |args: &[&str]| parse_options(args.iter().map(|value| (*value).to_owned()));
-        let options = parse(&["--min-size", "1200x1000", "--max-size", "8192x8192", "--hints-on-key", "30", "--clear-hints-on-key", "31", "--request-move-on-button", "--request-resize-on-button"]).unwrap();
+        let options = parse(&[
+            "--min-size",
+            "1200x1000",
+            "--max-size",
+            "8192x8192",
+            "--hints-on-key",
+            "30",
+            "--clear-hints-on-key",
+            "31",
+            "--request-move-on-button",
+            "--request-resize-on-button",
+        ])
+        .unwrap();
         assert_eq!(options.hints.min, Some((1200, 1000)));
         assert!(options.request_move && options.request_resize);
         assert_eq!(options.hints.action(30, true), Some(true));
         assert_eq!(options.hints.action(31, true), Some(false));
         assert_eq!(options.hints.action(30, false), None);
         assert_eq!(options.hints.action(32, true), None);
-        for input in ["0x1", "1x0", "8193x1", "1x8193", "-1x1", "+1x1", "1x1x1", "1 x1", "2147483648x1"] {
+        for input in [
+            "0x1",
+            "1x0",
+            "8193x1",
+            "1x8193",
+            "-1x1",
+            "+1x1",
+            "1x1x1",
+            "1 x1",
+            "2147483648x1",
+        ] {
             assert!(parse(&["--min-size", input]).is_err(), "{input}");
             assert!(parse(&["--max-size", input]).is_err(), "{input}");
         }
         for args in [
-            vec!["--min-size"], vec!["--min-size", "2x2", "--max-size", "1x2"],
+            vec!["--min-size"],
+            vec!["--min-size", "2x2", "--max-size", "1x2"],
             vec!["--min-size", "2x2", "--min-size", "2x2"],
             vec!["--hints-on-key", "30"],
-            vec!["--min-size", "2x2", "--hints-on-key", "30", "--clear-hints-on-key", "30"],
+            vec![
+                "--min-size",
+                "2x2",
+                "--hints-on-key",
+                "30",
+                "--clear-hints-on-key",
+                "30",
+            ],
             vec!["--min-size", "2x2", "--hints-on-key", "0"],
             vec!["--min-size", "2x2", "--hints-on-key", "768"],
             vec!["--min-size", "2x2", "--hints-on-key", "+30"],
-        ] { assert!(parse(&args).is_err(), "{args:?}"); }
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
         let defaults = parse(&[]).unwrap();
         assert_eq!(defaults.hints, HintControls::default());
         assert!(!defaults.request_move && !defaults.request_resize);
