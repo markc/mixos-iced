@@ -4,7 +4,14 @@ if len(args()) != 4 then raise("ARGS","REPO FIXTURE_BINARY RENDER_NODE FRESH_ART
 $repo=args()[0]; $binary=args()[1]; $node=args()[2]; $directory=args()[3]
 if not is_file($binary) then raise("BACKING_FIXTURE","Built renderer-owning fixture missing") end
 $binary_hash=hash_file($binary,"sha256")
-$result=run_argv_must([$binary,$node,$directory],{timeout:45,max_output:1000000})
+$result=run_argv([$binary,$node,$directory],{timeout:45,max_output:8000000,stderr:"stdout",env:{RUST_BACKTRACE:"full"}})
+-- Preserve the complete native failure before raising, including failures that
+-- occur before the fixture has created its own fresh artifact directory.
+write_file($directory .. ".fixture-result.json",json_encode($result))
+write_file($directory .. ".fixture-full.log",$result.stdout)
+if not $result.ok or $result.stdout_truncated then
+  raise("BACKING_FIXTURE","Native fixture failed; full output: " .. $directory .. ".fixture-full.log")
+end
 $passed=json_parse(read_file($directory .. "/passed.json"))
 if not $passed.actual_shared_gles_wgpu_backings or $passed.native_presentation_claimed or $passed.phases != 9 then
   raise("BACKING_FIXTURE","Actual shared-device lifecycle proof missing")
@@ -23,5 +30,6 @@ write_file($directory .. "/acceptance.json",json_encode({
   source:trim(run_argv_must(["git","-C",$repo,"rev-parse","HEAD"])),
   source_tree:trim(run_argv_must(["git","-C",$repo,"rev-parse","HEAD^{tree}"])),
   binary_sha256:$binary_hash,requested_render_node:$node,adapter:read_file($directory .. "/adapter.txt"),
-  phases:$receipts,stdout:$result,contract:"actual shared GLES/wgpu backing lifecycle; no native presentation or latency claim"}))
+  phases:$receipts,stdout:$result.stdout,fixture_result:$directory .. ".fixture-result.json",
+  contract:"actual shared GLES/wgpu backing lifecycle; no native presentation or latency claim"}))
 print(json_encode({passed:true,artifacts:$directory,binary_sha256:$binary_hash,phases:len($receipts)}))

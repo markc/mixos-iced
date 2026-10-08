@@ -13,6 +13,7 @@ use iced_core::window::{
 use render_gles::format::registrar::registrar::Registrar;
 use smithay::{
     backend::{
+        allocator::gbm::GbmDevice,
         egl::{EGLDevice, EGLDisplay},
         renderer::{ExportMem, Texture, gles::GlesRenderer},
     },
@@ -205,9 +206,16 @@ fn run(node: &str, directory: &Path) -> Result<()> {
                     || device.drm_device_path().ok().as_ref() == Some(&path))
         })
         .ok_or("no hardware EGL device for requested node")?;
-    // SAFETY: this fixture owns the enumerated device/display for its entire
+    // Match the native GbmGlesBackend: the EGL platform display owns a GBM
+    // device over the selected render fd. EGLDevice platform displays do not
+    // necessarily support the native renderer's window-capable config.
+    assert!(!device.is_software());
+    let fd = OpenOptions::new().read(true).write(true).open(&path)?;
+    let gbm = GbmDevice::new(fd)?;
+    // SAFETY: this fixture owns the render fd/GBM display for its entire
     // renderer lifetime; all GL/wgpu operations stay on this one thread.
-    let display = unsafe { EGLDisplay::new(device)? };
+    let display = unsafe { EGLDisplay::new(gbm)? };
+    fresh(&directory.join("display.txt"), format!("platform=GBM\nnode={}\n", path.display()).as_bytes())?;
     let mut gles = render_gles::context::egl::egl::create(&display)?;
     let ctx = create_wgpu_gl_context(&Registrar::new(), &mut gles)?;
     let adapter = ctx.adapter.get_info();
