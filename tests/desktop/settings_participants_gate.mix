@@ -196,7 +196,14 @@ fn preparation_failure_recovery()
   end
   retained("preparation-failed")
   write_file($R.run.path .. "/preparation-failure-observed.json",json_encode({before:$before,owners:$owners,failed:$bad,wait:$wait,descriptions:$failure_descriptions,hardware:false,recovery_verified:false}))
-  $good=apply({"appearance.resources":{schema:1,set_id:$manifest.set_id,manifest_blake3:$manifest_digest}},"preparation-recovered")
+  -- Restoring identical render input honestly advances applied evidence
+  -- without a UI swap or presented frame. Request a real visible text-scale
+  -- change with the valid binding when this gate requires fresh presentation.
+  $restored_scale=if $healthy.desktop.ui.text_scale < 2.5 then $healthy.desktop.ui.text_scale+0.1 else $healthy.desktop.ui.text_scale-0.1 end
+  $good=apply({"appearance.resources":{schema:1,set_id:$manifest.set_id,manifest_blake3:$manifest_digest},"ui.text_scale":$restored_scale},"preparation-recovered")
+  for each $app in $R.owners
+    check($good.snapshot.effective[$app.settings_context].ui.text_scale != $healthy.effective[$app.settings_context].ui.text_scale,"Recovery must change every selected owner's actual render input")
+  end
   $recovered_frames=participant_presentations($good,"preparation-recovered")
   for each $app in $R.owners
     $actual=$f.rpc($app.context,"app.describe",{})
