@@ -2,7 +2,9 @@
 -- version: 0.1.1
 -- Actual Term layout, installed native frames, held preparation and shutdown.
 -- Requires the named exact-commit acceptance-enabled candidate binaries.
-if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [--core-assets]") end
+$complete_core=len(args()) == 3
+if $complete_core and args()[2] != "--core-assets" then raise("ARGS","Unknown native Term acceptance option") end
 $repo=args()[0]
 $bin=args()[1]
 $mix=$bin .. "/mix"
@@ -10,6 +12,7 @@ export MIXOS_TEST_MIX=$mix
 $n=require("nested_host_lib.mix")
 $h=require("settings_host_lib.mix")
 $f=require("settings_fixture_lib.mix")
+$capture=require("capture_lib.mix")
 $pty=require("pty_host_lib.mix")
 for each $name in ["mix","term","noded","settingsd","compd"]
   if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing candidate " .. $name) end
@@ -59,6 +62,13 @@ fn launch_term($label,$identity)
     XDG_STATE_HOME:$home .. "/state",MIXOS_APP_HOME:$home,MIXOS_SETTINGS_INSTANCE:"fixture",
     MIXOS_SETTINGS_PROFILE:"default",TERM_NOTIFY:"0",LIBGL_ALWAYS_SOFTWARE:"1",WGPU_BACKEND:"gl",
     MIXOS_ACCEPTANCE_RUN:nil,MIXOS_ACCEPTANCE_INSTANCE:nil})
+  if $complete_core then
+    mkdir($home .. "/data",{parents:true})
+    mkdir($R.run.path .. "/empty-data",{parents:true})
+    $extra.XDG_DATA_HOME=$home .. "/data"
+    $extra.XDG_DATA_DIRS=$R.run.path .. "/empty-data"
+    $extra.MIXOS_SHARE=$R.run.path .. "/core"
+  end
   if $identity != nil then
     $extra.MIXOS_ACCEPTANCE_RUN=$identity.run
     $extra.MIXOS_ACCEPTANCE_INSTANCE=to_string($identity.instance)
@@ -123,6 +133,13 @@ end
 try
   $R.run=$n.new_run("/var/tmp/term-settings")
   $root=$R.run.path
+  if $complete_core then
+    mkdir($root .. "/core",{parents:true})
+    print(run_argv_must([$mix,$repo .. "/share/assets/install.mix","--root",$root .. "/core/assets",
+      "--manifest",$repo .. "/share/assets/core.conf.mix"],{timeout:300,max_output:2000000}))
+    print(run_argv_must([$mix,$repo .. "/share/assets/install.mix","--root",$root .. "/core/assets",
+      "--manifest",$repo .. "/share/assets/core.conf.mix","--verify"],{timeout:30,max_output:2000000}))
+  end
   $R.bus=$n.private_bus({dir:$root,name:"term-settings",noded:$bin .. "/noded"})
   mkdir($root .. "/cfg",{parents:true})
   write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
@@ -162,6 +179,35 @@ try
   $identity=merge($identity,{generation:$initial.evidence.live_generation})
   $first=presented($identity,$initial.target,"baseline")
   layout($identity,$initial.target.window,"baseline")
+  if $complete_core then
+    $manifest=load_data($repo .. "/share/assets/core.conf.mix")
+    check($before.resources.set_id == $manifest.set_id,"Native Term did not bind the complete verified core package")
+    $mono_file=nil
+    for each $file in $manifest.files
+      if $file.path == $manifest.fonts.mono then $mono_file=$file end
+    end
+    check($mono_file != nil,"Complete core package has no locked mono payload")
+    for each $record in ["mono","terminal"]
+      $matches=filter($before.resources.text,fn($text) = $text.record == $record)
+      check(len($matches) == 1 and $matches[0].family == $manifest.font_families.mono and
+        $matches[0].source_blake3 == $mono_file.blake3 and $matches[0].requested_weight == 300 and
+        $matches[0].effective_weight == 300,"Unchanged default role did not resolve the actual locked variable mono at 300: " .. $record)
+    end
+    $raster=$before.preparation.raster
+    check($raster.weight == 300 and $raster.source.kind == "verified" and
+      len($raster.source.groups) > 0 and len($raster.source.groups[0]) > 0 and
+      $raster.source.groups[0][0][0] == $mono_file.blake3 and $raster.source.groups[0][0][1] == $mono_file.bytes,
+      "Actual terminal painter did not install the verified mono source/weight")
+    $path=$root .. "/core-mono-300.ppm"
+    print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,
+      env:$n.client_env($R.session,$h.bus_env($R.bus,$root))}))
+    $pixels=$capture.ppm($path)
+    check($pixels.w > 0 and $pixels.h > 0 and deep_eq(app("app.describe",{}).resources,$before.resources),
+      "Native core font capture was empty or changed resources")
+    write_file($root .. "/core-mono-300.json",json_encode({manifest:$manifest.set_id,resources:$before.resources,
+      raster:$raster,frame:$first,window:$term.window,width:$pixels.w,height:$pixels.h,embedded_design_unchanged:true}))
+    print("PASS untouched core package: locked mono/terminal source at exact weight 300, installed native raster and presented frame")
+  end
   $reference=reached($identity,"zoom-1",1)
   $held=app("app.describe",{})
   check(not $held.preparation.current and $held.preparation.desired > $before.preparation.applied and
