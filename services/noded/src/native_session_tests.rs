@@ -6,6 +6,52 @@ use bus::native_session::{PRINCIPAL_HEADER, read_principal};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WsMessage};
 
+#[tokio::test]
+async fn supervised_unix_preserves_principals_verbs_and_bounded_retirement() {
+    use bus::native_client::{BoundedIncomingEvent, SupervisedClient, NodedClient, UnixConnectOutcome};
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let broker = Broker::start().await;
+        let mut options = client_options(&broker);
+        options.incoming_capacity = Some(1);
+        let owner = SupervisedClient::connect_options("supervised-unix", &broker.url)
+            .with_unix(options.clone())
+            .with_verbs(vec![bus::VerbDescriptor::new("probe.echo", &[], "Echo", true)])
+            .with_initial_topics(vec!["probe.changed".into()])
+            .connect().await.unwrap();
+        let mut incoming = owner.incoming_bounded().unwrap();
+        assert!(owner.incoming().is_none());
+        let UnixConnectOutcome::VerifiedUnix(caller) = NodedClient::connect_unix("unix-caller", &broker.url, &options, None).await.unwrap() else { panic!("verified caller") };
+        let help = caller.client().call("supervised-unix", "HELP", serde_json::Value::Null).await.unwrap();
+        assert!(help.to_string().contains("probe.echo"), "{help}");
+        caller.client().send("supervised-unix", "probe.event", serde_json::json!({"kind":"unix"})).await.unwrap();
+        let BoundedIncomingEvent::Command(command) = incoming.recv().await.unwrap() else { panic!("ordinary verified command") };
+        let envelope = BusMessage { headers: command.headers.clone(), body: command.body.clone() };
+        let principal = read_principal(&envelope).unwrap().unwrap();
+        assert_eq!(principal.assurance, bus::native_session::Assurance::LocalUnix);
+        assert_eq!(command.generation, owner.connection_generation());
+        let tcp = NodedClient::connect("tcp-caller", &broker.url).await.unwrap();
+        tcp.send_raw(&request("probe.event", "supervised-unix", "forged").with_header("type", "event").with_header("broker_principal", "forged")).await.unwrap();
+        let BoundedIncomingEvent::Command(untrusted) = incoming.recv().await.unwrap() else { panic!("TCP command") };
+        assert!(untrusted.header(PRINCIPAL_HEADER).is_none());
+        // Hold the outward lane full. Its owner must settle correlated requests,
+        // while the socket reader continues servicing unrelated RPC replies.
+        caller.client().send("supervised-unix", "probe.event", serde_json::Value::Null).await.unwrap();
+        let blocked = caller.client().call("supervised-unix", "probe.echo", serde_json::Value::Null);
+        let ping = owner.call("noded", "noded.ping", serde_json::Value::Null);
+        let (reply, pong) = tokio::join!(blocked, ping);
+        assert!(reply.unwrap_err().to_string().contains("overloaded"));
+        assert_eq!(pong.unwrap()["pong"], true);
+        caller.client().send("supervised-unix", "probe.event", serde_json::Value::Null).await.unwrap();
+        // A command on this same connection is a barrier behind the lost notice.
+        caller.client().call("noded", "noded.ping", serde_json::Value::Null).await.unwrap();
+        assert!(matches!(incoming.recv().await, Some(BoundedIncomingEvent::Overflow { .. })));
+        owner.shutdown().await;
+        assert!(matches!(owner.state(), bus::ConnState::ShuttingDown));
+        tcp.close().await;
+        caller.client().close().await;
+    }).await.expect("supervised Unix acceptance deadline");
+}
+
 struct Broker {
     sessions: Arc<tokio::sync::Mutex<session::Sessions>>,
     task: tokio::task::JoinHandle<Result<()>>,

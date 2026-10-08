@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Explicit, node-local BUS-013 transport. Ordinary `NodedClient::connect`
-//! remains TCP. Unix traffic cannot leave this node in v1; remote delegation
-//! and protected mesh transit are S5 work.
+//! Explicit authenticated BUS-013 local ingress. Ordinary `NodedClient::connect`
+//! remains TCP. Cross-node traffic uses existing ABP routing under the broker's
+//! `mesh_open` posture; locked posture refuses principal-carrying egress. Remote
+//! deliveries never gain a trusted local Unix principal.
 
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
@@ -202,6 +203,12 @@ pub struct VerifiedCommand {
     delivery: Delivery,
 }
 impl VerifiedCommand {
+    // Only the Bus supervisor may adapt an admitted verified delivery to its
+    // compatibility lane. Public raw clients cannot obtain trusted incoming.
+    pub(crate) fn into_supervised_command(self) -> IncomingCommand {
+        assert_eq!(self.delivery, Delivery::Command);
+        self.command
+    }
     pub(crate) fn new(command: IncomingCommand, principal: Option<BrokerPrincipal>) -> Self {
         Self {
             command,
@@ -252,24 +259,34 @@ impl NodedClient {
     /// Explicit Unix opt-in; ordinary `connect` remains unchanged. Native
     /// session clients MUST set `require_native_session`. Resolution is explicit
     /// endpoint, config, ping-discovered locator, then system default. Every
-    /// candidate is verified; discovery never establishes authority. Unix is node-local
-    /// in v1: mesh-destined traffic is refused, with no transparent TCP retry.
+    /// candidate is verified; discovery never establishes authority. Mesh
+    /// routing follows noded's posture, without a transparent TCP retry.
     pub async fn connect_unix(
         service_name: &str,
         tcp_url: &str,
         options: &UnixConnectOptions,
         provenance: Option<crate::RegisterProvenance>,
     ) -> Result<UnixConnectOutcome, ConnectError> {
+        Self::connect_unix_with_verbs(service_name, tcp_url, options, provenance, None).await
+    }
+
+    pub(crate) async fn connect_unix_with_verbs(
+        service_name: &str,
+        tcp_url: &str,
+        options: &UnixConnectOptions,
+        provenance: Option<crate::RegisterProvenance>,
+        verbs: Option<Vec<crate::VerbDescriptor>>,
+    ) -> Result<UnixConnectOutcome, ConnectError> {
         let mut resolved = options.clone();
         if resolved.endpoint.is_none() && resolved.configured_endpoint.is_none() {
             resolved.configured_endpoint = discover_endpoint(tcp_url).await;
         }
-        match connect_verified(service_name, &resolved, provenance.clone()).await {
+        match connect_verified(service_name, &resolved, provenance.clone(), verbs.clone()).await {
             Ok(connection) => Ok(UnixConnectOutcome::VerifiedUnix(connection)),
             Err(unix_error)
                 if !options.require_native_session && options.allow_unverified_tcp_fallback =>
             {
-                let client = Self::connect_with_provenance(service_name, tcp_url, provenance)
+                let client = Self::connect_with_provenance_and_capacity(service_name, tcp_url, provenance, options.incoming_capacity, verbs)
                     .await
                     .map_err(ConnectError::Protocol)?;
                 Ok(UnixConnectOutcome::UnverifiedTcp { client, unix_error })
@@ -307,6 +324,7 @@ async fn connect_verified(
     service_name: &str,
     options: &UnixConnectOptions,
     provenance: Option<crate::RegisterProvenance>,
+    verbs: Option<Vec<crate::VerbDescriptor>>,
 ) -> Result<VerifiedConnection, ConnectError> {
     let path = options.resolved_endpoint();
     let before = verify_path(path, options.broker_account)?;
@@ -325,7 +343,7 @@ async fn connect_verified(
         .await
         .map_err(|error| ConnectError::Protocol(error.into()))?;
     let (client, incoming) =
-        NodedClient::from_verified_unix(ws, service_name, provenance, options.incoming_capacity)
+        NodedClient::from_verified_unix(ws, service_name, provenance, options.incoming_capacity, verbs)
             .await
             .map_err(|error| match error.downcast::<ConnectError>() {
                 Ok(error) => error,

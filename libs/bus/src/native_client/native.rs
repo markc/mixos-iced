@@ -409,13 +409,14 @@ impl NodedClient {
         service_name: &str,
         provenance: Option<crate::RegisterProvenance>,
         incoming_capacity: Option<usize>,
+        declared_verbs: Option<Vec<crate::VerbDescriptor>>,
     ) -> Result<(Self, crate::native_client::unix::VerifiedIncoming)> {
         let (sink, stream) = socket.split();
         let sink: Arc<Mutex<WsSink>> = Arc::new(Mutex::new(Box::pin(sink)));
         let pending = Arc::new(StdMutex::new(HashMap::new()));
         let connected = Arc::new(AtomicBool::new(true));
         let service_name = Arc::new(RwLock::new(service_name.to_string()));
-        let verbs = Arc::new(RwLock::new(None));
+        let verbs = Arc::new(RwLock::new(declared_verbs));
         let (tx, rx) = match incoming_capacity {
             Some(capacity @ 1..=1024) => {
                 let (tx, commands) = mpsc::channel(capacity);
