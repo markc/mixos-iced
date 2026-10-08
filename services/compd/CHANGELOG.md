@@ -13,6 +13,8 @@
 - Share the renderer-free geometry executor across production and native
   fixtures. Work-area/output/SSD and client lifecycle events reflow the same
   owner; free placement and interactive movement refuse tiled ownership.
+- Add an owned native Bus/render/input tiling acceptance gate and bounded
+  testkit client hint/key controls and real button-serial move/resize requests.
 
 ## 0.1.15
 

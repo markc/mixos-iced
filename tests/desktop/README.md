@@ -84,6 +84,20 @@ mix tests/desktop/suite.mix [--only a,b] [--skip a,b] [--scales 1,2.5] [--bin PA
 
 Each script's header documents its checks and exit codes.
 
+`window_tiling_gate.mix REPO BUILD_BIN_DIR` owns a native broker, settingsd,
+nested compositor and three distinct-colour Wayland probes. It checks public
+tile/untile routes, two-to-three allocation, real ACK without a surface commit,
+committed size fences, captured colour boundaries and delivered pointer input.
+Occupied settings-backed panel changes, real client hint infeasibility/recovery,
+fullscreen/maximise return, suspended untile, actual interactive requests and
+retirement/stale targets are covered. The probe's min/max hints are bounded to
+1..8192; optional distinct evdev keys install/clear them on actual pressed key
+events. Opt-in left move/right resize requests use the received native seat and
+button serial. Ordinary probes omit these controls. Dormant-world executor
+isolation is tested by testkit; this GUI gate does not claim a dormant-world
+switch route. Nested software readback does not prove physical scanout or VT
+isolation.
+
 The standalone `scene_editor_settings_gate.mix` owns separate compositor and
 application brokers. It checks actual light/dark frames, selection and dialogue
 retention, checked cache and embedded fallback, a 65-second cold outage with
