@@ -521,11 +521,21 @@ pub fn wait_outcome<H: Clone + Eq + Hash>(
     let holds = |record: &SurfaceRecord<H>| {
         let facts = facts(record.id());
         match spec.until {
-            WaitUntil::Tiled => !record.minimized() && workspaces::on_workspace(record, current_workspace)
-                && facts.requested_tiled && facts.native_requested_tiled
-                && facts.committed_tiled && !facts.tile_pending && !facts.configure_pending,
-            WaitUntil::Untiled => !facts.requested_tiled && !facts.native_requested_tiled
-                && !facts.committed_tiled && !facts.configure_pending,
+            WaitUntil::Tiled => {
+                !record.minimized()
+                    && workspaces::on_workspace(record, current_workspace)
+                    && facts.requested_tiled
+                    && facts.native_requested_tiled
+                    && facts.committed_tiled
+                    && !facts.tile_pending
+                    && !facts.configure_pending
+            }
+            WaitUntil::Untiled => {
+                !facts.requested_tiled
+                    && !facts.native_requested_tiled
+                    && !facts.committed_tiled
+                    && !facts.configure_pending
+            }
             WaitUntil::Mapped => true,
             WaitUntil::Visible => facts.visible && !record.minimized(),
             WaitUntil::Presented => {

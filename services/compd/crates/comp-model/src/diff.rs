@@ -7,8 +7,8 @@
 use std::collections::BTreeSet;
 
 use crate::observation::{
-    HOST_PASSTHROUGH_PATH, PendingPropChanges, PropValue, prop_opt_string, prop_opt_u32, prop_opt_u64, prop_str,
-    queue_prop_change,
+    HOST_PASSTHROUGH_PATH, PendingPropChanges, PropValue, prop_opt_string, prop_opt_u32,
+    prop_opt_u64, prop_str, queue_prop_change,
 };
 use crate::snapshot::*;
 
@@ -579,11 +579,31 @@ fn diff_window_row(
             prop_opt_string(old.title.as_deref()),
             prop_opt_string(new.title.as_deref()),
         ),
-        ("tiled", PropValue::Bool(old.tiled), PropValue::Bool(new.tiled)),
-        ("requested_tiled", PropValue::Bool(old.requested_tiled), PropValue::Bool(new.requested_tiled)),
-        ("native_requested_tiled", PropValue::Bool(old.native_requested_tiled), PropValue::Bool(new.native_requested_tiled)),
-        ("configure_pending", PropValue::Bool(old.configure_pending), PropValue::Bool(new.configure_pending)),
-        ("tile_pending_reason", prop_opt_string(old.tile_pending_reason), prop_opt_string(new.tile_pending_reason)),
+        (
+            "tiled",
+            PropValue::Bool(old.tiled),
+            PropValue::Bool(new.tiled),
+        ),
+        (
+            "requested_tiled",
+            PropValue::Bool(old.requested_tiled),
+            PropValue::Bool(new.requested_tiled),
+        ),
+        (
+            "native_requested_tiled",
+            PropValue::Bool(old.native_requested_tiled),
+            PropValue::Bool(new.native_requested_tiled),
+        ),
+        (
+            "configure_pending",
+            PropValue::Bool(old.configure_pending),
+            PropValue::Bool(new.configure_pending),
+        ),
+        (
+            "tile_pending_reason",
+            prop_opt_string(old.tile_pending_reason),
+            prop_opt_string(new.tile_pending_reason),
+        ),
         (
             "app_id",
             prop_opt_string(old.app_id.as_deref()),

@@ -174,11 +174,17 @@ impl WireTrait for TestHost {
         let returning = if !fullscreen {
             SurfaceHandle::of_window(&window)
                 .and_then(|handle| self.comp.registry.id_for_handle(&handle))
-                .and_then(|id| world::comp::geometry::tile_return(&self.comp, &self.space.state, id))
-        } else { None };
+                .and_then(|id| {
+                    world::comp::geometry::tile_return(&self.comp, &self.space.state, id)
+                })
+        } else {
+            None
+        };
         let target = if fullscreen {
             world::comp::fullscreen::target_geometry(&self.comp, &self.space.state, &window)
-        } else { returning.map(|target| target.area) };
+        } else {
+            returning.map(|target| target.area)
+        };
         world::window::interface::draw::fullscreen::apply(
             &mut self.space.state,
             &window,

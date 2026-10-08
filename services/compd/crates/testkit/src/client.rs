@@ -221,9 +221,14 @@ impl TestClient {
     /// A real xdg-decoration object, used to prove target SSD geometry through
     /// native negotiation and client ACK/commit rather than a state stamp.
     pub fn decoration(&mut self, top: &XdgToplevel) -> ZxdgToplevelDecorationV1 {
-        let (name, _, version) = self.state.globals.iter().find(|(_, interface, _)|
-            interface == "zxdg_decoration_manager_v1").expect("native decoration global");
-        let manager: ZxdgDecorationManagerV1 = self.registry.bind(*name, (*version).min(1), &self.qh, ());
+        let (name, _, version) = self
+            .state
+            .globals
+            .iter()
+            .find(|(_, interface, _)| interface == "zxdg_decoration_manager_v1")
+            .expect("native decoration global");
+        let manager: ZxdgDecorationManagerV1 =
+            self.registry.bind(*name, (*version).min(1), &self.qh, ());
         manager.get_toplevel_decoration(top, &self.qh, ())
     }
 
@@ -239,8 +244,17 @@ impl TestClient {
     }
 
     /// Bind an actual requested xdg version for native capability guards.
-    pub fn toplevel_version(&mut self, surface: &WlSurface, version: u32) -> (XdgSurface, XdgToplevel) {
-        let (name, _, advertised) = self.state.globals.iter().find(|(_, interface, _)| interface == "xdg_wm_base").unwrap();
+    pub fn toplevel_version(
+        &mut self,
+        surface: &WlSurface,
+        version: u32,
+    ) -> (XdgSurface, XdgToplevel) {
+        let (name, _, advertised) = self
+            .state
+            .globals
+            .iter()
+            .find(|(_, interface, _)| interface == "xdg_wm_base")
+            .unwrap();
         assert!(version >= 1 && version <= *advertised);
         let wm: XdgWmBase = self.registry.bind(*name, version, &self.qh, ());
         let xdg = wm.get_xdg_surface(surface, &self.qh, ());

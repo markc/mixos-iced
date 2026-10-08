@@ -57,7 +57,12 @@ pub enum StatsTarget {
 /// window is named; only `restore` may name none (most recently minimised).
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowOp {
-    Tile { id: u64, generation: u64, enabled: bool, output: Option<String> },
+    Tile {
+        id: u64,
+        generation: u64,
+        enabled: bool,
+        output: Option<String>,
+    },
     State {
         id: u64,
         generation: u64,
@@ -753,11 +758,17 @@ pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, Control
         "comp.window.tile" | "comp.window.untile" => {
             let allowed: &'static [&'static str] = if verb == "comp.window.tile" {
                 &["id", "generation", "output"]
-            } else { &["id", "generation"] };
+            } else {
+                &["id", "generation"]
+            };
             let object = args_object(args, &empty, allowed)?;
             let (id, generation) = required_target(object)?;
-            Ok(WindowVerb::Op(WindowOp::Tile { id, generation,
-                enabled: verb == "comp.window.tile", output: output_arg(object)? }))
+            Ok(WindowVerb::Op(WindowOp::Tile {
+                id,
+                generation,
+                enabled: verb == "comp.window.tile",
+                output: output_arg(object)?,
+            }))
         }
         "comp.window.maximize"
         | "comp.window.unmaximize"

@@ -7,10 +7,10 @@
 //! window is policy-host `apply_interactive`, which needs the full `Loop`
 //! (the nested smoke covers it), so these tests stop at the record.
 
-use testkit::Harness;
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 use smithay::utils::{Point, SERIAL_COUNTER};
+use testkit::Harness;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
@@ -22,12 +22,22 @@ const AGENT: usize = 1;
 /// Move the server's primary pointer to `location` (grab-routed while a grab
 /// holds the pointer) and let the drain run.
 fn motion(h: &mut Harness, location: (f64, f64)) {
-    let pointer = h.wire.state.seat.seat.get_pointer().expect("primary pointer");
+    let pointer = h
+        .wire
+        .state
+        .seat
+        .seat
+        .get_pointer()
+        .expect("primary pointer");
     let dispatch = &mut h.wire.state;
     pointer.motion(
         dispatch,
         None,
-        &MotionEvent { location: Point::from(location), serial: SERIAL_COUNTER.next_serial(), time: 0 },
+        &MotionEvent {
+            location: Point::from(location),
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 0,
+        },
     );
     pointer.frame(dispatch);
     h.roundtrip();
@@ -36,7 +46,13 @@ fn motion(h: &mut Harness, location: (f64, f64)) {
 /// Let the button go on the server's primary pointer. Not `Harness::release`:
 /// the grab clears client focus, so the client sees no release to assert on.
 fn let_go(h: &mut Harness) {
-    let pointer = h.wire.state.seat.seat.get_pointer().expect("primary pointer");
+    let pointer = h
+        .wire
+        .state
+        .seat
+        .seat
+        .get_pointer()
+        .expect("primary pointer");
     let dispatch = &mut h.wire.state;
     pointer.button(
         dispatch,
@@ -61,7 +77,10 @@ fn commit_state(h: &mut Harness, surface: &WlSurface, state: State) {
         .space
         .state
         .elements()
-        .find(|window| dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(window).as_ref() == Some(&handle))
+        .find(|window| {
+            dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(window).as_ref()
+                == Some(&handle)
+        })
         .and_then(|window| window.toplevel().cloned())
         .expect("the window is in the Space");
     toplevel.with_pending_state(|pending| {
@@ -87,7 +106,12 @@ fn a_move_on_the_primary_seat_grabs_and_reports_the_travel() {
     let grab = h.comp().interactive.expect("still grabbing");
     assert_eq!((grab.delta, grab.updated), ((12.0, 3.0), true));
     let_go(&mut h);
-    assert!(h.comp().interactive.expect("the record waits for the host").ended);
+    assert!(
+        h.comp()
+            .interactive
+            .expect("the record waits for the host")
+            .ended
+    );
 }
 
 #[test]
@@ -99,7 +123,10 @@ fn a_resize_carries_its_edges() {
     h.roundtrip();
     assert_eq!(h.comp().interactive.map(|grab| grab.edges), Some(10));
     motion(&mut h, (21.0, 31.0));
-    assert_eq!(h.comp().interactive.map(|grab| grab.delta), Some((20.0, 30.0)));
+    assert_eq!(
+        h.comp().interactive.map(|grab| grab.delta),
+        Some((20.0, 30.0))
+    );
 }
 
 #[test]
@@ -124,7 +151,10 @@ fn a_maximised_window_is_not_moved() {
     let serial = h.press(&surface, BTN_LEFT);
     toplevel._move(h.client.seat(PRIMARY), serial);
     h.roundtrip();
-    assert!(h.comp().interactive.is_none(), "a committed-maximised window starts no move");
+    assert!(
+        h.comp().interactive.is_none(),
+        "a committed-maximised window starts no move"
+    );
 }
 
 #[test]
@@ -134,7 +164,10 @@ fn a_stale_serial_starts_nothing() {
     let serial = h.press(&surface, BTN_LEFT);
     toplevel._move(h.client.seat(PRIMARY), serial.wrapping_add(1000));
     h.roundtrip();
-    assert!(h.comp().interactive.is_none(), "the serial must name the held button");
+    assert!(
+        h.comp().interactive.is_none(),
+        "the serial must name the held button"
+    );
 }
 
 #[test]
@@ -142,13 +175,38 @@ fn tile_admission_refuses_real_native_move_and_resize_before_its_first_commit() 
     let mut h = Harness::new();
     let (surface, _, top) = h.mapped_toplevel(320, 240);
     let handle = h.handle_of(&surface);
-    let record = h.comp().registry.get(h.comp().registry.id_for_handle(&handle).unwrap()).unwrap();
-    let target = policy::tiling::Target { id: record.id(), generation: record.generation() };
-    let window = h.wire.inner.space.state.elements().find(|window|
-        dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(window).as_ref() == Some(&handle)).unwrap().clone();
+    let record = h
+        .comp()
+        .registry
+        .get(h.comp().registry.id_for_handle(&handle).unwrap())
+        .unwrap();
+    let target = policy::tiling::Target {
+        id: record.id(),
+        generation: record.generation(),
+    };
+    let window = h
+        .wire
+        .inner
+        .space
+        .state
+        .elements()
+        .find(|window| {
+            dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(window).as_ref()
+                == Some(&handle)
+        })
+        .unwrap()
+        .clone();
     {
         let host = &mut h.wire.inner;
-        world::comp::geometry::set_tiled(&mut host.comp, &mut host.space.state, target, &window, true, None).unwrap();
+        world::comp::geometry::set_tiled(
+            &mut host.comp,
+            &mut host.space.state,
+            target,
+            &window,
+            true,
+            None,
+        )
+        .unwrap();
     }
     h.roundtrip();
     assert!(!protocols::window::shell::shell::committed_tiled(&window));
@@ -160,14 +218,27 @@ fn tile_admission_refuses_real_native_move_and_resize_before_its_first_commit() 
     h.release(&surface, BTN_LEFT);
     {
         let host = &mut h.wire.inner;
-        world::comp::geometry::set_tiled(&mut host.comp, &mut host.space.state, target, &window, false, None).unwrap();
+        world::comp::geometry::set_tiled(
+            &mut host.comp,
+            &mut host.space.state,
+            target,
+            &window,
+            false,
+            None,
+        )
+        .unwrap();
     }
     h.roundtrip();
     h.client.attach(&surface, 320, 240);
     h.roundtrip();
-    assert!(!protocols::window::shell::shell::tile_input_owned(window.toplevel().unwrap().wl_surface()));
+    assert!(!protocols::window::shell::shell::tile_input_owned(
+        window.toplevel().unwrap().wl_surface()
+    ));
     let serial = h.press(&surface, BTN_LEFT);
     top._move(h.client.seat(PRIMARY), serial);
     h.roundtrip();
-    assert!(h.comp().interactive.is_some(), "untile restores ordinary real grab admission");
+    assert!(
+        h.comp().interactive.is_some(),
+        "untile restores ordinary real grab admission"
+    );
 }

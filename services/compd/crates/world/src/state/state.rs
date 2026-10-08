@@ -790,7 +790,10 @@ impl Orchestrator {
     }
 
     /// Geometry mutation belongs to the window's actual world, including dormant worlds.
-    pub fn comp_world_space_mut(&mut self, target: uuid::Uuid) -> (
+    pub fn comp_world_space_mut(
+        &mut self,
+        target: uuid::Uuid,
+    ) -> (
         &mut crate::comp::CompState,
         &mut smithay::desktop::Space<Window>,
     ) {

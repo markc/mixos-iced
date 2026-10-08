@@ -26,8 +26,11 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
         None
     };
     let target = if fullscreen {
-        crate::comp::fullscreen::target(_loop, &window).map(|(location, size)| Rectangle::new(location, size))
-    } else { returning.map(|target| target.area) };
+        crate::comp::fullscreen::target(_loop, &window)
+            .map(|(location, size)| Rectangle::new(location, size))
+    } else {
+        returning.map(|target| target.area)
+    };
     if !apply(
         &mut _loop.inner.space_state_mut().state,
         &window,

@@ -84,10 +84,16 @@ pub fn extents(window: &Window) -> Option<DecoExtents> {
 pub fn normal_extents(window: &Window) -> Option<DecoExtents> {
     let theme = installed()?;
     let server_side = if let Some(x11) = window.x11_surface() {
-        policy::x11::decoration_mode(x11.is_override_redirect(), ssd_enabled(), false, x11.is_decorated())
-            == policy::x11::DecorationMode::ServerSide
+        policy::x11::decoration_mode(
+            x11.is_override_redirect(),
+            ssd_enabled(),
+            false,
+            x11.is_decorated(),
+        ) == policy::x11::DecorationMode::ServerSide
     } else {
-        window.toplevel().is_some_and(dispatcher::wayland::xdg::decoration::mode::server_side)
+        window
+            .toplevel()
+            .is_some_and(dispatcher::wayland::xdg::decoration::mode::server_side)
     };
     server_side.then(|| DecoExtents::of(&theme.deco))
 }

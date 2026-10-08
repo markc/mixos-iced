@@ -345,7 +345,14 @@ impl CompState {
                 };
                 match op {
                     InteractiveOp::Begin { edges } => {
-                        if self.tiles.members().iter().any(|member| member.target.id == id) { return; }
+                        if self
+                            .tiles
+                            .members()
+                            .iter()
+                            .any(|member| member.target.id == id)
+                        {
+                            return;
+                        }
                         self.interactive = Some(Interactive {
                             id,
                             edges,
@@ -627,19 +634,38 @@ impl CompState {
     }
 
     pub(crate) fn tile_input_admit(&mut self, id: SurfaceId, surface: &WlSurface) {
-        if !self.tiles.members().iter().any(|member| member.target.id == id)
-            || self.registry.id_for_handle(&SurfaceHandle::wl(surface)) != Some(id) { return; }
-        self.tile_inputs.entry(id).or_insert_with(|| protocols::window::shell::shell::TileInputLease::acquire(surface));
+        if !self
+            .tiles
+            .members()
+            .iter()
+            .any(|member| member.target.id == id)
+            || self.registry.id_for_handle(&SurfaceHandle::wl(surface)) != Some(id)
+        {
+            return;
+        }
+        self.tile_inputs
+            .entry(id)
+            .or_insert_with(|| protocols::window::shell::shell::TileInputLease::acquire(surface));
     }
 
-    pub(crate) fn tile_input_retire(&mut self, id: SurfaceId) { self.tile_inputs.remove(&id); }
+    pub(crate) fn tile_input_retire(&mut self, id: SurfaceId) {
+        self.tile_inputs.remove(&id);
+    }
 
     fn reconcile_tiles(&mut self) {
         self.tiles.reconcile(&self.registry);
-        self.tile_inputs.retain(|id, _| self.tiles.members().iter().any(|member| member.target.id == *id));
+        self.tile_inputs.retain(|id, _| {
+            self.tiles
+                .members()
+                .iter()
+                .any(|member| member.target.id == *id)
+        });
     }
 
-    fn observe_tile_pending(&mut self, observation: Vec<(policy::tiling::Group, Option<policy::tiling::LayoutError>)>) {
+    fn observe_tile_pending(
+        &mut self,
+        observation: Vec<(policy::tiling::Group, Option<policy::tiling::LayoutError>)>,
+    ) {
         if self.tile_pending_observation != observation {
             self.tile_pending_observation = observation;
             self.tiling_changed();
