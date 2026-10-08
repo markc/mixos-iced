@@ -664,7 +664,12 @@ impl SceneHost {
         Ok(Self::from_port(port, waker, owner_version, host))
     }
 
-    pub(crate) fn from_port(mut port: Port, waker: Waker, owner_version: String, host: Host) -> Self {
+    pub(crate) fn from_port(
+        mut port: Port,
+        waker: Waker,
+        owner_version: String,
+        host: Host,
+    ) -> Self {
         let mut settings = port.take_settings_ui();
         settings.reconcile(port.settings_generation());
         let (sender, actions) = std::sync::mpsc::channel();
@@ -731,14 +736,20 @@ impl SceneHost {
     pub(crate) fn service_descriptions(&mut self) -> usize {
         let mut answered = 0;
         for _ in 0..crate::port::DESCRIPTION_CAPACITY {
-            let Some(request) = self.port.try_description() else { break; };
+            let Some(request) = self.port.try_description() else {
+                break;
+            };
             if !self.port.description_is_current(&request) {
                 tracing::debug!("scene host: stale description retired without completion");
                 request.retire().finish();
                 continue;
             }
             if let Err(error) = verify_origin(&request.command().headers) {
-                self.port.reply_description(request, 10, json!({"error_code":"SCENE_PROVENANCE","message":error}).to_string());
+                self.port.reply_description(
+                    request,
+                    10,
+                    json!({"error_code":"SCENE_PROVENANCE","message":error}).to_string(),
+                );
                 answered += 1;
                 continue;
             }
@@ -748,10 +759,13 @@ impl SceneHost {
                 continue;
             };
             let identity = application::describe::Identity {
-                app_id: None, version: &self.owner_version,
-                pid: std::process::id(), service,
+                app_id: None,
+                version: &self.owner_version,
+                pid: std::process::id(),
+                service,
             };
-            let (rc, value) = match crate::description::complete(identity, self.settings.session()) {
+            let (rc, value) = match crate::description::complete(identity, self.settings.session())
+            {
                 Ok(value) => (0, value),
                 Err(error) => (10, crate::description::refusal(&error)),
             };

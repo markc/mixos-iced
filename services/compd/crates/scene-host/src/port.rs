@@ -108,7 +108,10 @@ enum Outbound {
     /// A topic wire: `<service>.scene.changed`, or with `panel`
     /// `<service>.panel.changed`, retained as Quoin's is (a loader that
     /// subscribes late still reads the current panels).
-    Publish { panel: bool, wire: String },
+    Publish {
+        panel: bool,
+        wire: String,
+    },
 }
 
 struct Event {
@@ -255,15 +258,22 @@ impl Port {
         self.client.get().map(|client| client.service_name())
     }
     pub(crate) fn try_description(&self) -> Option<Accepted> {
-        self.descriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_recv().ok()
+        self.descriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_recv()
+            .ok()
     }
     pub(crate) fn description_is_current(&self, request: &Accepted) -> bool {
-        self.client.get().is_some_and(|client| request.is_current(client))
+        self.client
+            .get()
+            .is_some_and(|client| request.is_current(client))
     }
     pub(crate) fn reply_description(&self, request: Accepted, rc: u8, body: String) {
         let reply = request.reply(rc, body, std::time::Instant::now() + SEND_TIMEOUT);
         if let Err(error) = self.outbound.send(Outbound::Description(reply))
-            && let Outbound::Description(reply) = error.0 {
+            && let Outbound::Description(reply) = error.0
+        {
             tracing::warn!("scene host: description reply retired after worker closure");
             reply.retire().finish();
         }
@@ -343,7 +353,9 @@ impl Port {
 }
 
 fn freeze_descriptions(descriptions: &Mutex<tokio_mpsc::Receiver<Accepted>>) {
-    let mut descriptions = descriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut descriptions = descriptions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Closing admission before draining also protects the detached worker:
     // no later accepted request can enter this receiver.
     descriptions.close();
@@ -449,7 +461,9 @@ pub fn route(service: &str, command: &IncomingCommand) -> Route {
     if command.is_topic_delivery() || command.command.is_empty() {
         return Route::Ignore;
     }
-    if command.command == "app.describe" { return Route::AppDescribe; }
+    if command.command == "app.describe" {
+        return Route::AppDescribe;
+    }
     match SceneVerb::parse(service, &command.command) {
         Some(verb) => Route::Scene(verb),
         None if command.id.is_some() => Route::Unknown,
@@ -799,18 +813,44 @@ async fn serve(
     }
     let deadline = std::time::Instant::now() + SHUTDOWN_BUDGET;
     notify(lane.publish(SettingsEvent::Wake));
-    drain_outbound(client, &topics, outbound, &mut sends, &mut description_replies, &mut description_faults).await;
+    drain_outbound(
+        client,
+        &topics,
+        outbound,
+        &mut sends,
+        &mut description_replies,
+        &mut description_faults,
+    )
+    .await;
     flights.abort_all();
     replies.abort_all();
     sends.abort_all();
     while !description_replies.is_empty() {
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), description_replies.join_next()).await {
-            Ok(Some(result)) => reap("Quoin description", result, &mut description_faults, record_description_reply),
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            description_replies.join_next(),
+        )
+        .await
+        {
+            Ok(Some(result)) => reap(
+                "Quoin description",
+                result,
+                &mut description_faults,
+                record_description_reply,
+            ),
             Ok(None) => break,
-            Err(_) => { description_faults.push("description reply drain timed out".into()); break; }
+            Err(_) => {
+                description_faults.push("description reply drain timed out".into());
+                break;
+            }
         }
     }
-    cancel("Quoin description", description_replies, &mut description_faults, record_description_reply);
+    cancel(
+        "Quoin description",
+        description_replies,
+        &mut description_faults,
+        record_description_reply,
+    );
     tracing::debug!(faults = ?description_faults.recent(), counts = ?description_admission.counts(), "Quoin description shutdown");
     deadline
 }
@@ -832,7 +872,9 @@ async fn drain_outbound(
         while sends.join_next().await.is_some() {}
         while let Ok(message) = outbound.try_recv() {
             match message {
-                Outbound::Description(reply) => submit_description_reply(reply, description_replies, description_faults),
+                Outbound::Description(reply) => {
+                    submit_description_reply(reply, description_replies, description_faults)
+                }
                 message => send(client, topics, message).await,
             }
         }
@@ -852,10 +894,16 @@ async fn drain_outbound(
 }
 
 fn record_description_reply(result: Result<(), String>, faults: &mut Faults) {
-    if let Err(error) = result { faults.push(error); }
+    if let Err(error) = result {
+        faults.push(error);
+    }
 }
 
-fn submit_description_reply(reply: NativeReply, tasks: &mut TaskSet<Result<(), String>>, faults: &mut Faults) {
+fn submit_description_reply(
+    reply: NativeReply,
+    tasks: &mut TaskSet<Result<(), String>>,
+    faults: &mut Faults,
+) {
     if let Err(reply) = tasks.try_spawn_with(reply, NativeReply::into_task) {
         reply.retire().finish();
         faults.push("description reply task invariant failed; unsent reply retired".into());
@@ -863,22 +911,39 @@ fn submit_description_reply(reply: NativeReply, tasks: &mut TaskSet<Result<(), S
 }
 
 fn admit_description(
-    client: &Arc<SupervisedClient>, delivery: &Delivery, command: IncomingCommand, admission: &Admission,
+    client: &Arc<SupervisedClient>,
+    delivery: &Delivery,
+    command: IncomingCommand,
+    admission: &Admission,
 ) -> Option<(IncomingCommand, u8, Value)> {
-    if command.id.is_none() || settings::native::live_generation(client) != Some(command.generation) { return None; }
+    if command.id.is_none() || settings::native::live_generation(client) != Some(command.generation)
+    {
+        return None;
+    }
     if let Err(error) = application::describe::validate_request(&command.body) {
         return Some((command, 10, crate::description::refusal(&error)));
     }
     let Some(permit) = admission.try_acquire() else {
-        return Some((command, 11, json!({"error_code":"QUEUE_FULL","message":"description capacity exhausted"})));
+        return Some((
+            command,
+            11,
+            json!({"error_code":"QUEUE_FULL","message":"description capacity exhausted"}),
+        ));
     };
     let request = Accepted::new(client.clone(), command, permit, std::time::Instant::now());
     match delivery.descriptions.try_send(request) {
-        Ok(()) => { (delivery.waker)(); None }
+        Ok(()) => {
+            (delivery.waker)();
+            None
+        }
         Err(error) => {
             let (permit, command) = error.into_inner().into_task(|_, command, _| command);
             permit.finish();
-            Some((command, 11, json!({"error_code":"QUEUE_FULL","message":"description engine unavailable"})))
+            Some((
+                command,
+                11,
+                json!({"error_code":"QUEUE_FULL","message":"description engine unavailable"}),
+            ))
         }
     }
 }
@@ -1007,7 +1072,9 @@ async fn send(
         _ => scene_topic.as_str(),
     };
     let result = match &message {
-        Outbound::Description(_) => unreachable!("description replies require the bounded task set"),
+        Outbound::Description(_) => {
+            unreachable!("description replies require the bounded task set")
+        }
         Outbound::Reply {
             generation,
             command,
@@ -1067,8 +1134,14 @@ async fn send(
 mod tests {
     use super::*;
 
-    async fn received_command(incoming: &mut bus::native_client::BoundedIncomingReceiver) -> IncomingCommand {
-        match tokio::time::timeout(Duration::from_secs(5), incoming.recv()).await.unwrap().unwrap() {
+    async fn received_command(
+        incoming: &mut bus::native_client::BoundedIncomingReceiver,
+    ) -> IncomingCommand {
+        match tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
             BoundedIncomingEvent::Command(command) => command,
             BoundedIncomingEvent::Overflow { .. } => panic!("unexpected native ingress overflow"),
         }
@@ -1078,47 +1151,113 @@ mod tests {
     async fn shutdown_description_behind_a_stalled_send_uses_the_reaped_reply_lane() {
         use bus::native_client::NodedClient;
         let broker = term_test_broker::Broker::start_stable();
-        let client = Arc::new(SupervisedClient::connect_options("shell-shutdown-description", &broker.url)
-            .bounded_incoming(DESCRIPTION_CAPACITY).connect().await.unwrap());
+        let client = Arc::new(
+            SupervisedClient::connect_options("shell-shutdown-description", &broker.url)
+                .bounded_incoming(DESCRIPTION_CAPACITY)
+                .connect()
+                .await
+                .unwrap(),
+        );
         assert!(settings::native::live_generation(&client).is_some());
         let stalled = SupervisedClient::connect_options("shell-stalled-send", &broker.url)
-            .bounded_incoming(1).connect().await.unwrap();
+            .bounded_incoming(1)
+            .connect()
+            .await
+            .unwrap();
         assert!(settings::native::live_generation(&stalled).is_some());
         let mut stalled_incoming = stalled.incoming_bounded().unwrap();
         let mut incoming = client.incoming_bounded().unwrap();
         let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
         let calling = caller.clone();
         let description = tokio::spawn(async move {
-            calling.call_with_headers_raw("shell-shutdown-description", "app.describe", &BTreeMap::new(), "{}").await
+            calling
+                .call_with_headers_raw(
+                    "shell-shutdown-description",
+                    "app.describe",
+                    &BTreeMap::new(),
+                    "{}",
+                )
+                .await
         });
         let command = received_command(&mut incoming).await;
         let admission = Admission::new(DESCRIPTION_CAPACITY);
-        let request = Accepted::new(client.clone(), command, admission.try_acquire().unwrap(), std::time::Instant::now());
+        let request = Accepted::new(
+            client.clone(),
+            command,
+            admission.try_acquire().unwrap(),
+            std::time::Instant::now(),
+        );
         let (outbound_tx, mut outbound) = tokio_mpsc::unbounded_channel();
-        assert!(outbound_tx.send(Outbound::Description(request.reply(10,
-            json!({"error_code":"SHUTDOWN","message":"host stopping"}).to_string(),
-            std::time::Instant::now() + SEND_TIMEOUT))).is_ok());
+        assert!(
+            outbound_tx
+                .send(Outbound::Description(request.reply(
+                    10,
+                    json!({"error_code":"SHUTDOWN","message":"host stopping"}).to_string(),
+                    std::time::Instant::now() + SEND_TIMEOUT
+                )))
+                .is_ok()
+        );
         let mut sends = tokio::task::JoinSet::new();
         let sending = client.clone();
-        sends.spawn(async move { let _ = sending.call("shell-stalled-send", "test.hold", json!({})).await; });
+        sends.spawn(async move {
+            let _ = sending
+                .call("shell-stalled-send", "test.hold", json!({}))
+                .await;
+        });
         // The actual recipient has the ordinary call and deliberately retains
         // it unanswered; no scheduler delay is used to infer that send state.
         let held = received_command(&mut stalled_incoming).await;
         assert_eq!(held.command, "test.hold");
         let mut replies = TaskSet::new(DESCRIPTION_CAPACITY);
         let mut faults = Faults::default();
-        tokio::time::timeout(SHUTDOWN_BUDGET, drain_outbound(&client,
-            &("shell-shutdown-description.scene.changed".into(), "shell-shutdown-description.panel.changed".into()),
-            &mut outbound, &mut sends, &mut replies, &mut faults)).await.unwrap();
+        tokio::time::timeout(
+            SHUTDOWN_BUDGET,
+            drain_outbound(
+                &client,
+                &(
+                    "shell-shutdown-description.scene.changed".into(),
+                    "shell-shutdown-description.panel.changed".into(),
+                ),
+                &mut outbound,
+                &mut sends,
+                &mut replies,
+                &mut faults,
+            ),
+        )
+        .await
+        .unwrap();
         assert_eq!(sends.len(), 1, "ordinary recipient has not replied");
-        assert_eq!(replies.len(), 1, "queued description entered the bounded task set");
+        assert_eq!(
+            replies.len(),
+            1,
+            "queued description entered the bounded task set"
+        );
         assert_eq!(admission.counts().active, 1);
-        let completed = tokio::time::timeout(SHUTDOWN_BUDGET, replies.join_next()).await.unwrap().unwrap();
-        assert_eq!(admission.counts().finished, 0, "credit survives task completion until reap");
-        reap("Quoin description", completed, &mut faults, record_description_reply);
-        let response = tokio::time::timeout(SHUTDOWN_BUDGET, description).await.unwrap().unwrap().unwrap();
+        let completed = tokio::time::timeout(SHUTDOWN_BUDGET, replies.join_next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            admission.counts().finished,
+            0,
+            "credit survives task completion until reap"
+        );
+        reap(
+            "Quoin description",
+            completed,
+            &mut faults,
+            record_description_reply,
+        );
+        let response = tokio::time::timeout(SHUTDOWN_BUDGET, description)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert_eq!(response.0, 10);
-        assert_eq!(serde_json::from_str::<Value>(&response.1).unwrap()["error_code"], "SHUTDOWN");
+        assert_eq!(
+            serde_json::from_str::<Value>(&response.1).unwrap()["error_code"],
+            "SHUTDOWN"
+        );
         assert_eq!(faults.count(), 0);
         assert_eq!(admission.counts().active, 0);
         assert_eq!(admission.counts().finished, 1);
@@ -1134,21 +1273,37 @@ mod tests {
     async fn frozen_description_ingress_retires_queued_commands_and_rejects_a_late_worker() {
         use bus::native_client::NodedClient;
         let broker = term_test_broker::Broker::start_stable();
-        let client = Arc::new(SupervisedClient::connect_options("shell-frozen-description", &broker.url)
-            .bounded_incoming(DESCRIPTION_CAPACITY).connect().await.unwrap());
+        let client = Arc::new(
+            SupervisedClient::connect_options("shell-frozen-description", &broker.url)
+                .bounded_incoming(DESCRIPTION_CAPACITY)
+                .connect()
+                .await
+                .unwrap(),
+        );
         assert!(settings::native::live_generation(&client).is_some());
         let mut incoming = client.incoming_bounded().unwrap();
         let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
         let (sender, _inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (descriptions, receiver) = tokio_mpsc::channel(DESCRIPTION_CAPACITY);
         let receiver = Mutex::new(receiver);
-        let delivery = Delivery { sender, descriptions, waker: Arc::new(|| {}) };
+        let delivery = Delivery {
+            sender,
+            descriptions,
+            waker: Arc::new(|| {}),
+        };
         let admission = Admission::new(DESCRIPTION_CAPACITY);
         let mut waiting = Vec::new();
         for _ in 0..2 {
             let calling = caller.clone();
             waiting.push(tokio::spawn(async move {
-                calling.call_with_headers_raw("shell-frozen-description", "app.describe", &BTreeMap::new(), "{}").await
+                calling
+                    .call_with_headers_raw(
+                        "shell-frozen-description",
+                        "app.describe",
+                        &BTreeMap::new(),
+                        "{}",
+                    )
+                    .await
             }));
             let command = received_command(&mut incoming).await;
             assert!(admit_description(&client, &delivery, command, &admission).is_none());
@@ -1163,22 +1318,57 @@ mod tests {
         // shutdown is detached. Its next native command cannot enter ingress.
         let calling = caller.clone();
         let late = tokio::spawn(async move {
-            calling.call_with_headers_raw("shell-frozen-description", "app.describe", &BTreeMap::new(), " { } ").await
+            calling
+                .call_with_headers_raw(
+                    "shell-frozen-description",
+                    "app.describe",
+                    &BTreeMap::new(),
+                    " { } ",
+                )
+                .await
         });
         let command = received_command(&mut incoming).await;
-        let original = (command.from.clone(), command.id.clone(), command.body.clone(), command.generation);
-        let (command, rc, body) = admit_description(&client, &delivery, command, &admission).unwrap();
-        assert_eq!((command.from.clone(), command.id.clone(), command.body.clone(), command.generation), original);
+        let original = (
+            command.from.clone(),
+            command.id.clone(),
+            command.body.clone(),
+            command.generation,
+        );
+        let (command, rc, body) =
+            admit_description(&client, &delivery, command, &admission).unwrap();
+        assert_eq!(
+            (
+                command.from.clone(),
+                command.id.clone(),
+                command.body.clone(),
+                command.generation
+            ),
+            original
+        );
         assert_eq!(rc, 11);
         assert_eq!(admission.counts().active, 0);
-        assert_eq!(admission.counts().finished, 3, "rejected insertion explicitly retires its acquired credit");
+        assert_eq!(
+            admission.counts().finished,
+            3,
+            "rejected insertion explicitly retires its acquired credit"
+        );
         assert_eq!(admission.counts().abandoned, 0);
         refuse(&client, &command, rc, body).await;
-        let response = tokio::time::timeout(SHUTDOWN_BUDGET, late).await.unwrap().unwrap().unwrap();
+        let response = tokio::time::timeout(SHUTDOWN_BUDGET, late)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert_eq!(response.0, 11);
-        assert_eq!(serde_json::from_str::<Value>(&response.1).unwrap()["error_code"], "QUEUE_FULL");
+        assert_eq!(
+            serde_json::from_str::<Value>(&response.1).unwrap()["error_code"],
+            "QUEUE_FULL"
+        );
         assert!(receiver.lock().unwrap().try_recv().is_err());
-        for task in waiting { task.abort(); let _ = task.await; }
+        for task in waiting {
+            task.abort();
+            let _ = task.await;
+        }
         caller.close().await;
         client.close().await;
     }
@@ -1186,20 +1376,34 @@ mod tests {
     #[tokio::test]
     async fn description_reply_timeout_is_recorded_before_credit_finishes() {
         let broker = term_test_broker::Broker::start_stable();
-        let client = Arc::new(SupervisedClient::connect_options("shell-description-credit", &broker.url)
-            .connect().await.unwrap());
+        let client = Arc::new(
+            SupervisedClient::connect_options("shell-description-credit", &broker.url)
+                .connect()
+                .await
+                .unwrap(),
+        );
         let admission = Admission::new(1);
         let mut command = incoming("caller", "app.describe", Some("credit"), &[], "{}");
         command.generation = client.connection_generation();
         let now = std::time::Instant::now();
-        let request = Accepted::new(client.clone(), command, admission.try_acquire().unwrap(), now);
+        let request = Accepted::new(
+            client.clone(),
+            command,
+            admission.try_acquire().unwrap(),
+            now,
+        );
         let mut tasks = TaskSet::new(1);
         let mut faults = Faults::default();
         submit_description_reply(request.reply(0, "{}".into(), now), &mut tasks, &mut faults);
         let completed = tasks.join_next().await.unwrap();
         assert_eq!(admission.counts().active, 1);
         assert_eq!(admission.counts().finished, 0);
-        reap("Quoin description", completed, &mut faults, record_description_reply);
+        reap(
+            "Quoin description",
+            completed,
+            &mut faults,
+            record_description_reply,
+        );
         assert_eq!(faults.count(), 1);
         assert_eq!(faults.recent().back().unwrap(), "Bus reply timed out");
         assert_eq!(admission.counts().active, 0);
@@ -1209,30 +1413,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_embedded_descriptions_answer_without_output_or_window_and_use_actual_fallback_name() {
+    async fn native_embedded_descriptions_answer_without_output_or_window_and_use_actual_fallback_name()
+     {
         use bus::native_client::NodedClient;
         let broker = term_test_broker::Broker::start_stable();
         for fallback in [false, true] {
-            let owner = if fallback { Some(SupervisedClient::connect_options("shell", &broker.url).connect().await.unwrap()) } else { None };
+            let owner = if fallback {
+                Some(
+                    SupervisedClient::connect_options("shell", &broker.url)
+                        .connect()
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
             let wake = Arc::new(tokio::sync::Notify::new());
             let notify = wake.clone();
             let waker: Waker = Arc::new(move || notify.notify_one());
             let root = tempfile::tempdir().unwrap();
-            let port = Port::start_at(HostConfig {
-                owner_version: "compd-fixture".into(), service_override: Some("shell-description-overridden".into()), noded_url: broker.url.clone(),
-            }, waker.clone(), root.path().join("cache")).unwrap();
+            let port = Port::start_at(
+                HostConfig {
+                    owner_version: "compd-fixture".into(),
+                    service_override: Some("shell-description-overridden".into()),
+                    noded_url: broker.url.clone(),
+                },
+                waker.clone(),
+                root.path().join("cache"),
+            )
+            .unwrap();
             tokio::time::timeout(Duration::from_secs(10), async {
-                while port.settings_generation().is_none() { wake.notified().await; }
-            }).await.unwrap();
+                while port.settings_generation().is_none() {
+                    wake.notified().await;
+                }
+            })
+            .await
+            .unwrap();
             let service = port.registered_service_name().unwrap().to_owned();
-            assert_eq!(service, if fallback { "shell-description-overridden" } else { "shell" });
-            let mut engine = crate::host::SceneHost::from_port(port, waker, "compd-fixture".into(), crate::host::Host::default());
+            assert_eq!(
+                service,
+                if fallback {
+                    "shell-description-overridden"
+                } else {
+                    "shell"
+                }
+            );
+            let mut engine = crate::host::SceneHost::from_port(
+                port,
+                waker,
+                "compd-fixture".into(),
+                crate::host::Host::default(),
+            );
             let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
             for body in ["", "{}", " { } "] {
                 let calling = caller.clone();
                 let target = service.clone();
                 let body = body.to_owned();
-                let mut request = tokio::spawn(async move { calling.call_with_headers_raw(&target, "app.describe", &BTreeMap::new(), &body).await });
+                let mut request = tokio::spawn(async move {
+                    calling
+                        .call_with_headers_raw(&target, "app.describe", &BTreeMap::new(), &body)
+                        .await
+                });
                 let result = tokio::time::timeout(Duration::from_secs(5), async {
                     loop {
                         tokio::select! {
@@ -1250,17 +1491,38 @@ mod tests {
                 assert!(value["app_id"].is_null());
                 assert_eq!(value["embedded"], true);
             }
-            for body in ["{".into(), "null".into(), "[]".into(), "{\"extra\":true}".into(), format!("{{{}}}", " ".repeat(application::describe::MAX_REQUEST_BYTES))] {
-                let (rc, body, _) = tokio::time::timeout(Duration::from_secs(5), caller.call_with_headers_raw(&service, "app.describe", &BTreeMap::new(), &body)).await.unwrap().unwrap();
+            for body in [
+                "{".into(),
+                "null".into(),
+                "[]".into(),
+                "{\"extra\":true}".into(),
+                format!(
+                    "{{{}}}",
+                    " ".repeat(application::describe::MAX_REQUEST_BYTES)
+                ),
+            ] {
+                let (rc, body, _) = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    caller.call_with_headers_raw(&service, "app.describe", &BTreeMap::new(), &body),
+                )
+                .await
+                .unwrap()
+                .unwrap();
                 let value: Value = serde_json::from_str(&body).unwrap();
                 assert_eq!(rc, 10);
                 assert_eq!(value["error_code"], "ARGUMENT");
                 assert!(value["describe_code"].is_string());
-                assert_eq!(engine.service_descriptions(), 0, "invalid request reached the engine");
+                assert_eq!(
+                    engine.service_descriptions(),
+                    0,
+                    "invalid request reached the engine"
+                );
             }
             caller.close().await;
             engine.finish();
-            if let Some(owner) = owner { owner.close().await; }
+            if let Some(owner) = owner {
+                owner.close().await;
+            }
         }
     }
 
@@ -1896,7 +2158,13 @@ mod tests {
 
     #[test]
     fn frames_route_to_verbs_registry_sets_or_nothing() {
-        let describe = incoming("caller", "app.describe", Some("describe"), &[("broker_origin", "local")], "{}");
+        let describe = incoming(
+            "caller",
+            "app.describe",
+            Some("describe"),
+            &[("broker_origin", "local")],
+            "{}",
+        );
         assert_eq!(route("shell", &describe), Route::AppDescribe);
         assert_eq!(route("shell-overridden", &describe), Route::AppDescribe);
         let schema = incoming("caller", "shell.scene.describe", Some("schema"), &[], "{}");

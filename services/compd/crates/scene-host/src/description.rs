@@ -4,7 +4,10 @@ use crate::appearance::Look;
 use application::{describe, presentation::native::Session};
 use serde_json::{Value, json};
 
-pub(crate) fn complete(identity: describe::Identity<'_>, session: &Session<Look>) -> Result<Value, describe::Violation> {
+pub(crate) fn complete(
+    identity: describe::Identity<'_>,
+    session: &Session<Look>,
+) -> Result<Value, describe::Violation> {
     let mut verbs = crate::verb::SceneVerb::names(identity.service);
     verbs.push(describe::VERB.into());
     let mut value = json!({"schema":"quoin.v1","app":"quoin","embedded":true,"transport":"native","verbs":verbs});
@@ -21,10 +24,19 @@ mod tests {
     use super::*;
     #[test]
     fn embedded_description_uses_its_executable_identity_without_inventing_a_window() {
-        let session = Session::new(settings::consumer::Consumer::for_shell(settings::Binding {
-            instance:"fixture".into(), profile:"default".into(),
-        }).unwrap());
-        let identity = describe::Identity { app_id:None, version:"compd-fixture", pid:std::process::id(), service:"shell-overridden" };
+        let session = Session::new(
+            settings::consumer::Consumer::for_shell(settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            })
+            .unwrap(),
+        );
+        let identity = describe::Identity {
+            app_id: None,
+            version: "compd-fixture",
+            pid: std::process::id(),
+            service: "shell-overridden",
+        };
         let preparation = serde_json::to_value(session.preparation_evidence()).unwrap();
         let value = complete(identity, &session).unwrap();
         describe::validate(&value).unwrap();
@@ -38,7 +50,10 @@ mod tests {
         expected.push("app.describe".into());
         assert_eq!(value["verbs"], json!(expected));
         assert_eq!(value, complete(identity, &session).unwrap());
-        assert_eq!(serde_json::to_value(session.preparation_evidence()).unwrap(), preparation);
+        assert_eq!(
+            serde_json::to_value(session.preparation_evidence()).unwrap(),
+            preparation
+        );
         assert!(session.frame_stamp().is_none());
     }
 }
