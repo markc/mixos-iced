@@ -428,10 +428,17 @@ impl App {
             "transport":"native",
             "verbs":verbs::VERBS
         });
-        application::describe::complete_native(&mut describe, application::describe::Identity {
-            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
-            pid: std::process::id(), service: self.bus.service_name(),
-        }, self.settings_ui.session()).map_err(|error| error.to_string())?;
+        application::describe::complete_native(
+            &mut describe,
+            application::describe::Identity {
+                app_id: Some(APP_ID),
+                version: env!("CARGO_PKG_VERSION"),
+                pid: std::process::id(),
+                service: self.bus.service_name(),
+            },
+            self.settings_ui.session(),
+        )
+        .map_err(|error| error.to_string())?;
         Ok(describe)
     }
     fn modal(&self) -> bool {

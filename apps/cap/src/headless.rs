@@ -112,10 +112,17 @@ fn describe(settings_ui: &mut Ui<()>, handle: &bus::BusHandle) -> Result<Value, 
         "transport":"native",
         "verbs":verbs::VERBS
     });
-    application::describe::complete_native(&mut describe, application::describe::Identity {
-        app_id: None, version: env!("CARGO_PKG_VERSION"),
-        pid: std::process::id(), service: handle.service_name(),
-    }, settings_ui.session()).map_err(|error| error.to_string())?;
+    application::describe::complete_native(
+        &mut describe,
+        application::describe::Identity {
+            app_id: None,
+            version: env!("CARGO_PKG_VERSION"),
+            pid: std::process::id(),
+            service: handle.service_name(),
+        },
+        settings_ui.session(),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(describe)
 }
 
@@ -124,9 +131,14 @@ mod tests {
     use super::*;
     #[test]
     fn canonical_headless_description_uses_actual_owner_and_null_window_identity() {
-        let consumer = settings::consumer::Consumer::for_app(settings::Binding {
-            instance: "fixture".into(), profile: "default".into(),
-        }, "cap").unwrap();
+        let consumer = settings::consumer::Consumer::for_app(
+            settings::Binding {
+                instance: "fixture".into(),
+                profile: "default".into(),
+            },
+            "cap",
+        )
+        .unwrap();
         let (mut ui, _lane) = application::presentation::native::bridge(
             application::presentation::native::Session::new(consumer),
             application::presentation::native::Worker::offline(|_, _| Ok(())),

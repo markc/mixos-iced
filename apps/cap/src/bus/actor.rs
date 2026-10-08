@@ -218,7 +218,15 @@ fn refusal(
     faults: &mut Faults,
     shed: &mut u64,
 ) {
-    refuse_body(client, command, tasks, admission, faults, shed, BUSY_BODY.into());
+    refuse_body(
+        client,
+        command,
+        tasks,
+        admission,
+        faults,
+        shed,
+        BUSY_BODY.into(),
+    );
 }
 
 fn refuse_body(
@@ -235,11 +243,8 @@ fn refuse_body(
         return;
     };
     let now = Instant::now();
-    let reply = Accepted::new(client.clone(), command, permit, now).reply(
-        10,
-        body,
-        now + SHUTDOWN_BUDGET,
-    );
+    let reply =
+        Accepted::new(client.clone(), command, permit, now).reply(10, body, now + SHUTDOWN_BUDGET);
     if let Err(reply) = tasks.try_spawn_with(reply, NativeReply::into_task) {
         reply.retire().finish();
         *shed = shed.saturating_add(1);
