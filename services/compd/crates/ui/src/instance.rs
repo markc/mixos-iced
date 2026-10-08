@@ -226,7 +226,7 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         self.poll_publish();
         if let Some(view) = self.surface.begin_render_view() {
             if let Some(slot) = self.surface.target_slot() {
-                if let Some(binding) = self.runtime.ui().frame_presentation() {
+                if let Some(binding) = self.runtime.ui.frame_presentation() {
                     self.frame_bindings.insert(slot, binding);
                 } else {
                     self.frame_bindings.remove(&slot);
