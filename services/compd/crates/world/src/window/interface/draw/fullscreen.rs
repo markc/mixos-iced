@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use smithay::desktop::{Space, Window};
-use dispatcher::state::state::RedrawReason;
-use smithay::utils::{Logical, Rectangle};
 use crate::camera::transform::translate::slot;
 use crate::state::Loop;
 use crate::window::interface::record::data::WindowFullscreen;
 use crate::window::interface::record::window::LoopWindow;
+use dispatcher::state::state::RedrawReason;
 use protocols::window::find::find;
 use protocols::window::shell::shell;
+use smithay::desktop::{Space, Window};
+use smithay::utils::{Logical, Rectangle};
 
 /// Apply (or clear) fullscreen on a window.
 ///
@@ -23,7 +23,12 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
     } else {
         None
     };
-    if !apply(&mut _loop.inner.space_state_mut().state, &window, fullscreen, target) {
+    if !apply(
+        &mut _loop.inner.space_state_mut().state,
+        &window,
+        fullscreen,
+        target,
+    ) {
         return;
     }
     if fullscreen && let Some(uuid) = window.uuid() {
@@ -46,9 +51,7 @@ pub fn apply(
             return false;
         }
 
-        let current_loc = space
-            .element_location(window)
-            .unwrap_or_default();
+        let current_loc = space.element_location(window).unwrap_or_default();
         // The window's PRE-fullscreen slot (what it's rendered at + what the group bbox uses).
         let current_size = slot::size_of(window)
             .filter(|s| s.w > 0 && s.h > 0)
@@ -123,7 +126,8 @@ fn focused_window(_loop: &Loop) -> Option<Window> {
         .and_then(|kb| kb.current_focus())?;
 
     _loop
-        .inner.space_state()
+        .inner
+        .space_state()
         .state
         .elements()
         .find(|w| find::is_surface(w, &focus))

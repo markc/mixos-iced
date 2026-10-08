@@ -62,7 +62,11 @@ pub struct States {
 /// See the module docs: `_NET_WM_PID` for X11, surface credentials otherwise.
 pub fn credentials(window: &Window, display_handle: &DisplayHandle) -> Credentials {
     if let Some(x11) = window.x11_surface() {
-        return Credentials { pid: x11_pid(x11), uid: None, gid: None };
+        return Credentials {
+            pid: x11_pid(x11),
+            uid: None,
+            gid: None,
+        };
     }
     let Some(client) = window.wl_surface().and_then(|s| s.client()) else {
         return Credentials::default();
@@ -123,14 +127,24 @@ pub fn pid(window: &Window, display_handle: &DisplayHandle) -> Option<u32> {
 pub fn names(window: &Window) -> Names {
     let clean = |s: String| Some(s).filter(|s| !s.is_empty());
     if let Some(x11) = window.x11_surface() {
-        return Names { title: clean(x11.title()), app_id: clean(x11.class()) };
+        return Names {
+            title: clean(x11.title()),
+            app_id: clean(x11.class()),
+        };
     }
-    let Some(toplevel) = window.toplevel() else { return Names::default() };
+    let Some(toplevel) = window.toplevel() else {
+        return Names::default();
+    };
     compositor::with_states(toplevel.wl_surface(), |states| {
-        let Some(role) = states.data_map.get::<Mutex<XdgToplevelSurfaceRoleAttributes>>() else {
+        let Some(role) = states
+            .data_map
+            .get::<Mutex<XdgToplevelSurfaceRoleAttributes>>()
+        else {
             return Names::default();
         };
-        let Ok(guard) = role.lock() else { return Names::default() };
+        let Ok(guard) = role.lock() else {
+            return Names::default();
+        };
         Names {
             title: guard.title.clone().and_then(clean),
             app_id: guard.app_id.clone().and_then(clean),
@@ -176,9 +190,7 @@ pub fn names(window: &Window) -> Names {
 /// Protocol-agnostic on purpose — [`surface`] would answer identically and
 /// [`xdg_surface`] would answer wrongly (`None` for every X11 window).
 pub fn is_drawn(window: &Window) -> bool {
-    window.wl_surface().is_some()
-        && window.geometry().size.w > 0
-        && window.geometry().size.h > 0
+    window.wl_surface().is_some() && window.geometry().size.w > 0 && window.geometry().size.h > 0
 }
 
 /// The comp policy's workspace / minimise suppression as it last stamped it on
@@ -321,7 +333,9 @@ pub fn states(window: &Window) -> States {
             fullscreen: x11.is_fullscreen(),
         };
     }
-    let Some(toplevel) = window.toplevel() else { return States::default() };
+    let Some(toplevel) = window.toplevel() else {
+        return States::default();
+    };
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
     toplevel.with_pending_state(|s| States {
         maximized: false,
@@ -343,7 +357,6 @@ pub fn committed_fullscreen(window: &Window) -> bool {
         window.x11_surface().is_some_and(|x11| x11.is_fullscreen())
     }
 }
-
 
 /// Is this window a POPUP — a menu, tooltip, dropdown or drag icon?
 ///
@@ -427,7 +440,9 @@ pub fn is_popup_x11_surface(x11: &smithay::xwayland::X11Surface) -> bool {
 /// desktop-entry verdict, or the X11 window's own declaration".
 pub fn is_ephemeral_x11(window: &Window) -> bool {
     use smithay::xwayland::xwm::WmWindowType;
-    let Some(x11) = window.x11_surface() else { return false };
+    let Some(x11) = window.x11_surface() else {
+        return false;
+    };
     if x11.is_override_redirect() || x11.is_modal() {
         return true;
     }

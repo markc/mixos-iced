@@ -98,7 +98,12 @@ pub fn project(lp: &Loop, identity: Identity, scopes: &ReadScopes) -> CompSnapsh
     let registry = &lp.inner.comp.registry;
     let mut surfaces: BTreeMap<String, SurfaceSnapshot> = registry
         .surface_rows()
-        .map(|record| (surface_key(record.id().0), project_surface(lp, record, &placements)))
+        .map(|record| {
+            (
+                surface_key(record.id().0),
+                project_surface(lp, record, &placements),
+            )
+        })
         .collect();
     // compd's own scene surfaces: layer rows, as Quoin's are.
     for row in &lp.inner.comp.scenes.rows {
@@ -227,8 +232,15 @@ pub fn project(lp: &Loop, identity: Identity, scopes: &ReadScopes) -> CompSnapsh
         // `input.*`: the seats (volatile, scoped), which seat moved
         // last, and the nested host passthrough leaf.
         input: InputSnapshot {
-            seats: scopes.wants("input.seats").then(|| crate::input::project_seats(lp)),
-            last_origin: lp.inner.comp.injection.last_origin.map(surfaces::SeatKind::name),
+            seats: scopes
+                .wants("input.seats")
+                .then(|| crate::input::project_seats(lp)),
+            last_origin: lp
+                .inner
+                .comp
+                .injection
+                .last_origin
+                .map(surfaces::SeatKind::name),
             corners: corners(lp),
             host: lp
                 .inner
@@ -248,7 +260,11 @@ pub fn project(lp: &Loop, identity: Identity, scopes: &ReadScopes) -> CompSnapsh
             state: crate::xwayland::state().name(),
             failures: crate::xwayland::failures(),
         },
-        dmabuf: if scopes.wants("dmabuf") { project_dmabuf(lp) } else { Default::default() },
+        dmabuf: if scopes.wants("dmabuf") {
+            project_dmabuf(lp)
+        } else {
+            Default::default()
+        },
         port,
         full_tree: FullTreeCache::default(),
     }
@@ -304,7 +320,9 @@ pub(crate) fn source_output_name(lp: &Loop, key: Option<&str>) -> Option<String>
     )
 }
 
-pub(crate) fn project_outputs(lp: &Loop) -> (BTreeMap<String, OutputSnapshot>, Vec<(Output, String)>, u64) {
+pub(crate) fn project_outputs(
+    lp: &Loop,
+) -> (BTreeMap<String, OutputSnapshot>, Vec<(Output, String)>, u64) {
     let space = &lp.inner.host_space().state;
     let default = space.outputs().next().cloned();
     let mut rows = BTreeMap::new();
@@ -319,7 +337,8 @@ pub(crate) fn project_outputs(lp: &Loop) -> (BTreeMap<String, OutputSnapshot>, V
         let Some(geometry) = space.output_geometry(output) else {
             continue;
         };
-        let usable = crate::control::usable_area(output, geometry, crate::control::reserved_for(lp, output));
+        let usable =
+            crate::control::usable_area(output, geometry, crate::control::reserved_for(lp, output));
         keys.push((output.clone(), key.clone()));
         rows.insert(
             key,
@@ -388,8 +407,12 @@ impl Placements {
         };
         for space in lp.inner.all_world_spaces() {
             for window in space.state.elements() {
-                let Some(handle) = SurfaceHandle::of_window(window) else { continue };
-                let Some(location) = space.state.element_location(window) else { continue };
+                let Some(handle) = SurfaceHandle::of_window(window) else {
+                    continue;
+                };
+                let Some(location) = space.state.element_location(window) else {
+                    continue;
+                };
                 let output = space
                     .state
                     .outputs_for_element(window)
@@ -400,10 +423,14 @@ impl Placements {
         }
         let space = &lp.inner.host_space().state;
         for (output, key) in output_keys {
-            let Some(output_geometry) = space.output_geometry(output) else { continue };
+            let Some(output_geometry) = space.output_geometry(output) else {
+                continue;
+            };
             let map = layer_map_for_output(output);
             for layer in map.layers() {
-                let Some(geometry) = map.layer_geometry(layer) else { continue };
+                let Some(geometry) = map.layer_geometry(layer) else {
+                    continue;
+                };
                 let origin = output_geometry.loc + geometry.loc;
                 let cached = layer.cached_state();
                 let stratum = layer.layer();
@@ -471,7 +498,9 @@ impl Placements {
             .and_then(surface_size)
             .unwrap_or_else(|| window.bbox().size);
         let decoration = window.toplevel().map(|toplevel| {
-            match toplevel.with_committed_state(|state| state.and_then(|state| state.decoration_mode)) {
+            match toplevel
+                .with_committed_state(|state| state.and_then(|state| state.decoration_mode))
+            {
                 Some(DecorationMode::ServerSide) => "server",
                 Some(DecorationMode::ClientSide) => "client",
                 _ => "unbound",
@@ -509,7 +538,12 @@ impl Placements {
     /// The popups of a root surface, where smithay draws them: the root's
     /// geometry origin plus the popup's offset, less the popup's own geometry
     /// offset.
-    fn place_popups(&mut self, root: &WlSurface, geometry_origin: Point<i32, Logical>, output: Option<String>) {
+    fn place_popups(
+        &mut self,
+        root: &WlSurface,
+        geometry_origin: Point<i32, Logical>,
+        output: Option<String>,
+    ) {
         for (popup, offset) in PopupManager::popups_for_surface(root) {
             let origin = geometry_origin + offset - popup.geometry().loc;
             let handle = match &popup {
@@ -546,7 +580,9 @@ impl Placements {
             let parent = registry.get(current.parent()?)?;
             if parent.role() != SurfaceRole::Subsurface {
                 let base = self.by_handle.get(parent.handle())?;
-                let own = surface_size(&wl_surface(lp, record.handle())?).map(size).unwrap_or_default();
+                let own = surface_size(&wl_surface(lp, record.handle())?)
+                    .map(size)
+                    .unwrap_or_default();
                 return Some(Placement {
                     origin: (base.origin.0 + offset.0, base.origin.1 + offset.1),
                     size: own,
@@ -562,7 +598,11 @@ impl Placements {
 }
 
 /// One `surfaces.s<id>` row: identity from the registry, place from the engine.
-fn project_surface(lp: &Loop, record: &SurfaceRecord<SurfaceHandle>, placements: &Placements) -> SurfaceSnapshot {
+fn project_surface(
+    lp: &Loop,
+    record: &SurfaceRecord<SurfaceHandle>,
+    placements: &Placements,
+) -> SurfaceSnapshot {
     let placement = if record.role() == SurfaceRole::Subsurface {
         placements.subsurface(lp, record)
     } else {
@@ -580,7 +620,10 @@ fn project_surface(lp: &Loop, record: &SurfaceRecord<SurfaceHandle>, placements:
         id: record.id().0,
         role: record.role().kind(),
         mapped: record.mapped(),
-        visible: !redact && record.mapped() && placement.visible && !lp.inner.comp.hidden_id(record.id()),
+        visible: !redact
+            && record.mapped()
+            && placement.visible
+            && !lp.inner.comp.hidden_id(record.id()),
         x: placement.origin.0,
         y: placement.origin.1,
         width: placement.size.0,
@@ -592,7 +635,10 @@ fn project_surface(lp: &Loop, record: &SurfaceRecord<SurfaceHandle>, placements:
         // order (layers, popups, the lock) read 0. `tree_index` is the
         // back-to-front position in the root's subsurface tree;
         // 0 for a root alone and for an X11 record (no wl_surface of its own).
-        sequence: record.uuid().and_then(|uuid| lp.inner.draw_sequence(uuid)).unwrap_or(0),
+        sequence: record
+            .uuid()
+            .and_then(|uuid| lp.inner.draw_sequence(uuid))
+            .unwrap_or(0),
         tree_index: wl_surface(lp, record.handle())
             .and_then(|surface| protocols::window::ident::ident::tree_index(&surface))
             .unwrap_or(0),
@@ -654,7 +700,11 @@ fn occlusion_of(lp: &Loop, record: &SurfaceRecord<SurfaceHandle>) -> OcclusionPr
 pub(crate) fn project_focus(lp: &Loop) -> FocusSnapshot {
     let comp = &lp.inner.comp;
     let seat = &lp.state.seat.seat;
-    let id = |surface: Option<WlSurface>| surface.and_then(|surface| comp.id_for_surface(&surface)).map(|id| id.0);
+    let id = |surface: Option<WlSurface>| {
+        surface
+            .and_then(|surface| comp.id_for_surface(&surface))
+            .map(|id| id.0)
+    };
     let pointer = seat.get_pointer();
     // A scene surface holding the iced keyboard focus takes every key (the
     // seat routes them to iced), so it is the keyboard focus, not the window
@@ -665,7 +715,11 @@ pub(crate) fn project_focus(lp: &Loop) -> FocusSnapshot {
         .filter(|_| !world::comp::session_lock::active(lp))
         .map(|id| id.0);
     FocusSnapshot {
-        keyboard: scene_keyboard.or_else(|| id(seat.get_keyboard().and_then(|keyboard| keyboard.current_focus()))),
+        keyboard: scene_keyboard.or_else(|| {
+            id(seat
+                .get_keyboard()
+                .and_then(|keyboard| keyboard.current_focus()))
+        }),
         // The latched Top/Overlay layer (every stratum latches).
         exclusive_latch: lp.inner.comp.latch.layer.map(|id| id.0),
         pointer: id(pointer.as_ref().and_then(|pointer| pointer.current_focus())),
@@ -684,7 +738,9 @@ pub(crate) fn project_focus(lp: &Loop) -> FocusSnapshot {
             .registry
             .surface_rows()
             .filter(|_| !world::comp::session_lock::active(lp))
-            .filter(|record| record.focused() && record.mapped() && record.role().managed_toplevel())
+            .filter(|record| {
+                record.focused() && record.mapped() && record.role().managed_toplevel()
+            })
             .min_by_key(|record| record.id().0)
             .map_or_else(FocusWindowSnapshot::default, |record| FocusWindowSnapshot {
                 id: Some(record.id().0),

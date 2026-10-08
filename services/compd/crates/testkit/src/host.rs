@@ -11,7 +11,6 @@ use dispatcher::wire::trait_::surface_event::{SurfaceEvent, SurfaceHandle};
 use dispatcher::wire::trait_::wire_trait::{ActivationOrigin, WireTrait};
 use protocols::space::state::SpaceState;
 use protocols::window::ident::ident;
-use world::comp::CompState;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::desktop::{Space, Window};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
@@ -21,6 +20,7 @@ use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size, Transform};
 use smithay::wayland::dmabuf::{DmabufGlobal, ImportNotifier};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::xwayland::X11Surface;
+use world::comp::CompState;
 
 /// The fake output's mode.
 pub const OUTPUT_SIZE: (i32, i32) = (1920, 1080);
@@ -171,9 +171,13 @@ impl WireTrait for TestHost {
         self.to_place.push((window, geometry));
     }
     fn fullscreen_request(&mut self, window: Window, fullscreen: bool) {
-        let target = world::comp::fullscreen::target_geometry(&self.comp, &self.space.state, &window);
+        let target =
+            world::comp::fullscreen::target_geometry(&self.comp, &self.space.state, &window);
         world::window::interface::draw::fullscreen::apply(
-            &mut self.space.state, &window, fullscreen, target,
+            &mut self.space.state,
+            &window,
+            fullscreen,
+            target,
         );
     }
     fn request_activation(&mut self, _window: Window, _origin: ActivationOrigin) {}
