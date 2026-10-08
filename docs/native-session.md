@@ -47,3 +47,12 @@ Run `containment-probe` inside a delegated test service with containment enabled
 to verify actual descendant cleanup. Graph checks and nested rendering do not
 prove VT handover: GPU acquisition, physical input, scan-out, audio and rollback
 are separate hardware acceptance gates.
+
+## Fullscreen state evidence
+
+Window projections report client-committed fullscreen. A fullscreen or
+unfullscreen request stages compositor intent; `configure_pending` remains true
+while requested maximise or fullscreen differs from committed state. For xdg
+clients, acknowledging a configure alone does not commit it: a subsequent
+surface commit applies the acknowledged state. Native fullscreen state waits
+use this same fence. X11 has no xdg ACK fence and reports its server-side state.

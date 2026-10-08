@@ -818,13 +818,15 @@ pub fn window_facts(lp: &Loop, id: SurfaceId) -> WindowFacts {
         .element_location(&window)
         .unwrap_or_default();
     let fullscreen = protocols::window::ident::ident::states(&window).fullscreen;
+    let committed_fullscreen = protocols::window::ident::ident::committed_fullscreen(&window);
     let geometry = window.geometry();
     WindowFacts {
         requested_maximized,
         requested_fullscreen: fullscreen,
         committed_maximized,
-        committed_fullscreen: fullscreen,
-        configure_pending: requested_maximized != committed_maximized,
+        committed_fullscreen,
+        configure_pending: requested_maximized != committed_maximized
+            || fullscreen != committed_fullscreen,
         min_size,
         max_size,
         visible: drawn(lp, &window),

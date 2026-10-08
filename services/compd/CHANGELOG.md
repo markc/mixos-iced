@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.15
+
+- Report client-committed fullscreen in window projections and state replies.
+  `configure_pending` includes fullscreen entry and exit until the acknowledged
+  state commits. Native state waits retain the live pending-state fence.
+- Share the production fullscreen output placement, restore and configure path
+  with native protocol fixtures; preserve the decided restore size while client
+  buffers lag behind compositor geometry.
+
 ## 0.1.13
 
 - Serve canonical embedded Quoin descriptions on the existing shell service,

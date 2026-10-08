@@ -75,7 +75,8 @@ pub struct WindowFacts {
     pub requested_fullscreen: bool,
     pub committed_maximized: bool,
     pub committed_fullscreen: bool,
-    /// A window-state configure awaits its ack.
+    /// Requested maximise or fullscreen differs from client-committed state.
+    /// An xdg ACK alone does not clear this: the acknowledged state must commit.
     pub configure_pending: bool,
     /// The client's size hints (0 = unset).
     pub min_size: (i32, i32),

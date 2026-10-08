@@ -170,7 +170,12 @@ impl WireTrait for TestHost {
     fn place_window(&mut self, window: Window, geometry: Rectangle<i32, Logical>) {
         self.to_place.push((window, geometry));
     }
-    fn fullscreen_request(&mut self, _window: Window, _fullscreen: bool) {}
+    fn fullscreen_request(&mut self, window: Window, fullscreen: bool) {
+        let target = world::comp::fullscreen::target_geometry(&self.comp, &self.space.state, &window);
+        world::window::interface::draw::fullscreen::apply(
+            &mut self.space.state, &window, fullscreen, target,
+        );
+    }
     fn request_activation(&mut self, _window: Window, _origin: ActivationOrigin) {}
     fn settle_toplevel_drag(&mut self, _surface: WlSurface) {}
     fn dmabuf_import(

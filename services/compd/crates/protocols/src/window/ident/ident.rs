@@ -331,6 +331,19 @@ pub fn states(window: &Window) -> States {
     })
 }
 
+/// The fullscreen state accepted by a client commit, rather than staged
+/// compositor intent. X11 has no xdg ACK/commit fence; read its server property.
+pub fn committed_fullscreen(window: &Window) -> bool {
+    if let Some(toplevel) = window.toplevel() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+        toplevel.with_committed_state(|state| {
+            state.is_some_and(|state| state.states.contains(State::Fullscreen))
+        })
+    } else {
+        window.x11_surface().is_some_and(|x11| x11.is_fullscreen())
+    }
+}
+
 
 /// Is this window a POPUP — a menu, tooltip, dropdown or drag icon?
 ///

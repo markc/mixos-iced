@@ -494,7 +494,7 @@ impl Placements {
                 )),
                 visible: ident::is_drawn(window),
                 decoration,
-                fullscreen: ident::states(window).fullscreen,
+                fullscreen: ident::committed_fullscreen(window),
                 maximized: crate::control::committed_maximized(window),
                 foreign_id,
                 layer: None,

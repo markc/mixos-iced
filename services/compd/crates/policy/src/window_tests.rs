@@ -437,6 +437,16 @@ fn presented_and_state_waits_read_the_engine_facts() {
     let maximized = wait_spec(by_id(id, generation), WaitUntil::Maximized);
     assert_eq!(wait_outcome(&registry, &maximized, false, 1, shown(false, true, true)), None, "ack pending");
     assert!(wait_outcome(&registry, &maximized, false, 1, shown(false, true, false)).is_some());
+    for (until, committed) in [(WaitUntil::Fullscreen, true), (WaitUntil::Unfullscreen, false)] {
+        let spec = wait_spec(by_id(id, generation), until);
+        let fullscreen = |pending| move |_: SurfaceId| WindowFacts {
+            committed_fullscreen: committed,
+            configure_pending: pending,
+            ..facts()
+        };
+        assert_eq!(wait_outcome(&registry, &spec, false, 1, fullscreen(true)), None, "fullscreen transition pending");
+        assert!(wait_outcome(&registry, &spec, false, 1, fullscreen(false)).is_some());
+    }
     registry.set_minimized(SurfaceId(id), true).unwrap();
     assert_eq!(wait_outcome(&registry, &presented, false, 1, shown(true, false, false)), None, "minimised");
 }
