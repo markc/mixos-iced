@@ -19,7 +19,7 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-settings = { workspace = true, features = ["observation"] }
+settings = { workspace = true, features = ["native", "observation"] }
 config.workspace = true
 strict.workspace = true
 bus = { workspace = true, features = ["native"] }

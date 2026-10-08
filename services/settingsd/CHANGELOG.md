@@ -6,6 +6,9 @@ Include bounded runtime authority observation in the existing protected snapshot
 topic header. Replayed, restarted and unchanged operations do not acquire a new
 durable acceptance or presentation time.
 
+Declare the native settings supervision dependency explicitly so the daemon
+also builds on its own, without application feature unification.
+
 ## 0.1.2
 
 Add optional runtime commit observation outside the snapshot and durable
