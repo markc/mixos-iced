@@ -179,7 +179,7 @@ impl VerifiedIncoming {
                         return Some(VerifiedCommand::gap());
                     }
                     if let Some(command) = deferred.take() {
-                        return Some(command);
+                        return Some(*command);
                     }
                     // Refusals first; no reader waits for the owner's sink.
                     let command = tokio::select! {
@@ -192,7 +192,7 @@ impl VerifiedIncoming {
                         command = commands.recv() => command,
                     };
                     if gap.take() {
-                        *deferred = command;
+                        *deferred = command.map(Box::new);
                         return Some(VerifiedCommand::gap());
                     }
                     return command;
@@ -208,7 +208,7 @@ pub(crate) enum VerifiedIncoming {
         commands: mpsc::Receiver<VerifiedCommand>,
         refusals: mpsc::Receiver<VerifiedCommand>,
         gap: std::sync::Arc<VerifiedGap>,
-        deferred: Option<VerifiedCommand>,
+        deferred: Option<Box<VerifiedCommand>>,
     },
 }
 

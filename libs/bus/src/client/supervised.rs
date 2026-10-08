@@ -1044,8 +1044,9 @@ impl SupervisorOutgoing {
             (Self::Bounded(sender), BoundedIncomingEvent::Command(command)) => {
                 match sender.try_send_retaining(command) {
                     Ok(()) => true,
-                    Err(mpsc::error::TrySendError::Closed(_)) => false,
-                    Err(mpsc::error::TrySendError::Full(command)) => {
+                    Err(error) => match *error {
+                    mpsc::error::TrySendError::Closed(_) => false,
+                    mpsc::error::TrySendError::Full(command) => {
                         if command.id.is_none() {
                             sender.record_overflow(1);
                             true
@@ -1062,6 +1063,7 @@ impl SupervisorOutgoing {
                                 .is_ok()
                         }
                     }
+                    },
                 }
             }
             (_, event) => self.forward(event),
