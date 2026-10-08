@@ -22,14 +22,22 @@ pub const BTN_LEFT: u32 = 0x110;
 /// The chrome under a hit, if it is chrome with a part.
 pub fn target(hit: Option<&SurfaceHit>) -> Option<(Window, ChromeHit)> {
     match hit {
-        Some(SurfaceHit::WindowChrome { window, chrome: Some(chrome) }) => Some((window.clone(), *chrome)),
+        Some(SurfaceHit::WindowChrome {
+            window,
+            chrome: Some(chrome),
+        }) => Some((window.clone(), *chrome)),
         _ => None,
     }
 }
 
 /// Where `position` (host Space) is relative to `window`'s slot.
 fn relative(lp: &Loop, window: &Window, position: Point<f64, Logical>) -> (f64, f64) {
-    let origin = lp.inner.space_state().state.element_location(window).unwrap_or_default();
+    let origin = lp
+        .inner
+        .space_state()
+        .state
+        .element_location(window)
+        .unwrap_or_default();
     (position.x - origin.x as f64, position.y - origin.y as f64)
 }
 
@@ -55,7 +63,9 @@ pub fn motion(lp: &mut Loop, target: Option<(Window, ChromeHit)>) {
 /// A primary-button press that hit `hit` at `position` (host Space), at event
 /// `time`. Does nothing for a hit that is not a chrome part.
 pub fn press(lp: &mut Loop, hit: &SurfaceHit, position: Point<f64, Logical>, time: u32) {
-    let Some((window, chrome)) = target(Some(hit)) else { return };
+    let Some((window, chrome)) = target(Some(hit)) else {
+        return;
+    };
     let relative = relative(lp, &window, position);
     if let Some(intent) = decor::seat::press(&window, chrome, relative, time) {
         apply(lp, &window, intent);
@@ -83,7 +93,27 @@ pub fn release(lp: &mut Loop) {
 
 /// An intent from the chrome, as the request the client itself would make.
 fn apply(lp: &mut Loop, window: &Window, intent: Intent) {
-    let Some(handle) = SurfaceHandle::of_window(window) else { return };
+    let Some(handle) = SurfaceHandle::of_window(window) else {
+        return;
+    };
+    let tile_owned = lp
+        .inner
+        .comp
+        .registry
+        .id_for_handle(&handle)
+        .is_some_and(|id| {
+            lp.inner
+                .comp
+                .tiles
+                .members()
+                .iter()
+                .any(|member| member.target.id == id)
+        });
+    let tile_flags = protocols::window::shell::shell::requested_tiled(window)
+        || protocols::window::shell::shell::committed_tiled(window);
+    if (tile_owned || tile_flags) && matches!(intent, Intent::Move | Intent::Resize { .. }) {
+        return;
+    }
     match intent {
         Intent::Move => {
             dispatcher::wayland::grab::interactive::start_chrome(&mut lp.state, handle, 0);

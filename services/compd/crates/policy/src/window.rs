@@ -71,6 +71,12 @@ pub fn merged(mut body: Value, extra: Value) -> Value {
 /// The window facts the engine keeps beside the registry record.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WindowFacts {
+    /// Persistent generation-fenced group membership, including suspended or
+    /// pending members. Distinct from the native requested/committed flags.
+    pub requested_tiled: bool,
+    pub native_requested_tiled: bool,
+    pub committed_tiled: bool,
+    pub tile_pending: bool,
     pub requested_maximized: bool,
     pub requested_fullscreen: bool,
     pub committed_maximized: bool,
@@ -164,6 +170,10 @@ pub fn state_reply<H>(
         json!({
             "maximized": facts.committed_maximized,
             "fullscreen": facts.committed_fullscreen,
+            "tiled": facts.committed_tiled,
+            "requested_tiled": facts.requested_tiled,
+            "native_requested_tiled": facts.native_requested_tiled,
+            "tile_pending": facts.tile_pending,
             "configure_pending": facts.configure_pending,
         }),
     ))
@@ -511,6 +521,21 @@ pub fn wait_outcome<H: Clone + Eq + Hash>(
     let holds = |record: &SurfaceRecord<H>| {
         let facts = facts(record.id());
         match spec.until {
+            WaitUntil::Tiled => {
+                !record.minimized()
+                    && workspaces::on_workspace(record, current_workspace)
+                    && facts.requested_tiled
+                    && facts.native_requested_tiled
+                    && facts.committed_tiled
+                    && !facts.tile_pending
+                    && !facts.configure_pending
+            }
+            WaitUntil::Untiled => {
+                !facts.requested_tiled
+                    && !facts.native_requested_tiled
+                    && !facts.committed_tiled
+                    && !facts.configure_pending
+            }
             WaitUntil::Mapped => true,
             WaitUntil::Visible => facts.visible && !record.minimized(),
             WaitUntil::Presented => {
@@ -624,10 +649,11 @@ pub fn place<H: Clone + Eq + Hash>(
     let sid = record.id();
     let maximized = facts.committed_maximized || facts.requested_maximized;
     let fullscreen = facts.committed_fullscreen || facts.requested_fullscreen;
-    if maximized || fullscreen {
+    let tiled = facts.requested_tiled || facts.native_requested_tiled || facts.committed_tiled;
+    if maximized || fullscreen || tiled {
         return Err(ControlReply::refused(
             "invalid_state",
-            json!({"id": spec.id, "maximized": maximized, "fullscreen": fullscreen}),
+            json!({"id": spec.id, "maximized": maximized, "fullscreen": fullscreen, "tiled": tiled}),
         ));
     }
     let origin = facts.window_origin;

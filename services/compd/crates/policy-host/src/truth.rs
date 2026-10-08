@@ -254,6 +254,21 @@ pub fn truth(lp: &Loop) -> Value {
         "commits": commits,
         "configured": configured,
         "slots": slots,
+        "tiles": registry.surface_rows().filter(|record| record.role().managed_toplevel()).map(|record| {
+            let id = record.id();
+            let native = crate::control::window_of(lp, id);
+            let membership = comp.tiles.member(policy::tiling::Target { id, generation: record.generation() });
+            let pending = crate::geometry::tile_pending(comp, &lp.inner.host_space().state, id);
+            (id.0.to_string(), json!({
+                "generation":record.generation(), "requested_tiled":membership.is_some(),
+                "native_requested_tiled":native.as_ref().is_some_and(protocols::window::shell::shell::requested_tiled),
+                "tiled":native.as_ref().is_some_and(protocols::window::shell::shell::committed_tiled),
+                "group":membership.map(|member| json!({"output":member.group.output,"workspace":member.group.workspace,
+                    "order":comp.tiles.members().iter().position(|candidate| candidate.target == member.target),
+                    "normal":{"x":member.normal.x,"y":member.normal.y,"width":member.normal.width,"height":member.normal.height}})),
+                "pending_reason":pending.map(|error|error.name()),
+            }))
+        }).collect::<serde_json::Map<String,Value>>(),
         "focus": {
             "keyboard": comp.focused().map(|id| id.0),
             "window": focus_window,

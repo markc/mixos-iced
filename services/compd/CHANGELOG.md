@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.16
+
+- Add strict generation-fenced `comp.window.tile` and `comp.window.untile` for
+  explicitly admitted active xdg clients. Persistent bounded column groups use
+  actual work areas, client hints and prepared SSD metrics, and retain original
+  normal restores through minimise, workspace and fullscreen/maximise overlays.
+- Separate tile membership, native requested flags and client-committed tiled
+  state. Complete-group infeasibility reports a pending reason; overlay exit
+  restores normal geometry until a feasible current plan returns. Native tiled
+  waits require a matching real client commit and current geometry.
+- Share the renderer-free geometry executor across production and native
+  fixtures. Work-area/output/SSD and client lifecycle events reflow the same
+  owner; free placement and interactive movement refuse tiled ownership.
+
 ## 0.1.15
 
 - Report client-committed fullscreen in window projections and state replies.

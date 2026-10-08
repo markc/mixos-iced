@@ -79,6 +79,25 @@ pub fn extents(window: &Window) -> Option<DecoExtents> {
     installed().map(|theme| DecoExtents::of(&theme.deco))
 }
 
+/// Target normal-mode extents even while a fullscreen configure is still
+/// committed. Rendering keeps using extents() until that commit changes.
+pub fn normal_extents(window: &Window) -> Option<DecoExtents> {
+    let theme = installed()?;
+    let server_side = if let Some(x11) = window.x11_surface() {
+        policy::x11::decoration_mode(
+            x11.is_override_redirect(),
+            ssd_enabled(),
+            false,
+            x11.is_decorated(),
+        ) == policy::x11::DecorationMode::ServerSide
+    } else {
+        window
+            .toplevel()
+            .is_some_and(dispatcher::wayland::xdg::decoration::mode::server_side)
+    };
+    server_side.then(|| DecoExtents::of(&theme.deco))
+}
+
 /// How far `window`'s chrome reaches outside its content on any side (logical
 /// px; 0 without chrome): what a cull of the content's slot must grow by so it
 /// never drops a window whose titlebar still shows. The shadow is not counted:

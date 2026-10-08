@@ -757,6 +757,19 @@ fn place_moves_output_locally_keeps_the_real_size_and_refuses_off_output() {
             committed_fullscreen: true,
             ..facts()
         },
+        WindowFacts {
+            requested_tiled: true,
+            tile_pending: true,
+            ..facts()
+        },
+        WindowFacts {
+            native_requested_tiled: true,
+            ..facts()
+        },
+        WindowFacts {
+            committed_tiled: true,
+            ..facts()
+        },
     ] {
         let (rc, refusal) = body(
             place_with(

@@ -1,44 +1,44 @@
-use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::input::keyboard::LedState;
-use smithay::input::dnd::DndGrabHandler;
-use smithay::input::pointer::CursorImageStatus;
-use smithay::reexports::calloop::{self, LoopHandle};
-use smithay::reexports::wayland_server::Client;
-use smithay::reexports::wayland_server::backend::ClientId;
-use smithay::reexports::wayland_server::Resource;
-use smithay::reexports::wayland_server::Weak;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
-use smithay::desktop::Window;
 use crate::state::deferred::deferred::Deferred;
-use x11_wm::focus::focus as xwayland_focus;
-use protocols::window::shell::shell;
 /// Every redraw names its reason; re-exported so the
 /// crates above reach it through the wrappers' own crate.
 pub use protocols::redraw::schedule::schedule::RedrawReason;
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use protocols::window::shell::shell;
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::wayland::dmabuf::{DmabufGlobal, ImportNotifier};
-use smithay::wayland::drm_syncobj::DrmSyncPointSource;
-use smithay::wayland::pointer_constraints::with_pointer_constraint;
-use smithay::wayland::shell::wlr_layer::{Layer as WlrLayer, LayerSurface};
-use smithay::wayland::shell::xdg::ToplevelSurface;
-use std::collections::HashMap;
+use smithay::desktop::Window;
+use smithay::input::dnd::DndGrabHandler;
+use smithay::input::keyboard::LedState;
+use smithay::input::pointer::CursorImageStatus;
+use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::reexports::calloop::{self, LoopHandle};
+use smithay::reexports::wayland_server::Client;
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::Weak;
+use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Dispatch as SmithayDispatch, GlobalDispatch};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 use smithay::wayland::Dispatch2;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::CompositorHandler;
 use smithay::wayland::dmabuf::DmabufHandler;
+use smithay::wayland::dmabuf::{DmabufGlobal, ImportNotifier};
+use smithay::wayland::drm_syncobj::DrmSyncPointSource;
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
 use smithay::wayland::output::OutputHandler;
+use smithay::wayland::pointer_constraints::with_pointer_constraint;
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{DataDeviceHandler, WaylandDndGrabHandler};
 use smithay::wayland::shell::wlr_layer::WlrLayerShellHandler;
+use smithay::wayland::shell::wlr_layer::{Layer as WlrLayer, LayerSurface};
+use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::wayland::shell::xdg::XdgShellHandler;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shm::ShmHandler;
 use smithay::wayland::xdg_activation::XdgActivationHandler;
 use smithay::wayland::xdg_foreign::XdgForeignState;
+use std::collections::HashMap;
+use x11_wm::focus::focus as xwayland_focus;
 
 // 1. Define the trait with your desired traits as bounds (supertraits)
 pub trait DispatchWire:
@@ -127,7 +127,6 @@ pub struct Dispatch {
     /// `ext_data_control_manager_v1`, the standard
     /// successor of the wlr protocol; same store, same openness.
     pub ext_data_control: smithay::wayland::selection::ext_data_control::DataControlState,
-
 
     /// Set by a source that DISPATCHED protocol traffic this iteration, consumed by
     /// `Wire::drain_protocol`.
@@ -259,18 +258,24 @@ impl Dispatch {
     /// pipes behind the epoch, so there is nothing to suppress — and suppressing
     /// it is how paced commits once went unserviced until the floor watchdog.
     #[inline]
-    pub fn schedule_redraw_unchecked(&mut self, reason: RedrawReason) { self.redraw.request_for(reason); }
+    pub fn schedule_redraw_unchecked(&mut self, reason: RedrawReason) {
+        self.redraw.request_for(reason);
+    }
     /// Unconditional wake: rescues (watchdogs, rate-cap timer) and hotplug, where
     /// an idle cycle must restart whatever the in-flight bookkeeping says.
     #[inline]
-    pub fn force_redraw(&mut self, reason: RedrawReason) { self.redraw.force_for(reason); }
+    pub fn force_redraw(&mut self, reason: RedrawReason) {
+        self.redraw.force_for(reason);
+    }
     /// Arm the protocol drain: something was queued that `Wire::drain_protocol` has to
     /// apply, and this wake may not be a protocol dispatch.
     ///
     /// Call it wherever a drained queue is WRITTEN. See [`protocol_pending`](Self::protocol_pending)
     /// for why the input *source* must not arm it while these individual writers must.
     #[inline]
-    pub fn arm_drain(&mut self) { self.protocol_pending = true; }
+    pub fn arm_drain(&mut self) {
+        self.protocol_pending = true;
+    }
     /// The gate on an xdg interactive move/resize: not the agent seat, not a
     /// maximised or fullscreen window.
     pub fn interactive_allowed(
@@ -287,9 +292,33 @@ impl Dispatch {
         if requester.as_ref() != Some(&self.seat.seat) {
             return false;
         }
+        if protocols::window::shell::shell::tile_input_owned(surface.wl_surface()) {
+            return false;
+        }
+        if surface.with_pending_state(|state| {
+            [
+                State::TiledLeft,
+                State::TiledRight,
+                State::TiledTop,
+                State::TiledBottom,
+            ]
+            .iter()
+            .any(|edge| state.states.contains(*edge))
+        }) {
+            return false;
+        }
         !surface.with_committed_state(|state| {
             state.is_some_and(|state| {
-                state.states.contains(State::Maximized) || state.states.contains(State::Fullscreen)
+                state.states.contains(State::Maximized)
+                    || state.states.contains(State::Fullscreen)
+                    || [
+                        State::TiledLeft,
+                        State::TiledRight,
+                        State::TiledTop,
+                        State::TiledBottom,
+                    ]
+                    .iter()
+                    .any(|edge| state.states.contains(*edge))
             })
         })
     }
@@ -298,7 +327,9 @@ impl Dispatch {
         if window.is_maximized() || window.is_fullscreen() {
             return;
         }
-        let Some(surface) = window.wl_surface() else { return };
+        let Some(surface) = window.wl_surface() else {
+            return;
+        };
         let handle = crate::wire::trait_::surface_event::SurfaceHandle::x11(window);
         if !crate::wayland::grab::interactive::start(self, &surface, handle, None, edges) {
             trace!("x11 move/resize without a pointer grab over the window");
@@ -312,7 +343,9 @@ impl Dispatch {
     /// Mark every pipe stale WITHOUT a wake, for callers that invoke the executor
     /// themselves (session resume, the off-thread publish wake).
     #[inline]
-    pub fn bump_redraw_epoch(&mut self, reason: RedrawReason) { self.redraw.request_silent_for(reason); }
+    pub fn bump_redraw_epoch(&mut self, reason: RedrawReason) {
+        self.redraw.request_silent_for(reason);
+    }
 }
 
 /// Establish a popup's explicit grab. Called INLINE from `XdgShellHandler::grab` (while the
@@ -330,14 +363,19 @@ pub fn establish_popup_grab(
     serial: smithay::utils::Serial,
 ) {
     use smithay::desktop::{
-        PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, find_popup_root_surface,
+        PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy,
+        find_popup_root_surface,
     };
     use smithay::input::Seat;
     use smithay::input::pointer::Focus;
 
-    let Some(seat) = Seat::<Dispatch>::from_resource(&seat) else { return };
+    let Some(seat) = Seat::<Dispatch>::from_resource(&seat) else {
+        return;
+    };
     let kind = PopupKind::Xdg(surface);
-    let Ok(root) = find_popup_root_surface(&kind) else { return };
+    let Ok(root) = find_popup_root_surface(&kind) else {
+        return;
+    };
     let mut grab = match dispatch.popup.state.grab_popup(root, kind, &seat, serial) {
         Ok(grab) => grab,
         Err(_) => return,
@@ -464,7 +502,9 @@ impl Dispatch {
     /// to push the canvas order every drain and undid this within a frame, which is the
     /// other reason it failed. It is gone.
     pub fn raise_x11_for_pointer(&mut self, focused: Option<&WlSurface>) {
-        let Some(x11) = focused.and_then(xwayland_focus::indexed) else { return };
+        let Some(x11) = focused.and_then(xwayland_focus::indexed) else {
+            return;
+        };
         // Remembered for popup parenting: an X11 menu mostly names no parent, so the
         // window the user was last pointing at is what it belongs to.
         //
@@ -482,7 +522,9 @@ impl Dispatch {
         if !protocols::window::ident::ident::is_popup_x11_surface(&x11) {
             self.xwayland.map_position_parent_hover = Some(x11.window_id());
         }
-        let Some(xwm) = self.xwayland.xwm.as_mut() else { return };
+        let Some(xwm) = self.xwayland.xwm.as_mut() else {
+            return;
+        };
         if let Err(err) = xwm.raise_window(&x11) {
             warn!("x11 raise for pointer failed: {err:?}");
         }
@@ -495,7 +537,9 @@ impl Dispatch {
     /// is what brings it up, and only when the pointer actually arrives. satellite does
     /// the same thing, stacking `Below` in its `MapRequest` handler.
     fn lower_new_x11(&mut self, window: &smithay::xwayland::X11Surface) {
-        let Some(xwm) = self.xwayland.xwm.as_mut() else { return };
+        let Some(xwm) = self.xwayland.xwm.as_mut() else {
+            return;
+        };
         if let Err(err) = xwm.lower_window(window) {
             warn!("x11 lower on map failed: {err:?}");
         }
@@ -530,10 +574,13 @@ impl Dispatch {
     /// this is a late notification about a clipboard nobody holds any more.
     pub fn retire_x11_selection(&mut self) {
         let mirrored = {
-            let held = smithay::wayland::selection::data_device::current_data_device_selection_userdata::<Dispatch>(
-                &self.seat.seat,
-            );
-            held.is_some_and(|user_data| *user_data == crate::state::state::xwm_impls::X11_SELECTION)
+            let held =
+                smithay::wayland::selection::data_device::current_data_device_selection_userdata::<
+                    Dispatch,
+                >(&self.seat.seat);
+            held.is_some_and(|user_data| {
+                *user_data == crate::state::state::xwm_impls::X11_SELECTION
+            })
         };
         if !mirrored {
             return;
@@ -543,7 +590,9 @@ impl Dispatch {
         let mime_types = self.clipboard.capture.mime_types();
         if mime_types.is_empty() {
             trace!("x11 clipboard owner gone with nothing captured");
-            smithay::wayland::selection::data_device::clear_data_device_selection::<Dispatch>(&dh, &seat);
+            smithay::wayland::selection::data_device::clear_data_device_selection::<Dispatch>(
+                &dh, &seat,
+            );
             return;
         }
         let generation = self.clipboard.capture.generation();
@@ -563,10 +612,7 @@ impl Dispatch {
             }
         }
         smithay::wayland::selection::data_device::set_data_device_selection::<Dispatch>(
-            &dh,
-            &seat,
-            mime_types,
-            generation,
+            &dh, &seat, mime_types, generation,
         );
     }
 
@@ -587,14 +633,18 @@ impl Dispatch {
         // carries every deferred world effect, and clearing it would drop the frame's
         // window maps, destroys and layer events on the floor because the user grabbed
         // the canvas. Only this variant is ours to discard.
-        self.deferred.retain(|d| !matches!(d, Deferred::PointerRestore { .. }));
+        self.deferred
+            .retain(|d| !matches!(d, Deferred::PointerRestore { .. }));
         self.seat.unlock_restoration_location = None;
     }
 
     /// The hand tool took the pointer: drop the active constraint and refuse to
     /// activate another (a game re-requests its lock the instant it is unlocked)
     /// until [`resume_constraints`](Self::resume_constraints).
-    pub fn suspend_constraints(&mut self, pointer: &smithay::input::pointer::PointerHandle<Dispatch>) {
+    pub fn suspend_constraints(
+        &mut self,
+        pointer: &smithay::input::pointer::PointerHandle<Dispatch>,
+    ) {
         self.seat.constraints_suspended = true;
         self.abandon_active_constraint(pointer);
     }
@@ -602,12 +652,19 @@ impl Dispatch {
     /// The hand tool is off: honour constraints again, and arm the one under the
     /// pointer now if its surface also holds the keyboard — the same terms as a
     /// freshly requested one.
-    pub fn resume_constraints(&mut self, pointer: &smithay::input::pointer::PointerHandle<Dispatch>) {
+    pub fn resume_constraints(
+        &mut self,
+        pointer: &smithay::input::pointer::PointerHandle<Dispatch>,
+    ) {
         self.seat.constraints_suspended = false;
         if let Some(surface) = pointer.current_focus() {
             if self.seat.is_keyboard_focused(&surface) {
                 with_pointer_constraint(&surface, pointer, |c| {
-                    if let Some(c) = c { if !c.is_active() { c.activate(); } }
+                    if let Some(c) = c {
+                        if !c.is_active() {
+                            c.activate();
+                        }
+                    }
                 });
             }
         }
@@ -622,7 +679,9 @@ impl SeatHandler for Dispatch {
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
-    fn seat_state(&mut self) -> &mut SeatState<Self> { &mut self.seat.state }
+    fn seat_state(&mut self) -> &mut SeatState<Self> {
+        &mut self.seat.state
+    }
 
     fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
         // Only the primary seat drives the visible cursor; the agent seat
@@ -641,9 +700,10 @@ impl SeatHandler for Dispatch {
             return;
         }
         // The comp registry's focus edge (primary seat only).
-        self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Focus(focused.map(crate::wire::trait_::surface_event::SurfaceHandle::resolve)));
-        let client = focused
-            .and_then(|s| self.output.display_handle.get_client(s.id()).ok());
+        self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Focus(
+            focused.map(crate::wire::trait_::surface_event::SurfaceHandle::resolve),
+        ));
+        let client = focused.and_then(|s| self.output.display_handle.get_client(s.id()).ok());
 
         // The X11 half of focus. `KeyboardFocus` here is the plain `WlSurface`, so
         // smithay's `KeyboardTarget for X11Surface` — which does this for a compositor
@@ -651,7 +711,12 @@ impl SeatHandler for Dispatch {
         // is never told which window has the input focus: X clients would receive no
         // keyboard input at all. Read `previous_focus` BEFORE the pointer block below
         // overwrites it.
-        if let Some(x11) = self.seat.previous_focus.as_ref().and_then(xwayland_focus::indexed) {
+        if let Some(x11) = self
+            .seat
+            .previous_focus
+            .as_ref()
+            .and_then(xwayland_focus::indexed)
+        {
             x11.set_input_focus(false);
         }
         let newly = focused.and_then(xwayland_focus::indexed);
@@ -717,7 +782,8 @@ impl SeatHandler for Dispatch {
         // Follow keyboard focus with tablet-pad focus: `leave` the old client's pad,
         // `enter` the new one, so pad button/ring/strip/dial/mode events are gated to
         // the focused client (external zwp_tablet_pad_v2 has no smithay focus model).
-        self.tablet.set_pad_focus(focused.cloned(), SERIAL_COUNTER.next_serial());
+        self.tablet
+            .set_pad_focus(focused.cloned(), SERIAL_COUNTER.next_serial());
 
         self.schedule_redraw(RedrawReason::Focus);
     }
@@ -748,7 +814,10 @@ impl SeatHandler for Dispatch {
 smithay::delegate_dispatch2!(Dispatch);
 
 mod color_impls {
-    use std::sync::Mutex;
+    use super::Dispatch;
+    use crate::wire::color::color as cm;
+    use crate::wire::color::color::{ImageDescData, ParamsState};
+    use crate::wire::colorsurf::colorsurf as cs;
     use smithay::reexports::wayland_protocols::wp::color_management::v1::server::{
         wp_color_management_output_v1::{self, WpColorManagementOutputV1},
         wp_color_management_surface_feedback_v1::{self, WpColorManagementSurfaceFeedbackV1},
@@ -759,18 +828,17 @@ mod color_impls {
         wp_image_description_info_v1::WpImageDescriptionInfoV1,
         wp_image_description_v1::{self, WpImageDescriptionV1},
     };
-    use smithay::reexports::wayland_server::{Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch, New, Resource};
     use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-    use crate::wire::color::color::{ImageDescData, ParamsState};
-    use crate::wire::color::color as cm;
-    use crate::wire::colorsurf::colorsurf as cs;
-    use super::Dispatch;
+    use smithay::reexports::wayland_server::{
+        Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch, New, Resource,
+    };
+    use std::sync::Mutex;
 
+    use crate::wire::tearing::tearing as tc;
     use smithay::reexports::wayland_protocols::wp::tearing_control::v1::server::{
         wp_tearing_control_manager_v1::{self, WpTearingControlManagerV1},
         wp_tearing_control_v1::{self, WpTearingControlV1},
     };
-    use crate::wire::tearing::tearing as tc;
 
     impl GlobalDispatch<WpTearingControlManagerV1, ()> for Dispatch {
         /// NOT advertised to Xwayland.
@@ -789,63 +857,158 @@ mod color_impls {
         fn can_view(client: Client, _: &()) -> bool {
             !protocols::xwm::base::is_xwayland(&client)
         }
-        fn bind(_: &mut Self, _: &DisplayHandle, _: &Client, resource: New<WpTearingControlManagerV1>, _: &(), di: &mut DataInit<'_, Self>) {
+        fn bind(
+            _: &mut Self,
+            _: &DisplayHandle,
+            _: &Client,
+            resource: New<WpTearingControlManagerV1>,
+            _: &(),
+            di: &mut DataInit<'_, Self>,
+        ) {
             di.init(resource, ());
         }
     }
     impl WLDispatch<WpTearingControlManagerV1, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpTearingControlManagerV1, request: wp_tearing_control_manager_v1::Request, _: &(), _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpTearingControlManagerV1,
+            request: wp_tearing_control_manager_v1::Request,
+            _: &(),
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             tc::dispatch_manager(request, di);
         }
     }
     impl WLDispatch<WpTearingControlV1, WlSurface> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpTearingControlV1, request: wp_tearing_control_v1::Request, surface: &WlSurface, _: &DisplayHandle, _: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpTearingControlV1,
+            request: wp_tearing_control_v1::Request,
+            surface: &WlSurface,
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
             tc::dispatch_control(request, surface);
         }
     }
 
     impl GlobalDispatch<WpColorManagerV1, ()> for Dispatch {
-        fn bind(_: &mut Self, _: &DisplayHandle, _: &Client, resource: New<WpColorManagerV1>, _: &(), di: &mut DataInit<'_, Self>) {
+        fn bind(
+            _: &mut Self,
+            _: &DisplayHandle,
+            _: &Client,
+            resource: New<WpColorManagerV1>,
+            _: &(),
+            di: &mut DataInit<'_, Self>,
+        ) {
             cm::bind_color_manager(di.init(resource, ()));
         }
     }
     impl WLDispatch<WpColorManagerV1, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpColorManagerV1, request: wp_color_manager_v1::Request, _: &(), _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpColorManagerV1,
+            request: wp_color_manager_v1::Request,
+            _: &(),
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_color_manager(request, di);
         }
     }
     impl WLDispatch<WpColorManagementOutputV1, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpColorManagementOutputV1, request: wp_color_management_output_v1::Request, _: &(), _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpColorManagementOutputV1,
+            request: wp_color_management_output_v1::Request,
+            _: &(),
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_color_output(request, di);
         }
     }
     impl WLDispatch<WpColorManagementSurfaceV1, WlSurface> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpColorManagementSurfaceV1, request: wp_color_management_surface_v1::Request, surface: &WlSurface, _: &DisplayHandle, _: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpColorManagementSurfaceV1,
+            request: wp_color_management_surface_v1::Request,
+            surface: &WlSurface,
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_color_surface(request, surface);
         }
     }
     impl WLDispatch<WpColorManagementSurfaceFeedbackV1, WlSurface> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpColorManagementSurfaceFeedbackV1, request: wp_color_management_surface_feedback_v1::Request, _: &WlSurface, _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpColorManagementSurfaceFeedbackV1,
+            request: wp_color_management_surface_feedback_v1::Request,
+            _: &WlSurface,
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_color_feedback(request, di);
         }
     }
     impl WLDispatch<WpImageDescriptionCreatorParamsV1, Mutex<ParamsState>> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpImageDescriptionCreatorParamsV1, request: wp_image_description_creator_params_v1::Request, data: &Mutex<ParamsState>, _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpImageDescriptionCreatorParamsV1,
+            request: wp_image_description_creator_params_v1::Request,
+            data: &Mutex<ParamsState>,
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_color_params(request, data, di);
         }
     }
     impl WLDispatch<WpImageDescriptionCreatorIccV1, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpImageDescriptionCreatorIccV1, request: wp_image_description_creator_icc_v1::Request, _: &(), _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpImageDescriptionCreatorIccV1,
+            request: wp_image_description_creator_icc_v1::Request,
+            _: &(),
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_color_icc(request, di);
         }
     }
     impl WLDispatch<WpImageDescriptionV1, ImageDescData> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpImageDescriptionV1, request: wp_image_description_v1::Request, data: &ImageDescData, _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpImageDescriptionV1,
+            request: wp_image_description_v1::Request,
+            data: &ImageDescData,
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             cs::dispatch_image_desc(request, data, di);
         }
     }
     impl WLDispatch<WpImageDescriptionInfoV1, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &WpImageDescriptionInfoV1, _: <WpImageDescriptionInfoV1 as Resource>::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &WpImageDescriptionInfoV1,
+            _: <WpImageDescriptionInfoV1 as Resource>::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
     }
 }
 
@@ -856,6 +1019,7 @@ mod color_impls {
 // cleaned up in `destroyed`. Coexists with `delegate_dispatch2!` because our `()`
 // userdata never matches smithay's tablet `Dispatch2` impls (GlobalData/…UserData).
 mod tablet_impls {
+    use super::Dispatch;
     use super::RedrawReason;
     use smithay::reexports::wayland_protocols::wp::tablet::zv2::server::{
         zwp_tablet_manager_v2::{self, ZwpTabletManagerV2},
@@ -869,18 +1033,32 @@ mod tablet_impls {
         zwp_tablet_v2::{self, ZwpTabletV2},
     };
     use smithay::reexports::wayland_server::{
-        backend::ClientId, Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch,
-        New, Resource,
+        Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch, New, Resource,
+        backend::ClientId,
     };
-    use super::Dispatch;
 
     impl GlobalDispatch<ZwpTabletManagerV2, ()> for Dispatch {
-        fn bind(_: &mut Self, _: &DisplayHandle, _: &Client, resource: New<ZwpTabletManagerV2>, _: &(), di: &mut DataInit<'_, Self>) {
+        fn bind(
+            _: &mut Self,
+            _: &DisplayHandle,
+            _: &Client,
+            resource: New<ZwpTabletManagerV2>,
+            _: &(),
+            di: &mut DataInit<'_, Self>,
+        ) {
             di.init(resource, ());
         }
     }
     impl WLDispatch<ZwpTabletManagerV2, ()> for Dispatch {
-        fn request(state: &mut Self, client: &Client, _: &ZwpTabletManagerV2, request: zwp_tablet_manager_v2::Request, _: &(), dh: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            client: &Client,
+            _: &ZwpTabletManagerV2,
+            request: zwp_tablet_manager_v2::Request,
+            _: &(),
+            dh: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             if let zwp_tablet_manager_v2::Request::GetTabletSeat { tablet_seat, .. } = request {
                 // The compositor is single-seat: track every bound tablet-seat flatly.
                 let seat = di.init(tablet_seat, ());
@@ -889,13 +1067,31 @@ mod tablet_impls {
         }
     }
     impl WLDispatch<ZwpTabletSeatV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletSeatV2, _: zwp_tablet_seat_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletSeatV2,
+            _: zwp_tablet_seat_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
         fn destroyed(state: &mut Self, _: ClientId, seat: &ZwpTabletSeatV2, _: &()) {
             state.tablet.remove_seat(&seat.id());
         }
     }
     impl WLDispatch<ZwpTabletV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletV2, _: zwp_tablet_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletV2,
+            _: zwp_tablet_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
         fn destroyed(state: &mut Self, _: ClientId, tablet: &ZwpTabletV2, _: &()) {
             // NB: `ZwpTabletV2::id` is also a protocol event method — disambiguate.
             state.tablet.remove_tablet_resource(&Resource::id(tablet));
@@ -906,9 +1102,27 @@ mod tablet_impls {
         // the pointer image, exactly like `wl_pointer::set_cursor` (the cursor follows
         // the pen). `force_cursor` (e.g. the canvas Hand grab) still overrides it at
         // render time; the pen session reverts it on proximity-out.
-        fn request(state: &mut Self, _: &Client, tool: &ZwpTabletToolV2, request: zwp_tablet_tool_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {
-            if let zwp_tablet_tool_v2::Request::SetCursor { surface, hotspot_x, hotspot_y, .. } = request {
-                if let Some(status) = state.tablet.set_tool_cursor(tool, surface, (hotspot_x, hotspot_y).into()) {
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            tool: &ZwpTabletToolV2,
+            request: zwp_tablet_tool_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+            if let zwp_tablet_tool_v2::Request::SetCursor {
+                surface,
+                hotspot_x,
+                hotspot_y,
+                ..
+            } = request
+            {
+                if let Some(status) =
+                    state
+                        .tablet
+                        .set_tool_cursor(tool, surface, (hotspot_x, hotspot_y).into())
+                {
                     state.seat.pointer_status = status;
                     state.schedule_redraw(RedrawReason::Cursor);
                 }
@@ -920,28 +1134,73 @@ mod tablet_impls {
     }
     // ── pad objects (server-created via seat.pad_added; no globals) ──────────────
     impl WLDispatch<ZwpTabletPadV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletPadV2, _: zwp_tablet_pad_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletPadV2,
+            _: zwp_tablet_pad_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
         fn destroyed(state: &mut Self, _: ClientId, pad: &ZwpTabletPadV2, _: &()) {
             state.tablet.remove_pad_resource(&pad.id());
         }
     }
     impl WLDispatch<ZwpTabletPadGroupV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletPadGroupV2, _: zwp_tablet_pad_group_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletPadGroupV2,
+            _: zwp_tablet_pad_group_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
     }
     impl WLDispatch<ZwpTabletPadRingV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletPadRingV2, _: zwp_tablet_pad_ring_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletPadRingV2,
+            _: zwp_tablet_pad_ring_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
         fn destroyed(state: &mut Self, _: ClientId, ring: &ZwpTabletPadRingV2, _: &()) {
             state.tablet.remove_pad_resource(&ring.id());
         }
     }
     impl WLDispatch<ZwpTabletPadStripV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletPadStripV2, _: zwp_tablet_pad_strip_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletPadStripV2,
+            _: zwp_tablet_pad_strip_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
         fn destroyed(state: &mut Self, _: ClientId, strip: &ZwpTabletPadStripV2, _: &()) {
             state.tablet.remove_pad_resource(&strip.id());
         }
     }
     impl WLDispatch<ZwpTabletPadDialV2, ()> for Dispatch {
-        fn request(_: &mut Self, _: &Client, _: &ZwpTabletPadDialV2, _: zwp_tablet_pad_dial_v2::Request, _: &(), _: &DisplayHandle, _: &mut DataInit<'_, Self>) {}
+        fn request(
+            _: &mut Self,
+            _: &Client,
+            _: &ZwpTabletPadDialV2,
+            _: zwp_tablet_pad_dial_v2::Request,
+            _: &(),
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
+        }
         fn destroyed(state: &mut Self, _: ClientId, dial: &ZwpTabletPadDialV2, _: &()) {
             state.tablet.remove_pad_resource(&dial.id());
         }
@@ -954,6 +1213,7 @@ mod tablet_impls {
 // `wire.session` scans it and owns the request logic; the store lives on
 // `Dispatch.session`.
 mod session_impls {
+    use super::Dispatch;
     use crate::wire::session::session::{
         self, SessionData, SessionResource, ToplevelSessionData, XdgSessionManagerV1, XdgSessionV1,
         XdgToplevelSessionV1, XxSessionManagerV1, XxSessionV1, XxToplevelSessionV1,
@@ -961,40 +1221,87 @@ mod session_impls {
         xx_session_v1, xx_toplevel_session_v1,
     };
     use smithay::reexports::wayland_server::{
-        backend::ClientId, Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch,
-        New,
+        Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch, New,
+        backend::ClientId,
     };
-    use super::Dispatch;
 
     impl GlobalDispatch<XdgSessionManagerV1, ()> for Dispatch {
-        fn bind(_: &mut Self, _: &DisplayHandle, _: &Client, resource: New<XdgSessionManagerV1>, _: &(), di: &mut DataInit<'_, Self>) {
+        fn bind(
+            _: &mut Self,
+            _: &DisplayHandle,
+            _: &Client,
+            resource: New<XdgSessionManagerV1>,
+            _: &(),
+            di: &mut DataInit<'_, Self>,
+        ) {
             di.init(resource, ());
         }
     }
     impl WLDispatch<XdgSessionManagerV1, ()> for Dispatch {
-        fn request(state: &mut Self, client: &Client, manager: &XdgSessionManagerV1, request: xdg_session_manager_v1::Request, _: &(), dh: &DisplayHandle, di: &mut DataInit<'_, Self>) {
-            session::dispatch_manager(&mut state.session, &mut state.session_live, manager, client, dh, request, di);
+        fn request(
+            state: &mut Self,
+            client: &Client,
+            manager: &XdgSessionManagerV1,
+            request: xdg_session_manager_v1::Request,
+            _: &(),
+            dh: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
+            session::dispatch_manager(
+                &mut state.session,
+                &mut state.session_live,
+                manager,
+                client,
+                dh,
+                request,
+                di,
+            );
         }
     }
     impl WLDispatch<XdgSessionV1, SessionData> for Dispatch {
-        fn request(state: &mut Self, _: &Client, session: &XdgSessionV1, request: xdg_session_v1::Request, data: &SessionData, _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            session: &XdgSessionV1,
+            request: xdg_session_v1::Request,
+            data: &SessionData,
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             session::dispatch_session(&mut state.session, session, &data.session_id, request, di);
         }
         // Release the live claim; the REMEMBERED names stay, which is what makes
         // the next run restorable. Only an explicit `remove` erases those.
         fn destroyed(state: &mut Self, _: ClientId, resource: &XdgSessionV1, data: &SessionData) {
-            session::destroyed_session(&mut state.session_live, data, SessionResource::Xdg(resource.clone()));
+            session::destroyed_session(
+                &mut state.session_live,
+                data,
+                SessionResource::Xdg(resource.clone()),
+            );
         }
     }
     impl WLDispatch<XdgToplevelSessionV1, ToplevelSessionData> for Dispatch {
-        fn request(state: &mut Self, _: &Client, _: &XdgToplevelSessionV1, request: xdg_toplevel_session_v1::Request, data: &ToplevelSessionData, _: &DisplayHandle, _: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            _: &XdgToplevelSessionV1,
+            request: xdg_toplevel_session_v1::Request,
+            data: &ToplevelSessionData,
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
             if let Some(renamed) =
                 session::dispatch_toplevel_session(&mut state.session, data, request)
             {
                 state.session_live.renames.push(renamed);
             }
         }
-        fn destroyed(state: &mut Self, _: ClientId, _: &XdgToplevelSessionV1, data: &ToplevelSessionData) {
+        fn destroyed(
+            state: &mut Self,
+            _: ClientId,
+            _: &XdgToplevelSessionV1,
+            data: &ToplevelSessionData,
+        ) {
             session::destroyed_toplevel_session(&mut state.session, data);
         }
     }
@@ -1004,28 +1311,82 @@ mod session_impls {
     // genuinely differ (see `wire.session::legacy`); the store behind them is
     // the same one.
     impl GlobalDispatch<XxSessionManagerV1, ()> for Dispatch {
-        fn bind(_: &mut Self, _: &DisplayHandle, _: &Client, resource: New<XxSessionManagerV1>, _: &(), di: &mut DataInit<'_, Self>) {
+        fn bind(
+            _: &mut Self,
+            _: &DisplayHandle,
+            _: &Client,
+            resource: New<XxSessionManagerV1>,
+            _: &(),
+            di: &mut DataInit<'_, Self>,
+        ) {
             di.init(resource, ());
         }
     }
     impl WLDispatch<XxSessionManagerV1, ()> for Dispatch {
-        fn request(state: &mut Self, client: &Client, manager: &XxSessionManagerV1, request: xx_session_manager_v1::Request, _: &(), dh: &DisplayHandle, di: &mut DataInit<'_, Self>) {
-            session::dispatch_legacy_manager(&mut state.session, &mut state.session_live, manager, client, dh, request, di);
+        fn request(
+            state: &mut Self,
+            client: &Client,
+            manager: &XxSessionManagerV1,
+            request: xx_session_manager_v1::Request,
+            _: &(),
+            dh: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
+            session::dispatch_legacy_manager(
+                &mut state.session,
+                &mut state.session_live,
+                manager,
+                client,
+                dh,
+                request,
+                di,
+            );
         }
     }
     impl WLDispatch<XxSessionV1, SessionData> for Dispatch {
-        fn request(state: &mut Self, _: &Client, session: &XxSessionV1, request: xx_session_v1::Request, data: &SessionData, _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
-            session::dispatch_legacy_session(&mut state.session, session, &data.session_id, request, di);
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            session: &XxSessionV1,
+            request: xx_session_v1::Request,
+            data: &SessionData,
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
+            session::dispatch_legacy_session(
+                &mut state.session,
+                session,
+                &data.session_id,
+                request,
+                di,
+            );
         }
         fn destroyed(state: &mut Self, _: ClientId, resource: &XxSessionV1, data: &SessionData) {
-            session::destroyed_session(&mut state.session_live, data, SessionResource::Xx(resource.clone()));
+            session::destroyed_session(
+                &mut state.session_live,
+                data,
+                SessionResource::Xx(resource.clone()),
+            );
         }
     }
     impl WLDispatch<XxToplevelSessionV1, ToplevelSessionData> for Dispatch {
-        fn request(state: &mut Self, _: &Client, _: &XxToplevelSessionV1, request: xx_toplevel_session_v1::Request, data: &ToplevelSessionData, _: &DisplayHandle, _: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            _: &XxToplevelSessionV1,
+            request: xx_toplevel_session_v1::Request,
+            data: &ToplevelSessionData,
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
             session::dispatch_legacy_toplevel_session(&mut state.session, data, request);
         }
-        fn destroyed(state: &mut Self, _: ClientId, _: &XxToplevelSessionV1, data: &ToplevelSessionData) {
+        fn destroyed(
+            state: &mut Self,
+            _: ClientId,
+            _: &XxToplevelSessionV1,
+            data: &ToplevelSessionData,
+        ) {
             session::destroyed_toplevel_session(&mut state.session, data);
         }
     }
@@ -1036,6 +1397,7 @@ mod session_impls {
 // this one (staging feature, already on via smithay), so `wire.drag` owns only
 // the request logic; the source→drag registry lives on `Dispatch.toplevel_drag`.
 mod drag_impls {
+    use super::Dispatch;
     use protocols::dispatch::wire::drag::drag::{
         self, ToplevelDragData, XdgToplevelDragManagerV1, XdgToplevelDragV1,
         xdg_toplevel_drag_manager_v1, xdg_toplevel_drag_v1,
@@ -1043,20 +1405,42 @@ mod drag_impls {
     use smithay::reexports::wayland_server::{
         Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch, New,
     };
-    use super::Dispatch;
 
     impl GlobalDispatch<XdgToplevelDragManagerV1, ()> for Dispatch {
-        fn bind(_: &mut Self, _: &DisplayHandle, _: &Client, resource: New<XdgToplevelDragManagerV1>, _: &(), di: &mut DataInit<'_, Self>) {
+        fn bind(
+            _: &mut Self,
+            _: &DisplayHandle,
+            _: &Client,
+            resource: New<XdgToplevelDragManagerV1>,
+            _: &(),
+            di: &mut DataInit<'_, Self>,
+        ) {
             di.init(resource, ());
         }
     }
     impl WLDispatch<XdgToplevelDragManagerV1, ()> for Dispatch {
-        fn request(state: &mut Self, _: &Client, manager: &XdgToplevelDragManagerV1, request: xdg_toplevel_drag_manager_v1::Request, _: &(), _: &DisplayHandle, di: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            manager: &XdgToplevelDragManagerV1,
+            request: xdg_toplevel_drag_manager_v1::Request,
+            _: &(),
+            _: &DisplayHandle,
+            di: &mut DataInit<'_, Self>,
+        ) {
             drag::dispatch_manager(&mut state.toplevel_drag, manager, request, di);
         }
     }
     impl WLDispatch<XdgToplevelDragV1, ToplevelDragData> for Dispatch {
-        fn request(state: &mut Self, _: &Client, resource: &XdgToplevelDragV1, request: xdg_toplevel_drag_v1::Request, data: &ToplevelDragData, _: &DisplayHandle, _: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _: &Client,
+            resource: &XdgToplevelDragV1,
+            request: xdg_toplevel_drag_v1::Request,
+            data: &ToplevelDragData,
+            _: &DisplayHandle,
+            _: &mut DataInit<'_, Self>,
+        ) {
             drag::dispatch_drag(&mut state.toplevel_drag, resource, request, data);
         }
     }
@@ -1068,6 +1452,8 @@ mod drag_impls {
 // delegate to `foreign.base` (state + emit). Inbound control requests are queued
 // world-free onto `self.foreign`; the rim drains + applies them.
 mod foreign_impls {
+    use super::Dispatch;
+    use protocols::foreign::base::{ForeignManagerGlobalData, ForeignRequest, ToplevelHandleData};
     use smithay::reexports::wayland_protocols_wlr::foreign_toplevel::v1::server::{
         zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
         zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
@@ -1076,11 +1462,9 @@ mod foreign_impls {
         Client, DataInit, Dispatch as WLDispatch, DisplayHandle, GlobalDispatch, New,
         backend::ClientId,
     };
-    use smithay::wayland::foreign_toplevel_list::{ForeignToplevelListHandler, ForeignToplevelListState};
-    use protocols::foreign::base::{
-        ForeignManagerGlobalData, ForeignRequest, ToplevelHandleData,
+    use smithay::wayland::foreign_toplevel_list::{
+        ForeignToplevelListHandler, ForeignToplevelListState,
     };
-    use super::Dispatch;
 
     // ext_foreign_toplevel_list_v1: smithay drives the protocol (Dispatch/GlobalDispatch
     // come from `delegate_dispatch2!(Dispatch)`); we only supply the state accessor.
@@ -1091,14 +1475,29 @@ mod foreign_impls {
     }
 
     impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ForeignManagerGlobalData> for Dispatch {
-        fn bind(state: &mut Self, _dh: &DisplayHandle, _client: &Client, resource: New<ZwlrForeignToplevelManagerV1>, _data: &ForeignManagerGlobalData, di: &mut DataInit<'_, Self>) {
+        fn bind(
+            state: &mut Self,
+            _dh: &DisplayHandle,
+            _client: &Client,
+            resource: New<ZwlrForeignToplevelManagerV1>,
+            _data: &ForeignManagerGlobalData,
+            di: &mut DataInit<'_, Self>,
+        ) {
             let manager = di.init(resource, ());
             state.foreign.bind_manager::<Dispatch>(manager);
         }
     }
 
     impl WLDispatch<ZwlrForeignToplevelManagerV1, ()> for Dispatch {
-        fn request(state: &mut Self, _client: &Client, manager: &ZwlrForeignToplevelManagerV1, request: zwlr_foreign_toplevel_manager_v1::Request, _data: &(), _dh: &DisplayHandle, _di: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _client: &Client,
+            manager: &ZwlrForeignToplevelManagerV1,
+            request: zwlr_foreign_toplevel_manager_v1::Request,
+            _data: &(),
+            _dh: &DisplayHandle,
+            _di: &mut DataInit<'_, Self>,
+        ) {
             match request {
                 zwlr_foreign_toplevel_manager_v1::Request::Stop => {
                     state.foreign.remove_manager(manager);
@@ -1107,29 +1506,53 @@ mod foreign_impls {
                 _ => {}
             }
         }
-        fn destroyed(state: &mut Self, _client: ClientId, manager: &ZwlrForeignToplevelManagerV1, _data: &()) {
+        fn destroyed(
+            state: &mut Self,
+            _client: ClientId,
+            manager: &ZwlrForeignToplevelManagerV1,
+            _data: &(),
+        ) {
             state.foreign.remove_manager(manager);
         }
     }
 
     impl WLDispatch<ZwlrForeignToplevelHandleV1, ToplevelHandleData> for Dispatch {
-        fn request(state: &mut Self, _client: &Client, _handle: &ZwlrForeignToplevelHandleV1, request: zwlr_foreign_toplevel_handle_v1::Request, data: &ToplevelHandleData, _dh: &DisplayHandle, _di: &mut DataInit<'_, Self>) {
+        fn request(
+            state: &mut Self,
+            _client: &Client,
+            _handle: &ZwlrForeignToplevelHandleV1,
+            request: zwlr_foreign_toplevel_handle_v1::Request,
+            data: &ToplevelHandleData,
+            _dh: &DisplayHandle,
+            _di: &mut DataInit<'_, Self>,
+        ) {
             use zwlr_foreign_toplevel_handle_v1::Request as R;
             let surface = data.surface.clone();
             match request {
                 // Supported set only. maximize/minimize are intentionally NOT handled — the
                 // compositor has no such window model, so they fall through to the ignore arm rather than
                 // manufacturing a request the rim discards (docks then don't act on them).
-                R::Activate { .. } => state.foreign.push_request(surface, ForeignRequest::Activate),
+                R::Activate { .. } => state
+                    .foreign
+                    .push_request(surface, ForeignRequest::Activate),
                 R::Close => state.foreign.push_request(surface, ForeignRequest::Close),
-                R::SetFullscreen { .. } => state.foreign.push_request(surface, ForeignRequest::Fullscreen(true)),
-                R::UnsetFullscreen => state.foreign.push_request(surface, ForeignRequest::Fullscreen(false)),
+                R::SetFullscreen { .. } => state
+                    .foreign
+                    .push_request(surface, ForeignRequest::Fullscreen(true)),
+                R::UnsetFullscreen => state
+                    .foreign
+                    .push_request(surface, ForeignRequest::Fullscreen(false)),
                 // set_maximized/unset_maximized, set_minimized/unset_minimized, set_rectangle,
                 // destroy: accepted by the protocol, ignored by us.
                 _ => {}
             }
         }
-        fn destroyed(state: &mut Self, _client: ClientId, handle: &ZwlrForeignToplevelHandleV1, _data: &ToplevelHandleData) {
+        fn destroyed(
+            state: &mut Self,
+            _client: ClientId,
+            handle: &ZwlrForeignToplevelHandleV1,
+            _data: &ToplevelHandleData,
+        ) {
             state.foreign.remove_handle(handle);
         }
     }
@@ -1190,7 +1613,8 @@ mod handler_impls {
     use super::Dispatch;
 
     fn unconstrain_popup(popup: &PopupSurface) {
-        let infinite_target = Rectangle::from_loc_and_size((-100_000, -100_000), (200_000, 200_000));
+        let infinite_target =
+            Rectangle::from_loc_and_size((-100_000, -100_000), (200_000, 200_000));
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(infinite_target);
         });
@@ -1208,7 +1632,8 @@ mod handler_impls {
     fn constrain_layer_popup(dispatch: &Dispatch, parent: &LayerSurface, popup: &PopupSurface) {
         for (output, output_geo) in &dispatch.outputs_snapshot {
             let map = layer_map_for_output(output);
-            let Some(layer) = map.layer_for_surface(parent.wl_surface(), WindowSurfaceType::TOPLEVEL)
+            let Some(layer) =
+                map.layer_for_surface(parent.wl_surface(), WindowSurfaceType::TOPLEVEL)
             else {
                 continue;
             };
@@ -1233,18 +1658,33 @@ mod handler_impls {
 
     impl PointerConstraintsHandler for Dispatch {
         fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
-            let pointer_focused = pointer.current_focus().map(|f| &f == surface).unwrap_or(false);
-            if !pointer_focused { return; }
-            if !self.seat.is_keyboard_focused(surface) { return; }
+            let pointer_focused = pointer
+                .current_focus()
+                .map(|f| &f == surface)
+                .unwrap_or(false);
+            if !pointer_focused {
+                return;
+            }
+            if !self.seat.is_keyboard_focused(surface) {
+                return;
+            }
             // Hand tool: the request stays registered but inactive; `resume_constraints` arms it.
-            if self.seat.constraints_suspended { return; }
+            if self.seat.constraints_suspended {
+                return;
+            }
             // A constraint created while a hot corner is engaged stays pending
             // until the cursor leaves every corner (comp::corners re-activates it).
             if self.seat.corner_engaged {
                 self.seat.constraint_deferred = true;
                 return;
             }
-            with_pointer_constraint(surface, pointer, |c| { if let Some(c) = c { if !c.is_active() { c.activate(); } } });
+            with_pointer_constraint(surface, pointer, |c| {
+                if let Some(c) = c {
+                    if !c.is_active() {
+                        c.activate();
+                    }
+                }
+            });
         }
         /// The ONE place a constraint going away is announced — a client destroying
         /// it, or `PointerConstraintRef::deactivate` from our own paths. Harvest the
@@ -1258,19 +1698,31 @@ mod handler_impls {
             _constraint: Option<&smithay::wayland::pointer_constraints::PointerConstraint>,
         ) {
             if let Some(token) = self.take_restoration_for(surface) {
-                self.deferred.push(Deferred::PointerRestore { surface: token.0, at: token.1 });
+                self.deferred.push(Deferred::PointerRestore {
+                    surface: token.0,
+                    at: token.1,
+                });
                 self.arm_drain();
             }
         }
-        fn cursor_position_hint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>, location: Point<f64, Logical>) {
+        fn cursor_position_hint(
+            &mut self,
+            surface: &WlSurface,
+            pointer: &PointerHandle<Self>,
+            location: Point<f64, Logical>,
+        ) {
             with_pointer_constraint(surface, pointer, |c| {
-                if c.is_some() { self.seat.unlock_restoration_location = Some((surface.clone(), location)); }
+                if c.is_some() {
+                    self.seat.unlock_restoration_location = Some((surface.clone(), location));
+                }
             });
         }
     }
 
     impl DrmSyncobjHandler for Dispatch {
-        fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> { self.dmabuf.syncobj_state.as_mut() }
+        fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
+            self.dmabuf.syncobj_state.as_mut()
+        }
     }
     /// smithay's tablet infrastructure now carries a tool-focus target type. This
     /// crate's tablet support is hand-rolled (`wire.tablet`) and routes tool events to the
@@ -1281,18 +1733,24 @@ mod handler_impls {
     }
     impl InputMethodHandler for Dispatch {
         fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
-                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
-                role: surfaces::SurfaceRole::ImePopup,
-                parent: None,
-            });
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
+                    handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        surface.wl_surface(),
+                    ),
+                    role: surfaces::SurfaceRole::ImePopup,
+                    parent: None,
+                },
+            );
             if let Err(err) = self.popup.state.track_popup(PopupKind::from(surface)) {
                 warn!("failed to track input-method popup err={err:?}");
             }
             self.schedule_redraw(RedrawReason::Popup);
         }
         fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface())));
+            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(
+                crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
+            ));
             // IME-scoped: untrack ONLY this popup from the shared PopupManager, never a
             // blanket clear (xdg popups live in the same manager). smithay calls this from
             // deactivate / re-activate while the popup still holds its (old) parent, so the
@@ -1314,7 +1772,9 @@ mod handler_impls {
         }
     }
     impl XdgForeignHandler for Dispatch {
-        fn xdg_foreign_state(&mut self) -> &mut XdgForeignState { &mut self.xdg_foreign_state.xdg_foreign_state }
+        fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+            &mut self.xdg_foreign_state.xdg_foreign_state
+        }
     }
     impl XdgDialogHandler for Dispatch {
         /// Latch modality onto the surface while it is still true.
@@ -1332,25 +1792,38 @@ mod handler_impls {
                     protocols::ephemeral::mark::mark::mark(toplevel.wl_surface());
                     trace!("xdg-dialog: toplevel marked modal");
                 }
-                ToplevelDialogHint::Dialog => trace!("xdg-dialog: toplevel marked dialog (non-modal)"),
+                ToplevelDialogHint::Dialog => {
+                    trace!("xdg-dialog: toplevel marked dialog (non-modal)")
+                }
                 ToplevelDialogHint::Unknown => trace!("xdg-dialog: toplevel hint cleared"),
             }
         }
     }
     impl FractionalScaleHandler for Dispatch {
         fn new_fractional_scale(&mut self, surface: WlSurface) {
-            let Some(scale) = self.fractional.last_emitted() else { return; };
+            let Some(scale) = self.fractional.last_emitted() else {
+                return;
+            };
             rd::new_fractional_scale(scale, &surface);
         }
     }
     impl XdgActivationHandler for Dispatch {
-        fn activation_state(&mut self) -> &mut XdgActivationState { &mut self.xdg_activation.xdg_activation }
-        fn request_activation(&mut self, token: XdgActivationToken, token_data: XdgActivationTokenData, surface: WlSurface) {
+        fn activation_state(&mut self) -> &mut XdgActivationState {
+            &mut self.xdg_activation.xdg_activation
+        }
+        fn request_activation(
+            &mut self,
+            token: XdgActivationToken,
+            token_data: XdgActivationTokenData,
+            surface: WlSurface,
+        ) {
             protocols::xdg::activation::request::request_activation(surface, token, token_data);
         }
     }
     impl XdgShellHandler for Dispatch {
-        fn xdg_shell_state(&mut self) -> &mut XdgShellState { &mut self.xdg_shell.state }
+        fn xdg_shell_state(&mut self) -> &mut XdgShellState {
+            &mut self.xdg_shell.state
+        }
         // The comp policy's window model answers these: queued for the
         // host, answered after the drain with a configure either way.
         fn maximize_request(&mut self, surface: ToplevelSurface) {
@@ -1372,24 +1845,39 @@ mod handler_impls {
             });
         }
         fn title_changed(&mut self, surface: ToplevelSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::xdg_names(&surface));
+            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::xdg_names(
+                &surface,
+            ));
         }
         fn app_id_changed(&mut self, surface: ToplevelSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::xdg_names(&surface));
+            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::xdg_names(
+                &surface,
+            ));
         }
         fn new_toplevel(&mut self, surface: ToplevelSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
-                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
-                role: surfaces::SurfaceRole::Toplevel,
-                parent: None,
-            });
-            self.deferred.push(Deferred::WindowMapped(crate::state::deferred::deferred::Mapped::Xdg(smithay::desktop::Window::new_wayland_window(surface))));
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
+                    handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        surface.wl_surface(),
+                    ),
+                    role: surfaces::SurfaceRole::Toplevel,
+                    parent: None,
+                },
+            );
+            self.deferred.push(Deferred::WindowMapped(
+                crate::state::deferred::deferred::Mapped::Xdg(
+                    smithay::desktop::Window::new_wayland_window(surface),
+                ),
+            ));
             self.schedule_redraw(RedrawReason::Map);
         }
         fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface())));
+            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(
+                crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
+            ));
             // A dead toplevel holds no session name (see `SessionStore::release_toplevel`).
-            self.session.release_toplevel(surface.xdg_toplevel().id().protocol_id());
+            self.session
+                .release_toplevel(surface.xdg_toplevel().id().protocol_id());
             // Carried right now, or abandoned by a cancel of ours. Consumed on the
             // way past: the verdict belongs to this one destroy.
             let abandoned = self
@@ -1400,8 +1888,8 @@ mod handler_impls {
             if let Some(at) = abandoned {
                 self.toplevel_drag.abandoned.remove(at);
             }
-            let carried = abandoned.is_some()
-                || self.toplevel_drag.is_carrying(surface.wl_surface());
+            let carried =
+                abandoned.is_some() || self.toplevel_drag.is_carrying(surface.wl_surface());
             self.deferred.push(Deferred::WindowDestroyed {
                 window: protocols::window::find::find::Shell::Xdg(surface),
                 drag_discard: carried,
@@ -1409,17 +1897,25 @@ mod handler_impls {
             self.schedule_redraw(RedrawReason::Unmap);
         }
         fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
-                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
-                role: surfaces::SurfaceRole::Popup,
-                parent: surface.get_parent_surface().map(|parent| crate::wire::trait_::surface_event::SurfaceHandle::wl(&parent)),
-            });
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
+                    handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        surface.wl_surface(),
+                    ),
+                    role: surfaces::SurfaceRole::Popup,
+                    parent: surface.get_parent_surface().map(|parent| {
+                        crate::wire::trait_::surface_event::SurfaceHandle::wl(&parent)
+                    }),
+                },
+            );
             unconstrain_popup(&surface);
             let _ = self.popup.state.track_popup(PopupKind::Xdg(surface));
             self.schedule_redraw(RedrawReason::Popup);
         }
         fn popup_destroyed(&mut self, surface: PopupSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface())));
+            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(
+                crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
+            ));
             self.schedule_redraw(RedrawReason::Popup);
         }
         fn fullscreen_request(&mut self, surface: ToplevelSurface, _: Option<WlOutput>) {
@@ -1443,18 +1939,38 @@ mod handler_impls {
             if !self.interactive_allowed(&surface, &seat) {
                 return;
             }
-            let handle = crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface());
-            if !crate::wayland::grab::interactive::start(self, surface.wl_surface(), handle, Some(serial), 0) {
+            let handle =
+                crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface());
+            if !crate::wayland::grab::interactive::start(
+                self,
+                surface.wl_surface(),
+                handle,
+                Some(serial),
+                0,
+            ) {
                 trace!("xdg move request without a matching pointer grab");
             }
         }
-        fn resize_request(&mut self, surface: ToplevelSurface, seat: WlSeat, serial: Serial, edges: ResizeEdge) {
+        fn resize_request(
+            &mut self,
+            surface: ToplevelSurface,
+            seat: WlSeat,
+            serial: Serial,
+            edges: ResizeEdge,
+        ) {
             let edges = u32::from(edges);
             if edges == 0 || !self.interactive_allowed(&surface, &seat) {
                 return;
             }
-            let handle = crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface());
-            if !crate::wayland::grab::interactive::start(self, surface.wl_surface(), handle, Some(serial), edges) {
+            let handle =
+                crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface());
+            if !crate::wayland::grab::interactive::start(
+                self,
+                surface.wl_surface(),
+                handle,
+                Some(serial),
+                edges,
+            ) {
                 trace!("xdg resize request without a matching pointer grab");
             }
         }
@@ -1463,7 +1979,11 @@ mod handler_impls {
             // latch, a popup grab rooted anywhere else is denied.
             if let Some(latched) = self.exclusive_latch.as_ref() {
                 let kind = smithay::desktop::PopupKind::Xdg(surface.clone());
-                if smithay::desktop::find_popup_root_surface(&kind).ok().as_ref() != Some(latched) {
+                if smithay::desktop::find_popup_root_surface(&kind)
+                    .ok()
+                    .as_ref()
+                    != Some(latched)
+                {
                     surface.send_popup_done();
                     return;
                 }
@@ -1481,7 +2001,12 @@ mod handler_impls {
             super::establish_popup_grab(self, surface, seat, serial);
             self.schedule_redraw(RedrawReason::Popup);
         }
-        fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
+        fn reposition_request(
+            &mut self,
+            surface: PopupSurface,
+            positioner: PositionerState,
+            token: u32,
+        ) {
             surface.with_pending_state(|state| {
                 let geometry = positioner.get_geometry();
                 state.geometry = geometry;
@@ -1652,7 +2177,9 @@ mod handler_impls {
             // generation check below does not apply.
             if *user_data == crate::state::state::xwm_impls::X11_SELECTION {
                 let sent = match self.xwayland.xwm.as_mut() {
-                    Some(xwm) => xwm.send_selection(ty, mime_type, fd).map_err(|e| format!("{e:?}")),
+                    Some(xwm) => xwm
+                        .send_selection(ty, mime_type, fd)
+                        .map_err(|e| format!("{e:?}")),
                     None => Err("no x11 window manager".into()),
                 };
                 if let Err(err) = sent {
@@ -1662,7 +2189,9 @@ mod handler_impls {
                     // dead offer standing for every paste after it, so retire the
                     // selection: clients see it go away, and the next copy by anyone
                     // installs a live one. One empty paste, not a stuck clipboard.
-                    warn!("failed to read the x11 clipboard for a wayland client: {err};                            retiring the stale offer");
+                    warn!(
+                        "failed to read the x11 clipboard for a wayland client: {err};                            retiring the stale offer"
+                    );
                     self.retire_x11_selection();
                 }
                 return;
@@ -1678,11 +2207,15 @@ mod handler_impls {
             // the writer in the same iteration's drain, and what the user actually sees
             // is the PASTING client committing a buffer — which schedules its own redraw
             // through the normal commit path.
-            self.clipboard.pending_sends.push((*user_data, client, mime_type, fd));
+            self.clipboard
+                .pending_sends
+                .push((*user_data, client, mime_type, fd));
         }
     }
     impl DataDeviceHandler for Dispatch {
-        fn data_device_state(&mut self) -> &mut DataDeviceState { &mut self.clipboard.data_device_state }
+        fn data_device_state(&mut self) -> &mut DataDeviceState {
+            &mut self.clipboard.data_device_state
+        }
     }
     // The selection protocols beside wl_data_device. They
     // share `SelectionHandler` (above), so a primary or data-control selection reaches
@@ -1717,12 +2250,20 @@ mod handler_impls {
                 let mut cached = states.cached_state.get::<DrmSyncobjCachedState>();
                 cached.pending().acquire_point.clone()
             });
-            let Some(acquire) = maybe_acquire else { return; };
+            let Some(acquire) = maybe_acquire else {
+                return;
+            };
             let has_new_buffer = compositor::with_states(surface, |states| {
                 let mut cached = states.cached_state.get::<SurfaceAttributes>();
-                matches!(cached.pending().buffer, Some(BufferAssignment::NewBuffer(_)))
+                matches!(
+                    cached.pending().buffer,
+                    Some(BufferAssignment::NewBuffer(_))
+                )
             });
-            if !has_new_buffer { trace!("syncobj: acquire point but no new buffer; skipping blocker"); return; }
+            if !has_new_buffer {
+                trace!("syncobj: acquire point but no new buffer; skipping blocker");
+                return;
+            }
             // compd F6: once explicit sync has faulted, no new explicit-sync
             // use is accepted.
             if !crate::wayland::dmabuf::explicit_sync::healthy() {
@@ -1750,7 +2291,11 @@ mod handler_impls {
     /// Signal the refused commit's release point (the client is not left
     /// waiting on it) and disconnect the client, rather than accept a buffer
     /// compd cannot release correctly.
-    fn refuse_explicit_sync(surface: &WlSurface, dh: &smithay::reexports::wayland_server::DisplayHandle, why: &str) {
+    fn refuse_explicit_sync(
+        surface: &WlSurface,
+        dh: &smithay::reexports::wayland_server::DisplayHandle,
+        why: &str,
+    ) {
         compositor::with_states(surface, |states| {
             let mut cached = states.cached_state.get::<DrmSyncobjCachedState>();
             if let Some(release) = cached.pending().release_point.take()
@@ -1774,10 +2319,14 @@ mod handler_impls {
 
     /// The surface's commit counter as the pacer last saw it, in its `UserDataMap`:
     /// a gated commit is admitted only when this advanced (new pixels).
-    struct LastPacedCommit(std::sync::Mutex<Option<smithay::backend::renderer::utils::CommitCounter>>);
+    struct LastPacedCommit(
+        std::sync::Mutex<Option<smithay::backend::renderer::utils::CommitCounter>>,
+    );
 
     impl CompositorHandler for Dispatch {
-        fn compositor_state(&mut self) -> &mut CompositorState { &mut self.compositor.state }
+        fn compositor_state(&mut self) -> &mut CompositorState {
+            &mut self.compositor.state
+        }
         fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
             protocols::compositor::client::client::client_compositor_state(client)
         }
@@ -1792,7 +2341,9 @@ mod handler_impls {
                     state.push_surface_event(SurfaceEvent::Destroyed(SurfaceHandle::wl(surface)));
                 },
             );
-            let Some(scale) = self.fractional.last_emitted() else { return; };
+            let Some(scale) = self.fractional.last_emitted() else {
+                return;
+            };
             rd::new_surface_fractional(scale, surface);
         }
         fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
@@ -1812,7 +2363,8 @@ mod handler_impls {
                 match popup {
                     PopupKind::Xdg(ref xdg) => {
                         if !xdg.is_initial_configure_sent() {
-                            xdg.send_configure().unwrap_or_else(|e| abort!("initial configure failed: {e:?}"));
+                            xdg.send_configure()
+                                .unwrap_or_else(|e| abort!("initial configure failed: {e:?}"));
                         }
                     }
                     PopupKind::InputMethod(ref _im) => {}
@@ -1890,7 +2442,9 @@ mod handler_impls {
                     // let a client tick the cadence that the scene does not consider a
                     // target at all.
                     let tagged = {
-                        use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+                        use smithay::wayland::compositor::{
+                            TraversalAction, with_surface_tree_downward,
+                        };
                         let mut verdict = pacer::Verdict::default();
                         with_surface_tree_downward(
                             &root,
@@ -1918,7 +2472,9 @@ mod handler_impls {
                         use smithay::backend::renderer::utils::with_renderer_surface_state;
                         let now = with_renderer_surface_state(surface, |s| s.current_commit());
                         compositor::with_states(surface, |states| {
-                            states.data_map.insert_if_missing(|| LastPacedCommit(std::sync::Mutex::new(None)));
+                            states
+                                .data_map
+                                .insert_if_missing(|| LastPacedCommit(std::sync::Mutex::new(None)));
                             let slot = states.data_map.get::<LastPacedCommit>().unwrap();
                             let mut last = slot.0.lock().unwrap_or_else(|e| e.into_inner());
                             let advanced = now.is_some() && now != *last;
@@ -1936,8 +2492,15 @@ mod handler_impls {
         }
     }
     impl DmabufHandler for Dispatch {
-        fn dmabuf_state(&mut self) -> &mut DmabufState { &mut self.dmabuf.state }
-        fn dmabuf_imported(&mut self, global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
+        fn dmabuf_state(&mut self) -> &mut DmabufState {
+            &mut self.dmabuf.state
+        }
+        fn dmabuf_imported(
+            &mut self,
+            global: &DmabufGlobal,
+            dmabuf: Dmabuf,
+            notifier: ImportNotifier,
+        ) {
             self.pending_dmabuf.push((global.clone(), dmabuf, notifier));
         }
     }
@@ -1945,7 +2508,12 @@ mod handler_impls {
         fn queue_toplevel_drag_move(&mut self, surface: WlSurface, location: Point<f64, Logical>) {
             // Last write wins: the grab emits one of these per motion event, and
             // only the newest position is meaningful by the time the drain runs.
-            if let Some(slot) = self.toplevel_drag.moves.iter_mut().find(|(s, _)| *s == surface) {
+            if let Some(slot) = self
+                .toplevel_drag
+                .moves
+                .iter_mut()
+                .find(|(s, _)| *s == surface)
+            {
                 slot.1 = location;
             } else {
                 self.toplevel_drag.moves.push((surface, location));
@@ -1960,7 +2528,9 @@ mod handler_impls {
                     crate::wire::trait_::surface_event::SurfaceHandle::wl(&icon),
                 ));
             }
-            self.toplevel_drag.settled.extend(self.toplevel_drag.carried_surface());
+            self.toplevel_drag
+                .settled
+                .extend(self.toplevel_drag.carried_surface());
             self.arm_drain();
             // Anything the grab queued on its last motion is now a position for a
             // drag that is over. The frame hook applies these, so leaving them
@@ -1969,7 +2539,13 @@ mod handler_impls {
             self.toplevel_drag.deactivate_all();
             self.schedule_redraw(RedrawReason::Input);
         }
-        fn dropped(&mut self, _: Option<smithay::input::dnd::DndTarget<'_, Self>>, _: bool, _: Seat<Self>, _: Point<f64, Logical>) {
+        fn dropped(
+            &mut self,
+            _: Option<smithay::input::dnd::DndTarget<'_, Self>>,
+            _: bool,
+            _: Seat<Self>,
+            _: Point<f64, Logical>,
+        ) {
             if let Some(icon) = self.dnd.icon.take() {
                 self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(
                     crate::wire::trait_::surface_event::SurfaceHandle::wl(&icon),
@@ -1983,7 +2559,9 @@ mod handler_impls {
             // This runs with the drag still active: on a physical drop the inner
             // `DnDGrab` is what gets unset (it passes ITSELF to `unset_grab`), so
             // the wrapper's `unset` — which clears `active` — only runs afterwards.
-            self.toplevel_drag.settled.extend(self.toplevel_drag.carried_surface());
+            self.toplevel_drag
+                .settled
+                .extend(self.toplevel_drag.carried_surface());
             self.arm_drain();
             self.toplevel_drag.deactivate_all();
             self.schedule_redraw(RedrawReason::Input);
@@ -2000,11 +2578,22 @@ mod handler_impls {
             }
             true
         }
-        fn dnd_requested<Src: Source>(&mut self, source: Src, icon: Option<WlSurface>, seat: Seat<Dispatch>, serial: Serial, type_: GrabType) {
+        fn dnd_requested<Src: Source>(
+            &mut self,
+            source: Src,
+            icon: Option<WlSurface>,
+            seat: Seat<Dispatch>,
+            serial: Serial,
+            type_: GrabType,
+        ) {
             match type_ {
                 GrabType::Pointer => {
-                    let Some(ptr) = seat.get_pointer() else { return; };
-                    let Some(start_data) = ptr.grab_start_data() else { return; };
+                    let Some(ptr) = seat.get_pointer() else {
+                        return;
+                    };
+                    let Some(start_data) = ptr.grab_start_data() else {
+                        return;
+                    };
                     // `Src` is concretely `WlDataSource` on the wayland path
                     // (`data_device::device`), which is how a toplevel drag
                     // created for this source is recovered. Downcast rather
@@ -2018,42 +2607,73 @@ mod handler_impls {
                     // toplevel has torn nothing off — see `ToplevelDragData::live`.
                     let origin = start_data.focus.as_ref().map(|(s, _)| s.clone());
                     if let Some(icon) = icon.as_ref() {
-                        self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
-                            handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(icon),
-                            role: surfaces::SurfaceRole::DragIcon,
-                            parent: None,
-                        });
+                        self.push_surface_event(
+                            crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
+                                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(icon),
+                                role: surfaces::SurfaceRole::DragIcon,
+                                parent: None,
+                            },
+                        );
                     }
                     self.dnd.icon = icon;
-                    let grab = DnDGrab::new_pointer(&self.output.display_handle, start_data, source, seat);
+                    let grab =
+                        DnDGrab::new_pointer(&self.output.display_handle, start_data, source, seat);
                     match attached {
                         Some(drag) => {
                             if let Some(d) = drag.data::<ToplevelDragData>() {
                                 d.set_active(true);
                                 d.set_origin(origin.as_ref());
                             }
-                            ptr.set_grab(self, ToplevelDragGrab::new(grab, drag), serial, Focus::Keep);
+                            ptr.set_grab(
+                                self,
+                                ToplevelDragGrab::new(grab, drag),
+                                serial,
+                                Focus::Keep,
+                            );
                         }
                         None => ptr.set_grab(self, grab, serial, Focus::Keep),
                     }
                 }
-                GrabType::Touch => { source.cancel(); }
+                GrabType::Touch => {
+                    source.cancel();
+                }
             }
         }
     }
     impl WlrLayerShellHandler for Dispatch {
-        fn shell_state(&mut self) -> &mut WlrLayerShellState { &mut self.layershell.wlr }
-        fn new_layer_surface(&mut self, surface: LayerSurface, output: Option<WlOutput>, layer: Layer, namespace: String) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
-                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
-                role: surfaces::SurfaceRole::Layer,
-                parent: None,
+        fn shell_state(&mut self) -> &mut WlrLayerShellState {
+            &mut self.layershell.wlr
+        }
+        fn new_layer_surface(
+            &mut self,
+            surface: LayerSurface,
+            output: Option<WlOutput>,
+            layer: Layer,
+            namespace: String,
+        ) {
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
+                    handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        surface.wl_surface(),
+                    ),
+                    role: surfaces::SurfaceRole::Layer,
+                    parent: None,
+                },
+            );
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::LayerBinding {
+                    handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        surface.wl_surface(),
+                    ),
+                    explicit: output.is_some(),
+                },
+            );
+            self.deferred.push(Deferred::LayerMapped {
+                surface,
+                output,
+                layer,
+                namespace,
             });
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::LayerBinding {
-                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
-                explicit: output.is_some(),
-            });
-            self.deferred.push(Deferred::LayerMapped { surface, output, layer, namespace });
             self.schedule_redraw(RedrawReason::Layer);
         }
         // The comp policy's panel liveness probe is a re-sent
@@ -2069,7 +2689,9 @@ mod handler_impls {
             });
         }
         fn layer_destroyed(&mut self, surface: LayerSurface) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface())));
+            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Dormant(
+                crate::wire::trait_::surface_event::SurfaceHandle::wl(surface.wl_surface()),
+            ));
             self.deferred.push(Deferred::LayerDestroyed(surface));
             self.schedule_redraw(RedrawReason::Layer);
         }
@@ -2078,14 +2700,24 @@ mod handler_impls {
         // created with a NULL xdg parent, then adopted by the layer). Track it in the
         // shared PopupManager so the commit handler sends its initial configure and the
         // draw + hit paths (which walk `PopupManager::popups_for_surface`) find it.
-        fn new_popup(&mut self, parent: LayerSurface, popup: smithay::wayland::shell::xdg::PopupSurface) {
+        fn new_popup(
+            &mut self,
+            parent: LayerSurface,
+            popup: smithay::wayland::shell::xdg::PopupSurface,
+        ) {
             // Layer popups are constrained to their output (unlike window popups).
             constrain_layer_popup(self, &parent, &popup);
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
-                handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(popup.wl_surface()),
-                role: surfaces::SurfaceRole::Popup,
-                parent: Some(crate::wire::trait_::surface_event::SurfaceHandle::wl(parent.wl_surface())),
-            });
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::RoleTaken {
+                    handle: crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        popup.wl_surface(),
+                    ),
+                    role: surfaces::SurfaceRole::Popup,
+                    parent: Some(crate::wire::trait_::surface_event::SurfaceHandle::wl(
+                        parent.wl_surface(),
+                    )),
+                },
+            );
             let _ = self.popup.state.track_popup(PopupKind::Xdg(popup));
             self.schedule_redraw(RedrawReason::Popup);
         }
@@ -2101,7 +2733,9 @@ mod handler_impls {
         }
     }
     impl ShmHandler for Dispatch {
-        fn shm_state(&self) -> &ShmState { &self.shm.state }
+        fn shm_state(&self) -> &ShmState {
+            &self.shm.state
+        }
     }
     /// Decoration requests all arrive BEFORE the initial configure for the clients that
     /// matter here (Chromium sets its mode ~16ms before we configure). Sending a configure
@@ -2151,7 +2785,10 @@ mod handler_impls {
 // `Dispatch`; the loader owns it and pumps it from the outer loop (see
 // `kernel.loader/…/execute.base/xwayland.rs`).
 pub mod xwm_impls {
+    use super::Dispatch;
     use super::RedrawReason;
+    use crate::state::deferred::deferred::Deferred;
+    use protocols::window::find::find::Shell;
     use smithay::desktop::Window;
     use smithay::reexports::wayland_server::Resource;
     use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -2161,11 +2798,8 @@ pub mod xwm_impls {
     use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
     use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
     use smithay::xwayland::{X11Surface, X11Wm, XWaylandClientData, XwmHandler};
-    use protocols::window::find::find::Shell;
-    use crate::state::deferred::deferred::Deferred;
-    use x11_wm::focus::focus as xwayland_focus;
     use std::os::fd::OwnedFd;
-    use super::Dispatch;
+    use x11_wm::focus::focus as xwayland_focus;
 
     /// The `SelectionUserData` (a clipboard capture generation everywhere else) that
     /// means "this selection is owned by an X11 client". A paste against it is routed
@@ -2185,9 +2819,7 @@ pub mod xwm_impls {
             // A tearing verdict reached before this moment has been waiting on the
             // `X11Surface` for somewhere to go — see `shell::mark_tearing_target`. This is
             // that moment.
-            protocols::window::shell::shell::promote_tearing_target(
-                &window, &surface,
-            );
+            protocols::window::shell::shell::promote_tearing_target(&window, &surface);
             // First association is first drawable, which ends the window's self-sizing
             // period — see `shell::may_self_size`. Latched, so a remap does not reopen it.
             protocols::window::shell::shell::mark_shown(&window);
@@ -2203,9 +2835,7 @@ pub mod xwm_impls {
             // client message that checks nothing about map state.
             if protocols::window::shell::shell::take_held_map(&window) {
                 self.deferred.push(Deferred::WindowMapped(
-                    crate::state::deferred::deferred::Mapped::X11(
-                        window.clone(),
-                    ),
+                    crate::state::deferred::deferred::Mapped::X11(window.clone()),
                 ));
             }
             // An activation that found no surface to focus (focus-on-map can run
@@ -2330,7 +2960,10 @@ pub mod xwm_impls {
         fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
             // Nothing to un-index: the surface→X11 mapping the focus path reads lives
             // on the wl_surface itself (`xwayland_focus::indexed`) and goes away with it.
-            self.deferred.push(Deferred::WindowDestroyed { window: Shell::X11(window), drag_discard: false });
+            self.deferred.push(Deferred::WindowDestroyed {
+                window: Shell::X11(window),
+                drag_discard: false,
+            });
             self.schedule_redraw(RedrawReason::Unmap);
         }
 
@@ -2404,10 +3037,12 @@ pub mod xwm_impls {
             // stacking, so relative restacks (Above/Below a sibling, Bottom) are
             // ignored. The policy answers it as `comp.window.raise` (no focus).
             if matches!(reorder, Some(Reorder::Top)) && !window.is_override_redirect() {
-                self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::Request {
-                    handle: crate::wire::trait_::surface_event::SurfaceHandle::x11(&window),
-                    request: crate::wire::trait_::surface_event::WindowRequest::Raise,
-                });
+                self.push_surface_event(
+                    crate::wire::trait_::surface_event::SurfaceEvent::Request {
+                        handle: crate::wire::trait_::surface_event::SurfaceHandle::x11(&window),
+                        request: crate::wire::trait_::surface_event::WindowRequest::Raise,
+                    },
+                );
             }
         }
 
@@ -2432,12 +3067,18 @@ pub mod xwm_impls {
         }
 
         fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-            self.deferred.push(Deferred::WindowFullscreen { window: Shell::X11(window), on: true });
+            self.deferred.push(Deferred::WindowFullscreen {
+                window: Shell::X11(window),
+                on: true,
+            });
             self.schedule_redraw(RedrawReason::WindowState);
         }
 
         fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-            self.deferred.push(Deferred::WindowFullscreen { window: Shell::X11(window), on: false });
+            self.deferred.push(Deferred::WindowFullscreen {
+                window: Shell::X11(window),
+                on: false,
+            });
             self.schedule_redraw(RedrawReason::WindowState);
         }
 
@@ -2461,7 +3102,13 @@ pub mod xwm_impls {
         // `_NET_WM_MOVERESIZE`: the same grab as xdg's, on
         // whatever implicit pointer grab the client is holding (the message carries
         // no serial). Refused for a maximised or fullscreen window.
-        fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32, edges: ResizeEdge) {
+        fn resize_request(
+            &mut self,
+            _xwm: XwmId,
+            window: X11Surface,
+            _button: u32,
+            edges: ResizeEdge,
+        ) {
             let edges = match edges {
                 ResizeEdge::Top => 1,
                 ResizeEdge::Bottom => 2,
@@ -2545,7 +3192,9 @@ pub mod xwm_impls {
             });
         }
         fn current_desktop_request(&mut self, _xwm: XwmId, desktop: u32, _timestamp: u32) {
-            self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::CurrentDesktop(desktop));
+            self.push_surface_event(
+                crate::wire::trait_::surface_event::SurfaceEvent::CurrentDesktop(desktop),
+            );
         }
         fn property_notify(
             &mut self,
@@ -2555,13 +3204,20 @@ pub mod xwm_impls {
         ) {
             use smithay::xwayland::xwm::WmWindowProperty;
             if matches!(property, WmWindowProperty::Title | WmWindowProperty::Class) {
-                self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::x11_names(&window));
+                self.push_surface_event(
+                    crate::wire::trait_::surface_event::SurfaceEvent::x11_names(&window),
+                );
             }
             // compd (integration E4): the owner a move follows to OR children.
             if matches!(property, WmWindowProperty::TransientFor) {
-                self.push_surface_event(crate::wire::trait_::surface_event::SurfaceEvent::x11_transient_for(&window));
+                self.push_surface_event(
+                    crate::wire::trait_::surface_event::SurfaceEvent::x11_transient_for(&window),
+                );
             }
-            if matches!(property, WmWindowProperty::Hints | WmWindowProperty::Protocols) {
+            if matches!(
+                property,
+                WmWindowProperty::Hints | WmWindowProperty::Protocols
+            ) {
                 // `window_id()`, never `==`: `X11Surface`'s `PartialEq` folds in an
                 // aliveness test, so a surface smithay has marked dead equals nothing —
                 // not even itself.
@@ -2588,9 +3244,15 @@ pub mod xwm_impls {
         /// holds keyboard focus — otherwise any X client could poll the clipboard of
         /// whatever the user is actually working in.
         fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {
-            let Some(keyboard) = self.seat.seat.get_keyboard() else { return false };
-            let Some(focus) = keyboard.current_focus() else { return false };
-            let Ok(client) = self.output.display_handle.get_client(focus.id()) else { return false };
+            let Some(keyboard) = self.seat.seat.get_keyboard() else {
+                return false;
+            };
+            let Some(focus) = keyboard.current_focus() else {
+                return false;
+            };
+            let Ok(client) = self.output.display_handle.get_client(focus.id()) else {
+                return false;
+            };
             client.get_data::<XWaylandClientData>().is_some()
         }
 
@@ -2610,7 +3272,13 @@ pub mod xwm_impls {
         /// `current_data_device_selection_userdata` is the discriminator, and an exact
         /// one — it answers `Some` for a COMPOSITOR-provided selection and `None` for a
         /// client-provided one, which is the very distinction that decides the route.
-        fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
+        fn send_selection(
+            &mut self,
+            _xwm: XwmId,
+            selection: SelectionTarget,
+            mime_type: String,
+            fd: OwnedFd,
+        ) {
             if selection != SelectionTarget::Clipboard {
                 return;
             }
@@ -2639,10 +3307,14 @@ pub mod xwm_impls {
                         warn!("clipboard read for xwayland with no client recorded");
                         return;
                     };
-                    self.clipboard.pending_sends.push((generation, client, mime_type, fd));
+                    self.clipboard
+                        .pending_sends
+                        .push((generation, client, mime_type, fd));
                 }
                 None => {
-                    if let Err(err) = request_data_device_client_selection(&self.seat.seat, mime_type, fd) {
+                    if let Err(err) =
+                        request_data_device_client_selection(&self.seat.seat, mime_type, fd)
+                    {
                         warn!("xwayland clipboard read from the wayland owner failed: {err:?}");
                     }
                 }
@@ -2652,11 +3324,19 @@ pub mod xwm_impls {
         /// An X client took the clipboard. The wayland side is pointed at it with the
         /// [`X11_SELECTION`] marker as its user data, which is what routes a later
         /// paste back over the X connection.
-        fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        fn new_selection(
+            &mut self,
+            _xwm: XwmId,
+            selection: SelectionTarget,
+            mime_types: Vec<String>,
+        ) {
             if selection != SelectionTarget::Clipboard {
                 return;
             }
-            trace!("clipboard taken by an x11 client flavors={}", mime_types.len());
+            trace!(
+                "clipboard taken by an x11 client flavors={}",
+                mime_types.len()
+            );
             // Invalidate FIRST, exactly as the wayland `new_selection` does: bump the
             // generation and drop the head before a byte of the new selection is read,
             // so an in-flight capture that finishes late cannot refill the slot with the

@@ -18,6 +18,7 @@
 //!   injection (preflight refusals, injected holds, the
 //!   `comp.input.sequence` run model, `release_all`);
 //! - [`pointer`]: the `comp.pointer.watch` lease;
+//! - [`tiling`]: internal bounded membership and desired column plans;
 //! - [`bindings`]: the key-binding filter and its tables;
 //! - [`x11`]: the X11 decoration rule and Motif interpretation.
 
@@ -27,6 +28,7 @@ pub mod corner;
 pub mod effect;
 pub mod panel;
 pub mod pointer;
+pub mod tiling;
 pub mod window;
 pub mod workspaces;
 pub mod x11;

@@ -615,6 +615,10 @@ fn project_surface(
     let redact = world::comp::session_lock::active(lp) && record.role() != SurfaceRole::Lock;
     let (window_x, window_y, window_width, window_height) = placement.window.unwrap_or_default();
     let occlusion = occlusion_of(lp, record);
+    let facts = crate::control::window_facts(lp, record.id());
+    let tile_pending_reason =
+        crate::geometry::tile_pending(&lp.inner.comp, &lp.inner.host_space().state, record.id())
+            .map(|error| error.name());
     SurfaceSnapshot {
         occlusion,
         id: record.id().0,
@@ -658,6 +662,11 @@ fn project_surface(
         foreign_id: window_row.then_some(placement.foreign_id).flatten(),
         generation: record.generation(),
         window: WindowExtras {
+            tiled: facts.committed_tiled,
+            requested_tiled: facts.requested_tiled,
+            native_requested_tiled: facts.native_requested_tiled,
+            tile_pending_reason,
+            configure_pending: facts.configure_pending,
             window_x,
             window_y,
             window_width,

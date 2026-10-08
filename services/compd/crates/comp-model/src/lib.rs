@@ -3,7 +3,7 @@
 //! The `comp.*` wire is frozen, including `{id, generation}` numeric window
 //! addressing. This crate is that wire:
 //!
-//! - [`catalogue`]: the 35 verbs and 11 topics;
+//! - [`catalogue`]: the 37 verbs and 11 topics;
 //! - [`request`]: verb routing ([`request::classify`]) and the argument
 //!   parsers, which refuse unknown fields by name (`invalid_args`) and parse
 //!   `{id, generation}`;

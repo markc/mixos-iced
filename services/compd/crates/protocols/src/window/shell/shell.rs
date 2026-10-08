@@ -28,10 +28,68 @@
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::xwayland::xwm::WmAllowedAction;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[derive(Default)]
+struct TileInputLatch {
+    owned: AtomicBool,
+    participant: AtomicBool,
+}
+
+/// Owner-held input lease, not protocol tiled state or a placement owner.
+/// Drop releases the native admission latch on retirement/rebinding/shutdown.
+pub struct TileInputLease(WlSurface);
+impl TileInputLease {
+    pub fn acquire(surface: &WlSurface) -> Self {
+        with_states(surface, |states| {
+            let latch = states
+                .data_map
+                .get_or_insert_threadsafe(TileInputLatch::default);
+            latch.owned.store(true, Ordering::Relaxed);
+            latch.participant.store(true, Ordering::Relaxed);
+        });
+        Self(surface.clone())
+    }
+}
+impl Drop for TileInputLease {
+    fn drop(&mut self) {
+        if !self.0.is_alive() {
+            return;
+        }
+        with_states(&self.0, |states| {
+            if let Some(latch) = states.data_map.get::<TileInputLatch>() {
+                latch.owned.store(false, Ordering::Relaxed);
+            }
+        });
+    }
+}
+
+pub fn tile_input_owned(surface: &WlSurface) -> bool {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<TileInputLatch>()
+            .is_some_and(|latch| latch.owned.load(Ordering::Relaxed))
+    })
+}
+
+/// A real tile participant keeps the latest decided geometry fence after
+/// membership removal, so an empty commit cannot finish normal restoration.
+pub fn tile_geometry_participant(surface: &WlSurface) -> bool {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<TileInputLatch>()
+            .is_some_and(|latch| latch.participant.load(Ordering::Relaxed))
+    })
+}
 
 /// The size staged for an X11 window, awaiting the per-frame flush. The xdg
 /// counterpart is the toplevel's own pending state.
@@ -529,6 +587,60 @@ pub fn set_fullscreen(window: &Window, fullscreen: bool) {
         true => state.states.set(xdg_toplevel::State::Fullscreen),
         false => state.states.unset(xdg_toplevel::State::Fullscreen),
     });
+}
+
+/// Column tiling constrains all four native xdg edges. X11 has no corresponding
+/// state property; public tile admission refuses that unsupported contract.
+pub fn set_tiled(window: &Window, tiled: bool) {
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
+    toplevel.with_pending_state(|state| {
+        for edge in [
+            xdg_toplevel::State::TiledLeft,
+            xdg_toplevel::State::TiledRight,
+            xdg_toplevel::State::TiledTop,
+            xdg_toplevel::State::TiledBottom,
+        ] {
+            if tiled {
+                state.states.set(edge);
+            } else {
+                state.states.unset(edge);
+            }
+        }
+    });
+}
+
+pub fn requested_tiled(window: &Window) -> bool {
+    window.toplevel().is_some_and(|top| {
+        top.with_pending_state(|state| {
+            [
+                xdg_toplevel::State::TiledLeft,
+                xdg_toplevel::State::TiledRight,
+                xdg_toplevel::State::TiledTop,
+                xdg_toplevel::State::TiledBottom,
+            ]
+            .into_iter()
+            .all(|edge| state.states.contains(edge))
+        })
+    })
+}
+
+pub fn committed_tiled(window: &Window) -> bool {
+    window.toplevel().is_some_and(|top| {
+        top.with_committed_state(|state| {
+            state.is_some_and(|state| {
+                [
+                    xdg_toplevel::State::TiledLeft,
+                    xdg_toplevel::State::TiledRight,
+                    xdg_toplevel::State::TiledTop,
+                    xdg_toplevel::State::TiledBottom,
+                ]
+                .into_iter()
+                .all(|edge| state.states.contains(edge))
+            })
+        })
+    })
 }
 
 /// "This window is not being presented, stop painting it."

@@ -3,6 +3,53 @@
 // The long-admission test reads `LongOp::admission_timeout` directly.
 
 use super::*;
+
+#[test]
+fn tile_verbs_keep_strict_original_identity_and_output_contract() {
+    let body = json!({"id":7,"generation":11,"output":"o_test"});
+    assert_eq!(
+        parse_window_verb("comp.window.tile", &body),
+        Ok(WindowVerb::Op(WindowOp::Tile {
+            id: 7,
+            generation: 11,
+            enabled: true,
+            output: Some("o_test".into())
+        }))
+    );
+    assert_eq!(
+        parse_window_verb("comp.window.untile", &json!({"id":7,"generation":11})),
+        Ok(WindowVerb::Op(WindowOp::Tile {
+            id: 7,
+            generation: 11,
+            enabled: false,
+            output: None
+        }))
+    );
+    for invalid in [
+        json!({"id":7}),
+        json!({"generation":11}),
+        json!({"id":7,"generation":null}),
+        json!({"id":7,"generation":11.5}),
+        json!({"id":true,"generation":11}),
+        json!({"id":7,"generation":11,"gen":11}),
+        json!({"id":7,"generation":11,"output":false}),
+    ] {
+        assert!(
+            parse_window_verb("comp.window.tile", &invalid).is_err(),
+            "{invalid}"
+        );
+    }
+    assert!(
+        parse_window_verb("comp.window.untile", &body).is_err(),
+        "untile never retargets an output"
+    );
+    for until in [WaitUntil::Tiled, WaitUntil::Untiled] {
+        assert!(
+            matches!(parse_window_verb("comp.window.wait", &json!({"match":{"id":7,"generation":11},"until":until.name()})),
+            Ok(WindowVerb::Long(LongOp::Wait(spec))) if spec.until == until)
+        );
+    }
+}
 use crate::reply::{validate_service_name, with_error_code};
 use crate::snapshot::ReadScopes;
 use surfaces::WindowTargetError;

@@ -23,6 +23,7 @@ pub mod bindings;
 pub mod causes;
 pub mod corners;
 pub mod fullscreen;
+pub mod geometry;
 pub mod injection;
 pub(crate) mod input_geometry;
 pub mod latch;
@@ -96,6 +97,12 @@ pub struct CompState {
     /// output loss and parked frames; drained by the owning seat path.
     input_geometry_dirty: bool,
     pub registry: Registry<SurfaceHandle>,
+    /// Persistent generation-fenced tile membership and immutable normal
+    /// restores. Geometry and native configures use comp::geometry.
+    pub tiles: policy::tiling::Tiles,
+    tile_inputs: HashMap<SurfaceId, protocols::window::shell::shell::TileInputLease>,
+    /// Bounded change detector only; public pending facts derive live plans.
+    tile_pending_observation: Vec<(policy::tiling::Group, Option<policy::tiling::LayoutError>)>,
     /// The workspace model (count, current per output).
     pub workspaces: WorkspaceState,
     /// The default output (the single-output rule), refreshed from the
@@ -186,6 +193,7 @@ impl CompState {
                 let parent = parent.and_then(|parent| self.registry.id_for_handle(&parent));
                 match self.registry.take_role(handle, role, parent) {
                     Ok((id, _)) => {
+                        self.tiles.forget(id);
                         self.touched();
                         self.placed.remove(&id);
                         self.presentation.forget(id);
@@ -337,6 +345,14 @@ impl CompState {
                 };
                 match op {
                     InteractiveOp::Begin { edges } => {
+                        if self
+                            .tiles
+                            .members()
+                            .iter()
+                            .any(|member| member.target.id == id)
+                        {
+                            return;
+                        }
                         self.interactive = Some(Interactive {
                             id,
                             edges,
@@ -371,6 +387,7 @@ impl CompState {
                 }
             }
         }
+        self.reconcile_tiles();
     }
 
     fn touched(&mut self) {
@@ -378,6 +395,8 @@ impl CompState {
     }
 
     fn forget(&mut self, id: SurfaceId) {
+        self.tiles.forget(id);
+        self.tile_inputs.remove(&id);
         self.placed.remove(&id);
         self.fullscreen.forget(id);
         self.presentation.forget(id);
@@ -434,6 +453,7 @@ impl CompState {
             warn!("comp registry: uuid {uuid} refused for {id:?}: {error:?}");
         }
         let _ = self.registry.set_pid(id, pid.map(u64::from));
+        self.reconcile_tiles();
     }
 
     /// A withdrawn X11 window maps again under the uuid it left with: a new
@@ -509,6 +529,7 @@ impl CompState {
     /// A workspace change (switch, move, count) moved what is shown: both the
     /// edge pass (activity) and the truth revision (content) must see it.
     pub fn workspaces_changed(&mut self) {
+        self.reconcile_tiles();
         self.revision = self.revision.wrapping_add(1);
         self.touched();
         self.causes.note("", "workspace.switch");
@@ -595,6 +616,60 @@ impl CompState {
         let mut ids: Vec<SurfaceId> = self.maximized.keys().copied().collect();
         ids.sort_unstable_by_key(|id| id.0);
         ids
+    }
+
+    /// Every persistent geometry owner, resolved across worlds by its caller.
+    pub fn geometry_ids(&self) -> Vec<SurfaceId> {
+        let mut ids = self.maximized_ids();
+        ids.extend(self.tiles.members().iter().map(|member| member.target.id));
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.dedup();
+        ids
+    }
+
+    pub fn tiling_changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.touched();
+        self.causes.note("windows", "comp.window");
+    }
+
+    pub(crate) fn tile_input_admit(&mut self, id: SurfaceId, surface: &WlSurface) {
+        if !self
+            .tiles
+            .members()
+            .iter()
+            .any(|member| member.target.id == id)
+            || self.registry.id_for_handle(&SurfaceHandle::wl(surface)) != Some(id)
+        {
+            return;
+        }
+        self.tile_inputs
+            .entry(id)
+            .or_insert_with(|| protocols::window::shell::shell::TileInputLease::acquire(surface));
+    }
+
+    pub(crate) fn tile_input_retire(&mut self, id: SurfaceId) {
+        self.tile_inputs.remove(&id);
+    }
+
+    fn reconcile_tiles(&mut self) {
+        self.tiles.reconcile(&self.registry);
+        self.tile_inputs.retain(|id, _| {
+            self.tiles
+                .members()
+                .iter()
+                .any(|member| member.target.id == *id)
+        });
+    }
+
+    fn observe_tile_pending(
+        &mut self,
+        observation: Vec<(policy::tiling::Group, Option<policy::tiling::LayoutError>)>,
+    ) {
+        if self.tile_pending_observation != observation {
+            self.tile_pending_observation = observation;
+            self.tiling_changed();
+        }
     }
 
     /// An output's usable area moved: the edge pass (`outputs.*.usable`) and

@@ -17,23 +17,35 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
     if fullscreen && window.is_fullscreen() {
         return;
     }
+    let returning = if !fullscreen {
+        let (comp, space) = _loop.inner.comp_space_mut();
+        dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(&window)
+            .and_then(|handle| comp.registry.id_for_handle(&handle))
+            .and_then(|id| crate::comp::geometry::tile_return(comp, space, id))
+    } else {
+        None
+    };
     let target = if fullscreen {
         crate::comp::fullscreen::target(_loop, &window)
             .map(|(location, size)| Rectangle::new(location, size))
     } else {
-        None
+        returning.map(|target| target.area)
     };
     if !apply(
         &mut _loop.inner.space_state_mut().state,
         &window,
         fullscreen,
         target,
+        returning.is_some_and(|target| target.tiled),
     ) {
         return;
     }
     if fullscreen && let Some(uuid) = window.uuid() {
         _loop.inner.raise_drawable(uuid);
     }
+    let (comp, space) = _loop.inner.comp_space_mut();
+    comp.mark_input_geometry_dirty();
+    crate::comp::geometry::refresh_space(comp, space);
     _loop.schedule_redraw(RedrawReason::WindowState);
 }
 
@@ -45,6 +57,7 @@ pub fn apply(
     window: &Window,
     fullscreen: bool,
     target: Option<Rectangle<i32, Logical>>,
+    restore_tiled: bool,
 ) -> bool {
     if fullscreen {
         if window.is_fullscreen() {
@@ -77,6 +90,7 @@ pub fn apply(
         slot::set_expected_size(window, target_size);
 
         shell::set_fullscreen(window, true);
+        shell::set_tiled(window, false);
         shell::stage(window, target_size, false);
         shell::send(window);
     } else {
@@ -87,13 +101,15 @@ pub fn apply(
 
         // Where to land: fullscreen covered the output, so the window goes back
         // to the rectangle it had before it.
-        let (loc, size) = (restore.restore_loc, restore.restore_size);
+        let normal = target.unwrap_or(Rectangle::new(restore.restore_loc, restore.restore_size));
+        let (loc, size) = (normal.loc, normal.size);
 
         space.map_element(window.clone(), loc, false);
 
         slot::set_expected_size(window, size);
 
         shell::set_fullscreen(window, false);
+        shell::set_tiled(window, restore_tiled);
         shell::stage(window, size, false);
         shell::send(window);
     }
