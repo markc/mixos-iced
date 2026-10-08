@@ -26,7 +26,7 @@ mod_module_files = "deny"
 # compact reuse, the one atomic toolkit batch, the owned image decoder and
 # the resource receipt attached to Prepared. Requires the assets `verified`
 # reader and toolkit's owned image decoding.
-resources = ["assets/verified", "dep:hex", "dep:serde", "toolkit/image"]
+resources = ["assets/verified", "dep:hex", "dep:serde", "dep:blake3", "toolkit/image"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
@@ -38,6 +38,7 @@ config = { workspace = true }
 design = { workspace = true }
 # Parsing recorded 64-hex manifest digests for the verified reader.
 hex = { version = "=0.4.3", optional = true }
+blake3 = { version = "=1.8.6", optional = true }
 # `Color` and `Font`, the iced types the mapped tokens are made of.
 iced_core = { workspace = true }
 iced_widget = { workspace = true }

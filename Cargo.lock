@@ -204,7 +204,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "appearance",
  "assets",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "dopus"
-version = "0.4.4"
+version = "0.4.7"
 dependencies = [
  "actions",
  "anyhow",
@@ -1573,7 +1573,9 @@ dependencies = [
  "resvg 0.47.0",
  "serde",
  "serde_json",
+ "settings",
  "tempfile",
+ "term-test-broker",
  "tiny-skia 0.11.4",
  "tokio",
  "toolkit",
@@ -7780,7 +7782,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toolkit"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "blake3",
  "cosmic-text",

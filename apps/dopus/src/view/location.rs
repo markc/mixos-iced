@@ -71,6 +71,9 @@ fn display(look: Look, pane: &PaneModel, pane_id: PaneId) -> Element<'static, Ms
             text: path,
             font: look.mono_font,
             px: text_px(look),
+            line_height: look
+                .mono_line_height
+                .map(|height| height * text_px(look) / look.mono_px),
             color: look.chrome.secondary_text,
         })
         .padding(padding(look))
@@ -90,7 +93,7 @@ fn editor(look: Look, pane_id: PaneId, text: &str) -> Element<'_, Msg> {
         .on_submit(Msg::LocationSubmit(pane_id))
         .width(Length::Fill)
         .padding(padding(look))
-        .size(text_px(look))
+        .text_style(look.mono_text(text_px(look) / look.mono_px))
         .style(field_look(&look));
     field.into()
 }

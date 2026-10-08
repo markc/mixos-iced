@@ -134,23 +134,11 @@ fn main() {
         // Headless dopus IS the Bus port: no broker, no process.
         dopus::headless::run(config, config_file, dirs, &args.service, &noded_url, &paths)
     } else {
-        // Single instance: a running dopus takes the paths (first → left
-        // pane, second → right).
-        if dopus::bus::probe_running(&noded_url, &args.service) {
-            if paths.is_empty() {
-                eprintln!("dopus: already running as {}", args.service);
-                return;
-            }
-            match dopus::bus::forward_open(&noded_url, &args.service, &paths) {
-                Ok(()) => return,
-                Err(e) => {
-                    eprintln!(
-                        "dopus: a running instance answered but refused the paths: {e}"
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
+        // Single instance: the windowed worker's own async handoff is the
+        // sole collision path — a refused initial registration forwards the
+        // deferred argv paths through the owned Bus worker. The launcher
+        // never probes or forwards here (the worker answers, not a blocking
+        // pre-connect at launch).
         dopus::app::run(config, config_file, dirs, &args.service, &noded_url, &paths)
     };
     if let Err(e) = result {

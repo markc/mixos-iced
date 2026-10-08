@@ -28,6 +28,7 @@ pub const SCHEMA: &str = "dopus.v1";
 pub const VERBS: &[(&str, bool)] = &[
     ("dopus.ping", true),
     ("dopus.describe", true),
+    ("app.describe", true),
     ("dopus.info", true),
     ("dopus.state", true),
     ("dopus.action", false),
@@ -302,31 +303,41 @@ pub struct ServerMeta {
 /// One served command's answer.
 pub enum Served {
     ToggleSidebar {
-        id: u64,
+        id: crate::bus::Request,
         sidebar: dopus_core::config::Sidebar,
         action: String,
     },
     /// Reply `(rc, body)` to command `id`.
-    Reply { id: u64, rc: u8, body: String },
+    Reply {
+        id: crate::bus::Request,
+        rc: u8,
+        body: String,
+    },
     /// Apply the theme selection, then reply to `id` with the resolved
     /// `(scheme, mode)` names.
     ThemeSet {
-        id: u64,
+        id: crate::bus::Request,
         scheme: Option<String>,
         mode: Option<String>,
     },
     /// Perform the theme selection of a `dopus.action theme.*` call: the
     /// windowed twin of [`Served::ThemeSet`] (mode-toggle resolves against
     /// the live selection; headless refuses UNAVAILABLE).
-    ThemeAction { id: u64, action: ThemeAction },
+    ThemeAction {
+        id: crate::bus::Request,
+        action: ThemeAction,
+    },
     /// Focus the requested location bar, then acknowledge the action.
-    LocationFocus { id: u64, pane: PaneId },
+    LocationFocus {
+        id: crate::bus::Request,
+        pane: PaneId,
+    },
     /// Reply to `id`, then quit.
-    Quit { id: u64 },
+    Quit { id: crate::bus::Request },
 }
 
 impl Served {
-    fn reply_json<T: serde::Serialize>(id: u64, value: &T) -> Self {
+    fn reply_json<T: serde::Serialize>(id: crate::bus::Request, value: &T) -> Self {
         Self::Reply {
             id,
             rc: 0,
@@ -334,7 +345,7 @@ impl Served {
         }
     }
 
-    fn refusal(id: u64, refusal: Refusal) -> Self {
+    fn refusal(id: crate::bus::Request, refusal: Refusal) -> Self {
         Self::Reply {
             id,
             rc: 10,
@@ -343,7 +354,7 @@ impl Served {
         }
     }
 
-    fn error(id: u64, error_code: &str, message: String) -> Self {
+    fn error(id: crate::bus::Request, error_code: &str, message: String) -> Self {
         Self::refusal(
             id,
             Refusal {
@@ -781,7 +792,7 @@ pub fn serve_command(
 ) -> Vec<Served> {
     match command.verb.as_str() {
         "dopus.ping" => vec![Served::reply_json(
-            command.id,
+            command.id.clone(),
             &PingReply {
                 pong: true,
                 service: meta.service.clone(),
@@ -790,8 +801,8 @@ pub fn serve_command(
                 headless: meta.headless,
             },
         )],
-        "dopus.describe" => vec![Served::reply_json(
-            command.id,
+        "dopus.describe" | "app.describe" => vec![Served::reply_json(
+            command.id.clone(),
             &DescribeReply {
                 contract: "ctk-app-control.v0".to_owned(),
                 app: "dopus".to_owned(),
@@ -805,7 +816,7 @@ pub fn serve_command(
             },
         )],
         "dopus.info" => vec![Served::reply_json(
-            command.id,
+            command.id.clone(),
             &InfoReply {
                 version: info.version.to_owned(),
                 git_sha: info.git_sha.to_owned(),
@@ -825,7 +836,7 @@ pub fn serve_command(
                 theme_mode: meta.theme_mode.clone(),
                 appearance: meta.appearance.clone(),
             };
-            vec![Served::reply_json(command.id, &state)]
+            vec![Served::reply_json(command.id.clone(), &state)]
         }
         "dopus.action" => match serde_json::from_str::<ActionReq>(&command.body) {
             Ok(req) => {
@@ -838,51 +849,51 @@ pub fn serve_command(
                     // remote caller never mutates the filesystem through a file
                     // manager.
                     Ok(action) if action.as_str().starts_with("file.") => vec![Served::error(
-                        command.id,
+                        command.id.clone(),
                         code::FORBIDDEN,
                         format!("{action} is keyboard-only — the Bus never mutates the filesystem through a file manager"),
                     )],
                     Ok(action) => match apply_action_in(action, core, pane) {
-                        Ok(Applied::ToggleSidebar(_)) if meta.headless || !meta.location_focus_available => vec![Served::refusal(command.id, Refusal {
+                        Ok(Applied::ToggleSidebar(_)) if meta.headless || !meta.location_focus_available => vec![Served::refusal(command.id.clone(), Refusal {
                             error_code: code::UNAVAILABLE.to_owned(),
                             message: "sidebar toggles need an available window".to_owned(),
                             reason: Some(if meta.headless { "headless" } else { "window_busy" }.to_owned()),
                         })],
-                        Ok(Applied::ToggleSidebar(sidebar)) => vec![Served::ToggleSidebar { id: command.id, sidebar, action: req.id }],
+                        Ok(Applied::ToggleSidebar(sidebar)) => vec![Served::ToggleSidebar { id: command.id.clone(), sidebar, action: req.id }],
                         Ok(Applied::LocationFocus(_)) if meta.headless || !meta.location_focus_available => {
-                            vec![Served::refusal(command.id, Refusal {
+                            vec![Served::refusal(command.id.clone(), Refusal {
                                 error_code: code::UNAVAILABLE.to_owned(),
                                 message: "location focus needs an available window editor".to_owned(),
                                 reason: Some(if meta.headless { "headless" } else { "window_busy" }.to_owned()),
                             })]
                         }
-                        Ok(Applied::LocationFocus(pane)) => vec![Served::LocationFocus { id: command.id, pane }],
+                        Ok(Applied::LocationFocus(pane)) => vec![Served::LocationFocus { id: command.id.clone(), pane }],
                         Ok(Applied::Done) => vec![Served::reply_json(
-                            command.id,
+                            command.id.clone(),
                             &ActionReply { id: req.id, ok: true, result: None },
                         )],
                         // The theme.* actions: UNAVAILABLE on headless (the
                         // theme.set pre-refusal's wording — the vocabulary is
                         // real, the painter is not), performed windowed.
                         Ok(Applied::Theme(_)) if meta.headless => vec![Served::refusal(
-                            command.id,
+                            command.id.clone(),
                             Refusal {
                                 error_code: code::UNAVAILABLE.to_owned(),
                                 message: "theme selection needs the windowed app (headless paints nothing)".to_owned(),
                                 reason: Some("headless".to_owned()),
                             },
                         )],
-                        Ok(Applied::Theme(theme)) => vec![Served::ThemeAction { id: command.id, action: theme }],
+                        Ok(Applied::Theme(theme)) => vec![Served::ThemeAction { id: command.id.clone(), action: theme }],
                         Ok(Applied::Quit) => vec![
-                            Served::reply_json(command.id, &QuitReply { quitting: true }),
-                            Served::Quit { id: command.id },
+                            Served::reply_json(command.id.clone(), &QuitReply { quitting: true }),
+                            Served::Quit { id: command.id.clone() },
                         ],
-                        Err(refusal) => vec![Served::refusal(command.id, refusal)],
+                        Err(refusal) => vec![Served::refusal(command.id.clone(), refusal)],
                     },
-                    Err(error) => vec![Served::error(command.id, code::INVALID_ARGUMENT, format!("action id {:?}: {error}", req.id))],
+                    Err(error) => vec![Served::error(command.id.clone(), code::INVALID_ARGUMENT, format!("action id {:?}: {error}", req.id))],
                 }
             },
-            Err(error) => vec![Served::error(command.id, code::INVALID_ARGUMENT, format!("body: {error}"))],
+            Err(error) => vec![Served::error(command.id.clone(), code::INVALID_ARGUMENT, format!("body: {error}"))],
         },
         "dopus.actions.list" => {
             // `enabled` is per-frame from the core's availability (P3): the
@@ -895,17 +906,17 @@ pub fn serve_command(
                     row.enabled = !meta.headless && meta.location_focus_available;
                 }
             }
-            vec![Served::reply_json(command.id, &ActionsReply { actions })]
+            vec![Served::reply_json(command.id.clone(), &ActionsReply { actions })]
         }
         "dopus.theme.set" => match serde_json::from_str::<ThemeSetReq>(&command.body) {
-            Ok(req) => vec![Served::ThemeSet { id: command.id, scheme: req.scheme, mode: req.mode }],
-            Err(error) => vec![Served::error(command.id, code::INVALID_ARGUMENT, format!("body: {error}"))],
+            Ok(req) => vec![Served::ThemeSet { id: command.id.clone(), scheme: req.scheme, mode: req.mode }],
+            Err(error) => vec![Served::error(command.id.clone(), code::INVALID_ARGUMENT, format!("body: {error}"))],
         },
         "dopus.open" => match serde_json::from_str::<OpenReq>(&command.body) {
             Ok(req) => {
                 if let Some(target) = req.pane {
                     if req.paths.len() != 1 {
-                        return vec![Served::error(command.id, code::INVALID_ARGUMENT,
+                        return vec![Served::error(command.id.clone(), code::INVALID_ARGUMENT,
                             "pane-targeted open requires exactly one path".to_owned())];
                     }
                     let pane = target.resolve(core);
@@ -914,18 +925,18 @@ pub fn serve_command(
                     apply_open_paths(core, &req.paths);
                 }
                 vec![Served::reply_json(
-                    command.id,
+                    command.id.clone(),
                     &OpenReply { accepted: req.paths.len(), opened: !req.paths.is_empty() },
                 )]
             }
-            Err(error) => vec![Served::error(command.id, code::INVALID_ARGUMENT, format!("body: {error}"))],
+            Err(error) => vec![Served::error(command.id.clone(), code::INVALID_ARGUMENT, format!("body: {error}"))],
         },
         "dopus.quit" => vec![
-            Served::reply_json(command.id, &QuitReply { quitting: true }),
-            Served::Quit { id: command.id },
+            Served::reply_json(command.id.clone(), &QuitReply { quitting: true }),
+            Served::Quit { id: command.id.clone() },
         ],
         other => vec![Served::error(
-            command.id,
+            command.id.clone(),
             code::UNKNOWN_VERB,
             format!("{other} is not a dopus verb (schema {SCHEMA})"),
         )],

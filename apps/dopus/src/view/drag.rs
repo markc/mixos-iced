@@ -457,7 +457,7 @@ fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rect
     // with the listing's single-line paragraphs before handing off owned text.
     let width = (clip.x + clip.width - position.x - look.chrome.pad).max(0.0);
     let label = super::elide::middle(content, width, |value| {
-        super::elide::shape(value, look.ui_font, look.px)
+        super::elide::shape_with_line_height(value, look.ui_font, look.px, look.ui_line_height)
             .min_bounds()
             .width
     });
@@ -468,7 +468,7 @@ fn draw_text(renderer: &mut Renderer, content: &str, position: Point, clip: Rect
                 bounds: Size::new(width, clip.height),
                 size: application::iced::Pixels(look.px),
                 line_height: application::iced::advanced::text::LineHeight::Absolute(
-                    application::iced::Pixels(look.px * 1.4),
+                    application::iced::Pixels(look.ui_line_height.unwrap_or(look.px * 1.4)),
                 ),
                 font: look.ui_font,
                 align_x: application::iced::advanced::text::Alignment::Left,
@@ -542,8 +542,13 @@ mod tests {
             chrome: theme.chrome,
             ui_font: theme.ui_font,
             mono_font: theme.mono_font,
+            small_font: theme.small_font,
             px: theme.ui_px(),
             mono_px: theme.mono.1,
+            ui_line_height: theme.ui_line_height,
+            mono_line_height: theme.mono_line_height,
+            small_line_height: theme.small_line_height,
+            density: theme.density,
         }
     }
 

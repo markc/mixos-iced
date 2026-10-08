@@ -1,103 +1,315 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The Bus thread — ced's `bus.rs` shape (itself the
-//! `mixos-term-core/src/bus.rs` shape): a current-thread tokio runtime on its
-//! own OS thread holding a [`SupervisedClient`] registered as `dopus` (or
-//! `--service NAME`) with `fatal_on_registration_rejection(true)`. It forwards
-//! `dopus.*` commands and `theme.changed` topic frames to the app through an
-//! unbounded futures channel (exposed as a `Subscription`, no poll thread),
-//! reports connection edges, and carries the app's replies back.
-//!
-//! **No broker is not an error**: [`spawn`] returns [`StartError::Unreachable`]
-//! and the app runs windowed without a Bus — a file manager works standalone.
-//!
-//! Security posture (see `verbs.rs`): file-mutating verbs do not exist on
-//! the Bus surface; `dopus.action` refuses them in the app layer.
+//! One supervised Bus actor with bounded owned work and offline GUI startup.
+use ::bus::native_client::{
+    BoundedIncomingEvent, ConnState, IncomingCommand, NodedClient, RegistrationRejectionKind,
+    SupervisedClient,
+};
+use application::iced::futures::channel::mpsc::{Receiver, Sender, channel};
+use application::message::Once;
+use application::native_actor::{
+    Accepted, Faults, Reply as NativeReply, TaskSet, cancel, reap, submit_replies,
+};
+use application::native_queue::{Admission, Flush, Outbox, Permit, SendError};
+use application::presentation::native::{
+    Event as SettingsEvent, Progress, Session, Ui as SettingsUi, Worker as SettingsWorker, bridge,
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+mod actor;
+#[cfg(test)]
+mod actor_tests;
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-use std::time::Duration;
-
-use ::bus::native_client::{ConnState, IncomingCommand, NodedClient, SupervisedClient};
-use application::iced::futures::channel::mpsc::{UnboundedReceiver, unbounded};
+/// Clones retain one response/mutation token and the receiving generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub id: u64,
+    generation: u64,
+    ticket: Once<u64>,
+}
+impl Request {
+    fn new(id: u64, generation: u64) -> Self {
+        Self {
+            id,
+            generation,
+            ticket: Once::new(id),
+        }
+    }
+}
+#[cfg(test)]
+impl From<u64> for Request {
+    fn from(id: u64) -> Self {
+        Self::new(id, 0)
+    }
+}
+#[cfg(test)]
+impl From<i32> for Request {
+    fn from(id: i32) -> Self {
+        Self::new(u64::try_from(id).expect("nonnegative fixture id"), 0)
+    }
+}
 
 /// Everything the bus thread delivers to the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
-    /// A `dopus.*` command (topics are separated out below).
+    /// A `dopus.*` command.
     Command(Command),
-    /// The `theme.changed` topic fired (body is the theme selection; the app
-    /// re-resolves from the files, the same as ctk).
-    ThemeChanged,
+    /// The supervised connection came up (registration succeeded).
     Connected,
     Disconnected,
+    /// A settings stage is ready to drain on the UI loop.
+    Settings,
+    /// The service name is registered (before or with the first Connected).
+    Registered,
+    /// Registration ended fatally without (or after) owning the name. The
+    /// window stays up; an initial [`StartError::NameTaken`] is the
+    /// single-instance forward case.
+    RegistrationFailed(StartError),
+    /// The single-instance forward answered.
+    Forwarded(Result<(), String>),
+    /// A `theme.*` appearance mutation answered: the applied `(scheme,
+    /// mode)` names, or the refusal message for the status line.
+    ThemeApplied(Result<(String, String), String>),
+    /// The bus thread finished (replies flushed, cache drained); the faults
+    /// list is empty on a clean shutdown.
+    Stopped {
+        faults: Vec<String>,
+    },
 }
 
 /// One request to dopus. `id` indexes a pending reply; `None`-reply verbs
 /// still get one (an error reply at least).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
-    pub id: u64,
+    pub id: Request,
     pub verb: String,
     pub body: String,
     /// `local:<from>` / `mesh:<service>@<peer>` / `anon` (editd E0 §4.3).
     pub caller_key: String,
 }
 
-/// Effects the app sends back to the bus thread.
+/// One fenced appearance mutation, captured on the UI thread from the
+/// CONFIRMED consumer read: the binding, incarnation and revision the apply
+/// must still match, plus a fresh operation id. The worker validates then
+/// applies against `settingsd`; the reply is the real receipt.
 #[derive(Debug, Clone)]
+pub struct ThemeRequest {
+    /// The `dopus.theme.set`/`dopus.action theme.*` command id, when any.
+    pub reply_id: Option<Request>,
+    pub binding: settings::Binding,
+    pub expected_incarnation: String,
+    pub expected_revision: settings::Revision,
+    pub operation_id: String,
+    pub changes: BTreeMap<String, serde_json::Value>,
+    /// The requested selection, echoed on a successful apply.
+    pub scheme: String,
+    pub mode: String,
+}
+
 pub enum Effect {
-    /// Reply to command `id` with `(rc, body)`.
-    Respond { id: u64, rc: u8, body: String },
-    /// Stop the bus thread (the app is quitting).
+    Respond {
+        id: u64,
+        rc: u8,
+        body: String,
+    },
+    ForwardOpen {
+        paths: Vec<String>,
+        permit: Permit,
+    },
+    ThemeApply {
+        request: Box<ThemeRequest>,
+        generation: Option<u64>,
+        deadline: Instant,
+        permit: Permit,
+    },
     Quit,
 }
-
-/// The handle the app uses to reply / quit.
-#[derive(Clone)]
+impl std::fmt::Debug for Effect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Respond { id, rc, .. } => f
+                .debug_struct("Respond")
+                .field("id", id)
+                .field("rc", rc)
+                .finish(),
+            Self::ForwardOpen { .. } => f.write_str("ForwardOpen(..)"),
+            Self::ThemeApply { .. } => f.write_str("ThemeApply(..)"),
+            Self::Quit => f.write_str("Quit"),
+        }
+    }
+}
+#[derive(Default)]
+struct Done {
+    finished: bool,
+    faults: Vec<String>,
+    fault_count: u64,
+}
 pub struct BusHandle {
     tx: tokio::sync::mpsc::UnboundedSender<Effect>,
-    /// Set + notified when the bus thread has finished (replies flushed,
-    /// client closed) — `wait_done` before process exit guarantees the
-    /// last reply reached the wire instead of racing it. Arc-shared so
-    /// the handle stays Clone (a raw Receiver is not).
-    done: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    done: Arc<(std::sync::Mutex<Done>, std::sync::Condvar)>,
+    client: Option<Arc<SupervisedClient>>,
+    settings: Option<SettingsUi<crate::app::Content, crate::app::PreparationContext>>,
+    bootstrap: Option<appearance::settings::Prepared>,
+    themes: Admission,
+    quitting: Arc<std::sync::atomic::AtomicBool>,
+    forwarded: Arc<std::sync::atomic::AtomicBool>,
 }
-
+// Control handles share requests; only the original owns the startup UI and
+// bootstrap, which its take methods transfer to the window.
+impl Clone for BusHandle {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            done: Arc::clone(&self.done),
+            client: self.client.clone(),
+            settings: None,
+            bootstrap: None,
+            themes: self.themes.clone(),
+            quitting: Arc::clone(&self.quitting),
+            forwarded: Arc::clone(&self.forwarded),
+        }
+    }
+}
 impl BusHandle {
-    /// Exercise the real window command performer without a broker connection.
     #[cfg(test)]
     pub fn response_sink() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Effect>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (
             Self {
                 tx,
-                done: std::sync::Arc::new((std::sync::Mutex::new(true), std::sync::Condvar::new())),
+                done: Arc::new((
+                    std::sync::Mutex::new(Done {
+                        finished: true,
+                        ..Default::default()
+                    }),
+                    std::sync::Condvar::new(),
+                )),
+                client: None,
+                settings: None,
+                bootstrap: None,
+                themes: Admission::new(THEME_QUEUE_BOUND),
+                quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             rx,
         )
     }
-
-    pub fn respond(&self, id: u64, rc: u8, body: String) {
-        let _ = self.tx.send(Effect::Respond { id, rc, body });
+    pub fn take_settings_ui(
+        &mut self,
+    ) -> Option<SettingsUi<crate::app::Content, crate::app::PreparationContext>> {
+        self.settings.take()
     }
-
-    pub fn quit(&self) {
-        let _ = self.tx.send(Effect::Quit);
+    pub fn take_bootstrap(&mut self) -> Option<appearance::settings::Prepared> {
+        self.bootstrap.take()
     }
-
-    /// Block until the bus thread is finished (bounded). Call after
-    /// [`BusHandle::quit`] and before exiting the process.
-    pub fn wait_done(&self, timeout: Duration) {
-        let (lock, notified) = &*self.done;
-        let finished = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *finished {
+    pub fn settings_generation(&self) -> Option<u64> {
+        self.client
+            .as_ref()
+            .and_then(|client| settings::native::live_generation(client))
+    }
+    pub fn registration_generation(&self) -> u64 {
+        self.client
+            .as_ref()
+            .map_or(0, |client| client.connection_generation())
+    }
+    pub fn connected(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_none_or(|client| settings::native::live_generation(client).is_some())
+    }
+    pub fn is_current(&self, request: &Request) -> bool {
+        self.client.as_ref().is_none_or(|client| {
+            settings::native::live_generation(client) == Some(request.generation)
+        })
+    }
+    pub fn respond(&self, request: impl Into<Request>, rc: u8, body: String) {
+        let request = request.into();
+        let Some(id) = request.ticket.take() else {
+            return;
+        };
+        if self.is_current(&request) {
+            let _ = self.tx.send(Effect::Respond { id, rc, body });
+        }
+    }
+    pub fn forward_open(&self, paths: Vec<String>) {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .forwarded
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
             return;
         }
-        let _ = notified
-            .wait_timeout_while(finished, timeout, |finished| !*finished)
+        let permit = Admission::new(1)
+            .try_acquire()
+            .expect("single lifetime forward");
+        if let Err(error) = self.tx.send(Effect::ForwardOpen { paths, permit }) {
+            actor::retire_unsent(error.0);
+        }
+    }
+    pub fn theme_apply(&self, request: ThemeRequest) -> Result<(), String> {
+        if self.quitting.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Bus worker stopped".into());
+        }
+        let Some(permit) = self.themes.try_acquire() else {
+            if let Some(id) = request.reply_id {
+                self.respond(
+                    id,
+                    10,
+                    "{\"error_code\":\"BUSY\",\"message\":\"appearance queue exhausted\"}".into(),
+                );
+            }
+            return Err("appearance queue exhausted".into());
+        };
+        if let Some(id) = &request.reply_id
+            && (!self.is_current(id) || id.ticket.take().is_none())
+        {
+            permit.finish();
+            return Err("Bus theme request retired".into());
+        }
+        let effect = Effect::ThemeApply {
+            request: Box::new(request),
+            generation: self.settings_generation(),
+            deadline: Instant::now() + SHUTDOWN_BUDGET,
+            permit,
+        };
+        if let Err(error) = self.tx.send(effect) {
+            actor::retire_unsent(error.0);
+            return Err("Bus worker stopped".into());
+        }
+        Ok(())
+    }
+    pub fn quit(&self) {
+        if !self
+            .quitting
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            let _ = self.tx.send(Effect::Quit);
+        }
+    }
+    /// Actual worker completion, with bounded retained fault text. A completed
+    /// thread does not establish delivery of unconfirmed native replies.
+    pub fn wait_done(&self, timeout: Duration) -> Result<Vec<String>, String> {
+        let (lock, notified) = &*self.done;
+        let state = lock
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut state, _) = notified
+            .wait_timeout_while(state, timeout, |state| !state.finished)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.finished {
+            Ok(std::mem::take(&mut state.faults))
+        } else {
+            Err("Bus shutdown did not complete in time".into())
+        }
+    }
+    pub fn shutdown_fault_count(&self) -> u64 {
+        self.done
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fault_count
     }
 }
 
@@ -110,6 +322,8 @@ pub enum StartError {
     Rejected(String),
     /// No broker reachable — run windowed without a Bus.
     Unreachable(String),
+    /// The local desktop settings binding could not be resolved.
+    SettingsBinding(String),
 }
 
 impl std::fmt::Display for StartError {
@@ -118,6 +332,7 @@ impl std::fmt::Display for StartError {
             StartError::NameTaken => f.write_str("the service name is already registered"),
             StartError::Rejected(m) => write!(f, "registration refused: {m}"),
             StartError::Unreachable(m) => write!(f, "Bus unreachable: {m}"),
+            StartError::SettingsBinding(m) => write!(f, "settings session: {m}"),
         }
     }
 }
@@ -140,266 +355,259 @@ pub fn caller_key(cmd: &IncomingCommand) -> String {
 
 /// Initial connect + register budget.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Single-instance probe deadline.
-const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-/// The topic the shared theme selection announces on.
-pub const THEME_TOPIC: &str = "theme.changed";
-
-/// Start the bus thread registered as `service`, connecting to `url`
-/// (`::bus::client_helpers::resolve_noded_url()` unless
-/// `--noded-url` overrode it).
-pub fn spawn(
-    service: &str,
-    url: &str,
-) -> Result<(BusHandle, UnboundedReceiver<Delivery>), StartError> {
-    let (dtx, drx) = unbounded();
-    let (etx, erx) = tokio::sync::mpsc::unbounded_channel();
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let done = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    let done_thread = std::sync::Arc::clone(&done);
-    let service = service.to_string();
-    let url = url.to_owned();
-    std::thread::Builder::new()
-        .name(format!("{service}-bus"))
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ =
-                        ready_tx.send(Err(StartError::Unreachable(format!("Bus runtime: {e}"))));
-                    return;
-                }
-            };
-            runtime.block_on(run(service, url, dtx, erx, ready_tx));
-            let (lock, notified) = &*done_thread;
-            *lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-            notified.notify_all();
-        })
-        .map_err(|e| StartError::Unreachable(format!("Bus thread: {e}")))?;
-    match ready_rx.recv() {
-        Ok(Ok(())) => Ok((BusHandle { tx: etx, done }, drx)),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(StartError::Unreachable("the Bus thread exited".into())),
+/// The single shutdown budget: accepted jobs, the retained outbox, the
+/// settings cache drain and the client close share this ONE deadline.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
+/// The bounded incoming queue (the settingsd/ced shape): overflow drops the
+/// oldest frames and publishes one full settings read.
+const INCOMING_BOUND: usize = 64;
+/// The bounded GUI delivery channel behind the retained outbox.
+const DELIVERY_BOUND: usize = 64;
+/// The typed registration classification for the supervised client: a name
+/// collision counts as the single-instance case ONLY before the first
+/// successful registration (generation zero); unknown/admission refusals and
+/// post-registration failures stay refusals/notice.
+fn registration_error(client: &SupervisedClient) -> StartError {
+    let rejection = client.registration_rejection();
+    match rejection.map(|rejection| (rejection.kind(), rejection.rc, rejection.message)) {
+        Some((RegistrationRejectionKind::NameTaken, ..)) if client.connection_generation() == 0 => {
+            StartError::NameTaken
+        }
+        Some((_, rc, message)) => StartError::Rejected(format!("rc {rc}: {message}")),
+        None => StartError::Unreachable("connection stopped".into()),
     }
 }
 
-async fn run(
-    service: String,
-    url: String,
-    dtx: application::iced::futures::channel::mpsc::UnboundedSender<Delivery>,
-    mut erx: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: std::sync::mpsc::Sender<Result<(), StartError>>,
-) {
-    let connect = SupervisedClient::connect_options(&service, &url)
-        .fatal_on_registration_rejection(true)
-        .connect();
-    let client = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
-        Ok(Ok(c)) => Arc::new(c),
-        Ok(Err(e)) => {
-            let err = match e.registration_rejection() {
-                Some((_, msg)) if msg.contains("already registered") => StartError::NameTaken,
-                Some((rc, msg)) => StartError::Rejected(format!("rc {rc}: {msg}")),
-                None => StartError::Unreachable(e.to_string()),
-            };
-            let _ = ready.send(Err(err));
-            return;
-        }
-        Err(_) => {
-            let _ = ready.send(Err(StartError::Unreachable("connect timed out".into())));
-            return;
-        }
-    };
-    let Some(mut incoming) = client.incoming() else {
-        let _ = ready.send(Err(StartError::Unreachable("no incoming channel".into())));
-        return;
-    };
-    let mut state = client.subscribe_state();
-    let _ = ready.send(Ok(()));
-
-    // Commands awaiting a reply from the app.
-    let mut commands: HashMap<u64, IncomingCommand> = HashMap::new();
-    let mut next_command = 0u64;
-    loop {
-        tokio::select! {
-            cmd = incoming.recv() => {
-                let Some(cmd) = cmd else { break };
-                if let Some(topic) = cmd.topic() {
-                    if topic == THEME_TOPIC {
-                        let _ = dtx.unbounded_send(Delivery::ThemeChanged);
-                    }
-                    continue;
-                }
-                if cmd.command.is_empty() {
-                    continue;
-                }
-                next_command += 1;
-                let delivery = Delivery::Command(Command {
-                    id: next_command,
-                    verb: cmd.command.clone(),
-                    body: if cmd.body.trim().is_empty() { "{}".to_string() } else { cmd.body.clone() },
-                    caller_key: caller_key(&cmd),
-                });
-                if cmd.id.is_some() {
-                    commands.insert(next_command, cmd);
-                }
-                let _ = dtx.unbounded_send(delivery);
-            }
-            effect = erx.recv() => {
-                let Some(effect) = effect else { break };
-                match effect {
-                    Effect::Respond { id, rc, body } => {
-                        if let Some(cmd) = commands.remove(&id) {
-                            // Awaited INLINE, not spawned: a reply —
-                            // `dopus.quit`'s above all — must be on the wire
-                            // before this loop can break (Effect::Quit) and
-                            // close the client under it. The 2 s cap keeps a
-                            // wedged broker from hanging the thread.
-                            let _ =
-                                tokio::time::timeout(Duration::from_secs(2), client.respond(&cmd, rc, &body)).await;
-                        }
-                    }
-                    Effect::Quit => {
-                        // A quit racing its own reply must not swallow it:
-                        // headless replies-then-quits in one breath, and
-                        // select! may pick this arm while the Respond is
-                        // still queued — drain every pending reply (each
-                        // awaited inline, same 2 s cap) before breaking.
-                        while let Ok(effect) = erx.try_recv() {
-                            if let Effect::Respond { id, rc, body } = effect
-                                && let Some(cmd) = commands.remove(&id)
-                            {
-                                let _ = tokio::time::timeout(
-                                    Duration::from_secs(2),
-                                    client.respond(&cmd, rc, &body),
-                                )
-                                .await;
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-            changed = state.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let edge = match *state.borrow_and_update() {
-                    ConnState::Connected => Some(Delivery::Connected),
-                    ConnState::Disconnected => Some(Delivery::Disconnected),
-                    ConnState::ShuttingDown | ConnState::Fatal => {
-                        break;
-                    }
-                    ConnState::Connecting => None,
-                };
-                if let Some(edge) = edge {
-                    let _ = dtx.unbounded_send(edge);
-                }
-            }
-        }
-    }
-    let _ = tokio::time::timeout(Duration::from_secs(2), client.close()).await;
+const PENDING_BOUND: usize = 32;
+const JOB_BOUND: usize = 16;
+const THEME_QUEUE_BOUND: usize = 4;
+pub fn spawn(service: &str, url: &str) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    actor::start(
+        service,
+        url,
+        false,
+        DELIVERY_BOUND,
+        #[cfg(test)]
+        None,
+    )
 }
-
-/// One anonymous request to `service`, bounded by `limit`.
-fn anonymous_call(
-    url: &str,
+pub fn spawn_settings(
     service: &str,
-    verb: &str,
-    body: &serde_json::Value,
-    limit: Duration,
-) -> Option<(u8, String)> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    runtime.block_on(async {
-        let call = async {
-            let client = NodedClient::connect_anonymous(url).await.ok()?;
-            let reply = client
-                .call_with_headers_raw(service, verb, &BTreeMap::new(), &body.to_string())
-                .await
-                .ok();
-            client.close().await;
-            reply.map(|(rc, body, _)| (rc, body))
-        };
-        tokio::time::timeout(limit, call).await.ok().flatten()
-    })
-}
-
-/// Single-instance probe: an anonymous `dopus.ping` with a 500 ms deadline;
-/// `true` when an instance answered.
-pub fn probe_running(url: &str, service: &str) -> bool {
-    matches!(
-        anonymous_call(
-            url,
-            service,
-            "dopus.ping",
-            &serde_json::json!({}),
-            PROBE_TIMEOUT
-        ),
-        Some((0, _))
+    url: &str,
+) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    actor::start(
+        service,
+        url,
+        true,
+        DELIVERY_BOUND,
+        #[cfg(test)]
+        None,
     )
 }
 
-/// Single-instance forward: send the argv paths as `dopus.open`. The running
-/// instance routes them into its panes (first → left, second → right), and
-/// this reports success — the forward worked.
-pub fn forward_open(url: &str, service: &str, paths: &[String]) -> Result<(), String> {
-    match anonymous_call(
-        url,
-        service,
-        "dopus.open",
-        &serde_json::json!({ "paths": paths }),
-        Duration::from_secs(5),
-    ) {
-        Some((0, _)) => Ok(()),
-        Some((rc, body)) => Err(format!("dopus.open refused (rc {rc}): {body}")),
-        None => Err(format!("no answer from {service}")),
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+struct ActorProbe {
+    generation: u64,
+    connected: bool,
+    pending: usize,
+    active: usize,
+    reliable: usize,
+    reply_tasks: usize,
+    replies: usize,
+    themes: usize,
+    invariant_faults: usize,
+}
+
+async fn call_settings(
+    client: &SupervisedClient,
+    generation: u64,
+    verb: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (rc, body, _) = client
+        .call_with_headers_raw_at_generation(
+            generation,
+            "settingsd",
+            verb,
+            &BTreeMap::new(),
+            &body.to_string(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if rc == 0 {
+        serde_json::from_str(&body).map_err(|error| error.to_string())
+    } else {
+        Err(body)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The refusal `settingsd` returned, mapped to dopus's error vocabulary.
+/// `status` is the authority's structured status field; `body` may carry a
+/// message.
+fn settings_refusal(status: &str, value: &serde_json::Value) -> (String, String) {
+    let message = value
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| match status {
+            "conflict" => format!(
+                "settings conflict: the desktop revision moved to {}",
+                value
+                    .get("revision")
+                    .map(|revision| revision.to_string())
+                    .unwrap_or_else(|| "?".to_owned())
+            ),
+            _ => status.to_owned(),
+        });
+    let code = match status {
+        "conflict" => "CONFLICT",
+        "validation_failed" => "INVALID_ARGUMENT",
+        _ => "INTERNAL",
+    };
+    (code.to_owned(), message)
+}
 
-    fn cmd(from: &str, headers: &[(&str, &str)]) -> IncomingCommand {
-        IncomingCommand {
-            generation: 0,
-            from: from.to_string(),
-            command: "dopus.ping".into(),
-            id: Some("1".into()),
-            args: serde_json::Value::Null,
-            body: String::new(),
-            headers: headers
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+/// Map an authority reply error to the app's refusal vocabulary: a
+/// structured refusal body keeps its status; anything else (transport,
+/// timeout) is UNAVAILABLE.
+fn authority_refusal(message: &str) -> (String, String) {
+    match serde_json::from_str::<serde_json::Value>(message) {
+        Ok(value) => {
+            let status = value
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            settings_refusal(status, &value)
         }
+        Err(_) => ("UNAVAILABLE".to_owned(), message.to_owned()),
     }
+}
 
-    #[test]
-    fn caller_keys_follow_editd_rules() {
-        assert_eq!(
-            caller_key(&cmd("ctl-90", &[("broker_origin", "local")])),
-            "local:ctl-90"
+/// Validate the fenced appearance candidate against `settingsd`, then apply
+/// it. Both calls share ONE two-second deadline. The result is the real
+/// receipt: `changed`/`unchanged`/`replayed` echo the requested selection,
+/// refusals surface verbatim — never a faked success, and never a local
+/// authority.
+async fn theme_apply(
+    client: &SupervisedClient,
+    generation: Option<u64>,
+    deadline: Instant,
+    request: &ThemeRequest,
+) -> (u8, String, Result<(String, String), String>) {
+    let refused = |code: &str, message: String| {
+        (
+            10,
+            serde_json::to_string(&crate::verbs::Refusal {
+                error_code: code.to_owned(),
+                message: message.clone(),
+                reason: None,
+            })
+            .unwrap_or_default(),
+            Err(message),
+        )
+    };
+    let body = serde_json::json!({
+        "binding": request.binding,
+        "expected_incarnation": request.expected_incarnation,
+        "expected_revision": request.expected_revision,
+        "operation_id": request.operation_id,
+        "changes": request.changes,
+        "reset": [],
+    });
+    let Some(generation) = generation
+        .filter(|generation| settings::native::live_generation(client) == Some(*generation))
+    else {
+        return refused(
+            "UNAVAILABLE",
+            "queued appearance mutation retired; no call sent".into(),
         );
-        assert_eq!(caller_key(&cmd("", &[("broker_origin", "local")])), "anon");
-        assert_eq!(
-            caller_key(&cmd(
-                "x",
-                &[
-                    ("broker_origin", "mesh"),
-                    ("broker_service", "svc"),
-                    ("broker_peer", "beta")
-                ]
-            )),
-            "mesh:svc@beta"
+    };
+    if Instant::now() >= deadline {
+        return refused(
+            "UNAVAILABLE",
+            "queued appearance mutation expired; no call sent".into(),
         );
-        assert_eq!(caller_key(&cmd("x", &[])), "anon");
     }
+    let deadline = tokio::time::Instant::from_std(deadline);
+    let outcome: Result<(), (String, String)> = match tokio::time::timeout_at(deadline, async {
+        let validated = call_settings(client, generation, "settings.validate", body.clone())
+            .await
+            .map_err(|message| authority_refusal(&message))?;
+        let status = validated.get("status").and_then(|s| s.as_str());
+        if status != Some("valid") {
+            return Err(settings_refusal(
+                status.unwrap_or("validation_failed"),
+                &validated,
+            ));
+        }
+        let applied = call_settings(client, generation, "settings.apply", body)
+            .await
+            .map_err(|message| authority_refusal(&message))?;
+        let status = applied.get("status").and_then(|s| s.as_str());
+        match status {
+            Some("changed" | "unchanged") => Ok(()),
+            _ => Err(settings_refusal(
+                status.unwrap_or("apply_refused"),
+                &applied,
+            )),
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err((
+            "UNAVAILABLE".to_owned(),
+            "the settings authority did not answer in time".to_owned(),
+        )),
+    };
+    match outcome {
+        Ok(()) => (
+            0,
+            serde_json::to_string(&crate::verbs::ThemeSetReply {
+                scheme: request.scheme.clone(),
+                mode: request.mode.clone(),
+            })
+            .unwrap_or_default(),
+            Ok((request.scheme.clone(), request.mode.clone())),
+        ),
+        Err((code, message)) => refused(&code, message),
+    }
+}
+
+async fn forward_open_async(url: &str, service: &str, paths: &[String]) -> Result<(), String> {
+    let client = tokio::time::timeout(Duration::from_secs(5), NodedClient::connect_anonymous(url))
+        .await
+        .map_err(|_| "forward connection timed out".to_string())?
+        .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let ping = client
+            .call_with_headers_raw(service, "dopus.ping", &BTreeMap::new(), "{}")
+            .await
+            .map_err(|error| error.to_string())?;
+        if ping.0 != 0 {
+            return Err(format!("dopus.ping refused: rc {}", ping.0));
+        }
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let reply = client
+            .call_with_headers_raw(
+                service,
+                "dopus.open",
+                &BTreeMap::new(),
+                &serde_json::json!({ "paths": paths }).to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if reply.0 == 0 {
+            Ok(())
+        } else {
+            Err(format!("dopus.open refused: rc {}: {}", reply.0, reply.1))
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("forward request timed out".into()));
+    let _ = tokio::time::timeout(Duration::from_millis(500), client.close()).await;
+    result
 }

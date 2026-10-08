@@ -34,9 +34,14 @@ impl Measurements {
 
     pub fn footer(&mut self, look: Look, pane: PaneId, text: String) -> Footer {
         self.footer_with(look, pane, text, |text| {
-            elide::shape(text, look.ui_font, look.small_px)
-                .min_bounds()
-                .width
+            elide::shape_with_line_height(
+                text,
+                look.small_font,
+                look.small_px,
+                look.small_line_height,
+            )
+            .min_bounds()
+            .width
                 + 2.0 * look.chrome.pad
         })
     }

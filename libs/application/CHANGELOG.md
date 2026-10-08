@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.21
+
+- Local preparation of unbound resources regenerates embedded icon variants
+  without resource discovery or reselection of the installed fonts.
+
 ## 0.1.20
 
 - Converge the shared description contract with native preparation and actor
