@@ -1258,9 +1258,12 @@ mod tests {
             application::test::assert_visible_bounds(service.bounds(), size);
             for text in [label("body"), label("reply")] {
                 let mut reached = false;
-                for _ in 0..40 {
+                for step in 0..40 {
                     let control = sim.find(text.clone()).expect("primary call editor label");
                     let bounds = control.bounds();
+                    if step == 0 || step == 39 {
+                        eprintln!("compact inspector size={size:?} label={text:?} step={step} bounds={bounds:?} visible={:?}", control.visible_bounds());
+                    }
                     if control.visible_bounds() == Some(bounds)
                         && bounds.y >= 0.0 && bounds.y + bounds.height <= size.height
                     {
