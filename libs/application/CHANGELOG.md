@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Share normal desktop window constraints through `Window::desktop`, retaining
+  application-specific preferred sizes and real prepared typography in compact views.
 - Carry shared typed authority preparation-failure evidence through existing
   retained native owner observations, including embedded Quoin participants.
 - Add exact typed participant owner fences for the event-driven

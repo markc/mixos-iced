@@ -295,8 +295,7 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         (app, boot),
         App::update,
         App::view,
-        application::Window::new(APP_ID, Size::new(1100.0, 760.0), ui_font)
-            .minimum(Size::new(420.0, 240.0))
+        application::Window::desktop(APP_ID, Size::new(1100.0, 760.0), ui_font)
             .defer_close(),
     )
     .title(App::title)

@@ -386,8 +386,7 @@ pub fn run(
         (app, fixture_task),
         Dopus::update,
         Dopus::view,
-        application::Window::new(APP_ID, Size::new(980.0, 640.0), ui_font)
-            .minimum(Size::new(420.0, 240.0))
+        application::Window::desktop(APP_ID, Size::new(980.0, 640.0), ui_font)
             .defer_close(),
     )
     .title(Dopus::title)

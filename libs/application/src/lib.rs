@@ -77,6 +77,14 @@ pub struct Window {
 }
 
 impl Window {
+    /// Shared lower bound for normal desktop workspaces. Preferred initial
+    /// sizes stay application-specific; compact contents scroll at real text sizes.
+    pub const DESKTOP_MINIMUM: iced::Size = iced::Size::new(420.0, 240.0);
+
+    pub fn desktop(id: impl Into<String>, size: iced::Size, font: iced::Font) -> Self {
+        Self::new(id, size, font).minimum(Self::DESKTOP_MINIMUM)
+    }
+
     pub fn new(id: impl Into<String>, size: iced::Size, font: iced::Font) -> Self {
         Self {
             settings: iced::window::Settings {

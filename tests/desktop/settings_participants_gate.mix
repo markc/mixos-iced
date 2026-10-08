@@ -1,12 +1,18 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.2.0
+-- version: 0.3.0
 -- One real owned broker/session, six simultaneous native apps plus Quoin.
 -- Four exact acceptance frame/layout stamps; Ced/Scene Editor/Quoin capture
 -- palette/boundary evidence remains explicitly different. No KMS claim.
-if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [ACTUAL_OUTPUT_SCALE]") end
+if len(args()) < 2 or len(args()) > 4 then raise("ARGS","REPO BUILD_BIN_DIR [ACTUAL_OUTPUT_SCALE [compact]]") end
 $repo=args()[0]; $bin=args()[1]; $mix=$bin .. "/mix"
-$requested_scale=if len(args()) == 3 then to_number(args()[2]) else 1.25 end
-if $requested_scale != 1 and $requested_scale != 1.25 and $requested_scale != 1.5 then raise("ARGS","Supported measured output scale: 1, 1.25 or 1.5") end
+$compact_mode=len(args()) == 4 and args()[3] == "compact"
+if len(args()) == 4 and not $compact_mode then raise("ARGS","Unknown native layout mode") end
+$requested_scale=if len(args()) >= 3 then to_number(args()[2]) else 1.25 end
+if $compact_mode then
+  if $requested_scale != 2.5 then raise("ARGS","Compact layout requires actual output scale 2.5") end
+elif $requested_scale != 1 and $requested_scale != 1.25 and $requested_scale != 1.5 then
+  raise("ARGS","Supported measured output scale: 1, 1.25 or 1.5")
+end
 export MIXOS_TEST_MIX=$mix
 export COMPD_KEEP_RUN="1"
 $n=require("nested_host_lib.mix")
@@ -158,6 +164,98 @@ fn participant_presentations($batch,$label)
     environment:"owned nested compositor; all owners concurrent; sequential native reveal after authority change",
     applied:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_applied_ns != nil),fn($row)=$row.accepted_to_applied_ns)),
     presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
+end
+fn compact_windows($area,$size)
+  $compact_rows=[]
+  $compact_windows=comp("comp.windows.list",{}).windows
+  for each $compact_owner in filter($R.owners,fn($candidate)=$candidate.name != "quoin")
+    $compact_matches=filter($compact_windows,fn($candidate)=$candidate.id == $compact_owner.window.id and $candidate.generation == $compact_owner.window.generation and $candidate.pid == $compact_owner.pid)
+    check(len($compact_matches) == 1,"Compact native owner was replaced")
+    $compact_window=$compact_matches[0]
+    check($compact_window.width == $size.width and $compact_window.height == $size.height,"Actual compact client geometry differs from requested size")
+    check($compact_window.visible and not $compact_window.minimized and not $compact_window.maximized,"Compact native owner must remain normally visible")
+    check($compact_window.width > 0 and $compact_window.height > 0 and $compact_window.x >= $area.x and $compact_window.y >= $area.y and $compact_window.x+$compact_window.width <= $area.x+$area.width and $compact_window.y+$compact_window.height <= $area.y+$area.height,"Compact native window is clipped outside usable output")
+    for each $compact_prior in $compact_rows
+      check($compact_window.x+$compact_window.width <= $compact_prior.x or $compact_prior.x+$compact_prior.width <= $compact_window.x or $compact_window.y+$compact_window.height <= $compact_prior.y or $compact_prior.y+$compact_prior.height <= $compact_window.y,"Compact native windows overlap")
+    end
+    $compact_rows=concat($compact_rows,[$compact_window])
+  end
+  check(len($compact_rows) == 6,"Compact proof requires all six native windows")
+  for each $compact_other in $compact_windows
+    if not $compact_other.visible or $compact_other.minimized or any($compact_rows,fn($candidate)=$candidate.id == $compact_other.id and $candidate.generation == $compact_other.generation) then continue end
+    for each $compact_row in $compact_rows
+      check($compact_other.x+$compact_other.width <= $compact_row.x or $compact_row.x+$compact_row.width <= $compact_other.x or $compact_other.y+$compact_other.height <= $compact_row.y or $compact_row.y+$compact_row.height <= $compact_other.y,"Unmeasured window overlaps compact population")
+    end
+  end
+  return $compact_rows
+end
+fn compact_desktop()
+  $compact_output_rows=comp("comp.props.get",{path:"outputs"})
+  check(len(keys($compact_output_rows)) == 1,"Compact proof requires one native output")
+  $compact_output=$compact_output_rows[keys($compact_output_rows)[0]]
+  check($compact_output.scale == 2.5 and $compact_output.width == 1536 and $compact_output.height == 864,"Actual compact logical output or scale differs")
+  $compact_area=$compact_output.usable
+  $compact_layouts=[]
+  for each $compact_size in [{width:420,height:240},{width:458,height:346}]
+    $compact_index=0
+    for each $compact_app in filter($R.owners,fn($candidate)=$candidate.name != "quoin")
+      $compact_column=$compact_index-floor($compact_index/3)*3
+      $compact_row_index=floor($compact_index/3)
+      comp("comp.window.focus",$compact_app.window)
+      $compact_placed=comp("comp.window.place",merge($compact_app.window,{x:$compact_area.x+40+$compact_column*($compact_size.width+40),y:$compact_area.y+40+$compact_row_index*($compact_size.height+40),width:$compact_size.width,height:$compact_size.height}))
+      check(deep_eq($compact_placed.requested,$compact_size),"Production native size hints clamped compact request")
+      check(comp("comp.window.wait",{match:$compact_app.window,until:"size",width:$compact_size.width,height:$compact_size.height,timeout_ms:3000}).window != nil,"Actual compact client did not commit requested size")
+      $compact_index=$compact_index+1
+    end
+    $compact_before=compact_windows($compact_area,$compact_size)
+    $compact_live=shell("app.describe",{}).participants.participants
+    $compact_keys=[]; $compact_services=[]; $compact_selected=[]
+    for each $compact_participant_owner in $R.owners
+      $compact_participant_rows=filter($compact_live,fn($candidate)=$candidate.service == $compact_participant_owner.context.service and $candidate.pid == $compact_participant_owner.pid and ($compact_participant_owner.name != "quoin" or $candidate.key == $compact_participant_owner.context.service .. "/all-apps-control") and not contains(["hidden","minimised","closed","inactive_session"],$candidate.state))
+      check(len($compact_participant_rows) == 1,"Actual unique visible compact participant missing")
+      check(deep_eq($compact_participant_rows[0].native_window,if $compact_participant_owner.name == "quoin" then nil else $compact_participant_owner.window end),"Compact participant belongs to a different native window")
+      $compact_keys=concat($compact_keys,[$compact_participant_rows[0].key])
+      $compact_services=concat($compact_services,[$compact_participant_owner.context.service])
+      $compact_selected=concat($compact_selected,[{owner:$compact_participant_owner,key:$compact_participant_rows[0].key,row:$compact_participant_rows[0]}])
+    end
+    check(len(unique($compact_keys)) == 7,"Complete distinct compact participant population required")
+    $compact_label="compact-" .. to_string($compact_size.width) .. "x" .. to_string($compact_size.height)
+    -- No focus, resize, raise or sequential reveal after this real render change.
+    $compact_current=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+    $compact_batch=apply({"ui.text_scale":1.25,"appearance.mode":if $compact_current.desktop.appearance.mode == "dark" then "light" else "dark" end},$compact_label)
+    $compact_wait_path=$R.run.path .. "/participant-" .. $compact_label .. ".log"
+    $compact_wait_child=own($h.call_async($mix,$R.bus,$R.run.path,"shell","app.participants.wait",{operation_id:$compact_batch.operation_id,services:$compact_services,keys:$compact_keys,until:"presented",timeout_ms:20000},$compact_wait_path,25),false)
+    $compact_wait_deadline=time()+30
+    while process_alive($compact_wait_child) and time() < $compact_wait_deadline sleep(0.05) end
+    check(not process_alive($compact_wait_child),"Compact native wait child exceeded outer budget")
+    $compact_wait_reply=$h.collect($compact_wait_path,$compact_wait_child)
+    check($compact_wait_reply != nil and $compact_wait_reply.rc == 0,"Compact native presentation wait refused")
+    $compact_wait=$compact_wait_reply.result
+    $compact_frames=[]
+    for each $compact_selected_owner in $compact_selected
+      $compact_frame=$participants.exact_presented($compact_wait,$compact_batch.operation_id,$compact_selected_owner.owner.context.service,$compact_selected_owner.key,$compact_selected_owner.owner.pid,$h.identity($compact_batch.snapshot))
+      for each $compact_fence in ["pid","connection_generation","registration_incarnation","surface_incarnation","native_window","frame_owner"]
+        check(deep_eq($compact_frame[$compact_fence],$compact_selected_owner.row[$compact_fence]),"Compact presented frame replaced its selected owner fence: " .. $compact_fence)
+      end
+      $compact_frames=concat($compact_frames,[$compact_frame])
+    end
+    $compact_descriptions=descriptions($compact_batch,$compact_label)
+    for each $compact_actual_owner in $R.owners
+      check($compact_batch.snapshot.effective[$compact_actual_owner.settings_context].ui.text_scale == 1.25,"Compact owner did not receive real prepared text scale")
+    end
+    $compact_after=compact_windows($compact_area,$compact_size)
+    $compact_geometry_before=map($compact_before,fn($candidate)={id:$candidate.id,generation:$candidate.generation,pid:$candidate.pid,x:$candidate.x,y:$candidate.y,width:$candidate.width,height:$candidate.height})
+    $compact_geometry_after=map($compact_after,fn($candidate)={id:$candidate.id,generation:$candidate.generation,pid:$candidate.pid,x:$candidate.x,y:$candidate.y,width:$candidate.width,height:$candidate.height})
+    check(deep_eq($compact_geometry_before,$compact_geometry_after),"Native geometry changed during compact presentation proof")
+    $compact_capture=$R.run.path .. "/" .. $compact_label .. ".ppm"
+    run_argv_must([$bin .. "/testkit-screenshot",$compact_capture],{timeout:10,env:$n.client_env($R.session,{})})
+    $compact_pixels=$pixels.ppm($compact_capture)
+    check($compact_pixels.w == 3840 and $compact_pixels.h == 2160,"Actual compact output screenshot differs from scaled mode")
+    $compact_layouts=concat($compact_layouts,[{size:$compact_size,visible_before:$compact_before,visible_after:$compact_after,selected:$compact_selected,batch:$compact_batch,wait:$compact_wait,frames:$compact_frames,owners:$compact_descriptions,capture:{path:$compact_capture,sha256:hash_file($compact_capture,"sha256"),width:$compact_pixels.w,height:$compact_pixels.h}}])
+  end
+  $compact_receipt={output:$compact_output,layouts:$compact_layouts,environment:"owned native Wayland clients in nested software compositor",physical:false,kms:false,accepted_input:false}
+  write_file($R.run.path .. "/compact-desktop.json",json_encode($compact_receipt))
+  return $compact_receipt
 end
 fn preparation_failure_recovery()
   $healthy=rpc("settingsd","settings.get",{binding:$binding}).snapshot
@@ -432,7 +530,7 @@ try
   write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"all-apps-fallback",decorations_ssd:false}))
   $R.session=$n.start({bin:$bin .. "/compd",tag:"all-apps",run:$R.run,config:$root .. "/cfg/settings.json",
     host_renderer:"pixman",software:true,scale:$requested_scale,max_secs:900,
-    width:1280*$requested_scale,height:800*$requested_scale,
+    width:(if $compact_mode then 1536 else 1280 end)*$requested_scale,height:(if $compact_mode then 864 else 800 end)*$requested_scale,
     env:merge(env_for($root .. "/compositor-home"),{COMPD_FRAME_TRACE:"1",COMPD_FRAME_TRACE_FILE:$root .. "/frame-trace.log",COMPD_FRAME_TRACE_LIMIT:"1000000"})})
   check($n.wait_ready($R.session,30),"Owned compositor did not register")
   ready("shell","shell.info",$R.session.comp_pid)
@@ -497,6 +595,7 @@ try
     $selected=nil; sleep(0.05)
   end
   check($selected != nil,"True Scene Editor calendar selection unavailable")
+  if $compact_mode then compact_desktop() end
   comp("comp.window.focus",$editor.window)
   for each $key in ["F10","Right","Right","End","Return"] comp("comp.input.key",{seat:"human",window:$editor.window,key:$key}) end
   $deadline=time()+5; $confirm=nil

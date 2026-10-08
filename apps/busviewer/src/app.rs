@@ -149,8 +149,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
             (app, initial_task),
             App::update,
             App::view,
-            application::Window::new(APP_ID, iced::Size::new(1100.0, 760.0), font)
-                .minimum(iced::Size::new(760.0, 500.0))
+            application::Window::desktop(APP_ID, iced::Size::new(1100.0, 760.0), font)
                 .defer_close(),
         )
         .title(|_: &App| label("title"))

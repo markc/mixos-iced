@@ -297,8 +297,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
             (app, Task::batch(startup)),
             App::update,
             App::view,
-            application::Window::new(APP_ID, iced::Size::new(1040.0, 720.0), font)
-                .minimum(iced::Size::new(760.0, 450.0))
+            application::Window::desktop(APP_ID, iced::Size::new(1040.0, 720.0), font)
                 .defer_close(),
         )
         .title(|_: &App| label("title"))

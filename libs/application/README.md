@@ -12,6 +12,12 @@ initial state and boot task exactly once, selects a single asynchronous task
 worker and applies a `Window` configuration. The returned builder accepts the
 application's title, subscription, theme and style before entering `.run()`.
 
+`Window::desktop` shares a 420 × 240 logical minimum for normal desktop
+workspaces while preserving each application's preferred initial size. Cap,
+Busviewer, Scene Editor, Ced, DOpus and Term use this policy. Compact views keep
+their prepared typography and make longer contents scrollable. `Window::new`
+remains available for other window roles, and `minimum` remains explicit.
+
 CPU, image, GPU and raster diagnostic support are selected with the
 `tiny-skia`, `image`, `wgpu` and `raster-probe` features. The `iced`, `cpu` and
 `runtime` namespaces expose the selected host interfaces to app adapters.

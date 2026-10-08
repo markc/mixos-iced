@@ -270,7 +270,7 @@ fn run(settings: core_config::Settings) -> Result<(), String> {
         (state, initial_task),
         update,
         view,
-        application::Window::new(
+        application::Window::desktop(
             format!("dev.mixos.{SERVICE}"),
             Size::new(900.0, 560.0),
             ui_font,
