@@ -431,7 +431,9 @@ mod tests {
     use application::iced::window::Id;
 
     fn notice(handle: &frames::Handle, sequence: u64) -> PresentationNotice {
-        let identity = json!({"incarnation":"authority","revision":1,"design_revision":1,"source_digest":"source"});
+        let identity = json!({"incarnation":"authority","revision":"1","design_revision":"1","source_digest":"source"});
+        serde_json::from_value::<settings::consumer::SnapshotIdentity>(identity.clone())
+            .expect("owner fixture uses the production snapshot identity wire contract");
         PresentationNotice {
             service: "term".into(),
             registration: "registered".into(),

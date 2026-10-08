@@ -510,7 +510,7 @@ try
   $R.bus=$n.restart_private_bus(merge($R.bus,{restart_record:"restart.json"}))
   $reconnected=[]
   for each $app in $R.owners
-    $reconnected=concat($reconnected,[merge($app,{context:merge($app.context,{bus:$R.bus}),desktop:merge($app.desktop,{bus:$R.bus})})])
+    $reconnected=concat($reconnected,[merge($app,{context:merge($app.context,{bus:$R.bus})})])
   end
   $R.owners=$reconnected
   ready("shell","app.describe",$quoin.pid)
