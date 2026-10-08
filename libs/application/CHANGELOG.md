@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.22
+
+- Share a bounded native refusal lane for existing actors. Preserve original
+  command ownership and absolute reply deadlines, keep admission through reap,
+  return overflow untouched and drain within the owner's shutdown budget.
+
 ## 0.1.21
 
 - Local preparation of unbound resources regenerates embedded icon variants

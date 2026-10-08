@@ -1,5 +1,11 @@
 # Scene Editor contract
 
+## 0.1.3
+
+- Advertise and complete canonical descriptions with actual service identity
+  and installed presentation evidence. Refuse malformed raw requests on the
+  shared bounded native lane without disturbing scene selection or edits.
+
 ## 0.1.2
 
 Read-only `ui.confirmation` in `scene-editor.info`: while a confirmation is

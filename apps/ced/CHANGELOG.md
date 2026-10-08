@@ -1,5 +1,11 @@
 # Ced Bus contract
 
+## 0.1.9
+
+- Report canonical GUI and headless descriptions with actual native identity.
+  GUI evidence comes from its installed presentation; headless invents no
+  window or settings owner. Bound raw-request refusals on the existing worker.
+
 ## 0.1.8
 
 Use application's paired settings bridge for UI activation, worker delivery

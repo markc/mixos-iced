@@ -707,26 +707,11 @@ impl App {
                 let id = cmd.id;
                 let mut effects = self.controller.on_bus_command(cmd);
                 if describe {
-                    let evidence = self.settings.session().host().consumer().evidence();
-                    for effect in &mut effects {
-                        if let Effect::Respond {
-                            id: reply, body, ..
-                        } = effect
-                            && *reply == id
-                            && let Ok(serde_json::Value::Object(mut object)) =
-                                serde_json::from_str(body)
-                        {
-                            object.insert(
-                                "settings".into(),
-                                serde_json::to_value(&evidence).expect("settings evidence"),
-                            );
-                            object.insert(
-                                "settings_cache".into(),
-                                serde_json::json!(self.settings.session().cache_evidence()),
-                            );
-                            *body = serde_json::Value::Object(object).to_string();
-                        }
-                    }
+                    crate::verbs::complete_describe_reply(&mut effects, id, |value|
+                        application::describe::complete_native(value, application::describe::Identity {
+                            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
+                            pid: std::process::id(), service: self.bus.service_name(),
+                        }, self.settings.session()));
                 }
                 self.perform(effects)
             }

@@ -80,7 +80,7 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let keymap_path: Option<PathBuf> = dirs.as_ref().map(|d| d.keymap_file());
     let keymap = keys::load(keymap_path.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let meta = ServerMeta {
+    let mut meta = ServerMeta {
         service: service.to_owned(),
         headless: true,
         location_focus_available: false,
@@ -101,6 +101,7 @@ pub fn run(
     let core = Arc::new(Mutex::new(core));
     let (bus, mut deliveries) =
         bus::spawn(service, noded_url).map_err(|e| anyhow::anyhow!("{e}"))?;
+    meta.service = bus.service_name().into();
 
     // The drainer: laws 1-4 on one thread.
     {

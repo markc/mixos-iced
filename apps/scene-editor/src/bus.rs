@@ -47,6 +47,9 @@ pub struct Handle {
     client: Option<Arc<SupervisedClient>>,
 }
 impl Handle {
+    pub fn service_name(&self) -> &str {
+        self.client.as_ref().map_or("scene-editor", |client| client.service_name())
+    }
     pub fn connected(&self) -> bool {
         self.client
             .as_ref()
@@ -231,6 +234,8 @@ async fn worker(
     let mut connection_open = true;
     let mut operations = tokio::task::JoinSet::new();
     let mut topics = tokio::task::JoinSet::new();
+    let mut refusals = application::native_actor::Refusals::new(8);
+    let mut refusal_faults = application::native_actor::Faults::default();
     let mut lifecycle = None;
     // Sample once before waiting: fast registration may already have completed.
     loop {
@@ -260,6 +265,9 @@ async fn worker(
             }
         }
         tokio::select! {
+            result = refusals.join_next(), if !refusals.is_empty() => {
+                if let Some(result) = result { application::native_actor::Refusals::record(result, &mut refusal_faults); }
+            }
             result = operations.join_next(), if !operations.is_empty() => {
                 if let Some(Err(error)) = result { eprintln!("scene-editor: Bus work: {error}"); }
             }
@@ -296,6 +304,14 @@ async fn worker(
                 }
                 if command.command.is_empty() {
                     let _ = tokio::time::timeout(Duration::from_secs(2),client.respond(&command,10,"{\"error_code\":\"ARGUMENT\",\"message\":\"command verb is empty\"}")).await;
+                    continue;
+                }
+                if command.command == "app.describe" && let Err(error) = application::describe::validate_request(&command.body) {
+                    if settings::native::live_generation(&client) != Some(command.generation) { continue; }
+                    let body = describe_refusal(&error).to_string();
+                    if refusals.try_reply(client.clone(), command, 10, body, std::time::Instant::now() + Duration::from_secs(2)).is_err() {
+                        refusal_faults.push("description refusal capacity exhausted; request shed".into());
+                    }
                     continue;
                 }
                 if pending.len() >= 32 {
@@ -346,6 +362,8 @@ async fn worker(
     let mut faults = Vec::new();
     topics.abort_all();
     operations.abort_all();
+    refusals.drain(deadline, &mut refusal_faults).await;
+    faults.extend(refusal_faults.recent().iter().cloned());
     if let Err(error) = lane.flush_cache(deadline).await {
         faults.push(format!("settings cache: {}: {}", error.code, error.message));
     }
@@ -356,6 +374,42 @@ async fn worker(
         faults.push("Bus close timed out".into());
     }
     eprintln!("SCENE_EDITOR_SHUTDOWN {}", json!({"faults":faults}));
+}
+
+pub fn describe_refusal(error: &application::describe::Violation) -> Value {
+    json!({"error_code":"ARGUMENT","message":error.to_string(),"describe_code":error.code,"path":error.path})
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn invalid_descriptions_refuse_before_pending_or_frontend_admission() {
+    use application::iced::futures::StreamExt;
+    let broker = term_test_broker::Broker::start_stable();
+    let (send, mut gui) = mpsc::unbounded();
+    let (effects, receive) = tokio::sync::mpsc::unbounded_channel();
+    let (ready, observed) = std::sync::mpsc::channel();
+    let actor = tokio::spawn(worker("scene-description-overridden".into(), broker.url.clone(), "shell".into(), send, receive, ready));
+    let (_client, _ui, _bootstrap) = tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(5)))
+        .await.unwrap().unwrap().unwrap();
+    let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+    for body in ["{".into(), "null".into(), "[]".into(), "{\"extra\":true}".into(),
+        format!("{{{}}}", " ".repeat(application::describe::MAX_REQUEST_BYTES))] {
+        let (rc, body, _) = tokio::time::timeout(Duration::from_secs(5),
+            caller.call_with_headers_raw("scene-description-overridden", "app.describe", &BTreeMap::new(), &body)).await.unwrap().unwrap();
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(rc, 10);
+        assert_eq!(value["error_code"], "ARGUMENT");
+        assert!(value["describe_code"].is_string());
+    }
+    assert!(tokio::time::timeout(Duration::from_millis(20), async {
+        while let Some(delivery) = gui.next().await {
+            if matches!(delivery, Delivery::Command { .. }) { return; }
+        }
+        panic!("actor unexpectedly closed");
+    }).await.is_err(), "invalid request reached the stalled frontend");
+    effects.send(Effect::Quit).unwrap();
+    tokio::time::timeout(Duration::from_secs(4), actor).await.unwrap().unwrap();
+    caller.close().await;
 }
 
 fn arm_topics(

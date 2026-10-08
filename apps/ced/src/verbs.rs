@@ -465,6 +465,36 @@ pub struct DescribeReply {
     pub verbs: Vec<String>,
 }
 
+pub fn describe_refusal(error: &application::describe::Violation) -> String {
+    serde_json::json!({"error_code":code::INVALID_ARGUMENT,"message":error.to_string(),
+        "reason":error.code,"describe_code":error.code,"path":error.path}).to_string()
+}
+
+/// Complete only the matching successful description; never annotate a
+/// refusal or an unrelated queued response with a success contract.
+pub fn complete_describe_reply(
+    effects: &mut [crate::controller::Effect],
+    id: u64,
+    complete: impl Fn(&mut serde_json::Value) -> Result<(), application::describe::Violation>,
+) {
+    for effect in effects {
+        if let crate::controller::Effect::Respond { id: reply, rc, body } = effect
+            && *reply == id && *rc == 0 {
+            let result = serde_json::from_str(body).map_err(|error| error.to_string()).and_then(|mut value| {
+                complete(&mut value).map_err(|error| error.to_string())?;
+                Ok(value.to_string())
+            });
+            match result {
+                Ok(value) => *body = value,
+                Err(error) => {
+                    *rc = 10;
+                    *body = serde_json::json!({"error_code":code::INVALID_ARGUMENT,"message":error,"reason":"describe_completion"}).to_string();
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuitReply {
     pub quitting: bool,

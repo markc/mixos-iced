@@ -1,5 +1,11 @@
 # DOpus Bus contract
 
+## 0.4.8
+
+- Complete canonical descriptions from the actual GUI or headless owner and
+  installed resources. Refuse invalid raw requests on the bounded native lane
+  while preserving the legacy Dopus discovery verb and file state.
+
 ## 0.4.7
 
 - Adopt pinned glyphs and image allocations from the shared resource receipt;

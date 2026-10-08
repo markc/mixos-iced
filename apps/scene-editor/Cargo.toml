@@ -1,6 +1,6 @@
 [package]
 name = "scene-editor"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,7 +18,7 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-application = { workspace = true, features = ["tiny-skia", "settings-cache"] }
+application = { workspace = true, features = ["tiny-skia", "settings-cache", "describe"] }
 toolkit = { workspace = true, features = ["tiny-skia", "i18n"] }
 appearance.workspace = true
 settings = { workspace = true, features = ["native"] }
@@ -30,6 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+term-test-broker = { path = "../term/crates/term-test-broker" }
 application = { workspace = true, features = ["tiny-skia", "test-support"] }
 
 [build-dependencies]

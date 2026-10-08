@@ -276,6 +276,14 @@ impl App {
             "state_token": token,
         }))
     }
+    fn describe(&self) -> Result<Value, application::describe::Violation> {
+        let mut value = model::describe();
+        application::describe::complete_native(&mut value, application::describe::Identity {
+            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
+            pid: std::process::id(), service: self.bus.service_name(),
+        }, self.settings_ui.session())?;
+        Ok(value)
+    }
     fn info(&self) -> Value {
         json!({"schema":"scene-editor.v1","app_id":APP_ID,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"connected":self.bus.connected(),"busy":self.operation.is_some(),"selection":self.selection,"edge":self.edge,"epoch":self.epoch,"status":self.status,"state_token":self.snapshot.0["state_token"],"ui":{"menu_bar":true,"dialog":match self.dialog{Some(Dialog::Confirm{..})=>Some("confirm"),Some(Dialog::Shortcuts)=>Some("shortcuts"),Some(Dialog::About)=>Some("about"),None=>None},"confirmation":self.confirmation()},"snapshot":self.snapshot.0})
     }
@@ -463,6 +471,11 @@ impl App {
         )
     }
     fn command(&mut self, id: u64, verb: &str, body: &str) -> Task<Message> {
+        if verb == "app.describe" && let Err(error) = application::describe::validate_request(body) {
+            self.bus.reply(id, 10, crate::bus::describe_refusal(&error));
+            return Task::none();
+        }
+        let body = if verb == "app.describe" && body.trim().is_empty() { "{}" } else { body };
         let args: Value = match serde_json::from_str::<Value>(body) {
             Ok(args) if args.is_object() => args,
             _ => {
@@ -486,11 +499,10 @@ impl App {
             }
             "app.describe" => {
                 self.settings_ui.reconcile(self.bus.settings_generation());
-                let mut describe = model::describe();
-                describe["settings"] =
-                    json!(self.settings_ui.session().host().consumer().evidence());
-                describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
-                self.bus.reply(id, 0, describe);
+                match self.describe() {
+                    Ok(describe) => self.bus.reply(id, 0, describe),
+                    Err(error) => self.bus.reply(id, 10, crate::bus::describe_refusal(&error)),
+                }
                 Task::none()
             }
             "scene-editor.show" => {
@@ -1114,6 +1126,26 @@ mod tests {
         assert_eq!(named.scene.as_deref(), Some("launcher"));
         assert_eq!(command_selection(&json!({}), &current).unwrap(), current);
         assert!(command_selection(&json!({"selection":{"scene":"../panel"}}), &current).is_err());
+    }
+    #[test]
+    fn canonical_description_reads_the_installed_owner_without_editing() {
+        let mut app = app();
+        app.selection.scene = Some("unfinished-selection".into());
+        let selection = app.selection.clone();
+        let preparation = serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap();
+        let stamp = app.settings_ui.session().frame_stamp();
+        let first = app.describe().unwrap();
+        application::describe::validate(&first).unwrap();
+        assert_eq!(first["pid"], std::process::id());
+        assert_eq!(first["service"], "scene-editor");
+        assert_eq!(first["app_id"], APP_ID);
+        assert!(first["resources"].is_null());
+        assert!(first["settings_cache"].is_object());
+        assert_eq!(first["views"], model::describe()["views"]);
+        assert_eq!(first, app.describe().unwrap());
+        assert_eq!(app.selection, selection);
+        assert_eq!(app.settings_ui.session().frame_stamp(), stamp);
+        assert_eq!(serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap(), preparation);
     }
     #[test]
     fn navigation_clears_old_page_and_stale_action_busy_status() {

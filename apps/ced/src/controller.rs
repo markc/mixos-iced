@@ -2238,6 +2238,10 @@ impl Controller {
     // ── the ced.v1 port ──────────────────────────────────────────────────────
 
     fn bus_command(&mut self, cmd: &BusCommand, fx: &mut Vec<Effect>) {
+        if cmd.verb == "app.describe" && let Err(error) = application::describe::validate_request(&cmd.body) {
+            fx.push(Effect::Respond { id: cmd.id, rc: 10, body: verbs::describe_refusal(&error) });
+            return;
+        }
         // The declared body limit is enforced before the body is parsed at all
         // (review m7), not after a full DOM parse of up to the Bus's 16 MiB.
         if cmd.verb == "ced.diagnostics" && cmd.body.len() > verbs::MAX_DIAGNOSTICS_BODY {
@@ -3079,6 +3083,44 @@ mod tests {
         assert_eq!(rc, 10);
         let fx = c.on_bus_command(cmd("app.quit", json!({})));
         assert!(fx.contains(&Effect::Quit));
+    }
+
+    #[test]
+    fn canonical_headless_describe_preserves_product_and_never_completes_refusals() {
+        let mut c = ctl();
+        let before = c.tabs.len();
+        let identity = application::describe::Identity {
+            app_id: None, version: env!("CARGO_PKG_VERSION"),
+            pid: std::process::id(), service: "ced-overridden",
+        };
+        for body in ["", "  ", "{}", " { } "] {
+            let mut command = cmd("app.describe", json!({}));
+            command.body = body.into();
+            let mut effects = c.on_bus_command(command);
+            verbs::complete_describe_reply(&mut effects, 7, |value| application::describe::complete(value, identity));
+            let (rc, value) = response(&effects);
+            assert_eq!(rc, 0);
+            application::describe::validate(&value).unwrap();
+            assert_eq!(value["pid"], std::process::id());
+            assert_eq!(value["service"], "ced-overridden");
+            assert!(value["app_id"].is_null());
+            assert_eq!(value["contract"], "ctk-app-control.v0");
+            assert_eq!(value["app"], "ced");
+            assert!(value["controls"].is_array());
+            assert!(value.get("settings").is_none());
+            assert!(value.get("resources").is_none());
+            assert_eq!(c.tabs.len(), before);
+        }
+        for body in ["{", "null", "[]", "{\"extra\":true}"] {
+            let mut command = cmd("app.describe", json!({}));
+            command.body = body.into();
+            let mut effects = c.on_bus_command(command);
+            verbs::complete_describe_reply(&mut effects, 7, |value| application::describe::complete(value, identity));
+            let (rc, value) = response(&effects);
+            assert_eq!(rc, 10);
+            assert!(value.get("describe_contract").is_none());
+            assert!(value.get("describe_code").is_some());
+        }
     }
 
     #[test]

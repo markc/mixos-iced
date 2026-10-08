@@ -66,7 +66,17 @@ pub fn run(service: &str, config: Config) -> anyhow::Result<()> {
             };
             work = match delivery {
                 Delivery::Incoming(i) => ctl.on_incoming(i),
-                Delivery::Command(c) => ctl.on_bus_command(c),
+                Delivery::Command(c) => {
+                    let describe = c.verb == "app.describe";
+                    let id = c.id;
+                    let mut effects = ctl.on_bus_command(c);
+                    if describe {
+                        crate::verbs::complete_describe_reply(&mut effects, id, |value| application::describe::complete(value,
+                            application::describe::Identity { app_id: None, version: env!("CARGO_PKG_VERSION"),
+                                pid: std::process::id(), service: bus.service_name() }));
+                    }
+                    effects
+                }
                 Delivery::Settings => Vec::new(),
                 Delivery::Registered
                 | Delivery::RegistrationFailed(_)

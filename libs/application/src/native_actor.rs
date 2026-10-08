@@ -3,7 +3,7 @@
 //!
 //! Hosts keep their existing runtime, native client, select loop and shutdown
 //! deadline. These helpers spawn only on that runtime and interpret no verbs.
-use crate::native_queue::{Outbox, Permit, SendError};
+use crate::native_queue::{Admission, Outbox, Permit, SendError};
 use bus::native_client::{ConnState, IncomingCommand, SupervisedClient};
 use std::{future::Future, sync::Arc, time::Instant};
 use tokio::task::{JoinError, JoinSet};
@@ -276,6 +276,66 @@ pub fn submit_replies(retained: &mut Outbox<Reply, 0>, tasks: &mut TaskSet<Resul
             .try_spawn_with(reply, Reply::into_task)
             .map_err(SendError::Full)
     });
+}
+
+/// A small refusal lane on the host's existing runtime. Running and completed
+/// replies retain their original supervisor, command and credit through reap.
+/// Saturation returns the untouched command; it never starts overflow work.
+pub struct Refusals {
+    admission: Admission,
+    tasks: TaskSet<Result<(), String>>,
+}
+impl Refusals {
+    pub fn new(capacity: usize) -> Self {
+        Self { admission: Admission::new(capacity), tasks: TaskSet::new(capacity) }
+    }
+    pub fn is_empty(&self) -> bool { self.tasks.is_empty() }
+    pub fn counts(&self) -> crate::native_queue::Counts { self.admission.counts() }
+    pub fn try_reply(
+        &mut self,
+        client: Arc<SupervisedClient>,
+        command: IncomingCommand,
+        rc: u8,
+        body: String,
+        deadline: Instant,
+    ) -> Result<(), IncomingCommand> {
+        if command.id.is_none() { return Ok(()); }
+        if self.tasks.is_full() { return Err(command); }
+        let Some(permit) = self.admission.try_acquire() else { return Err(command); };
+        let reply = Accepted::new(client, command, permit, Instant::now()).reply(rc, body, deadline);
+        // Exclusive access to this set keeps the capacity check valid until
+        // submission. No await or factory runs between these operations.
+        match self.tasks.try_spawn_with(reply, Reply::into_task) {
+            Ok(()) => Ok(()),
+            Err(reply) => {
+                let Accepted { command, permit, .. } = *reply.accepted;
+                permit.finish();
+                Err(command)
+            }
+        }
+    }
+    pub async fn join_next(&mut self) -> Option<Result<Completed<Result<(), String>>, JoinError>> {
+        self.tasks.join_next().await
+    }
+    pub fn record(result: Result<Completed<Result<(), String>>, JoinError>, faults: &mut Faults) {
+        reap("native refusal", result, faults, |value, faults| {
+            if let Err(error) = value { faults.push(error); }
+        });
+    }
+    /// Drain only within the host's existing absolute shutdown deadline.
+    /// Cancellation reports unconfirmed work separately from sent replies.
+    pub async fn drain(mut self, deadline: Instant, faults: &mut Faults) {
+        while !self.tasks.is_empty() {
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.tasks.join_next()).await {
+                Ok(Some(result)) => Self::record(result, faults),
+                Ok(None) => break,
+                Err(_) => { faults.push("native refusal drain timed out".into()); break; }
+            }
+        }
+        cancel("native refusal", self.tasks, faults, |value, faults| {
+            if let Err(error) = value { faults.push(error); }
+        });
+    }
 }
 
 #[cfg(test)]

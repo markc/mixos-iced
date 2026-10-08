@@ -255,6 +255,19 @@ fn refusal(
     faults: &mut Faults,
     shed: &mut u64,
 ) {
+    refusal_body(client, command, tasks, admission, faults, shed,
+        "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".into());
+}
+fn refusal_body(
+    client: &Arc<SupervisedClient>,
+    command: IncomingCommand,
+    tasks: &mut TaskSet<Result<(), String>>,
+    admission: &Admission,
+    faults: &mut Faults,
+    shed: &mut u64,
+    body: String,
+) {
+    if command.id.is_none() { return; }
     let Some(permit) = admission.try_acquire() else {
         *shed = shed.saturating_add(1);
         return;
@@ -262,7 +275,7 @@ fn refusal(
     let now = Instant::now();
     let reply = Accepted::new(client.clone(), command, permit, now).reply(
         10,
-        "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".into(),
+        body,
         now + SHUTDOWN_BUDGET,
     );
     if let Err(reply) = tasks.try_spawn_with(reply, NativeReply::into_task) {
@@ -511,6 +524,10 @@ async fn run(
                     if let Some(lane) = &mut lane && let Some(needed) = lane.delivery(&command) { wake(&mut gui, needed); continue; }
                     if command.topic().is_some() || command.command.is_empty() { continue; }
                     if settings::native::live_generation(&client) != Some(command.generation) { faults.push("stale command retired before frontend admission".into()); continue; }
+                    if command.command == "app.describe" && let Err(error) = application::describe::validate_request(&command.body) {
+                        refusal_body(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed, crate::verbs::describe_refusal(&error));
+                        continue;
+                    }
                     let Some(permit) = admission.try_acquire() else { refusal(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed); continue; };
                     let Some(id) = next_id.checked_add(1) else { permit.finish(); refusal(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed); continue; };
                     next_id = id;

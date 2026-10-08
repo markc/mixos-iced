@@ -1099,7 +1099,8 @@ impl Dopus {
         // before any command-native info is built: dopus.state/app.describe
         // report what the connection really carries, never a stale sample.
         self.settings.reconcile(handle.settings_generation());
-        let meta = self.server_meta();
+        let mut meta = self.server_meta();
+        meta.service = handle.service_name().into();
         let info = buildinfo::build_info!();
         let mut tasks = Vec::new();
         for served in verbs::serve_command(command, &mut self.core, &meta, &info) {
@@ -1122,7 +1123,16 @@ impl Dopus {
                     );
                 }
                 Served::Reply { id, rc, body } => {
-                    let body = if matches!(command.verb.as_str(), "dopus.state" | "app.describe") {
+                    let (rc, body) = if command.verb == "app.describe" && rc == 0 {
+                        let mut value: serde_json::Value = serde_json::from_str(&body).expect("typed description");
+                        match application::describe::complete_native(&mut value, application::describe::Identity {
+                            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
+                            pid: std::process::id(), service: handle.service_name(),
+                        }, self.settings.session()) {
+                            Ok(()) => (0, value.to_string()),
+                            Err(error) => (10, verbs::describe_refusal(&error)),
+                        }
+                    } else if command.verb == "dopus.state" && rc == 0 {
                         // The canonical settings evidence (reconciled at the
                         // top of serve) joins the actual client state.
                         match serde_json::from_str::<serde_json::Value>(&body) {
@@ -1133,12 +1143,12 @@ impl Dopus {
                                 .expect("settings evidence serialises");
                                 value["settings_cache"] =
                                     serde_json::json!(self.settings.session().cache_evidence());
-                                value.to_string()
+                                (rc, value.to_string())
                             }
-                            _ => body,
+                            _ => (rc, body),
                         }
                     } else {
-                        body
+                        (rc, body)
                     };
                     handle.respond(id, rc, body);
                 }
@@ -2687,6 +2697,14 @@ mod tests {
             assert_eq!(evidence["kind"], "last_good");
             assert_eq!(evidence["current"]["incarnation"], "fixture");
             assert!(value.get("settings_cache").is_some());
+            if verb == "app.describe" {
+                application::describe::validate(&value).unwrap();
+                assert_eq!(value["pid"], std::process::id());
+                assert_eq!(value["app_id"], APP_ID);
+                assert_eq!(value["service"], "dopus");
+                assert!(value["resources"].is_object());
+                assert!(value["preparation"].is_object());
+            }
         }
     }
 }

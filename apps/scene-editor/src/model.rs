@@ -147,7 +147,7 @@ pub fn launch_selection(uri: &str) -> Result<Selection, String> {
 pub fn describe() -> Value {
     json!({"schema":"scene-editor.v1", "app_id":APP_ID, "version":env!("CARGO_PKG_VERSION"),
         "transport":"native", "verbs":["scene-editor.ping","scene-editor.info","scene-editor.show",
-        "scene-editor.action","scene-editor.quit"], "views":View::ALL.map(View::key)})
+        "scene-editor.action","scene-editor.quit","app.describe"], "views":View::ALL.map(View::key)})
 }
 
 #[cfg(test)]
