@@ -161,9 +161,10 @@ try
     sleep(0.02)
   end
   $product=app("busviewer.info",{})
+  write_file($root .. "/product-edited.json",json_encode($product))
   check($product.selection != nil and $product.body == '{"unfinished":true}' and $product.reply.rc == 0 and
     $product.reply.service == $service and $product.reply.verb == "busviewer.ping" and $product.reply.transport_error == nil,
-    "Native edits or the actual successful call were not retained")
+    "Native edits or the actual successful call were not retained: " .. json_encode($product))
   $reference=hold($identity,"theme-held")
   $waiting=async_wait("barrier.wait",$reference,"theme-reached")
   $changed=apply($snapshot,"viewer-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
