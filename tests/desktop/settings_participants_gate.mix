@@ -220,7 +220,7 @@ fn native_idle()
     output_change:{status:"source owner gap",reason:"nested factory accepts scale only before wire; no native Bus live scale/mode route in this base"}}
 end
 fn native_samples()
-  $runs=[]; $series={}
+  $runs=[]; $series={}; $batch_applied=[]; $batch_presented=[]
   for $index=1 to 20
     $mode=if floor($index/2)*2 == $index then "light" else "dark" end
     $batch=apply({"appearance.mode":$mode},"participant-sample-" .. to_string($index))
@@ -230,6 +230,8 @@ fn native_samples()
       $prior=$series[$record.service] ?? {applied:[],presented:[]}
       $series[$record.service]={applied:concat($prior.applied,[$record.accepted_to_applied_ns]),presented:concat($prior.presented,[$record.accepted_to_presented_ns])}
     end
+    $batch_applied=concat($batch_applied,[max(map($sample.records,fn($row)=$row.accepted_to_applied_ns))])
+    $batch_presented=concat($batch_presented,[max(map($sample.records,fn($row)=$row.accepted_to_presented_ns))])
     $runs=concat($runs,[$sample])
   end
   $quantiles={}
@@ -237,7 +239,10 @@ fn native_samples()
     $quantiles[$service]={accepted_to_applied:$participants.quantiles($series[$service].applied),accepted_to_presented:$participants.quantiles($series[$service].presented)}
   end
   retained("measured-samples")
-  return {runs:$runs,per_service:$quantiles,resident_resources:true,exclusions:[],
+  return {runs:$runs,per_service:$quantiles,resident_resources:true,
+    complete_batch:{accepted_to_applied:$participants.quantiles($batch_applied),accepted_to_presented:$participants.quantiles($batch_presented),
+      estimator:"maximum actual comparable owner interval per changed operation; twenty complete seven-owner batches"},
+    exclusions:[{claim:"simultaneous responsive visible broadcast p95",reason:"each native application is focused sequentially after authority acceptance; reveal latency remains included in samples"}],
     environment:"recorded owned nested software renderer, actual fractional output, all seven owners concurrent, sequential native reveal",
     reference_hardware:false,broadcast_only_p95_claimed:false,target_p95_ns:100000000,
     target_disposition:"measured values only; reference hardware and simultaneous visible broadcast release target remain separate acceptance"}
@@ -474,6 +479,18 @@ try
   $late_control=merge($late_control,{click:$click})
   simultaneously_alive()
   retained("late")
+  $quoin=owner("quoin")
+  $quoin_key=$quoin.context.service .. "/all-apps-control"
+  $quoin_batch=apply({"ui.text_scale":1.41},"participant-quoin-hidden")
+  $quoin_hidden=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$quoin.context.service],keys:[$quoin_key],timeout_ms:3000})
+  $hidden_rows=filter($quoin_hidden.observations.participants,fn($row)=$row.key == $quoin_key)
+  check(not $quoin_hidden.deadline_elapsed and len($hidden_rows) == 1 and $hidden_rows[0].state == "hidden" and $hidden_rows[0].presentation == nil,"Hidden native Quoin scene supplied false presentation")
+  shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-control"})
+  $quoin_revealed=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$quoin.context.service],keys:[$quoin_key],until:"presented",timeout_ms:3000})
+  $participants.exact_presented($quoin_revealed,$quoin_batch.operation_id,$quoin.context.service,$quoin_key,$quoin.pid,$h.identity($quoin_batch.snapshot))
+  shell("shell.scene.unload",{scene:"all-apps-late-control"})
+  $quoin_closed=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$quoin.context.service],keys:[$quoin.context.service .. "/all-apps-late-control"],until:"closed",timeout_ms:3000})
+  check(not $quoin_closed.deadline_elapsed,"Unloaded native Quoin scene failed retirement")
   $late_rows=filter(shell("app.describe",{}).participants.participants,fn($row)=$row.service == $late.context.service and $row.pid == $late.pid)
   check(len($late_rows) == 1,"Late native owner did not join participant registry")
   comp("comp.window.close",merge($late.window,{force:false}))
@@ -490,6 +507,7 @@ try
     compositor:{pid:$R.session.comp_pid,service:$R.session.service,backend:"nested"},native_inventory:$inventory,
     all_six_simultaneous:true,quoin:true,core_set:$manifest.set_id,core_manifest_blake3:$manifest_digest,rounds:$R.rounds,participant_states:$participant_states,participant_idle:$participant_idle,participant_samples:$participant_samples,
     new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed},new_control:$late_control,
+    quoin_lifecycle:{hidden:$quoin_hidden,revealed:$quoin_revealed,retired:$quoin_closed},
     hardware:false,actual_output_scale:$output.scale,quantile_population:"actual monotonic durations across current operation participants; small measured sample count explicit",exact_frame_participants:["term","busviewer","cap","dopus"],
     palette_boundary_participants:["ced","scene-editor"],quoin_palette_layout:true}))
   $R.ok=true
