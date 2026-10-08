@@ -307,14 +307,12 @@ impl IcedRegistry {
         iced_core::window::presentation::FrameBinding,
     )> {
         let item = self.get(id)?;
-        if !item.is_visible()
-            || states
-                .element_render_state(item.inner.smithay_id().clone())
-                .is_none_or(|state| state.visible_area == 0)
-        {
-            return None;
-        }
-        item.inner.frame_presentation()
+        rendered_presentation(
+            item.is_visible(),
+            item.inner.smithay_id(),
+            states,
+            || item.inner.frame_presentation(),
+        )
     }
     pub fn get_mut(&mut self, id: HandleId) -> Option<&mut IcedItem> {
         let idx = *self.index.get(&id)?;
@@ -1460,6 +1458,105 @@ impl IcedRegistry {
     /// The earliest future instant any instance asked to be redrawn at.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.items.iter().filter_map(|i| i.deadline()).min()
+    }
+}
+
+/// Only a texture sampled by this composed frame can supply feedback metadata.
+/// Resolve the published slot lazily: hidden or absent elements have no binding.
+fn rendered_presentation(
+    visible: bool,
+    element: &smithay::backend::renderer::element::Id,
+    states: &smithay::backend::renderer::element::RenderElementStates,
+    published: impl FnOnce() -> Option<(
+        iced_core::window::Id,
+        iced_core::window::presentation::FrameBinding,
+    )>,
+) -> Option<(
+    iced_core::window::Id,
+    iced_core::window::presentation::FrameBinding,
+)> {
+    if !visible
+        || states
+            .element_render_state(element.clone())
+            .is_none_or(|state| state.visible_area == 0)
+    {
+        return None;
+    }
+    published()
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::rendered_presentation;
+    use smithay::backend::renderer::element::{
+        Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
+    };
+
+    fn drawn(id: &Id, visible_area: usize) -> RenderElementStates {
+        let mut states = RenderElementStates::default();
+        states.states.insert(id.clone(), RenderElementState {
+            visible_area,
+            presentation_state: RenderElementPresentationState::Rendering { reason: None },
+            needs_capture: false,
+        });
+        states
+    }
+
+    #[test]
+    fn hidden_absent_occluded_and_replaced_elements_do_not_resolve_a_binding() {
+        let element = Id::new();
+        let replacement = Id::new();
+        for (visible, states) in [
+            (false, drawn(&element, 100)),
+            (true, RenderElementStates::default()),
+            (true, drawn(&element, 0)),
+            (true, drawn(&replacement, 100)),
+        ] {
+            assert!(rendered_presentation(visible, &element, &states, || {
+                panic!("an unshown texture must not acquire presentation ownership")
+            }).is_none());
+        }
+    }
+
+    #[test]
+    fn visible_element_without_a_published_texture_has_no_binding() {
+        let element = Id::new();
+        assert!(rendered_presentation(true, &element, &drawn(&element, 100), || None).is_none());
+    }
+
+    #[test]
+    fn visible_texture_keeps_its_published_stamp_and_captures_each_admission() {
+        use iced_core::window::presentation::{FrameBinding, FrameObserver, FrameStamp};
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+        let element = Id::new();
+        let window = iced_core::window::Id::unique();
+        let captures = Arc::new(AtomicUsize::new(0));
+        let captured = Arc::clone(&captures);
+        let published = FrameBinding {
+            stamp: FrameStamp { activation_epoch: 7, local_revision: 11 },
+            observer: FrameObserver::with_capture(move || {
+                captured.fetch_add(1, Ordering::SeqCst);
+                FrameObserver::new(|_| panic!("composition is not presentation feedback"))
+            }),
+        };
+        // The current target may have moved on. Only the published texture's
+        // stamp can accompany this frame; resolving it does not admit feedback.
+        let newer_target = FrameStamp { activation_epoch: 8, local_revision: 12 };
+        let (resolved_window, binding) = rendered_presentation(
+            true, &element, &drawn(&element, 100), || Some((window, published)),
+        ).expect("a sampled published texture must retain its metadata");
+        assert_eq!(resolved_window, window);
+        assert_ne!(binding.stamp, newer_target);
+        assert_eq!(captures.load(Ordering::SeqCst), 0);
+
+        // An abandoned/failed queue attempt acquires no sink. Each actual retry
+        // admission captures independently, without fabricating a completion.
+        let first = binding.captured();
+        let retry = binding.captured();
+        assert_eq!(first.stamp, binding.stamp);
+        assert_eq!(retry.stamp, binding.stamp);
+        assert_eq!(captures.load(Ordering::SeqCst), 2);
     }
 }
 // Add this to your compositor binary's keyboard handler module

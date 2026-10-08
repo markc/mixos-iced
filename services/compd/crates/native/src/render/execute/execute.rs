@@ -733,12 +733,12 @@ pub fn execute(
         }
 
         let mut last_result_empty = true;
-        // THIS frame's per-element render states, kept only so `collect_feedback` can
-        // report `ZeroCopy` per surface. Cloned out of the `RenderFrameResult` because
+        // THIS frame's per-element render states bind scene textures to the queued
+        // page flip as well as reporting `ZeroCopy` per surface. Cloned out of the
+        // `RenderFrameResult` because
         // that borrows the renderer and is dropped well before `present` runs; the map
         // is one entry per element, so this is cheap next to the frame it describes.
-        let mut frame_states: Option<smithay::backend::renderer::element::RenderElementStates> =
-            None;
+        let frame_states;
         let mut visible_window: Vec<_> = Vec::new();
 
         // GLES composes and scans out; there is no Vulkan composite path.
@@ -1086,11 +1086,15 @@ pub fn execute(
                         damage.as_deref(),
                     ));
                 }
+                frame_states = scene_result.states.clone();
                 drop(scene_result);
                 drop(r);
 
                 last_result_empty = scene_is_empty;
                 visible_window = scene.visible_window;
+            } else {
+                // No scene was composed and no page flip will be admitted.
+                frame_states = smithay::backend::renderer::element::RenderElementStates::default();
             }
         }
 
@@ -1102,7 +1106,7 @@ pub fn execute(
                 state,
                 visible_window,
                 output_idx,
-                frame_states.as_ref(),
+                &frame_states,
             ) {
                 any_queued = true;
             }
@@ -1299,7 +1303,7 @@ fn present(
     state: &mut Loop,
     window_visible: Vec<smithay::desktop::Window>,
     output_idx: usize,
-    states: Option<&smithay::backend::renderer::element::RenderElementStates>,
+    states: &smithay::backend::renderer::element::RenderElementStates,
 ) -> bool {
     use kms::scanout::flip::queue::queue::{QueueOutcome, queue};
     let trace_output = if ledger::frame_trace::enabled() {
@@ -1464,7 +1468,7 @@ fn present(
     let feedback = frames::draw::present::callbacks::callbacks::collect_feedback(
         &current_output,
         &window_visible,
-        states,
+        Some(states),
     );
 
     // Per-frame tearing decision. The FrameFlags half (plane assignment on/off)
@@ -1547,7 +1551,7 @@ fn present(
     }
 
     // compd (integration batch D): this frame was handed to the display.
-    world::comp::presentation::frame_queued(state, &current_output, &window_visible, states);
+    world::comp::presentation::frame_queued(state, &current_output, &window_visible, Some(states));
     frames::draw::present::callbacks::callbacks::send_window_frames(
         state,
         &current_output,
