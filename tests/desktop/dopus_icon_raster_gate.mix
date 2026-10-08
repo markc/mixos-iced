@@ -352,8 +352,10 @@ try
   verify_pixels("dark",$dopus,$identity,$initial.target,$snapshot,false,false,false)
   -- Real navigation establishes each history state, then returns to the
   -- original owned listing before comparing the toolbar's glyph/tint.
-  app("dopus.action",{id:"selection.first",pane:0})
-  app("dopus.action",{id:"file.open",pane:0})
+  click_alias("left-entry-0",$dopus,$identity,$initial.target,"select-folder")
+  $open=comp("comp.input.key",{seat:"human",window:$dopus.window,key:28})
+  check(deep_eq($open.target,$dopus.window),"Native folder-open key reached another owner")
+  write_file($root .. "/input-open-folder.json",json_encode($open))
   wait_path($root .. "/left/0-folder",0)
   app("dopus.action",{id:"nav.parent",pane:0})
   wait_path($root .. "/left",8)
