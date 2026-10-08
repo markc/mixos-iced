@@ -1,0 +1,33 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Individual native crop comparison; source attestation is a separate fence.
+$capture=require("capture_lib.mix")
+fn compare($native,$reference,$bounds,$origin,$background)
+  $mismatch=0
+  $ink=0
+  $maximum=0
+  $pixels=0
+  -- Compare the full decoration plus a two-pixel guard. This detects a
+  -- shifted glyph and leakage outside its expected physical raster.
+  for $y=floor($bounds[1])-2 to ceil($bounds[1]+$bounds[3])+1
+    for $x=floor($bounds[0])-2 to ceil($bounds[0]+$bounds[2])+1
+      $expected=$capture.pixel($reference,$x-floor($bounds[0])+2,$y-floor($bounds[1])+2)
+      $actual=$capture.pixel($native,$origin[0]+$x,$origin[1]+$y)
+      if ($x >= ceil($bounds[0]) and $x < floor($bounds[0]+$bounds[2]) and
+        $y >= ceil($bounds[1]) and $y < floor($bounds[1]+$bounds[3]) and
+        not deep_eq($expected,$background)) then $ink=$ink+1 end
+      $different=false
+      for $channel=0 to 2
+        $delta=abs($expected[$channel]-$actual[$channel])
+        $maximum=max($maximum,$delta)
+        if $delta > 2 then $different=true end
+      end
+      if $different then $mismatch=$mismatch+1 end
+      $pixels=$pixels+1
+    end
+  end
+  return {matches:$mismatch == 0 and $ink >= 8,mismatched_pixels:$mismatch,
+    maximum_channel_error:$maximum,expected_ink_pixels:$ink,compared_pixels:$pixels,tolerance:2}
+end
+fn rgba($linear)
+  return [$capture.srgb($linear[0]),$capture.srgb($linear[1]),$capture.srgb($linear[2]),round(255*$linear[3])]
+end

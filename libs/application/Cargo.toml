@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.22"
+version = "0.1.23"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -68,3 +68,8 @@ blake3 = "=1.8.6"
 hex = "=0.4.3"
 sha2 = { workspace = true }
 strict = { path = "../strict" }
+
+[[bin]]
+name = "native-glyph-reference"
+path = "src/bin/native-glyph-reference.rs"
+required-features = ["acceptance", "tiny-skia"]

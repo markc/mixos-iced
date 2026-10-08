@@ -1,5 +1,18 @@
 # DOpus Bus contract
 
+## 0.4.11
+
+- Report actual per-pane back/forward history availability in `dopus.state`.
+  Native glyph acceptance derives enabled toolbar colours from this model
+  evidence instead of assuming a particular startup history.
+
+## 0.4.10
+
+- Extend the optional native acceptance layout inventory with realised file
+  decorations, toolbar glyph slots and Places glyph slots. Ordinary launches
+  retain no fixture, IDs or inspection traversal. The new native raster gate
+  checks every reachable glyph through actual controls at output scales 1/2.
+
 ## 0.4.9
 
 - Report the actual GUI location draft in `dopus.state.ui.location_draft`.

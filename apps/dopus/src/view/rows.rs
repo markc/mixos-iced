@@ -169,7 +169,7 @@ pub fn file_list<'a>(
     drag: super::drag::Shared,
     busy: bool,
 ) -> FileList<'a> {
-    FileList::new(
+    let list = FileList::new(
         Listing {
             rows,
             root,
@@ -213,7 +213,24 @@ pub fn file_list<'a>(
             ),
         };
         icons.draw(renderer, icon, tint, bounds, clip);
-    })
+    });
+    #[cfg(feature = "acceptance")]
+    let list = if crate::acceptance::enabled() && id == dopus_core::PaneId::Left {
+        list.decoration_id(|index, decoration| {
+            if index < 8 && decoration == pane::Decoration::Entry {
+                Some(crate::acceptance::entry_id(index))
+            } else if index == 0 {
+                Some(application::iced::widget::Id::from(
+                    "dopus.fixture.left-chevron-0",
+                ))
+            } else {
+                None
+            }
+        })
+    } else {
+        list
+    };
+    list
 }
 
 fn size_text(entry: &FileEntry) -> String {

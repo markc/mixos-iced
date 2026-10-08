@@ -20,10 +20,15 @@ pub fn navigation<'a>(
     actions: &[crate::verbs::ActionRow],
 ) -> Element<'a, Msg> {
     let disabled_tint = crate::icons::tint_key(look.tokens.palette.muted_text);
-    let control = |icon, action, label| {
+    let control = |index, icon, action, label| {
         let enabled = enabled(active, busy, action);
         let tint = if enabled { tint } else { &disabled_tint };
-        let button = button(super::image_widget(look, icons, tint, icon))
+        let element = super::image_widget(look, icons, tint, icon);
+        #[cfg(feature = "acceptance")]
+        let element = crate::acceptance::tag(element, format!("toolbar-{index}"));
+        #[cfg(not(feature = "acceptance"))]
+        let _ = index;
+        let button = button(element)
             .padding(look.chrome.small)
             .on_press_maybe(enabled.then_some(Msg::Actions(vec![action])))
             .style(super::button_look(&look));
@@ -34,22 +39,24 @@ pub fn navigation<'a>(
         )
     };
     let controls = row![
-        control(Icon::ArrowLeft, filemgr::NAV_BACK, "Back"),
-        control(Icon::ArrowRight, filemgr::NAV_FORWARD, "Forward"),
-        control(Icon::ArrowUp, filemgr::NAV_PARENT, "Up"),
-        control(Icon::House, filemgr::NAV_HOME, "Home"),
-        control(Icon::Refresh, filemgr::VIEW_REFRESH, "Refresh"),
-        control(Icon::FolderOpen, filemgr::FILE_OPEN, "Open"),
-        control(Icon::Folder, filemgr::FILE_NEW_FOLDER, "New folder"),
-        control(Icon::FileText, filemgr::FILE_RENAME, "Rename"),
-        control(Icon::Copy, filemgr::FILE_COPY, "Copy to other pane"),
+        control(0, Icon::ArrowLeft, filemgr::NAV_BACK, "Back"),
+        control(1, Icon::ArrowRight, filemgr::NAV_FORWARD, "Forward"),
+        control(2, Icon::ArrowUp, filemgr::NAV_PARENT, "Up"),
+        control(3, Icon::House, filemgr::NAV_HOME, "Home"),
+        control(4, Icon::Refresh, filemgr::VIEW_REFRESH, "Refresh"),
+        control(5, Icon::FolderOpen, filemgr::FILE_OPEN, "Open"),
+        control(6, Icon::Folder, filemgr::FILE_NEW_FOLDER, "New folder"),
+        control(7, Icon::FileText, filemgr::FILE_RENAME, "Rename"),
+        control(8, Icon::Copy, filemgr::FILE_COPY, "Copy to other pane"),
         control(
+            9,
             Icon::MoveHorizontal,
             filemgr::FILE_MOVE,
             "Move to other pane"
         ),
-        control(Icon::Trash, filemgr::FILE_DELETE, "Delete"),
+        control(10, Icon::Trash, filemgr::FILE_DELETE, "Delete"),
         control(
+            11,
             if active.show_hidden {
                 Icon::EyeOff
             } else {
@@ -65,13 +72,18 @@ pub fn navigation<'a>(
     ]
     .spacing(look.chrome.small)
     .align_y(application::iced::Alignment::Center);
-    let panel = |icon, action, name: &str, open| {
+    let panel = |index, icon, action, name: &str, open| {
         let tint = crate::icons::tint_key(if open {
             look.tokens.palette.selection_text
         } else {
             look.tokens.palette.muted_text
         });
-        let button = button(super::image_widget(look, icons, &tint, icon))
+        let element = super::image_widget(look, icons, &tint, icon);
+        #[cfg(feature = "acceptance")]
+        let element = crate::acceptance::tag(element, format!("toolbar-{index}"));
+        #[cfg(not(feature = "acceptance"))]
+        let _ = index;
+        let button = button(element)
             .padding(look.chrome.small)
             .on_press(Msg::Actions(vec![action]))
             .style(move |theme, status| {
@@ -93,6 +105,7 @@ pub fn navigation<'a>(
     container(
         row![
             panel(
+                12,
                 Icon::PanelLeft,
                 actions::view::TOGGLE_PLACES,
                 "Places",
@@ -100,6 +113,7 @@ pub fn navigation<'a>(
             ),
             container(controls).center_x(Length::Fill),
             panel(
+                13,
                 Icon::PanelRight,
                 actions::view::TOGGLE_PROPERTIES,
                 "Properties",

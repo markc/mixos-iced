@@ -166,7 +166,18 @@ try
   $identity={run:"dopus-native-" .. to_string(pid()),instance:1}
   $dopus=launch("fixture",$identity)
   $info=fixture("describe",$identity)
-  check($info.pid == $dopus.pid and deep_eq($info.aliases,["root","viewport","left-location","right-location"]) and
+  $aliases=["root","viewport","left-location","right-location"]
+  for $index=0 to 7
+    $aliases=concat($aliases,["left-entry-" .. to_string($index)])
+  end
+  $aliases=concat($aliases,["left-chevron-0"])
+  for $index=0 to 13
+    $aliases=concat($aliases,["toolbar-" .. to_string($index)])
+  end
+  for each $name in ["Home","Filesystem","Desktop","Documents","Downloads","Music","Pictures","Videos"]
+    $aliases=concat($aliases,["place-" .. $name])
+  end
+  check($info.pid == $dopus.pid and deep_eq($info.aliases,$aliases) and
     deep_eq($info.points,["dopus.prepare"]) and $info.frames.enabled,"Wrong explicit fixture")
   $before=current($snapshot)
   $initial=$f.target(fixture_context(),$identity,$before.preparation.applied)

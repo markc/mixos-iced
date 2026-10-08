@@ -1,0 +1,453 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Owned actual Dopus file rows: exact native glyph pixels and source locks.
+if len(args()) != 3 then raise("ARGS","REPO BUILD_BIN_DIR OUTPUT_SCALE_1_OR_2") end
+$repo=args()[0]
+$bin=args()[1]
+$scale=to_number(args()[2])
+if not contains([1,2],$scale) then raise("ARGS","Output scale must be 1 or 2") end
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$capture=require("capture_lib.mix")
+$assets=require("settings_asset_fixture_lib.mix")
+$oracle=require("dopus_icon_raster_lib.mix")
+$R={run:nil,bus:nil,session:nil,children:[],calls:[],covered:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+$service="dopus-settings"
+fn check($condition,$message)
+  if not $condition then raise("DOPUS_SETTINGS_GATE",$message) end
+end
+fn stable_geometry($row)
+  -- Real presentation counters and timings keep advancing while native frames
+  -- are consumed. Preserve every owner, placement and visibility field.
+  $stable={}
+  for each $key in keys($row)
+    if $key != "presentation" then $stable[$key]=$row[$key] end
+  end
+  return $stable
+end
+fn fixture_context()
+  return {mix:$mix,bus:$R.bus,root:$R.run.path,service:$service}
+end
+fn rpc($service,$verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path,$service,$verb,$body)
+end
+fn app($verb,$body)
+  return $f.rpc(fixture_context(),$verb,$body)
+end
+fn fixture($verb,$body)
+  return $f.fixture(fixture_context(),$verb,$body)
+end
+fn comp($verb,$body)
+  return rpc($R.session.service,$verb,$body)
+end
+fn wait_service($service,$verb,$child,$log)
+  $deadline=time()+10
+  while time() < $deadline
+    check(process_alive($child),"Owned child exited: " .. read_file($log))
+    $reply=$h.call($mix,$R.bus,$R.run.path,$service,$verb,{})
+    if $reply.rc == 0 then return $reply.result end
+    sleep(0.05)
+  end
+  raise("SETUP","Service did not register: " .. $service)
+end
+fn launch($label,$identity)
+  $home=$R.run.path .. "/home-" .. $label
+  for each $dir in ["config","state","cache"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  for each $dir in ["Desktop","Documents","Downloads","Music","Pictures","Videos"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  $environment=merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",XDG_CACHE_HOME:$home .. "/cache",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1",
+    MIXOS_SHARE:$R.run.path .. "/empty-share",XDG_DATA_HOME:$R.package.data_home,XDG_DATA_DIRS:$R.run.path .. "/empty-data",
+    MIXOS_ACCEPTANCE_RUN:nil,MIXOS_ACCEPTANCE_INSTANCE:nil})
+  if $identity != nil then
+    $environment.MIXOS_ACCEPTANCE_RUN=$identity.run
+    $environment.MIXOS_ACCEPTANCE_INSTANCE=to_string($identity.instance)
+  end
+  $log=$R.run.path .. "/dopus-" .. $label .. ".log"
+  $child=spawn([$bin .. "/dopus","--service",$service,"--noded-url",$R.bus.url,"--",$R.run.path .. "/left",$R.run.path .. "/right"],
+    {env:$n.client_env($R.session,$environment),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$child])
+  wait_service($service,"app.describe",$child,$log)
+  $window=comp("comp.window.wait",{match:{app_id:"dev.mixos.dopus"},until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.pid == $child,"Window is not the actual launched owner")
+  return {pid:$child,window:{id:$window.id,generation:$window.generation},log:$log}
+end
+fn current($snapshot)
+  $deadline=time()+10
+  $last=nil
+  while time() < $deadline
+    $last=app("app.describe",{})
+    if (deep_eq($last.settings.applied,$h.identity($snapshot)) and
+      deep_eq($last.settings_cache.persisted,$last.settings.applied) and $last.preparation.current) then return $last end
+    check($last.preparation.fault == nil,"Preparation failed: " .. json_encode($last))
+    sleep(0.05)
+  end
+  raise("ACTIVATION","Did not settle: " .. json_encode($last))
+end
+fn apply($snapshot,$operation,$changes)
+  rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:$operation,changes:$changes,reset:[]})
+  return rpc("settingsd","settings.get",{binding:$binding}).snapshot
+end
+fn render_reference($request,$label)
+  $input=$R.run.path .. "/reference-" .. $label .. ".json"
+  $output=$R.run.path .. "/reference-" .. $label .. ".ppm"
+  write_file($input,json_encode($request))
+  run_argv_must([$bin .. "/native-glyph-reference",$input,$output],{timeout:20})
+  return $capture.ppm($output)
+end
+fn wait_path($path,$rows)
+  $deadline=time()+8
+  while time() < $deadline
+    $state=app("dopus.state",{})
+    if $state.panes[0].path == $path and $state.panes[0].rows == $rows then return $state end
+    sleep(0.05)
+  end
+  raise("LISTING","Actual owned listing did not settle: " .. json_encode($state))
+end
+fn click_alias($alias,$owner,$identity,$target,$label)
+  $layout=fixture("layout",merge($identity,{window:$target.window,layer:"base",aliases:[$alias]}))
+  check(len($layout.records) == 1 and $layout.aliases[0].status == "found","Native click target unavailable")
+  $bounds=$layout.records[0].visible_bounds
+  check($bounds != nil,"Native click target is clipped away")
+  $geometry=comp("comp.props.get",{path:"windows.s" .. to_string($owner.window.id)})
+  $point=$f.surface_point($geometry,$owner.window,$bounds[0]+$bounds[2]/2,$bounds[1]+$bounds[3]/2)
+  $focus=comp("comp.window.focus",$owner.window)
+  check($focus.focused,"Native focus refused")
+  $move=comp("comp.input.pointer.move",{seat:"human",window:$owner.window,x:$point.x,y:$point.y,corners:false})
+  $press=comp("comp.input.pointer.button",{seat:"human",window:$owner.window,button:"left",action:"press"})
+  $release=comp("comp.input.pointer.button",{seat:"human",window:$owner.window,button:"left",action:"release"})
+  check(deep_eq($press.target,$owner.window) and deep_eq($release.target,$owner.window),"Native click reached another owner")
+  comp("comp.input.pointer.move",{seat:"human",x:1,y:1,corners:false})
+  write_file($R.run.path .. "/input-" .. $label .. ".json",json_encode({alias:$alias,geometry:$geometry,
+    layout:$layout,point:$point,focus:$focus,move:$move,press:$press,release:$release}))
+end
+fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded)
+  $before=app("app.describe",{})
+  check($before.pid == $owner.pid and $before.service == $service and $before.app_id == "dev.mixos.dopus",
+    "Raster fixture is not the launched native application owner")
+  $assets.verified($before,$R.package,true)
+  $frame=$f.presented(fixture_context(),$identity,$target,"icons-" .. $label)
+  $aliases=[]
+  for $index=0 to 7
+    $aliases=concat($aliases,["left-entry-" .. to_string($index)])
+  end
+  $aliases=concat($aliases,["left-chevron-0"])
+  for $index=0 to 13
+    $aliases=concat($aliases,["toolbar-" .. to_string($index)])
+  end
+  $state=app("dopus.state",{})
+  write_file($R.run.path .. "/model-" .. $label .. ".json",json_encode($state))
+  if $state.places.open then
+    for each $name in ["Home","Filesystem","Desktop","Documents","Downloads","Music","Pictures","Videos"]
+      $aliases=concat($aliases,["place-" .. $name])
+    end
+  end
+  $query=merge($identity,{window:$target.window,layer:"base",aliases:$aliases})
+  $layout=fixture("layout",$query)
+  $deadline=time()+4
+  $stable=0
+  while time() < $deadline and $stable < 3
+    sleep(0.05)
+    $next=fixture("layout",$query)
+    $stable=if deep_eq($layout,$next) then $stable+1 else 0 end
+    $layout=$next
+  end
+  check($stable == 3 and $layout.window_id == $target.window and $layout.layout_sequence > 0 and
+    not $layout.truncated and len($layout.records) == len($aliases),"Actual individual decoration layout did not settle")
+  $f.layout(fixture_context(),$identity,$target.window,"icons-root-" .. $label)
+  $outputs=comp("comp.props.get",{path:"outputs"})
+  check(len(keys($outputs)) == 1,"Raster oracle requires the owned single output")
+  for each $key in keys($outputs)
+    $output=$outputs[$key]
+  end
+  check($output.scale == $scale and $output.x == 0 and $output.y == 0,"Raster oracle requires selected native output at origin")
+  $geometry=comp("comp.props.get",{path:"windows.s" .. to_string($owner.window.id)})
+  check($geometry.pid == $owner.pid and $geometry.generation == $owner.window.generation and $geometry.visible,
+    "Native icon window owner changed")
+  -- This gate owns one integral-scale output, with no fractional surface
+  -- translation or invented resampling of the captured client buffer.
+  check($geometry.x*$scale == floor($geometry.x*$scale) and $geometry.y*$scale == floor($geometry.y*$scale),
+    "Fractional physical native surface origin")
+  check($layout.logical_size[0] == floor($layout.logical_size[0]) and
+    $layout.logical_size[1] == floor($layout.logical_size[1]),"Nonintegral client size")
+  $path=$R.run.path .. "/native-icons-" .. $label .. ".ppm"
+  run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,
+    env:$n.client_env($R.session,$h.bus_env($R.bus,$R.run.path))})
+  $native=$capture.ppm($path)
+  write_file($R.run.path .. "/individual-layout-" .. $label .. ".json",json_encode($layout))
+  write_file($R.run.path .. "/individual-geometry-" .. $label .. ".json",json_encode($geometry))
+  check($native.w == $output.width*$scale and $native.h == $output.height*$scale,"Screencopy did not capture selected native output")
+  $pairs=$snapshot.effective["app:dopus"].design.pairs
+  $foreground=$oracle.rgba($pairs.base.rendered_foreground)
+  $background=slice($oracle.rgba($pairs.base.rendered_surface),0,3)
+  check($foreground[3] == 255 and $pairs.base.rendered_surface[3] == 1,"Oracle requires opaque owned base pair")
+  check($geometry.x >= 0 and $geometry.y >= 0 and ($geometry.x+$layout.logical_size[0])*$scale <= $native.w and
+    ($geometry.y+$layout.logical_size[1])*$scale <= $native.h,"Native client is not wholly inside selected output")
+  $entries=[]
+  $names=[if $expanded then "folder_open" else "folder" end,"draft","description","code","image","audio_file","video_file","archive"]
+  for $index=0 to 7
+    $selected=$index == 0 and $state.panes[0].selected == $R.run.path .. "/left/0-folder"
+    $entries=concat($entries,[{alias:"left-entry-" .. to_string($index),name:$names[$index],foreground:$foreground,
+      background:if $selected then slice($oracle.rgba($pairs.accent.rendered_surface),0,3) else $background end}])
+  end
+  $entries=concat($entries,[{alias:"left-chevron-0",name:if $expanded then "expand_more" else "chevron_right" end,
+    foreground:$foreground,background:$entries[0].background}])
+  $toolbar=["arrow_back","arrow_forward","arrow_upward","home","refresh","folder_open","folder",
+    "description","content_copy","swap_horiz","delete",if $state.panes[0].show_hidden then "visibility_off" else "visibility" end,
+    "left_panel_open","right_panel_open"]
+  $muted=$oracle.rgba($pairs.muted.rendered_foreground)
+  $selection=$oracle.rgba($pairs.accent.rendered_foreground)
+  $strip=slice($oracle.rgba($pairs.secondary.rendered_surface),0,3)
+  $has_selection=$state.panes[0].selected != nil
+  for $index=0 to 13
+    $enabled=true
+    if $index == 0 then $enabled=$state.panes[0].can_go_back end
+    if $index == 1 then $enabled=$state.panes[0].can_go_forward end
+    if contains([5,7,8,9,10],$index) then $enabled=$has_selection end
+    $panel=$index >= 12
+    $open=if $index == 12 then $state.places.open else $state.properties.open end
+    $tint=if $enabled then $foreground else $muted end
+    if $panel then $tint=if $open then $selection else $muted end end
+    $surface=if $panel and $open then slice($oracle.rgba($pairs.accent.rendered_surface),0,3) else $strip end
+    $entries=concat($entries,[{alias:"toolbar-" .. to_string($index),name:$toolbar[$index],foreground:$tint,background:$surface}])
+  end
+  if $state.places.open then
+    $places={Home:"home",Filesystem:"hard_drive",Desktop:"grid_view",Documents:"description",Downloads:"download",
+      Music:"music_note",Pictures:"image",Videos:"video_file"}
+    for each $name in keys($places)
+      $entries=concat($entries,[{alias:"place-" .. $name,name:$places[$name],foreground:$foreground,background:$strip}])
+    end
+  end
+  $rows=[]
+  for each $entry in $entries
+    $alias=$entry.alias
+    $records=filter($layout.records,fn($record)=$record.alias == $alias)
+    $statuses=filter($layout.aliases,fn($record)=$record.alias == $alias)
+    check(len($records) == 1 and len($statuses) == 1 and $statuses[0].status == "found",
+      "Individual icon is not uniquely realised")
+    $bounds=$records[0].layout_bounds
+    check(deep_eq($bounds,$records[0].visible_bounds) and $bounds[2] > 8 and $bounds[3] > 8,
+      "Icon is clipped or unavailable")
+    $name=$entry.name
+    $foreground=$entry.foreground
+    $background=$entry.background
+    $glyph=$R.package.icon_catalogue.glyphs[$name]
+    $font=$R.package.root .. "/sets/" .. $R.package.set_id .. "/" .. $R.package.icon_catalogue.font
+    $lock=$assets.locked_file($R.package,$R.package.icon_catalogue.font)
+    check(hash_file($font,"blake3") == $lock.blake3,"Reference font changed after verification")
+    $physical=map($bounds,fn($value)=$value*$scale)
+    -- Translate by whole physical pixels only: preserve fractional glyph
+    -- phase without writing a full-window reference for every small icon.
+    $request={font_path:$font,family:$R.package.icon_catalogue.family,glyph:$glyph,
+      size:[ceil($physical[0]+$physical[2])-floor($physical[0])+4,
+        ceil($physical[1]+$physical[3])-floor($physical[1])+4],scale:$scale,
+      bounds:[$bounds[0]-(floor($physical[0])-2)/$scale,$bounds[1]-(floor($physical[1])-2)/$scale,$bounds[2],$bounds[3]],
+      foreground:$foreground,background:$background}
+    -- An adjacent actual glyph can enter the two-physical-pixel guard. Draw
+    -- its independently selected catalogue scalar at its actual inspected
+    -- bounds rather than treating valid neighbouring ink as leakage.
+    $neighbours=[]
+    for each $other in $entries
+      if $other.alias == $alias then continue end
+      $near=filter($layout.records,fn($record)=$record.alias == $other.alias)
+      check(len($near) == 1,"Neighbour is not uniquely realised")
+      $near=$near[0].layout_bounds
+      if ($near[0]*$scale < ceil($physical[0]+$physical[2])+2 and
+        ($near[0]+$near[2])*$scale > floor($physical[0])-2 and
+        $near[1]*$scale < ceil($physical[1]+$physical[3])+2 and
+        ($near[1]+$near[3])*$scale > floor($physical[1])-2) then
+        check(deep_eq($other.background,$background),"Adjacent glyph crosses a distinct background")
+        $neighbours=concat($neighbours,[{glyph:$R.package.icon_catalogue.glyphs[$other.name],
+          bounds:[$near[0]-(floor($physical[0])-2)/$scale,$near[1]-(floor($physical[1])-2)/$scale,$near[2],$near[3]],
+          foreground:$other.foreground}])
+      end
+    end
+    $request.neighbours=$neighbours
+    $origin=[$geometry.x*$scale,$geometry.y*$scale]
+    $reference=render_reference($request,$label .. "-" .. $alias)
+    $proof=$oracle.compare($native,$reference,$physical,$origin,$background)
+    write_file($R.run.path .. "/pixels-" .. $label .. "-" .. $alias .. ".json",json_encode({request:$request,proof:$proof}))
+    check($proof.matches,"Native " .. $name .. " pixels differ: " .. json_encode($proof))
+    if not contains($R.covered,$name) then $R.covered=concat($R.covered,[$name]) end
+    $wrong_name=if $name == "delete" then "folder" else "delete" end
+    $wrong_glyph=render_reference(merge($request,{glyph:$R.package.icon_catalogue.glyphs[$wrong_name]}),
+      $label .. "-" .. $alias .. "-wrong-glyph")
+    $glyph_negative=$oracle.compare($native,$wrong_glyph,$physical,$origin,$background)
+    check(not $glyph_negative.matches and $glyph_negative.mismatched_pixels > 0,"Wrong catalogue glyph passed native oracle")
+    $wrong_tint=render_reference(merge($request,{foreground:[255-$foreground[0],255-$foreground[1],255-$foreground[2],255]}),
+      $label .. "-" .. $alias .. "-wrong-tint")
+    $tint_negative=$oracle.compare($native,$wrong_tint,$physical,$origin,$background)
+    check(not $tint_negative.matches and $tint_negative.mismatched_pixels > 0,"Wrong tint passed native oracle")
+    $rows=concat($rows,[{alias:$alias,name:$name,glyph:$glyph,font_blake3:$lock.blake3,face_index:0,
+      bounds:$bounds,foreground:$foreground,background:$background,pixels:$proof,
+      wrong_glyph:$glyph_negative,wrong_tint:$tint_negative}])
+  end
+  $after=app("app.describe",{})
+  $after_layout=fixture("layout",$query)
+  $after_geometry=comp("comp.props.get",{path:"windows.s" .. to_string($owner.window.id)})
+  $after_frame=fixture("frame.state",$identity)
+  write_file($R.run.path .. "/stability-" .. $label .. ".json",json_encode({
+    before:$before,after:$after,layout:$layout,after_layout:$after_layout,
+    geometry:$geometry,after_geometry:$after_geometry,target:$target,after_frame:$after_frame}))
+  check($after.pid == $owner.pid and deep_eq($before.settings.applied,$after.settings.applied) and deep_eq($before.resources,$after.resources) and
+    deep_eq($after_frame.target,$target) and deep_eq($layout,$after_layout) and
+    deep_eq(stable_geometry($geometry),stable_geometry($after_geometry)),"Owner/settings/layout changed across native raster proof")
+  write_file($R.run.path .. "/individual-icons-" .. $label .. ".json",json_encode({frame:$frame,
+    owner:$owner,geometry:$geometry,layout:$layout,rows:$rows,settings:$before.settings.applied,
+    resources:$before.resources,output:$output,product:$state,expanded:$expanded,
+    reference_backend:"same tiny-skia text backend; independent catalogue selection"}))
+end
+try
+  for each $name in ["mix","dopus","noded","settingsd","compd","testkit-screenshot","native-glyph-reference"]
+    check(is_file($bin .. "/" .. $name),"Missing exact candidate " .. $name)
+  end
+  $R.run=$n.new_run("/var/tmp/dopus-icon-raster")
+  $root=$R.run.path
+  $R.package=$assets.prepare($repo,$root .. "/fixture-data",$mix)
+  for each $directory in ["left","right","left/0-folder","empty-data","empty-share","cfg"]
+    mkdir($root .. "/" .. $directory,{parents:true})
+  end
+  -- These are real directory entries, never a substituted icon gallery.
+  for each $name in ["1-README","2-notes.txt","3-main.rs","4-shot.png","5-song.flac","6-clip.mkv","7-lib.zip"]
+    write_file($root .. "/left/" .. $name,"owned native icon acceptance entry\n")
+  end
+  $R.bus=$n.private_bus({dir:$root,name:"dopus-icons",noded:$bin .. "/noded"})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"dopus-icons",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:$scale,
+    width:1280*$scale,height:800*$scale,max_secs:900})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  $log=$root .. "/settingsd.log"
+  $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
+    {env:$h.bus_env($R.bus,$root),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$authority])
+  wait_service("settingsd","settings.describe",$authority,$log)
+  $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $snapshot=apply($snapshot,"icon-prime",{"appearance.mode":"dark","ui.text_scale":1.0})
+  $identity={run:"dopus-icons-" .. to_string(pid()),instance:1}
+  $dopus=launch("fixture",$identity)
+  $description=current($snapshot)
+  $initial=$f.target(fixture_context(),$identity,$description.preparation.applied)
+  $identity=merge($identity,{generation:$initial.evidence.live_generation})
+  $deadline=time()+8
+  while time() < $deadline
+    $state=app("dopus.state",{})
+    if $state.panes[0].rows == 8 then break end
+    sleep(0.05)
+  end
+  check($state.panes[0].rows == 8 and $state.panes[0].path == $root .. "/left","Owned real listing did not settle")
+  -- Put the real pointer outside the rows, keeping hover tooltips absent.
+  comp("comp.input.pointer.move",{seat:"human",x:1,y:1,corners:false})
+  verify_pixels("dark",$dopus,$identity,$initial.target,$snapshot,false)
+  -- Real navigation establishes each history state, then returns to the
+  -- original owned listing before comparing the toolbar's glyph/tint.
+  click_alias("left-entry-0",$dopus,$identity,$initial.target,"select-folder")
+  $open=comp("comp.input.key",{seat:"human",window:$dopus.window,key:28})
+  check(deep_eq($open.target,$dopus.window),"Native folder-open key reached another owner")
+  write_file($root .. "/input-open-folder.json",json_encode($open))
+  wait_path($root .. "/left/0-folder",0)
+  app("dopus.action",{id:"nav.parent",pane:0})
+  wait_path($root .. "/left",8)
+  verify_pixels("history-back",$dopus,$identity,$initial.target,$snapshot,false)
+  app("dopus.action",{id:"nav.back",pane:0})
+  wait_path($root .. "/left/0-folder",0)
+  app("dopus.action",{id:"nav.back",pane:0})
+  wait_path($root .. "/left",8)
+  verify_pixels("history-forward",$dopus,$identity,$initial.target,$snapshot,false)
+  app("dopus.action",{id:"selection.first",pane:0})
+  click_alias("left-chevron-0",$dopus,$identity,$initial.target,"expand-folder")
+  verify_pixels("expanded",$dopus,$identity,$initial.target,$snapshot,true)
+  app("dopus.action",{id:"view.toggle-hidden",pane:0})
+  wait_path($root .. "/left",8)
+  -- Changing hidden-file policy reloads the root listing and clears its tree.
+  verify_pixels("hidden",$dopus,$identity,$initial.target,$snapshot,false)
+  app("dopus.action",{id:"view.toggle-places"})
+  app("dopus.action",{id:"view.toggle-properties"})
+  verify_pixels("panel-toggles",$dopus,$identity,$initial.target,$snapshot,false)
+  app("dopus.action",{id:"view.toggle-places"})
+  $navigation_before=app("dopus.state",{}).panes[0]
+  $snapshot=apply($snapshot,"icon-light",{"appearance.mode":"light","ui.text_scale":1.25})
+  $description=current($snapshot)
+  $navigation_after=app("dopus.state",{}).panes[0]
+  write_file($root .. "/navigation-settings-retention.json",json_encode({before:$navigation_before,after:$navigation_after}))
+  check($navigation_before.can_go_back == $navigation_after.can_go_back and
+    $navigation_before.can_go_forward == $navigation_after.can_go_forward,
+    "Settings activation changed retained navigation history availability")
+  $changed=$f.target(fixture_context(),$identity,$description.preparation.applied)
+  check($changed.target.stamp.activation_epoch == $initial.target.stamp.activation_epoch+1,"Unexpected native install epoch")
+  verify_pixels("light-scaled",$dopus,$identity,$changed.target,$snapshot,false)
+  click_alias("left-chevron-0",$dopus,$identity,$changed.target,"expand-light-folder")
+  verify_pixels("light-expanded",$dopus,$identity,$changed.target,$snapshot,true)
+  click_alias("left-chevron-0",$dopus,$identity,$changed.target,"collapse-folder")
+  app("dopus.action",{id:"view.toggle-hidden",pane:0})
+  wait_path($root .. "/left",8)
+  verify_pixels("light-collapsed",$dopus,$identity,$changed.target,$snapshot,false)
+  $unused=["expand_less","info","view_list","logout","menu","push_pin","keep_off","search"]
+  for each $name in keys($R.package.icon_catalogue.glyphs)
+    check(contains($unused,$name) or contains($R.covered,$name),"Reachable catalogue glyph lacks native raster proof: " .. $name)
+  end
+  check(len($R.covered) == 27,"Unexpected production raster coverage")
+  app("dopus.quit",{})
+  $deadline=time()+4
+  while process_alive($dopus.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($dopus.pid),"Actual native quit did not retire owner")
+  write_file($root .. "/acceptance.json",json_encode({individual_file_icons:8,reachable_glyphs:$R.covered,
+    unused_source_attested_only:$unused,native_raster:true,
+    wrong_glyph_refused:true,wrong_tint_refused:true,verified_core:true,same_owner:true,
+    native_frames:true,modes:["dark","light"],text_scales:[1.0,1.25],output_scale:$scale,
+    visible_states:["dark","history-back","history-forward","expanded-hidden","panel-toggles","light-scaled","light-collapsed"],
+    limits:"Same text raster backend, independent catalogue selection; eight unused entries have no production draw site"}))
+  $R.ok=true
+catch $message
+  print("FAIL Dopus native settings: " .. $message)
+finally
+  for each $child in concat($R.calls,$R.children)
+    try
+      $h.stop($child)
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+    catch $error
+      $R.ok=false
+      print("FAIL native host teardown: " .. $error)
+    end
+    for each $child in $R.session.pids
+      try
+        $h.stop($child)
+      catch $error
+        $R.ok=false
+        print("FAIL host child teardown: " .. $error)
+      end
+    end
+  end
+  if $R.bus != nil then
+    try
+      $h.stop($R.bus.pid)
+    catch $error
+      $R.ok=false
+      print("FAIL broker teardown: " .. $error)
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS Dopus actual individual file-row icons: verified core glyphs, exact native frames and native crop equality with wrong glyph/tint refusals")

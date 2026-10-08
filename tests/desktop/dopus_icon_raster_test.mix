@@ -1,0 +1,34 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Pure crop-oracle guards, not native acceptance.
+$oracle=require("dopus_icon_raster_lib.mix")
+fn check($condition,$message)
+  if not $condition then raise("ICON_ORACLE_TEST",$message) end
+end
+fn pixel_fixture($w,$h,$box,$ink)
+  $bytes=[]
+  for $y=0 to $h-1
+    for $x=0 to $w-1
+      $inside=$x >= $box[0] and $x < $box[0]+$box[2] and $y >= $box[1] and $y < $box[1]+$box[3]
+      $bytes=concat($bytes,if $inside then $ink else [10,20,30] end)
+    end
+  end
+  return {w:$w,h:$h,off:0,bytes:$bytes}
+end
+for each $scale in [1,2]
+  $bounds=[4*$scale,4*$scale,4*$scale,4*$scale]
+  $native=pixel_fixture(64,64,[16+4*$scale,14+4*$scale,4*$scale,4*$scale],[220,180,100])
+  $side=4*$scale+4
+  $reference=pixel_fixture($side,$side,[2,2,4*$scale,4*$scale],[220,180,100])
+  check($oracle.compare($native,$reference,$bounds,[16,14],[10,20,30]).matches,"Correct source crop rejected")
+  $wrong=pixel_fixture($side,$side,[2,2,4*$scale,4*$scale],[100,180,220])
+  check(not $oracle.compare($native,$wrong,$bounds,[16,14],[10,20,30]).matches,"Wrong tint accepted")
+  $shifted=pixel_fixture($side,$side,[3,2,4*$scale,4*$scale],[220,180,100])
+  check(not $oracle.compare($native,$shifted,$bounds,[16,14],[10,20,30]).matches,"Shifted glyph accepted")
+  $blank=pixel_fixture($side,$side,[0,0,0,0],[220,180,100])
+  check(not $oracle.compare($native,$blank,$bounds,[16,14],[10,20,30]).matches,"Blank glyph accepted")
+  $neighbour_only=pixel_fixture($side,$side,[$side-2,2,2,4*$scale],[220,180,100])
+  $native_neighbour_only=pixel_fixture(64,64,[16+8*$scale,14+4*$scale,2,4*$scale],[220,180,100])
+  check(not $oracle.compare($native_neighbour_only,$neighbour_only,$bounds,[16,14],[10,20,30]).matches,
+    "Neighbour guard ink falsely proves a blank target glyph")
+end
+print("PASS pure icon crop guards: correct origin at scales 1/2; tint, shift and blank refused; no native claim")
