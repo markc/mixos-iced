@@ -8,6 +8,9 @@
 - Keep dormant client geometry, tile facts and pending observations in their
   owning Space. Dormant untile preserves world membership and normal restore;
   active-world geometry verbs refuse dormant clients rather than migrating them.
+- Restore a dormant client's own xdg unmaximise request in its owning Space;
+  public geometry commands retain the active-world guard. Native acceptance
+  exercises client-requested fullscreen/maximise exit after a world switch.
 
 ## 0.1.16
 

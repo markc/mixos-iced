@@ -269,7 +269,7 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
             enabled,
             output,
         } => Some(
-            match window_state(lp, *id, *generation, *state, *enabled, output.as_deref()) {
+            match window_state(lp, *id, *generation, *state, *enabled, output.as_deref(), true) {
                 Ok((record_id, before, after)) => {
                     let facts = window_facts(lp, record_id);
                     let registry = &lp.inner.comp.registry;
@@ -554,6 +554,8 @@ fn minimized(lp: &mut Loop, id: u64, generation: u64, minimized: bool) -> Contro
 
 /// The policy's refusals, then the request; `Ok`
 /// carries the record and the requested state before and after.
+/// Public commands require the active world. A client's own overlay exit
+/// restores its immutable owning Space, even after that world becomes dormant.
 fn window_state(
     lp: &mut Loop,
     id: u64,
@@ -561,6 +563,7 @@ fn window_state(
     state: WindowState,
     enabled: bool,
     output: Option<&str>,
+    active_world_required: bool,
 ) -> Result<(SurfaceId, bool, bool), ControlReply> {
     let record_id = lp
         .inner
@@ -569,7 +572,7 @@ fn window_state(
         .resolve_window_target(id, Some(generation))
         .map_err(|error| ControlReply::WindowTarget { id, error })?
         .id();
-    if window_of(lp, record_id).is_some_and(|window| {
+    if active_world_required && window_of(lp, record_id).is_some_and(|window| {
         lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())
     }) {
         return Err(ControlReply::refused(
@@ -1254,7 +1257,7 @@ fn set_window_state(
     } else {
         WindowState::Fullscreen
     };
-    match window_state(lp, window, current_generation, state, enabled, None) {
+    match window_state(lp, window, current_generation, state, enabled, None, true) {
         Ok((_, old, new)) => ControlReply::Set {
             path: path.to_string(),
             old: PropValue::Bool(old),
@@ -1602,6 +1605,7 @@ pub fn apply_client_requests(lp: &mut Loop) {
                     WindowState::Maximized,
                     enabled,
                     None,
+                    enabled,
                 )
                 .is_err()
                     && let Some(window) = window_of(lp, id)

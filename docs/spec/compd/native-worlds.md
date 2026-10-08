@@ -29,8 +29,10 @@ and the shared renderer. There is no separate broker, service or transport.
 `comp.window.untile` can remove the same live member while its owning world is
 dormant. It restores that world's actual local normal rectangle and clears its
 native requested tiled flags without activating, focusing or migrating it.
-Tile admission, free placement and requested fullscreen/maximise geometry need
-the active world. Dormant window projections report invisible, while their
+Tile admission, free placement and Bus fullscreen/maximise geometry requests
+need the active world. A client's own protocol overlay-exit request restores
+its normal rectangle in its immutable owning Space while dormant, without
+activating or reassigning it. Dormant window projections report invisible, while their
 geometry and native state are read from their owning Space. Tiled group planning
 and pending observation remain scoped to actual Space participants.
 
