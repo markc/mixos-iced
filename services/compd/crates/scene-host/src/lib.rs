@@ -24,6 +24,7 @@ use world::state::Loop;
 
 mod appearance;
 pub mod conf;
+mod description;
 pub mod host;
 mod icons;
 mod images;

@@ -11,9 +11,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use world::state::Loop;
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::calloop::ping::make_ping;
+use world::state::Loop;
 
 pub struct Scenes {
     pending: Rc<Cell<bool>>,
@@ -23,14 +23,21 @@ impl Scenes {
     /// `None` when `scene_host` is off. The fallback name is
     /// `--scene-service`, else the `scene_service` preference; the noded URL
     /// is the comp port's (`MIXOS_NODED_URL`, else the loopback broker).
-    pub fn start(lp: &Loop, cli_service: Option<&str>, handle: &LoopHandle<'static, Loop>) -> Option<Self> {
+    pub fn start(
+        lp: &Loop,
+        cli_service: Option<&str>,
+        handle: &LoopHandle<'static, Loop>,
+    ) -> Option<Self> {
         let preference = &lp.inner.preference;
         if !preference.scene_host {
             model::info!("Mix Scenes host off (preference scene_host = false)");
             return None;
         }
         let config = scene_host::HostConfig {
-            service_override: cli_service.map(str::to_owned).or_else(|| preference.scene_service.clone()),
+            owner_version: env!("CARGO_PKG_VERSION").into(),
+            service_override: cli_service
+                .map(str::to_owned)
+                .or_else(|| preference.scene_service.clone()),
             noded_url: comp_service::default_noded_url(),
         };
         let (ping, source) = match make_ping() {

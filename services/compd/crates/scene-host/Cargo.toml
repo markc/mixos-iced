@@ -18,7 +18,7 @@ contract = "none"
 workspace = true
 
 [dependencies]
-application = { workspace = true, features = ["settings-cache", "wgpu-bare"] }
+application = { workspace = true, features = ["settings-cache", "wgpu-bare", "describe"] }
 appearance = { workspace = true }
 settings = { workspace = true, features = ["native"] }
 # conf.mix (strict data) and its path in the MixOS etc dir, as Quoin reads them.
@@ -55,6 +55,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+term-test-broker = { path = "../../../../apps/term/crates/term-test-broker" }
 tempfile = "=3.27.0"
 # The same CPU SVG parser/rasteriser and embedded-image support as iced_wgpu.
 resvg = { version = "0.45", default-features = false, features = ["raster-images"] }
