@@ -305,14 +305,20 @@ impl App {
                 if std::env::var_os("MIXOS_ACCEPTANCE_RUN").is_some()
                     && matches!(&event, iced::Event::Mouse(_) | iced::Event::Keyboard(_))
                 {
-                    eprintln!("BUSVIEWER_FIXTURE_INPUT window={id:?} status={status:?} event={event:?}");
+                    eprintln!(
+                        "BUSVIEWER_FIXTURE_INPUT window={id:?} status={status:?} event={event:?}"
+                    );
                 }
                 match event {
-                iced::Event::Window(event) => Some(Message::Window(id, event)),
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key, modifiers, ..
-                }) if status == iced::event::Status::Ignored => Some(Message::Key(key, modifiers)),
-                _ => None,
+                    iced::Event::Window(event) => Some(Message::Window(id, event)),
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key,
+                        modifiers,
+                        ..
+                    }) if status == iced::event::Status::Ignored => {
+                        Some(Message::Key(key, modifiers))
+                    }
+                    _ => None,
                 }
             }),
         ])
