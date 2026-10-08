@@ -160,6 +160,7 @@ fn participant_presentations($batch,$label)
     presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
 end
 fn preparation_failure_recovery()
+  $healthy=rpc("settingsd","settings.get",{binding:$binding}).snapshot
   $before=shell("app.describe",{}).participants
   $keys=[]; $owners={}; $retained={}; $services=[]
   for each $app in $R.owners
@@ -168,6 +169,7 @@ fn preparation_failure_recovery()
     $admitted_row=$rows[0]; push($keys,$admitted_row.key); push($services,$app.context.service)
     $owners[$admitted_row.key]={pid:$admitted_row.pid,connection_generation:$admitted_row.connection_generation,registration_incarnation:$admitted_row.registration_incarnation,surface_incarnation:$admitted_row.surface_incarnation,native_window:$admitted_row.native_window,frame_owner:$admitted_row.frame_owner}
     $retained[$app.context.service]=$f.rpc($app.context,"app.describe",{})
+    $all.canonical($retained[$app.context.service],$app,$healthy,$binding,$manifest,$manifest_digest)
   end
   check(len($keys) == 7 and len(unique($keys)) == 7,"Seven genuine failure owners required")
   $bad=apply({"appearance.resources":{schema:1,set_id:"native-absent-resource",manifest_blake3:$manifest_digest}},"preparation-failed")
@@ -193,6 +195,7 @@ fn preparation_failure_recovery()
     push($failure_descriptions,{service:$app.context.service,before:$old,failed:$actual})
   end
   retained("preparation-failed")
+  write_file($R.run.path .. "/preparation-failure-observed.json",json_encode({before:$before,owners:$owners,failed:$bad,wait:$wait,descriptions:$failure_descriptions,hardware:false,recovery_verified:false}))
   $good=apply({"appearance.resources":{schema:1,set_id:$manifest.set_id,manifest_blake3:$manifest_digest}},"preparation-recovered")
   $recovered_frames=participant_presentations($good,"preparation-recovered")
   for each $app in $R.owners
@@ -404,7 +407,19 @@ try
   run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30})
   $authority=own(spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],{env:env_for($root .. "/authority-home"),stdout:{file:$root .. "/settingsd.log"},stderr:"stdout",detach:true}),false)
   ready("settingsd","settings.describe",$authority)
-  $light=apply({"appearance.mode":"light","ui.text_scale":1.0,"ui.density":1.0,"shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:72}},"initial-light")
+  -- Explicit resource bindings require declared families; packaged-default
+  -- remapping deliberately applies only when the resource reference is absent.
+  $design=load_data($repo .. "/libs/design/src/defaults/revision-1.theme.conf.mix")
+  $records=$design.design.v1.typography.records
+  $roles={ui:"sans",ui_display:"display",small:"sans",mono:"mono",terminal:"mono"}
+  for each $record in keys($records)
+    $role=if $roles[$record] != nil then $roles[$record] else "ui" end
+    $records[$record]=merge($records[$record],{family:$manifest.font_families[$role],fallbacks:[]})
+  end
+  $typography=merge($design.design.v1.typography,{records:$records})
+  $v1=merge($design.design.v1,{typography:$typography})
+  $design=merge($design,{typography:merge($design.typography,{family:$manifest.font_families.ui}),design:merge($design.design,{v1:$v1})})
+  $light=apply({"appearance.source":data_encode($design),"appearance.resources":{schema:1,set_id:$manifest.set_id,manifest_blake3:$manifest_digest},"appearance.mode":"light","ui.text_scale":1.0,"ui.density":1.0,"shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:72}},"initial-light")
   mkdir($root .. "/cfg",{parents:true})
   write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
   write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"all-apps-fallback",decorations_ssd:false}))
