@@ -26,6 +26,12 @@
 //! `--delay-state-commit WxH:MS` instead ACKs without any surface commit until
 //! the delayed replacement buffer. Both delays require a resize of an already
 //! mapped buffer and are bounded to 1..=60000 ms; the flags are mutually exclusive.
+//! `--min-size WxH` / `--max-size WxH` install real client hints (1..=8192).
+//! `--hints-on-key EVDEV` defers installation to that received pressed key;
+//! `--clear-hints-on-key EVDEV` clears both hints on that received pressed key.
+//! `--request-move-on-button` sends xdg move on a real left-button press;
+//! `--request-resize-on-button` sends bottom-right resize on a real right press.
+//! Both use the received pointer serial and seat, never invented input.
 //! `--seats` lists and labels every seat's keyboard/pointer events.
 //! `--idle-timeout-ms N` also enables this mode and subscribes to one
 //! ext-idle-notify notification per seat. Seat names are whatever the
@@ -93,6 +99,34 @@ struct Probe {
     presented: u64,
     pointer_at: (f64, f64),
     closed: bool,
+    toplevel: Option<xdg_toplevel::XdgToplevel>,
+    hints: HintControls,
+    hints_dirty: bool,
+    request_move: bool,
+    request_resize: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HintControls {
+    min: Option<(i32, i32)>,
+    max: Option<(i32, i32)>,
+    set_key: Option<u32>,
+    clear_key: Option<u32>,
+}
+
+impl HintControls {
+    fn action(self, key: u32, pressed: bool) -> Option<bool> {
+        if !pressed {
+            return None;
+        }
+        if self.clear_key == Some(key) {
+            Some(false)
+        } else if self.set_key == Some(key) {
+            Some(true)
+        } else {
+            None
+        }
+    }
 }
 
 /// One seat's event lines. Events that arrive before the seat's name are
@@ -162,6 +196,51 @@ impl SeatProbe {
 }
 
 impl Probe {
+    fn hint_key(&mut self, key: u32, pressed: bool) {
+        if let Some(enabled) = self.hints.action(key, pressed) {
+            self.install_hints(enabled);
+        }
+    }
+
+    fn install_hints(&mut self, enabled: bool) {
+        let Some(top) = &self.toplevel else {
+            return;
+        };
+        let min = if enabled {
+            self.hints.min.unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
+        let max = if enabled {
+            self.hints.max.unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
+        top.set_min_size(min.0, min.1);
+        top.set_max_size(max.0, max.1);
+        self.hints_dirty = true;
+        say(&format!(
+            "hints_requested {} {} {} {}",
+            min.0, min.1, max.0, max.1
+        ));
+    }
+
+    fn interactive_button(&self, seat: &wl_seat::WlSeat, serial: u32, button: u32, pressed: bool) {
+        if !pressed {
+            return;
+        }
+        let Some(top) = &self.toplevel else {
+            return;
+        };
+        if self.request_move && button == 272 {
+            top._move(seat, serial);
+            say(&format!("move_requested serial={serial}"));
+        } else if self.request_resize && button == 273 {
+            top.resize(seat, serial, xdg_toplevel::ResizeEdge::BottomRight);
+            say(&format!("resize_requested serial={serial}"));
+        }
+    }
+
     fn prepare_seats(&mut self, qh: &QueueHandle<Self>) {
         for (id, seat) in &mut self.seats {
             if seat.notification.is_none()
@@ -209,6 +288,9 @@ struct Options {
     ssd: bool,
     delay_size_commit: Option<(i32, i32, Duration)>,
     delay_state_commit: Option<(i32, i32, Duration)>,
+    hints: HintControls,
+    request_move: bool,
+    request_resize: bool,
 }
 
 fn options() -> Result<Options, String> {
@@ -231,6 +313,9 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         ssd: false,
         delay_size_commit: None,
         delay_state_commit: None,
+        hints: HintControls::default(),
+        request_move: false,
+        request_resize: false,
     };
     while let Some(argument) = arguments.next() {
         let mut value = || {
@@ -268,6 +353,37 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
             "--translucent" => options.translucent = true,
             "--colour" => options.colour = Some(parse_colour(&value()?)?),
             "--ssd" => options.ssd = true,
+            "--min-size" | "--max-size" => {
+                let size = parse_hint_size(&value()?)?;
+                let field = if argument == "--min-size" {
+                    &mut options.hints.min
+                } else {
+                    &mut options.hints.max
+                };
+                if field.replace(size).is_some() {
+                    return Err(format!("duplicate {argument}"));
+                }
+            }
+            "--hints-on-key" | "--clear-hints-on-key" => {
+                let input = value()?;
+                if input.is_empty() || !input.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err("hint key must be an evdev code 1..=767".into());
+                }
+                let key: u32 = input.parse().map_err(|_| "invalid hint key")?;
+                if !(1..=767).contains(&key) {
+                    return Err("hint key must be an evdev code 1..=767".into());
+                }
+                let field = if argument == "--hints-on-key" {
+                    &mut options.hints.set_key
+                } else {
+                    &mut options.hints.clear_key
+                };
+                if field.replace(key).is_some() {
+                    return Err(format!("duplicate {argument}"));
+                }
+            }
+            "--request-move-on-button" => options.request_move = true,
+            "--request-resize-on-button" => options.request_resize = true,
             "--delay-size-commit" | "--delay-state-commit" => {
                 if options.delay_size_commit.is_some() || options.delay_state_commit.is_some() {
                     return Err("only one delayed commit flag is allowed".into());
@@ -305,7 +421,36 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
     if options.width <= 0 || options.height <= 0 {
         return Err("size must be positive".into());
     }
+    if options.hints.set_key.is_some() && options.hints.set_key == options.hints.clear_key {
+        return Err("hint set and clear keys must differ".into());
+    }
+    if (options.hints.set_key.is_some() || options.hints.clear_key.is_some())
+        && options.hints.min.is_none()
+        && options.hints.max.is_none()
+    {
+        return Err("hint key controls require a size hint".into());
+    }
+    if let (Some(min), Some(max)) = (options.hints.min, options.hints.max) {
+        if min.0 > max.0 || min.1 > max.1 {
+            return Err("minimum hint exceeds maximum".into());
+        }
+    }
     Ok(options)
+}
+
+fn parse_hint_size(input: &str) -> Result<(i32, i32), String> {
+    let (width, height) = input.split_once('x').ok_or("hint size expects WxH")?;
+    let dimension = |value: &str| -> Result<i32, String> {
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("hint dimensions must be 1..=8192".into());
+        }
+        let value: i32 = value.parse().map_err(|_| "invalid hint dimension")?;
+        if !(1..=8192).contains(&value) {
+            return Err("hint dimensions must be 1..=8192".into());
+        }
+        Ok(value)
+    };
+    Ok((dimension(width)?, dimension(height)?))
 }
 
 fn parse_colour(value: &str) -> Result<[u8; 3], String> {
@@ -445,6 +590,9 @@ fn run() -> Result<(), String> {
     let mut probe = Probe {
         all_seats: options.seats || options.idle_timeout_ms.is_some(),
         idle_timeout_ms: options.idle_timeout_ms,
+        hints: options.hints,
+        request_move: options.request_move,
+        request_resize: options.request_resize,
         ..Probe::default()
     };
     queue
@@ -490,6 +638,12 @@ fn run() -> Result<(), String> {
     let surface = compositor.create_surface(&qh, ());
     let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg.get_toplevel(&qh, ());
+    probe.toplevel = Some(toplevel.clone());
+    if options.hints.set_key.is_none()
+        && (options.hints.min.is_some() || options.hints.max.is_some())
+    {
+        probe.install_hints(true);
+    }
     toplevel.set_title(options.title.clone());
     toplevel.set_app_id(options.app_id.clone());
     let _decoration = if options.ssd {
@@ -504,14 +658,17 @@ fn run() -> Result<(), String> {
         None
     };
     surface.commit();
+    probe.hints_dirty = false;
 
     let deadline = Instant::now() + options.duration;
     let mut current: Option<Canvas> = None;
     let mut frame = 0_u32;
     probe.frame_done = true;
     let mut hidden = false;
-    // After a remap nothing may be attached until the new configure is
-    // acknowledged.
+    // After a remap nothing may be attached until an actual configure is
+    // acknowledged. A configure received while hidden remains outstanding:
+    // a compositor control request may configure the unmapped role before
+    // the re-show empty commit, so that commit need not earn another serial.
     let mut awaiting_configure = false;
     let mut remap_at: Option<Instant> = None;
     let mut remap_left = options.remap_once;
@@ -535,12 +692,12 @@ fn run() -> Result<(), String> {
             remap_at = None;
             hidden = false;
             awaiting_configure = true;
-            // A fresh initial commit; the configure it earns re-attaches.
+            // Start re-show; use the retained actual configure, or await the
+            // initial configure this empty commit earns if none is pending.
             surface.commit();
             say("remapped");
         }
         if hidden {
-            probe.pending_configure = None;
             wait_readable(&mut queue, Duration::from_millis(20))?;
             queue
                 .dispatch_pending(&mut probe)
@@ -553,6 +710,11 @@ fn run() -> Result<(), String> {
         let mut dirty = false;
         if let Some((serial, width, height)) = probe.pending_configure.take() {
             xdg.ack_configure(serial);
+            if awaiting_configure {
+                say(&format!(
+                    "remap_configure_ack {width} {height} serial={serial}"
+                ));
+            }
             let width = if width > 0 { width } else { options.width };
             let height = if height > 0 { height } else { options.height };
             if delayed_commit.is_some_and(|(w, h, _)| (w, h) != (width, height)) {
@@ -600,7 +762,7 @@ fn run() -> Result<(), String> {
         }
         if let Some(canvas) = current.as_ref()
             && delayed_commit.is_none()
-            && (dirty || (probe.frame_done && !awaiting_configure))
+            && (dirty || probe.hints_dirty || (probe.frame_done && !awaiting_configure))
         {
             frame = frame.wrapping_add(1);
             let pixel = options.pixel(frame);
@@ -616,6 +778,12 @@ fn run() -> Result<(), String> {
                 presentation.feedback(&surface, &qh, ());
             }
             surface.commit();
+            if std::mem::take(&mut probe.hints_dirty) {
+                queue
+                    .roundtrip(&mut probe)
+                    .map_err(|error| format!("hint commit sync failed: {error}"))?;
+                say("hints_committed");
+            }
             if options.delay_state_commit.is_some() && dirty {
                 say(&format!("buffer_commit {} {}", canvas.width, canvas.height));
             }
@@ -690,7 +858,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
                 state.compositor = Some(registry.bind(name, version.min(6), qh, ()));
             }
             "wl_shm" => state.shm = Some(registry.bind(name, 1, qh, ())),
-            "xdg_wm_base" => state.wm_base = Some(registry.bind(name, 1, qh, ())),
+            "xdg_wm_base" => state.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
             "zxdg_decoration_manager_v1" => {
                 state.decoration_manager = Some(registry.bind(name, 1, qh, ()));
             }
@@ -808,9 +976,13 @@ impl Dispatch<wl_pointer::WlPointer, u32> for Probe {
             wl_pointer::Event::Button {
                 button,
                 state: pressed,
+                serial,
                 ..
             } => {
                 let pressed = matches!(pressed, WEnum::Value(wl_pointer::ButtonState::Pressed));
+                let native_seat = seat.seat.clone();
+                state.interactive_button(&native_seat, serial, button, pressed);
+                let seat = state.seats.get_mut(id).unwrap();
                 format!(
                     "button {button} {} {} {}",
                     u8::from(pressed),
@@ -820,7 +992,7 @@ impl Dispatch<wl_pointer::WlPointer, u32> for Probe {
             }
             _ => return,
         };
-        seat.emit(line);
+        state.seats.get_mut(id).unwrap().emit(line);
     }
 }
 
@@ -833,9 +1005,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, u32> for Probe {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let Some(seat) = state.seats.get_mut(id) else {
+        if !state.seats.contains_key(id) {
             return;
-        };
+        }
         let line = match event {
             wl_keyboard::Event::Enter { .. } => "keyboard_enter".into(),
             wl_keyboard::Event::Leave { .. } => "keyboard_leave".into(),
@@ -845,11 +1017,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, u32> for Probe {
                 ..
             } => {
                 let pressed = matches!(pressed, WEnum::Value(wl_keyboard::KeyState::Pressed));
+                state.hint_key(key, pressed);
                 format!("key {key} {}", u8::from(pressed))
             }
             _ => return,
         };
-        seat.emit(line);
+        state.seats.get_mut(id).unwrap().emit(line);
     }
 }
 
@@ -927,10 +1100,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Probe {
             wl_pointer::Event::Button {
                 button,
                 state: button_state,
+                serial,
                 ..
             } => {
                 let pressed =
                     matches!(button_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
+                if let Some(seat) = state.seat.clone() {
+                    state.interactive_button(&seat, serial, button, pressed);
+                }
                 say(&format!(
                     "button {button} {} {} {}",
                     u8::from(pressed),
@@ -945,7 +1122,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Probe {
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Probe {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &wl_keyboard::WlKeyboard,
         event: wl_keyboard::Event,
         _: &(),
@@ -961,6 +1138,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Probe {
                 ..
             } => {
                 let pressed = matches!(pressed, WEnum::Value(wl_keyboard::KeyState::Pressed));
+                state.hint_key(key, pressed);
                 say(&format!("key {key} {}", u8::from(pressed)));
             }
             _ => {}
@@ -1083,6 +1261,66 @@ ignore_events!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_hint_controls_are_bounded_consistent_and_only_use_pressed_selected_keys() {
+        let parse = |args: &[&str]| parse_options(args.iter().map(|value| (*value).to_owned()));
+        let options = parse(&[
+            "--min-size",
+            "1200x1000",
+            "--max-size",
+            "8192x8192",
+            "--hints-on-key",
+            "30",
+            "--clear-hints-on-key",
+            "31",
+            "--request-move-on-button",
+            "--request-resize-on-button",
+        ])
+        .unwrap();
+        assert_eq!(options.hints.min, Some((1200, 1000)));
+        assert!(options.request_move && options.request_resize);
+        assert_eq!(options.hints.action(30, true), Some(true));
+        assert_eq!(options.hints.action(31, true), Some(false));
+        assert_eq!(options.hints.action(30, false), None);
+        assert_eq!(options.hints.action(32, true), None);
+        for input in [
+            "0x1",
+            "1x0",
+            "8193x1",
+            "1x8193",
+            "-1x1",
+            "+1x1",
+            "1x1x1",
+            "1 x1",
+            "2147483648x1",
+        ] {
+            assert!(parse(&["--min-size", input]).is_err(), "{input}");
+            assert!(parse(&["--max-size", input]).is_err(), "{input}");
+        }
+        for args in [
+            vec!["--min-size"],
+            vec!["--min-size", "2x2", "--max-size", "1x2"],
+            vec!["--min-size", "2x2", "--min-size", "2x2"],
+            vec!["--hints-on-key", "30"],
+            vec![
+                "--min-size",
+                "2x2",
+                "--hints-on-key",
+                "30",
+                "--clear-hints-on-key",
+                "30",
+            ],
+            vec!["--min-size", "2x2", "--hints-on-key", "0"],
+            vec!["--min-size", "2x2", "--hints-on-key", "768"],
+            vec!["--min-size", "2x2", "--hints-on-key", "+30"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+        let defaults = parse(&[]).unwrap();
+        assert_eq!(defaults.hints, HintControls::default());
+        assert!(!defaults.request_move && !defaults.request_resize);
+    }
 
     #[test]
     fn delayed_state_commit_is_strict_and_only_holds_a_mapped_resize() {

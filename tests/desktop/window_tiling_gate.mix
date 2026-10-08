@@ -1,0 +1,464 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Actual Bus tiling owner, native ACK/buffer fences, colour readback and input.
+-- Usage: mix tests/desktop/window_tiling_gate.mix REPO BUILD_BIN_DIR
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=env("MIXOS_TEST_MIX","/opt/mixos/bin/mix")
+$n=require("nested_host_lib.mix")
+$host=require("settings_host_lib.mix")
+$capture=require("capture_lib.mix")
+$fixture=require("settings_fixture_lib.mix")
+for each $name in ["compd","settingsd","noded","testkit-input-probe","testkit-screenshot"]
+  if not is_file($bin .. "/" .. $name) then raise("SETUP","Missing " .. $name) end
+end
+$R={run:nil,bus:nil,session:nil,children:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+fn check($condition,$message)
+  if not $condition then raise("TILING",$message) end
+end
+fn call($verb,$body)
+  return $n.call($R.session.service,$verb,$body)
+end
+fn rpc($verb,$body)
+  $reply=call($verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn shell($verb,$body)
+  $reply=$n.call($shell,$verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn identity($client)
+  return {id:$client.id,generation:$client.generation}
+end
+fn row($client)
+  $value=rpc("comp.props.get",{path:"windows.s" .. to_string($client.id)})
+  check($value.id == $client.id and $value.generation == $client.generation and
+    $value.pid == $client.pid and process_alive($client.pid),"Native owner changed: " .. json_encode($value))
+  return $value
+end
+fn owner($client)
+  $truth=rpc("compd.truth",{})
+  $value=$truth.tiles[to_string($client.id)]
+  check($value != nil and $value.generation == $client.generation,"Missing fenced tiling owner")
+  return $value
+end
+fn geometry($value,$x,$y,$w,$h)
+  return $value.window_x == $x and $value.window_y == $y and $value.window_width == $w and $value.window_height == $h
+end
+fn wait_state($client,$until)
+  return rpc("comp.window.wait",{match:identity($client),until:$until,timeout_ms:12000}).window
+end
+fn wait_size($client,$w,$h)
+  return rpc("comp.window.wait",{match:identity($client),until:"size",width:$w,height:$h,timeout_ms:12000}).window
+end
+fn timeout($client,$until)
+  $reply=call("comp.window.wait",{match:identity($client),until:$until,timeout_ms:200})
+  check($reply.rc >= 10 and type($reply.result) == "map" and $reply.result.error == "timeout",
+    "Premature " .. $until .. " wait: " .. json_encode($reply))
+  return $reply
+end
+fn probe_tail($client,$offset)
+  return slice(read_file($client.log),$offset)
+end
+fn log_after($client,$offset,$needle)
+  for $attempt=1 to 500
+    if contains(probe_tail($client,$offset),$needle) then return end
+    check(process_alive($client.pid),"Probe died before " .. $needle)
+    sleep(0.02)
+  end
+  raise("PROBE","No actual event " .. $needle .. ": " .. probe_tail($client,$offset))
+end
+fn spawn_probe($name,$colour,$x,$y,$options)
+  $log=$root .. "/probe-" .. $name .. ".log"
+  $pid=spawn(concat([$bin .. "/testkit-input-probe","--app-id","dev.mixos.Tile" .. $name,
+    "--size","420x260","--seconds","300","--colour",$colour,"--seats"],$options),
+    {env:$n.client_env($R.session,{}),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$pid])
+  $mapped=rpc("comp.window.wait",{match:{app_id:"dev.mixos.Tile" .. $name},until:"presented",timeout_ms:15000}).window
+  check($mapped != nil and $mapped.pid == $pid,"Presented row does not name owned client")
+  $client={id:$mapped.id,generation:$mapped.generation,pid:$pid,log:$log,colour:$colour,
+    normal:{x:$x,y:$y,width:420,height:260}}
+  rpc("comp.window.place",merge(identity($client),$client.normal))
+  wait_size($client,420,260)
+  check(geometry(row($client),$x,$y,420,260),"Initial normal rectangle failed")
+  check(not contains(read_file($log),"PROBE state_ack_held"),"Initial map falsely delayed")
+  return $client
+end
+fn tile($client)
+  return rpc("comp.window.tile",merge(identity($client),{output:$output_key}))
+end
+fn check_slot($client,$w,$h)
+  $value=rpc("compd.truth",{}).slots[to_string($client.id)]
+  check($value != nil and deep_eq($value.decided,[$w,$h]),"Wrong real decided slot: " .. json_encode($value))
+end
+fn columns($clients,$height)
+  $count=len($clients)
+  for $index=0 to $count-1
+    $client=$clients[$index]
+    $left=floor($index*$width/$count)
+    $right=floor(($index+1)*$width/$count)
+    wait_state($client,"tiled")
+    wait_size($client,$right-$left,$height)
+    $value=row($client)
+    check(geometry($value,$left,0,$right-$left,$height) and $value.requested_tiled and
+      $value.native_requested_tiled and $value.tiled and not $value.configure_pending and $value.tile_pending_reason == nil,
+      "Wrong committed column: " .. json_encode($value))
+    $owned=owner($client)
+    check($owned.group.output == $output.name and deep_eq($owned.group.normal,$client.normal),"Owner lost output or immutable restore")
+    check_slot($client,$right-$left,$height)
+  end
+end
+fn colour($image,$x,$y,$hex)
+  $pixel=$capture.pixel($image,$x,$y)
+  $expected=if $hex == "ff00ff" then [255,0,255] else if $hex == "00ff00" then [0,255,0] else [0,0,255] end
+  return abs($pixel[0]-$expected[0]) <= 8 and abs($pixel[1]-$expected[1]) <= 8 and abs($pixel[2]-$expected[2]) <= 8
+end
+fn screenshot($label)
+  $path=$root .. "/" .. $label .. ".ppm"
+  run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,env:$n.client_env($R.session,{})})
+  $image=$capture.ppm($path)
+  check($image.w == $width and $image.h == $height,"Capture scale/geometry changed")
+  return $image
+end
+fn pixels_overlay($label,$client,$usable)
+  $settled=false
+  for $attempt=1 to 40
+    $image=screenshot($label)
+    if colour($image,20,20,$client.colour) and colour($image,$width-20,$usable-20,$client.colour) then $settled=true; break end
+    sleep(0.05)
+  end
+  check($settled,"Actual overlay pixels never converged: " .. $label)
+end
+fn pixels_normal($label,$client)
+  rpc("comp.window.focus",merge(identity($client),{raise:true}))
+  $normal=$client.normal
+  $settled=false
+  for $attempt=1 to 40
+    $image=screenshot($label)
+    if (colour($image,$normal.x+20,$normal.y+20,$client.colour) and
+      not colour($image,$normal.x+$normal.width+16,$normal.y+20,$client.colour)) then $settled=true; break end
+    sleep(0.05)
+  end
+  check($settled,"Actual immutable normal colour boundary failed: " .. $label)
+  point($client,20,20)
+end
+fn pixels_columns($label,$clients,$usable)
+  $settled=false
+  for $attempt=1 to 40
+    $image=screenshot($label)
+    $settled=true
+    for $index=0 to len($clients)-1
+      $left=floor($index*$width/len($clients))
+      $right=floor(($index+1)*$width/len($clients))
+      $client=$clients[$index]
+      if (not colour($image,$left+8,floor($usable/2),$client.colour) or
+        not colour($image,$right-8,floor($usable/2),$client.colour) or
+        not colour($image,floor(($left+$right)/2),floor($usable/2),$client.colour) or
+        not colour($image,$left+8,$usable-8,$client.colour)) then $settled=false end
+    end
+    if $settled then break end
+    sleep(0.05)
+  end
+  check($settled,"Actual column colour boundaries failed: " .. $label)
+  for each $client in $clients
+    point($client,20,floor($usable/2))
+  end
+end
+fn point($client,$x,$y)
+  $value=row($client)
+  $local=$fixture.surface_point($value,identity($client),$x,$y)
+  $offset=len(read_file($client.log))
+  $move=rpc("comp.input.pointer.move",{seat:"human",window:identity($client),x:$local.x,y:$local.y,corners:false})
+  check($move.target != nil and $move.target.id == $client.id,"Pointer missed live rendered owner")
+  -- A different point forces motion even when this client already owns focus.
+  $move=rpc("comp.input.pointer.move",{seat:"human",window:identity($client),x:$local.x+1,y:$local.y+1,corners:false})
+  log_after($client,$offset,"motion " .. to_string($x+1) .. " " .. to_string($y+1))
+end
+fn button($name,$action)
+  return rpc("comp.input.pointer.button",{seat:"human",button:$name,action:$action})
+end
+fn interactive($client,$enabled,$button,$marker)
+  rpc("comp.window.focus",merge(identity($client),{raise:true}))
+  point($client,40,40)
+  $before=row($client)
+  $offset=len(read_file($client.log))
+  button($button,"press")
+  log_after($client,$offset,$marker)
+  check(len(re_find(probe_tail($client,$offset),"(?:move|resize)_requested serial=([1-9][0-9]*)")) == 1,"Interactive request lacks one actual button serial")
+  rpc("comp.input.pointer.move",{seat:"human",x:$before.x+90,y:$before.y+70})
+  rpc("comp.input.pointer.move",{seat:"human",x:$before.x+130,y:$before.y+100})
+  button($button,"release")
+  $after=row($client)
+  if $enabled then
+    $changed=false
+    for $attempt=1 to 100
+      $after=row($client)
+      $changed=if $button == "left" then $after.window_x != $before.window_x or $after.window_y != $before.window_y
+        else $after.window_width != $before.window_width or $after.window_height != $before.window_height end
+      if $changed and not $after.configure_pending then break end
+      sleep(0.02)
+    end
+    check($changed and not $after.configure_pending,"Ordinary real interactive request remained blocked or uncommitted after untile")
+    point($client,20,20)
+    $image=screenshot("ordinary-" .. $button)
+    check(colour($image,$after.x+20,$after.y+20,$client.colour),"Ordinary interactive geometry did not render the live owner")
+  else
+    check(geometry($after,$before.window_x,$before.window_y,$before.window_width,$before.window_height),"Member allowed real interactive geometry mutation")
+    log_after($client,$offset,"button " .. (if $button == "left" then "272" else "273" end) .. " 0")
+  end
+end
+fn key($client,$key,$marker)
+  $offset=len(read_file($client.log))
+  rpc("comp.input.key",{seat:"human",window:identity($client),key:$key,action:"tap",raise:false})
+  $code=if $key == "a" then 30 else 31 end
+  log_after($client,$offset,"key " .. to_string($code) .. " 1")
+  log_after($client,$offset,$marker)
+  log_after($client,$offset,"PROBE hints_committed")
+end
+fn apply_panel($mode,$thickness,$label)
+  $current=$n.call("settingsd","settings.get",{binding:$binding})
+  check($current.rc == 0,"Lost authority")
+  $current=$current.result.snapshot
+  $accepted=$n.call("settingsd","settings.apply",{binding:$binding,expected_incarnation:$current.incarnation,
+    expected_revision:$current.revision,operation_id:$label,changes:{"shell.panels.bottom":{edge:"bottom",mode:$mode,thickness:$thickness}},reset:[]})
+  check($accepted.rc == 0,"Panel batch refused: " .. json_encode($accepted))
+  $snapshot=$n.call("settingsd","settings.get",{binding:$binding}).result.snapshot
+  for $attempt=1 to 100
+    $panel=shell("shell.panel.state",{edge:"bottom"})
+    $settings=shell("shell.props.get",{path:"settings"})
+    $reserved=if $mode == "dock" then $thickness else 0 end
+    if ($panel.settings != nil and $panel.settings.presented_px == $thickness and
+      $panel.settings.reserved_px == $reserved and $settings.kind == "current" and
+      $settings.applied != nil and $settings.applied.incarnation == $snapshot.incarnation and
+      $settings.applied.revision == $snapshot.revision) then return $snapshot end
+    sleep(0.05)
+  end
+  raise("PANEL","Settings panel presentation/reservation did not converge")
+end
+fn normal($client)
+  wait_state($client,"untiled")
+  wait_size($client,420,260)
+  $value=row($client)
+  check(geometry($value,$client.normal.x,$client.normal.y,420,260) and not owner($client).requested_tiled,
+    "Untile lost immutable normal restore")
+end
+try
+  $R.run=$n.new_run("/var/tmp/window-tiling")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"window-tiling",noded:$bin .. "/noded"})
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
+    {stdout:{file:$root .. "/settingsd.log"},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$authority])
+  $ready=false
+  for $attempt=1 to 100
+    if $n.call("settingsd","settings.get",{binding:$binding}).rc == 0 then $ready=true; break end
+    sleep(0.05)
+  end
+  check($ready,"Owned authority never registered")
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"tiling-shell",decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"tiling",run:$R.run,config:$root .. "/cfg/settings.json",
+    host_renderer:"pixman",software:true,scale:1,env:{HOME:$root .. "/home",MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default"}})
+  check($n.wait_ready($R.session,30),"Owned compositor never registered")
+  $shell=nil
+  for $attempt=1 to 100
+    $found=re_find(read_file($R.session.log),"scene host: registered as `([^`]+)`")
+    if len($found) > 0 then $shell=$found[0].groups[0]; break end
+    sleep(0.05)
+  end
+  check($shell == "shell" or $shell == "tiling-shell","No actual scene host")
+  $outputs=rpc("comp.props.get",{path:"outputs"})
+  check(len(keys($outputs)) == 1,"Bounded fixture requires one output")
+  $output_key=keys($outputs)[0]
+  $output=$outputs[$output_key]
+  $width=$output.width
+  $height=$output.height
+  check($output.x == 0 and $output.y == 0 and $width > 1000 and $height > 600 and $width <= 4096 and $height <= 4096,"Unsupported fixture output")
+  rpc("comp.props.set",{path:"input.host.passthrough",value:false})
+  -- A real edge scene is required: settings alone must not pretend occupancy.
+  shell("shell.scene.load",{source:"---\nscene: 1\nname: tiling-panel\ncitizen: settingsd\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":52}\n---\n```mix\nroot: {widget: \"row\", fill: true, background: \"#123456\", children: []}\n```\n"})
+  apply_panel("overlay",52,"tiling-initial")
+  $hint=to_string($width) .. "x" .. to_string($height)
+  $a=spawn_probe("A","ff00ff",64,48,["--min-size",$hint,"--hints-on-key","30","--clear-hints-on-key","31","--request-move-on-button","--request-resize-on-button"])
+  $b=spawn_probe("B","00ff00",120,80,[])
+  tile($a); tile($b)
+  columns([$a,$b],$height)
+  pixels_columns("two",[$a,$b],$height-60)
+  $third_width=$width-floor(2*$width/3)
+  $c=spawn_probe("C","0000ff",180,120,["--delay-state-commit",to_string($third_width) .. "x" .. to_string($height) .. ":8000","--hide-on-close","--remap-once-ms","8000"])
+  $offset=len(read_file($c.log))
+  tile($c)
+  log_after($c,$offset,"PROBE state_ack_held " .. to_string($third_width) .. " " .. to_string($height))
+  $held=row($c)
+  check($held.requested_tiled and $held.native_requested_tiled and not $held.tiled and $held.configure_pending and
+    $held.window_width == 420 and $held.window_height == 260,"Held native ACK fabricated committed tile/geometry")
+  check_slot($c,$third_width,$height)
+  write_file($root .. "/third-held.json",json_encode({row:$held,owner:owner($c),truth:rpc("compd.truth",{})}))
+  timeout($c,"tiled")
+  $size_wait=call("comp.window.wait",{match:identity($c),until:"size",width:$third_width,height:$height,timeout_ms:200})
+  check($size_wait.rc >= 10 and $size_wait.result.error == "timeout","Held geometry prematurely satisfied size wait")
+  $image=screenshot("third-held")
+  $left=floor(2*$width/3)
+  -- Production aspect-fits the committed buffer in the new decided slot.
+  -- The old short buffer is centred with letterbox, never a tall replacement.
+  check(colour($image,$left+$third_width/2,$height/2,"0000ff") and
+    not colour($image,$left+20,40,"0000ff"),"Held old buffer was replaced in actual pixels")
+  $pointer_offset=len(read_file($c.log))
+  $inside=rpc("comp.input.pointer.move",{seat:"human",x:$left+$third_width/2,y:$height/2})
+  check($inside.target != nil and $inside.target.id == $c.id,"Fitted committed buffer did not own native input")
+  $matched=false
+  for $attempt=1 to 100
+    $motions=re_find(probe_tail($c,$pointer_offset),"(?:enter|motion) (-?[0-9.]+) (-?[0-9.]+)")
+    for each $motion in $motions
+      if (abs(to_number($motion.groups[0])-$held.window_width/2) <= 1 and
+        abs(to_number($motion.groups[1])-$held.window_height/2) <= 1) then $matched=true; break end
+    end
+    if $matched then break end
+    sleep(0.02)
+  end
+  check($matched,"Actual input did not invert the committed buffer's aspect fit")
+  $outside=rpc("comp.input.pointer.move",{seat:"human",x:$left+20,y:40})
+  check($outside.target == nil or $outside.target.id != $c.id,"Held new decided size fabricated native input")
+  check(not contains(probe_tail($c,$offset),"PROBE buffer_commit"),"Buffer committed during claimed held assertions")
+  write_file($root .. "/third-held-input.json",json_encode({size_wait:$size_wait,inside:$inside,outside:$outside,motions:$motions}))
+  columns([$a,$b,$c],$height)
+  check(contains(probe_tail($c,$offset),"PROBE buffer_commit " .. to_string($third_width) .. " " .. to_string($height)),"Converged without real replacement buffer log")
+  pixels_columns("three",[$a,$b,$c],$height-60)
+  interactive($a,false,"left","PROBE move_requested")
+  interactive($a,false,"right","PROBE resize_requested")
+  $refused=call("comp.window.place",merge(identity($a),{x:50,y:50,width:500,height:300}))
+  check($refused.rc >= 10,"Member allowed public placement")
+
+  -- Occupied settings-backed work area; overlay remains whole-output.
+  rpc("comp.window.fullscreen",merge(identity($a),{output:$output_key}))
+  wait_state($a,"fullscreen")
+  wait_size($a,$width,$height)
+  pixels_overlay("fullscreen",$a,$height-60)
+  point($a,$width-30,$height-80)
+  apply_panel("dock",64,"tiling-dock64")
+  key($a,"a","PROBE hints_requested " .. to_string($width) .. " " .. to_string($height))
+  rpc("comp.window.unfullscreen",identity($a))
+  wait_state($a,"unfullscreen")
+  wait_size($a,420,260)
+  $pending=row($a)
+  check($pending.requested_tiled and not $pending.native_requested_tiled and not $pending.tiled and
+    $pending.tile_pending_reason == "insufficient_area" and geometry($pending,64,48,420,260),"Infeasible overlay exit fabricated tile geometry")
+  timeout($a,"tiled"); timeout($a,"untiled")
+  interactive($a,false,"left","PROBE move_requested")
+  pixels_normal("pending-normal",$a)
+  key($a,"s","PROBE hints_requested 0 0 0 0")
+  columns([$a,$b,$c],$height-64)
+  pixels_columns("recovered-dock64",[$a,$b,$c],$height-64)
+  rpc("comp.window.maximize",identity($a))
+  wait_state($a,"maximized"); wait_size($a,$width,$height-64)
+  pixels_overlay("maximized",$a,$height-64)
+  apply_panel("dock",96,"tiling-dock96")
+  wait_size($a,$width,$height-96)
+  rpc("comp.window.unmaximize",identity($a))
+  wait_state($a,"unmaximized")
+  columns([$a,$b,$c],$height-96)
+  pixels_columns("max-return-current",[$a,$b,$c],$height-96)
+  rpc("comp.window.fullscreen",merge(identity($a),{output:$output_key}))
+  wait_state($a,"fullscreen")
+  apply_panel("dock",80,"tiling-dock80")
+  rpc("comp.window.unfullscreen",identity($a))
+  wait_state($a,"unfullscreen")
+  columns([$a,$b,$c],$height-80)
+  pixels_columns("full-return-current",[$a,$b,$c],$height-80)
+
+  -- Same live generation remains removable while suspended.
+  rpc("comp.window.minimize",identity($b))
+  check(row($b).minimized,"Native minimize did not suspend member")
+  rpc("comp.window.untile",identity($b))
+  check(not owner($b).requested_tiled and row($b).minimized,"Minimised untile changed visibility or retained membership")
+  rpc("comp.window.restore",identity($b))
+  normal($b)
+  pixels_normal("minimised-untile-restore",$b)
+  rpc("comp.props.set",{path:"workspaces.count",value:2})
+  rpc("comp.window.send_to_workspace",merge(identity($a),{index:2}))
+  check(not row($a).visible,"Workspace transfer did not suspend actual client")
+  rpc("comp.window.untile",identity($a))
+  check(not owner($a).requested_tiled and not row($a).visible,"Off-workspace untile changed visibility or retained membership")
+  rpc("comp.window.send_to_workspace",merge(identity($a),{index:1}))
+  normal($a)
+  pixels_normal("workspace-untile-restore",$a)
+  interactive($a,true,"left","PROBE move_requested")
+  interactive($a,true,"right","PROBE resize_requested")
+  $offset=len(read_file($c.log))
+  rpc("comp.window.close",identity($c))
+  log_after($c,$offset,"PROBE hidden")
+  rpc("comp.window.untile",identity($c))
+  $surface=rpc("comp.props.get",{path:"surfaces.s" .. to_string($c.id)})
+  check(not owner($c).requested_tiled and not $surface.mapped,"Null-buffer untile was refused or fabricated mapping")
+  write_file($root .. "/null-buffer-untile.json",json_encode({surface:$surface,owner:owner($c),truth:rpc("compd.truth",{})}))
+  log_after($c,$offset,"PROBE remapped")
+  log_after($c,$offset,"PROBE remap_configure_ack")
+  wait_state($c,"mapped")
+  write_file($root .. "/null-buffer-remapped.json",json_encode({row:row($c),surface:rpc("comp.props.get",{path:"surfaces.s" .. to_string($c.id)}),owner:owner($c),truth:rpc("compd.truth",{})}))
+  -- Native remap preserves stacking. The earlier real A resize covers C's
+  -- immutable normal rectangle; reveal it before requiring presentation.
+  rpc("comp.window.raise",identity($c))
+  wait_state($c,"presented")
+  normal($c)
+  pixels_normal("null-buffer-untile-remap",$c)
+  $host.stop($c.pid)
+  wait_state($c,"gone")
+  for each $verb in ["comp.window.tile","comp.window.untile","comp.window.place","comp.input.pointer.move"]
+    $stale={id:$a.id,generation:$a.generation+1}
+    $body=if $verb == "comp.window.place" then merge($stale,{x:10,y:10,width:300,height:200}) else if $verb == "comp.input.pointer.move" then {seat:"human",window:$stale,x:10,y:10,corners:false} else $stale end
+    $before=row($a)
+    $reply=call($verb,$body)
+    check($reply.rc >= 10 and type($reply.result) == "map" and $reply.result.error == "stale_target","Stale native route was not refused: " .. $verb)
+    $after=row($a)
+    check(geometry($after,$before.window_x,$before.window_y,$before.window_width,$before.window_height) and
+      not owner($a).requested_tiled,"Stale route mutated current owner")
+  end
+  -- Natural close retires membership; actual input and pixels reflow to survivor.
+  rpc("comp.window.place",merge(identity($a),$a.normal))
+  wait_size($a,420,260)
+  tile($a); tile($b)
+  columns([$a,$b],$height-80)
+  rpc("comp.window.close",identity($b))
+  wait_state($b,"gone")
+  for $attempt=1 to 100
+    if not process_alive($b.pid) then break end
+    sleep(0.02)
+  end
+  check(not process_alive($b.pid),"Closed member failed natural process retirement")
+  check(rpc("compd.truth",{}).tiles[to_string($b.id)] == nil,"Destroyed member retained owner/input state")
+  columns([$a],$height-80)
+  pixels_columns("retired-reflow",[$a],$height-80)
+  $retired=call("comp.input.pointer.move",{seat:"human",window:identity($b),x:20,y:20,corners:false})
+  check($retired.rc >= 10,"Retired input target remained routable")
+  write_file($root .. "/final-truth.json",json_encode(rpc("compd.truth",{})))
+  print("PASS native tiling: real 2→3 allocation, ACK/buffer fence, pixels/input, settings work area, hint recovery, current overlay return, suspended untile, interactive retirement and stale refusal")
+  $R.ok=true
+catch $message
+  print("FAIL " .. $message)
+  if $R.session != nil then
+    try
+      write_file($root .. "/failure-native.json",json_encode({windows:call("comp.props.get",{path:"windows"}),surfaces:call("comp.props.get",{path:"surfaces"}),truth:call("compd.truth",{})}))
+    catch $diagnostic
+      print("Native failure receipt unavailable: " .. $diagnostic)
+    end
+  end
+  if $R.run != nil then
+    for each $name in ["compositor.log","settingsd.log","probe-A.log","probe-B.log","probe-C.log","weston.log","noded.log"]
+      if is_file($R.run.path .. "/" .. $name) then print(run_argv(["tail","-n","25",$R.run.path .. "/" .. $name],{max_output:16000}).stdout) end
+    end
+  end
+finally
+  for each $child in $R.children
+    $host.stop($child)
+  end
+  if $R.session != nil then $n.stop($R.session) end
+  if $R.bus != nil then $host.stop($R.bus.pid) end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
