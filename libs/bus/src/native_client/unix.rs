@@ -384,7 +384,9 @@ async fn connect_verified(
     verbs: Option<Vec<crate::VerbDescriptor>>,
 ) -> Result<VerifiedConnection, ConnectError> {
     if !(1..=1048576).contains(&options.incoming_max_bytes) {
-        return Err(ConnectError::Protocol(anyhow::anyhow!("invalid verified incoming byte budget")));
+        return Err(ConnectError::Protocol(anyhow::anyhow!(
+            "invalid verified incoming byte budget"
+        )));
     }
     let path = options.resolved_endpoint();
     let before = verify_path(path, options.broker_account)?;
