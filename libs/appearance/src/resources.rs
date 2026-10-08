@@ -661,7 +661,9 @@ impl PreparedResources {
     }
 
     fn with_embedded(mut self, sources: Vec<EmbeddedSvg>) -> Self {
-        Arc::get_mut(&mut self.receipt).expect("new exclusive receipt").embedded = sources;
+        Arc::get_mut(&mut self.receipt)
+            .expect("new exclusive receipt")
+            .embedded = sources;
         self
     }
 
@@ -1955,15 +1957,31 @@ fn decode_embedded(
         embedded_evidence.insert(key.clone(), evidence);
         icons.insert(key, ready);
     }
-    let evidence = requirements.icons().iter().map(|requirement| {
-        embedded_evidence.remove(&requirement.key).unwrap_or_else(|| IconEvidence {
-            key: requirement.key.clone(), name: requirement.name.clone(),
-            family: None, style: None, glyph: None, weight: None,
-            asset: None, source_blake3: None,
-            reason: "no verified asset set".into(),
+    let evidence = requirements
+        .icons()
+        .iter()
+        .map(|requirement| {
+            embedded_evidence
+                .remove(&requirement.key)
+                .unwrap_or_else(|| IconEvidence {
+                    key: requirement.key.clone(),
+                    name: requirement.name.clone(),
+                    family: None,
+                    style: None,
+                    glyph: None,
+                    weight: None,
+                    asset: None,
+                    source_blake3: None,
+                    reason: "no verified asset set".into(),
+                })
         })
-    }).collect();
-    Ok(EmbeddedIcons { icons, evidence, charges, admission })
+        .collect();
+    Ok(EmbeddedIcons {
+        icons,
+        evidence,
+        charges,
+        admission,
+    })
 }
 
 fn generic_prepared(
@@ -1971,7 +1989,12 @@ fn generic_prepared(
     requirements: &ResourceRequirements,
     check: &mut dyn FnMut() -> Result<(), Diagnostic>,
 ) -> Result<Prepared, Diagnostic> {
-    let EmbeddedIcons { icons, evidence: icon_evidence, charges, admission } = decode_embedded(requirements, check)?;
+    let EmbeddedIcons {
+        icons,
+        evidence: icon_evidence,
+        charges,
+        admission,
+    } = decode_embedded(requirements, check)?;
     let mut texts = BTreeMap::new();
     let mut text_evidence = Vec::new();
     let mut prepared = projection.prepare(|record, resolved| {
@@ -2027,24 +2050,48 @@ pub fn reprepare_unbound(
     check()?;
     let _permit = staging_permit();
     check()?;
-    let resources = appearance.resources().ok_or_else(|| fault("resources", "unbound receipt missing"))?;
+    let resources = appearance
+        .resources()
+        .ok_or_else(|| fault("resources", "unbound receipt missing"))?;
     let previous = &resources.receipt;
     if previous.binding.is_some() {
-        return Err(fault("resources", "local unbound preparation requires an unbound receipt"));
+        return Err(fault(
+            "resources",
+            "local unbound preparation requires an unbound receipt",
+        ));
     }
     for supplied in &requirements.embedded {
-        if !previous.embedded.iter().any(|captured| captured.name == supplied.name && captured.bytes == supplied.bytes) {
-            return Err(fault("resources.embedded", "local preparation cannot replace captured artwork"));
+        if !previous
+            .embedded
+            .iter()
+            .any(|captured| captured.name == supplied.name && captured.bytes == supplied.bytes)
+        {
+            return Err(fault(
+                "resources.embedded",
+                "local preparation cannot replace captured artwork",
+            ));
         }
     }
     // Use only activation-time sources, including for a new alias/tint/size.
     requirements.embedded = previous.embedded.clone();
-    let EmbeddedIcons { icons, evidence: icon_evidence, charges, admission } = decode_embedded(&requirements, check)?;
+    let EmbeddedIcons {
+        icons,
+        evidence: icon_evidence,
+        charges,
+        admission,
+    } = decode_embedded(&requirements, check)?;
     let mut evidence = previous.evidence.clone();
     evidence.icons = icon_evidence;
     evidence.registry.image = admission.usage_after;
-    let receipt = PreparedResources::assemble(None, previous.texts.clone(), previous.owned_texts.clone(), icons, evidence, charges)
-        .with_embedded(previous.embedded.clone());
+    let receipt = PreparedResources::assemble(
+        None,
+        previous.texts.clone(),
+        previous.owned_texts.clone(),
+        icons,
+        evidence,
+        charges,
+    )
+    .with_embedded(previous.embedded.clone());
     let mut prepared = appearance.clone();
     prepared.attach_resources(receipt);
     check()?;
@@ -2212,12 +2259,30 @@ mod tests {
         let _test = TESTS.lock().unwrap_or_else(|error| error.into_inner());
         const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3 L21 20"/></svg>"#;
         const OTHER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0 0 L20 0 L20 20 Z"/></svg>"#;
-        let requirements = |scale, bytes| ResourceRequirements::new(vec![IconRequirement {
-            key: "local".into(), name: "captured".into(), logical_size: 16.0,
-            scale, tint: Color::from_rgba(0.0, 1.0, 0.0, 0.5),
-        }]).unwrap().with_embedded_svg_fallbacks(vec![EmbeddedSvg::trusted_static("captured", bytes).unwrap()]).unwrap();
+        let requirements = |scale, bytes| {
+            ResourceRequirements::new(vec![IconRequirement {
+                key: "local".into(),
+                name: "captured".into(),
+                logical_size: 16.0,
+                scale,
+                tint: Color::from_rgba(0.0, 1.0, 0.0, 0.5),
+            }])
+            .unwrap()
+            .with_embedded_svg_fallbacks(vec![
+                EmbeddedSvg::trusted_static("captured", bytes).unwrap(),
+            ])
+            .unwrap()
+        };
         let root = tempfile::tempdir().unwrap();
-        let first = host(root.path()).prepare(projection(), None, None, requirements(1.0, SVG), &mut check_ok()).unwrap();
+        let first = host(root.path())
+            .prepare(
+                projection(),
+                None,
+                None,
+                requirements(1.0, SVG),
+                &mut check_ok(),
+            )
+            .unwrap();
         let original = first.resources().unwrap();
         let old = image_handle(original.icon("local"));
         // An unusable discovery root after activation cannot affect the pure
@@ -2227,23 +2292,38 @@ mod tests {
         let receipt = resized.resources().unwrap();
         let new = image_handle(receipt.icon("local"));
         assert_ne!(old, new);
-        let iced_core::image::Handle::Rgba { width, height, .. } = new else { panic!("ready pixels") };
+        let iced_core::image::Handle::Rgba { width, height, .. } = new else {
+            panic!("ready pixels")
+        };
         assert_eq!((width, height), (24, 24));
-        let iced_core::image::Handle::Rgba { width, height, .. } = old.clone() else { panic!("retained pixels") };
+        let iced_core::image::Handle::Rgba { width, height, .. } = old.clone() else {
+            panic!("retained pixels")
+        };
         assert_eq!((width, height), (16, 16));
         assert!(receipt.binding().is_none());
-        assert_eq!(receipt.evidence().icons[0].source_blake3, original.evidence().icons[0].source_blake3);
+        assert_eq!(
+            receipt.evidence().icons[0].source_blake3,
+            original.evidence().icons[0].source_blake3
+        );
         assert_eq!(resized.typography().get("ui"), first.typography().get("ui"));
         let usage = image_usage();
-        let returned = reprepare_unbound(&resized, requirements(1.0, SVG), &mut check_ok()).unwrap();
-        assert_eq!(image_handle(returned.resources().unwrap().icon("local")), old);
+        let returned =
+            reprepare_unbound(&resized, requirements(1.0, SVG), &mut check_ok()).unwrap();
+        assert_eq!(
+            image_handle(returned.resources().unwrap().icon("local")),
+            old
+        );
         assert_eq!(image_usage(), usage);
         assert!(reprepare_unbound(&resized, requirements(2.0, OTHER), &mut check_ok()).is_err());
         assert_eq!(image_usage(), usage);
         let mut checks = 0;
         let mut cancelled = || {
             checks += 1;
-            if checks == 6 { Err(fault("test", "cancelled local decode")) } else { Ok(()) }
+            if checks == 6 {
+                Err(fault("test", "cancelled local decode"))
+            } else {
+                Ok(())
+            }
         };
         assert!(reprepare_unbound(&resized, requirements(1.75, SVG), &mut cancelled).is_err());
         assert_eq!(image_usage(), usage, "cancelled local admission is private");
