@@ -118,13 +118,15 @@ pub(super) fn start_configured(
                 send,
                 effects,
                 ready,
-                worker_frames,
-                #[cfg(feature = "acceptance")]
-                worker_fixture_frames,
-                #[cfg(feature = "acceptance")]
-                fixture,
-                #[cfg(test)]
-                probe,
+                Presentation {
+                    frames: worker_frames,
+                    #[cfg(feature = "acceptance")]
+                    fixture_frames: worker_fixture_frames,
+                    #[cfg(feature = "acceptance")]
+                    fixture,
+                    #[cfg(test)]
+                    probe,
+                },
             ));
             runtime.shutdown_timeout(Duration::from_millis(100));
             let (lock, notified) = &*owner;
@@ -326,6 +328,16 @@ fn submit_themes(
     });
 }
 
+struct Presentation {
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    fixture_frames: Option<application::acceptance::frames::Endpoint>,
+    #[cfg(feature = "acceptance")]
+    fixture: Option<application::acceptance::Fixture>,
+    #[cfg(test)]
+    probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
+}
+
 async fn worker(
     service: String,
     url: String,
@@ -333,10 +345,7 @@ async fn worker(
     send: Sender<Delivery>,
     effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: std::sync::mpsc::Sender<Ready>,
-    frames: application::frames::Handle,
-    #[cfg(feature = "acceptance")] fixture_frames: Option<application::acceptance::frames::Endpoint>,
-    #[cfg(feature = "acceptance")] fixture: Option<application::acceptance::Fixture>,
-    #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
+    presentation: Presentation,
 ) -> Faults {
     let faults = Faults::default();
     let options = SupervisedClient::connect_options(&service, &url)
@@ -383,13 +392,7 @@ async fn worker(
             send,
             effects,
             None,
-            frames,
-            #[cfg(feature = "acceptance")]
-            fixture_frames,
-            #[cfg(feature = "acceptance")]
-            fixture,
-            #[cfg(test)]
-            probe,
+            presentation,
         )
         .await;
     };
@@ -402,7 +405,7 @@ async fn worker(
         }
     };
     #[cfg(feature = "acceptance")]
-    let prepare_hook = fixture.as_ref().map(|fixture| fixture.hook.clone());
+    let prepare_hook = presentation.fixture.as_ref().map(|fixture| fixture.hook.clone());
     let worker = SettingsWorker::contextual(move |appearance, snapshot: &settings::Snapshot, context: &crate::app::PreparationContext| {
         #[cfg(feature = "acceptance")]
         if let Some(hook) = &prepare_hook {
@@ -438,13 +441,7 @@ async fn worker(
         send,
         effects,
         Some(lane),
-        frames,
-        #[cfg(feature = "acceptance")]
-        fixture_frames,
-        #[cfg(feature = "acceptance")]
-        fixture,
-        #[cfg(test)]
-        probe,
+        presentation,
     )
     .await
 }
@@ -456,11 +453,17 @@ async fn run(
     mut send: Sender<Delivery>,
     mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     mut lane: Option<SettingsLane>,
-    frames: application::frames::Handle,
-    #[cfg(feature = "acceptance")] fixture_frames: Option<application::acceptance::frames::Endpoint>,
-    #[cfg(feature = "acceptance")] mut fixture: Option<application::acceptance::Fixture>,
-    #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
+    presentation: Presentation,
 ) -> Faults {
+    let Presentation {
+        frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
+        #[cfg(feature = "acceptance")]
+        mut fixture,
+        #[cfg(test)]
+        probe,
+    } = presentation;
     // incoming_bounded is consuming; the sole worker takes it here.
     let mut incoming = client
         .incoming_bounded()

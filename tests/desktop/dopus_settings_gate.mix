@@ -1,0 +1,330 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Owned actual GUI, shared inspector/native receipts and held authority change.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$capture=require("capture_lib.mix")
+$R={run:nil,bus:nil,session:nil,children:[],calls:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+$service="dopus-settings"
+fn check($condition,$message)
+  if not $condition then raise("DOPUS_SETTINGS_GATE",$message) end
+end
+fn fixture_context()
+  return {mix:$mix,bus:$R.bus,root:$R.run.path,service:$service}
+end
+fn rpc($service,$verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path,$service,$verb,$body)
+end
+fn app($verb,$body)
+  return $f.rpc(fixture_context(),$verb,$body)
+end
+fn fixture($verb,$body)
+  return $f.fixture(fixture_context(),$verb,$body)
+end
+fn comp($verb,$body)
+  return rpc($R.session.service,$verb,$body)
+end
+fn wait_service($service,$verb,$child,$log)
+  $deadline=time()+10
+  while time() < $deadline
+    check(process_alive($child),"Owned child exited: " .. read_file($log))
+    $reply=$h.call($mix,$R.bus,$R.run.path,$service,$verb,{})
+    if $reply.rc == 0 then return $reply.result end
+    sleep(0.05)
+  end
+  raise("SETUP","Service did not register: " .. $service)
+end
+fn launch($label,$identity)
+  $home=$R.run.path .. "/home-" .. $label
+  for each $dir in ["config","state","cache"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  $environment=merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",XDG_CACHE_HOME:$home .. "/cache",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1",
+    MIXOS_ACCEPTANCE_RUN:nil,MIXOS_ACCEPTANCE_INSTANCE:nil})
+  if $identity != nil then
+    $environment.MIXOS_ACCEPTANCE_RUN=$identity.run
+    $environment.MIXOS_ACCEPTANCE_INSTANCE=to_string($identity.instance)
+  end
+  $log=$R.run.path .. "/dopus-" .. $label .. ".log"
+  $child=spawn([$bin .. "/dopus","--service",$service,"--noded-url",$R.bus.url,"--",$R.run.path .. "/left",$R.run.path .. "/right"],
+    {env:$n.client_env($R.session,$environment),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$child])
+  wait_service($service,"app.describe",$child,$log)
+  $window=comp("comp.window.wait",{match:{app_id:"dev.mixos.dopus"},until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.pid == $child,"Window is not the actual launched owner")
+  return {pid:$child,window:{id:$window.id,generation:$window.generation},log:$log}
+end
+fn current($snapshot)
+  $deadline=time()+10
+  $last=nil
+  while time() < $deadline
+    $last=app("app.describe",{})
+    if (deep_eq($last.settings.applied,$h.identity($snapshot)) and
+      deep_eq($last.settings_cache.persisted,$last.settings.applied) and $last.preparation.current) then return $last end
+    check($last.preparation.fault == nil,"Preparation failed: " .. json_encode($last))
+    sleep(0.05)
+  end
+  raise("ACTIVATION","Did not settle: " .. json_encode($last))
+end
+fn apply($snapshot,$operation,$changes)
+  rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:$operation,changes:$changes,reset:[]})
+  return rpc("settingsd","settings.get",{binding:$binding}).snapshot
+end
+fn hold($identity,$token)
+  $arm=fixture("barrier.arm",merge($identity,{point:"dopus.prepare",token:$token}))
+  check($arm.state == "armed","Hold failed to arm")
+  return merge($identity,{sequence:$arm.sequence,token:$token})
+end
+fn async_wait($verb,$body,$label)
+  $pending=$f.asynchronous(fixture_context(),$verb,$body,$label,12)
+  $R.calls=concat($R.calls,[$pending.pid])
+  return $pending
+end
+fn product_matches($expected,$label)
+  $now=app("dopus.state",{})
+  check(deep_eq($now.panes,$expected.panes) and deep_eq($now.ui.location_draft,$expected.ui.location_draft) and
+    deep_eq($now.places,$expected.places) and deep_eq($now.properties,$expected.properties),
+    $label .. " disturbed actual file state or unfinished draft")
+  write_file($R.run.path .. "/product-" .. $label .. ".json",json_encode($now))
+end
+fn icon_resources($description,$label)
+  check(type($description.resources) == "map" and len($description.resources.icons) > 0,"No checked file-pane icon resources")
+  $folder=false
+  for each $icon in $description.resources.icons
+    check($icon.source_blake3 != nil and $icon.source_blake3 != "","Unverified icon source")
+    if $icon.name == "folder" then $folder=true end
+  end
+  check($folder,"Actual folder icon resource missing")
+  write_file($R.run.path .. "/icons-" .. $label .. ".json",json_encode($description.resources))
+end
+fn capture($label,$owner,$identity,$target)
+  -- Native output artefacts bracket the installed receipt and real window.
+  -- Individual file-row icon bounds are not exposed; this does not certify
+  -- a particular icon's raster by substituting a palette sample for it.
+  $before=app("app.describe",{})
+  $frame=$f.presented(fixture_context(),$identity,$target,"capture-" .. $label)
+  $geometry=comp("comp.props.get",{path:"windows.s" .. to_string($owner.window.id)})
+  check($geometry.pid == $owner.pid and $geometry.visible,"Capture owner is not visible")
+  $path=$R.run.path .. "/file-pane-" .. $label .. ".ppm"
+  print(run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,
+    env:$n.client_env($R.session,$h.bus_env($R.bus,$R.run.path))}))
+  $image=$capture.ppm($path)
+  check($image.w > 0 and $image.h > 0,"Native capture is empty")
+  check(deep_eq($before.settings.applied,app("app.describe",{}).settings.applied) and
+    deep_eq(fixture("frame.state",$identity).target,$target),"Settings changed across native pixel capture")
+  write_file($R.run.path .. "/pixels-" .. $label .. ".json",json_encode({frame:$frame,window:$owner.window,
+    geometry:$geometry,width:$image.w,height:$image.h,resources:$before.resources}))
+end
+try
+  for each $name in ["mix","dopus","noded","settingsd","compd","testkit-screenshot"]
+    check(is_file($bin .. "/" .. $name),"Missing exact candidate " .. $name)
+  end
+  $R.run=$n.new_run("/var/tmp/dopus-settings")
+  $root=$R.run.path
+  for each $directory in ["left","right","left/folder"]
+    mkdir($root .. "/" .. $directory,{parents:true})
+  end
+  write_file($root .. "/left/owned-file.txt","Actual owned file-pane content\n")
+  write_file($root .. "/right/other-file.txt","Other owned pane\n")
+  $R.bus=$n.private_bus({dir:$root,name:"dopus-settings",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"dopus-settings",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:180})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  $authority_log=$root .. "/settingsd.log"
+  $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
+    {env:$h.bus_env($R.bus,$root),stdout:{file:$authority_log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$authority])
+  wait_service("settingsd","settings.describe",$authority,$authority_log)
+  $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $ordinary=launch("ordinary",nil)
+  $describe=current($snapshot)
+  check($describe.pid == $ordinary.pid and $describe.service == $service and
+    $describe.app_id == "dev.mixos.dopus" and $describe.describe_contract == "application.describe.v1",
+    "Wrong canonical owner: " .. json_encode($describe))
+  for each $entry in $describe.verbs
+    check(not starts_with($entry.name,"app.acceptance."),"Ordinary inventory advertises fixture")
+  end
+  for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
+    $reply=$f.call(fixture_context(),"app.acceptance." .. $verb,{})
+    check($reply.rc == 10 and $reply.result.error_code == "UNKNOWN_VERB","Ordinary launch exposes fixture: " .. json_encode($reply))
+  end
+  app("dopus.quit",{})
+  $deadline=time()+4
+  while process_alive($ordinary.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($ordinary.pid),"Ordinary native quit did not retire its owner")
+  $identity={run:"dopus-native-" .. to_string(pid()),instance:1}
+  $dopus=launch("fixture",$identity)
+  $info=fixture("describe",$identity)
+  check($info.pid == $dopus.pid and deep_eq($info.aliases,["root","viewport","left-location","right-location"]) and
+    deep_eq($info.points,["dopus.prepare"]) and $info.frames.enabled,"Wrong explicit fixture")
+  $before=current($snapshot)
+  $initial=$f.target(fixture_context(),$identity,$before.preparation.applied)
+  $identity=merge($identity,{generation:$initial.evidence.live_generation})
+  $f.presented(fixture_context(),$identity,$initial.target,"baseline")
+  $f.layout(fixture_context(),$identity,$initial.target.window,"baseline")
+  $viewport=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["viewport"]}))
+  check(len($viewport.records) == 1 and $viewport.aliases[0].status == "found" and
+    $viewport.records[0].visible_bounds != nil,"Actual file-pane viewport unavailable")
+  write_file($root .. "/layout-viewport.json",json_encode($viewport))
+  $deadline=time()+8
+  while time() < $deadline
+    $state=app("dopus.state",{})
+    if ($state.panes[0].path == $root .. "/left" and $state.panes[1].path == $root .. "/right" and
+      $state.panes[0].rows == 2 and $state.panes[1].rows == 1) then break end
+    sleep(0.05)
+  end
+  check($state.panes[0].rows == 2 and $state.panes[1].rows == 1 and
+    $state.panes[0].path == $root .. "/left" and $state.panes[1].path == $root .. "/right","Owned actual listings did not settle")
+  app("dopus.action",{id:"selection.last",pane:0})
+  app("dopus.action",{id:"location.focus",pane:0})
+  $editor=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["left-location"]}))
+  write_file($root .. "/layout-editor.json",json_encode($editor))
+  check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual location editor layout unavailable")
+  $bounds=$editor.records[0].visible_bounds
+  check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 10,"Location editor not visibly editable")
+  $focus=comp("comp.window.focus",$dopus.window)
+  check($focus.focused == true,"Native window focus refused")
+  $geometry=comp("comp.props.get",{path:"windows.s" .. to_string($dopus.window.id)})
+  $point=$f.surface_point($geometry,$dopus.window,$bounds[0]+10,$bounds[1]+$bounds[3]/2)
+  $move=comp("comp.input.pointer.move",{seat:"human",window:$dopus.window,x:$point.x,y:$point.y,corners:false})
+  $press=comp("comp.input.pointer.button",{seat:"human",window:$dopus.window,button:"left",action:"press"})
+  $release=comp("comp.input.pointer.button",{seat:"human",window:$dopus.window,button:"left",action:"release"})
+  $select=comp("comp.input.key",{seat:"human",window:$dopus.window,key:"a",modifiers:["ctrl"]})
+  $draft=$root .. "/unfinished-draft"
+  $typed=comp("comp.input.key",{seat:"human",window:$dopus.window,text:$draft})
+  $input={focus:$focus,geometry:$geometry,point:$point,move:$move,press:$press,release:$release,select:$select,typed:$typed}
+  write_file($root .. "/input-editor.json",json_encode($input))
+  check(deep_eq($typed.target,$dopus.window) and $typed.completed_events > 0,"Native text reached the wrong owner")
+  $deadline=time()+3
+  while time() < $deadline
+    $product=app("dopus.state",{})
+    if $product.ui.location_draft != nil and $product.ui.location_draft.text == $draft then break end
+    sleep(0.02)
+  end
+  check($product.panes[0].selected == $root .. "/left/owned-file.txt" and len($product.panes[0].selected_paths) == 1 and
+    $product.ui.location_draft != nil and $product.ui.location_draft.pane == "left" and $product.ui.location_draft.text == $draft,
+    "Actual selection/draft not observed: " .. json_encode({product:$product,input:$input}))
+  write_file($root .. "/product-edited.json",json_encode($product))
+  icon_resources($before,"baseline")
+  capture("baseline",$dopus,$identity,$initial.target)
+  $reference=hold($identity,"theme-held")
+  $waiting=async_wait("barrier.wait",$reference,"theme-reached")
+  $changed=apply($snapshot,"dopus-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
+  $reached=$f.collect($waiting,4)
+  check($reached.rc == 0 and $reached.result.ok and $reached.result.state == "reached","Physical preparation never reached hold")
+  check($reached.result.observation == "revision=" .. to_string($changed.revision) .. " scale=1",
+    "Hold did not observe the actual contextual preparation")
+  $held=app("app.describe",{})
+  check(deep_eq($held.settings.current,$h.identity($changed)) and deep_eq($held.settings.applied,$before.settings.applied) and
+    deep_eq($held.resources,$before.resources),"Held builder replaced installed settings/resources")
+  check(deep_eq(fixture("frame.state",$identity).target,$initial.target),"Held preparation relabelled old frame")
+  product_matches($product,"held")
+  capture("held",$dopus,$identity,$initial.target)
+  $f.layout(fixture_context(),$identity,$initial.target.window,"held")
+  check(fixture("barrier.release",$reference).state == "released","Release failed")
+  $after=current($changed)
+  $second=$f.target(fixture_context(),$identity,$after.preparation.applied)
+  check($second.target.window == $initial.target.window and $second.target.stamp.activation_epoch > $initial.target.stamp.activation_epoch,"No new activation on the actual window")
+  $f.presented(fixture_context(),$identity,$second.target,"settings")
+  $f.layout(fixture_context(),$identity,$second.target.window,"settings")
+  product_matches($product,"activated")
+  icon_resources($after,"activated")
+  capture("activated",$dopus,$identity,$second.target)
+  $old_identity=$identity
+  $R.bus=$n.restart_private_bus($R.bus)
+  wait_service($service,"app.describe",$dopus.pid,$dopus.log)
+  $reconnected=current($changed)
+  $second=$f.target(fixture_context(),{run:$identity.run,instance:$identity.instance},$reconnected.preparation.applied)
+  check($second.evidence.live_generation > $old_identity.generation and $second.target.window == $initial.target.window and
+    process_alive($dopus.pid),"Reconnect replaced the GUI owner or failed to advance its generation")
+  $stale=$f.call(fixture_context(),"app.acceptance.frame.state",$old_identity)
+  check($stale.rc == 0 and not $stale.result.ok and contains($stale.result.error,"generation"),"Old generation remained usable after reconnect")
+  $identity=merge($identity,{generation:$second.evidence.live_generation})
+  $f.presented(fixture_context(),$identity,$second.target,"reconnected")
+  $f.layout(fixture_context(),$identity,$second.target.window,"reconnected")
+  product_matches($product,"reconnected")
+  capture("reconnected",$dopus,$identity,$second.target)
+  $closing=hold($identity,"closing")
+  $closing_wait=async_wait("barrier.wait",$closing,"closing-reached")
+  $last=apply($changed,"dopus-native-close",{"ui.density":1.5})
+  $closed_hold=$f.collect($closing_wait,4)
+  check($closed_hold.rc == 0 and $closed_hold.result.ok and $closed_hold.result.state == "reached","Closing preparation did not hold")
+  $future=merge($identity,{window:$second.target.window,activation_epoch:$second.target.stamp.activation_epoch+1,
+    local_revision:$second.target.stamp.local_revision,timeout_ms:10000})
+  $pending=async_wait("frame.wait",$future,"closing-frame")
+  $admitted=false
+  $deadline=time()+1
+  while time() < $deadline
+    $busy=$f.call(fixture_context(),"app.acceptance.frame.wait",merge($future,{timeout_ms:100}))
+    if $busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"frame wait: Busy") then $admitted=true; break end
+    check($busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"TimedOut"),"Unexpected wait admission")
+  end
+  check($admitted,"Closing wait never claimed native owner")
+  $started=time()
+  app("dopus.quit",{})
+  $reply=$f.collect($pending,3)
+  check($reply.rc == 0 and not $reply.result.ok and contains($reply.result.error,"Closed"),"Admitted frame wait did not close explicitly")
+  $deadline=time()+3
+  while process_alive($dopus.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($dopus.pid) and time()-$started < 5,"Held preparation blocked bounded shutdown")
+  write_file($root .. "/acceptance.json",json_encode({ordinary_omission:true,layout:true,presented:true,
+    held_last_good:true,reconnect:true,file_state_preserved:true,draft_preserved:true,icon_resources:true,native_pixel_artifacts:true,settings_applied:$h.identity($changed),same_window:true,shutdown_wait:$reply,dbus:false}))
+  $R.ok=true
+catch $message
+  print("FAIL Dopus native settings: " .. $message)
+finally
+  for each $child in concat($R.calls,$R.children)
+    try
+      $h.stop($child)
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+    catch $error
+      $R.ok=false
+      print("FAIL native host teardown: " .. $error)
+    end
+    for each $child in $R.session.pids
+      try
+        $h.stop($child)
+      catch $error
+        $R.ok=false
+        print("FAIL host child teardown: " .. $error)
+      end
+    end
+  end
+  if $R.bus != nil then
+    try
+      $h.stop($R.bus.pid)
+    catch $error
+      $R.ok=false
+      print("FAIL broker teardown: " .. $error)
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS Dopus actual GUI: canonical identity, ordinary omission, real roots, exact native frames, file selection/draft, held icon resources, native pixels and bounded shutdown")
