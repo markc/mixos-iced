@@ -143,8 +143,8 @@ try
     sleep(0.05)
   end
   check(not app("busviewer.info",{}).busy,"Native inventory did not settle")
-  app("busviewer.select",{service:"noded",verb:"noded.list"})
-  app("busviewer.call",{service:"noded",verb:"noded.list",body:"{}"})
+  app("busviewer.select",{service:$service,verb:"busviewer.ping"})
+  app("busviewer.call",{service:$service,verb:"busviewer.ping",body:"{}"})
   $editor=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["body"]}))
   check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual body editor layout unavailable")
   $bounds=$editor.records[0].visible_bounds
@@ -161,7 +161,7 @@ try
   end
   $product=app("busviewer.info",{})
   check($product.selection != nil and $product.body == '{"unfinished":true}' and $product.reply.rc == 0 and
-    $product.reply.service == "noded" and $product.reply.verb == "noded.list" and $product.reply.transport_error == nil,
+    $product.reply.service == $service and $product.reply.verb == "busviewer.ping" and $product.reply.transport_error == nil,
     "Native edits or the actual successful call were not retained")
   $reference=hold($identity,"theme-held")
   $waiting=async_wait("barrier.wait",$reference,"theme-reached")
