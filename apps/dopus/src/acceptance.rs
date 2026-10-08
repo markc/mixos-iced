@@ -23,11 +23,13 @@ pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::M
             inspect::Target::new(
                 "left-location",
                 widget::Id::from(crate::view::location::LOCATION_LEFT),
-            ),
+            )
+            .kind(inspect::Kind::TextInput),
             inspect::Target::new(
                 "right-location",
                 widget::Id::from(crate::view::location::LOCATION_RIGHT),
-            ),
+            )
+            .kind(inspect::Kind::TextInput),
         ],
         inspect::Limits::new(),
     )?;

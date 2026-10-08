@@ -190,7 +190,8 @@ try
   app("dopus.action",{id:"location.focus",pane:0})
   $editor=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["left-location"]}))
   write_file($root .. "/layout-editor.json",json_encode($editor))
-  check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual location editor layout unavailable")
+  check(len($editor.records) == 1 and $editor.aliases[0].status == "found" and
+    $editor.records[0].kind == "text_input","Actual location editor layout unavailable")
   $bounds=$editor.records[0].visible_bounds
   check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 10,"Location editor not visibly editable")
   $focus=comp("comp.window.focus",$dopus.window)
