@@ -561,7 +561,7 @@ async fn worker(
                             match ::bus::client_helpers::local_supervised_options(&name, &url) {
                                 Ok(options) => options,
                                 Err(error) => {
-                                    tracing::error!("Term verified Bus configuration: {error}");
+                                    eprintln!("term: verified Bus configuration: {error}");
                                     break;
                                 }
                             };
