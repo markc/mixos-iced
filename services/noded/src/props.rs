@@ -518,7 +518,11 @@ impl ChangeBus {
         new: &PropValue,
         cause: &str,
     ) {
-        let event = props::publish::build_props_changed_message(path, old, new, cause);
+        let mut event = props::publish::build_props_changed_message(path, old, new, cause);
+        // The generic props builder has no service identity. This broker-owned
+        // publisher must identify its notices so registry consumers can admit
+        // updates after their initial snapshot without trusting caller content.
+        event.set("from", "noded");
 
         match self
             .broker
