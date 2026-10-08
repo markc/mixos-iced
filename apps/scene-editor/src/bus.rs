@@ -48,7 +48,9 @@ pub struct Handle {
 }
 impl Handle {
     pub fn service_name(&self) -> &str {
-        self.client.as_ref().map_or("scene-editor", |client| client.service_name())
+        self.client
+            .as_ref()
+            .map_or("scene-editor", |client| client.service_name())
     }
     pub fn connected(&self) -> bool {
         self.client
@@ -388,27 +390,66 @@ async fn invalid_descriptions_refuse_before_pending_or_frontend_admission() {
     let (send, mut gui) = mpsc::unbounded();
     let (effects, receive) = tokio::sync::mpsc::unbounded_channel();
     let (ready, observed) = std::sync::mpsc::channel();
-    let actor = tokio::spawn(worker("scene-description-overridden".into(), broker.url.clone(), "shell".into(), send, receive, ready));
-    let (_client, _ui, _bootstrap) = tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(5)))
-        .await.unwrap().unwrap().unwrap();
+    let actor = tokio::spawn(worker(
+        "scene-description-overridden".into(),
+        broker.url.clone(),
+        "shell".into(),
+        send,
+        receive,
+        ready,
+    ));
+    let (_client, _ui, _bootstrap) =
+        tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
-    for body in ["{".into(), "null".into(), "[]".into(), "{\"extra\":true}".into(),
-        format!("{{{}}}", " ".repeat(application::describe::MAX_REQUEST_BYTES))] {
-        let (rc, body, _) = tokio::time::timeout(Duration::from_secs(5),
-            caller.call_with_headers_raw("scene-description-overridden", "app.describe", &BTreeMap::new(), &body)).await.unwrap().unwrap();
+    for body in [
+        "{".into(),
+        "null".into(),
+        "[]".into(),
+        "{\"extra\":true}".into(),
+        format!(
+            "{{{}}}",
+            " ".repeat(application::describe::MAX_REQUEST_BYTES)
+        ),
+    ] {
+        let (rc, body, _) = tokio::time::timeout(
+            Duration::from_secs(5),
+            caller.call_with_headers_raw(
+                "scene-description-overridden",
+                "app.describe",
+                &BTreeMap::new(),
+                &body,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(rc, 10);
         assert_eq!(value["error_code"], "ARGUMENT");
         assert!(value["describe_code"].is_string());
     }
-    assert!(tokio::time::timeout(Duration::from_millis(20), async {
-        while let Some(delivery) = gui.next().await {
-            if matches!(delivery, Delivery::Command { .. }) { return; }
-        }
-        panic!("actor unexpectedly closed");
-    }).await.is_err(), "invalid request reached the stalled frontend");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), async {
+            while let Some(delivery) = gui.next().await {
+                if matches!(delivery, Delivery::Command { .. }) {
+                    return;
+                }
+            }
+            panic!("actor unexpectedly closed");
+        })
+        .await
+        .is_err(),
+        "invalid request reached the stalled frontend"
+    );
     effects.send(Effect::Quit).unwrap();
-    tokio::time::timeout(Duration::from_secs(4), actor).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(4), actor)
+        .await
+        .unwrap()
+        .unwrap();
     caller.close().await;
 }
 

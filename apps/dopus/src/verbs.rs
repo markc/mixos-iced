@@ -786,7 +786,8 @@ fn pane_state(core: &DopusCore, pane_id: PaneId) -> PaneState {
 /// every arm ends in a `Served`.
 pub fn describe_refusal(error: &application::describe::Violation) -> String {
     serde_json::json!({"error_code":code::INVALID_ARGUMENT,"message":error.to_string(),
-        "reason":error.code,"describe_code":error.code,"path":error.path}).to_string()
+        "reason":error.code,"describe_code":error.code,"path":error.path})
+    .to_string()
 }
 
 pub fn serve_command(
@@ -797,7 +798,11 @@ pub fn serve_command(
 ) -> Vec<Served> {
     if command.verb == "app.describe" {
         if let Err(error) = application::describe::validate_request(&command.body) {
-            return vec![Served::Reply { id: command.id.clone(), rc: 10, body: describe_refusal(&error) }];
+            return vec![Served::Reply {
+                id: command.id.clone(),
+                rc: 10,
+                body: describe_refusal(&error),
+            }];
         }
         let mut value = serde_json::to_value(DescribeReply {
             contract: "ctk-app-control.v0".into(), app: "dopus".into(),
@@ -806,13 +811,30 @@ pub fn serve_command(
             description: "the MixOS twin-pane file manager (P4: plain Places and Properties panels; file operations via keyboard and dialogs; file.* stays Bus-forbidden)".into(),
             controls: Vec::new(), verbs: VERBS.iter().map(|(verb, _)| (*verb).to_owned()).collect(),
         }).expect("typed description");
-        let result = application::describe::complete(&mut value, application::describe::Identity {
-            app_id: if meta.headless { None } else { Some(crate::app::APP_ID) },
-            version: info.version, pid: std::process::id(), service: &meta.service,
-        });
+        let result = application::describe::complete(
+            &mut value,
+            application::describe::Identity {
+                app_id: if meta.headless {
+                    None
+                } else {
+                    Some(crate::app::APP_ID)
+                },
+                version: info.version,
+                pid: std::process::id(),
+                service: &meta.service,
+            },
+        );
         return vec![match result {
-            Ok(()) => Served::Reply { id: command.id.clone(), rc: 0, body: value.to_string() },
-            Err(error) => Served::Reply { id: command.id.clone(), rc: 10, body: describe_refusal(&error) },
+            Ok(()) => Served::Reply {
+                id: command.id.clone(),
+                rc: 0,
+                body: value.to_string(),
+            },
+            Err(error) => Served::Reply {
+                id: command.id.clone(),
+                rc: 10,
+                body: describe_refusal(&error),
+            },
         }];
     }
     match command.verb.as_str() {

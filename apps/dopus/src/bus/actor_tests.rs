@@ -45,15 +45,40 @@ impl Drop for Stop {
 async fn raw_describe_refusals_do_not_admit_work_into_a_paused_gui() {
     let broker = term_test_broker::Broker::start_stable();
     let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
-    let (handle, _paused_gui) = actor::start("dopus-description-overridden", &broker.url, false, 1, Some(probe)).unwrap();
+    let (handle, _paused_gui) = actor::start(
+        "dopus-description-overridden",
+        &broker.url,
+        false,
+        1,
+        Some(probe),
+    )
+    .unwrap();
     let _stop = Stop(handle.clone());
     observed(&mut observation, |state| state.connected).await;
     assert_eq!(handle.service_name(), "dopus-description-overridden");
     let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
-    for body in ["{".into(), "null".into(), "[]".into(), "{\"extra\":true}".into(),
-        format!("{{{}}}", " ".repeat(application::describe::MAX_REQUEST_BYTES))] {
-        let (rc, body, _) = tokio::time::timeout(Duration::from_secs(5),
-            caller.call_with_headers_raw("dopus-description-overridden", "app.describe", &BTreeMap::new(), &body)).await.unwrap().unwrap();
+    for body in [
+        "{".into(),
+        "null".into(),
+        "[]".into(),
+        "{\"extra\":true}".into(),
+        format!(
+            "{{{}}}",
+            " ".repeat(application::describe::MAX_REQUEST_BYTES)
+        ),
+    ] {
+        let (rc, body, _) = tokio::time::timeout(
+            Duration::from_secs(5),
+            caller.call_with_headers_raw(
+                "dopus-description-overridden",
+                "app.describe",
+                &BTreeMap::new(),
+                &body,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(rc, 10);
         assert_eq!(value["error_code"], "INVALID_ARGUMENT");

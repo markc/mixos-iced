@@ -71,9 +71,17 @@ pub fn run(service: &str, config: Config) -> anyhow::Result<()> {
                     let id = c.id;
                     let mut effects = ctl.on_bus_command(c);
                     if describe {
-                        crate::verbs::complete_describe_reply(&mut effects, id, |value| application::describe::complete(value,
-                            application::describe::Identity { app_id: None, version: env!("CARGO_PKG_VERSION"),
-                                pid: std::process::id(), service: bus.service_name() }));
+                        crate::verbs::complete_describe_reply(&mut effects, id, |value| {
+                            application::describe::complete(
+                                value,
+                                application::describe::Identity {
+                                    app_id: None,
+                                    version: env!("CARGO_PKG_VERSION"),
+                                    pid: std::process::id(),
+                                    service: bus.service_name(),
+                                },
+                            )
+                        });
                     }
                     effects
                 }

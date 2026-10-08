@@ -707,11 +707,18 @@ impl App {
                 let id = cmd.id;
                 let mut effects = self.controller.on_bus_command(cmd);
                 if describe {
-                    crate::verbs::complete_describe_reply(&mut effects, id, |value|
-                        application::describe::complete_native(value, application::describe::Identity {
-                            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
-                            pid: std::process::id(), service: self.bus.service_name(),
-                        }, self.settings.session()));
+                    crate::verbs::complete_describe_reply(&mut effects, id, |value| {
+                        application::describe::complete_native(
+                            value,
+                            application::describe::Identity {
+                                app_id: Some(APP_ID),
+                                version: env!("CARGO_PKG_VERSION"),
+                                pid: std::process::id(),
+                                service: self.bus.service_name(),
+                            },
+                            self.settings.session(),
+                        )
+                    });
                 }
                 self.perform(effects)
             }

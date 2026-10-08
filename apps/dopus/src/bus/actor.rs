@@ -255,8 +255,15 @@ fn refusal(
     faults: &mut Faults,
     shed: &mut u64,
 ) {
-    refusal_body(client, command, tasks, admission, faults, shed,
-        "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".into());
+    refusal_body(
+        client,
+        command,
+        tasks,
+        admission,
+        faults,
+        shed,
+        "{\"error_code\":\"BUSY\",\"message\":\"too many pending commands\"}".into(),
+    );
 }
 fn refusal_body(
     client: &Arc<SupervisedClient>,
@@ -267,17 +274,16 @@ fn refusal_body(
     shed: &mut u64,
     body: String,
 ) {
-    if command.id.is_none() { return; }
+    if command.id.is_none() {
+        return;
+    }
     let Some(permit) = admission.try_acquire() else {
         *shed = shed.saturating_add(1);
         return;
     };
     let now = Instant::now();
-    let reply = Accepted::new(client.clone(), command, permit, now).reply(
-        10,
-        body,
-        now + SHUTDOWN_BUDGET,
-    );
+    let reply =
+        Accepted::new(client.clone(), command, permit, now).reply(10, body, now + SHUTDOWN_BUDGET);
     if let Err(reply) = tasks.try_spawn_with(reply, NativeReply::into_task) {
         reply.retire().finish();
         faults.push("refusal task invariant failed".into());

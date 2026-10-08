@@ -287,10 +287,17 @@ pub struct Refusals {
 }
 impl Refusals {
     pub fn new(capacity: usize) -> Self {
-        Self { admission: Admission::new(capacity), tasks: TaskSet::new(capacity) }
+        Self {
+            admission: Admission::new(capacity),
+            tasks: TaskSet::new(capacity),
+        }
     }
-    pub fn is_empty(&self) -> bool { self.tasks.is_empty() }
-    pub fn counts(&self) -> crate::native_queue::Counts { self.admission.counts() }
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+    pub fn counts(&self) -> crate::native_queue::Counts {
+        self.admission.counts()
+    }
     pub fn try_reply(
         &mut self,
         client: Arc<SupervisedClient>,
@@ -299,16 +306,25 @@ impl Refusals {
         body: String,
         deadline: Instant,
     ) -> Result<(), IncomingCommand> {
-        if command.id.is_none() { return Ok(()); }
-        if self.tasks.is_full() { return Err(command); }
-        let Some(permit) = self.admission.try_acquire() else { return Err(command); };
-        let reply = Accepted::new(client, command, permit, Instant::now()).reply(rc, body, deadline);
+        if command.id.is_none() {
+            return Ok(());
+        }
+        if self.tasks.is_full() {
+            return Err(command);
+        }
+        let Some(permit) = self.admission.try_acquire() else {
+            return Err(command);
+        };
+        let reply =
+            Accepted::new(client, command, permit, Instant::now()).reply(rc, body, deadline);
         // Exclusive access to this set keeps the capacity check valid until
         // submission. No await or factory runs between these operations.
         match self.tasks.try_spawn_with(reply, Reply::into_task) {
             Ok(()) => Ok(()),
             Err(reply) => {
-                let Accepted { command, permit, .. } = *reply.accepted;
+                let Accepted {
+                    command, permit, ..
+                } = *reply.accepted;
                 permit.finish();
                 Err(command)
             }
@@ -319,21 +335,33 @@ impl Refusals {
     }
     pub fn record(result: Result<Completed<Result<(), String>>, JoinError>, faults: &mut Faults) {
         reap("native refusal", result, faults, |value, faults| {
-            if let Err(error) = value { faults.push(error); }
+            if let Err(error) = value {
+                faults.push(error);
+            }
         });
     }
     /// Drain only within the host's existing absolute shutdown deadline.
     /// Cancellation reports unconfirmed work separately from sent replies.
     pub async fn drain(mut self, deadline: Instant, faults: &mut Faults) {
         while !self.tasks.is_empty() {
-            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.tasks.join_next()).await {
+            match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                self.tasks.join_next(),
+            )
+            .await
+            {
                 Ok(Some(result)) => Self::record(result, faults),
                 Ok(None) => break,
-                Err(_) => { faults.push("native refusal drain timed out".into()); break; }
+                Err(_) => {
+                    faults.push("native refusal drain timed out".into());
+                    break;
+                }
             }
         }
         cancel("native refusal", self.tasks, faults, |value, faults| {
-            if let Err(error) = value { faults.push(error); }
+            if let Err(error) = value {
+                faults.push(error);
+            }
         });
     }
 }

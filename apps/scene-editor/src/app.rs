@@ -278,10 +278,16 @@ impl App {
     }
     fn describe(&self) -> Result<Value, application::describe::Violation> {
         let mut value = model::describe();
-        application::describe::complete_native(&mut value, application::describe::Identity {
-            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
-            pid: std::process::id(), service: self.bus.service_name(),
-        }, self.settings_ui.session())?;
+        application::describe::complete_native(
+            &mut value,
+            application::describe::Identity {
+                app_id: Some(APP_ID),
+                version: env!("CARGO_PKG_VERSION"),
+                pid: std::process::id(),
+                service: self.bus.service_name(),
+            },
+            self.settings_ui.session(),
+        )?;
         Ok(value)
     }
     fn info(&self) -> Value {
@@ -471,11 +477,17 @@ impl App {
         )
     }
     fn command(&mut self, id: u64, verb: &str, body: &str) -> Task<Message> {
-        if verb == "app.describe" && let Err(error) = application::describe::validate_request(body) {
+        if verb == "app.describe"
+            && let Err(error) = application::describe::validate_request(body)
+        {
             self.bus.reply(id, 10, crate::bus::describe_refusal(&error));
             return Task::none();
         }
-        let body = if verb == "app.describe" && body.trim().is_empty() { "{}" } else { body };
+        let body = if verb == "app.describe" && body.trim().is_empty() {
+            "{}"
+        } else {
+            body
+        };
         let args: Value = match serde_json::from_str::<Value>(body) {
             Ok(args) if args.is_object() => args,
             _ => {
@@ -1132,7 +1144,8 @@ mod tests {
         let mut app = app();
         app.selection.scene = Some("unfinished-selection".into());
         let selection = app.selection.clone();
-        let preparation = serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap();
+        let preparation =
+            serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap();
         let stamp = app.settings_ui.session().frame_stamp();
         let first = app.describe().unwrap();
         application::describe::validate(&first).unwrap();
@@ -1145,7 +1158,10 @@ mod tests {
         assert_eq!(first, app.describe().unwrap());
         assert_eq!(app.selection, selection);
         assert_eq!(app.settings_ui.session().frame_stamp(), stamp);
-        assert_eq!(serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap(), preparation);
+        assert_eq!(
+            serde_json::to_value(app.settings_ui.session().preparation_evidence()).unwrap(),
+            preparation
+        );
     }
     #[test]
     fn navigation_clears_old_page_and_stale_action_busy_status() {

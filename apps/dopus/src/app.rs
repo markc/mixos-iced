@@ -1124,11 +1124,18 @@ impl Dopus {
                 }
                 Served::Reply { id, rc, body } => {
                     let (rc, body) = if command.verb == "app.describe" && rc == 0 {
-                        let mut value: serde_json::Value = serde_json::from_str(&body).expect("typed description");
-                        match application::describe::complete_native(&mut value, application::describe::Identity {
-                            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
-                            pid: std::process::id(), service: handle.service_name(),
-                        }, self.settings.session()) {
+                        let mut value: serde_json::Value =
+                            serde_json::from_str(&body).expect("typed description");
+                        match application::describe::complete_native(
+                            &mut value,
+                            application::describe::Identity {
+                                app_id: Some(APP_ID),
+                                version: env!("CARGO_PKG_VERSION"),
+                                pid: std::process::id(),
+                                service: handle.service_name(),
+                            },
+                            self.settings.session(),
+                        ) {
                             Ok(()) => (0, value.to_string()),
                             Err(error) => (10, verbs::describe_refusal(&error)),
                         }

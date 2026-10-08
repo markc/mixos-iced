@@ -174,7 +174,9 @@ impl Clone for BusHandle {
 }
 impl BusHandle {
     pub fn service_name(&self) -> &str {
-        self.client.as_ref().map_or("dopus", |client| client.service_name())
+        self.client
+            .as_ref()
+            .map_or("dopus", |client| client.service_name())
     }
     #[cfg(test)]
     pub fn response_sink() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Effect>) {
