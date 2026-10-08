@@ -129,7 +129,7 @@ fn run() -> Result<(), String> {
         }
         wait_readable(&mut queue, deadline - now)?;
     }
-    grab.destroy();
+    grab.release();
     queue
         .roundtrip(&mut probe)
         .map_err(|error| error.to_string())?;
